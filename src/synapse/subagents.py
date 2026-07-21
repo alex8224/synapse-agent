@@ -11,6 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def _intent_middleware() -> list[Any]:
+    """Inject ``intent`` field into every tool arg schema (main-agent parity)."""
+    from synapse.middleware import build_intent_schema_middleware
+
+    return list(build_intent_schema_middleware())
+
+
 def _readonly_middleware(*, allow_execute: bool = False) -> list[Any]:
     """Strip write (and optionally execute) tools from the subagent model view."""
     from synapse.middleware import build_tool_exclusion_middleware
@@ -19,6 +26,14 @@ def _readonly_middleware(*, allow_execute: bool = False) -> list[Any]:
     if not allow_execute:
         excluded.add("execute")
     return [build_tool_exclusion_middleware(excluded)]
+
+
+_PARALLEL_HINT = (
+    "- Run independent tool calls in parallel when they do not depend on each other.\n"
+    "- Every tool call must include a short English ``intent`` describing its purpose.\n"
+    "  Example: ``inspect pytest config`` / ``locate login failure``.\n"
+    "- Do not use generic intent values such as ``run tool`` or ``read_file``.\n"
+)
 
 
 def build_default_subagents(
@@ -58,6 +73,7 @@ def build_default_subagents(
             "- Do not expand scope beyond verifying the requested behavior.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n"
+            + _PARALLEL_HINT
         ),
     }
     if tester_model:
@@ -80,6 +96,7 @@ def build_default_subagents(
             "- Prefer read-only inspection; do not modify files unless required.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n"
+            + _PARALLEL_HINT
         ),
     }
     if reviewer_model:
@@ -102,12 +119,18 @@ def build_default_subagents(
             "- Return concrete file paths and short evidence snippets.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n"
+            + _PARALLEL_HINT
         ),
     }
     if researcher_model:
         researcher["model"] = researcher_model
     if isolate_tools:
         researcher["middleware"] = _readonly_middleware(allow_execute=False)
+
+    # Every subagent gets intent-schema middleware (parity with main agent).
+    for spec in (researcher, tester, reviewer):
+        existing = list(spec.get("middleware") or [])
+        spec["middleware"] = _intent_middleware() + existing
 
     return [researcher, tester, reviewer]
 
