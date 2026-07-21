@@ -6,6 +6,8 @@ render ghost-text and accept with Right/Tab.
 
 from __future__ import annotations
 
+import os
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -528,6 +530,23 @@ _SKIP_DIRS = frozenset(
 )
 
 
+def _scandir_entries(
+    path: str,
+    *,
+    limit: int = 500,
+) -> list[os.DirEntry]:
+    """Return visible (non-dot) entries in *path*, sorted dirs-first."""
+    try:
+        with os.scandir(path) as it:
+            entries = [e for e in it if not e.name.startswith(".")]
+        entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
+        if len(entries) > limit:
+            entries = entries[:limit]
+        return entries
+    except (PermissionError, OSError):
+        return []
+
+
 def _glob_at_candidates(
     token: str,
     workspace: Path,
@@ -545,9 +564,9 @@ def _glob_at_candidates(
     down without remembering exact file names.
 
     When the user types a bare prefix (no directory separators) and direct
-    children produce few results, the function falls back to a shallow
-    recursive scan so that ``@syn`` can match ``src/synapse/`` without
-    requiring the user to type every directory level.
+    children produce few results, the function falls back to a BFS recursive
+    scan (using ``os.scandir`` with directory pruning) so that ``@syn`` can
+    match ``src/synapse/`` without requiring the user to type every level.
     """
     trailing_slash = token.endswith("/") or token.endswith("\\")
     prefix = _at_path_prefix(token)
@@ -565,7 +584,11 @@ def _glob_at_candidates(
             if parent_part == ".":
                 parent_part = ""
             base_part = parent_path.name
-            ls_dir = (workspace / parent_path.parent).resolve() if parent_part else workspace.resolve()
+            ls_dir = (
+                (workspace / parent_path.parent).resolve()
+                if parent_part
+                else workspace.resolve()
+            )
     else:
         parent_part = ""
         base_part = ""
@@ -578,20 +601,11 @@ def _glob_at_candidates(
     candidates: list[str] = []
 
     # -- direct children first (fast path) --
-    try:
-        all_entries: list[Path] = []
-        for i, ent in enumerate(ls_dir.iterdir()):
-            if i >= 500:
-                break
-            all_entries.append(ent)
-        entries = sorted(all_entries, key=lambda p: (not p.is_dir(), p.name.lower()))
-    except PermissionError:
-        entries = []
-
+    entries = _scandir_entries(str(ls_dir))
     for ent in entries:
         if base_part and not ent.name.lower().startswith(base_part.lower()):
             continue
-        suffix = ent.name + ("/" if ent.is_dir() else "")
+        suffix = ent.name + ("/" if ent.is_dir(follow_symlinks=False) else "")
         rel = f"{parent_part}/{suffix}" if parent_part else suffix
         rel = rel.replace("\\", "/")
         if rel.startswith("./"):
@@ -602,9 +616,8 @@ def _glob_at_candidates(
             if len(candidates) >= limit:
                 return candidates
 
-    # -- recursive fallback: search subdirectories for prefix matches --
-    # Only when the user typed a bare prefix (no explicit parent dir) and is
-    # not in directory-browsing mode.
+    # -- recursive fallback via os.scandir BFS with directory pruning --
+    # Only when the user typed a bare prefix and is not browsing a directory.
     if trailing_slash:
         return candidates
     if not base_part:
@@ -612,34 +625,53 @@ def _glob_at_candidates(
     if len(candidates) >= limit // 2:
         return candidates
 
-    try:
-        workspace_resolved = workspace.resolve()
-        pattern = f"**/{base_part}*"
-        scanned = 0
-        for p in workspace_resolved.rglob(pattern):
-            if scanned >= _RECURSIVE_SCAN_LIMIT:
-                break
-            scanned += 1
-            # Skip hidden / common-ignore dirs anywhere in the path.
-            if any(part in _SKIP_DIRS for part in p.parts):
-                continue
-            try:
-                rel = p.relative_to(workspace_resolved).as_posix()
-            except ValueError:
-                continue
-            # Skip hidden entries and entries inside hidden dirs.
-            if rel.startswith(".") or "/." in rel:
-                continue
-            suffix = "/" if p.is_dir() else ""
-            key = rel + suffix
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(key)
-            if len(candidates) >= limit:
-                break
-    except PermissionError:
-        pass
+    _base_lower = base_part.lower()
+
+    # BFS queue: (absolute-path, rel-prefix).  BFS finds shallower matches first.
+    _q: deque[tuple[str, str]] = deque()
+    _q.append((str(ls_dir), parent_part))
+    _scanned = 0
+
+    while _q and len(candidates) < limit:
+        dir_path, rel_prefix = _q.popleft()
+        try:
+            with os.scandir(dir_path) as it:
+                for entry in it:
+                    _scanned += 1
+                    if _scanned > _RECURSIVE_SCAN_LIMIT:
+                        break
+                    name = entry.name
+                    if name.startswith("."):
+                        continue
+
+                    child_rel = f"{rel_prefix}/{name}" if rel_prefix else name
+                    child_rel = child_rel.replace("\\", "/")
+
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+
+                    if is_dir:
+                        if name in _SKIP_DIRS:
+                            continue
+                        _q.append((entry.path, child_rel))
+                        if name.lower().startswith(_base_lower):
+                            key = child_rel + "/"
+                            if key not in seen:
+                                seen.add(key)
+                                candidates.append(key)
+                                if len(candidates) >= limit:
+                                    break
+                    elif name.lower().startswith(_base_lower):
+                        key = child_rel
+                        if key not in seen:
+                            seen.add(key)
+                            candidates.append(key)
+                            if len(candidates) >= limit:
+                                break
+        except (PermissionError, OSError):
+            continue
 
     # Sort: directories first, then by path.
     candidates.sort(key=lambda c: (not c.endswith("/"), c.lower()))
