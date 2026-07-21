@@ -81,7 +81,7 @@ def normalize_region_id(value: TopBarRegion | str | None) -> str:
     return key
 
 
-RenderFn = Callable[[], str]
+RenderFn = Callable[[], str | Text]
 
 
 @dataclass(slots=True)
@@ -130,14 +130,23 @@ class TopBarComponent:
     style: str | None = None
     visible: bool = True
 
-    def text(self) -> str:
+    def content(self) -> str | Text:
+        """Return render output as plain str or styled Rich Text."""
         if not self.visible:
             return ""
         try:
             raw = self.render()
         except Exception:  # noqa: BLE001
             return ""
+        if isinstance(raw, Text):
+            return raw
         return str(raw or "")
+
+    def text(self) -> str:
+        raw = self.content()
+        if isinstance(raw, Text):
+            return raw.plain
+        return raw
 
 
 def _default_regions() -> dict[str, TopBarRegionSpec]:
@@ -791,13 +800,17 @@ def render_packed_line(
                 line.append(" " * lead, style=style)
             first = True
             for comp in reg.components:
-                chunk = comp.text()
-                if not chunk:
+                chunk = comp.content()
+                plain = chunk.plain if isinstance(chunk, Text) else str(chunk or "")
+                if not plain:
                     continue
                 if not first and comp.gap_before:
                     line.append(comp.gap_before, style=style)
-                c_style = comp.style if comp.style is not None else style
-                line.append(chunk, style=c_style or None)
+                if isinstance(chunk, Text):
+                    line.append_text(chunk)
+                else:
+                    c_style = comp.style if comp.style is not None else style
+                    line.append(chunk, style=c_style or None)
                 first = False
             trail = reg.width - lead - display_width(natural)
             if trail > 0:
@@ -816,91 +829,6 @@ def render_packed_line(
     return line
 
 
-def install_default_components(
-    registry: TopBarRegistry,
-    *,
-    workspace: RenderFn,
-    title: RenderFn,
-    branch: RenderFn,
-    usage: RenderFn,
-    workspace_mark: str = "≡",
-    branch_mark: str = "⎇",
-) -> None:
-    """Register the built-in four chrome pieces (idempotent replace)."""
-    registry.register_region(
-        TopBarRegion.LEFT.value,
-        order=10,
-        flex=0,
-        align=TopBarAlign.LEFT,
-        priority=40,
-        gap_after=DEFAULT_COL_GAP,
-    )
-    registry.register_region(
-        TopBarRegion.CENTER.value,
-        order=20,
-        flex=1,
-        align=TopBarAlign.CENTER,
-        priority=10,
-        min_width=4,
-        gap_after=DEFAULT_COL_GAP,
-    )
-    registry.register_region(
-        TopBarRegion.RIGHT.value,
-        order=30,
-        flex=0,
-        align=TopBarAlign.RIGHT,
-        priority=50,
-        gap_after=0,
-    )
-
-    def _workspace() -> str:
-        label = (workspace() or "").strip()
-        if not label:
-            return ""
-        mark = (workspace_mark or "").strip()
-        return f"{mark}  {label}" if mark else label
-
-    def _branch() -> str:
-        name = (branch() or "").strip()
-        if not name:
-            return ""
-        mark = (branch_mark or "").strip()
-        return f"{mark} {name}" if mark else name
-
-    registry.register_fn(
-        "workspace",
-        _workspace,
-        region=TopBarRegion.LEFT,
-        order=10,
-        priority=40,
-        min_width=8,
-    )
-    registry.register_fn(
-        "title",
-        lambda: (title() or "").strip(),
-        region=TopBarRegion.CENTER,
-        order=10,
-        priority=10,
-        min_width=4,
-    )
-    registry.register_fn(
-        "branch",
-        _branch,
-        region=TopBarRegion.LEFT,
-        order=20,
-        priority=50,
-        min_width=6,
-    )
-    registry.register_fn(
-        "usage",
-        lambda: (usage() or "").strip(),
-        region=TopBarRegion.RIGHT,
-        order=10,
-        priority=60,
-        min_width=8,
-    )
-
-
 __all__ = [
     "DEFAULT_COL_GAP",
     "DEFAULT_REGION_GAP",
@@ -914,7 +842,6 @@ __all__ = [
     "align_in_width",
     "center_in_width",
     "display_width",
-    "install_default_components",
     "join_region_parts",
     "layout_from_registry",
     "normalize_region_id",

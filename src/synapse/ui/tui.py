@@ -55,9 +55,15 @@ from synapse.ui.timeline import (
     parse_todo_preview_lines,
     summarize_items,
 )
+from synapse.ui.topbar.git_chrome import (
+    GitBranchChrome,
+    probe_git_branch_chrome,
+    render_branch_chrome,
+)
 from synapse.ui.topbar import (
     TopBarAlign,
     TopBarComponent,
+    TopBarContext,
     TopBarRegion,
     TopBarRegionSpec,
     TopBarRegistry,
@@ -390,23 +396,9 @@ def soften_turn_footer(message: str) -> str:
 
 
 def _git_branch(cwd: Path) -> str | None:
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=1.0,
-            check=False,
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    if proc.returncode != 0:
-        return None
-    branch = (proc.stdout or "").strip()
-    if not branch or branch == "HEAD":
-        return None
-    return branch
+    """Backward-compatible branch name probe."""
+    info = probe_git_branch_chrome(cwd)
+    return info.name if info is not None else None
 
 
 def stream_tail_preview(
@@ -1998,7 +1990,8 @@ class CodingAgentApp(App[None]):
         self._complete_applied: str | None = None
         self._complete_cands: list[str] = []
         ws = Path(getattr(settings, "workspace", Path.cwd()) or Path.cwd())
-        self._git_branch = _git_branch(ws)
+        self._git_chrome: GitBranchChrome | None = probe_git_branch_chrome(ws)
+        self._git_branch = self._git_chrome.name if self._git_chrome else None
         hist_root = Path(project_root or ws)
         self._input_history = InputHistory.for_project(hist_root)
         self._topbar = TopBarRegistry()
@@ -2660,16 +2653,40 @@ class CodingAgentApp(App[None]):
         self._usage_base_cache = self._cache_tokens
         self._refresh_topbar()
 
+    def _render_branch_chrome(self):
+        """Styled branch + dirty/ahead/behind for the topbar."""
+        return render_branch_chrome(
+            self._git_chrome,
+            mark=_TOPBAR_BRANCH_MARK,
+            color_clean=_C_GREEN,
+            color_dirty=_C_ERROR,
+            color_ahead=_C_USER,
+            color_behind=_C_ORANGE,
+            color_diverged=_C_FG,
+        )
+
+    def _refresh_git_chrome(self) -> None:
+        """Re-probe local git status for the topbar (cheap, local-only)."""
+        try:
+            ws = Path(getattr(self.settings, "workspace", Path.cwd()) or Path.cwd())
+            self._git_chrome = probe_git_branch_chrome(ws)
+            self._git_branch = self._git_chrome.name if self._git_chrome else None
+        except Exception:  # noqa: BLE001
+            pass
+        self._refresh_topbar()
+
     def _install_default_topbar(self) -> None:
         """Register built-in workspace / title / branch / usage components."""
         install_default_components(
             self._topbar,
-            workspace=lambda: short_workspace_label(self.settings.workspace),
-            title=lambda: (self._session_title or "").strip()
-            or self._session_title_label(max_len=56),
-            branch=lambda: (self._git_branch or "").strip(),
-            usage=self._usage_right_label,
-            branch_mark=_TOPBAR_BRANCH_MARK,
+            TopBarContext(
+                workspace=lambda: short_workspace_label(self.settings.workspace),
+                title=lambda: (self._session_title or "").strip()
+                or self._session_title_label(max_len=56),
+                branch=self._render_branch_chrome,
+                usage=self._usage_right_label,
+                branch_mark=_TOPBAR_BRANCH_MARK,
+            ),
         )
 
     def register_topbar_region(
@@ -4303,6 +4320,10 @@ class CodingAgentApp(App[None]):
             pass
         self.clear_stream()
         self.set_activity("idle", "ready", True)
+        try:
+            self._refresh_git_chrome()
+        except Exception:  # noqa: BLE001
+            pass
         self.query_one("#prompt", Input).focus()
         # If the model finished without another tool/model step, apply leftover
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
