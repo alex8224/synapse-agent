@@ -622,6 +622,8 @@ def _glob_at_candidates(
         return candidates
     if not base_part:
         return candidates
+    if len(base_part) < 2:  # Require >= 2 chars to avoid expensive wide scans.
+        return candidates
     if len(candidates) >= limit // 2:
         return candidates
 

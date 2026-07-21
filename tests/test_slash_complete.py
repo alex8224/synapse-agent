@@ -184,6 +184,25 @@ def test_at_recursive_skips_ignored_dirs(tmp_path: Path):
     assert not any(".venv" in c for c in cands)
 
 
+def test_at_short_input_skips_recursive(tmp_path: Path):
+    """A single character should only match direct children, never recurse."""
+    ws = _make_workspace(tmp_path)
+    # "p" matches "pyproject.toml" as a direct child, but should NOT
+    # recursively find "prompts.py" inside src/synapse/.
+    cands = _glob_at_candidates("p", ws)
+    assert "pyproject.toml" in cands
+    assert not any("prompts" in c for c in cands)
+
+
+def test_at_two_char_triggers_recursive(tmp_path: Path):
+    """Two characters should allow the recursive fallback."""
+    ws = _make_workspace(tmp_path)
+    # "pr" should find "prompts.py" via recursive search.
+    cands = _glob_at_candidates("pr", ws)
+    matching = [c for c in cands if "prompts" in c]
+    assert len(matching) > 0, f"Expected recursive match for 2-char, got: {cands}"
+
+
 def test_complete_at_line_recursive(tmp_path: Path):
     """complete_at_line should return full-line candidates with recursive matches."""
     ws = _make_workspace(tmp_path)
