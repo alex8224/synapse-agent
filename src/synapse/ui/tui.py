@@ -4102,10 +4102,14 @@ class CodingAgentApp(App[None]):
                 self.apply_theme(str(theme_name), persist=False, announce=False)
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme apply failed: {exc}", "yellow")
-        self._emit_system_lines(
-            getattr(ok, "lines", []) or [],
-            error=bool(getattr(ok, "error", False)),
-        )
+        _notice = (getattr(ok, "notice", None) or "").strip()
+        if _notice and not getattr(ok, "error", False):
+            self.flash_status(_notice, "dim")
+        else:
+            self._emit_system_lines(
+                getattr(ok, "lines", []) or [],
+                error=bool(getattr(ok, "error", False)),
+            )
         self._reload_session_title()
         self._refresh_topbar()
 
@@ -4206,7 +4210,11 @@ class CodingAgentApp(App[None]):
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme apply failed: {exc}", "yellow")
 
-        self._emit_system_lines(result.lines, error=bool(result.error))
+        _notice = (getattr(result, "notice", None) or "").strip()
+        if _notice and not result.error:
+            self.flash_status(_notice, "dim")
+        else:
+            self._emit_system_lines(result.lines, error=bool(result.error))
 
         # HITL: /approve or /reject resumes the paused graph.
         resume_action = getattr(result, "resume_action", None)
