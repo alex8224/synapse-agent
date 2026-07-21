@@ -121,6 +121,7 @@ class _FullTableElement(_TableElement):
             pad_edge=False,
             style="markdown.table.border",
             show_edge=True,
+            show_lines=True,  # draw grid lines between body rows/cells
             collapse_padding=True,
         )
 

@@ -208,3 +208,26 @@ def test_write_answer_token_ignored_after_complete():
         printer.write_answer_complete("final text", msg_id="m1")
     printer.write_answer_token("late", msg_id="m1")
     assert printer._open_answer_parts == []
+
+
+def test_render_markdown_tables_use_full_rounded_borders():
+    """Markdown tables should render full ROUNDED grid, not SIMPLE header line."""
+    from rich.console import Console
+
+    from synapse.ui.stream import _FullBorderMarkdown, _FullTableElement, render_markdown
+
+    md = render_markdown(
+        "| file | change |\n| --- | --- |\n| a.py | hello |\n| b.py | world |"
+    )
+    assert isinstance(md, _FullBorderMarkdown)
+    assert md.elements.get("table_open") is _FullTableElement
+
+    c = Console(width=40, force_terminal=True, highlight=False, emoji=False, record=True)
+    c.print(md)
+    out = c.export_text()
+    # outer corners + verticals + row/header junctions (show_lines)
+    assert "┌" in out and "└" in out and "│" in out
+    assert "├" in out  # ├ between rows/header
+    assert "┼" in out  # ┼ grid cross when show_lines=True
+    assert "file" in out and "a.py" in out and "b.py" in out
+

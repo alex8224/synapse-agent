@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Group
-from rich.markdown import Markdown
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -44,7 +43,7 @@ from synapse.multimodal import (
 from synapse.session_recap import SessionRecapController
 from synapse.steer import format_steer_message, get_agent_steer_queue
 from synapse.ui.steer_widget import SteerQueueWidget
-from synapse.ui.stream import extract_last_ai_text, render_math_in_text, stream_agent
+from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
 from synapse.ui.timeline import (
     TODO_MARK_ACTIVE,
     TODO_MARK_DONE,
@@ -959,9 +958,7 @@ class ThoughtBlock(Static):
                     preview = preview[:159].rstrip() + "..."
                 lines.append(Text(f"  {preview}", style=_C_DIM))
             else:
-                from rich.markdown import Markdown as RichMarkdown
-
-                lines.append(RichMarkdown(render_math_in_text(self.body), code_theme=_CODE_THEME))
+                lines.append(render_markdown(self.body))
         lines.append(Text(""))
         self.update(Group(*lines))
 
@@ -1014,7 +1011,7 @@ class AnswerBlock(Static):
         if len(body) > _MARKDOWN_MAX_CHARS:
             renderable: Any = Text(body, style=_C_FG)
         else:
-            renderable = Markdown(render_math_in_text(body), code_theme=_CODE_THEME)
+            renderable = render_markdown(body)
         self.update(Group(renderable, Text("")))
 
 
