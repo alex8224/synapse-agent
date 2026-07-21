@@ -387,14 +387,15 @@ def _make_app(monkeypatch):
         "_render_status",
         "action_clear_log",
         "append_event",
+        "flash_status",
         "apply_theme",
         "set_activity",
         "query_one",
         "refresh",
         "refresh_css",
+        "set_timer",
     ):
         setattr(app, method, MagicMock())
-
     app.push_screen = MagicMock()
     return app
 

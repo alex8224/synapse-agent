@@ -1994,6 +1994,11 @@ class CodingAgentApp(App[None]):
         self._session_title = ""
         self._complete_applied: str | None = None
         self._complete_cands: list[str] = []
+        # Ephemeral left-side status notice (slash confirms etc.); not transcript.
+        self._status_notice: str = ""
+        self._status_notice_style: str = "dim"
+        self._status_notice_until: float = 0.0
+        self._status_notice_timer = None
         ws = Path(getattr(settings, "workspace", Path.cwd()) or Path.cwd())
         self._git_chrome: GitBranchChrome | None = probe_git_branch_chrome(ws)
         self._git_branch = self._git_chrome.name if self._git_chrome else None
@@ -2903,6 +2908,98 @@ class CodingAgentApp(App[None]):
 
     # -- status ----------------------------------------------------------
 
+    def flash_status(
+        self,
+        message: str,
+        style: str = "dim",
+        *,
+        ttl: float = 4.0,
+    ) -> None:
+        """Show a short notice in #status left activity slot (not transcript)."""
+        msg = (message or "").strip()
+        if not msg:
+            return
+        # Keep single-line chrome; collapse whitespace.
+        msg = " ".join(msg.split())
+        self._status_notice = msg
+        self._status_notice_style = (style or "dim").strip() or "dim"
+        self._status_notice_until = time.monotonic() + max(0.5, float(ttl or 0))
+        if self._status_notice_timer is not None:
+            try:
+                self._status_notice_timer.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._status_notice_timer = None
+        # Only schedule auto-clear when the app loop is actually running.
+        if bool(getattr(self, "is_running", False)):
+            try:
+                self._status_notice_timer = self.set_timer(
+                    max(0.5, float(ttl or 0)), self._clear_status_notice
+                )
+            except Exception:  # noqa: BLE001
+                self._status_notice_timer = None
+        try:
+            self._render_status()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _clear_status_notice(self) -> None:
+        self._status_notice_timer = None
+        self._status_notice = ""
+        self._status_notice_style = "dim"
+        self._status_notice_until = 0.0
+        try:
+            self._render_status()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _active_status_notice(self) -> str:
+        msg = (self._status_notice or "").strip()
+        if not msg:
+            return ""
+        if time.monotonic() >= float(self._status_notice_until or 0):
+            self._status_notice = ""
+            self._status_notice_until = 0.0
+            return ""
+        return msg
+
+    def _emit_system_lines(
+        self,
+        lines: list[str] | tuple[str, ...] | None,
+        *,
+        error: bool = False,
+        prefer_status: bool = True,
+    ) -> None:
+        """Route short system confirms to the status bar; dumps stay in log."""
+        style = "yellow" if error else "dim"
+        cleaned = [str(x).rstrip() for x in (lines or []) if str(x or "").strip()]
+        if not cleaned:
+            return
+        # Multi-line dumps / help / tables belong in the transcript.
+        if not prefer_status or len(cleaned) > 2:
+            for line in cleaned:
+                self.append_event(line, style)
+            return
+        total = sum(len(x) for x in cleaned)
+        if total > 140 or any(len(x) > 120 for x in cleaned):
+            for line in cleaned:
+                self.append_event(line, style)
+            return
+        # Heuristic: list/table output (session list, model catalog, help sections).
+        listish = 0
+        for x in cleaned:
+            s = x.lstrip()
+            if s.startswith(("* ", "- ", "usage:", "note:", "config=")):
+                listish += 1
+            if " -> " in x and len(cleaned) > 1:
+                listish += 1
+        if listish:
+            for line in cleaned:
+                self.append_event(line, style)
+            return
+        msg = cleaned[0] if len(cleaned) == 1 else " · ".join(cleaned)
+        self.flash_status(msg, style=style)
+
     def set_activity(self, phase: str, detail: str = "", reset_timer: bool = False) -> None:
         detail = detail or ""
         if reset_timer or phase != self._phase:
@@ -2929,7 +3026,46 @@ class CodingAgentApp(App[None]):
         """Bottom status when idle (alias of resident right chrome)."""
         return self._resident_status_right()
 
+    def _status_notice_style_token(self) -> str:
+        """Map notice style name to a palette color for the left activity slot."""
+        key = (self._status_notice_style or "dim").lower()
+        if "red" in key or "error" in key:
+            return _C_ERROR
+        if "yellow" in key or "warn" in key or "orange" in key:
+            return _C_ORANGE
+        return _C_DIM
+
+    def _compose_status_left(
+        self,
+        *,
+        busy: bool,
+        elapsed: float,
+        steer_n: int,
+        left_budget: int,
+    ) -> tuple[str, str]:
+        """Build left activity text + style for #status.
+
+        Layout target (bottom chrome above the prompt)::
+
+            [ left activity / notice ] ........ [ model · thinking · mcp ]
+
+        Short system confirms (thinking set / theme / switch) occupy the same
+        left slot as ``waiting for model · Ns`` — never the transcript.
+        """
+        notice = self._active_status_notice()
+        if notice:
+            # Prefer the ephemeral confirm while it is live, even mid-run.
+            return truncate_to_width(notice, left_budget), self._status_notice_style_token()
+        if not busy:
+            return "", _C_MUTED
+        spin = _SPINNER[self._spin_i % len(_SPINNER)]
+        detail = f" {self._detail}" if self._detail else ""
+        steer_badge = f" · steer×{steer_n}" if steer_n else ""
+        left = f"{spin} {self._phase}{detail}{steer_badge} · {elapsed:.1f}s"
+        return truncate_to_width(left, left_budget), _C_ORANGE
+
     def _render_status(self) -> None:
+        """Paint bottom #status: left activity/notice + right resident chrome."""
         elapsed = max(0.0, time.monotonic() - self._activity_started)
         busy = self._phase not in {"idle", "ready", ""}
         status = self.query_one("#status", Static)
@@ -2943,26 +3079,24 @@ class CodingAgentApp(App[None]):
         if right_w > usable:
             right = truncate_to_width(right, usable)
             right_w = display_width(right)
-            left = ""
             pad = max(0, usable - right_w)
             status.update(Text((" " * pad) + right, style=_C_MUTED))
             return
 
-        if not busy:
+        left_budget = max(8, usable - right_w - 1) if right_w else usable
+        left, left_style = self._compose_status_left(
+            busy=busy,
+            elapsed=elapsed,
+            steer_n=steer_n,
+            left_budget=left_budget,
+        )
+        if not left:
             pad = max(0, usable - right_w)
             status.update(Text((" " * pad) + right, style=_C_MUTED))
             return
 
-        spin = _SPINNER[self._spin_i % len(_SPINNER)]
-        detail = f" {self._detail}" if self._detail else ""
-        steer_badge = f" · steer×{steer_n}" if steer_n else ""
-        # Leave ≥1 space between activity and resident chrome.
-        left_budget = max(8, usable - right_w - 1)
-        left = f"{spin} {self._phase}{detail}{steer_badge} · {elapsed:.1f}s"
-        left = truncate_to_width(left, left_budget)
         left_w = display_width(left)
         pad = max(1, usable - left_w - right_w)
-        # Clamp if CJK/width math still overflows.
         overflow = left_w + pad + right_w - usable
         if overflow > 0:
             pad = max(1, pad - overflow)
@@ -2973,8 +3107,8 @@ class CodingAgentApp(App[None]):
                 pad = max(1, usable - left_w - right_w)
 
         line = Text()
-        # Orange = in-flight / calling (spinner + phase + elapsed).
-        line.append(left, style=_C_ORANGE)
+        # Left = activity / short system notice; right = model · thinking · mcp.
+        line.append(left, style=left_style)
         line.append(" " * pad, style=_C_MUTED)
         line.append(right, style=_C_MUTED)
         status.update(line)
@@ -3012,7 +3146,7 @@ class CodingAgentApp(App[None]):
         self._sync_prompt_placeholder()
         # Applied: short status only, no essay in the log.
         if prev > 0 and now == 0 and self._busy:
-            self.append_event(f"已注入 {prev} 条引导", "dim")
+            self.flash_status(f"已注入 {prev} 条引导", "dim")
 
     def _sync_prompt_placeholder(self) -> None:
         """Prompt copy guides mode: normal vs mid-run queue."""
@@ -3048,6 +3182,11 @@ class CodingAgentApp(App[None]):
             self._spin_i += 1
             self._render_status()
         else:
+            # Drop expired status notices without waiting for the timer edge case.
+            if self._status_notice and time.monotonic() >= float(self._status_notice_until or 0):
+                self._clear_status_notice()
+            elif self._status_notice:
+                self._render_status()
             self._maybe_show_session_recap()
         # Keep Thought "Thinking… Xs" / final seal clock honest between tokens.
         live = self._live_stream_block
@@ -3697,7 +3836,7 @@ class CodingAgentApp(App[None]):
             pass
         self._repaint_themed_widgets()
         if announce:
-            self.append_event(f"theme: {theme.name} ({theme.label})", "dim")
+            self.flash_status(f"theme: {theme.name} ({theme.label})", "dim")
         return get_theme().name
 
     def _repaint_themed_widgets(self) -> None:
@@ -3766,7 +3905,7 @@ class CodingAgentApp(App[None]):
         from synapse.slash_cmds import handle_slash
 
         self.call_from_thread(self.set_activity, "switching", activity, True)
-        self.call_from_thread(self.append_event, f"{activity} ...", "dim")
+        self.call_from_thread(self.flash_status, f"{activity}…", "dim")
         try:
             ok = handle_slash(
                 command,
@@ -3963,9 +4102,10 @@ class CodingAgentApp(App[None]):
                 self.apply_theme(str(theme_name), persist=False, announce=False)
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme apply failed: {exc}", "yellow")
-        style = "yellow" if getattr(ok, "error", False) else "dim"
-        for line in getattr(ok, "lines", []) or []:
-            self.append_event(line, style)
+        self._emit_system_lines(
+            getattr(ok, "lines", []) or [],
+            error=bool(getattr(ok, "error", False)),
+        )
         self._reload_session_title()
         self._refresh_topbar()
 
@@ -4066,9 +4206,7 @@ class CodingAgentApp(App[None]):
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme apply failed: {exc}", "yellow")
 
-        style = "yellow" if result.error else "dim"
-        for line in result.lines:
-            self.append_event(line, style)
+        self._emit_system_lines(result.lines, error=bool(result.error))
 
         # HITL: /approve or /reject resumes the paused graph.
         resume_action = getattr(result, "resume_action", None)
