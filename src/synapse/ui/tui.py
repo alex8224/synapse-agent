@@ -1088,7 +1088,7 @@ class ToolGroupBlock(Static):
         mark = "▸" if self.collapsed else "▾"
         hi = self._HEADER_INDENT
         lines: list[Text] = [
-            Text(f"{hi}{mark}  {self.summary}", style=f"{_C_DIM} on {_C_BAR}")
+            Text(f"{hi}{mark}  {self.summary}", style=f"{_C_FG} on {_C_BAR}")
         ]
         if not self.collapsed:
             visible = self.items
@@ -1108,11 +1108,11 @@ class ToolGroupBlock(Static):
                     bullet = "✓"
                 label = item.label or item.name
                 item_indent = self._SUB_ITEM_INDENT if item.sub else self._ITEM_INDENT
-                item_style = _C_MUTED if item.sub else style
+                item_style = style
                 if " " in label and item.category in {"read", "edit", "list"}:
                     head, tail = label.split(" ", 1)
                     row = Text(f"{item_indent}{bullet}  {head} ", style=item_style)
-                    row.append(tail, style=_C_MUTED if item.sub else _C_ORANGE)
+                    row.append(tail, style=_C_ORANGE)
                     lines.append(row)
                 else:
                     lines.append(Text(f"{item_indent}{bullet}  {label}", style=item_style))
@@ -2654,7 +2654,7 @@ class CodingAgentApp(App[None]):
         self._refresh_topbar()
 
     def _render_branch_chrome(self):
-        """Styled branch + dirty/ahead/behind for the topbar."""
+        """Styled branch + dirty/diff stats/ahead/behind for the topbar."""
         return render_branch_chrome(
             self._git_chrome,
             mark=_TOPBAR_BRANCH_MARK,
@@ -2663,6 +2663,9 @@ class CodingAgentApp(App[None]):
             color_ahead=_C_USER,
             color_behind=_C_ORANGE,
             color_diverged=_C_FG,
+            color_files=_C_DIM,
+            color_added=_C_GREEN,
+            color_deleted=_C_ERROR,
         )
 
     def _refresh_git_chrome(self) -> None:

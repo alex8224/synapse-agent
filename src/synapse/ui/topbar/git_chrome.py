@@ -4,8 +4,11 @@ Compact status:
 
 - clean + in sync: green branch name (no dirty mark)
 - dirty: red branch name + red `` *`` (space before star)
+- diff stats (when dirty): `` Nf +A -D`` (files changed, lines added, lines deleted)
 - ahead: ``↑N`` in ahead color
 - behind: ``↓N`` in behind color
+
+Diff stats use ``git diff HEAD --shortstat`` (working tree + index vs HEAD).
 """
 
 from __future__ import annotations
@@ -28,6 +31,9 @@ class GitBranchChrome:
     dirty: bool = False
     ahead: int | None = None  # None = no upstream tracking
     behind: int | None = None
+    files_changed: int = 0
+    lines_added: int = 0
+    lines_deleted: int = 0
 
     @property
     def synced(self) -> bool:
@@ -65,12 +71,39 @@ def _format_count(n: int) -> str:
     return str(n)
 
 
+def _probe_diff_shortstat(cwd: Path, *, timeout: float = 0.8) -> tuple[int, int, int]:
+    """Return ``(files_changed, lines_added, lines_deleted)`` from
+    ``git diff HEAD --shortstat`` (working tree + index vs HEAD).
+
+    Returns ``(0, 0, 0)`` on failure or when there is nothing to diff
+    (e.g. no commits yet).
+    """
+    raw = _run_git(["diff", "HEAD", "--shortstat"], cwd=cwd, timeout=timeout)
+    if not raw:
+        return 0, 0, 0
+    import re
+
+    files = 0
+    inserted = 0
+    deleted = 0
+    m = re.search(r"(\d+)\s+files?\s+changed", raw)
+    if m:
+        files = int(m.group(1))
+    m = re.search(r"(\d+)\s+insertions?\(\+\)", raw)
+    if m:
+        inserted = int(m.group(1))
+    m = re.search(r"(\d+)\s+deletions?\(-\)", raw)
+    if m:
+        deleted = int(m.group(1))
+    return files, inserted, deleted
+
+
 def format_branch_chrome_plain(
     info: GitBranchChrome | None,
     *,
     mark: str = "⎇",
 ) -> str:
-    """Plain-text form for tests / fallbacks: ``⎇ main * ↑2↓1``."""
+    """Plain-text form for tests / fallbacks: ``⎇ main * 3f +120 -45 ↑2↓1``."""
     if info is None or not (info.name or "").strip():
         return ""
     name = info.name.strip()
@@ -79,6 +112,13 @@ def format_branch_chrome_plain(
     if info.dirty:
         head = f"{head} *"
     parts.append(head)
+    # Diff stats (only when there are changes).
+    if info.files_changed > 0:
+        parts.append(f"{_format_count(info.files_changed)}f")
+    if info.lines_added > 0:
+        parts.append(f"+{_format_count(info.lines_added)}")
+    if info.lines_deleted > 0:
+        parts.append(f"-{_format_count(info.lines_deleted)}")
     bits = ""
     if info.ahead is not None and int(info.ahead) > 0:
         bits += f"↑{_format_count(int(info.ahead))}"
@@ -98,12 +138,16 @@ def render_branch_chrome(
     color_ahead: str = "#8ab4f8",
     color_behind: str = "#f4b183",
     color_diverged: str = "#e8eaed",
+    color_files: str = "#9aa0a6",
+    color_added: str = "#81c995",
+    color_deleted: str = "#f28b82",
 ) -> Text:
     """Styled branch chrome for the topbar.
 
     Color rules:
     - fully clean/synced: green name (no star)
     - dirty: red name + red `` *``
+    - diff stats: ``Nf`` (files count, muted), ``+A`` (added, green), ``-D`` (deleted, red)
     - clean but diverged: neutral name; ahead blue; behind orange
     """
     out = Text()
@@ -125,6 +169,14 @@ def render_branch_chrome(
     if info.dirty:
         # Space before dirty mark; mark shares dirty red with the name.
         out.append(" *", style=color_dirty)
+
+    # Diff stats: files changed + lines added / deleted (vs HEAD).
+    if info.files_changed > 0:
+        out.append(f" {_format_count(info.files_changed)}f", style=color_files)
+    if info.lines_added > 0:
+        out.append(f" +{_format_count(info.lines_added)}", style=color_added)
+    if info.lines_deleted > 0:
+        out.append(f" -{_format_count(info.lines_deleted)}", style=color_deleted)
 
     bits = Text()
     if info.ahead is not None and int(info.ahead) > 0:
@@ -168,4 +220,14 @@ def probe_git_branch_chrome(cwd: Path | str, *, timeout: float = 0.8) -> GitBran
                 ahead = None
                 behind = None
 
-    return GitBranchChrome(name=name, dirty=dirty, ahead=ahead, behind=behind)
+    files, inserted, deleted = _probe_diff_shortstat(root, timeout=timeout)
+
+    return GitBranchChrome(
+        name=name,
+        dirty=dirty,
+        ahead=ahead,
+        behind=behind,
+        files_changed=files,
+        lines_added=inserted,
+        lines_deleted=deleted,
+    )
