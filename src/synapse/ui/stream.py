@@ -1010,7 +1010,7 @@ def human_tool_label(call: Any) -> str:
     return " ".join(str(label or name).split()).strip() or name
 
 
-def human_nested_tools_detail(calls: list[Any], *, limit: int = 3) -> str:
+def human_nested_tools_detail(calls: list[Any], *, limit: int = 5) -> str:
     """Status text for concurrent nested tool calls."""
     labels: list[str] = []
     for call in calls[: max(1, limit)]:
@@ -1568,6 +1568,10 @@ def stream_agent(
                                         preview=preview,
                                         error=err,
                                     )
+                                    try:
+                                        pending_tool_items.remove(item)
+                                    except ValueError:
+                                        pass
                             continue
                         sink.activity_stop()
                         if use_tool_items:
@@ -1671,7 +1675,7 @@ def stream_agent(
                                     sub_tool_labels[cid] = label
                                 if n:
                                     sub_tool_labels[n] = label
-                            detail = human_nested_tools_detail(list(calls), limit=3)
+                            detail = human_nested_tools_detail(list(calls), limit=5)
                             try:
                                 sink.activity_update("subagent", detail, force=True)
                             except TypeError:
