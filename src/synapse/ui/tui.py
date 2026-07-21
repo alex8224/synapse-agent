@@ -1104,7 +1104,7 @@ class ToolGroupBlock(Static):
                     style = _C_ORANGE
                     bullet = "○"
                 else:
-                    style = _C_GREEN if item.category == "run" else _C_DIM
+                    style = _C_GREEN
                     bullet = "✓"
                 label = item.label or item.name
                 item_indent = self._SUB_ITEM_INDENT if item.sub else self._ITEM_INDENT

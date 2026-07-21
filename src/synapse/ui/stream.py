@@ -722,7 +722,7 @@ class RichStreamSink:
 
     def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:
         prefix = "sub" if sub else ""
-        style = "red" if status.lower().startswith("error") else "dim"
+        style = "red" if status.lower().startswith("error") else "green"
         console.print()
         console.print(
             f"[dim]←{prefix}[/dim] [yellow]{name}[/yellow] "
