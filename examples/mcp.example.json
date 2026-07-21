@@ -1,0 +1,28 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "enabled": false
+    },
+    {
+      "name": "anysearch",
+      "transport": "streamable_http",
+      "url": "https://api.anysearch.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANYSEARCH_API_KEY}"
+      },
+      "enabled": false,
+      "tool_prefix": "anysearch__"
+    },
+    {
+      "name": "remote-sse",
+      "transport": "sse",
+      "url": "http://127.0.0.1:8000/sse",
+      "headers": {},
+      "enabled": false
+    }
+  ]
+}

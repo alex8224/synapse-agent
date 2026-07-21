@@ -1,0 +1,34 @@
+{
+  "default": "primary",
+  "thinking_levels": ["off", "low", "medium", "high", "max"],
+  "default_thinking": "high",
+  "models": {
+    "primary": {
+      "model": "openai:gpt-4.1",
+      "api_key": "sk-REPLACE_ME",
+      "base_url": null,
+      "context_window": 128000,
+      "parallel_tool_calls": true,
+      "temperature": 0.2,
+      "max_tokens": 8192
+    },
+    "deepseek": {
+      "model": "openai:deepseek-v4-pro",
+      "api_key": "sk-REPLACE_ME",
+      "base_url": "http://127.0.0.1:3000/v1",
+      "context_window": 128000,
+      "thinking_levels": ["off", "low", "high", "max"],
+      "thinking": "high",
+      "temperature": 0.2
+    },
+    "claude": {
+      "model": "anthropic:claude-sonnet-4-6",
+      "api_key": "sk-ant-REPLACE_ME",
+      "context_window": 200000,
+      "temperature": 0.3,
+      "extra_body": {
+        "thinking": {"type": "enabled", "budget_tokens": 8000}
+      }
+    }
+  }
+}

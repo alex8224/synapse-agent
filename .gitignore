@@ -1,0 +1,37 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local env / agent state
+.env
+.coding-agent/
+.cmd-agent/
+.synapse/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Agent transient output
+large_tool_results/
+conversation_history/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Runtime logs
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
