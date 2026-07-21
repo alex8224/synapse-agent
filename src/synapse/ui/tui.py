@@ -3092,16 +3092,19 @@ class CodingAgentApp(App[None]):
             pass
         self._last_answer_text = body
         self._commit_live_tools_to_log()
+        live = self._live_stream_block
+        if isinstance(live, AnswerBlock) and self._live_stream_kind == "answer":
+            # Divider was mounted when the live answer row started (set_stream).
+            live.seal(body)
+            self._live_stream_block = None
+            self._live_stream_kind = None
+            self._follow_timeline_if_needed()
+            return
         if self._pending_answer_divider:
             self._mount_answer_divider()
             self._pending_answer_divider = False
-        # Huge Markdown trees can stall the terminal for seconds.  Prefer
-        # plain text once past the soft limit; normal answers stay Markdown.
-        if len(body) > _MARKDOWN_MAX_CHARS:
-            renderable: Any = Text(body, style=_C_FG)
-        else:
-            renderable = Markdown(render_math_in_text(body), code_theme=_CODE_THEME)
-        self._mount_block(Static(Group(renderable, Text(""))))
+        # No live row (e.g. restore / non-stream path): mount sealed answer once.
+        self._mount_block(AnswerBlock(body, live=False))
 
     def _mount_answer_divider(self) -> None:
         """Insert centered ◇ rule with vertical spacing before the answer."""
