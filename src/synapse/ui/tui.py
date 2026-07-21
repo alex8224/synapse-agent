@@ -1169,6 +1169,7 @@ class TextualStreamSink:
         self._open_answer: list[str] = []
         self._open_answer_chars = 0
         self._open_reasoning: list[str] = []
+        self._open_reasoning_chars = 0
         self._reasoning_open = False
         self._reasoning_started = 0.0
         self._complete_ids: set[str] = set()
@@ -1227,9 +1228,9 @@ class TextualStreamSink:
         return _WS_RE.sub(" ", (text or "").strip())
 
     def _stream_interval(self) -> float:
-        """Slow down UI pushes as the answer grows to protect the event loop."""
+        """Slow down UI pushes as live text grows to protect the event loop."""
         base = self._min_stream_interval
-        n = self._open_answer_chars
+        n = max(self._open_answer_chars, self._open_reasoning_chars)
         if n >= 12_000:
             return max(base, _STREAM_INTERVAL_LARGE)
         if n >= 3_000:
@@ -1351,12 +1352,17 @@ class TextualStreamSink:
             self._reasoning_started = time.monotonic()
             self._reasoning_open = True
             self._open_reasoning.clear()
+            self._open_reasoning_chars = 0
         self.streamed_reasoning = True
         self._open_reasoning.append(text)
+        self._open_reasoning_chars += len(text)
         self.reasoning_buf.append(text)
         elapsed = max(0.0, time.monotonic() - self._reasoning_started)
-        # Do not render the growing reasoning body.  It causes a full layout
-        # pass for every token and is not useful in the primary reading flow.
+        # Live preview mirrors answer tokens: rate-limit + tail-only layout.
+        now = time.monotonic()
+        if (now - self._last_stream_push) >= self._stream_interval():
+            body = "".join(self._open_reasoning)
+            self._push_stream("reasoning", body, force=True)
         self._push_activity("thinking", f"{elapsed:.1f}s")
 
     def close_reasoning(self) -> None:
@@ -1364,6 +1370,7 @@ class TextualStreamSink:
             return
         body = "".join(self._open_reasoning).strip()
         self._open_reasoning.clear()
+        self._open_reasoning_chars = 0
         self._reasoning_open = False
         elapsed = (
             max(0.0, time.monotonic() - self._reasoning_started)
@@ -2755,9 +2762,14 @@ class CodingAgentApp(App[None]):
             self.clear_stream()
             return
         if kind == "reasoning":
-            # Reasoning is committed as a historical ThoughtBlock only after
-            # the reasoning segment closes.  Never grow a live text widget.
-            renderable = Text(f"  {_MARK_THOUGHT}  Thinking…", style=f"italic {_C_DIM}")
+            # Live plain-text tail while tokens arrive; full ThoughtBlock is
+            # committed on close_reasoning (same pattern as answer stream).
+            preview = stream_tail_preview(body)
+            header = Text(f"  {_MARK_THOUGHT}  Thinking…", style=f"italic {_C_DIM}")
+            if preview.strip():
+                renderable = Group(header, Text(preview, style=_C_DIM), Text(""))
+            else:
+                renderable = header
         else:
             # Markdown is intentionally rendered once, on completion.  Live
             # preview is plain Text of a bounded tail (see stream_tail_preview).

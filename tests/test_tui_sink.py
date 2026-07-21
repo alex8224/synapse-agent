@@ -134,6 +134,23 @@ def test_textual_sink_reasoning_thought_line():
     assert thoughts[0][1][1] == "think hard"
 
 
+def test_textual_sink_streams_reasoning_live():
+    """Reasoning tokens should push a live stream preview before commit."""
+    app = _FakeApp()
+    sink = TextualStreamSink(app)  # type: ignore[arg-type]
+    sink._min_stream_interval = 0
+    sink.write_reasoning("step ")
+    sink.write_reasoning("one")
+    streams = [c for c in app.calls if c[0] == "set_stream"]
+    assert streams
+    assert streams[-1][1] == ("reasoning", "step one")
+    sink.close_reasoning()
+    assert any(c[0] == "clear_stream" for c in app.calls)
+    thoughts = [c for c in app.calls if c[0] == "commit_thought"]
+    assert len(thoughts) == 1
+    assert thoughts[0][1][1] == "step one"
+
+
 def test_textual_sink_tool_items_detail():
     app = _FakeApp()
     sink = TextualStreamSink(app)  # type: ignore[arg-type]
