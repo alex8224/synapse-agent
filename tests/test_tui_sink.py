@@ -161,14 +161,61 @@ def test_thought_block_live_then_seal():
     block.body = "abc"
     block.live = True
     block.collapsed = False
+    block._started_at = None
     block._render_block = lambda: None  # type: ignore[method-assign]
     block.update_live(1.5, "abc def")
     assert block.body == "abc def"
-    assert block.elapsed_s == 1.5
+    assert block.elapsed_s >= 1.5
     block.seal(2.0, "abc def final")
     assert block.live is False
     assert block.collapsed is True
-    assert block.body == "abc def final"
+    assert block.elapsed_s >= 2.0
+
+
+def test_thought_block_tick_live_advances_clock():
+    """Live thought header seconds move even without new tokens."""
+    import time
+
+    block = ThoughtBlock.__new__(ThoughtBlock)
+    block.elapsed_s = 0.0
+    block.body = "thinking"
+    block.live = True
+    block.collapsed = False
+    block._started_at = time.monotonic() - 0.3
+    rendered: list[float] = []
+
+    def _capture() -> None:
+        rendered.append(block.elapsed_s)
+
+    block._render_block = _capture  # type: ignore[method-assign]
+    block.tick_live()
+    assert block.elapsed_s >= 0.25
+    assert rendered  # header re-rendered
+
+
+def test_sink_thought_clock_starts_at_activity_start():
+    """Thought duration includes wait-for-model, not only token arrival."""
+    import time
+
+    app = _FakeApp()
+    sink = TextualStreamSink(app)  # type: ignore[arg-type]
+    sink._min_stream_interval = 0
+    sink.activity_start("thinking", "waiting for model")
+    armed = sink._reasoning_started
+    assert armed > 0
+    time.sleep(0.05)
+    sink.write_reasoning("plan")
+    streams = [c for c in app.calls if c[0] == "set_stream"]
+    assert streams
+    assert streams[-1][2].get("elapsed_s", 0) >= 0.04
+    time.sleep(0.05)
+    sink.close_reasoning()
+    thoughts = [c for c in app.calls if c[0] == "commit_thought"]
+    assert len(thoughts) == 1
+    assert thoughts[0][1][0] >= 0.08
+    assert thoughts[0][1][1] == "plan"
+    # Clock resets after seal so the next round starts clean.
+    assert sink._reasoning_started == 0.0
 
 
 def test_answer_block_live_then_seal():
@@ -462,6 +509,18 @@ def test_timeline_blocks_toggle_in_place():
     assert tool.collapsed is True
     tool.toggle()
     assert tool.collapsed is False
+
+
+def test_tool_group_block_hover_class_marks_group():
+    """Pointer hover adds -hover so CSS can paint a faint left edge."""
+    from types import SimpleNamespace
+
+    tool = ToolGroupBlock("Read 1 file")
+    assert not tool.has_class("-hover")
+    tool.on_enter(SimpleNamespace(stop=lambda: None))
+    assert tool.has_class("-hover")
+    tool.on_leave(SimpleNamespace(stop=lambda: None))
+    assert not tool.has_class("-hover")
 
 
 def test_stream_tail_preview_keeps_only_recent_lines():

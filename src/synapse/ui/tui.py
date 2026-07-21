@@ -927,26 +927,59 @@ class ThoughtBlock(Static):
     """Thought row in the transcript; supports live streaming then seal."""
 
     def __init__(self, elapsed_s: float, body: str, *, live: bool = False) -> None:
-        self.elapsed_s = elapsed_s
+        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
         self.body = body or ""
         self.live = bool(live)
         # Expanded while streaming so the growing body is readable.
         self.collapsed = not self.live
+        # Wall-clock anchor so the header seconds keep moving without new tokens.
+        self._started_at: float | None = None
+        if self.live:
+            self._started_at = time.monotonic() - self.elapsed_s
         super().__init__()
         self._render_block()
+
+    def _sync_elapsed(self, elapsed_s: float | None = None) -> float:
+        """Prefer wall clock from ``_started_at``; fall back to reported seconds."""
+        reported = max(0.0, float(elapsed_s or 0.0))
+        started = getattr(self, "_started_at", None)
+        if started is None:
+            if reported > 0:
+                started = time.monotonic() - reported
+            elif self.live:
+                started = time.monotonic()
+            self._started_at = started
+        if started is not None:
+            wall = max(0.0, time.monotonic() - started)
+            self.elapsed_s = max(reported, wall)
+        else:
+            self.elapsed_s = reported
+        return self.elapsed_s
 
     def update_live(self, elapsed_s: float, body: str) -> None:
         """Refresh in place while tokens are still arriving."""
         self.live = True
         self.collapsed = False
-        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
+        self._sync_elapsed(elapsed_s)
         self.body = body or ""
+        self._render_block()
+
+    def tick_live(self) -> None:
+        """Advance the live header clock between token batches."""
+        if not self.live or self._started_at is None:
+            return
+        new_elapsed = max(0.0, time.monotonic() - self._started_at)
+        # Avoid re-layout for sub-tenth changes (status tick is 0.1s).
+        if abs(new_elapsed - self.elapsed_s) < 0.05:
+            return
+        self.elapsed_s = new_elapsed
         self._render_block()
 
     def seal(self, elapsed_s: float, body: str) -> None:
         """Finalize this row as a historical ThoughtBlock (no remount)."""
         self.live = False
-        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
+        self._sync_elapsed(elapsed_s)
+        self._started_at = None
         self.body = body or ""
         self.collapsed = True
         self._render_block()
@@ -1222,6 +1255,15 @@ class ToolGroupBlock(Static):
         self.collapsed = not self.collapsed
         self._render_block()
 
+    def on_enter(self, event: Enter) -> None:
+        # Faint left border while the pointer is over this group.
+        event.stop()
+        self.add_class("-hover")
+
+    def on_leave(self, event: Leave) -> None:
+        event.stop()
+        self.remove_class("-hover")
+
     def on_click(self, event: Click) -> None:
         event.stop()
         self.toggle()
@@ -1396,6 +1438,12 @@ class TextualStreamSink:
         self._pending_activity = None
         if phase == "subagent":
             self._last_sub_detail = " ".join((detail or "").split()).strip()
+        # Count "waiting for model" into the next Thought for Xs duration.
+        if (
+            (phase or "") in {"thinking", "model", "reasoning"}
+            and not self._reasoning_open
+        ):
+            self._reasoning_started = time.monotonic()
         self._call("set_activity", phase, detail, True)
         self._last_activity_push = time.monotonic()
 
@@ -1414,6 +1462,14 @@ class TextualStreamSink:
             self._flush_pending_activity(force=True)
         else:
             self._pending_activity = None
+        # First wait-for-model update also arms the thought clock.
+        if (
+            reset_timer
+            and (phase or "") in {"thinking", "model", "reasoning"}
+            and not self._reasoning_open
+            and not self._reasoning_started
+        ):
+            self._reasoning_started = time.monotonic()
         self._push_activity(phase, detail, reset_timer=reset_timer, force=force)
 
     def activity_stop(self) -> None:
@@ -1434,7 +1490,9 @@ class TextualStreamSink:
             if not any(it.status == "running" for it in self._group_items):
                 self._finalize_open_group()
         if not self._reasoning_open:
-            self._reasoning_started = time.monotonic()
+            # Prefer clock armed at activity_start (waiting for model).
+            if not self._reasoning_started:
+                self._reasoning_started = time.monotonic()
             self._reasoning_open = True
             self._open_reasoning.clear()
             self._open_reasoning_chars = 0
@@ -1462,6 +1520,7 @@ class TextualStreamSink:
             if self._reasoning_started
             else 0.0
         )
+        self._reasoning_started = 0.0
         # Seal the in-log ThoughtBlock; avoid clear before commit.
         if body:
             self._call("commit_thought", elapsed, body)
@@ -1834,6 +1893,16 @@ class CodingAgentApp(App[None]):
     }
     TurnRailItem.-dense {
         color: $theme-dim;
+    }
+    /* Tool groups: faint left edge on hover marks the whole block as one unit.
+       Always keep a transparent left border so hover does not reflow width. */
+    ToolGroupBlock {
+        width: 1fr;
+        height: auto;
+        border-left: solid transparent;
+    }
+    ToolGroupBlock.-hover {
+        border-left: solid $theme-dim;
     }
     AnswerDivider {
         color: $theme-muted;
@@ -2853,6 +2922,10 @@ class CodingAgentApp(App[None]):
             self._render_status()
         else:
             self._maybe_show_session_recap()
+        # Keep Thought "Thinking… Xs" / final seal clock honest between tokens.
+        live = self._live_stream_block
+        if isinstance(live, ThoughtBlock) and live.live:
+            live.tick_live()
 
     # -- stream ----------------------------------------------------------
 
