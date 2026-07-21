@@ -730,6 +730,28 @@ def pack_topbar_regions(
     return pack_region_list(items, usable_width=usable_width)
 
 
+def pack_layout_from_registry(
+    registry: TopBarRegistry,
+    *,
+    usable_width: int,
+    col_gap: int | None = None,
+) -> TopBarLayout:
+    """Pack registry regions without styling (for hit-testing / span queries)."""
+    region_specs = registry.regions(include_hidden=False)
+    if col_gap is not None:
+        gap = max(0, int(col_gap))
+        region_specs = [
+            dc_replace(spec, gap_after=gap) if spec.id in {"left", "center"} else spec
+            for spec in region_specs
+        ]
+
+    items: list[tuple[TopBarRegionSpec, str, list[TopBarComponent]]] = []
+    for spec in region_specs:
+        comps = registry.components(spec.id)
+        items.append((spec, render_region_text(comps), comps))
+    return pack_region_list(items, usable_width=usable_width)
+
+
 def layout_from_registry(
     registry: TopBarRegistry,
     *,
@@ -748,22 +770,58 @@ def layout_from_registry(
         "center": center_style or default_fg,
         "right": right_style or default_fg,
     }
-
-    region_specs = registry.regions(include_hidden=False)
-    if col_gap is not None:
-        gap = max(0, int(col_gap))
-        region_specs = [
-            dc_replace(spec, gap_after=gap) if spec.id in {"left", "center"} else spec
-            for spec in region_specs
-        ]
-
-    items: list[tuple[TopBarRegionSpec, str, list[TopBarComponent]]] = []
-    for spec in region_specs:
-        comps = registry.components(spec.id)
-        items.append((spec, render_region_text(comps), comps))
-
-    packed = pack_region_list(items, usable_width=usable_width)
+    packed = pack_layout_from_registry(
+        registry, usable_width=usable_width, col_gap=col_gap
+    )
     return render_packed_line(packed, fallback_fg=fallback)
+
+
+def locate_component_span(
+    registry: TopBarRegistry,
+    component_id: str,
+    *,
+    usable_width: int,
+    col_gap: int | None = None,
+) -> tuple[int, int] | None:
+    """Return ``(start_col, width)`` of a component within the packed topbar row.
+
+    Coordinates are content cells (0 = first cell of the usable topbar line),
+    matching ``Static`` content after CSS horizontal padding.
+    """
+    cid = str(component_id or "").strip()
+    if not cid:
+        return None
+    packed = pack_layout_from_registry(
+        registry, usable_width=usable_width, col_gap=col_gap
+    )
+    cursor = 0
+    visible = [r for r in packed.regions if r.width > 0 or r.content]
+    for i, reg in enumerate(visible):
+        natural = reg.content or ""
+        lead = 0
+        if reg.spec.align is TopBarAlign.RIGHT:
+            lead = max(0, reg.width - display_width(natural))
+        elif reg.spec.align is TopBarAlign.CENTER:
+            lead = max(0, (reg.width - display_width(natural)) // 2)
+
+        x = cursor + lead
+        first = True
+        for comp in reg.components:
+            plain = comp.text()
+            if not plain:
+                continue
+            if not first and comp.gap_before:
+                x += display_width(comp.gap_before)
+            w = display_width(plain)
+            if comp.id == cid:
+                return (x, w)
+            x += w
+            first = False
+
+        cursor += reg.width
+        if i < len(visible) - 1 and reg.spec.gap_after > 0:
+            cursor += int(reg.spec.gap_after or 0)
+    return None
 
 
 def render_packed_line(
@@ -844,7 +902,9 @@ __all__ = [
     "display_width",
     "join_region_parts",
     "layout_from_registry",
+    "locate_component_span",
     "normalize_region_id",
+    "pack_layout_from_registry",
     "pack_region_list",
     "pack_topbar_regions",
     "render_packed_line",

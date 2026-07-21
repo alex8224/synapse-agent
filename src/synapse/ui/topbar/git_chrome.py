@@ -88,7 +88,8 @@ def _run_git(args: list[str], *, cwd: Path, timeout: float = 0.8) -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    return (proc.stdout or "").strip()
+    # rstrip only: leading spaces are meaningful in porcelain XY codes.
+    return (proc.stdout or "").rstrip()
 
 
 def _format_count(n: int) -> str:

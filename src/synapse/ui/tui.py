@@ -59,6 +59,7 @@ from synapse.ui.topbar.git_chrome import (
     probe_git_branch_chrome,
     render_branch_chrome,
 )
+from synapse.ui.topbar.git_changes_popover import TopBar
 from synapse.ui.topbar import (
     TopBarAlign,
     TopBarComponent,
@@ -2012,7 +2013,26 @@ class CodingAgentApp(App[None]):
     def compose(self) -> ComposeResult:
         from synapse.slash_complete import make_textual_suggester
 
-        yield Static(id="topbar")
+        yield TopBar(
+            registry_provider=lambda: self._topbar,
+            workspace_provider=lambda: Path(
+                getattr(self.settings, "workspace", Path.cwd()) or Path.cwd()
+            ),
+            dirty_provider=lambda: bool(
+                self._git_chrome is not None and self._git_chrome.dirty
+            ),
+            usable_width_provider=self._topbar_usable_width,
+            colors={
+                "clean": _C_GREEN,
+                "dirty": _C_ERROR,
+                "dim": _C_DIM,
+                "fg": _C_FG,
+                "orange": _C_ORANGE,
+                "added": _C_GREEN,
+                "deleted": _C_ERROR,
+            },
+            id="topbar",
+        )
         with Vertical(id="main", classes="welcome"):
             yield WelcomeView(self.project_root, id="welcome")
             yield VerticalScroll(id="log")
@@ -2680,6 +2700,13 @@ class CodingAgentApp(App[None]):
             self._git_branch = self._git_chrome.name if self._git_chrome else None
         except Exception:  # noqa: BLE001
             pass
+        try:
+            bar = self.query_one("#topbar", TopBar)
+            bar.invalidate_files_cache()
+            if not (self._git_chrome and self._git_chrome.dirty):
+                bar.dismiss()
+        except Exception:  # noqa: BLE001
+            pass
         self._refresh_topbar()
 
     def _install_default_topbar(self) -> None:
@@ -2826,11 +2853,38 @@ class CodingAgentApp(App[None]):
         """Change draw order within the component's region."""
         return self._topbar.set_order(id, order)
 
+    def _topbar_usable_width(self) -> int:
+        """Usable content width for the topbar line (excludes CSS padding)."""
+        width = max(int(getattr(self.size, "width", 0) or 0), 48)
+        return max(20, width - 2)
+
+    def _keep_git_changes_popover(self) -> None:
+        try:
+            self.query_one("#topbar", TopBar).keep_open()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _schedule_hide_git_changes_popover(self) -> None:
+        try:
+            self.query_one("#topbar", TopBar).schedule_hide()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_click(self, event: Click) -> None:
+        # Outside click closes the branch changes popover.
+        try:
+            bar = self.query_one("#topbar", TopBar)
+        except Exception:  # noqa: BLE001
+            return
+        if not bar.is_popover_open():
+            return
+        control = getattr(event, "control", None) or getattr(event, "widget", None)
+        if bar.dismiss_if_outside(control):
+            event.stop()
+
     def _refresh_topbar(self, tokens: str | None = None) -> None:
         del tokens  # legacy arg; usage is tracked on the app
-        width = max(int(getattr(self.size, "width", 0) or 0), 48)
-        # CSS #topbar padding: 0 1; single row, no wrap.
-        usable = max(20, width - 2)
+        usable = self._topbar_usable_width()
         line = layout_from_registry(
             self._topbar,
             usable_width=usable,
@@ -2839,7 +2893,7 @@ class CodingAgentApp(App[None]):
             right_style=_C_DIM,
             gap_style=_C_DIM,
         )
-        self.query_one("#topbar", Static).update(line)
+        self.query_one("#topbar", TopBar).update(line)
 
     def on_resize(self, event: object) -> None:  # noqa: ANN001
         del event

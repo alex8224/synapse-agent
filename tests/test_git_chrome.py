@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
+    GitChangedFile,
     format_branch_chrome_plain,
+    format_changed_file_plain,
     render_branch_chrome,
+    render_changed_file_row,
+    _parse_numstat,
+    _parse_porcelain_line,
+    _status_letter,
 )
 
 
@@ -85,3 +91,38 @@ def test_synced_property() -> None:
     assert GitBranchChrome("m", dirty=False, ahead=None, behind=None).synced
     assert not GitBranchChrome("m", dirty=True, ahead=0, behind=0).synced
     assert not GitBranchChrome("m", dirty=False, ahead=1, behind=0).synced
+
+
+
+def test_status_letter_and_porcelain_parse() -> None:
+    assert _status_letter("M ") == "M"
+    assert _status_letter(" M") == "M"
+    assert _status_letter("A ") == "A"
+    assert _status_letter("??", untracked=True) == "?"
+    assert _parse_porcelain_line(" M src/app.py") == (" M", "src/app.py", None)
+    assert _parse_porcelain_line("?? scratch.txt") == ("??", "scratch.txt", None)
+    assert _parse_porcelain_line("R  old.py -> new.py") == ("R ", "new.py", "old.py")
+
+
+def test_parse_numstat_sums() -> None:
+    raw = "10\t3\tsrc/a.py\n-\t-\tbin.dat\n2\t1\tsrc/a.py\n"
+    stats = _parse_numstat(raw)
+    assert stats["src/a.py"] == (12, 4)
+    assert stats["bin.dat"] == (0, 0)
+
+
+def test_format_changed_file_plain() -> None:
+    m = GitChangedFile(path="src/app.py", status="M", lines_added=10, lines_deleted=3)
+    assert format_changed_file_plain(m) == "M  src/app.py  +10 -3"
+    u = GitChangedFile(path="new.txt", status="?", is_untracked=True)
+    assert "untracked" in format_changed_file_plain(u)
+    d = GitChangedFile(path="gone.py", status="D")
+    assert "deleted" in format_changed_file_plain(d)
+
+
+def test_render_changed_file_row_styles() -> None:
+    item = GitChangedFile(path="src/app.py", status="M", lines_added=2, lines_deleted=1)
+    text = render_changed_file_row(item, color_added="green", color_deleted="red")
+    assert "src/app.py" in text.plain
+    assert "+2" in text.plain
+    assert "-1" in text.plain

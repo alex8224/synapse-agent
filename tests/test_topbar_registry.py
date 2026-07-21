@@ -12,6 +12,7 @@ from synapse.ui.topbar import (
     display_width,
     install_default_components,
     layout_from_registry,
+    locate_component_span,
     pack_topbar_regions,
     render_region_text,
 )
@@ -176,3 +177,24 @@ def test_configure_region_style() -> None:
     assert left.align is TopBarAlign.RIGHT
     assert left.width == 12
     assert not reg.set_region_style("nope", fg="#fff")
+
+
+
+def test_locate_component_span_branch() -> None:
+    reg = TopBarRegistry()
+    install_default_components(
+        reg,
+        workspace=lambda: "proj/ws",
+        title=lambda: "My Session",
+        branch=lambda: "main",
+        usage=lambda: "1K/0/0",
+    )
+    span = locate_component_span(reg, "branch", usable_width=100)
+    assert span is not None
+    start, width = span
+    assert start > 0
+    assert width > 0
+    left = render_region_text(reg.components(TopBarRegion.LEFT))
+    # branch text should sit inside left region content
+    assert "main" in left
+    assert start + width <= 100
