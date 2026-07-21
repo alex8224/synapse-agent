@@ -389,8 +389,8 @@ class _ActivityLine:
         self._lock = threading.Lock()
         self._spinner = Spinner(
             "line",
-            text=Text(self._format_text(), style="cyan"),
-            style="bold cyan",
+            text=Text(self._format_text(), style="orange"),
+            style="bold orange",
             speed=1.2,
         )
 
@@ -402,7 +402,7 @@ class _ActivityLine:
 
     def _apply_text(self) -> None:
         with self._lock:
-            self._spinner.update(text=Text(self._format_text(), style="cyan"))
+            self._spinner.update(text=Text(self._format_text(), style="orange"))
 
     def _heartbeat(self) -> None:
         while not self._stop_hb.wait(0.08):
