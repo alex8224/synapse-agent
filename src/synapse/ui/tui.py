@@ -1626,6 +1626,7 @@ class TextualStreamSink:
         preview: str | None = None,
         error: bool = False,
     ) -> None:
+        _side_effect = False
         for it in self._group_items:
             if it.id != item_id:
                 continue
@@ -1643,6 +1644,9 @@ class TextualStreamSink:
                         it.preview = preview
                 else:
                     it.preview = preview
+            # Edit/write/execute tools mutate the workspace; refresh git chrome.
+            if it.category in {"edit", "run"} and not error:
+                _side_effect = True
             break
         # Flip running glyph immediately; keep non-todo payload off transcript.
         self._call(
@@ -1658,6 +1662,9 @@ class TextualStreamSink:
         self._call("update_tool_group_header", header)
         if still == 0:
             self._call("set_activity", "tools", header, False)
+
+        if _side_effect:
+            self._call("_refresh_git_chrome")
 
     def tool_group_closed(self, group_id: str) -> None:
         """Close one stream tool batch as its own visual group."""
