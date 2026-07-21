@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from synapse.ui.tui import (
+from synapse.ui.topbar import (
     center_in_width,
     display_width,
+    truncate_to_width,
+)
+from synapse.ui.tui import (
     format_context_occupancy_label,
     format_usage_label,
-    truncate_to_width,
 )
 
 

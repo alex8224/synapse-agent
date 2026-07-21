@@ -1,7 +1,7 @@
 """Textual TUI — Cursor-style agent transcript with tool timeline.
 
 Layout (Grok/Cursor chrome):
-  top:     1-line centered: ≡ path · title · ⎇ branch · in/cache/out + ctx
+  top:     1-line centered: ≡ path · ⎇ branch · title · in/cache/out + ctx
   user:    accent bar ● prompt (multi-line, click expand) · time
   thought: ◆ Thought for Xs  (Ctrl+E expand)
   tools:   ▾ group header + ◆ per-item labels
@@ -54,6 +54,18 @@ from synapse.ui.timeline import (
     is_todo_tool,
     parse_todo_preview_lines,
     summarize_items,
+)
+from synapse.ui.topbar import (
+    TopBarAlign,
+    TopBarComponent,
+    TopBarRegion,
+    TopBarRegionSpec,
+    TopBarRegistry,
+    center_in_width,
+    display_width,
+    install_default_components,
+    layout_from_registry,
+    truncate_to_width,
 )
 from synapse.ui.welcome import WelcomeView
 
@@ -178,64 +190,6 @@ def format_token_count(n: int) -> str:
     return f"{(n + 500_000) // 1_000_000}M"
 
 
-def display_width(text: str) -> int:
-    """Terminal cell width (CJK / fullwidth / emoji count as 2)."""
-    total = 0
-    for ch in text or "":
-        o = ord(ch)
-        # Wide: CJK, Hangul, fullwidth forms, common emoji blocks.
-        if (
-            0x1100 <= o <= 0x115F
-            or 0x2E80 <= o <= 0xA4CF
-            or 0xAC00 <= o <= 0xD7A3
-            or 0xF900 <= o <= 0xFAFF
-            or 0xFE10 <= o <= 0xFE19
-            or 0xFE30 <= o <= 0xFE6F
-            or 0xFF00 <= o <= 0xFF60
-            or 0xFFE0 <= o <= 0xFFE6
-            or 0x1F300 <= o <= 0x1FAFF
-        ):
-            total += 2
-        else:
-            total += 1
-    return total
-
-
-def truncate_to_width(text: str, max_w: int) -> str:
-    """Truncate ``text`` so its display width fits ``max_w`` cells."""
-    raw = text or ""
-    max_w = int(max_w or 0)
-    if max_w <= 0:
-        return ""
-    if display_width(raw) <= max_w:
-        return raw
-    if max_w == 1:
-        return "…"
-    out: list[str] = []
-    used = 0
-    limit = max_w - 1  # room for ellipsis
-    for ch in raw:
-        cw = display_width(ch)
-        if used + cw > limit:
-            break
-        out.append(ch)
-        used += cw
-    return "".join(out) + "…"
-
-
-def center_in_width(text: str, width: int) -> str:
-    """Pad ``text`` so it appears centered within ``width`` terminal cells."""
-    body = truncate_to_width(text or "", width)
-    w = display_width(body)
-    if w >= width:
-        return body
-    left = (width - w) // 2
-    right = width - w - left
-    return (" " * left) + body + (" " * right)
-
-
-# Wide separator between topbar regions (branch / path / title / usage).
-_TOPBAR_REGION_GAP = "   ·   "
 # Text prefix for git branch (not emoji; terminal-safe branch mark).
 _TOPBAR_BRANCH_MARK = "⎇"  # APL upwards vane / branch mark
 
@@ -1781,7 +1735,7 @@ class CodingAgentApp(App[None]):
     #topbar {
         height: 1;
         padding: 0 1;
-        color: $theme-dim;
+        color: $theme-fg;
         background: $theme-top;
     }
     #main {
@@ -2047,6 +2001,8 @@ class CodingAgentApp(App[None]):
         self._git_branch = _git_branch(ws)
         hist_root = Path(project_root or ws)
         self._input_history = InputHistory.for_project(hist_root)
+        self._topbar = TopBarRegistry()
+        self._install_default_topbar()
         self.title = "Synapse"
         self.sub_title = model_status_label(settings)
         self._reload_session_title()
@@ -2704,74 +2660,161 @@ class CodingAgentApp(App[None]):
         self._usage_base_cache = self._cache_tokens
         self._refresh_topbar()
 
+    def _install_default_topbar(self) -> None:
+        """Register built-in workspace / title / branch / usage components."""
+        install_default_components(
+            self._topbar,
+            workspace=lambda: short_workspace_label(self.settings.workspace),
+            title=lambda: (self._session_title or "").strip()
+            or self._session_title_label(max_len=56),
+            branch=lambda: (self._git_branch or "").strip(),
+            usage=self._usage_right_label,
+            branch_mark=_TOPBAR_BRANCH_MARK,
+        )
+
+    def register_topbar_region(
+        self,
+        id: str,
+        *,
+        order: int | None = None,
+        width: int | None = None,
+        min_width: int | None = None,
+        max_width: int | None = None,
+        flex: int | None = None,
+        align: TopBarAlign | str | None = None,
+        fg: str | None = None,
+        bg: str | None = None,
+        gap_after: int | None = None,
+        priority: int | None = None,
+        visible: bool | None = None,
+        replace: bool = True,
+    ) -> TopBarRegionSpec:
+        """Add or configure a freeform topbar region.
+
+        Regions are horizontal slots (not limited to left/center/right).
+        ``width`` is fixed cells; omit for hug-content. ``flex>0`` shares leftover
+        row width. ``align`` is left/center/right inside the allocated band.
+        ``fg`` / ``bg`` are Rich style colors (bg paints the whole region band).
+        """
+        return self._topbar.register_region(
+            id,
+            order=order,
+            width=width,
+            min_width=min_width,
+            max_width=max_width,
+            flex=flex,
+            align=align,
+            fg=fg,
+            bg=bg,
+            gap_after=gap_after,
+            priority=priority,
+            visible=visible,
+            replace=replace,
+        )
+
+    def unregister_topbar_region(self, id: str, *, drop_components: bool = False) -> bool:
+        """Remove a topbar region (optionally its components)."""
+        return self._topbar.unregister_region(id, drop_components=drop_components)
+
+    def configure_topbar_region(
+        self,
+        id: str,
+        *,
+        order: int | None = None,
+        width: int | None = None,
+        min_width: int | None = None,
+        max_width: int | None = None,
+        flex: int | None = None,
+        align: TopBarAlign | str | None = None,
+        fg: str | None = None,
+        bg: str | None = None,
+        gap_after: int | None = None,
+        priority: int | None = None,
+        visible: bool | None = None,
+    ) -> bool:
+        """Update style/layout of an existing region; returns False if missing."""
+        return self._topbar.set_region_style(
+            id,
+            order=order,
+            width=width,
+            min_width=min_width,
+            max_width=max_width,
+            flex=flex,
+            align=align,
+            fg=fg,
+            bg=bg,
+            gap_after=gap_after,
+            priority=priority,
+            visible=visible,
+        )
+
+    def register_topbar_component(
+        self,
+        id: str,
+        render: Any,
+        *,
+        region: TopBarRegion | str = TopBarRegion.RIGHT,
+        order: int = 100,
+        priority: int = 0,
+        min_width: int = 0,
+        gap_before: str = "  ·  ",
+        style: str | None = None,
+        visible: bool = True,
+        replace: bool = True,
+    ) -> TopBarComponent:
+        """Public extension point: add or replace a topbar component.
+
+        ``region`` is any region id (built-in left/center/right or a custom
+        region created via ``register_topbar_region``). Unknown region ids are
+        auto-created as hug-content slots. ``order`` controls position inside
+        that region; ``priority`` controls shrink order when the row is narrow.
+        """
+        return self._topbar.register_fn(
+            id,
+            render,
+            region=region,
+            order=order,
+            priority=priority,
+            min_width=min_width,
+            gap_before=gap_before,
+            style=style,
+            visible=visible,
+            replace=replace,
+        )
+
+    def unregister_topbar_component(self, id: str) -> bool:
+        """Remove a previously registered topbar component by id."""
+        return self._topbar.unregister(id)
+
+    def set_topbar_component_visible(self, id: str, visible: bool) -> bool:
+        """Show or hide a topbar component without unregistering it."""
+        return self._topbar.set_visible(id, visible)
+
+    def set_topbar_component_region(
+        self,
+        id: str,
+        region: TopBarRegion | str,
+    ) -> bool:
+        """Move a component to another horizontal region."""
+        return self._topbar.set_region(id, region)
+
+    def set_topbar_component_order(self, id: str, order: int) -> bool:
+        """Change draw order within the component's region."""
+        return self._topbar.set_order(id, order)
+
     def _refresh_topbar(self, tokens: str | None = None) -> None:
         del tokens  # legacy arg; usage is tracked on the app
         width = max(int(getattr(self.size, "width", 0) or 0), 48)
         # CSS #topbar padding: 0 1; single row, no wrap.
-        # Three regions with spacing: left | centered title | right.
         usable = max(20, width - 2)
-        col_gap = 3  # spaces between left/title/right
-
-        workspace = short_workspace_label(self.settings.workspace)
-        title = (self._session_title or "").strip() or self._session_title_label(
-            max_len=56
+        line = layout_from_registry(
+            self._topbar,
+            usable_width=usable,
+            left_style=_C_FG,
+            center_style=_C_FG,
+            right_style=_C_DIM,
+            gap_style=_C_DIM,
         )
-        usage = self._usage_right_label()
-        branch = (self._git_branch or "").strip()
-
-        left = f"≡  {workspace}"
-        right_bits: list[str] = []
-        if branch:
-            right_bits.append(f"{_TOPBAR_BRANCH_MARK} {branch}")
-        if usage:
-            right_bits.append(usage)
-        # Branch and usage separated with a medium gap (not glued).
-        right = "  ·  ".join(right_bits) if right_bits else ""
-
-        left_w = display_width(left)
-        right_w = display_width(right)
-        # Title sits in the middle band; shrink it first when space is tight.
-        mid_budget = usable - left_w - right_w - 2 * col_gap
-        if mid_budget < 4:
-            # Prefer keeping right chrome; compress left label next.
-            right = truncate_to_width(right, max(8, usable // 3))
-            right_w = display_width(right)
-            left = truncate_to_width(left, max(6, usable // 4))
-            left_w = display_width(left)
-            mid_budget = max(4, usable - left_w - right_w - 2 * col_gap)
-        title = truncate_to_width(title, mid_budget)
-        title_w = display_width(title)
-
-        rest = usable - left_w - title_w - right_w
-        if rest < 2 * col_gap:
-            # Last resort: hard truncate whole line without wrapping.
-            body = truncate_to_width(
-                f"{left}{' ' * col_gap}{title}{' ' * col_gap}{right}",
-                usable,
-            )
-            line = Text(body, style=_C_DIM)
-            self.query_one("#topbar", Static).update(line)
-            return
-
-        # Distribute leftover spaces so the title stays visually centered.
-        pad_l = rest // 2
-        pad_r = rest - pad_l
-        # Enforce a minimum gap so regions never collide.
-        if pad_l < col_gap:
-            shift = col_gap - pad_l
-            pad_l += shift
-            pad_r = max(col_gap, pad_r - shift)
-        if pad_r < col_gap:
-            shift = col_gap - pad_r
-            pad_r += shift
-            pad_l = max(col_gap, pad_l - shift)
-
-        line = Text()
-        line.append(left, style=_C_DIM)
-        line.append(" " * pad_l, style=_C_MUTED)
-        line.append(title, style=_C_DIM)
-        line.append(" " * pad_r, style=_C_MUTED)
-        line.append(right, style=_C_MUTED)
         self.query_one("#topbar", Static).update(line)
 
     def on_resize(self, event: object) -> None:  # noqa: ANN001
