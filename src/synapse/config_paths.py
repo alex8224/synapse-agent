@@ -10,11 +10,12 @@ Optional portable layer: directory next to a frozen / non-python exe.
 File layout (either layer)::
 
     .synapse/
-      models.json      # model profiles + api_key (preferred over .env)
-      mcp.json          # MCP servers
-      settings.json     # non-secret Settings overrides (includes theme)
-      themes.json       # optional custom UI themes (merged user → project)
-      sessions.sqlite   # project layer typically
+      models.json         # model profiles + api_key (preferred over .env)
+      mcp.json            # MCP servers
+      settings.json       # non-secret Settings overrides (includes theme)
+      themes.json         # optional custom UI themes (merged user → project)
+      system_prompt.md    # coding agent system prompt (user/project override)
+      sessions.sqlite     # project layer typically
       checkpoints.sqlite
       history
 """

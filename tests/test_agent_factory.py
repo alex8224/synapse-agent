@@ -7,14 +7,62 @@ from unittest.mock import MagicMock, patch
 
 from synapse.backends import build_backend
 from synapse.config import load_settings
-from synapse.prompts import build_system_prompt
+from synapse.prompts import (
+    DEFAULT_CODING_SYSTEM_PROMPT,
+    build_system_prompt,
+    load_coding_system_prompt,
+)
 
 
 def test_build_system_prompt_includes_workspace(tmp_path: Path):
     text = build_system_prompt(tmp_path)
     assert str(tmp_path) in text
-    assert "编码 Agent" in text or "虚拟文件系统" in text
-    assert "中文" in text
+    assert "senior software engineer" in text or "Virtual filesystem" in text
+    assert "Chinese" in text
+    assert "Current workspace" in text
+
+
+def test_load_coding_system_prompt_prefers_project_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from synapse import prompts as prompts_mod
+
+    user_dir = tmp_path / "user-home"
+    user_dir.mkdir()
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: user_dir)
+
+    project_prompt = tmp_path / ".synapse" / "system_prompt.md"
+    project_prompt.parent.mkdir(parents=True)
+    project_prompt.write_text("PROJECT PROMPT BODY\n", encoding="utf-8")
+
+    body = load_coding_system_prompt(tmp_path)
+    assert body == "PROJECT PROMPT BODY"
+
+
+def test_load_coding_system_prompt_falls_back_to_builtin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from synapse import prompts as prompts_mod
+
+    user_dir = tmp_path / "user-home-empty"
+    user_dir.mkdir()
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: user_dir)
+
+    body = load_coding_system_prompt(tmp_path, ensure_user_file=False)
+    assert body == DEFAULT_CODING_SYSTEM_PROMPT.strip()
+
+
+def test_ensure_user_system_prompt_seeds_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from synapse import prompts as prompts_mod
+
+    user_dir = tmp_path / "user-seed"
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: user_dir)
+
+    path = prompts_mod.ensure_user_system_prompt()
+    assert path.is_file()
+    assert "senior software engineer" in path.read_text(encoding="utf-8")
 
 
 def test_build_backend_local_shell(tmp_path: Path):

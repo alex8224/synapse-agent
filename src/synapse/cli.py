@@ -43,6 +43,12 @@ app.add_typer(mcp_app, name="mcp")
 
 def _bootstrap_env() -> Path | None:
     """Load project `.env` with override=True so it beats stale system keys."""
+    try:
+        from synapse.prompts import ensure_user_system_prompt
+
+        ensure_user_system_prompt()
+    except Exception:  # noqa: BLE001
+        pass
     return bootstrap_project_env(Path.cwd())
 
 
