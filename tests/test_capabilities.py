@@ -255,6 +255,58 @@ def test_profile_api_key_not_overridden_by_openai_fallback(tmp_path: Path, monke
         assert kwargs["api_key"] == "sk-local-test-key"
 
 
+def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Avoid langchain-openai 120s StreamChunkTimeoutError on long reasoning."""
+    monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
+    monkeypatch.delenv("STREAM_CHUNK_TIMEOUT", raising=False)
+    monkeypatch.setattr(
+        "synapse.config_paths.user_config_dir",
+        lambda: tmp_path / "nouser" / ".synapse",
+    )
+    monkeypatch.setattr("synapse.config_paths.executable_config_dirs", lambda: [])
+    cfg = {
+        "default": "main",
+        "models": {
+            "main": {"model": "openai:demo"},
+            "strict": {
+                "model": "openai:demo",
+                "stream_chunk_timeout": 90,
+            },
+        },
+    }
+    path = tmp_path / ".synapse" / "models.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=None,
+        checkpoint_backend="memory",
+    )
+    assert settings.stream_chunk_timeout is None
+
+    with patch("synapse.models_registry.init_chat_model") as init_mock:
+        init_mock.return_value = MagicMock(name="chat")
+        build_model_from_settings(settings, model_name="main")
+        kwargs = init_mock.call_args.kwargs
+        assert "stream_chunk_timeout" in kwargs
+        assert kwargs["stream_chunk_timeout"] is None
+
+        init_mock.reset_mock()
+        build_model_from_settings(settings, model_name="strict")
+        kwargs = init_mock.call_args.kwargs
+        assert kwargs["stream_chunk_timeout"] == 90
+
+    settings = settings.model_copy(update={"stream_chunk_timeout": 600.0})
+    with patch("synapse.models_registry.init_chat_model") as init_mock:
+        init_mock.return_value = MagicMock(name="chat")
+        build_model_from_settings(settings, model_name="main")
+        kwargs = init_mock.call_args.kwargs
+        assert kwargs["stream_chunk_timeout"] == 600.0
+
+
 def test_format_model_status_and_thinking_token(tmp_path: Path):
     settings = load_settings(
         workspace=tmp_path,

@@ -27,6 +27,21 @@ def test_tool_details_expanded_default_and_env(monkeypatch):
     assert settings_off.tool_details_expanded is False
 
 
+def test_stream_chunk_timeout_default_disabled_and_env(monkeypatch):
+    """langchain-openai default 120s stall timeout must be off unless configured."""
+    monkeypatch.delenv("STREAM_CHUNK_TIMEOUT", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.stream_chunk_timeout is None
+
+    monkeypatch.setenv("STREAM_CHUNK_TIMEOUT", "600")
+    settings_on = Settings(_env_file=None)
+    assert settings_on.stream_chunk_timeout == 600.0
+
+    monkeypatch.setenv("STREAM_CHUNK_TIMEOUT", "off")
+    settings_off = Settings(_env_file=None)
+    assert settings_off.stream_chunk_timeout is None
+
+
 def test_models_config_discovered_beside_exe(tmp_path, monkeypatch):
     """Portable layout: models.json under exe-adjacent .synapse/."""
     from synapse.config_paths import models_config_paths

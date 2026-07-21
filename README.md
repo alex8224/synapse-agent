@@ -182,10 +182,11 @@ my-project/.synapse/
 | `thinking` / `thinking_level` / `reasoning_effort` | 思考级别：`off\|minimal\|low\|medium\|high\|max` |
 | `enable_thinking` | 兼容旧字段 bool |
 | `temperature` / `max_tokens` / `timeout` 等 | 直接传给 ChatModel |
+| `stream_chunk_timeout` | 流式相邻 chunk 静默超时（秒）；默认由 settings 关闭，避免长思考被 langchain-openai 120s 掐断 |
 | `model_kwargs` | 请求体 kwargs |
 | `extra_body` | 厂商扩展体（与 thinking 合并） |
 
-`settings.json` 可放非密钥运行参数（见 `examples/settings.example.json`）。  
+`settings.json` 可放非密钥运行参数（见 `examples/settings.example.json`；其中 `stream_chunk_timeout` 默认 `null` 关闭静默超时，需要时可设为正数秒）。  
 `.env` 仍可读，仅作迁移/CI 兼容，**不推荐**作为常规分发方式。
 
 ```bash

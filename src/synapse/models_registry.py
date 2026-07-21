@@ -376,6 +376,7 @@ class ModelRegistry:
         fallback_enable_thinking: bool = True,
         fallback_reasoning_effort: str = "high",
         fallback_parallel_tool_calls: bool = True,
+        fallback_stream_chunk_timeout: float | None = None,
         enable_thinking: bool | None = None,
         reasoning_effort: str | None = None,
     ):
@@ -385,6 +386,11 @@ class ModelRegistry:
           1. Explicit ``enable_thinking`` / ``reasoning_effort`` (session Settings)
           2. Profile defaults
           3. ``fallback_*`` kwargs
+
+        For OpenAI-compatible models, ``stream_chunk_timeout`` defaults to the
+        session fallback (usually disabled) so long reasoning pauses do not
+        raise langchain-openai's StreamChunkTimeoutError. Profile ``params`` /
+        top-level ``stream_chunk_timeout`` still win when present.
         """
         from synapse.startup_trace import span
 
@@ -427,6 +433,9 @@ class ModelRegistry:
                 kwargs["api_key"] = api_key
             kwargs.setdefault("use_responses_api", False)
             kwargs.setdefault("streaming", True)
+            # Override langchain-openai default 120s silence killer unless profile set it.
+            if "stream_chunk_timeout" not in kwargs:
+                kwargs["stream_chunk_timeout"] = fallback_stream_chunk_timeout
 
             model_kwargs = dict(kwargs.get("model_kwargs") or {})
             model_kwargs.update(dict(profile.model_kwargs or {}))
@@ -827,6 +836,9 @@ def build_model_from_settings(settings: Any, *, model_name: str | None = None):
         fallback_enable_thinking=settings.enable_thinking,
         fallback_reasoning_effort=settings.reasoning_effort,
         fallback_parallel_tool_calls=settings.parallel_tool_calls,
+        fallback_stream_chunk_timeout=getattr(
+            settings, "stream_chunk_timeout", None
+        ),
         # Session Settings always win over profile defaults.
         enable_thinking=bool(settings.enable_thinking),
         reasoning_effort=settings.reasoning_effort,

@@ -2,6 +2,7 @@
   "token_stream": true,
   "parallel_tool_calls": true,
   "max_concurrency": 8,
+  "stream_chunk_timeout": null,
   "tool_details_expanded": true,
   "enable_mcp": true,
   "require_approval": false,

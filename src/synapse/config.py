@@ -171,6 +171,13 @@ class Settings(BaseSettings):
     token_stream: bool = Field(default=True, validation_alias="TOKEN_STREAM")
     parallel_tool_calls: bool = Field(default=True, validation_alias="PARALLEL_TOOL_CALLS")
     max_concurrency: int = Field(default=8, validation_alias="MAX_CONCURRENCY")
+    # langchain-openai async per-chunk silence timeout (seconds).
+    # Default None disables StreamChunkTimeoutError (library default is 120s), which
+    # otherwise aborts long reasoning / slow OpenAI-compatible gateways mid-turn.
+    # Set a positive number to re-enable; 0 also disables. Profile params can override.
+    stream_chunk_timeout: float | None = Field(
+        default=None, validation_alias="STREAM_CHUNK_TIMEOUT"
+    )
     # TUI / CLI appearance (see synapse.ui.theme).
     # Terminal inherit (transparent): ansi (aliases: inherit, terminal, auto)
     # Built-in dark: cursor-dark github-dark dracula nord solarized-dark
@@ -262,6 +269,18 @@ class Settings(BaseSettings):
             return []
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("stream_chunk_timeout", mode="before")
+    @classmethod
+    def _coerce_stream_chunk_timeout(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            text = value.strip().casefold()
+            if text in {"none", "null", "off", "disable", "disabled"}:
+                return None
+            return float(text)
         return value
 
     def ensure_dirs(self) -> None:
