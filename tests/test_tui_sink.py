@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from synapse.ui.timeline import ToolItem, build_tool_item, summarize_categories
 from synapse.ui.tui import (
+    AnswerBlock,
     TextualStreamSink,
     ThoughtBlock,
     ToolGroupBlock,
@@ -27,8 +28,8 @@ class _FakeApp:
     def set_activity(self, phase: str, detail: str = "", reset_timer: bool = False) -> None:
         self.calls.append(("set_activity", (phase, detail, reset_timer), {}))
 
-    def set_stream(self, kind: str, body: str) -> None:
-        self.calls.append(("set_stream", (kind, body), {}))
+    def set_stream(self, kind: str, body: str, elapsed_s: float = 0.0) -> None:
+        self.calls.append(("set_stream", (kind, body), {"elapsed_s": elapsed_s}))
 
     def clear_stream(self) -> None:
         self.calls.append(("clear_stream", (), {}))
@@ -144,11 +145,42 @@ def test_textual_sink_streams_reasoning_live():
     streams = [c for c in app.calls if c[0] == "set_stream"]
     assert streams
     assert streams[-1][1] == ("reasoning", "step one")
+    assert streams[-1][2].get("elapsed_s", 0) >= 0
     sink.close_reasoning()
-    assert any(c[0] == "clear_stream" for c in app.calls)
+    # Full body seals via commit_thought (clear_stream would drop the live row).
+    assert not any(c[0] == "clear_stream" for c in app.calls)
     thoughts = [c for c in app.calls if c[0] == "commit_thought"]
     assert len(thoughts) == 1
     assert thoughts[0][1][1] == "step one"
+
+
+def test_thought_block_live_then_seal():
+    # Avoid Textual App: only exercise state transitions.
+    block = ThoughtBlock.__new__(ThoughtBlock)
+    block.elapsed_s = 0.0
+    block.body = "abc"
+    block.live = True
+    block.collapsed = False
+    block._render_block = lambda: None  # type: ignore[method-assign]
+    block.update_live(1.5, "abc def")
+    assert block.body == "abc def"
+    assert block.elapsed_s == 1.5
+    block.seal(2.0, "abc def final")
+    assert block.live is False
+    assert block.collapsed is True
+    assert block.body == "abc def final"
+
+
+def test_answer_block_live_then_seal():
+    block = AnswerBlock.__new__(AnswerBlock)
+    block.body = "hi"
+    block.live = True
+    block._render_block = lambda: None  # type: ignore[method-assign]
+    block.update_live("hi there")
+    assert block.body == "hi there"
+    block.seal("hi there final")
+    assert block.live is False
+    assert block.body == "hi there final"
 
 
 def test_textual_sink_tool_items_detail():

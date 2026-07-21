@@ -924,17 +924,48 @@ class TurnRail(Vertical):
 
 
 class ThoughtBlock(Static):
-    """A historical thought that can be expanded in place with the mouse."""
+    """Thought row in the transcript; supports live streaming then seal."""
 
-    def __init__(self, elapsed_s: float, body: str) -> None:
+    def __init__(self, elapsed_s: float, body: str, *, live: bool = False) -> None:
         self.elapsed_s = elapsed_s
         self.body = body or ""
-        self.collapsed = True
+        self.live = bool(live)
+        # Expanded while streaming so the growing body is readable.
+        self.collapsed = not self.live
         super().__init__()
         self._render_block()
 
+    def update_live(self, elapsed_s: float, body: str) -> None:
+        """Refresh in place while tokens are still arriving."""
+        self.live = True
+        self.collapsed = False
+        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
+        self.body = body or ""
+        self._render_block()
+
+    def seal(self, elapsed_s: float, body: str) -> None:
+        """Finalize this row as a historical ThoughtBlock (no remount)."""
+        self.live = False
+        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
+        self.body = body or ""
+        self.collapsed = True
+        self._render_block()
+
     def _render_block(self) -> None:
-        lines: list[Text | Any] = [
+        if self.live:
+            lines: list[Text | Any] = [
+                Text(
+                    f"  {_MARK_THOUGHT}  Thinking… {self.elapsed_s:.1f}s",
+                    style=f"italic {_C_DIM}",
+                )
+            ]
+            preview = stream_tail_preview(self.body)
+            if preview.strip():
+                lines.append(Text(preview, style=_C_DIM))
+            lines.append(Text(""))
+            self.update(Group(*lines))
+            return
+        lines = [
             Text(f"  {_MARK_THOUGHT}  Thought for {self.elapsed_s:.1f}s", style=_C_DIM)
         ]
         if self.body:
@@ -951,7 +982,7 @@ class ThoughtBlock(Static):
         self.update(Group(*lines))
 
     def toggle(self) -> None:
-        if not self.body:
+        if not self.body or self.live:
             return
         self.collapsed = not self.collapsed
         self._render_block()
@@ -959,6 +990,48 @@ class ThoughtBlock(Static):
     def on_click(self, event: Click) -> None:
         event.stop()
         self.toggle()
+
+
+class AnswerBlock(Static):
+    """Assistant answer row; live plain-text tail, then Markdown seal."""
+
+    DEFAULT_CSS = """
+    AnswerBlock {
+        width: 1fr;
+        height: auto;
+    }
+    """
+
+    def __init__(self, body: str = "", *, live: bool = False) -> None:
+        self.body = body or ""
+        self.live = bool(live)
+        super().__init__()
+        self._render_block()
+
+    def update_live(self, body: str) -> None:
+        self.live = True
+        self.body = body or ""
+        self._render_block()
+
+    def seal(self, body: str) -> None:
+        self.live = False
+        self.body = body or ""
+        self._render_block()
+
+    def _render_block(self) -> None:
+        body = self.body or ""
+        if self.live:
+            preview = stream_tail_preview(body)
+            self.update(Text(preview, style=_C_FG) if preview else Text(""))
+            return
+        if not body.strip():
+            self.update(Text(""))
+            return
+        if len(body) > _MARKDOWN_MAX_CHARS:
+            renderable: Any = Text(body, style=_C_FG)
+        else:
+            renderable = Markdown(render_math_in_text(body), code_theme=_CODE_THEME)
+        self.update(Group(renderable, Text("")))
 
 
 class AnswerDivider(Static):
@@ -1237,13 +1310,25 @@ class TextualStreamSink:
             return max(base, _STREAM_INTERVAL_MED)
         return base
 
-    def _push_stream(self, kind: str, body: str, *, force: bool = False) -> None:
+    def _push_stream(
+        self,
+        kind: str,
+        body: str,
+        *,
+        force: bool = False,
+        elapsed_s: float = 0.0,
+    ) -> None:
         now = time.monotonic()
         if not force and (now - self._last_stream_push) < self._stream_interval():
             return
         self._last_stream_push = now
-        # Always hand the UI a bounded preview, even on force flushes.
-        self._call("set_stream", kind, stream_tail_preview(body))
+        # Tail-only preview keeps layout cheap; commit seals the full body.
+        self._call(
+            "set_stream",
+            kind,
+            stream_tail_preview(body),
+            elapsed_s=float(elapsed_s or 0.0),
+        )
 
     def _push_activity(
         self,
@@ -1358,11 +1443,11 @@ class TextualStreamSink:
         self._open_reasoning_chars += len(text)
         self.reasoning_buf.append(text)
         elapsed = max(0.0, time.monotonic() - self._reasoning_started)
-        # Live preview mirrors answer tokens: rate-limit + tail-only layout.
+        # Live preview mounts in #log via set_stream (rate-limit + tail).
         now = time.monotonic()
         if (now - self._last_stream_push) >= self._stream_interval():
             body = "".join(self._open_reasoning)
-            self._push_stream("reasoning", body, force=True)
+            self._push_stream("reasoning", body, force=True, elapsed_s=elapsed)
         self._push_activity("thinking", f"{elapsed:.1f}s")
 
     def close_reasoning(self) -> None:
@@ -1377,9 +1462,11 @@ class TextualStreamSink:
             if self._reasoning_started
             else 0.0
         )
-        self._call("clear_stream")
+        # Seal the in-log ThoughtBlock; avoid clear before commit.
         if body:
             self._call("commit_thought", elapsed, body)
+        else:
+            self._call("clear_stream")
 
     # -- answer ----------------------------------------------------------
 
@@ -1425,7 +1512,7 @@ class TextualStreamSink:
         self._open_answer.clear()
         self._open_answer_chars = 0
         self.answer_buf.append(body)
-        self._call("clear_stream")
+        # Seal the in-log AnswerBlock mounted by set_stream.
         self._call("commit_answer", body)
 
     def finalize_line(self) -> None:
@@ -1434,7 +1521,6 @@ class TextualStreamSink:
             body = "".join(self._open_answer).strip()
             self._open_answer.clear()
             self._open_answer_chars = 0
-            self._call("clear_stream")
             if body:
                 key = self._norm(body)
                 if key not in self._complete_texts:
@@ -1442,6 +1528,8 @@ class TextualStreamSink:
                     self.answer_buf.append(body)
                     self.streamed_answer = True
                     self._call("commit_answer", body)
+            else:
+                self._call("clear_stream")
 
     # -- tools: enhanced item API ----------------------------------------
 
@@ -1681,17 +1769,16 @@ class CodingAgentApp(App[None]):
         overflow-y: hidden;
     }
     #stream {
-        /* Fixed region: auto-height growth reflows #log on every token. */
-        height: 12;
-        max-height: 12;
-        padding: 0 0 1 2;
+        /* Legacy fixed slot — live text now mounts in #log in place.
+           Keep the node for compat but never reserve vertical space. */
         display: none;
+        height: 0;
+        max-height: 0;
+        padding: 0;
         overflow-y: hidden;
-        background: $theme-bg;
-        color: $theme-fg;
     }
     #stream.active {
-        display: block;
+        display: none;
     }
     /* Single bottom stack: Textual multi-dock bottom does NOT stack (overlaps). */
     #bottom-chrome {
@@ -1846,6 +1933,9 @@ class CodingAgentApp(App[None]):
         self._thought_blocks: list[ThoughtBlock] = []
         self._tool_blocks: list[ToolGroupBlock] = []
         self._live_tool_block: ToolGroupBlock | None = None
+        # In-timeline live stream (reasoning / answer), like tool groups.
+        self._live_stream_block: ThoughtBlock | AnswerBlock | None = None
+        self._live_stream_kind: str | None = None
         self._user_turns: list[UserTurnBlock] = []
         self._in_tool_rail = False
         # After tools run, next final answer gets a ◇ divider above it.
@@ -2756,32 +2846,69 @@ class CodingAgentApp(App[None]):
 
     # -- stream ----------------------------------------------------------
 
-    def set_stream(self, kind: str, body: str) -> None:
-        stream = self.query_one("#stream", Static)
-        if not (body or "").strip():
-            self.clear_stream()
+    def set_stream(self, kind: str, body: str, elapsed_s: float = 0.0) -> None:
+        """Mount or update a live block at the end of #log (in place)."""
+        text = body or ""
+        kind = (kind or "answer").strip() or "answer"
+        if self._live_stream_kind and self._live_stream_kind != kind:
+            self._live_stream_block = None
+            self._live_stream_kind = None
+        if not text.strip() and self._live_stream_block is None:
             return
         if kind == "reasoning":
-            # Live plain-text tail while tokens arrive; full ThoughtBlock is
-            # committed on close_reasoning (same pattern as answer stream).
-            preview = stream_tail_preview(body)
-            header = Text(f"  {_MARK_THOUGHT}  Thinking…", style=f"italic {_C_DIM}")
-            if preview.strip():
-                renderable = Group(header, Text(preview, style=_C_DIM), Text(""))
+            block = self._live_stream_block
+            if not isinstance(block, ThoughtBlock) or self._live_stream_kind != "reasoning":
+                block = ThoughtBlock(float(elapsed_s or 0.0), text, live=True)
+                self._live_stream_block = block
+                self._live_stream_kind = "reasoning"
+                self._thought_blocks.append(block)
+                self._mount_block(block)
             else:
-                renderable = header
+                block.update_live(float(elapsed_s or 0.0), text)
+                self._follow_timeline_if_needed()
+            self._in_tool_rail = False
+            return
+        block = self._live_stream_block
+        if not isinstance(block, AnswerBlock) or self._live_stream_kind != "answer":
+            if self._pending_answer_divider:
+                self._mount_answer_divider()
+                self._pending_answer_divider = False
+            block = AnswerBlock(text, live=True)
+            self._live_stream_block = block
+            self._live_stream_kind = "answer"
+            self._mount_block(block)
         else:
-            # Markdown is intentionally rendered once, on completion.  Live
-            # preview is plain Text of a bounded tail (see stream_tail_preview).
-            preview = stream_tail_preview(body)
-            renderable = Text(preview, style=_C_FG)
-        stream.update(renderable)
-        stream.add_class("active")
+            block.update_live(text)
+            self._follow_timeline_if_needed()
 
     def clear_stream(self) -> None:
-        stream = self.query_one("#stream", Static)
-        stream.update("")
-        stream.remove_class("active")
+        """Drop unsealed live stream row; legacy #stream stays empty."""
+        try:
+            stream = self.query_one("#stream", Static)
+            stream.update("")
+            stream.remove_class("active")
+        except Exception:  # noqa: BLE001
+            pass
+        block = self._live_stream_block
+        if block is not None and getattr(block, "live", False):
+            try:
+                if block.is_attached:
+                    block.remove()
+            except Exception:  # noqa: BLE001
+                pass
+            if isinstance(block, ThoughtBlock) and block in self._thought_blocks:
+                self._thought_blocks.remove(block)
+        self._live_stream_block = None
+        self._live_stream_kind = None
+
+    def _follow_timeline_if_needed(self) -> None:
+        try:
+            timeline = self.query_one("#log", VerticalScroll)
+        except Exception:  # noqa: BLE001
+            return
+        follow = timeline.max_scroll_y <= 0 or timeline.scroll_y >= timeline.max_scroll_y - 1
+        if follow:
+            self.call_after_refresh(self._scroll_timeline)
 
     # -- transcript writers ----------------------------------------------
 
@@ -2908,9 +3035,19 @@ class CodingAgentApp(App[None]):
         self._last_thought_body = body or ""
         self._last_thought_elapsed = elapsed_s
         self._thought_expanded = False
-        block = ThoughtBlock(elapsed_s, body)
-        self._thought_blocks.append(block)
-        self._mount_block(block)
+        live = self._live_stream_block
+        if (
+            isinstance(live, ThoughtBlock)
+            and self._live_stream_kind == "reasoning"
+        ):
+            live.seal(elapsed_s, body or "")
+            self._live_stream_block = None
+            self._live_stream_kind = None
+            self._follow_timeline_if_needed()
+        else:
+            block = ThoughtBlock(elapsed_s, body)
+            self._thought_blocks.append(block)
+            self._mount_block(block)
         self._in_tool_rail = False
 
     def action_toggle_last_thought(self) -> None:
@@ -3141,6 +3278,8 @@ class CodingAgentApp(App[None]):
         self._thought_blocks.clear()
         self._tool_blocks.clear()
         self._live_tool_block = None
+        self._live_stream_block = None
+        self._live_stream_kind = None
         self._user_turns.clear()
         self._in_tool_rail = False
         self._session_recap.reset()
