@@ -21,14 +21,17 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
-from rich.markdown import Markdown
+from rich.markdown import Markdown as _Markdown
+from rich.markdown import MarkdownElement, TableElement as _TableElement
 from rich.panel import Panel
 from rich.spinner import Spinner
+from rich.table import Table
 from rich.text import Text
+from rich import box
 
 from synapse.context_compact import (
     is_context_compact_text,
@@ -107,13 +110,50 @@ def render_math_in_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_markdown(text: str) -> Markdown:
+class _FullTableElement(_TableElement):
+    """Rich table element with full rounded borders instead of just a header line."""
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        table = Table(
+            box=box.ROUNDED,
+            pad_edge=False,
+            style="markdown.table.border",
+            show_edge=True,
+            collapse_padding=True,
+        )
+
+        if self.header is not None and self.header.row is not None:
+            for column in self.header.row.cells:
+                heading = column.content.copy()
+                heading.stylize("markdown.table.header")
+                table.add_column(heading)
+
+        if self.body is not None:
+            for row in self.body.rows:
+                row_content = [element.content for element in row.cells]
+                table.add_row(*row_content)
+
+        yield table
+
+
+class _FullBorderMarkdown(_Markdown):
+    """Rich Markdown that renders tables with full rounded borders."""
+
+    elements: ClassVar[dict[str, type[MarkdownElement]]] = {
+        **_Markdown.elements,
+        "table_open": _FullTableElement,
+    }
+
+
+def render_markdown(text: str) -> _Markdown:
     """Build a Rich Markdown renderable for assistant answers."""
     theme = _theme()
     code_theme = getattr(theme, "code_theme", None) or "monokai"
     # Render LaTeX math blocks before passing to Rich Markdown.
     text = render_math_in_text(text)
-    return Markdown(
+    return _FullBorderMarkdown(
         text or "(empty response)",
         code_theme=code_theme,
         hyperlinks=True,
