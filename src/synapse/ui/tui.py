@@ -55,6 +55,7 @@ from synapse.ui.timeline import (
     parse_todo_preview_lines,
     summarize_items,
 )
+from synapse.ui.welcome import WelcomeView
 
 _WS_RE = re.compile(r"\s+")
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -1631,6 +1632,23 @@ class CodingAgentApp(App[None]):
         padding: 0 1;
         overflow-y: hidden;
     }
+    WelcomeView {
+        display: none;
+        width: 1fr;
+        height: 1fr;
+        padding: 1 2;
+        content-align: center middle;
+        text-align: center;
+        background: $theme-bg;
+    }
+    #main.welcome WelcomeView {
+        display: block;
+    }
+    #main.welcome #log,
+    #main.welcome #turn-rail,
+    #main.welcome #stream {
+        display: none;
+    }
     #log {
         width: 1fr;
         height: 1fr;
@@ -1848,7 +1866,7 @@ class CodingAgentApp(App[None]):
         self._git_branch = _git_branch(ws)
         hist_root = Path(project_root or ws)
         self._input_history = InputHistory.for_project(hist_root)
-        self.title = "coding-agent"
+        self.title = "Synapse"
         self.sub_title = model_status_label(settings)
         self._reload_session_title()
 
@@ -1861,7 +1879,8 @@ class CodingAgentApp(App[None]):
         from synapse.slash_complete import make_textual_suggester
 
         yield Static(id="topbar")
-        with Vertical(id="main"):
+        with Vertical(id="main", classes="welcome"):
+            yield WelcomeView(self.project_root, id="welcome")
             yield VerticalScroll(id="log")
             # Floating overlay: hover previews must not reflow the transcript.
             yield TurnRail(id="turn-rail")
@@ -2754,7 +2773,23 @@ class CodingAgentApp(App[None]):
 
     # -- transcript writers ----------------------------------------------
 
-    def _mount_block(self, block: Any) -> None:
+    def _show_welcome(self) -> None:
+        try:
+            self.query_one("#main", Vertical).add_class("welcome")
+            self.query_one("#welcome", WelcomeView).start_animation()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _dismiss_welcome(self) -> None:
+        try:
+            self.query_one("#main", Vertical).remove_class("welcome")
+            self.query_one("#welcome", WelcomeView).stop_animation()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _mount_block(self, block: Any, *, dismiss_welcome: bool = True) -> None:
+        if dismiss_welcome:
+            self._dismiss_welcome()
         timeline = self.query_one("#log", VerticalScroll)
         follow = timeline.max_scroll_y <= 0 or timeline.scroll_y >= timeline.max_scroll_y - 1
         timeline.mount(block)
@@ -3057,7 +3092,10 @@ class CodingAgentApp(App[None]):
         self._mount_block(Static(Text(f"  {body}", style=_C_MUTED)))
 
     def append_event(self, message: str, style: str = "dim") -> None:
-        self._mount_block(Static(Text(f"  {message}", style=style)))
+        self._mount_block(
+            Static(Text(f"  {message}", style=style)),
+            dismiss_welcome=(style or "dim").lower() != "dim",
+        )
 
     def action_cancel_run(self) -> None:
         """ESC: abort the in-flight agent loop so the user can start a new turn."""
@@ -3098,6 +3136,7 @@ class CodingAgentApp(App[None]):
             self.query_one("#turn-rail", TurnRail).clear_turns()
         except Exception:  # noqa: BLE001
             pass
+        self._show_welcome()
         self.set_activity("idle", "ready", True)
 
     def _reset_session_token_chrome(self) -> None:
@@ -3290,6 +3329,7 @@ class CodingAgentApp(App[None]):
     def _repaint_themed_widgets(self) -> None:
         """Re-render widgets that baked colors into Rich Text."""
         for cls_name, method in (
+            ("WelcomeView", "refresh_logo"),
             ("UserTurnBlock", "_render_block"),
             ("ThoughtBlock", "_render_block"),
             ("ToolGroupBlock", "_render_block"),
