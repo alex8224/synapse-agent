@@ -525,9 +525,9 @@ def turn_rail_tick_slots(n: int, height: int) -> list[list[int]]:
         for i in range(n):
             slots[start + i].append(i)
         return slots
-    # n > h — proportional bucket merging (legacy behaviour).
+    # n > h — proportional bucket merging.
     for i in range(n):
-        y = int(round(i * (h - 1) / (n - 1)))
+        y = i * h // n
         y = min(h - 1, max(0, y))
         slots[y].append(i)
     return slots
