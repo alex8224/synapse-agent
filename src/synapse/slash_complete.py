@@ -501,6 +501,33 @@ def _at_path_prefix(token: str) -> str:
     return t
 
 
+_RECURSIVE_SCAN_LIMIT = 2000
+"""Max entries scanned during recursive fallback."""
+
+# Directories skipped during recursive search (common VCS / cache / env dirs).
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".hypothesis",
+        ".eggs",
+        "build",
+        "dist",
+        ".idea",
+        ".vscode",
+    }
+)
+
+
 def _glob_at_candidates(
     token: str,
     workspace: Path,
@@ -516,6 +543,11 @@ def _glob_at_candidates(
     When *token* ends with ``/`` (or ``\\``) the token is treated as a
     directory and its immediate children are listed, so the user can drill
     down without remembering exact file names.
+
+    When the user types a bare prefix (no directory separators) and direct
+    children produce few results, the function falls back to a shallow
+    recursive scan so that ``@syn`` can match ``src/synapse/`` without
+    requiring the user to type every directory level.
     """
     trailing_slash = token.endswith("/") or token.endswith("\\")
     prefix = _at_path_prefix(token)
@@ -542,6 +574,10 @@ def _glob_at_candidates(
     if not ls_dir.is_dir():
         return []
 
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    # -- direct children first (fast path) --
     try:
         all_entries: list[Path] = []
         for i, ent in enumerate(ls_dir.iterdir()):
@@ -550,9 +586,8 @@ def _glob_at_candidates(
             all_entries.append(ent)
         entries = sorted(all_entries, key=lambda p: (not p.is_dir(), p.name.lower()))
     except PermissionError:
-        return []
+        entries = []
 
-    candidates: list[str] = []
     for ent in entries:
         if base_part and not ent.name.lower().startswith(base_part.lower()):
             continue
@@ -561,10 +596,54 @@ def _glob_at_candidates(
         rel = rel.replace("\\", "/")
         if rel.startswith("./"):
             rel = rel[2:]
-        candidates.append(rel)
-        if len(candidates) >= limit:
-            break
-    return candidates
+        if rel not in seen:
+            seen.add(rel)
+            candidates.append(rel)
+            if len(candidates) >= limit:
+                return candidates
+
+    # -- recursive fallback: search subdirectories for prefix matches --
+    # Only when the user typed a bare prefix (no explicit parent dir) and is
+    # not in directory-browsing mode.
+    if trailing_slash:
+        return candidates
+    if not base_part:
+        return candidates
+    if len(candidates) >= limit // 2:
+        return candidates
+
+    try:
+        workspace_resolved = workspace.resolve()
+        pattern = f"**/{base_part}*"
+        scanned = 0
+        for p in workspace_resolved.rglob(pattern):
+            if scanned >= _RECURSIVE_SCAN_LIMIT:
+                break
+            scanned += 1
+            # Skip hidden / common-ignore dirs anywhere in the path.
+            if any(part in _SKIP_DIRS for part in p.parts):
+                continue
+            try:
+                rel = p.relative_to(workspace_resolved).as_posix()
+            except ValueError:
+                continue
+            # Skip hidden entries and entries inside hidden dirs.
+            if rel.startswith(".") or "/." in rel:
+                continue
+            suffix = "/" if p.is_dir() else ""
+            key = rel + suffix
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(key)
+            if len(candidates) >= limit:
+                break
+    except PermissionError:
+        pass
+
+    # Sort: directories first, then by path.
+    candidates.sort(key=lambda c: (not c.endswith("/"), c.lower()))
+    return candidates[:limit]
 
 
 def complete_at_line(value: str, workspace: Path) -> list[str]:

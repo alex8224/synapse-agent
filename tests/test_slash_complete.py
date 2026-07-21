@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from synapse.slash_complete import (
     SessionChoice,
     SlashCompleteContext,
     best_completion,
+    complete_at_line,
     complete_slash,
     cycle_completion,
     format_completion_hint,
+    _glob_at_candidates,
 )
 
 
@@ -84,3 +88,108 @@ def test_make_textual_suggester_returns_suggestion():
     suggester = make_textual_suggester(lambda: SlashCompleteContext())
     suggestion = asyncio.run(suggester.get_suggestion("/he"))
     assert suggestion == "/help"
+
+
+# ---------------------------------------------------------------------------
+# @ path completion tests
+# ---------------------------------------------------------------------------
+
+
+def _make_workspace(base: Path) -> Path:
+    """Create a small directory tree for testing @ completion."""
+    root = base / "ws"
+    root.mkdir()
+    (root / "README.md").write_text("")
+    (root / "pyproject.toml").write_text("")
+    src = root / "src"
+    src.mkdir()
+    (src / "app.py").write_text("")
+    synapse = src / "synapse"
+    synapse.mkdir()
+    (synapse / "__init__.py").write_text("")
+    (synapse / "slash_complete.py").write_text("")
+    (synapse / "prompts.py").write_text("")
+    ui = synapse / "ui"
+    ui.mkdir()
+    (ui / "tui.py").write_text("")
+    tests_dir = root / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_models.py").write_text("")
+    (tests_dir / "test_utils.py").write_text("")
+    return root
+
+
+def test_at_direct_children_in_root(tmp_path: Path):
+    """Typing @REA should match README.md in workspace root."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("REA", ws)
+    assert "README.md" in cands
+
+
+def test_at_directory_listing(tmp_path: Path):
+    """Typing @src/ should list immediate children of src/."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("src/", ws)
+    assert "src/app.py" in cands
+    assert "src/synapse/" in cands
+
+
+def test_at_partial_path_with_slash(tmp_path: Path):
+    """Typing @src/sy should match src/synapse/ under src."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("src/sy", ws)
+    assert "src/synapse/" in cands
+
+
+def test_at_recursive_prefix_search(tmp_path: Path):
+    """Typing @sla should find src/synapse/slash_complete.py via recursive fallback."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("sla", ws)
+    matching = [c for c in cands if "slash_complete" in c]
+    assert len(matching) > 0, f"Expected recursive match, got: {cands}"
+
+
+def test_at_recursive_finds_deep_file(tmp_path: Path):
+    """Typing @tui should find src/synapse/ui/tui.py recursively."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("tui", ws)
+    paths = [c for c in cands if "tui" in c]
+    assert len(paths) > 0, f"Expected recursive tui match, got: {cands}"
+
+
+def test_at_recursive_directories_first(tmp_path: Path):
+    """Directory matches should appear before file matches."""
+    ws = _make_workspace(tmp_path)
+    cands = _glob_at_candidates("test", ws)
+    # tests/ (dir) should come before test_models.py (file)
+    dir_indices = [i for i, c in enumerate(cands) if c.endswith("/")]
+    file_indices = [i for i, c in enumerate(cands) if not c.endswith("/")]
+    if dir_indices and file_indices:
+        assert min(dir_indices) < min(file_indices)
+
+
+def test_at_recursive_skips_ignored_dirs(tmp_path: Path):
+    """Recursive search should skip .git, __pycache__, .venv etc."""
+    ws = _make_workspace(tmp_path)
+    (ws / ".git").mkdir()
+    (ws / ".git" / "config").write_text("")
+    (ws / "__pycache__").mkdir()
+    (ws / "__pycache__" / "foo.pyc").write_text("")
+    (ws / ".venv").mkdir()
+    (ws / ".venv" / "python.exe").write_text("")
+    cands = _glob_at_candidates("conf", ws)
+    # Should not include .git/config
+    assert not any(".git" in c for c in cands)
+    assert not any("__pycache__" in c for c in cands)
+    assert not any(".venv" in c for c in cands)
+
+
+def test_complete_at_line_recursive(tmp_path: Path):
+    """complete_at_line should return full-line candidates with recursive matches."""
+    ws = _make_workspace(tmp_path)
+    cands = complete_at_line("cat @sla", ws)
+    matching = [c for c in cands if "slash_complete" in c]
+    assert len(matching) > 0, f"Expected recursive match, got: {cands}"
+    # Full-line format preserves the prefix.
+    for c in matching:
+        assert c.startswith("cat @")
