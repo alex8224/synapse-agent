@@ -14,6 +14,8 @@ _BRAILLE_BLANK = "\u2800"
 _SHIMMER_FPS = 12.0
 _PULSE_SECONDS = 5.0
 _RIPPLE_SECONDS = 3.4
+_APPEAR_SPREAD = 0.08
+_APPEAR_RAMP = 0.5
 _BRAILLE_DOTS = (
     ((0, 0, 1), (1, 0, 2), (2, 0, 4), (3, 0, 64)),
     ((0, 1, 8), (1, 1, 16), (2, 1, 32), (3, 1, 128)),
@@ -115,7 +117,9 @@ def _breathing_intensity(frame: int, column: int, row: int, width: int) -> float
         + row * 0.3
     )
     ripple = 0.5 + 0.5 * math.sin(ripple_phase)
-    return max(0.18, min(0.94, 0.26 + 0.54 * breath + 0.14 * ripple))
+    intensity = max(0.18, min(0.94, 0.26 + 0.54 * breath + 0.14 * ripple))
+    alpha = max(0.0, min(1.0, (elapsed - center_distance * _APPEAR_SPREAD) / _APPEAR_RAMP))
+    return intensity * alpha
 
 
 def render_welcome_frame(
