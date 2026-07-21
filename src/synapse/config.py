@@ -172,6 +172,7 @@ class Settings(BaseSettings):
     parallel_tool_calls: bool = Field(default=True, validation_alias="PARALLEL_TOOL_CALLS")
     max_concurrency: int = Field(default=8, validation_alias="MAX_CONCURRENCY")
     # TUI / CLI appearance (see synapse.ui.theme).
+    # Terminal inherit (transparent): ansi (aliases: inherit, terminal, auto)
     # Built-in dark: cursor-dark github-dark dracula nord solarized-dark
     #  catppuccin-mocha one-dark
     # Built-in light: solarized-light github-light one-light gruvbox-light

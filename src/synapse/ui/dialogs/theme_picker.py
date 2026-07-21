@@ -40,7 +40,7 @@ class ThemePickerDialog(DialogBase):
         yield SectionHeader("Themes")
         items: list[OptionItem] = []
         for t in self._themes:
-            kind = "light" if _is_light(t.bg) else "dark"
+            kind = _theme_meta(t)
             items.append(
                 OptionItem(
                     key=t.name,
@@ -82,6 +82,22 @@ class ThemePickerDialog(DialogBase):
                 app.apply_theme(key, persist=False, announce=False)  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
             pass
+
+
+def _theme_meta(theme: object) -> str:
+    """Right-side hint: ansi | light | dark."""
+    try:
+        from synapse.ui.theme import theme_kind
+
+        return theme_kind(theme)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        pass
+    if bool(getattr(theme, "ansi", False)):
+        return "ansi"
+    bg = str(getattr(theme, "bg", "") or "")
+    if bg.strip().casefold() in {"transparent", "ansi_default", "default"}:
+        return "ansi"
+    return "light" if _is_light(bg) else "dark"
 
 
 def _is_light(hex_color: str) -> bool:

@@ -3543,8 +3543,12 @@ class CodingAgentApp(App[None]):
         persist: bool = False,
         announce: bool = False,
     ) -> str:
-        """Activate a theme at runtime (CSS variables + Rich paint slots)."""
-        from synapse.ui.theme import get_theme, set_theme
+        """Activate a theme at runtime (CSS variables + Rich paint slots).
+
+        Also switches Textual ``App.theme`` so surface/panel match the palette
+        (required for transparent ``ansi``; solid dark/light shells otherwise).
+        """
+        from synapse.ui.theme import apply_textual_theme, get_theme, set_theme
 
         theme = set_theme(
             name or getattr(self.settings, "theme", None),
@@ -3554,6 +3558,12 @@ class CodingAgentApp(App[None]):
         )
         try:
             self.settings.theme = theme.name
+        except Exception:  # noqa: BLE001
+            pass
+        # Drive Textual surface/panel (default textual-dark paints opaque black
+        # and would hide terminal acrylic under $theme-bg=transparent).
+        try:
+            apply_textual_theme(self, theme)
         except Exception:  # noqa: BLE001
             pass
         # refresh_css() calls get_css_variables() which returns the active

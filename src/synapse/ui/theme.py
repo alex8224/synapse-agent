@@ -16,11 +16,16 @@ Config surfaces:
         }
       }
 
+Built-in ``ansi`` inherits the terminal palette with transparent surfaces
+(terminal wallpaper / acrylic). Aliases: inherit, terminal, auto.
+
 Runtime:
 
 - ``bootstrap_theme(name, workspace=...)`` at app start
 - ``set_theme(name, persist=True)`` from ``/theme``
 - ``get_theme()`` for Rich/Textual paint paths
+- ``apply_textual_theme(app)`` switches Textual ``App.theme`` (needed for
+  transparent / ANSI surfaces; solid palettes use dark/light shells)
 """
 
 from __future__ import annotations
@@ -65,13 +70,29 @@ _PALETTE_KEYS = frozenset(
         "rich_ok_border",
         "rich_error",
         "rich_activity",
+        "ansi",
+        "css_fg",
+        "css_dim",
+        "css_muted",
+        "css_green",
+        "css_orange",
+        "css_bar",
+        "css_user",
+        "css_error",
+        "css_border",
+        "css_border_focus",
     }
 )
 
 
 @dataclass(frozen=True)
 class Theme:
-    """One complete UI palette (TUI CSS + Rich text styles)."""
+    """One complete UI palette (TUI CSS + Rich text styles).
+
+    For terminal-inherit themes (``ansi``), Rich Text styles use names like
+    ``default`` / ``bright_black``, while Textual CSS needs ``ansi_default`` /
+    ``transparent``. Optional ``css_*`` fields override the CSS side only.
+    """
 
     name: str
     label: str
@@ -93,23 +114,44 @@ class Theme:
     rich_ok_border: str = "green"
     rich_error: str = "bold red"
     rich_activity: str = "cyan"
+    # When True, surfaces stay transparent and Textual uses native ANSI colors.
+    ansi: bool = False
+    # CSS-only overrides (empty -> use the matching Rich field above).
+    css_fg: str = ""
+    css_dim: str = ""
+    css_muted: str = ""
+    css_green: str = ""
+    css_orange: str = ""
+    css_bar: str = ""
+    css_user: str = ""
+    css_error: str = ""
+    css_border: str = ""
+    css_border_focus: str = ""
 
     def css_variables(self) -> dict[str, str]:
         """Textual stylesheet variables (names without leading ``$``)."""
         return {
-            "theme-fg": self.fg,
-            "theme-dim": self.dim,
-            "theme-muted": self.muted,
-            "theme-green": self.green,
-            "theme-orange": self.orange,
-            "theme-bar": self.bar,
+            "theme-fg": self.css_fg or self.fg,
+            "theme-dim": self.css_dim or self.dim,
+            "theme-muted": self.css_muted or self.muted,
+            "theme-green": self.css_green or self.green,
+            "theme-orange": self.css_orange or self.orange,
+            "theme-bar": self.css_bar or self.bar,
             "theme-bg": self.bg,
             "theme-top": self.top,
-            "theme-user": self.user,
-            "theme-border": self.border,
-            "theme-border-focus": self.border_focus,
-            "theme-error": self.error,
+            "theme-user": self.css_user or self.user,
+            "theme-border": self.css_border or self.border,
+            "theme-border-focus": self.css_border_focus or self.border_focus,
+            "theme-error": self.css_error or self.error,
         }
+
+    @property
+    def is_terminal_inherit(self) -> bool:
+        """True when chrome should inherit terminal bg (transparent / ANSI)."""
+        if self.ansi:
+            return True
+        bg = (self.bg or "").strip().casefold()
+        return bg in {"transparent", "ansi_default", "default"}
 
 
 def _t(
@@ -134,6 +176,17 @@ def _t(
     rich_ok_border: str = "green",
     rich_error: str = "bold red",
     rich_activity: str = "cyan",
+    ansi: bool = False,
+    css_fg: str = "",
+    css_dim: str = "",
+    css_muted: str = "",
+    css_green: str = "",
+    css_orange: str = "",
+    css_bar: str = "",
+    css_user: str = "",
+    css_error: str = "",
+    css_border: str = "",
+    css_border_focus: str = "",
 ) -> Theme:
     return Theme(
         name=name,
@@ -156,11 +209,58 @@ def _t(
         rich_ok_border=rich_ok_border,
         rich_error=rich_error,
         rich_activity=rich_activity,
+        ansi=ansi,
+        css_fg=css_fg,
+        css_dim=css_dim,
+        css_muted=css_muted,
+        css_green=css_green,
+        css_orange=css_orange,
+        css_bar=css_bar,
+        css_user=css_user,
+        css_error=css_error,
+        css_border=css_border,
+        css_border_focus=css_border_focus,
     )
 
 
-# Built-in classic palettes (dark + light).
+# Built-in classic palettes (dark + light + terminal-inherit ansi).
 BUILTIN_THEMES: dict[str, Theme] = {
+    # Inherit terminal colors; transparent surfaces (acrylic / wallpaper).
+    # Rich Text: default / bright_black / green (no ansi_ prefix).
+    # CSS: transparent + ansi_* tokens for Textual native ANSI path.
+    "ansi": _t(
+        "ansi",
+        "Terminal (transparent)",
+        fg="default",
+        dim="bright_black",
+        muted="bright_black",
+        green="green",
+        orange="yellow",
+        bar="default",
+        bg="transparent",
+        top="transparent",
+        user="cyan",
+        border="bright_black",
+        border_focus="cyan",
+        error="red",
+        code_theme="ansi_dark",
+        rich_user="bold cyan",
+        rich_info_border="cyan",
+        rich_ok_border="green",
+        rich_error="bold red",
+        rich_activity="cyan",
+        ansi=True,
+        css_fg="ansi_default",
+        css_dim="ansi_bright_black",
+        css_muted="ansi_bright_black",
+        css_green="ansi_green",
+        css_orange="ansi_yellow",
+        css_bar="transparent",
+        css_user="ansi_cyan",
+        css_error="ansi_red",
+        css_border="ansi_bright_black",
+        css_border_focus="ansi_cyan",
+    ),
     "cursor-dark": _t(
         "cursor-dark",
         "Cursor Dark",
@@ -561,6 +661,17 @@ def _theme_from_dict(
             if val:
                 updates[key] = val
             continue
+        if key == "ansi":
+            if isinstance(raw, bool):
+                updates[key] = raw
+            elif raw is not None:
+                updates[key] = str(raw).strip().casefold() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+            continue
         color = _normalize_color(raw)
         if color is not None:
             updates[key] = color
@@ -652,11 +763,160 @@ def set_active_theme(theme: Theme) -> Theme:
     return theme
 
 
+# User-facing aliases that map to the terminal-inherit palette.
+_THEME_ALIASES: dict[str, str] = {
+    "inherit": "ansi",
+    "terminal": "ansi",
+    "auto": "ansi",
+    "default": "ansi",
+    "transparent": "ansi",
+}
+
+# Textual App.theme names registered by ensure_textual_themes().
+TEXTUAL_THEME_ANSI = "synapse-ansi"
+TEXTUAL_THEME_DARK = "synapse-dark"
+TEXTUAL_THEME_LIGHT = "synapse-light"
+
+
 def resolve_theme_name(name: str | None) -> str:
     text = (name or "").strip()
     if not text:
         return DEFAULT_THEME_NAME
+    key = text.casefold()
+    if key in _THEME_ALIASES:
+        return _THEME_ALIASES[key]
+    if text in BUILTIN_THEMES or text in _custom:
+        return text
+    for candidate in list(BUILTIN_THEMES) + list(_custom):
+        if candidate.casefold() == key:
+            return candidate
     return text
+
+
+def _is_light_hex(color: str) -> bool:
+    """Rough relative-luminance check for solid #rrggbb backgrounds."""
+    c = (color or "").strip().lstrip("#")
+    if len(c) < 6:
+        return False
+    try:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except ValueError:
+        return False
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    return lum > 0.5
+
+
+def theme_kind(theme: Theme | None = None) -> str:
+    """Classify a palette as ``ansi``, ``light``, or ``dark``."""
+    t = theme or get_theme()
+    if t.is_terminal_inherit:
+        return "ansi"
+    return "light" if _is_light_hex(t.bg) else "dark"
+
+
+def textual_themes() -> list[Any]:
+    """Build Textual Theme objects for ``App.register_theme``."""
+    from textual.theme import Theme as TextualTheme
+
+    coding_ansi = TextualTheme(
+        name=TEXTUAL_THEME_ANSI,
+        primary="ansi_cyan",
+        secondary="ansi_blue",
+        warning="ansi_yellow",
+        error="ansi_red",
+        success="ansi_green",
+        accent="ansi_cyan",
+        foreground="ansi_default",
+        background="transparent",
+        surface="transparent",
+        panel="transparent",
+        boost="transparent",
+        dark=True,
+        ansi=True,
+        variables={
+            # Built-in ansi-dark paints solid black; keep acrylic/wallpaper.
+            "ansi-background": "transparent",
+            "ansi-foreground": "ansi_default",
+            "border-blurred": "ansi_bright_black",
+            "input-cursor-background": "ansi_default",
+            "input-cursor-foreground": "ansi_default",
+            "input-selection-background": "ansi_bright_blue",
+            "input-selection-foreground": "ansi_black",
+            "footer-background": "transparent",
+        },
+    )
+    coding_dark = TextualTheme(
+        name=TEXTUAL_THEME_DARK,
+        primary="#89b4fa",
+        secondary="#cba6f7",
+        warning="#f4b183",
+        error="#f38ba8",
+        success="#81c995",
+        accent="#89b4fa",
+        foreground="#e8eaed",
+        background="#1a1b1e",
+        surface="#1a1b1e",
+        panel="#121316",
+        boost="#2b2d31",
+        dark=True,
+        ansi=False,
+    )
+    coding_light = TextualTheme(
+        name=TEXTUAL_THEME_LIGHT,
+        primary="#0969da",
+        secondary="#8250df",
+        warning="#9a6700",
+        error="#cf222e",
+        success="#1a7f37",
+        accent="#0969da",
+        foreground="#1f2328",
+        background="#f6f8fa",
+        surface="#ffffff",
+        panel="#ffffff",
+        boost="#eaeef2",
+        dark=False,
+        ansi=False,
+    )
+    return [coding_ansi, coding_dark, coding_light]
+
+
+def ensure_textual_themes(app: Any) -> None:
+    """Register synapse-* Textual themes on an App instance (idempotent)."""
+    for th in textual_themes():
+        try:
+            app.register_theme(th)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def apply_textual_theme(app: Any, theme: Theme | None = None) -> str:
+    """Switch ``App.theme`` so Textual surfaces match the active palette.
+
+    Returns the Textual theme name applied (or attempted).
+    """
+    pal = theme or get_theme()
+    kind = theme_kind(pal)
+    if kind == "ansi":
+        name = TEXTUAL_THEME_ANSI
+    elif kind == "light":
+        name = TEXTUAL_THEME_LIGHT
+    else:
+        name = TEXTUAL_THEME_DARK
+    ensure_textual_themes(app)
+    try:
+        app.theme = name
+        return name
+    except Exception:  # noqa: BLE001
+        fallback = {
+            TEXTUAL_THEME_ANSI: "ansi-dark",
+            TEXTUAL_THEME_DARK: "textual-dark",
+            TEXTUAL_THEME_LIGHT: "textual-light",
+        }.get(name, "textual-dark")
+        try:
+            app.theme = fallback
+        except Exception:  # noqa: BLE001
+            pass
+        return fallback
 
 
 def set_theme(
@@ -732,15 +992,17 @@ def format_theme_list_lines(*, active: str | None = None) -> list[str]:
     lines = [f"theme: {current}", "available:"]
     for theme in list_themes():
         mark = "*" if theme.name == current else " "
+        tone = theme_kind(theme)
         if theme.name in _custom and theme.name not in BUILTIN_THEMES:
-            kind = "custom"
+            kind = f"custom/{tone}"
         elif theme.name in _custom:
-            kind = "override"
+            kind = f"override/{tone}"
         else:
-            kind = "built-in"
+            kind = f"built-in/{tone}"
         lines.append(f"  {mark} {theme.name:20} {theme.label}  ({kind})")
     lines.append("usage: /theme <name>")
     lines.append("       /theme list")
+    lines.append("       /theme ansi|inherit  (terminal transparent)")
     lines.append("config: settings.json theme + optional themes.json")
     return lines
 
@@ -752,10 +1014,15 @@ def theme_field_names() -> list[str]:
 __all__ = [
     "BUILTIN_THEMES",
     "DEFAULT_THEME_NAME",
+    "TEXTUAL_THEME_ANSI",
+    "TEXTUAL_THEME_DARK",
+    "TEXTUAL_THEME_LIGHT",
     "THEMES_FILENAME",
     "Theme",
+    "apply_textual_theme",
     "bootstrap_theme",
     "builtin_theme_names",
+    "ensure_textual_themes",
     "format_theme_list_lines",
     "get_theme",
     "get_theme_by_name",
@@ -765,8 +1032,11 @@ __all__ = [
     "on_theme_change",
     "persist_theme_preference",
     "reload_theme_catalog",
+    "resolve_theme_name",
     "set_active_theme",
     "set_theme",
+    "textual_themes",
     "theme_field_names",
+    "theme_kind",
     "themes_config_paths",
 ]

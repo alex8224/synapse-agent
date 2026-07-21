@@ -27,6 +27,7 @@ def test_builtin_themes_present():
     names = set(BUILTIN_THEMES)
     assert DEFAULT_THEME_NAME in names
     for expected in (
+        "ansi",
         "cursor-dark",
         "github-dark",
         "dracula",
@@ -44,7 +45,7 @@ def test_builtin_themes_present():
         "nord-light",
     ):
         assert expected in names
-    assert len(names) >= 15
+    assert len(names) >= 16
 
 
 def test_set_theme_runtime_switch():
@@ -236,3 +237,91 @@ def test_tui_css_does_not_override_runtime_theme_variables():
     assert "$theme-fg:" not in CodingAgentApp.CSS
     assert "#log {" in CodingAgentApp.CSS
     assert "color: $theme-fg;" in CodingAgentApp.CSS
+
+
+def test_ansi_theme_is_transparent():
+    from synapse.ui.theme import resolve_theme_name, theme_kind
+
+    assert resolve_theme_name("inherit") == "ansi"
+    assert resolve_theme_name("terminal") == "ansi"
+    assert resolve_theme_name("auto") == "ansi"
+    t = set_theme("ansi", persist=False, reload=False)
+    assert t.name == "ansi"
+    assert t.bg == "transparent"
+    assert t.top == "transparent"
+    assert t.ansi is True
+    assert t.is_terminal_inherit is True
+    assert theme_kind(t) == "ansi"
+    # Rich Text styles (no ansi_ prefix).
+    assert t.fg == "default"
+    assert t.dim == "bright_black"
+    assert "ansi_" not in t.dim
+    # CSS dual tokens for Textual.
+    css = t.css_variables()
+    assert css["theme-bg"] == "transparent"
+    assert css["theme-fg"] == "ansi_default"
+    assert css["theme-user"] == "ansi_cyan"
+    assert t.code_theme == "ansi_dark"
+    set_theme(DEFAULT_THEME_NAME, persist=False, reload=False)
+
+
+def test_textual_themes_registerable():
+    from synapse.ui.theme import (
+        TEXTUAL_THEME_ANSI,
+        TEXTUAL_THEME_DARK,
+        TEXTUAL_THEME_LIGHT,
+        apply_textual_theme,
+        textual_themes,
+    )
+
+    themes = {t.name: t for t in textual_themes()}
+    assert TEXTUAL_THEME_ANSI in themes
+    assert themes[TEXTUAL_THEME_ANSI].background == "transparent"
+    assert themes[TEXTUAL_THEME_ANSI].surface == "transparent"
+    assert themes[TEXTUAL_THEME_ANSI].ansi is True
+    assert themes[TEXTUAL_THEME_ANSI].variables.get("ansi-background") == "transparent"
+    assert themes[TEXTUAL_THEME_DARK].background.startswith("#")
+    assert themes[TEXTUAL_THEME_LIGHT].dark is False
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.theme = "textual-dark"
+            self.registered: list[str] = []
+
+        def register_theme(self, th: object) -> None:
+            self.registered.append(getattr(th, "name", ""))
+
+    app = FakeApp()
+    set_theme("ansi", persist=False, reload=False)
+    applied = apply_textual_theme(app)
+    assert applied == TEXTUAL_THEME_ANSI
+    assert app.theme == TEXTUAL_THEME_ANSI
+    assert TEXTUAL_THEME_ANSI in app.registered
+    set_theme("github-light", persist=False, reload=False)
+    assert apply_textual_theme(app) == TEXTUAL_THEME_LIGHT
+    set_theme("dracula", persist=False, reload=False)
+    assert apply_textual_theme(app) == TEXTUAL_THEME_DARK
+    set_theme(DEFAULT_THEME_NAME, persist=False, reload=False)
+
+
+def test_slash_theme_ansi_alias(tmp_path: Path, monkeypatch):
+    user = tmp_path / "home" / ".synapse"
+    user.mkdir(parents=True)
+    monkeypatch.setattr(theme_mod, "user_config_dir", lambda: user)
+    import synapse.config_paths as cfgp
+
+    monkeypatch.setattr(cfgp, "user_config_dir", lambda: user)
+
+    settings = Settings(_env_file=None, theme="cursor-dark")
+    result = handle_slash(
+        "/theme inherit",
+        settings=settings,
+        agent=object(),
+        thread_id="t1",
+        project_root=tmp_path,
+    )
+    assert result.handled
+    assert not result.error
+    assert result.theme_name == "ansi"
+    assert settings.theme == "ansi"
+    assert get_theme().bg == "transparent"
