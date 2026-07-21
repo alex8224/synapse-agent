@@ -1808,7 +1808,7 @@ class CodingAgentApp(App[None]):
         background: $theme-bg;
     }
     #status.busy {
-        color: $theme-green;
+        color: $theme-orange;
     }
     #steer-queue {
         height: auto;
@@ -2919,7 +2919,8 @@ class CodingAgentApp(App[None]):
                 pad = max(1, usable - left_w - right_w)
 
         line = Text()
-        line.append(left, style=_C_GREEN if not steer_n else _C_ORANGE)
+        # Orange = in-flight / calling (spinner + phase + elapsed).
+        line.append(left, style=_C_ORANGE)
         line.append(" " * pad, style=_C_MUTED)
         line.append(right, style=_C_MUTED)
         status.update(line)
