@@ -508,19 +508,24 @@ def format_turn_rail_preview(
 
 
 def turn_rail_tick_slots(n: int, height: int) -> list[list[int]]:
-    """Map ``n`` turns onto ``height`` minimap rows (proportional, with buckets).
+    """Map ``n`` turns onto ``height`` minimap rows.
 
-    Returns a list of length ``height``; each entry is the turn indices (0-based)
-    that share that row. Empty rows are ``[]``.
+    When ``n <= height`` the turns are packed tightly and centered vertically
+    so the mouse need not travel far.  When ``n > height`` the rows are filled
+    proportionally with bucket merging (same as before).
     """
     h = max(1, int(height or 1))
     n = max(0, int(n or 0))
     slots: list[list[int]] = [[] for _ in range(h)]
     if n <= 0:
         return slots
-    if n == 1:
-        slots[0].append(0)
+    if n <= h:
+        # Compact, centered placement.
+        start = (h - n) // 2
+        for i in range(n):
+            slots[start + i].append(i)
         return slots
+    # n > h — proportional bucket merging (legacy behaviour).
     for i in range(n):
         y = int(round(i * (h - 1) / (n - 1)))
         y = min(h - 1, max(0, y))
