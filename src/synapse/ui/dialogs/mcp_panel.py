@@ -5,13 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.widgets import Button
+from textual.binding import Binding
 
 from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
 
 
 class McpPanelDialog(DialogBase):
     """List MCP servers, toggle enable/disable, reload."""
+
+    BINDINGS = [
+        *DialogBase.BINDINGS,
+        Binding("r", "reload", "Reload", show=False, priority=True),
+    ]
+    _title_icon = "⬡"
+    _title_keys = "↑↓ enter toggle · r reload · esc"
 
     def __init__(self, settings: Any, *, project_root: Any = None) -> None:
         super().__init__()
@@ -44,8 +51,7 @@ class McpPanelDialog(DialogBase):
                     OptionItem(
                         key=s.name,
                         label=s.name,
-                        detail=f"{s.transport} · {status}",
-                        meta=status,
+                        meta=f"{s.transport} · {status}",
                     )
                 )
         self._items = items
@@ -55,25 +61,11 @@ class McpPanelDialog(DialogBase):
         body = self.query_one("#dialog-body")
         body.set_options(self._items, mark="  ")
 
-    def _footer_buttons(self) -> ComposeResult:
-        yield Button("Toggle", id="btn-apply")
-        yield Button("Reload", id="btn-reload")
-        yield Button("Close", id="btn-close")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        bid = event.button.id or ""
-        if bid == "btn-close":
-            self.dismiss(None)
-        elif bid == "btn-apply":
-            body = self.query_one("#dialog-body")
-            key = body.selected_key
-            if key:
-                self.dismiss(("mcp-toggle", key))
-        elif bid == "btn-reload":
-            self.dismiss(("mcp-reload",))
+    def action_reload(self) -> None:
+        self.dismiss(("mcp-reload",))
 
     def _on_selected(self, key: str | None) -> None:
-        if key:
+        if key and key != "none":
             self.dismiss(("mcp-toggle", key))
         else:
             self.dismiss(None)

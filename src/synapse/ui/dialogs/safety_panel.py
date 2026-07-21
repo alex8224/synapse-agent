@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.widgets import Button
 
 from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
 
@@ -18,6 +17,8 @@ PROFILES = {
 
 class SafetyPanelDialog(DialogBase):
     """Pick a safety profile."""
+
+    _title_icon = "◇"
 
     def __init__(self, settings: Any) -> None:
         super().__init__()
@@ -46,10 +47,6 @@ class SafetyPanelDialog(DialogBase):
         super().on_mount()
         body = self.query_one("#dialog-body")
         body.set_options(self._items, mark="  ")
-
-    def _footer_buttons(self) -> ComposeResult:
-        yield Button("Apply", id="btn-apply")
-        yield Button("Close", id="btn-close")
 
     def _on_apply(self) -> None:
         body = self.query_one("#dialog-body")

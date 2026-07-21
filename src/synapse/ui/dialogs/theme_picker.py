@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.widgets import Button
 
 from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
 
 
 class ThemePickerDialog(DialogBase):
     """Browse built-in + custom themes with live preview."""
+
+    _title_icon = "◈"
 
     def __init__(self, settings: Any, project_root: Any = None) -> None:
         super().__init__()
@@ -59,9 +60,6 @@ class ThemePickerDialog(DialogBase):
         if self._themes:
             cur = self._current or self._themes[0].name
             self.on_option_row_clicked(cur)
-
-    def _footer_buttons(self) -> ComposeResult:
-        yield Button("Close", id="btn-close")
 
     def _on_selected(self, key: str | None) -> None:
         if key:

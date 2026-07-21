@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Static
 
 
 @dataclass
@@ -25,77 +25,65 @@ class OptionItem:
     meta: str = ""  # right-aligned hint (e.g. "enabled" / "3 turns")
 
 
-# Shared CSS snippet injected via app.stylesheet when a dialog is pushed.
+# Window-like modal: title bar + list + keyboard-only footer.
 # Uses $theme-* variables from the app's get_css_variables().
 dialog_css = """
 DialogBase {
     align: center middle;
-    background: $theme-bg 45%;
+    background: $theme-bg 60%;
 }
-DialogBase > Vertical {
-    width: 72;
+DialogBase > #dialog-window {
+    width: 66;
     height: auto;
     max-height: 28;
     background: $theme-bg;
-    border: tall $theme-border;
+    border: round $theme-user;
+    border-title-color: $theme-fg;
+    border-title-background: $theme-top;
+    border-title-style: bold;
+    border-title-align: left;
+    border-subtitle-color: $theme-muted;
+    border-subtitle-align: right;
     padding: 0;
+    layout: vertical;
 }
-DialogBase > Vertical > #dialog-title {
-    height: 1;
-    padding: 0 1;
-    color: $theme-dim;
-    background: $theme-top;
-}
-DialogBase > Vertical > #dialog-body {
+#dialog-body {
     height: auto;
-    max-height: 18;
+    max-height: 22;
+    min-height: 3;
+    width: 1fr;
     padding: 0 1;
     background: $theme-bg;
     overflow-y: auto;
-}
-DialogBase > Vertical > #dialog-footer {
-    height: 3;
-    layout: horizontal;
-    align: right middle;
-    padding: 0 1;
-    color: $theme-dim;
-    background: $theme-bar;
-}
-DialogBase #dialog-hint {
-    width: 1fr;
-    color: $theme-muted;
+    overflow-x: hidden;
+    scrollbar-size: 0 0;
+    scrollbar-background: $theme-bg;
+    scrollbar-color: $theme-bg;
+    scrollbar-background-hover: $theme-bg;
+    scrollbar-color-hover: $theme-bg;
+    scrollbar-background-active: $theme-bg;
+    scrollbar-color-active: $theme-bg;
 }
 DialogBody OptionRow {
     height: 1;
     width: 1fr;
     color: $theme-dim;
-    padding: 0;
+    padding: 0 1;
+    background: $theme-bg;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 DialogBody OptionRow.-selected {
     color: $theme-user;
+    background: $theme-bar;
+    text-style: bold;
 }
-DialogBody OptionRow.-detail {
-    color: $theme-muted;
-}
-DialogBody OptionRow.-meta {
-    color: $theme-muted;
-    text-align: right;
-}
-
 DialogBody SectionHeader {
     height: 1;
     width: 1fr;
     color: $theme-orange;
-    padding: 1 0 0 0;
-}
-
-DialogBase Button {
-    min-width: 10;
-    height: 1;
-    margin: 0 1;
-}
-DialogBase Button:hover {
-    /* Darken / highlight handled by Textual. */
+    padding: 0 1;
+    text-style: bold;
 }
 """
 
@@ -104,9 +92,9 @@ class OptionRow(Static):
     """One row in a dialog option list. Rendered as Rich Text.
 
     Class hooks:
-      -selected   → active / hovered
-      -detail     → second-line detail
-      -meta       → right-aligned hint
+      -selected   -> active / hovered
+      -detail     -> second-line detail
+      -meta       -> right-aligned hint
     """
 
     def __init__(
@@ -122,10 +110,13 @@ class OptionRow(Static):
 
     def _update_content(self) -> None:
         item = self.item
-        bullet = "●" if item.selected else "○"
+        bullet = "\u25cf" if item.selected else "\u25cb"
+        # Single line only: label + optional muted detail/meta (no wrap row).
         row = Text(f"{self._mark}{bullet}  {item.label}")
+        if item.detail:
+            row.append(f"  {item.detail}", style="dim")
         if item.meta:
-            row.append(f"  {item.meta}")
+            row.append(f"  {item.meta}", style="dim")
         self.update(row)
 
     def set_hover(self, on: bool) -> None:
@@ -151,7 +142,7 @@ class SectionHeader(Static):
 
 
 class DialogBody(VerticalScroll):
-    """Scrollable option-list container."""
+    """Scrollable option-list container (scrollbar chrome hidden)."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -164,6 +155,10 @@ class DialogBody(VerticalScroll):
         self._option_keys.clear()
         self.remove_children()
         self._selected_idx = 0
+        for i, item in enumerate(items):
+            if item.selected:
+                self._selected_idx = i
+                break
         self.append_options(items, mark=mark)
 
     def append_section(self, text: str) -> None:
@@ -177,8 +172,7 @@ class DialogBody(VerticalScroll):
             self._rows.append(row)
             self._option_keys.append(item.key)
             self.mount(row)
-            if item.detail:
-                self.mount(DetailRow(item.detail))
+            # detail/meta render on the same OptionRow line (no wrap).
         self._sync_hover()
 
     def _sync_hover(self) -> None:
@@ -212,18 +206,18 @@ class DialogBody(VerticalScroll):
 
 
 class DialogBase(ModalScreen[Any]):
-    """Shared ModalScreen with title bar, scrollable body, and footer.
+    """Shared ModalScreen with title bar, scrollable body, and keyboard footer.
 
     Subclasses override:
       - ``title_text`` property
-      - ``compose_body()`` → yields widgets into #dialog-body
-      - ``_footer_buttons()`` → yields Button widgets into #dialog-footer
-      - ``_on_key()`` / ``_on_footer()`` for action handlers
+      - ``compose_body()`` -> yields widgets into #dialog-body
+      - ``_title_keys`` for border subtitle (keyboard hint)
+      - ``_on_selected`` / ``_on_apply`` for action handlers
 
     Default keymap:
-      Esc      → ``dismiss(None)``
-      Up/Down  → delegate to body OptionRow navigation
-      Enter    → confirm / select
+      Esc      -> ``dismiss(None)``
+      Up/Down  -> body option navigation
+      Enter    -> confirm / select
     """
 
     DEFAULT_CSS = dialog_css
@@ -234,40 +228,33 @@ class DialogBase(ModalScreen[Any]):
         Binding("enter", "confirm", "Apply", show=False, priority=True),
     ]
 
+    # Left title-bar glyph (ASCII/Unicode mark, not emoji).
+    _title_icon: str = "\u25c6"  # ◆
+    # Border subtitle (bottom-right), compact keyboard hint.
+    _title_keys: str = "\u2191\u2193 enter \u00b7 esc"
+
     @property
     def title_text(self) -> str:
         return "Dialog"
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(self.title_text, id="dialog-title")
+        with Vertical(id="dialog-window"):
             with DialogBody(id="dialog-body"):
                 yield from self.compose_body()
-            with Horizontal(id="dialog-footer"):
-                yield Static("↑↓ Select · Enter Apply · Esc Close", id="dialog-hint")
-                yield from self._footer_buttons()
 
     def compose_body(self) -> ComposeResult:
         yield Static("")
         return
 
-    def _footer_buttons(self) -> ComposeResult:
-        yield Button("Close", id="btn-close")
-
     def on_mount(self) -> None:
-        # Keep keyboard input inside the modal, even before a footer button is used.
+        # Title lives on the window border (always visible, high contrast).
+        win = self.query_one("#dialog-window")
+        icon = (self._title_icon or "").strip()
+        title = (self.title_text or "Dialog").strip()
+        win.border_title = f"{icon} {title}".strip() if icon else title
+        win.border_subtitle = self._title_keys
+        # Keep keyboard input inside the modal list.
         self.set_focus(self.query_one("#dialog-body", DialogBody))
-        for btn in self.query(Button):
-            if btn.id == "btn-close":
-                btn.label = getattr(self, "_close_label", "Close")
-            elif btn.id == "btn-apply":
-                btn.label = getattr(self, "_apply_label", "Apply")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-close":
-            self.dismiss(None)
-        elif event.button.id == "btn-apply":
-            self._on_apply()
 
     def _on_apply(self) -> None:
         """Override in subclass."""

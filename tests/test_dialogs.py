@@ -210,10 +210,15 @@ class TestModelPickerMount:
                 initial_key = body.selected_key
 
                 assert dialog.focused is body
-                assert {button.id for button in dialog.query("Button")} == {
-                    "btn-apply",
-                    "btn-close",
-                }
+                # Keyboard-only chrome: no action buttons.
+                assert list(dialog.query("Button")) == []
+                assert dialog.title_text == "Select Model"
+                win = dialog.query_one("#dialog-window")
+                assert "Select Model" in str(win.border_title)
+                assert "◆" in str(win.border_title)
+                assert "esc" in str(win.border_subtitle)
+                assert list(dialog.query("#dialog-footer")) == []
+                assert list(dialog.query("#dialog-hint")) == []
 
                 await pilot.press("down")
                 selected_key = body.selected_key
@@ -225,6 +230,99 @@ class TestModelPickerMount:
                 assert initial_key != selected_key
 
         asyncio.run(exercise_dialog())
+
+    def test_modal_keys_not_swallowed_by_app_priority_bindings(self):
+        """App priority Esc/Up/Down must yield while a modal dialog is open."""
+        from textual.app import App
+        from textual.binding import Binding
+        from textual.screen import ModalScreen
+
+        from synapse.config import Settings
+        from synapse.ui.dialogs.model_picker import ModelPickerDialog
+        from synapse.ui.theme import get_theme
+
+        class PriorityHostApp(App[None]):
+            """Mirrors CodingAgentApp: priority Esc/Up/Down at App level."""
+
+            BINDINGS = [
+                Binding("escape", "cancel_run", "Cancel", show=False, priority=True),
+                Binding("up", "history_up", "HistoryUp", show=False, priority=True),
+                Binding("down", "history_down", "HistoryDown", show=False, priority=True),
+            ]
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.cancel_hits = 0
+                self.history_hits = 0
+
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+            def check_action(
+                self, action: str, parameters: tuple[object, ...]
+            ) -> bool | None:
+                if isinstance(self.screen, ModalScreen) and action in {
+                    "cancel_run",
+                    "history_up",
+                    "history_down",
+                }:
+                    return False
+                return True
+
+            def action_cancel_run(self) -> None:
+                self.cancel_hits += 1
+
+            def action_history_up(self) -> None:
+                self.history_hits += 1
+
+            def action_history_down(self) -> None:
+                self.history_hits += 1
+
+        async def exercise_dialog() -> None:
+            app = PriorityHostApp()
+            result: list[object] = []
+            async with app.run_test() as pilot:
+                await app.push_screen(
+                    ModelPickerDialog(Settings(_env_file=None, theme="cursor-dark")),
+                    result.append,
+                )
+                await pilot.pause()
+                body = app.screen.query_one("#dialog-body")
+                initial_key = body.selected_key
+                assert initial_key is not None
+
+                await pilot.press("down")
+                assert body.selected_key != initial_key
+                assert app.history_hits == 0
+
+                await pilot.press("escape")
+                await pilot.pause()
+                assert result == [None]
+                assert app.cancel_hits == 0
+
+        asyncio.run(exercise_dialog())
+
+    def test_coding_agent_app_check_action_yields_to_modal(self, monkeypatch):
+        """CodingAgentApp disables priority history/cancel while a modal is topmost."""
+        from textual.screen import ModalScreen
+
+        app = _make_app(monkeypatch)
+        modal = ModalScreen()
+        plain = object()
+        monkeypatch.setattr(
+            type(app),
+            "screen",
+            property(lambda self: getattr(self, "_test_screen", plain)),
+        )
+        app._test_screen = modal
+        assert app.check_action("cancel_run", ()) is False
+        assert app.check_action("history_up", ()) is False
+        assert app.check_action("history_down", ()) is False
+
+        app._test_screen = plain
+        assert app.check_action("cancel_run", ()) is True
+        assert app.check_action("history_up", ()) is True
+        assert app.check_action("clear_log", ()) is True
 
 
 # =========================================================================

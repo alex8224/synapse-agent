@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.widgets import Button
 
 from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
 
@@ -18,6 +17,8 @@ class SessionListDialog(DialogBase):
       ("delete", thread_id)  → TUI should call /session delete
     """
 
+    _title_icon = "≡"
+
     def __init__(
         self, settings: Any, *, current_thread: str, mode: str = "switch"
     ) -> None:
@@ -25,6 +26,8 @@ class SessionListDialog(DialogBase):
         self._settings = settings
         self._current_thread = current_thread
         self._mode = mode  # "switch" | "delete"
+        if mode == "delete":
+            self._title_keys = "↑↓ enter delete · esc"
         try:
             from synapse.sessions import SessionStore
 
@@ -61,13 +64,6 @@ class SessionListDialog(DialogBase):
         super().on_mount()
         body = self.query_one("#dialog-body")
         body.set_options(self._items, mark="  ")
-
-    def _footer_buttons(self) -> ComposeResult:
-        if self._mode == "switch":
-            yield Button("Switch", id="btn-apply")
-        else:
-            yield Button("Delete", id="btn-apply")
-        yield Button("Close", id="btn-close")
 
     def _on_apply(self) -> None:
         body = self.query_one("#dialog-body")

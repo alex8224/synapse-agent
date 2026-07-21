@@ -1859,6 +1859,16 @@ class CodingAgentApp(App[None]):
         Binding("f6", "dialog_safety", "Safety", show=False),
     ]
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Yield Esc/Up/Down to modal dialogs (App priority bindings run first)."""
+        if isinstance(self.screen, ModalScreen) and action in {
+            "cancel_run",
+            "history_up",
+            "history_down",
+        }:
+            return False
+        return True
+
     def action_dialog_model(self) -> None:
         self._open_model_dialog([])
 

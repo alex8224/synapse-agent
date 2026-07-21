@@ -23,6 +23,8 @@ class ModelPickerDialog(DialogBase):
       ("thinking", level)    → change thinking only
     """
 
+    _title_icon = "◆"
+
     def __init__(self, settings: Any) -> None:
         super().__init__()
         self._settings = settings
@@ -62,8 +64,9 @@ class ModelPickerDialog(DialogBase):
         return "Select Model"
 
     def compose_body(self) -> ComposeResult:
-        yield SectionHeader("")
-        # Actual population happens in on_mount after body is queryable.
+        # Population happens in on_mount after body is queryable.
+        return
+        yield  # pragma: no cover
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -80,11 +83,12 @@ class ModelPickerDialog(DialogBase):
                     detail = str(p.model or "")
                 except Exception:  # noqa: BLE001
                     pass
+            # Keep one line: alias as label, provider model as trailing meta.
             items.append(
                 OptionItem(
                     key=name,
                     label=name,
-                    detail=detail,
+                    meta=detail,
                     selected=(name == current),
                 )
             )
@@ -107,10 +111,6 @@ class ModelPickerDialog(DialogBase):
         if think_items:
             body.append_section("Thinking")
             body.append_options(think_items, mark="  ")
-
-    def _footer_buttons(self) -> ComposeResult:
-        if False:
-            yield
 
     def _on_apply(self) -> None:
         body = self.query_one("#dialog-body")
