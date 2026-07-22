@@ -51,7 +51,7 @@ HELP_TEXT = """slash commands:
     /rename <title>
     /session delete <thread_id>
     /session search <query>
-    /export [md|json] [path]
+    /export [md|json] [path]   (always writes a file; default: .coding-agent/exports/<thread>.md)
 
   mcp:
     /mcp | /mcp list
@@ -173,6 +173,22 @@ def _load_messages(agent: Any, settings: Any, thread_id: str) -> list[Any]:
     return load_thread_messages(agent=agent, settings=settings, thread_id=thread_id)
 
 
+def _normalize_export_fmt(fmt: str | None) -> str:
+    raw = (fmt or "md").strip().lower()
+    if raw in {"json", "j"}:
+        return "json"
+    return "md"
+
+
+def _default_export_path(settings: Any, thread_id: str, fmt: str) -> Path:
+    """Default export location next to session/checkpoint state."""
+    ext = "json" if fmt == "json" else "md"
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session"))
+    safe = (safe or "session")[:80]
+    parent = Path(settings.checkpoint_path).expanduser().resolve().parent
+    return parent / "exports" / f"{safe}.{ext}"
+
+
 def _export_lines(
     *,
     settings: Any,
@@ -181,12 +197,14 @@ def _export_lines(
     fmt: str,
     out_path: Path | None,
 ) -> SlashResult:
+    """Export transcript to a file only (never dump body into TUI/chat log)."""
     store = _store(settings)
     model = _model_name(settings)
     info = store.get(thread_id) or store.ensure(thread_id, model=model)
     messages = _load_messages(agent, settings, thread_id)
+    fmt_n = _normalize_export_fmt(fmt)
 
-    if fmt in {"json", "j"}:
+    if fmt_n == "json":
         payload = export_transcript_json(
             thread_id=thread_id,
             title=info.title,
@@ -205,19 +223,32 @@ def _export_lines(
         # Keep metadata section readable when transcript empty.
         if not messages:
             meta = store.export_markdown(thread_id) or ""
-            text = meta + "\n## Transcript\n\n(no checkpoint messages found)\n"
+            text = meta + '\n## Transcript\n\n(no checkpoint messages found)\n'
 
-    if out_path is not None:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text, encoding="utf-8")
+    target = out_path if out_path is not None else _default_export_path(
+        settings, thread_id, fmt_n
+    )
+    try:
+        target = Path(target).expanduser()
+        if not target.is_absolute():
+            target = (Path.cwd() / target).resolve()
+        else:
+            target = target.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    except OSError as exc:
         return SlashResult(
             handled=True,
-            lines=[
-                f"exported {fmt} -> {out_path}",
-                f"messages: {len(messages)}",
-            ],
+            lines=[f"export failed: {exc}"],
+            error=True,
         )
-    return SlashResult(handled=True, lines=text.splitlines() or ["(empty export)"])
+
+    confirm = f"exported {fmt_n} -> {target}"
+    return SlashResult(
+        handled=True,
+        lines=[confirm, f"messages: {len(messages)}"],
+        notice=confirm,
+    )
 
 
 def _handle_session(
@@ -319,9 +350,19 @@ def _handle_session(
         fmt = "md"
         out_path: Path | None = None
         if args:
-            fmt = args[0].lower()
-            if len(args) >= 2:
-                out_path = Path(" ".join(args[1:])).expanduser()
+            first = args[0].lower()
+            if first in {"md", "markdown", "m", "json", "j"}:
+                fmt = "json" if first in {"json", "j"} else "md"
+                if len(args) >= 2:
+                    out_path = Path(" ".join(args[1:])).expanduser()
+            else:
+                # /export path/to/file.md  (format inferred from suffix)
+                out_path = Path(" ".join(args)).expanduser()
+                suffix = out_path.suffix.lower()
+                if suffix == ".json":
+                    fmt = "json"
+                else:
+                    fmt = "md"
         return _export_lines(
             settings=settings,
             agent=agent,

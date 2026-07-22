@@ -95,6 +95,7 @@ uv run python -m synapse run "..."
 ```bash
 uv run synapse sessions list
 uv run synapse sessions export <thread_id> -f md
+# 默认写入 .coding-agent/exports/<thread_id>.md；需要打印正文时加 --stdout
 uv run synapse models list
 uv run synapse mcp list
 uv run synapse mcp test
@@ -103,7 +104,7 @@ uv run synapse mcp test
 chat / tui 斜杠命令：
 
 - `/help` `/thread` `/new` `/sessions` `/session ...` `/switch <id>`
-- `/rename` `/export [md|json] [path]`
+- `/rename` `/export [md|json] [path]`（始终写文件；默认 `.coding-agent/exports/<thread>.md`）
 - `/model` `/model <alias>`
 - `/mcp list|tools|test|reload|enable|disable|config`
 - `/clear` `/exit`

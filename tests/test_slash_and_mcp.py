@@ -249,10 +249,46 @@ def test_slash_export_includes_transcript(tmp_path: Path):
         project_root=tmp_path,
     )
     assert r.handled and not r.error
+    assert r.notice and "exported" in r.notice
+    # Must not dump transcript body into slash lines / TUI.
+    assert all("hello" not in line and "world" not in line for line in r.lines)
     text = out.read_text(encoding="utf-8")
     assert "hello" in text
     assert "world" in text
     assert "### 1. human" in text
+
+
+def test_slash_export_defaults_to_file(tmp_path: Path):
+    settings = _FakeSettings(tmp_path)
+    store = SessionStore(settings.resolved_sessions_path())
+    store.ensure("tid1", title="demo", model="openai:demo")
+
+    class Msg:
+        type = "human"
+        content = "only-in-file"
+        id = "1"
+        name = None
+
+    class FakeCP:
+        def get_tuple(self, config):
+            return SimpleNamespace(
+                checkpoint={"channel_values": {"messages": [Msg()]}}
+            )
+
+    agent = SimpleNamespace(_coding_checkpointer=FakeCP(), get_state=None)
+    r = handle_slash(
+        "/export",
+        settings=settings,
+        agent=agent,
+        thread_id="tid1",
+        project_root=tmp_path,
+    )
+    assert r.handled and not r.error
+    assert r.notice and "exported md ->" in r.notice
+    assert all("only-in-file" not in line for line in r.lines)
+    default = tmp_path / "exports" / "tid1.md"
+    assert default.is_file()
+    assert "only-in-file" in default.read_text(encoding="utf-8")
 
 
 def test_transcript_helpers():

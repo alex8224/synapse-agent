@@ -673,14 +673,24 @@ def sessions_rename(
 def sessions_export(
     thread_id: str = typer.Argument(..., help="Session thread id"),
     fmt: str = typer.Option("md", "--format", "-f", help="md or json"),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Write to file"),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Output file (default: .coding-agent/exports/<thread_id>.md|json)",
+    ),
     full: bool = typer.Option(
         True,
         "--full/--meta-only",
         help="Include checkpoint transcript when available",
     ),
+    stdout: bool = typer.Option(
+        False,
+        "--stdout",
+        help="Print export body to stdout instead of writing a file",
+    ),
 ) -> None:
-    """Export session metadata and optional checkpoint transcript."""
+    """Export session transcript to a file (default). Use --stdout to pipe."""
     import json as _json
 
     from synapse.transcript import (
@@ -700,7 +710,8 @@ def sessions_export(
     if full and settings.checkpoint_backend == "sqlite":
         messages = load_messages_from_sqlite_file(settings.checkpoint_path, thread_id)
 
-    if fmt.lower() == "json":
+    fmt_n = "json" if fmt.lower() in {"json", "j"} else "md"
+    if fmt_n == "json":
         if full:
             data = export_transcript_json(
                 thread_id=thread_id,
@@ -726,11 +737,25 @@ def sessions_export(
                 )
         else:
             text = store.export_markdown(thread_id) or ""
-    if out is not None:
-        out.write_text(text, encoding="utf-8")
-        print_info(f"wrote {out} (messages={len(messages)})")
-    else:
+
+    if stdout:
         console.print(text)
+        return
+
+    if out is None:
+        safe = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session")
+        )
+        safe = (safe or "session")[:80]
+        out = (
+            Path(settings.checkpoint_path).expanduser().resolve().parent
+            / "exports"
+            / f"{safe}.{fmt_n}"
+        )
+    out = Path(out).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print_info(f"wrote {out} (messages={len(messages)})")
 
 
 @sessions_app.command("search")
