@@ -23,7 +23,8 @@ from pathlib import Path
 
 from rich.text import Text
 
-# Cap large divergence counts so chrome stays short.
+# Cap large ahead/behind / file-count display so chrome stays short.
+# Line add/delete counts are always shown in full (topbar + popover).
 _COUNT_CAP = 99
 # Popover / shortstat path caps (display only).
 _PATH_CAP = 48
@@ -93,10 +94,16 @@ def _run_git(args: list[str], *, cwd: Path, timeout: float = 0.8) -> str | None:
 
 
 def _format_count(n: int) -> str:
+    """Cap large counts (ahead/behind/files) for compact chrome."""
     n = max(0, int(n or 0))
     if n > _COUNT_CAP:
         return f"{_COUNT_CAP}+"
     return str(n)
+
+
+def _format_lines(n: int) -> str:
+    """Full line add/delete count (no 99+ cap)."""
+    return str(max(0, int(n or 0)))
 
 
 def _probe_diff_shortstat(cwd: Path, *, timeout: float = 0.8) -> tuple[int, int, int]:
@@ -268,7 +275,7 @@ def format_changed_file_plain(item: GitChangedFile, *, path_width: int = _PATH_C
     if item.is_untracked:
         stats = "untracked"
     elif item.lines_added or item.lines_deleted:
-        stats = f"+{_format_count(item.lines_added)} -{_format_count(item.lines_deleted)}"
+        stats = f"+{_format_lines(item.lines_added)} -{_format_lines(item.lines_deleted)}"
     elif status == "D":
         stats = "deleted"
     elif status == "A":
@@ -317,11 +324,11 @@ def render_changed_file_row(
     elif item.lines_added or item.lines_deleted:
         out.append("  ")
         if item.lines_added:
-            out.append(f"+{_format_count(item.lines_added)}", style=color_added)
+            out.append(f"+{_format_lines(item.lines_added)}", style=color_added)
             if item.lines_deleted:
                 out.append(" ")
         if item.lines_deleted:
-            out.append(f"-{_format_count(item.lines_deleted)}", style=color_deleted)
+            out.append(f"-{_format_lines(item.lines_deleted)}", style=color_deleted)
     elif status == "D":
         out.append("  deleted", style=color_deleted)
     elif status == "A":
@@ -347,9 +354,9 @@ def format_branch_chrome_plain(
     if info.files_changed > 0:
         parts.append(f"{_format_count(info.files_changed)}f")
     if info.lines_added > 0:
-        parts.append(f"+{_format_count(info.lines_added)}")
+        parts.append(f"+{_format_lines(info.lines_added)}")
     if info.lines_deleted > 0:
-        parts.append(f"-{_format_count(info.lines_deleted)}")
+        parts.append(f"-{_format_lines(info.lines_deleted)}")
     bits = ""
     if info.ahead is not None and int(info.ahead) > 0:
         bits += f"↑{_format_count(int(info.ahead))}"
@@ -405,9 +412,9 @@ def render_branch_chrome(
     if info.files_changed > 0:
         out.append(f" {_format_count(info.files_changed)}f", style=color_files)
     if info.lines_added > 0:
-        out.append(f" +{_format_count(info.lines_added)}", style=color_added)
+        out.append(f" +{_format_lines(info.lines_added)}", style=color_added)
     if info.lines_deleted > 0:
-        out.append(f" -{_format_count(info.lines_deleted)}", style=color_deleted)
+        out.append(f" -{_format_lines(info.lines_deleted)}", style=color_deleted)
 
     bits = Text()
     if info.ahead is not None and int(info.ahead) > 0:

@@ -120,6 +120,28 @@ def test_format_changed_file_plain() -> None:
     assert "deleted" in format_changed_file_plain(d)
 
 
+def test_line_counts_not_capped() -> None:
+    """Add/delete line counts show full values; ahead still caps at 99+."""
+    info = GitBranchChrome(
+        name="main",
+        dirty=True,
+        ahead=120,
+        files_changed=3,
+        lines_added=150,
+        lines_deleted=200,
+    )
+    plain = format_branch_chrome_plain(info)
+    assert plain == "⎇ main * 3f +150 -200 ↑99+"
+    rich = render_branch_chrome(info)
+    assert rich.plain == "⎇ main * 3f +150 -200 ↑99+"
+
+    big = GitChangedFile(path="big.py", status="M", lines_added=150, lines_deleted=200)
+    assert format_changed_file_plain(big) == "M  big.py  +150 -200"
+    row = render_changed_file_row(big)
+    assert "+150" in row.plain
+    assert "-200" in row.plain
+
+
 def test_render_changed_file_row_styles() -> None:
     item = GitChangedFile(path="src/app.py", status="M", lines_added=2, lines_deleted=1)
     text = render_changed_file_row(item, color_added="green", color_deleted="red")
