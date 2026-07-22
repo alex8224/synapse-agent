@@ -7,8 +7,9 @@ Layout (Grok/Cursor chrome):
   tools:   ▾ group header + ◆ per-item labels
   answer:  clean Markdown
   footer:  Worked for Xs.
-  status:  [activity…]  model · thinking · mcp   (right chrome always on)
-  input:   ● Build anything
+  status:  [activity…]  (notices / spinner only)
+  input:   › Build anything
+  bottom:  key hints · mode | model · thinking · mcp · thread
 """
 
 from __future__ import annotations
@@ -72,6 +73,16 @@ from synapse.ui.topbar import (
     install_default_components,
     layout_from_registry,
     truncate_to_width,
+)
+from synapse.ui.bottombar import (
+    BottomBarAlign,
+    BottomBarComponent,
+    BottomBarContext,
+    BottomBarRegion,
+    BottomBarRegionSpec,
+    BottomBarRegistry,
+    install_default_components as install_default_bottombar_components,
+    layout_from_registry as layout_bottombar_from_registry,
 )
 from synapse.ui.welcome import WelcomeView
 
@@ -1827,11 +1838,19 @@ class CodingAgentApp(App[None]):
         color: $theme-fg;
         border: tall $theme-border;
         padding: 0 1;
-        margin: 0 1 1 1;
+        margin: 0 1 0 1;
         height: 3;
     }
     #prompt:focus {
         border: tall $theme-border-focus;
+    }
+    #bottombar {
+        height: 1.5;
+        padding: 0 2;
+        margin: 0 0 0 0;
+        color: $theme-muted;
+        background: $theme-bg;
+        content-align: left middle;
     }
     /* Must be in the app stylesheet: widget DEFAULT_CSS is parsed separately
        and cannot resolve the app's $theme-* variables. */
@@ -2006,6 +2025,8 @@ class CodingAgentApp(App[None]):
         self._input_history = InputHistory.for_project(hist_root)
         self._topbar = TopBarRegistry()
         self._install_default_topbar()
+        self._bottombar = BottomBarRegistry()
+        self._install_default_bottombar()
         self.title = "Synapse"
         self.sub_title = model_status_label(settings)
         self._reload_session_title()
@@ -2056,6 +2077,7 @@ class CodingAgentApp(App[None]):
                     workspace=self.project_root,
                 ),
             )
+            yield Static("", id="bottombar")
 
     def on_mount(self) -> None:
         # Apply configured theme before first paint of chrome widgets.
@@ -2068,6 +2090,7 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             pass
         self._refresh_topbar()
+        self._refresh_bottombar()
         self.set_interval(0.1, self._tick_status)
         log = self.query_one("#log", VerticalScroll)
         # Hide scrollbar chrome; mouse-wheel / keys / scroll_* still work.
@@ -2728,6 +2751,187 @@ class CodingAgentApp(App[None]):
             ),
         )
 
+    def _install_default_bottombar(self) -> None:
+        """Register key_hints / mode / model / mcp / thread under the prompt."""
+        install_default_bottombar_components(
+            self._bottombar,
+            BottomBarContext(
+                busy=lambda: bool(self._busy),
+                thread=self._bottombar_thread_label,
+                mode=self._bottombar_mode_label,
+                idle_hints=lambda: (
+                    "Tab complete · / commands · Esc cancel · F2 model · F4 sessions"
+                ),
+                busy_hints=lambda: "Esc cancel · Enter queue guidance",
+                model=lambda: model_status_label(self.settings),
+                mcp=self._mcp_label,
+            ),
+        )
+
+    def _bottombar_thread_label(self) -> str:
+        """Short thread id for the bottombar right slot."""
+        tid = (self.thread_id or "").strip()
+        if not tid:
+            return ""
+        if len(tid) <= 12:
+            return tid
+        return f"{tid[:4]}…{tid[-4:]}"
+
+    def _bottombar_mode_label(self) -> str:
+        """Optional center mode badge (steer count while busy)."""
+        if not self._busy:
+            return ""
+        n = len(getattr(self, "_steer_items", None) or [])
+        if n:
+            return f"steer×{n}"
+        return ""
+
+    def register_bottombar_region(
+        self,
+        id: str,
+        *,
+        order: int | None = None,
+        width: int | None = None,
+        min_width: int | None = None,
+        max_width: int | None = None,
+        flex: int | None = None,
+        align: BottomBarAlign | str | None = None,
+        fg: str | None = None,
+        bg: str | None = None,
+        gap_after: int | None = None,
+        priority: int | None = None,
+        visible: bool | None = None,
+        replace: bool = True,
+    ) -> BottomBarRegionSpec:
+        """Add or configure a freeform bottombar region (same model as topbar)."""
+        return self._bottombar.register_region(
+            id,
+            order=order,
+            width=width,
+            min_width=min_width,
+            max_width=max_width,
+            flex=flex,
+            align=align,
+            fg=fg,
+            bg=bg,
+            gap_after=gap_after,
+            priority=priority,
+            visible=visible,
+            replace=replace,
+        )
+
+    def unregister_bottombar_region(
+        self, id: str, *, drop_components: bool = False
+    ) -> bool:
+        """Remove a bottombar region (optionally its components)."""
+        return self._bottombar.unregister_region(id, drop_components=drop_components)
+
+    def configure_bottombar_region(
+        self,
+        id: str,
+        *,
+        order: int | None = None,
+        width: int | None = None,
+        min_width: int | None = None,
+        max_width: int | None = None,
+        flex: int | None = None,
+        align: BottomBarAlign | str | None = None,
+        fg: str | None = None,
+        bg: str | None = None,
+        gap_after: int | None = None,
+        priority: int | None = None,
+        visible: bool | None = None,
+    ) -> bool:
+        """Update style/layout of an existing bottombar region."""
+        return self._bottombar.set_region_style(
+            id,
+            order=order,
+            width=width,
+            min_width=min_width,
+            max_width=max_width,
+            flex=flex,
+            align=align,
+            fg=fg,
+            bg=bg,
+            gap_after=gap_after,
+            priority=priority,
+            visible=visible,
+        )
+
+    def register_bottombar_component(
+        self,
+        id: str,
+        render: Any,
+        *,
+        region: BottomBarRegion | str = BottomBarRegion.RIGHT,
+        order: int = 100,
+        priority: int = 0,
+        min_width: int = 0,
+        gap_before: str = "  ·  ",
+        style: str | None = None,
+        visible: bool = True,
+        replace: bool = True,
+    ) -> BottomBarComponent:
+        """Public extension point: add or replace a bottombar component.
+
+        Same contract as ``register_topbar_component``: freeform region ids,
+        ``order`` within the region, ``priority`` for shrink under width pressure.
+        """
+        return self._bottombar.register_fn(
+            id,
+            render,
+            region=region,
+            order=order,
+            priority=priority,
+            min_width=min_width,
+            gap_before=gap_before,
+            style=style,
+            visible=visible,
+            replace=replace,
+        )
+
+    def unregister_bottombar_component(self, id: str) -> bool:
+        """Remove a previously registered bottombar component by id."""
+        return self._bottombar.unregister(id)
+
+    def set_bottombar_component_visible(self, id: str, visible: bool) -> bool:
+        """Show or hide a bottombar component without unregistering it."""
+        return self._bottombar.set_visible(id, visible)
+
+    def set_bottombar_component_region(
+        self,
+        id: str,
+        region: BottomBarRegion | str,
+    ) -> bool:
+        """Move a bottombar component to another horizontal region."""
+        return self._bottombar.set_region(id, region)
+
+    def set_bottombar_component_order(self, id: str, order: int) -> bool:
+        """Change draw order within the component's region."""
+        return self._bottombar.set_order(id, order)
+
+    def _bottombar_usable_width(self) -> int:
+        """Usable content width for the bottombar line (excludes CSS padding)."""
+        width = max(int(getattr(self.size, "width", 0) or 0), 48)
+        return max(16, width - 4)
+
+    def _refresh_bottombar(self) -> None:
+        """Paint the extensible bottombar under the prompt."""
+        try:
+            bar = self.query_one("#bottombar", Static)
+        except Exception:  # noqa: BLE001
+            return
+        usable = self._bottombar_usable_width()
+        line = layout_bottombar_from_registry(
+            self._bottombar,
+            usable_width=usable,
+            left_style=_C_MUTED,
+            center_style=_C_DIM,
+            right_style=_C_MUTED,
+            gap_style=_C_MUTED,
+        )
+        bar.update(line)
+
     def register_topbar_region(
         self,
         id: str,
@@ -2904,6 +3108,7 @@ class CodingAgentApp(App[None]):
         del event
         self._refresh_topbar()
         self._render_status()
+        self._refresh_bottombar()
         self._refresh_turn_rail()
 
     # -- status ----------------------------------------------------------
@@ -3015,16 +3220,12 @@ class CodingAgentApp(App[None]):
         self._render_status()
 
     def _resident_status_right(self) -> str:
-        """Always-on chrome above the prompt: model · thinking · mcp (+ steer)."""
-        base = f"{model_status_label(self.settings)} · {self._mcp_label()}"
-        n = len(self._steer_items)
-        if n:
-            return f"{base} · steer×{n}"
-        return base
+        """Deprecated: model/mcp live on the bottombar now."""
+        return ""
 
     def _idle_status_label(self) -> str:
-        """Bottom status when idle (alias of resident right chrome)."""
-        return self._resident_status_right()
+        """Bottom status when idle (activity/notice only; model/mcp on bottombar)."""
+        return ""
 
     def _status_notice_style_token(self) -> str:
         """Map notice style name to a palette color for the left activity slot."""
@@ -3043,14 +3244,13 @@ class CodingAgentApp(App[None]):
         steer_n: int,
         left_budget: int,
     ) -> tuple[str, str]:
-        """Build left activity text + style for #status.
+        """Build activity/notice text for #status (full width).
 
-        Layout target (bottom chrome above the prompt)::
+        Layout target (above the prompt)::
 
-            [ left activity / notice ] ........ [ model · thinking · mcp ]
+            [ left activity / notice ]
 
-        Short system confirms (thinking set / theme / switch) occupy the same
-        left slot as ``waiting for model · Ns`` — never the transcript.
+        Model · thinking · mcp moved to the bottombar under the prompt.
         """
         notice = self._active_status_notice()
         if notice:
@@ -3065,53 +3265,25 @@ class CodingAgentApp(App[None]):
         return truncate_to_width(left, left_budget), _C_ORANGE
 
     def _render_status(self) -> None:
-        """Paint bottom #status: left activity/notice + right resident chrome."""
+        """Paint #status activity/notice only; model/mcp live on #bottombar."""
         elapsed = max(0.0, time.monotonic() - self._activity_started)
         busy = self._phase not in {"idle", "ready", ""}
         status = self.query_one("#status", Static)
         width = max(int(getattr(self.size, "width", 0) or 0), 48)
-        # Account for CSS padding (0 2) so right-aligned text is not clipped.
+        # Account for CSS padding (0 2).
         usable = max(16, width - 4)
         steer_n = len(self._steer_items)
-        # Model / thinking / MCP stay on the right whether idle or looping.
-        right = self._resident_status_right()
-        right_w = display_width(right)
-        if right_w > usable:
-            right = truncate_to_width(right, usable)
-            right_w = display_width(right)
-            pad = max(0, usable - right_w)
-            status.update(Text((" " * pad) + right, style=_C_MUTED))
-            return
-
-        left_budget = max(8, usable - right_w - 1) if right_w else usable
         left, left_style = self._compose_status_left(
             busy=busy,
             elapsed=elapsed,
             steer_n=steer_n,
-            left_budget=left_budget,
+            left_budget=usable,
         )
         if not left:
-            pad = max(0, usable - right_w)
-            status.update(Text((" " * pad) + right, style=_C_MUTED))
-            return
-
-        left_w = display_width(left)
-        pad = max(1, usable - left_w - right_w)
-        overflow = left_w + pad + right_w - usable
-        if overflow > 0:
-            pad = max(1, pad - overflow)
-            still = left_w + pad + right_w - usable
-            if still > 0:
-                left = truncate_to_width(left, max(4, left_w - still))
-                left_w = display_width(left)
-                pad = max(1, usable - left_w - right_w)
-
-        line = Text()
-        # Left = activity / short system notice; right = model · thinking · mcp.
-        line.append(left, style=left_style)
-        line.append(" " * pad, style=_C_MUTED)
-        line.append(right, style=_C_MUTED)
-        status.update(line)
+            status.update("")
+        else:
+            status.update(Text(left, style=left_style))
+        self._refresh_bottombar()
 
     def _bind_steer_queue(self) -> None:
         """Attach live UI listener to the agent steer queue."""
