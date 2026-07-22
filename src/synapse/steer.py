@@ -13,8 +13,49 @@ from collections.abc import Callable
 from typing import Any
 
 STEER_PREFIX = "[Mid-run user guidance]"
+# UI-only label used for silent follow-up turns (should never paint in transcript).
+STEER_FOLLOWUP_PREFIX = "[steer follow-up]"
 
 SteerListener = Callable[[list[str]], None]
+
+
+def is_steer_message(msg: Any = None, *, text: str | None = None) -> bool:
+    """True if a LangChain message / plain text is mid-run guidance (model-only).
+
+    Used to keep steer chrome out of the transcript and status bar.
+    """
+    if text is None and msg is not None:
+        # Prefer kwargs flag set by middleware.
+        ak = getattr(msg, "additional_kwargs", None)
+        if isinstance(ak, dict) and ak.get("coding_steer"):
+            return True
+        if isinstance(msg, dict):
+            ak2 = msg.get("additional_kwargs") or {}
+            if isinstance(ak2, dict) and ak2.get("coding_steer"):
+                return True
+            content = msg.get("content")
+        else:
+            content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict) and block.get("text"):
+                    parts.append(str(block.get("text")))
+            text = "\n".join(parts)
+        else:
+            text = str(content or "")
+    body = (text or "").strip()
+    if not body:
+        return False
+    if body.startswith(STEER_PREFIX) or STEER_PREFIX in body[:80]:
+        return True
+    if body.startswith(STEER_FOLLOWUP_PREFIX):
+        return True
+    return False
 
 
 class SteerQueue:

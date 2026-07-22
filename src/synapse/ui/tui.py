@@ -1824,8 +1824,35 @@ class CodingAgentApp(App[None]):
     }
     #steer-queue {
         height: auto;
-        max-height: 10;
+        max-height: 12;
+        width: 48;
+        max-width: 56;
+        min-width: 28;
         margin: 0 1;
+        /* Theme vars must live in app CSS so DEFAULT_CSS can resolve them. */
+    }
+    SteerQueueWidget {
+        background: $theme-bg;
+        border: round $theme-user;
+    }
+    SteerHeader {
+        color: $theme-orange;
+        background: $theme-bg;
+    }
+    SteerHeader:hover {
+        background: $theme-bar;
+    }
+    SteerRow {
+        color: $theme-dim;
+        background: $theme-bg;
+    }
+    SteerRow.-next {
+        color: $theme-user;
+        background: $theme-bar;
+        text-style: bold;
+    }
+    SteerRow:hover {
+        background: $theme-bar;
     }
     #complete-hint {
         height: auto;
@@ -3319,9 +3346,8 @@ class CodingAgentApp(App[None]):
             pass
         self._render_status()
         self._sync_prompt_placeholder()
-        # Applied: short status only, no essay in the log.
-        if prev > 0 and now == 0 and self._busy:
-            self.flash_status(f"已注入 {prev} 条引导", "dim")
+        # Applied drain: panel empties itself; never flash status / transcript.
+        del prev  # count transition only drives panel via set_items
 
     def _sync_prompt_placeholder(self) -> None:
         """Prompt copy guides mode: normal vs mid-run queue."""
@@ -4442,19 +4468,12 @@ class CodingAgentApp(App[None]):
             self._image_bank.clear()
             return
         if self._busy:
-            # Mid-run guidance: queue for next model step (after current tools).
+            # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
             self._bind_steer_queue()
             q = get_agent_steer_queue(self.agent)
             if q is not None:
                 pending = q.push(text)
                 if pending:
-                    preview = " ".join(text.split())
-                    if len(preview) > 60:
-                        preview = preview[:59] + "…"
-                    self.append_event(
-                        f"steer #{pending} queued: {preview}",
-                        "cyan",
-                    )
                     return
             self.append_event("still running previous turn…", "yellow")
             return
@@ -4766,16 +4785,13 @@ class CodingAgentApp(App[None]):
         content = format_steer_message(items)
         if not content:
             return
-        self.append_event(
-            f"applying {len(items)} queued guidance note(s) as follow-up…",
-            "cyan",
-        )
-        self.append_user(f"[steer follow-up] {'; '.join(items)}")
+        # Silent follow-up: model gets content; no transcript/status steer copy.
         self._busy = True
         self._skip_steer_followup = False
         self._cancel_event = threading.Event()
         self.clear_stream()
-        self.set_activity("thinking", "steer follow-up", True)
+        self.set_activity("thinking", "", True)
+        self._sync_prompt_placeholder()
         self.run_turn(content, None)
 
 def run_tui(

@@ -8,6 +8,7 @@ from synapse.steer import (
     build_steer_middleware,
     format_steer_message,
     format_steer_panel,
+    is_steer_message,
 )
 
 
@@ -52,6 +53,7 @@ def test_steer_queue_listener_notified():
 
 
 def test_format_steer_message_single_and_multi():
+
     one = format_steer_message(["focus on config.py"])
     assert STEER_PREFIX in one
     assert "focus on config.py" in one
@@ -62,6 +64,10 @@ def test_format_steer_message_single_and_multi():
     assert "steer queue" in panel
     assert "1. alpha" in panel
     assert "2." in panel
+    assert is_steer_message(text=one)
+    assert is_steer_message(text=multi)
+    assert is_steer_message(text="[steer follow-up] note")
+    assert not is_steer_message(text="normal user prompt")
 
 
 def test_steer_middleware_injects_human_message():

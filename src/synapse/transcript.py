@@ -470,9 +470,24 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             # Context-compaction wrappers are for the model only.
             if is_lc_summarization_message(msg):
                 continue
+            # Mid-run steer is model-only chrome; never paint in the transcript.
+            try:
+                from synapse.steer import is_steer_message
+
+                if is_steer_message(msg):
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             text = _message_content(msg).strip()
             if is_context_compact_text(text):
                 continue
+            try:
+                from synapse.steer import is_steer_message as _is_steer
+
+                if _is_steer(text=text):
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             images = _message_images(msg)
             if text or images:
                 events.append(
