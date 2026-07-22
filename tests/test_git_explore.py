@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 from pathlib import Path
+
+import pytest
 
 from synapse.ui.git_explore.engine import HAS_DIFF_VIEW, make_diff_view
 from synapse.ui.git_explore.provider import (
@@ -88,6 +92,152 @@ def test_make_diff_view_skips_binary() -> None:
     assert make_diff_view(payload) is None
 
 
+@pytest.mark.skipif(not HAS_DIFF_VIEW, reason="textual-diff-view is unavailable")
+def test_screen_preserves_native_diff_view_renderer(monkeypatch, tmp_path: Path) -> None:
+    """The memory fix must retain DiffView rendering and its view toggles."""
+    from textual.app import App
+    from textual_diff_view import DiffView
+
+    from synapse.ui.dialogs.git_explore import GitExploreScreen
+    from synapse.ui.theme import get_theme
+
+    monkeypatch.setattr(
+        "synapse.ui.dialogs.git_explore.probe_git_changed_files",
+        lambda *_args, **_kwargs: [],
+    )
+
+    payload = DiffPayload(
+        path="native.py",
+        text_a="old_value = 1\n",
+        text_b="new_value = 2\n",
+        mode="working",
+    )
+
+    class DiffApp(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            return {**super().get_css_variables(), **get_theme().css_variables()}
+
+    async def exercise() -> None:
+        app = DiffApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = GitExploreScreen(tmp_path)
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            screen._mount_payload(payload)
+            await pilot.pause()
+            first = screen.query_one("#ge-diff-view", DiffView)
+            assert first.code_original == payload.text_a
+            assert first.code_modified == payload.text_b
+            assert first.split is True
+            assert first.annotations is True
+
+            screen.action_toggle_split()
+            await pilot.pause()
+            unified = screen.query_one("#ge-diff-view", DiffView)
+            assert unified is not first
+            assert unified.code_original == payload.text_a
+            assert unified.split is False
+            assert unified.annotations is True
+
+            screen.action_toggle_annotations()
+            await pilot.pause()
+            plain = screen.query_one("#ge-diff-view", DiffView)
+            assert plain.code_modified == payload.text_b
+            assert plain.split is False
+            assert plain.annotations is False
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+
+
+@pytest.mark.skipif(not HAS_DIFF_VIEW, reason="textual-diff-view is unavailable")
+def test_diff_view_replacement_releases_detached_caches(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Clear old DiffView state only after unmount and unlink its style LRU keys."""
+    from textual._styles_cache import StylesCache
+    from textual.app import App
+    from textual.color import Color
+    from textual_diff_view import DiffView
+
+    from synapse.ui.dialogs.git_explore import GitExploreScreen
+    from synapse.ui.theme import get_theme
+
+    monkeypatch.setattr(
+        "synapse.ui.dialogs.git_explore.probe_git_changed_files",
+        lambda *_args, **_kwargs: [],
+    )
+
+    class TrackingDiffView(DiffView):
+        code_seen_on_unmount: str | None = None
+
+        def on_unmount(self) -> None:
+            self.code_seen_on_unmount = self.code_original
+
+    class DiffApp(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            return {**super().get_css_variables(), **get_theme().css_variables()}
+
+    async def exercise() -> None:
+        StylesCache.get_inner_outer.cache_clear()
+        app = DiffApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = GitExploreScreen(tmp_path)
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            original = "old_line = 1\n" * 20
+            first = TrackingDiffView(
+                "a/old.py",
+                "b/old.py",
+                original,
+                "new_line = 2\n" * 20,
+                split=True,
+                annotations=True,
+                auto_split=False,
+                wrap=False,
+                id="ge-diff-view",
+            )
+            await screen._replace_diff_children(first)
+            await pilot.pause()
+            assert first._highlighted_code_lines is not None
+            assert first._grouped_opcodes is not None
+
+            retained_cache = StylesCache()
+            retained_cache.get_inner_outer(
+                Color.parse("#010203"), Color.parse("#040506")
+            )
+            retained_cache_ref = weakref.ref(retained_cache)
+            del retained_cache
+            gc.collect()
+            assert retained_cache_ref() is not None
+
+            second = make_diff_view(
+                DiffPayload(
+                    path="new.py",
+                    text_a="left = 1\n",
+                    text_b="right = 2\n",
+                    mode="working",
+                )
+            )
+            assert isinstance(second, DiffView)
+            await screen._replace_diff_children(second)
+
+            assert first.code_seen_on_unmount == original
+            assert first.code_original == ""
+            assert first.code_modified == ""
+            assert first._highlighted_code_lines is None
+            assert first._grouped_opcodes is None
+            assert first._number_styles == {}
+            assert first._annotation_styles == {}
+            assert first._line_styles == {}
+            assert first._edge_styles == {}
+            gc.collect()
+            assert retained_cache_ref() is None
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+
+
 def test_release_heavy_state_clears_payload() -> None:
     """Screen close path must drop retained file texts for GC."""
     from synapse.ui.dialogs.git_explore import GitExploreScreen
@@ -162,10 +312,17 @@ def test_close_restores_keyboard_and_mouse_input(monkeypatch, tmp_path: Path) ->
             host_input.focus()
             await app.push_screen(GitExploreScreen(tmp_path))
             await pilot.pause()
+            mounted_diff = (
+                app.screen.query_one("#ge-diff-view") if HAS_DIFF_VIEW else None
+            )
 
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is host_screen
+            if mounted_diff is not None:
+                assert mounted_diff.is_attached is False
+                assert mounted_diff.code_original == ""
+                assert mounted_diff.code_modified == ""
 
             await pilot.click("#host-input")
             await pilot.press("x")

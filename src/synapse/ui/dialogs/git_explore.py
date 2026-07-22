@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,18 @@ from synapse.ui.topbar.git_chrome import (
     GitChangedFile,
     probe_git_changed_files,
 )
+
+
+def _clear_textual_style_cache_refs() -> None:
+    """Release detached widgets retained by Textual's instance-keyed style LRU."""
+    try:
+        from textual._styles_cache import StylesCache
+
+        cache_clear = getattr(StylesCache.get_inner_outer, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class ExploreFileRow(Static):
@@ -218,6 +232,7 @@ class GitExploreScreen(ModalScreen[None]):
         self._split = bool(split)
         self._annotations = bool(annotations)
         self._last_payload: DiffPayload | None = None
+        self._closing_diff_widgets: list[Any] = []
         # Keep this distinct from Textual MessagePump._closed.
         self._dismiss_started: bool = False
 
@@ -334,7 +349,7 @@ class GitExploreScreen(ModalScreen[None]):
         self._load_token += 1  # invalidate in-flight apply callbacks
 
     def _clear_diff_view_caches(self, widget: Any) -> None:
-        """Best-effort wipe of DiffView internal highlighted line caches."""
+        """Best-effort wipe of an unmounted DiffView's large code caches."""
         if widget is None:
             return
         for attr, empty in (
@@ -344,7 +359,8 @@ class GitExploreScreen(ModalScreen[None]):
             ("_grouped_opcodes", None),
         ):
             try:
-                setattr(widget, attr, empty)
+                if hasattr(widget, attr):
+                    setattr(widget, attr, empty)
             except Exception:  # noqa: BLE001
                 pass
         for attr in (
@@ -364,6 +380,10 @@ class GitExploreScreen(ModalScreen[None]):
         """Invalidate late work and release payloads before Textual removes the screen."""
         if self._dismiss_started:
             return
+        try:
+            self._closing_diff_widgets = list(self._diff_host().children)
+        except Exception:  # noqa: BLE001
+            self._closing_diff_widgets = []
         self._dismiss_started = True
         self._release_heavy_state()
 
@@ -374,6 +394,14 @@ class GitExploreScreen(ModalScreen[None]):
     def on_unmount(self) -> None:
         """Final safety net when the screen leaves the stack."""
         self._begin_close()
+        for widget in self._closing_diff_widgets:
+            self._clear_diff_view_caches(widget)
+        self._closing_diff_widgets.clear()
+        _clear_textual_style_cache_refs()
+        try:
+            asyncio.get_running_loop().call_soon(gc.collect)
+        except RuntimeError:
+            gc.collect()
 
     def _mount_file_rows(self) -> None:
         if not self._alive():
@@ -389,6 +417,7 @@ class GitExploreScreen(ModalScreen[None]):
             return
         panel = self.query_one("#ge-file-list", VerticalScroll)
         await panel.remove_children()
+        _clear_textual_style_cache_refs()
         if not self._alive():
             return
         if not self._files:
@@ -421,18 +450,22 @@ class GitExploreScreen(ModalScreen[None]):
 
     async def _replace_diff_children(self, *widgets: Any) -> None:
         if not self._alive():
-            # Drop unmounted DiffView caches if we still hold them.
-            for w in widgets:
-                self._clear_diff_view_caches(w)
+            for widget in widgets:
+                self._clear_diff_view_caches(widget)
             return
         host = self._diff_host()
-        # Clear caches on outgoing children before remove (helps GC).
-        for child in list(host.children):
-            self._clear_diff_view_caches(child)
+        outgoing = list(host.children)
         await host.remove_children()
+
+        # Textual 8.2.8 retains each Widget StylesCache as an lru_cache key.
+        # Once the old tree is detached, release its DiffView data and LRU keys.
+        for child in outgoing:
+            self._clear_diff_view_caches(child)
+        _clear_textual_style_cache_refs()
+
         if not self._alive():
-            for w in widgets:
-                self._clear_diff_view_caches(w)
+            for widget in widgets:
+                self._clear_diff_view_caches(widget)
             return
         if widgets:
             await host.mount(*widgets)
