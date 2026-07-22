@@ -19,6 +19,7 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
+    "termaid>=0.7.1",
     "texicode>=1.0.3",
     "textual>=1.0.0",
     "typer>=0.27.0",

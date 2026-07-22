@@ -25,6 +25,7 @@ from typing import Any, ClassVar
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
+from rich.markdown import CodeBlock as _CodeBlock
 from rich.markdown import Markdown as _Markdown
 from rich.markdown import MarkdownElement, TableElement as _TableElement
 from rich.panel import Panel
@@ -109,6 +110,33 @@ def render_math_in_text(text: str) -> str:
 # Rich Markdown rendering
 # ---------------------------------------------------------------------------
 
+_MERMAID_LANGS = frozenset({"mermaid", "mmd"})
+
+
+class _MermaidCodeBlock(_CodeBlock):
+    """Code fence that draws mermaid via termaid ``render_rich`` (Rich Text).
+
+    Non-mermaid fences keep Rich's default Syntax highlighting.
+    On termaid failure, falls back to the original source as a code block.
+    """
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        lexer = (self.lexer_name or "").strip().lower()
+        if lexer in _MERMAID_LANGS:
+            source = str(self.text).strip()
+            if source:
+                try:
+                    from termaid import render_rich
+
+                    # Colored Unicode diagram as Rich Text (not plain ASCII dump).
+                    yield render_rich(source)
+                    return
+                except Exception:  # noqa: BLE001
+                    pass
+        yield from super().__rich_console__(console, options)
+
 
 class _FullTableElement(_TableElement):
     """Rich table element with full rounded borders instead of just a header line."""
@@ -140,11 +168,13 @@ class _FullTableElement(_TableElement):
 
 
 class _FullBorderMarkdown(_Markdown):
-    """Rich Markdown that renders tables with full rounded borders."""
+    """Rich Markdown with full table borders and mermaid diagram fences."""
 
     elements: ClassVar[dict[str, type[MarkdownElement]]] = {
         **_Markdown.elements,
         "table_open": _FullTableElement,
+        "fence": _MermaidCodeBlock,
+        "code_block": _MermaidCodeBlock,
     }
 
 
@@ -152,7 +182,7 @@ def render_markdown(text: str) -> _Markdown:
     """Build a Rich Markdown renderable for assistant answers."""
     theme = _theme()
     code_theme = getattr(theme, "code_theme", None) or "monokai"
-    # Render LaTeX math blocks before passing to Rich Markdown.
+    # LaTeX math preprocessor; mermaid is drawn inside Markdown fence elements.
     text = render_math_in_text(text)
     return _FullBorderMarkdown(
         text or "(empty response)",
