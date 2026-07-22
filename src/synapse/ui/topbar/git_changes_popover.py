@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
-from rich.console import Group
 from rich.text import Text
 from textual.containers import Vertical
-from textual.events import Enter, Leave, MouseMove
+from textual.events import Click, Enter, Leave, MouseMove
+from textual.message import Message
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
@@ -42,6 +42,14 @@ def _widget_is_or_inside(widget: Widget | None, root: Widget | None) -> bool:
     return False
 
 
+class PopoverFileRow(Static):
+    """One clickable changed-file row inside the hover popover."""
+
+    def __init__(self, item: GitChangedFile, row_text: Text) -> None:
+        super().__init__(row_text)
+        self.item = item
+
+
 class GitChangesPopover(Vertical):
     """Overlay list of changed files under the branch chrome."""
 
@@ -68,6 +76,14 @@ class GitChangesPopover(Vertical):
         height: auto;
         max-height: 14;
         overflow-y: auto;
+        layout: vertical;
+    }
+    GitChangesPopover PopoverFileRow {
+        height: 1;
+        width: 1fr;
+    }
+    GitChangesPopover PopoverFileRow:hover {
+        text-style: bold;
     }
     """
 
@@ -99,35 +115,31 @@ class GitChangesPopover(Vertical):
 
     def compose(self):  # type: ignore[override]
         n = len(self.files)
-        title = f"changed files ({n})" if n else "no changes"
+        title = f"changed files ({n})  · click to explore" if n else "no changes"
         yield Static(title, id="git-changes-title")
-        yield Static(self._render_body(), id="git-changes-body")
-
-    def _render_body(self) -> Group | Text:
-        if not self.files:
-            return Text("working tree clean", style=self._colors["dim"])
-        rows: list[Text] = []
-        shown = self.files[:_MAX_ROWS]
-        path_w = max(12, min(48, max((len(f.path) for f in shown), default=12)))
-        for item in shown:
-            rows.append(
-                render_changed_file_row(
-                    item,
-                    path_width=path_w,
-                    color_status_m=self._colors["orange"],
-                    color_status_a=self._colors["added"],
-                    color_status_d=self._colors["deleted"],
-                    color_status_u=self._colors["dim"],
-                    color_path=self._colors["fg"],
-                    color_added=self._colors["added"],
-                    color_deleted=self._colors["deleted"],
-                    color_muted=self._colors["dim"],
-                )
-            )
-        extra = len(self.files) - len(shown)
-        if extra > 0:
-            rows.append(Text(f"... +{extra} more", style=self._colors["dim"]))
-        return Group(*rows)
+        with Vertical(id="git-changes-body"):
+            if not self.files:
+                yield Static(Text("working tree clean", style=self._colors["dim"]))
+            else:
+                shown = self.files[:_MAX_ROWS]
+                path_w = max(12, min(48, max((len(f.path) for f in shown), default=12)))
+                for item in shown:
+                    row_text = render_changed_file_row(
+                        item,
+                        path_width=path_w,
+                        color_status_m=self._colors["orange"],
+                        color_status_a=self._colors["added"],
+                        color_status_d=self._colors["deleted"],
+                        color_status_u=self._colors["dim"],
+                        color_path=self._colors["fg"],
+                        color_added=self._colors["added"],
+                        color_deleted=self._colors["deleted"],
+                        color_muted=self._colors["dim"],
+                    )
+                    yield PopoverFileRow(item, row_text)
+                extra = len(self.files) - len(shown)
+                if extra > 0:
+                    yield Static(Text(f"... +{extra} more", style=self._colors["dim"]))
 
     def measure_width(self) -> int:
         """Preferred content width in cells."""
@@ -135,7 +147,7 @@ class GitChangesPopover(Vertical):
             return _MIN_WIDTH
         plain_rows = [format_changed_file_plain(f) for f in self.files[:_MAX_ROWS]]
         body = max((display_width(r) for r in plain_rows), default=_MIN_WIDTH)
-        title_w = display_width(f"changed files ({len(self.files)})")
+        title_w = display_width(f"changed files ({len(self.files)})  · click to explore")
         # border + padding ~ 4 cells
         return max(_MIN_WIDTH, min(_MAX_WIDTH, max(body, title_w) + 4))
 
@@ -149,9 +161,29 @@ class GitChangesPopover(Vertical):
         if self._owner is not None:
             self._owner.on_popover_leave()
 
+    def on_click(self, event: Click) -> None:
+        """Click a file row (or the popover) to open Git Explore."""
+        event.stop()
+        path: str | None = None
+        widget = event.widget
+        if isinstance(widget, PopoverFileRow):
+            path = widget.item.path
+        elif self.files:
+            # Title / empty area → open explore without a focused path.
+            path = None
+        if self._owner is not None:
+            self._owner.request_explore(path)
+
 
 class TopBar(Static):
     """Single-line topbar Static with branch-hover change list."""
+
+    class OpenGitExplore(Message):
+        """Request the app to open the Git Explore modal."""
+
+        def __init__(self, path: str | None = None) -> None:
+            super().__init__()
+            self.path = path
 
     def __init__(
         self,
@@ -381,3 +413,19 @@ class TopBar(Static):
         self._popover_hover = False
         self._cancel_hide()
         self._remove_popover()
+
+    def request_explore(self, path: str | None = None) -> None:
+        """Dismiss the hover popover and ask the app to open Git Explore."""
+        self.dismiss()
+        self.post_message(self.OpenGitExplore(path))
+
+    def on_click(self, event: Click) -> None:
+        """Click branch chrome → open Git Explore (works even when clean)."""
+        try:
+            x = int(getattr(event, "x", -1))
+        except Exception:  # noqa: BLE001
+            x = -1
+        if x < 0 or not self._pointer_on_branch(x):
+            return
+        event.stop()
+        self.request_explore(None)

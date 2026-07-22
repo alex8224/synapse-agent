@@ -3121,6 +3121,48 @@ class CodingAgentApp(App[None]):
         if bar.dismiss_if_outside(control):
             event.stop()
 
+    @on(TopBar.OpenGitExplore)
+    def on_top_bar_open_git_explore(self, event: TopBar.OpenGitExplore) -> None:
+        """Branch chrome / popover click → open Git Explore modal."""
+        event.stop()
+        self._open_git_explore(getattr(event, "path", None))
+
+    def _open_git_explore(self, path: str | None = None) -> None:
+        from synapse.ui.dialogs import GitExploreScreen
+
+        try:
+            bar = self.query_one("#topbar", TopBar)
+            bar.dismiss()
+        except Exception:  # noqa: BLE001
+            pass
+
+        ws = Path(getattr(self.settings, "workspace", Path.cwd()) or Path.cwd())
+        branch = ""
+        if self._git_chrome is not None and (self._git_chrome.name or "").strip():
+            branch = self._git_chrome.name.strip()
+            if self._git_chrome.dirty:
+                branch = f"{branch} *"
+        self.push_screen(
+            GitExploreScreen(
+                ws,
+                initial_path=path,
+                branch_label=branch or None,
+                colors={
+                    "dim": _C_DIM,
+                    "fg": _C_FG,
+                    "orange": _C_ORANGE,
+                    "added": _C_GREEN,
+                    "deleted": _C_ERROR,
+                    "hunk": _C_USER,
+                },
+            ),
+            self._on_git_explore_done,
+        )
+
+    def _on_git_explore_done(self, _result: object) -> None:
+        # Refresh chrome after explore closes (user may have committed outside).
+        self._refresh_git_chrome()
+
     def _refresh_topbar(self, tokens: str | None = None) -> None:
         del tokens  # legacy arg; usage is tracked on the app
         usable = self._topbar_usable_width()
