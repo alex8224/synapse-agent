@@ -8,6 +8,7 @@ from typing import Any
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Click
@@ -217,6 +218,8 @@ class GitExploreScreen(ModalScreen[None]):
         self._split = bool(split)
         self._annotations = bool(annotations)
         self._last_payload: DiffPayload | None = None
+        # Keep this distinct from Textual MessagePump._closed.
+        self._dismiss_started: bool = False
 
     @property
     def title_text(self) -> str:
@@ -314,7 +317,67 @@ class GitExploreScreen(ModalScreen[None]):
         except Exception:  # noqa: BLE001
             pass
 
+    def _alive(self) -> bool:
+        """False after dismiss/unmount starts; blocks late mounts/workers."""
+        if self._dismiss_started:
+            return False
+        try:
+            return bool(self.is_attached)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _release_heavy_state(self) -> None:
+        """Drop file texts / lists held on the screen instance."""
+        self._last_payload = None
+        self._files = []
+        self._selected_idx = 0
+        self._load_token += 1  # invalidate in-flight apply callbacks
+
+    def _clear_diff_view_caches(self, widget: Any) -> None:
+        """Best-effort wipe of DiffView internal highlighted line caches."""
+        if widget is None:
+            return
+        for attr, empty in (
+            ("code_original", ""),
+            ("code_modified", ""),
+            ("_highlighted_code_lines", None),
+            ("_grouped_opcodes", None),
+        ):
+            try:
+                setattr(widget, attr, empty)
+            except Exception:  # noqa: BLE001
+                pass
+        for attr in (
+            "_number_styles",
+            "_annotation_styles",
+            "_line_styles",
+            "_edge_styles",
+        ):
+            try:
+                bucket = getattr(widget, attr, None)
+                if isinstance(bucket, dict):
+                    bucket.clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _begin_close(self) -> None:
+        """Invalidate late work and release payloads before Textual removes the screen."""
+        if self._dismiss_started:
+            return
+        self._dismiss_started = True
+        self._release_heavy_state()
+
+    def dismiss(self, result: Any = None) -> AwaitComplete:
+        self._begin_close()
+        return super().dismiss(result)
+
+    def on_unmount(self) -> None:
+        """Final safety net when the screen leaves the stack."""
+        self._begin_close()
+
     def _mount_file_rows(self) -> None:
+        if not self._alive():
+            return
         self.run_worker(
             self._replace_file_rows(),
             exclusive=True,
@@ -322,8 +385,12 @@ class GitExploreScreen(ModalScreen[None]):
         )
 
     async def _replace_file_rows(self) -> None:
+        if not self._alive():
+            return
         panel = self.query_one("#ge-file-list", VerticalScroll)
         await panel.remove_children()
+        if not self._alive():
+            return
         if not self._files:
             await panel.mount(Static(Text("no changes", style="dim")))
             return
@@ -331,10 +398,12 @@ class GitExploreScreen(ModalScreen[None]):
             ExploreFileRow(item, selected=(i == self._selected_idx))
             for i, item in enumerate(self._files)
         ]
-        if rows:
+        if rows and self._alive():
             await panel.mount_all(rows)
 
     def _sync_selection(self) -> None:
+        if not self._alive():
+            return
         panel = self.query_one("#ge-file-list", VerticalScroll)
         rows = list(panel.query(ExploreFileRow))
         for i, row in enumerate(rows):
@@ -351,8 +420,20 @@ class GitExploreScreen(ModalScreen[None]):
         return self.query_one("#ge-diff-scroll", VerticalScroll)
 
     async def _replace_diff_children(self, *widgets: Any) -> None:
+        if not self._alive():
+            # Drop unmounted DiffView caches if we still hold them.
+            for w in widgets:
+                self._clear_diff_view_caches(w)
+            return
         host = self._diff_host()
+        # Clear caches on outgoing children before remove (helps GC).
+        for child in list(host.children):
+            self._clear_diff_view_caches(child)
         await host.remove_children()
+        if not self._alive():
+            for w in widgets:
+                self._clear_diff_view_caches(w)
+            return
         if widgets:
             await host.mount(*widgets)
         try:
@@ -361,6 +442,8 @@ class GitExploreScreen(ModalScreen[None]):
             pass
 
     def _show_fallback(self, content: Any) -> None:
+        if not self._alive():
+            return
         host = self._diff_host()
         try:
             body = host.query_one("#ge-diff-body", Static)
@@ -380,6 +463,9 @@ class GitExploreScreen(ModalScreen[None]):
         )
 
     def _show_diff_view(self, view: Any) -> None:
+        if not self._alive():
+            self._clear_diff_view_caches(view)
+            return
         self.run_worker(
             self._replace_diff_children(view),
             exclusive=True,
@@ -387,6 +473,9 @@ class GitExploreScreen(ModalScreen[None]):
         )
 
     def _mount_payload(self, payload: DiffPayload) -> None:
+        if not self._alive():
+            return
+        # Keep only the active file payload; previous one is replaced (not stacked).
         self._last_payload = payload
         if payload.error or payload.binary:
             self._show_fallback(fallback_renderable(payload, colors=self._colors))
@@ -403,7 +492,7 @@ class GitExploreScreen(ModalScreen[None]):
         self._show_diff_view(view)
 
     def _request_diff(self) -> None:
-        if not self._files:
+        if not self._alive() or not self._files:
             return
         idx = self._selected_idx
         if not (0 <= idx < len(self._files)):
@@ -411,6 +500,8 @@ class GitExploreScreen(ModalScreen[None]):
         item = self._files[idx]
         self._load_token += 1
         token = self._load_token
+        # Drop previous payload early when switching files to free memory sooner.
+        self._last_payload = None
         self._show_fallback(Text(f"loading {item.path}…", style="dim"))
         self._load_diff_worker(
             token,
@@ -427,6 +518,8 @@ class GitExploreScreen(ModalScreen[None]):
         is_untracked: bool,
         mode: DiffMode,
     ) -> None:
+        if self._dismiss_started or token != self._load_token:
+            return
         try:
             payload = load_file_diff(
                 self._workspace,
@@ -442,14 +535,22 @@ class GitExploreScreen(ModalScreen[None]):
                 mode=mode,
                 error=f"diff failed: {exc}",
             )
-        self.app.call_from_thread(self._apply_payload, token, payload)
+        if self._dismiss_started or token != self._load_token:
+            return
+        try:
+            self.app.call_from_thread(self._apply_payload, token, payload)
+        except Exception:  # noqa: BLE001
+            # App/screen already gone — drop payload reference.
+            del payload
 
     def _apply_payload(self, token: int, payload: DiffPayload) -> None:
-        if token != self._load_token:
+        if self._dismiss_started or token != self._load_token or not self._alive():
             return
         try:
             self._mount_payload(payload)
         except Exception as exc:  # noqa: BLE001
+            if not self._alive():
+                return
             self._show_fallback(
                 Text(
                     f"diff failed: {exc}",
@@ -458,13 +559,15 @@ class GitExploreScreen(ModalScreen[None]):
             )
 
     def _set_mode(self, mode: DiffMode) -> None:
-        if mode == self._mode:
+        if not self._alive() or mode == self._mode:
             return
         self._mode = mode
         self._paint_header()
         self._request_diff()
 
     def _remount_last_payload(self) -> None:
+        if not self._alive():
+            return
         if self._last_payload is None:
             self._request_diff()
             return
