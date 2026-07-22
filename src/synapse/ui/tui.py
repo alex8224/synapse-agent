@@ -9,7 +9,7 @@ Layout (Grok/Cursor chrome):
   footer:  Worked for Xs.
   status:  [activity…]  (notices / spinner only)
   input:   › Build anything
-  bottom:  key hints · mode | model · thinking · mcp · thread
+  bottom:  model · thinking · mcp | mode | key hints
 """
 
 from __future__ import annotations
@@ -1847,8 +1847,9 @@ class CodingAgentApp(App[None]):
     #bottombar {
         height: 1.5;
         padding: 0 2;
-        margin: 0 0 0 0;
-        color: $theme-muted;
+        /* Gap under the prompt so chrome does not feel glued to the input. */
+        margin: 1 0 0 0;
+        /* No forced color: Rich Text carries per-region styles. */
         background: $theme-bg;
         content-align: left middle;
     }
@@ -2752,12 +2753,12 @@ class CodingAgentApp(App[None]):
         )
 
     def _install_default_bottombar(self) -> None:
-        """Register key_hints / mode / model / mcp / thread under the prompt."""
+        """Register key_hints / mode / model / mcp under the prompt."""
         install_default_bottombar_components(
             self._bottombar,
             BottomBarContext(
                 busy=lambda: bool(self._busy),
-                thread=self._bottombar_thread_label,
+                thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
                     "Tab complete · / commands · Esc cancel · F2 model · F4 sessions"
@@ -2922,11 +2923,13 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             return
         usable = self._bottombar_usable_width()
+        # Left = model/mcp (accent blue); right = key hints (muted gray).
+        # dim vs muted are both gray and look identical in screenshots.
         line = layout_bottombar_from_registry(
             self._bottombar,
             usable_width=usable,
-            left_style=_C_MUTED,
-            center_style=_C_DIM,
+            left_style=_C_USER,
+            center_style=_C_ORANGE,
             right_style=_C_MUTED,
             gap_style=_C_MUTED,
         )

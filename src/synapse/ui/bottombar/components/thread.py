@@ -1,4 +1,4 @@
-"""Bottombar component: short thread / session id (right)."""
+"""Bottombar component: short thread / session id (left)."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from synapse.ui.bottombar.context import BottomBarContext
 from synapse.ui.bottombar.core import BottomBarRegion, BottomBarRegistry
 
 ID = "thread"
-REGION = BottomBarRegion.RIGHT
+REGION = BottomBarRegion.LEFT
 ORDER = 30
 PRIORITY = 20  # drop before model/mcp when narrow
 MIN_WIDTH = 4
 
 
 def install(registry: BottomBarRegistry, ctx: BottomBarContext) -> None:
-    """Register the short thread label on the right."""
+    """Register the short thread label on the left."""
 
     def render() -> str:
         label = (ctx.thread() or "").strip()

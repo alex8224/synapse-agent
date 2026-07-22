@@ -33,24 +33,30 @@ if TYPE_CHECKING:
 ComponentInstaller = Callable[[BottomBarRegistry, "BottomBarContext"], None]
 
 # Order here is install order only (layout uses each component's region/order).
+# thread.install is available but not default (kept out of the chrome bar).
 DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     key_hints.install,
     mode.install,
     model.install,
     mcp.install,
-    thread.install,
 ]
 
 
 def install_default_regions(registry: BottomBarRegistry) -> None:
-    """Ensure classic left / center / right region slots exist."""
+    """Ensure classic left / center / right region slots exist.
+
+    Layout: left = model/mcp (hug), right = key hints (flex fill).
+    Region ``fg`` is a fallback; host ``layout_from_registry`` left/right styles
+    override at paint time for theme-aware colors.
+    """
     registry.register_region(
         BottomBarRegion.LEFT.value,
         order=10,
-        flex=1,
+        flex=0,
         align=BottomBarAlign.LEFT,
-        priority=40,
+        priority=50,
         gap_after=DEFAULT_COL_GAP,
+        fg="#8ab4f8",  # accent (model/mcp) — distinct from muted hints
     )
     registry.register_region(
         BottomBarRegion.CENTER.value,
@@ -60,14 +66,17 @@ def install_default_regions(registry: BottomBarRegistry) -> None:
         priority=10,
         min_width=0,
         gap_after=DEFAULT_COL_GAP,
+        fg="#f4b183",
     )
     registry.register_region(
         BottomBarRegion.RIGHT.value,
         order=30,
-        flex=0,
+        flex=1,
         align=BottomBarAlign.RIGHT,
-        priority=50,
+        priority=30,
+        min_width=8,
         gap_after=0,
+        fg="#5f6368",  # muted key hints
     )
 
 

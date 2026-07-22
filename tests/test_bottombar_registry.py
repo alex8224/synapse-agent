@@ -66,17 +66,19 @@ def test_install_defaults_layout_contains_pieces() -> None:
     )
     left = render_region_text(reg.components(BottomBarRegion.LEFT))
     right = render_region_text(reg.components(BottomBarRegion.RIGHT))
-    assert "Tab complete" in left
-    assert "haha-grok-4.5 · max" in right
-    assert "mcp off" in right
-    assert "abcd…wxyz" in right
-    # order: model → mcp → thread
-    assert right.index("haha-grok") < right.index("mcp off") < right.index("abcd")
+    assert "Tab complete" in right
+    assert "haha-grok-4.5 · max" in left
+    assert "mcp off" in left
+    # thread is not shown by default
+    assert "abcd…wxyz" not in left
+    # order: model → mcp (left)
+    assert left.index("haha-grok") < left.index("mcp off")
+    assert "thread" not in {c.id for c in reg.components(include_hidden=True)}
 
     busy["v"] = True
-    left_busy = render_region_text(reg.components(BottomBarRegion.LEFT))
+    right_busy = render_region_text(reg.components(BottomBarRegion.RIGHT))
     center = render_region_text(reg.components(BottomBarRegion.CENTER))
-    assert "Enter queue" in left_busy
+    assert "Enter queue" in right_busy
     assert "steer×2" in center
 
     line = layout_from_registry(reg, usable_width=120)
@@ -87,7 +89,52 @@ def test_install_defaults_layout_contains_pieces() -> None:
     assert display_width(plain) <= 120
 
 
-def test_custom_component_in_right_region() -> None:
+def test_mcp_label_colors_by_status() -> None:
+    from synapse.ui.bottombar.components.mcp import style_for_mcp_label
+
+    on = style_for_mcp_label("mcp on")
+    err = style_for_mcp_label("mcp err")
+    off = style_for_mcp_label("mcp off")
+    assert on != err
+    assert err != off
+    assert "81c995" in on  # green
+    assert "f28b82" in err  # red
+    assert "5f6368" in off  # muted
+
+    status = {"v": "mcp on"}
+    reg = BottomBarRegistry()
+    install_default_components(
+        reg,
+        busy=lambda: False,
+        thread=lambda: "",
+        mode=lambda: "",
+        idle_hints=lambda: "",
+        busy_hints=lambda: "",
+        model=lambda: "m",
+        mcp=lambda: status["v"],
+    )
+    left = render_region_text(reg.components(BottomBarRegion.LEFT))
+    assert "mcp on" in left
+
+    mcp_comp = next(c for c in reg.components(BottomBarRegion.LEFT) if c.id == "mcp")
+    painted = mcp_comp.content()
+    assert isinstance(painted, Text)
+    assert painted.plain == "mcp on"
+    # Rich may put the color on the whole Text.style or on spans.
+    painted_style = str(painted.style or "") + " ".join(str(s.style) for s in painted.spans)
+    assert "81c995" in painted_style
+
+    status["v"] = "mcp err"
+    painted_err = mcp_comp.content()
+    assert isinstance(painted_err, Text)
+    assert painted_err.plain == "mcp err"
+    err_style = str(painted_err.style or "") + " ".join(
+        str(s.style) for s in painted_err.spans
+    )
+    assert "f28b82" in err_style
+
+
+def test_custom_component_in_left_region() -> None:
     reg = BottomBarRegistry()
     install_default_components(
         reg,
@@ -102,16 +149,18 @@ def test_custom_component_in_right_region() -> None:
     reg.register_fn(
         "extra",
         lambda: "safe",
-        region=BottomBarRegion.RIGHT,
+        region=BottomBarRegion.LEFT,
         order=5,
         priority=30,
     )
+    left = render_region_text(reg.components(BottomBarRegion.LEFT))
+    # order 5 (extra) before model(10) / mcp(20); thread not installed
+    assert left.startswith("safe  ·  ")
+    assert "m · high" in left
+    assert "mcp on" in left
+    assert "tid" not in left
     right = render_region_text(reg.components(BottomBarRegion.RIGHT))
-    # order 5 (extra) before model(10) / mcp(20) / thread(30)
-    assert right.startswith("safe  ·  ")
-    assert "m · high" in right
-    assert "mcp on" in right
-    assert right.endswith("tid") or "tid" in right
+    assert "hints" in right
 
 
 def test_pack_prefers_right_over_center_when_tight() -> None:

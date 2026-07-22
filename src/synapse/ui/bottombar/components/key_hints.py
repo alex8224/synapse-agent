@@ -1,4 +1,4 @@
-"""Bottombar component: contextual key hints (left)."""
+"""Bottombar component: contextual key hints (right)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from synapse.ui.bottombar.context import BottomBarContext
 from synapse.ui.bottombar.core import BottomBarRegion, BottomBarRegistry
 
 ID = "key_hints"
-REGION = BottomBarRegion.LEFT
+REGION = BottomBarRegion.RIGHT
 ORDER = 10
-PRIORITY = 40
+PRIORITY = 30  # shrink before model/mcp when narrow
 MIN_WIDTH = 12
 
 

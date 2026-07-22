@@ -22,15 +22,15 @@ class BottomBarContext:
 
     # True while the agent run is active (steer mode / cancelable).
     busy: BoolFn
-    # Optional short session / thread label for the right slot.
+    # Optional short session / thread label (left, with model/mcp).
     thread: LabelFn
     # Optional extra mode tag (e.g. "safe", "steer×2"); empty hides the piece.
     mode: LabelFn
-    # Idle key-hint line (left).
+    # Idle key-hint line (right).
     idle_hints: LabelFn
-    # Busy key-hint line (left).
+    # Busy key-hint line (right).
     busy_hints: LabelFn
-    # Model id + thinking level (e.g. ``haha-grok-4.5 · max``).
+    # Model id + thinking level (left; e.g. ``haha-grok-4.5 · max``).
     model: LabelFn
-    # MCP chrome (``mcp on`` / ``mcp off`` / ``mcp err``).
+    # MCP chrome (left; ``mcp on`` / ``mcp off`` / ``mcp err``).
     mcp: LabelFn
