@@ -23,16 +23,17 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.markdown import CodeBlock as _CodeBlock
 from rich.markdown import Markdown as _Markdown
-from rich.markdown import MarkdownElement, TableElement as _TableElement
+from rich.markdown import MarkdownElement
+from rich.markdown import TableElement as _TableElement
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
-from rich import box
 
 from synapse.context_compact import (
     is_context_compact_text,
@@ -75,8 +76,11 @@ _LATEX_MATH_RE = re.compile(
 )
 
 
+_TEXICODE_ERROR_PREFIX = "texicode:"
+
+
 def _replace_latex(match: re.Match) -> str:
-    """Render a single LaTeX math block as Unicode art via TeXicode."""
+    """Render one LaTeX block, preserving source when TeXicode cannot parse it."""
     tex_block = match.group(0)
     if tex_block.startswith("$$"):
         clean = tex_block[2:-2]
@@ -96,9 +100,17 @@ def _replace_latex(match: re.Match) -> str:
     try:
         from texicode.pipeline import render_tex
 
-        return render_tex(clean, False, False, ctx, {"fonts": "normal"})
-    except Exception:
+        # TeXicode returns lexer/parser/renderer failures as ordinary strings
+        # instead of raising, so validate the rendered value below.
+        rendered = render_tex(clean, False, False, ctx, {"fonts": "normal"})
+    except Exception:  # noqa: BLE001
         return tex_block
+
+    if not isinstance(rendered, str) or not rendered.strip():
+        return tex_block
+    if _TEXICODE_ERROR_PREFIX in rendered.casefold():
+        return tex_block
+    return rendered
 
 
 def render_math_in_text(text: str) -> str:

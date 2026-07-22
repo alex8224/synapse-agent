@@ -15,6 +15,7 @@ from synapse.ui.stream import (
     _reasoning_token_count,
     _StreamPrinter,
     extract_last_ai_text,
+    render_math_in_text,
 )
 
 
@@ -208,6 +209,24 @@ def test_write_answer_token_ignored_after_complete():
         printer.write_answer_complete("final text", msg_id="m1")
     printer.write_answer_token("late", msg_id="m1")
     assert printer._open_answer_parts == []
+
+
+def test_render_math_preserves_source_on_texicode_error_string():
+    error = "\n```\nTeXicode: parsing error: unexpected token\n```\n"
+    with patch("texicode.pipeline.render_tex", return_value=error):
+        assert render_math_in_text("结论：$x +$") == "结论：$x +$"
+
+
+def test_render_math_preserves_source_on_texicode_exception_or_empty_result():
+    with patch("texicode.pipeline.render_tex", side_effect=ValueError("bad formula")):
+        assert render_math_in_text("$$broken$$") == "$$broken$$"
+    with patch("texicode.pipeline.render_tex", return_value=""):
+        assert render_math_in_text(r"\(broken\)") == r"\(broken\)"
+
+
+def test_render_math_uses_valid_texicode_result():
+    with patch("texicode.pipeline.render_tex", return_value="x + y"):
+        assert render_math_in_text("value: $x+y$") == "value: x + y"
 
 
 def test_render_markdown_tables_use_full_rounded_borders():
