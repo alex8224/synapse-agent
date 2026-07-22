@@ -42,8 +42,21 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
 ]
 
 
-def install_default_regions(registry: TopBarRegistry) -> None:
-    """Ensure classic left / center / right region slots exist."""
+def install_default_regions(
+    registry: TopBarRegistry,
+    *,
+    left_bg: str | None = None,
+    center_bg: str | None = None,
+    right_bg: str | None = None,
+    left_fg: str | None = None,
+    center_fg: str | None = None,
+    right_fg: str | None = None,
+) -> None:
+    """Ensure classic left / center / right region slots exist.
+
+    Optional ``*_bg`` / ``*_fg`` paint each region as a distinct color band
+    (Rich styles: ``fg on bg``). Omit to keep the widget-level topbar chrome.
+    """
     registry.register_region(
         TopBarRegion.LEFT.value,
         order=10,
@@ -51,6 +64,8 @@ def install_default_regions(registry: TopBarRegistry) -> None:
         align=TopBarAlign.LEFT,
         priority=40,
         gap_after=DEFAULT_COL_GAP,
+        fg=left_fg,
+        bg=left_bg,
     )
     registry.register_region(
         TopBarRegion.CENTER.value,
@@ -60,6 +75,8 @@ def install_default_regions(registry: TopBarRegistry) -> None:
         priority=10,
         min_width=4,
         gap_after=DEFAULT_COL_GAP,
+        fg=center_fg,
+        bg=center_bg,
     )
     registry.register_region(
         TopBarRegion.RIGHT.value,
@@ -68,6 +85,8 @@ def install_default_regions(registry: TopBarRegistry) -> None:
         align=TopBarAlign.RIGHT,
         priority=50,
         gap_after=0,
+        fg=right_fg,
+        bg=right_bg,
     )
 
 

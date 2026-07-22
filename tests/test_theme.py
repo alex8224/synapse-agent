@@ -262,6 +262,56 @@ def test_ansi_theme_is_transparent():
     assert css["theme-fg"] == "ansi_default"
     assert css["theme-user"] == "ansi_cyan"
     assert t.code_theme == "ansi_dark"
+    # ANSI keeps original transparent topbar (no region color blocks).
+    bands = t.topbar_region_bands()
+    assert bands["left"][1] == ""
+    assert bands["center"][1] == ""
+    assert bands["right"][1] == ""
+    set_theme(DEFAULT_THEME_NAME, persist=False, reload=False)
+
+
+def test_topbar_region_bands_from_theme_and_override(tmp_path: Path, monkeypatch):
+    """Built-ins have no region bands; themes.json can opt in + set pad/gap."""
+    solid = set_theme("cursor-dark", persist=False, reload=False)
+    bands = solid.topbar_region_bands()
+    assert bands["left"][1] == ""
+    assert bands["center"][1] == ""
+    assert bands["right"][1] == ""
+    # CSS metrics still present with classic defaults.
+    assert solid.top_pad_x == 1
+    assert solid.top_gap == 3
+    assert solid.css_variables()["theme-top-pad-x"] == "1"
+    assert solid.css_variables()["theme-top"] == solid.top
+
+    cfg = tmp_path / ".synapse"
+    cfg.mkdir()
+    (cfg / "themes.json").write_text(
+        json.dumps(
+            {
+                "themes": {
+                    "banded": {
+                        "extends": "cursor-dark",
+                        "top_left": "#112233",
+                        "top_center": "#445566",
+                        "top_right": "none",
+                        "top_pad_x": 2,
+                        "top_gap": 1,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(theme_mod, "user_config_dir", lambda: tmp_path / "nouser")
+    customs = load_custom_themes(tmp_path)
+    t = customs["banded"]
+    b = t.topbar_region_bands()
+    assert b["left"][1] == "#112233"
+    assert b["center"][1] == "#445566"
+    assert b["right"][1] == ""  # suppressed
+    assert t.top_pad_x == 2
+    assert t.top_gap == 1
+    assert t.css_variables()["theme-top-pad-x"] == "2"
     set_theme(DEFAULT_THEME_NAME, persist=False, reload=False)
 
 

@@ -155,11 +155,82 @@ def test_custom_region_with_width_align_fg_bg() -> None:
     assert "HOT" in plain
     assert "L" in plain and "R" in plain
     assert display_width(plain) <= 40
+    # Region band background is painted on the badge text.
+    assert any(
+        span.style is not None and "on #c44" in str(span.style)
+        for span in line._spans  # noqa: SLF001 — Rich Text public span list is private-ish
+    )
+
+
+def test_default_regions_can_use_distinct_bg_bands() -> None:
+    """left / center / right each paint their own solid background band."""
+    reg = TopBarRegistry()
+    reg.set_region_style("left", bg="#111111", fg="#eeeeee", flex=1)
+    reg.set_region_style("center", bg="#222222", fg="#eeeeee", flex=2)
+    reg.set_region_style("right", bg="#333333", fg="#aaaaaa", flex=1)
+    reg.register_fn("l", lambda: "LEFT", region="left", order=1)
+    reg.register_fn("c", lambda: "MID", region="center", order=1)
+    reg.register_fn("r", lambda: "RIGHT", region="right", order=1)
+
+    line = layout_from_registry(reg, usable_width=60)
+    styles = [str(span.style) for span in line._spans if span.style is not None]  # noqa: SLF001
+    joined = " | ".join(styles)
+    assert "on #111111" in joined
+    assert "on #222222" in joined
+    assert "on #333333" in joined
+    assert "LEFT" in line.plain and "MID" in line.plain and "RIGHT" in line.plain
+    # Flex bands fill the row: painted width is much larger than bare text.
+    assert display_width(line.plain) == 60
+
+
+def test_region_bg_fills_allocated_width_not_just_glyphs() -> None:
+    """Region bg must cover pad cells (full band), not only text cells."""
+    from synapse.ui.topbar.core import pack_layout_from_registry, render_packed_line
+
+    reg = TopBarRegistry()
+    # Hide other default panels so leftover width all goes to left.
+    reg.set_region_style("center", visible=False)
+    reg.set_region_style("right", visible=False)
+    reg.set_region_style("left", bg="#abcdef", fg="#fff", flex=1, min_width=1)
+    reg.register_fn("only", lambda: "X", region="left", order=1)
+    packed = pack_layout_from_registry(reg, usable_width=20)
+    left = next(r for r in packed.regions if r.spec.id == "left")
+    assert left.width == 20  # full flex band, not glyph-width=1
+    line = render_packed_line(packed)
+    # Leading/trailing pads also carry the region bg.
+    pad_styles = [
+        str(span.style)
+        for span in line._spans  # noqa: SLF001
+        if span.style is not None and "on #abcdef" in str(span.style)
+    ]
+    assert pad_styles
+    assert display_width(line.plain) == 20
+
+
+def test_region_bg_preserves_component_text_foreground() -> None:
+    """Pre-styled component Text keeps fg; region bg is layered underneath."""
+    reg = TopBarRegistry()
+    reg.set_region_style("left", bg="#101010", fg="#cccccc")
+    reg.register_fn(
+        "branchy",
+        lambda: Text("main", style="#81c995"),
+        region="left",
+        order=1,
+    )
+    line = layout_from_registry(reg, usable_width=20)
+    assert "main" in line.plain
+    styles = [str(span.style) for span in line._spans if span.style is not None]  # noqa: SLF001
+    assert any("on #101010" in s for s in styles)
+    assert any("#81c995" in s for s in styles)
 
 
 def test_region_order_places_custom_before_left() -> None:
     reg = TopBarRegistry()
-    reg.register_region("lead", order=1, width=4, align="left", fg="#0f0")
+    # Keep sibling panels out of the way so order is easy to assert.
+    reg.set_region_style("center", visible=False)
+    reg.set_region_style("right", visible=False)
+    reg.set_region_style("left", flex=0, min_width=0)
+    reg.register_region("lead", order=1, width=4, align="left", fg="#0f0", flex=0)
     reg.register_fn("lead_mark", lambda: ">>", region="lead")
     reg.register_fn("ws", lambda: "WS", region="left")
     line = layout_from_registry(reg, usable_width=30)

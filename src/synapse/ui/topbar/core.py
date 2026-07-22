@@ -29,6 +29,7 @@ from rich.text import Text
 # Default join between sibling components in the same region.
 DEFAULT_REGION_GAP = "  ·  "
 # Spaces after a default region when the next region is present.
+# Theme ``top_gap`` overrides this at runtime for the live TUI topbar.
 DEFAULT_COL_GAP = 3
 
 
@@ -150,6 +151,8 @@ class TopBarComponent:
 
 
 def _default_regions() -> dict[str, TopBarRegionSpec]:
+    # Classic chrome: left/right hug content, center flex-fills leftover.
+    # Theme ``top_gap`` may override gap_after at runtime.
     return {
         TopBarRegion.LEFT.value: TopBarRegionSpec(
             id=TopBarRegion.LEFT.value,
@@ -824,12 +827,55 @@ def locate_component_span(
     return None
 
 
+def _region_bg(spec: TopBarRegionSpec) -> str:
+    """Normalized region background color, or empty if unset."""
+    return (spec.bg or "").strip()
+
+
+def _with_bg(style: str | None, bg: str) -> str | None:
+    """Ensure a Rich style string includes ``on <bg>`` (for region color blocks)."""
+    bg = (bg or "").strip()
+    if not bg:
+        return style
+    raw = (style or "").strip()
+    if not raw:
+        return f"on {bg}"
+    # Already has an explicit background — keep caller choice.
+    if " on " in f" {raw} ":
+        return raw
+    return f"{raw} on {bg}"
+
+
+def _append_chunk_with_region_bg(
+    line: Text,
+    chunk: str | Text,
+    *,
+    style: str | None,
+    bg: str,
+) -> None:
+    """Append plain/Text content, painting the region band background when set."""
+    if isinstance(chunk, Text):
+        if bg:
+            painted = chunk.copy()
+            painted.stylize(f"on {bg}")
+            line.append_text(painted)
+        else:
+            line.append_text(chunk)
+        return
+    line.append(str(chunk), style=_with_bg(style, bg) if bg else style)
+
+
 def render_packed_line(
     layout: TopBarLayout,
     *,
     fallback_fg: dict[str, str] | str | None = None,
 ) -> Text:
-    """Turn a packed layout into styled Rich Text."""
+    """Turn a packed layout into styled Rich Text.
+
+    When a region sets ``bg``, the full allocated band (content + horizontal
+    pad) is painted as a solid color block. Per-component styles / pre-styled
+    ``Text`` keep their foregrounds; the region bg is layered underneath.
+    """
     line = Text()
     if isinstance(fallback_fg, str) or fallback_fg is None:
         fb_map: dict[str, str] = {}
@@ -842,20 +888,22 @@ def render_packed_line(
     for i, reg in enumerate(visible):
         fb = fb_map.get(reg.spec.id, default_fb)
         style = reg.spec.style_string(fallback_fg=fb or None)
+        bg = _region_bg(reg.spec)
         body = reg.aligned_text()
         natural = reg.content
-        if (
-            reg.components
-            and not reg.spec.bg
-            and render_region_text(reg.components) == natural
-        ):
+        # Prefer component path so branch/workspace keep their own styles, even
+        # when the region paints a solid background band.
+        if reg.components and render_region_text(reg.components) == natural:
             lead = 0
             if reg.spec.align is TopBarAlign.RIGHT:
                 lead = max(0, reg.width - display_width(natural))
             elif reg.spec.align is TopBarAlign.CENTER:
                 lead = max(0, (reg.width - display_width(natural)) // 2)
+            # Always paint pad cells with the region style so bg fills the band,
+            # not only the glyphs (hug regions used to look like text highlight).
+            band_style = style or (f"on {bg}" if bg else None)
             if lead > 0:
-                line.append(" " * lead, style=style)
+                line.append(" " * lead, style=band_style)
             first = True
             for comp in reg.components:
                 chunk = comp.content()
@@ -863,20 +911,25 @@ def render_packed_line(
                 if not plain:
                     continue
                 if not first and comp.gap_before:
-                    line.append(comp.gap_before, style=style)
+                    line.append(comp.gap_before, style=band_style)
                 if isinstance(chunk, Text):
-                    line.append_text(chunk)
+                    _append_chunk_with_region_bg(line, chunk, style=style, bg=bg)
                 else:
                     c_style = comp.style if comp.style is not None else style
-                    line.append(chunk, style=c_style or None)
+                    _append_chunk_with_region_bg(line, chunk, style=c_style, bg=bg)
                 first = False
             trail = reg.width - lead - display_width(natural)
             if trail > 0:
-                line.append(" " * trail, style=style)
+                line.append(" " * trail, style=band_style)
         elif body:
             line.append(body, style=style)
+        elif reg.width > 0 and (style or bg):
+            # Empty content but allocated width still paints a solid band.
+            band_style = style or (f"on {bg}" if bg else None)
+            line.append(" " * reg.width, style=band_style)
 
         if i < len(visible) - 1 and reg.spec.gap_after > 0:
+            # Gaps stay unstyled so the widget CSS topbar bg shows between blocks.
             line.append(" " * reg.spec.gap_after, style=None)
 
     plain_w = display_width(line.plain)

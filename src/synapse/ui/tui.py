@@ -1742,7 +1742,8 @@ class CodingAgentApp(App[None]):
     }
     #topbar {
         height: 1;
-        padding: 0 1;
+        /* Outer pad is theme-driven ($theme-top-pad-x); default 0 = edge-to-edge. */
+        padding: 0 $theme-top-pad-x;
         color: $theme-fg;
         background: $theme-top;
     }
@@ -2778,6 +2779,66 @@ class CodingAgentApp(App[None]):
                 branch_mark=_TOPBAR_BRANCH_MARK,
             ),
         )
+        self._apply_topbar_region_bands()
+
+    def _apply_topbar_region_bands(self) -> None:
+        """Apply theme topbar metrics (gap/pad already in CSS; optional band bg).
+
+        Built-in themes leave region backgrounds empty. ``top_gap`` controls
+        spacing between left/center/right. Explicit ``top_left`` /
+        ``top_center`` / ``top_right`` still enable optional color bands.
+        Layout stays classic: left/right hug content, center flex-fills.
+        """
+        gap = 0
+        try:
+            from synapse.ui.theme import get_theme
+
+            theme = get_theme()
+            bands = theme.topbar_region_bands()
+            gap = max(0, int(getattr(theme, "top_gap", 0) or 0))
+        except Exception:  # noqa: BLE001
+            bands = {
+                "left": (_C_FG, ""),
+                "center": (_C_FG, ""),
+                "right": (_C_DIM, ""),
+            }
+
+        layout = {
+            "left": {
+                "flex": 0,
+                "align": "left",
+                "min_width": 0,
+                "priority": 40,
+                "gap_after": gap,
+            },
+            "center": {
+                "flex": 1,
+                "align": "center",
+                "min_width": 4,
+                "priority": 10,
+                "gap_after": gap,
+            },
+            "right": {
+                "flex": 0,
+                "align": "right",
+                "min_width": 0,
+                "priority": 50,
+                "gap_after": 0,
+            },
+        }
+        for rid, (fg, bg) in bands.items():
+            conf = layout.get(rid, {})
+            # bg="" clears band (set_region_style treats None as "leave unchanged").
+            self._topbar.set_region_style(
+                rid,
+                fg=fg or _C_FG,
+                bg=bg if bg else "",
+                flex=int(conf.get("flex", 0)),
+                align=str(conf.get("align", "left")),
+                min_width=int(conf.get("min_width", 0)),
+                priority=int(conf.get("priority", 0)),
+                gap_after=int(conf.get("gap_after", 0)),
+            )
 
     def _install_default_bottombar(self) -> None:
         """Register key_hints / mode / model / mcp under the prompt."""
@@ -3095,7 +3156,15 @@ class CodingAgentApp(App[None]):
     def _topbar_usable_width(self) -> int:
         """Usable content width for the topbar line (excludes CSS padding)."""
         width = max(int(getattr(self.size, "width", 0) or 0), 48)
-        return max(20, width - 2)
+        pad = 0
+        try:
+            from synapse.ui.theme import get_theme
+
+            pad = max(0, int(getattr(get_theme(), "top_pad_x", 0) or 0))
+        except Exception:  # noqa: BLE001
+            pad = 0
+        # CSS ``padding: 0 $theme-top-pad-x`` subtracts pad on each side.
+        return max(20, width - 2 * pad)
 
     def _keep_git_changes_popover(self) -> None:
         try:
@@ -4108,6 +4177,8 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             pass
         try:
+            # Region band colors track the active palette.
+            self._apply_topbar_region_bands()
             self._refresh_topbar()
             self._render_status()
         except Exception:  # noqa: BLE001

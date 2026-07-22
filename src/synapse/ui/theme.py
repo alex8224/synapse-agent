@@ -11,10 +11,20 @@ Config surfaces:
             "extends": "cursor-dark",
             "label": "My Dark",
             "bg": "#0d1117",
-            "user": "#58a6ff"
+            "user": "#58a6ff",
+            "top_pad_x": 1,
+            "top_gap": 3
           }
         }
       }
+
+Topbar layout metrics (CSS / packing) and optional region bands:
+
+- ``top`` — whole-row ``#topbar`` background via ``$theme-top``
+- ``top_pad_x`` — horizontal CSS padding cells (default 1; ``$theme-top-pad-x``)
+- ``top_gap`` — cells between left/center/right slots (default 3)
+- ``top_left`` / ``top_center`` / ``top_right`` — optional per-region backgrounds
+- omit or empty region colors → no bands (default for every built-in theme)
 
 Built-in ``ansi`` inherits the terminal palette with transparent surfaces
 (terminal wallpaper / acrylic). Aliases: inherit, terminal, auto.
@@ -60,6 +70,11 @@ _PALETTE_KEYS = frozenset(
         "bar",
         "bg",
         "top",
+        "top_left",
+        "top_center",
+        "top_right",
+        "top_pad_x",
+        "top_gap",
         "user",
         "border",
         "border_focus",
@@ -83,6 +98,9 @@ _PALETTE_KEYS = frozenset(
         "css_border_focus",
     }
 )
+
+# Integer layout keys in themes.json (not colors).
+_INT_PALETTE_KEYS = frozenset({"top_pad_x", "top_gap"})
 
 
 @dataclass(frozen=True)
@@ -116,6 +134,15 @@ class Theme:
     rich_activity: str = "cyan"
     # When True, surfaces stay transparent and Textual uses native ANSI colors.
     ansi: bool = False
+    # Topbar left/center/right band backgrounds (empty = derived defaults).
+    # ``none`` / ``off`` / ``transparent`` suppresses that band.
+    top_left: str = ""
+    top_center: str = ""
+    top_right: str = ""
+    # Outer horizontal padding of #topbar (cells). CSS: $theme-top-pad-x.
+    top_pad_x: int = 1
+    # Gap cells between left/center/right slots (packing gap_after).
+    top_gap: int = 3
     # CSS-only overrides (empty -> use the matching Rich field above).
     css_fg: str = ""
     css_dim: str = ""
@@ -130,6 +157,7 @@ class Theme:
 
     def css_variables(self) -> dict[str, str]:
         """Textual stylesheet variables (names without leading ``$``)."""
+        pad = max(0, int(self.top_pad_x or 0))
         return {
             "theme-fg": self.css_fg or self.fg,
             "theme-dim": self.css_dim or self.dim,
@@ -143,6 +171,7 @@ class Theme:
             "theme-border": self.css_border or self.border,
             "theme-border-focus": self.css_border_focus or self.border_focus,
             "theme-error": self.css_error or self.error,
+            "theme-top-pad-x": str(pad),
         }
 
     @property
@@ -152,6 +181,36 @@ class Theme:
             return True
         bg = (self.bg or "").strip().casefold()
         return bg in {"transparent", "ansi_default", "default"}
+
+    def topbar_region_bands(self) -> dict[str, tuple[str, str]]:
+        """Resolved left/center/right ``(fg, bg)`` for optional region bands.
+
+        Empty ``bg`` means no band paint (widget CSS ``$theme-top`` shows).
+        Built-ins leave ``top_*`` empty so defaults paint no blocks; set
+        ``top_left`` / ``top_center`` / ``top_right`` in themes.json to enable.
+        """
+
+        def resolve(explicit: str) -> str:
+            key = (explicit or "").strip()
+            if not key:
+                return ""
+            low = key.casefold()
+            if low in {"none", "off", "false", "0", "transparent", "inherit", "default"}:
+                return ""
+            return key
+
+        left_bg = resolve(self.top_left)
+        center_bg = resolve(self.top_center)
+        right_bg = resolve(self.top_right)
+        left_fg = self.fg or ("default" if self.is_terminal_inherit else "")
+        center_fg = self.fg or ("default" if self.is_terminal_inherit else "")
+        right_fg = self.dim or ("bright_black" if self.is_terminal_inherit else "")
+
+        return {
+            "left": (left_fg, left_bg),
+            "center": (center_fg, center_bg),
+            "right": (right_fg, right_bg),
+        }
 
 
 def _t(
@@ -177,6 +236,11 @@ def _t(
     rich_error: str = "bold red",
     rich_activity: str = "cyan",
     ansi: bool = False,
+    top_left: str = "",
+    top_center: str = "",
+    top_right: str = "",
+    top_pad_x: int = 1,
+    top_gap: int = 3,
     css_fg: str = "",
     css_dim: str = "",
     css_muted: str = "",
@@ -210,6 +274,11 @@ def _t(
         rich_error=rich_error,
         rich_activity=rich_activity,
         ansi=ansi,
+        top_left=top_left,
+        top_center=top_center,
+        top_right=top_right,
+        top_pad_x=max(0, int(top_pad_x or 0)),
+        top_gap=max(0, int(top_gap or 0)),
         css_fg=css_fg,
         css_dim=css_dim,
         css_muted=css_muted,
@@ -671,6 +740,12 @@ def _theme_from_dict(
                     "yes",
                     "on",
                 }
+            continue
+        if key in _INT_PALETTE_KEYS:
+            try:
+                updates[key] = max(0, int(raw))
+            except (TypeError, ValueError):
+                pass
             continue
         color = _normalize_color(raw)
         if color is not None:
