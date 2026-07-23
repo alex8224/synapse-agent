@@ -38,12 +38,12 @@ try {
     Write-Host ""
 
     if ($DryRun) {
-        Write-Host "[DryRun] Would run: git tag $tag && git push origin $tag"
+        Write-Host "[DryRun] Would run: git tag $tag && git push origin $branch $tag"
         exit 0
     }
 
     git tag $tag
-    git push origin $tag
+    git push origin $branch $tag
 
     Write-Host ""
     Write-Host "Tag $tag pushed. Release workflow will build and publish at:"

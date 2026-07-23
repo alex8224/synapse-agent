@@ -24,10 +24,11 @@
 
 如果用户确认需要发布，按以下步骤一条龙完成：
 
-1. 确认版本号（读取 `pyproject.toml` 中的 `version`，用户可覆盖）
-2. 更新 `pyproject.toml` 中的版本号（如需要）
-3. 提交：`git add pyproject.toml && git commit -m "release: bump to v{version}"`
-4. 运行 `powershell -ExecutionPolicy Bypass -File scripts/release.ps1` 打 tag 并推送
-5. GitHub Actions 自动构建 wheel、生成发布说明、创建 Release
+1. 确认版本号（读取 `pyproject.toml` 中 `version`，用户可覆盖）
+2. 通过 `git log` 对比上次 tag 以来的变更，自动总结写入 `CHANGELOG.md`（在文件顶部插入新的 `## v{version}` 段落，包含新增功能、修复、工程改进等分类）
+3. 更新 `pyproject.toml` 中的版本号（如用户指定了新版本）
+4. 提交：`git add CHANGELOG.md pyproject.toml && git commit -m "release: bump to v{version}"`
+5. 运行 `powershell -ExecutionPolicy Bypass -File scripts/release.ps1` 打 tag 并推送
+6. GitHub Actions 自动从 `CHANGELOG.md` 提取对应版本段落作为发布说明，构建 wheel 并创建 Release
 
 如果用户说不需要发布，直接 `git push` 即可。

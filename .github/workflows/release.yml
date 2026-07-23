@@ -19,6 +19,24 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Extract changelog section
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          python -c "
+          import re
+          with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
+              content = f.read()
+          pattern = rf'(?s)^## {re.escape(VERSION)}\n.*?(?=\n## |\Z)'
+          m = re.search(pattern, content)
+          if m:
+              out = m.group().strip()
+              with open('release_body.md', 'w', encoding='utf-8') as f:
+                  f.write(out)
+              print(f'Extracted {len(out)} chars for {VERSION}')
+          else:
+              print(f'WARNING: ## {VERSION} section not found in CHANGELOG.md')
+          "
+
       - name: Build wheel
         run: uv build
 
@@ -26,4 +44,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: release_body.md
