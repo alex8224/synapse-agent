@@ -15,6 +15,7 @@ from synapse.harness import apply_harness_exclusions
 from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs, load_mcp_tools
 from synapse.middleware import (
     build_intent_schema_middleware,
+    build_model_retry_middleware,
     build_path_normalize_middleware,
     build_tool_error_recovery_middleware,
 )
@@ -271,6 +272,7 @@ def build_coding_agent(
         build_coding_agent.last_mcp_deferred = mcp_deferred  # type: ignore[attr-defined]
 
     middleware: list[Any] = [
+        build_model_retry_middleware(),
         build_tool_error_recovery_middleware(),
         build_path_normalize_middleware(root),
         *build_intent_schema_middleware(),

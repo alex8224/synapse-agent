@@ -2,13 +2,76 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRetryMiddleware,
+)
 from langchain_core.messages import ToolMessage
 
 from synapse.pathing import rewrite_tool_args_paths
+
+_TRANSIENT_MODEL_ERROR_MARKERS = (
+    "empty model output",
+    "overloaded",
+    "temporarily unavailable",
+    "service unavailable",
+    "upstream timeout",
+    "upstream request timeout",
+    "rate limit",
+    "rate_limit",
+)
+
+
+def _model_error_text(exc: Exception) -> str:
+    """Collect provider error text, including nested SSE error bodies."""
+
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+
+    def _collect(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for nested in value.values():
+                _collect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                _collect(nested)
+        elif value is not None:
+            parts.append(str(value))
+
+    _collect(body)
+    return " ".join(parts).lower()
+
+
+def should_retry_transient_model_error(exc: Exception) -> bool:
+    """Retry transient provider errors emitted after an HTTP stream is established.
+
+    HTTP/network failures with a status code remain the provider SDK's
+    responsibility, preventing nested SDK + middleware retry amplification.
+    """
+
+    if isinstance(getattr(exc, "status_code", None), int):
+        return False
+    text = _model_error_text(exc)
+    return any(marker in text for marker in _TRANSIENT_MODEL_ERROR_MARKERS)
+
+
+def build_model_retry_middleware() -> ModelRetryMiddleware:
+    """Retry recoverable model stream failures and re-raise after exhaustion."""
+
+    return ModelRetryMiddleware(
+        max_retries=5,
+        retry_on=should_retry_transient_model_error,
+        on_failure="error",
+        initial_delay=1.0,
+        backoff_factor=2.0,
+        max_delay=8.0,
+        jitter=True,
+    )
 
 
 def _dual_wrap_model_call(*, name: str, apply):
