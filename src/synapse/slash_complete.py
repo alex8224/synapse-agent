@@ -42,6 +42,7 @@ ROOT_COMMANDS: list[str] = [
     "/mcp",
     "/model",
     "/theme",
+    "/codex",
 ]
 
 SESSION_SUBCOMMANDS: list[str] = [
@@ -71,6 +72,7 @@ MCP_SUBCOMMANDS: list[str] = [
 ]
 
 EXPORT_FORMATS: list[str] = ["md", "json"]
+CODEX_SUBCOMMANDS: list[str] = ["import"]
 
 
 @dataclass
@@ -287,6 +289,14 @@ def complete_slash(
             return with_prefix(EXPORT_FORMATS, [])
         if len(rest) == 1 and not trailing_space:
             return with_prefix(_filter_prefix(EXPORT_FORMATS, rest[0]), [])
+        return []
+
+    # /codex import [native_id]
+    if cmd_cf == "/codex":
+        if not rest and trailing_space:
+            return with_prefix(CODEX_SUBCOMMANDS, [])
+        if len(rest) == 1 and not trailing_space:
+            return with_prefix(_filter_prefix(CODEX_SUBCOMMANDS, rest[0]), [])
         return []
 
     # /mcp <sub>

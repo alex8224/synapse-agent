@@ -52,6 +52,7 @@ HELP_TEXT = """slash commands:
     /session delete <thread_id>
     /session search <query>
     /export [md|json] [path]   (always writes a file; default: .coding-agent/exports/<thread>.md)
+  /codex import [native_id]  (TUI picker or import one Codex session)
 
   mcp:
     /mcp | /mcp list

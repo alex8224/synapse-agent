@@ -143,6 +143,36 @@ def _default_tui(
 # ---------------------------------------------------------------------------
 
 
+def _import_codex_session(
+    native_id: str,
+    *,
+    workspace: Path | None = None,
+    codex_home: Path | None = None,
+):
+    """Import one safe Codex visible-text snapshot into a Synapse thread."""
+    from synapse.agent import build_coding_agent
+    from synapse.codex_import import import_codex_session
+
+    settings = load_settings(workspace=workspace) if workspace is not None else load_settings()
+    agent = build_coding_agent(settings, project_root=settings.workspace, load_mcp=False)
+    try:
+        return import_codex_session(
+            native_id=native_id,
+            settings=settings,
+            agent=agent,
+            workspace=workspace,
+            codex_home=codex_home,
+        )
+    except Exception as exc:  # noqa: BLE001
+        prefix = "Codex session cannot be imported safely: "
+        message = str(exc)
+        if message.startswith(prefix):
+            codes = message.removeprefix(prefix).split(",")
+            reasons = ", ".join(_preview_warning_text(code) for code in codes)
+            raise ValueError(f"Codex session cannot be imported safely: {reasons}") from exc
+        raise ValueError(message) from exc
+
+
 @sessions_app.command("list")
 def sessions_list(
     limit: int = typer.Option(50, "--limit", "-n", help="Max sessions"),
@@ -283,6 +313,26 @@ def sessions_codex_preview(
         print_info(f"messages longer than {MAX_PREVIEW_MESSAGE_CHARS} characters were truncated")
     for warning in snapshot.warnings:
         print_info(f"warning: {_preview_warning_text(warning.code)}")
+
+
+@sessions_app.command("codex-import")
+def sessions_codex_import(
+    native_id: str = typer.Argument(..., help="Codex native session id"),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Filter Codex sessions to one workspace"
+    ),
+    codex_home: Path | None = typer.Option(
+        None, "--codex-home", help="Codex home directory (default: CODEX_HOME or ~/.codex)"
+    ),
+) -> None:
+    """Import one safe Codex visible-text snapshot into a new Synapse session."""
+    try:
+        result = _import_codex_session(native_id, workspace=workspace, codex_home=codex_home)
+    except Exception as exc:  # noqa: BLE001
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    status = "reused" if result.reused else "recovered" if result.recovered else "imported"
+    print_info(f"Codex session {status}: thread_id={result.thread_id}")
 
 
 @sessions_app.command("prune")

@@ -34,6 +34,7 @@ def test_cli_sessions_help():
     assert "codex-list" in result.stdout
     assert "codex-inspect" in result.stdout
     assert "codex-preview" in result.stdout
+    assert "codex-import" in result.stdout
 
 
 def test_codex_preview_helpers_bound_text_and_explain_known_errors():

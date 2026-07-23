@@ -2225,6 +2225,7 @@ class CodingAgentApp(App[None]):
         Binding("f4", "dialog_sessions", "Sessions", show=False),
         Binding("f5", "dialog_mcp", "MCP", show=False),
         Binding("f6", "dialog_safety", "Safety", show=False),
+        Binding("f7", "dialog_codex_import", "Import Codex", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2251,6 +2252,9 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_safety(self) -> None:
         self._open_safety_dialog()
+
+    def action_dialog_codex_import(self) -> None:
+        self._open_codex_import_dialog()
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -4599,6 +4603,66 @@ class CodingAgentApp(App[None]):
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme failed: {exc}", "yellow")
 
+    def _open_codex_import_dialog(self) -> None:
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        from synapse.ui.dialogs import CodexSessionListDialog
+
+        self.push_screen(
+            CodexSessionListDialog(self.settings),
+            self._on_codex_import_dialog_done,
+        )
+
+    def _on_codex_import_dialog_done(self, result: object) -> None:
+        if result is None:
+            return
+        action, native_id = result
+        if action == "codex-import" and native_id:
+            self._start_codex_import(str(native_id))
+
+    def _start_codex_import(self, native_id: str) -> None:
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        self._busy = True
+        self.set_activity("importing", "importing Codex session", True)
+        self.flash_status("importing Codex session…", "dim")
+        self._sync_prompt_placeholder()
+        self._import_codex_session_bg(native_id)
+
+    @work(thread=True, exclusive=True, group="codex-import")
+    def _import_codex_session_bg(self, native_id: str) -> None:
+        """Seed one Codex text snapshot, then switch through the normal session path."""
+        if not self._agent_ready.wait(timeout=180) or self.agent is None:
+            self.call_from_thread(
+                self.append_event,
+                "Codex import unavailable: agent is still starting",
+                "yellow",
+            )
+            self.call_from_thread(self._turn_done)
+            return
+        try:
+            from synapse.codex_import import import_codex_session
+
+            result = import_codex_session(
+                native_id=native_id,
+                settings=self.settings,
+                agent=self.agent,
+                workspace=Path(self.settings.workspace),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.append_event, f"Codex import failed: {exc}", "yellow")
+        else:
+            self.call_from_thread(self._finish_codex_import, result)
+        finally:
+            self.call_from_thread(self._turn_done)
+
+    def _finish_codex_import(self, result: Any) -> None:
+        self._apply_session_switch(str(result.thread_id))
+        status = "reused" if result.reused else "recovered" if result.recovered else "imported"
+        self.flash_status(f"Codex session {status}: {result.thread_id}", "dim")
+
     def _open_session_dialog(self, parts: list[str]) -> None:
         mode = "switch"
         if len(parts) >= 2 and parts[1].casefold() in {"delete", "del", "rm"}:
@@ -4809,6 +4873,15 @@ class CodingAgentApp(App[None]):
             if len(parts) == 2:
                 self._open_session_dialog(parts)
                 return True
+        if cmd == "/codex":
+            if len(parts) == 1 or (len(parts) == 2 and parts[1].casefold() == "import"):
+                self._open_codex_import_dialog()
+                return True
+            if len(parts) == 3 and parts[1].casefold() == "import":
+                self._start_codex_import(parts[2])
+                return True
+            self.append_event("usage: /codex import [native_id]", "yellow")
+            return True
         if cmd == "/theme" and (len(parts) == 1 or parts[1].casefold() in {"list", "ls"}):
             self._open_theme_dialog()
             return True
