@@ -14,6 +14,7 @@ This module subclasses ``LocalShellBackend`` and reimplements ``execute`` with:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -72,6 +73,57 @@ def resolve_shell_invocation(
 
     # Unknown absolute/custom binary: treat as shell program with shell=True.
     return command, True, raw
+
+
+def _kill_process_tree(proc: subprocess.Popen[Any] | None) -> None:
+    """Kill a process and all its children (best-effort on Windows).
+
+    On Windows, ``proc.kill()`` only terminates the direct process; child
+    processes survive and hold pipe handles open, which causes
+    ``communicate()`` to hang.  Use ``taskkill /T`` to terminate the whole
+    process tree, then drain pipes with a short timeout.
+    """
+    if proc is None:
+        return
+    try:
+        pid = proc.pid
+    except Exception:  # noqa: BLE001
+        return
+    if pid is None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    # Drain pipes with a short timeout so we don't hang forever if child
+    # processes still hold them open.
+    try:
+        proc.communicate(timeout=3)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _timeout_msg(effective_timeout: int, per_call_timeout: int | None) -> str:
+    if per_call_timeout is not None:
+        return (
+            f"Error: Command timed out after {effective_timeout} seconds "
+            "(custom timeout). The command may be stuck or require more time."
+        )
+    return (
+        f"Error: Command timed out after {effective_timeout} seconds. "
+        "For long-running commands, re-run using the timeout parameter."
+    )
 
 
 class CodingLocalShellBackend(LocalShellBackend):
@@ -240,69 +292,72 @@ class CodingLocalShellBackend(LocalShellBackend):
 
         run_kwargs: dict[str, Any] = {
             "args": args,
-            "check": False,
             "shell": use_shell,
-            "capture_output": True,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
             "stdin": subprocess.DEVNULL,
             "text": True,
             "encoding": self._shell_encoding,
             "errors": self._shell_encoding_errors,
-            "timeout": effective_timeout,
             "env": self._env,
             "cwd": str(self.cwd),
         }
         if executable:
             run_kwargs["executable"] = executable
 
+        proc = None
         try:
-            result = subprocess.run(**run_kwargs)  # noqa: S602
-
-            output_parts: list[str] = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-            output = "\n".join(output_parts) if output_parts else "<no output>"
-
-            truncated = False
-            if len(output) > self._max_output_bytes:
-                output = output[: self._max_output_bytes]
-                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-                truncated = True
-
-            if result.returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
-
-            return ExecuteResponse(
-                output=output,
-                exit_code=result.returncode,
-                truncated=truncated,
-            )
+            # Use Popen directly instead of subprocess.run because run()
+            # calls communicate() a second time after TimeoutExpired, which hangs
+            # on Windows when the shell spawns child processes that survive the
+            # kill and hold pipe handles open.
+            proc = subprocess.Popen(**run_kwargs)  # noqa: S602
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+            returncode = proc.returncode
 
         except subprocess.TimeoutExpired:
-            if timeout is not None:
-                msg = (
-                    f"Error: Command timed out after {effective_timeout} seconds "
-                    "(custom timeout). The command may be stuck or require more time."
-                )
-            else:
-                msg = (
-                    f"Error: Command timed out after {effective_timeout} seconds. "
-                    "For long-running commands, re-run using the timeout parameter."
-                )
+            _kill_process_tree(proc)
+            msg = _timeout_msg(effective_timeout, timeout)
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,
                 truncated=False,
             )
         except Exception as e:  # noqa: BLE001
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
             return ExecuteResponse(
                 output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,
                 truncated=False,
             )
+
+        output_parts: list[str] = []
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            stderr_lines = stderr.strip().split("\n")
+            output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+
+        truncated = False
+        if len(output) > self._max_output_bytes:
+            output = output[: self._max_output_bytes]
+            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+            truncated = True
+
+        if returncode != 0:
+            output = f"{output.rstrip()}\n\nExit code: {returncode}"
+
+        return ExecuteResponse(
+            output=output,
+            exit_code=returncode,
+            truncated=truncated,
+        )
 
 
 def build_backend(settings: Settings) -> CodingLocalShellBackend:

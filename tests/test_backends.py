@@ -90,23 +90,21 @@ def test_execute_pwsh_invocation_kwargs(tmp_path: Path):
         shell_encoding_errors="replace",
     )
 
-    completed = MagicMock()
-    completed.stdout = "ok-中文"
-    completed.stderr = ""
-    completed.returncode = 0
-
     pwsh_args = ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "echo hi"]
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = ("ok-中文", "")
+    mock_proc.returncode = 0
     with (
         patch(
             "synapse.backends.resolve_shell_invocation",
             return_value=(pwsh_args, False, None),
         ),
-        patch("synapse.backends.subprocess.run", return_value=completed) as mock_run,
+        patch("synapse.backends.subprocess.Popen", return_value=mock_proc) as mock_popen,
     ):
         resp = backend.execute("echo hi")
         assert resp.exit_code == 0
         assert "ok-中文" in resp.output
-        kwargs = mock_run.call_args.kwargs
+        kwargs = mock_popen.call_args.kwargs
         assert kwargs["shell"] is False
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
