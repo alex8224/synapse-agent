@@ -23,18 +23,19 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           python -c "
-          import re
+          import os, re
+          ver = os.environ['VERSION']
           with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
               content = f.read()
-          pattern = rf'(?s)^## {re.escape(VERSION)}\n.*?(?=\n## |\Z)'
+          pattern = rf'(?s)^## {re.escape(ver)}\n.*?(?=\n## |\Z)'
           m = re.search(pattern, content)
           if m:
               out = m.group().strip()
               with open('release_body.md', 'w', encoding='utf-8') as f:
                   f.write(out)
-              print(f'Extracted {len(out)} chars for {VERSION}')
+              print(f'Extracted {len(out)} chars for {ver}')
           else:
-              print(f'WARNING: ## {VERSION} section not found in CHANGELOG.md')
+              print(f'WARNING: ## {ver} section not found in CHANGELOG.md')
           "
 
       - name: Build wheel
