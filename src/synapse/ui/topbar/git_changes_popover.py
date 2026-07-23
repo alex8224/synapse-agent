@@ -65,7 +65,16 @@ class GitChangesPopover(Vertical):
         color: $theme-fg;
         overflow-x: hidden;
         overflow-y: auto;
-        scrollbar-size: 1 1;
+        /* Quiet 1-cell rail: track blends into bar; thumb is muted border. */
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
+        scrollbar-background: $theme-bar;
+        scrollbar-color: $theme-border;
+        scrollbar-background-hover: $theme-bar;
+        scrollbar-color-hover: $theme-muted;
+        scrollbar-background-active: $theme-bar;
+        scrollbar-color-active: $theme-dim;
+        scrollbar-corner-color: $theme-bar;
     }
     GitChangesPopover #git-changes-title {
         height: 1;
@@ -76,7 +85,17 @@ class GitChangesPopover(Vertical):
         height: auto;
         max-height: 14;
         overflow-y: auto;
+        overflow-x: hidden;
         layout: vertical;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
+        scrollbar-background: $theme-bar;
+        scrollbar-color: $theme-border;
+        scrollbar-background-hover: $theme-bar;
+        scrollbar-color-hover: $theme-muted;
+        scrollbar-background-active: $theme-bar;
+        scrollbar-color-active: $theme-dim;
+        scrollbar-corner-color: $theme-bar;
     }
     GitChangesPopover PopoverFileRow {
         height: 1;
