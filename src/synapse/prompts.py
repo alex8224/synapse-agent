@@ -109,6 +109,14 @@ Do not use generic intent values such as `run tool` or `read_file`.
 
 Search only when required by a clear task. Keep searches targeted and avoid unnecessary full-file output.
 
+For `glob` and `grep` tools, automatically exclude common build artifacts and caches:
+* `target/`
+* `.venv/`
+* `.node_modules/`
+* `__pycache__/`
+* `.git/`
+* `*.pyc`
+
 For large files, read only relevant ranges. After editing, re-read changed regions when useful.
 
 `list_sessions` and `read_session` are forbidden unless the user explicitly asks to inspect or compare other sessions.
