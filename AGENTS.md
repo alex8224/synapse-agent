@@ -17,3 +17,17 @@
 ## 安全注意
 - 除非用户明确要求，不要 force-push 或 hard-reset。
 - 不要打印 `.env` 中的密钥。
+
+## 发布流程
+
+推送前必须询问用户：**"本次是否需要打 tag 发 Release？"**
+
+如果用户确认需要发布，按以下步骤一条龙完成：
+
+1. 确认版本号（读取 `pyproject.toml` 中的 `version`，用户可覆盖）
+2. 更新 `pyproject.toml` 中的版本号（如需要）
+3. 提交：`git add pyproject.toml && git commit -m "release: bump to v{version}"`
+4. 运行 `powershell -ExecutionPolicy Bypass -File scripts/release.ps1` 打 tag 并推送
+5. GitHub Actions 自动构建 wheel、生成发布说明、创建 Release
+
+如果用户说不需要发布，直接 `git push` 即可。
