@@ -7,6 +7,14 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.2
+
+### 修复
+
+- Release workflow 中 CHANGELOG 提取脚本误将 shell 变量当 Python 变量，改用 `os.environ` 读取
+
+---
+
 ## v0.1.1
 
 ### 工程
