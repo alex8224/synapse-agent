@@ -118,7 +118,14 @@ TUI 快捷键：
 - `Ctrl+T` 折叠/展开最近工具组（历史 turn 工具组也支持）
 - `Ctrl+E` 展开/收起最近 Thought 摘要
 - `Ctrl+L` 清空 transcript
+- `Alt+C` 复制当前划选（无选区时复制最近答案）
+- `Ctrl+Shift+Y` 复制最近一条助手答案
 - `Ctrl+C` / `Ctrl+Q` 退出
+
+TUI 文本选择：
+- transcript 中答案 / Thought / 工具组 / 用户条支持鼠标拖选（有高亮）
+- 划选后用 `Alt+C` 复制；系统剪贴板依赖终端 OSC 52 支持
+- 完整会话导出仍用 `/export`
 
 ### MCP transports
 
