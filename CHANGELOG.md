@@ -7,6 +7,18 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.3
+
+### 修复
+
+- 修复 49 个 ruff lint 错误（E501 超长行、UP042 StrEnum、F401/F811 未使用导入、I001 导入排序）
+
+### 工程
+
+- CI 仅对 PR 触发，避免 push tag 时与 Release workflow 重复构建
+
+---
+
 ## v0.1.2
 
 ### 修复
