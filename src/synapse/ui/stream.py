@@ -1378,8 +1378,40 @@ def stream_agent(
     use_tool_items = sink_supports_tool_items(sink)
     pending_tool_items: list[Any] = []
     tool_group_seq = 0
-    # Nested subagent: tool name / call id -> human intent label.
-    sub_tool_labels: dict[str, str] = {}
+    # Nested subagent events are interleaved. Keep labels, pending items, and
+    # parent task ownership scoped by LangGraph namespace.
+    sub_tool_labels: dict[tuple[str, ...], dict[str, str]] = {}
+    sub_scope_seq: dict[tuple[str, ...], int] = {}
+    parent_task_items: dict[str, str] = {}
+
+    def _sub_scope(namespace: tuple[str, ...]) -> tuple[str, ...]:
+        """Return the namespace through the injected parent task segment."""
+        for index, segment in enumerate(namespace):
+            if segment.startswith("task_call:"):
+                return namespace[: index + 1]
+        return namespace[:1] if namespace else ()
+
+    def _sub_parent_id(namespace: tuple[str, ...]) -> str | None:
+        for segment in namespace:
+            if segment.startswith("task_call:"):
+                call_id = segment.removeprefix("task_call:")
+                return parent_task_items.get(call_id)
+        return None
+
+    def _pending_sub_item(namespace: tuple[str, ...], name: str, call_id: str) -> Any:
+        parent_id = _sub_parent_id(namespace)
+        for item in pending_tool_items:
+            if not getattr(item, "sub", False):
+                continue
+            if parent_id is not None and getattr(item, "parent_id", None) != parent_id:
+                continue
+            if call_id:
+                if getattr(item, "call_id", None) == call_id:
+                    return item
+                continue
+            if item.name == name:
+                return item
+        return None
 
     run_config = dict(config or {})
     run_config.setdefault("max_concurrency", max_concurrency)
@@ -1582,9 +1614,11 @@ def stream_agent(
                                 or getattr(msg, "id", None)
                                 or ""
                             )
+                            scope = _sub_scope(ns)
+                            labels = sub_tool_labels.get(scope, {})
                             label = (
-                                (tool_call_id and sub_tool_labels.get(tool_call_id))
-                                or sub_tool_labels.get(str(name))
+                                (tool_call_id and labels.get(tool_call_id))
+                                or labels.get(str(name))
                                 or str(name)
                             )
                             body = content_to_text(raw_content)
@@ -1596,7 +1630,7 @@ def stream_agent(
                                 sink.activity_update("subagent", detail)
                             # Also finish the nested tool item in the timeline.
                             if use_tool_items:
-                                item = match_tool_result(pending_tool_items, str(name))
+                                item = _pending_sub_item(ns, str(name), tool_call_id)
                                 preview = truncate_preview(raw_content)
                                 if item is not None:
                                     if is_todo_tool(item.name) and item.preview:
@@ -1617,7 +1651,12 @@ def stream_agent(
                             continue
                         sink.activity_stop()
                         if use_tool_items:
-                            item = match_tool_result(pending_tool_items, str(name))
+                            tool_call_id = str(
+                                getattr(msg, "tool_call_id", None) or ""
+                            )
+                            item = match_tool_result(
+                                pending_tool_items, str(name), tool_call_id or None
+                            )
                             preview = truncate_preview(raw_content)
                             err = is_error_status(status, content_to_text(raw_content))
                             if item is not None:
@@ -1709,30 +1748,36 @@ def stream_agent(
 
                     if in_sub:
                         if calls:
+                            scope = _sub_scope(ns)
+                            labels = sub_tool_labels.setdefault(scope, {})
+                            parent_id = _sub_parent_id(ns)
                             for call in calls:
                                 label = human_tool_label(call)
                                 cid = _tool_call_id(call)
                                 n = _tool_call_name(call)
                                 if cid:
-                                    sub_tool_labels[cid] = label
+                                    labels[cid] = label
                                 if n:
-                                    sub_tool_labels[n] = label
+                                    labels[n] = label
                             detail = human_nested_tools_detail(list(calls), limit=5)
                             try:
                                 sink.activity_update("subagent", detail, force=True)
                             except TypeError:
                                 sink.activity_update("subagent", detail)
-                            # Emit nested tool items under the current task group
-                            # so the user can see subagent internal progress.
+                            # Emit nested tool items next to their owning task row.
                             if use_tool_items:
-                                gid = f"g{tool_group_seq}"
+                                batch_seq = sub_scope_seq.get(scope, 0) + 1
+                                sub_scope_seq[scope] = batch_seq
+                                scope_key = str(parent_id or "orphan")
                                 for idx, call in enumerate(calls):
+                                    call_id = _tool_call_id(call) or str(idx)
                                     item = build_tool_item(
                                         call,
-                                        item_id=f"{gid}-sub-{idx}",
+                                        item_id=f"{scope_key}-sub-{batch_seq}-{call_id}",
                                         index=idx,
                                         sub=True,
                                     )
+                                    item.parent_id = parent_id
                                     pending_tool_items.append(item)
                                     sink.tool_item_started(item)
                         # Nested free-text: keep last tool intent sticky.
@@ -1775,6 +1820,8 @@ def stream_agent(
                                     sub=in_sub,
                                 )
                                 pending_tool_items.append(item)
+                                if item.name == "task" and item.call_id:
+                                    parent_task_items[item.call_id] = item.id
                                 sink.tool_item_started(item)
                         if any(n == "task" for n in names):
                             sink.activity_start(

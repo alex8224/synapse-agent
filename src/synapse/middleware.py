@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,63 @@ def _dual_wrap_tool_call(*, name: str, apply):
             "awrap_tool_call": awrap_tool_call,
         },
     )()
+
+def build_task_namespace_middleware():
+    """Give each concurrent ``task`` invocation a distinct subgraph namespace."""
+
+    def _call_id(request: Any) -> str:
+        call = request.tool_call
+        if isinstance(call, dict):
+            return str(call.get("id") or "")
+        return str(getattr(call, "id", None) or "")
+
+    def _name(request: Any) -> str:
+        call = request.tool_call
+        if isinstance(call, dict):
+            return str(call.get("name") or "")
+        return str(getattr(call, "name", None) or "")
+
+    def _config(request: Any, call_id: str) -> dict[str, Any]:
+        config = dict(request.runtime.config or {})
+        configurable = dict(config.get("configurable") or {})
+        parent_ns = str(configurable.get("checkpoint_ns") or "")
+        segment = f"task_call:{call_id}"
+        configurable["checkpoint_ns"] = (
+            f"{parent_ns}|{segment}" if parent_ns else segment
+        )
+        config["configurable"] = configurable
+        return config
+
+    def wrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        call_id = _call_id(request)
+        if _name(request) != "task" or not call_id:
+            return handler(request)
+        from langchain_core.runnables.config import set_config_context
+
+        with set_config_context(_config(request, call_id)) as ctx:
+            return ctx.run(handler, request)
+
+    async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        call_id = _call_id(request)
+        if _name(request) != "task" or not call_id:
+            return await handler(request)
+        from langchain_core.runnables.config import set_config_context
+
+        with set_config_context(_config(request, call_id)) as ctx:
+            task = ctx.run(asyncio.create_task, handler(request))
+            return await task
+
+    return type(
+        "scope_task_subgraphs",
+        (AgentMiddleware,),
+        {
+            "state_schema": AgentState,
+            "tools": [],
+            "wrap_tool_call": wrap_tool_call,
+            "awrap_tool_call": awrap_tool_call,
+        },
+    )()
+
 
 # Required model-facing field: short purpose shown in the timeline UI.
 TOOL_INTENT_KEY = "intent"

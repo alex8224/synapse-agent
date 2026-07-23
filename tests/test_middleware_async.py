@@ -9,6 +9,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from synapse.middleware import (
     build_intent_schema_middleware,
     build_path_normalize_middleware,
+    build_task_namespace_middleware,
     build_tool_exclusion_middleware,
 )
 from synapse.steer import SteerQueue, build_steer_middleware
@@ -59,6 +60,24 @@ def test_intent_and_path_middleware_have_async_wrap():
     _assert_dual_model(inject)
     _assert_dual_tool(strip)
     _assert_dual_tool(build_path_normalize_middleware(Path(".")))
+
+
+def test_task_namespace_middleware_scopes_sync_handler():
+    from types import SimpleNamespace
+
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    middleware = build_task_namespace_middleware()
+    _assert_dual_tool(middleware)
+    request = SimpleNamespace(
+        tool_call={"name": "task", "id": "call-a", "args": {}},
+        runtime=SimpleNamespace(config={"configurable": {"checkpoint_ns": "tools:root"}}),
+    )
+
+    def handler(_request):  # noqa: ANN001
+        return var_child_runnable_config.get()["configurable"]["checkpoint_ns"]
+
+    assert middleware.wrap_tool_call(request, handler) == "tools:root|task_call:call-a"
 
 
 def test_steer_middleware_has_async_before_model():

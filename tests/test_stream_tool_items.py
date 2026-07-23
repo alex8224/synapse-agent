@@ -55,7 +55,9 @@ class _ItemSink:
         self.events.append(("tool_result", name, status, sub))
 
     def tool_item_started(self, item: ToolItem) -> None:
-        self.events.append(("tool_item_started", item.id, item.label, item.name))
+        self.events.append(
+            ("tool_item_started", item.id, item.label, item.name, item.parent_id)
+        )
 
     def tool_item_updated(self, item: ToolItem) -> None:
         self.events.append(("tool_item_updated", item.id, item.label, item.name))
@@ -167,6 +169,136 @@ def test_stream_agent_keeps_todo_checklist_preview():
     assert "✓ explore" in finished[0][3]
     assert "● implement" in finished[0][3]
     assert result.tool_calls == 1
+
+
+class _ConcurrentSubagentAgent:
+    """Interleave two subgraphs that call the same nested tool."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                },
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent B"},
+                                    "id": "task-b",
+                                },
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        for namespace, call_id, intent in (
+            (("tools:parent", "task_call:task-a", "model:one"), "read-a", "read for A"),
+            (("tools:parent", "task_call:task-b", "model:one"), "read-b", "read for B"),
+        ):
+            yield (
+                namespace,
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            _Chunk(
+                                type="ai",
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {"file_path": "/x", "intent": intent},
+                                        "id": call_id,
+                                    }
+                                ],
+                                id=f"nested-{call_id}",
+                            )
+                        ]
+                    }
+                },
+            )
+        for namespace, call_id in (
+            (("tools:parent", "task_call:task-b", "tools:one"), "read-b"),
+            (("tools:parent", "task_call:task-a", "tools:one"), "read-a"),
+        ):
+            yield (
+                namespace,
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="read_file",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+        for call_id in ("task-b", "task-a"):
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="task",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+
+
+def test_stream_agent_scopes_nested_tools_to_concurrent_parent_tasks():
+    sink = _ItemSink()
+    stream_agent(
+        _ConcurrentSubagentAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    started = [event for event in sink.events if event[0] == "tool_item_started"]
+    parents = [event for event in started if event[3] == "task"]
+    nested = [event for event in started if event[3] == "read_file"]
+    assert [event[1] for event in parents] == ["g1-0", "g1-1"]
+    assert [event[4] for event in nested] == ["g1-0", "g1-1"]
+    assert nested[0][1] != nested[1][1]
+
+    finished_nested = [
+        event
+        for event in sink.events
+        if event[0] == "tool_item_finished" and "-sub-" in event[1]
+    ]
+    assert [event[1] for event in finished_nested] == [nested[1][1], nested[0][1]]
+    finished_parents = [
+        event
+        for event in sink.events
+        if event[0] == "tool_item_finished" and event[1] in {"g1-0", "g1-1"}
+    ]
+    assert [event[1] for event in finished_parents] == ["g1-1", "g1-0"]
 
 
 def test_build_tool_item_todo_preview_unit():

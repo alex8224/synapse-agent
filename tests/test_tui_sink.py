@@ -487,6 +487,42 @@ def test_close_tool_group_respects_tool_details_expanded_setting():
     assert block.collapsed is True
 
 
+def test_tool_group_block_places_nested_items_after_owning_task():
+    block = ToolGroupBlock("Launched 2 subagents")
+    task_a = build_tool_item(
+        {"name": "task", "args": {"description": "agent A"}},
+        item_id="g1-0",
+    )
+    task_b = build_tool_item(
+        {"name": "task", "args": {"description": "agent B"}},
+        item_id="g1-1",
+    )
+    block.add_item(task_a)
+    block.add_item(task_b)
+
+    nested_b = build_tool_item(
+        {"name": "grep", "args": {"intent": "search B"}},
+        item_id="g1-1-sub-1-grep-b",
+        sub=True,
+    )
+    nested_b.parent_id = task_b.id
+    nested_a = build_tool_item(
+        {"name": "read_file", "args": {"intent": "read A"}},
+        item_id="g1-0-sub-1-read-a",
+        sub=True,
+    )
+    nested_a.parent_id = task_a.id
+    block.add_item(nested_b)
+    block.add_item(nested_a)
+
+    assert [item.id for item in block.items] == [
+        task_a.id,
+        nested_a.id,
+        task_b.id,
+        nested_b.id,
+    ]
+
+
 def test_timeline_blocks_toggle_in_place():
     thought = ThoughtBlock(1.2, "first line\nsecond line")
     assert thought.collapsed is True

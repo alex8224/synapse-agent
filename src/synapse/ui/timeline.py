@@ -52,6 +52,8 @@ class ToolItem:
     preview: str | None = None
     error: bool = False
     sub: bool = False
+    parent_id: str | None = None
+    call_id: str | None = None
 
 
 @dataclass
@@ -541,9 +543,11 @@ def build_tool_item(
     if isinstance(call, dict):
         name = str(call.get("name") or "?")
         args = call.get("args")
+        call_id = call.get("id") or call.get("tool_call_id")
     else:
         name = str(getattr(call, "name", "?") or "?")
         args = getattr(call, "args", {}) or {}
+        call_id = getattr(call, "id", None) or getattr(call, "tool_call_id", None)
 
     cat = tool_category(name)
     path = extract_path(args)
@@ -561,20 +565,28 @@ def build_tool_item(
         preview=preview,
         error=False,
         sub=sub,
+        call_id=str(call_id) if call_id else None,
     )
 
 
 def match_tool_result(
     items: list[ToolItem],
     name: str,
+    call_id: str | None = None,
 ) -> ToolItem | None:
-    """Pick the first unfinished item with matching tool name.
+    """Pick the unfinished item matching call ID first, then tool name.
 
-    Do **not** fall back to an arbitrary running item.  Nested subagent tool
+    Do **not** fall back to an arbitrary running item. Nested subagent tool
     results (``read_file`` while the parent only has ``task`` pending) would
     otherwise finish the parent task early and leave a trail of empty groups.
     """
     want = (name or "").strip()
+    wanted_id = str(call_id or "").strip()
+    if wanted_id:
+        for it in items:
+            if it.status == "running" and it.call_id == wanted_id:
+                return it
+        return None
     for it in items:
         if it.status != "running":
             continue

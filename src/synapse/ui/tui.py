@@ -1412,10 +1412,24 @@ class ToolGroupBlock(SelectableStatic):
                 existing.preview = item.preview
                 existing.error = item.error
                 existing.sub = item.sub
+                existing.parent_id = item.parent_id
+                existing.call_id = item.call_id
                 self._sync_summary_from_items()
                 self._render_block()
                 return
-        self.items.append(item)
+        if item.parent_id:
+            insert_at = next(
+                (
+                    i + 1
+                    for i, existing in reversed(list(enumerate(self.items)))
+                    if existing.id == item.parent_id
+                    or existing.parent_id == item.parent_id
+                ),
+                len(self.items),
+            )
+            self.items.insert(insert_at, item)
+        else:
+            self.items.append(item)
         # Never leave a stale header like "Read 4 files" after more tools land.
         self._sync_summary_from_items()
         self._render_block()

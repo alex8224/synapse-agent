@@ -17,6 +17,7 @@ from synapse.middleware import (
     build_intent_schema_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
+    build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
 )
 from synapse.models_registry import build_model_from_settings, registry_from_settings
@@ -274,6 +275,7 @@ def build_coding_agent(
     middleware: list[Any] = [
         build_model_retry_middleware(),
         build_tool_error_recovery_middleware(),
+        build_task_namespace_middleware(),
         build_path_normalize_middleware(root),
         *build_intent_schema_middleware(),
     ]
