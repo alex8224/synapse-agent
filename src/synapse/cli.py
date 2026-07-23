@@ -159,6 +159,132 @@ def sessions_list(
     console.print(format_session_table(items))
 
 
+@sessions_app.command("codex-list")
+def sessions_codex_list(
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Filter Codex sessions to one workspace"
+    ),
+    codex_home: Path | None = typer.Option(
+        None, "--codex-home", help="Codex home directory (default: CODEX_HOME or ~/.codex)"
+    ),
+    limit: int = typer.Option(50, "--limit", "-n", min=1, max=200, help="Max sessions"),
+) -> None:
+    """List read-only Codex session metadata, optionally for one workspace."""
+    from synapse.codex_sessions import CodexSessionScanner
+
+    result = CodexSessionScanner(codex_home).scan(workspace, limit=limit)
+    scope = str(workspace.resolve()) if workspace is not None else "all workspaces"
+    if not result.sessions:
+        print_info(f"no Codex sessions found for {scope}")
+    else:
+        for session in result.sessions:
+            print_info(
+                f"{session.native_id}  {session.updated_at:%Y-%m-%d %H:%M}  "
+                f"{session.source:8s}  {session.cwd}  {session.title}"
+            )
+    for warning in result.warnings:
+        print_info(f"warning: {warning}")
+
+
+@sessions_app.command("codex-inspect")
+def sessions_codex_inspect(
+    native_id: str = typer.Argument(..., help="Codex native session id"),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Filter Codex sessions to one workspace"
+    ),
+    codex_home: Path | None = typer.Option(
+        None, "--codex-home", help="Codex home directory (default: CODEX_HOME or ~/.codex)"
+    ),
+) -> None:
+    """Show read-only metadata for one Codex session."""
+    from synapse.codex_sessions import CodexSessionScanner
+
+    scanner = CodexSessionScanner(codex_home)
+    session = scanner.inspect(native_id, workspace=workspace)
+    if session is None:
+        print_error(f"Codex session not found: {native_id}")
+        raise typer.Exit(code=1)
+    for key, value in session.to_dict().items():
+        if key == "warnings":
+            continue
+        print_info(f"{key}: {value}")
+    for warning in session.warnings:
+        print_info(f"warning: {warning}")
+
+
+MAX_PREVIEW_MESSAGE_CHARS = 12_000
+
+
+_PREVIEW_WARNING_TEXT = {
+    "internal_user_message": "历史包含内部提示内容",
+    "invalid_json": "历史文件不是有效的 JSONL",
+    "legacy_compaction_unsupported": "历史使用了暂不支持的旧版压缩格式",
+    "rollout_line_limit": "历史中有超过安全上限的单行内容",
+    "rollout_not_utf8": "历史文件不是 UTF-8 文本",
+    "rollout_read_failed": "历史文件无法读取",
+    "rollout_size_limit": "历史解压后的大小超过安全上限",
+    "rollout_zstd_invalid": "压缩的历史文件已损坏或不是有效 zstd 数据",
+    "unsupported_replacement_content": "压缩后的历史包含暂不支持的内容",
+    "unsupported_replacement_item": "压缩后的历史包含暂不支持的记录",
+}
+
+
+def _preview_warning_text(code: str) -> str:
+    return _PREVIEW_WARNING_TEXT.get(code, "历史包含暂不支持的记录")
+
+
+def _bounded_preview_text(text: str) -> tuple[str, bool]:
+    if len(text) <= MAX_PREVIEW_MESSAGE_CHARS:
+        return text, False
+    return text[:MAX_PREVIEW_MESSAGE_CHARS] + "\n[message truncated]", True
+
+
+@sessions_app.command("codex-preview")
+def sessions_codex_preview(
+    native_id: str = typer.Argument(..., help="Codex native session id"),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Filter Codex sessions to one workspace"
+    ),
+    codex_home: Path | None = typer.Option(
+        None, "--codex-home", help="Codex home directory (default: CODEX_HOME or ~/.codex)"
+    ),
+    limit: int = typer.Option(100, "--limit", "-n", min=1, max=500, help="Max visible messages"),
+    offset: int = typer.Option(0, "--offset", min=0, help="Visible message offset"),
+) -> None:
+    """Preview safe, completed user and assistant text from one Codex session."""
+    from synapse.codex_history import CodexHistoryProjector
+    from synapse.codex_sessions import CodexSessionScanner
+
+    session = CodexSessionScanner(codex_home).inspect(native_id, workspace=workspace)
+    if session is None:
+        print_error(f"Codex session not found: {native_id}")
+        raise typer.Exit(code=1)
+
+    snapshot = CodexHistoryProjector().project_path(session.rollout_path)
+    if not snapshot.importable:
+        print_error("Codex session cannot be previewed safely")
+        for warning in snapshot.warnings:
+            print_info(f"reason: {_preview_warning_text(warning.code)}")
+        raise typer.Exit(code=1)
+
+    page = snapshot.messages[offset : offset + limit]
+    print_info(f"Codex session: {session.title}")
+    print_info(f"Workspace: {session.cwd}")
+    print_info(f"Showing messages {offset + 1}-{offset + len(page)} of {len(snapshot.messages)}")
+    message_was_truncated = False
+    for message in page:
+        label = "User" if message.role == "user" else "Assistant"
+        text, truncated = _bounded_preview_text(message.text)
+        message_was_truncated = message_was_truncated or truncated
+        console.print(f"\n[{label}]\n{text}")
+    if offset + len(page) < len(snapshot.messages):
+        print_info(f"more messages: use --offset {offset + len(page)}")
+    if message_was_truncated:
+        print_info(f"messages longer than {MAX_PREVIEW_MESSAGE_CHARS} characters were truncated")
+    for warning in snapshot.warnings:
+        print_info(f"warning: {_preview_warning_text(warning.code)}")
+
+
 @sessions_app.command("prune")
 def sessions_prune() -> None:
     """Delete empty placeholder sessions (never got a real first message)."""

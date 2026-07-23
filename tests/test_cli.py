@@ -2,7 +2,7 @@
 
 from typer.testing import CliRunner
 
-from synapse.cli import app
+from synapse.cli import _bounded_preview_text, _preview_warning_text, app
 
 runner = CliRunner()
 
@@ -31,6 +31,18 @@ def test_cli_sessions_help():
     result = runner.invoke(app, ["sessions", "--help"])
     assert result.exit_code == 0
     assert "session" in result.stdout.lower()
+    assert "codex-list" in result.stdout
+    assert "codex-inspect" in result.stdout
+    assert "codex-preview" in result.stdout
+
+
+def test_codex_preview_helpers_bound_text_and_explain_known_errors():
+    text, truncated = _bounded_preview_text("x" * 12_001)
+
+    assert truncated is True
+    assert text.endswith("[message truncated]")
+    assert _preview_warning_text("rollout_size_limit") == "历史解压后的大小超过安全上限"
+    assert _preview_warning_text("future_warning") == "历史包含暂不支持的记录"
 
 
 def test_cli_models_help():

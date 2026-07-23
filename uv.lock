@@ -1562,6 +1562,7 @@ dependencies = [
     { name = "textual" },
     { name = "textual-diff-view" },
     { name = "typer" },
+    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
@@ -1588,6 +1589,7 @@ requires-dist = [
     { name = "textual", specifier = ">=1.0.0" },
     { name = "textual-diff-view", specifier = ">=0.1.5" },
     { name = "typer", specifier = ">=0.27.0" },
+    { name = "zstandard", specifier = ">=0.23.0" },
 ]
 
 [package.metadata.requires-dev]

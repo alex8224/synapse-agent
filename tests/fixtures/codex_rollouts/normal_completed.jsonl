@@ -1,0 +1,6 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"List the files."}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"List the files."}]}}
+{"type":"event_msg","payload":{"type":"agent_reasoning","text":"Internal reasoning omitted."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"The workspace contains `src` and `tests`."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
