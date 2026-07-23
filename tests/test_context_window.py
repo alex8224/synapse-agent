@@ -5,15 +5,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from deepagents.middleware.summarization import compute_summarization_defaults
+
 from synapse.models_registry import (
     ModelProfile,
     ModelRegistry,
+    _profiles_from_mapping,
     apply_context_window_to_model,
     merge_model_profiles,
     parse_context_window,
-    _profiles_from_mapping,
 )
-from deepagents.middleware.summarization import compute_summarization_defaults
 
 
 def test_parse_context_window_aliases() -> None:

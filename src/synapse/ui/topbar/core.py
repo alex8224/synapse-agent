@@ -19,10 +19,10 @@ with historical behavior, painted into a single-line Textual ``Static``.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
-from enum import Enum
-from typing import Callable, Iterable
+from enum import StrEnum
 
 from rich.text import Text
 
@@ -33,7 +33,7 @@ DEFAULT_REGION_GAP = "  ·  "
 DEFAULT_COL_GAP = 3
 
 
-class TopBarAlign(str, Enum):
+class TopBarAlign(StrEnum):
     LEFT = "left"
     CENTER = "center"
     RIGHT = "right"
@@ -52,7 +52,7 @@ class TopBarAlign(str, Enum):
             raise ValueError(f"unknown topbar align {value!r}; expected one of: {allowed}") from exc
 
 
-class TopBarRegion(str, Enum):
+class TopBarRegion(StrEnum):
     """Built-in region ids (custom region ids are plain strings)."""
 
     LEFT = "left"
@@ -69,7 +69,9 @@ class TopBarRegion(str, Enum):
             return cls(key)
         except ValueError as exc:
             allowed = ", ".join(r.value for r in cls)
-            raise ValueError(f"unknown topbar region {value!r}; expected one of: {allowed}") from exc
+            raise ValueError(
+                f"unknown topbar region {value!r}; expected one of: {allowed}"
+            ) from exc
 
 
 def normalize_region_id(value: TopBarRegion | str | None) -> str:
@@ -521,7 +523,12 @@ def _compress_region_parts(components: list[TopBarComponent], budget: int) -> st
         body = comp.text()
         if not body:
             continue
-        snaps.append((comp.gap_before, body, int(comp.priority), max(0, int(comp.min_width or 0)), idx))
+        snaps.append(
+            (
+                comp.gap_before, body, int(comp.priority),
+                max(0, int(comp.min_width or 0)), idx,
+            )
+        )
     if not snaps:
         return ""
 
@@ -707,7 +714,10 @@ def pack_topbar_regions(
     gap = max(0, int(col_gap or 0))
     items = [
         (
-            TopBarRegionSpec(id="left", order=10, flex=0, align=TopBarAlign.LEFT, priority=40, gap_after=gap),
+            TopBarRegionSpec(
+                id="left", order=10, flex=0,
+                align=TopBarAlign.LEFT, priority=40, gap_after=gap,
+            ),
             left or "",
             [],
         ),
@@ -725,7 +735,10 @@ def pack_topbar_regions(
             [],
         ),
         (
-            TopBarRegionSpec(id="right", order=30, flex=0, align=TopBarAlign.RIGHT, priority=50, gap_after=0),
+            TopBarRegionSpec(
+                id="right", order=30, flex=0,
+                align=TopBarAlign.RIGHT, priority=50, gap_after=0,
+            ),
             right or "",
             [],
         ),

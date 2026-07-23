@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.bottombar.components import key_hints, mcp, mode, model, thread
+from synapse.ui.bottombar.components import key_hints, mcp, mode, model
 from synapse.ui.bottombar.core import (
     DEFAULT_COL_GAP,
     BottomBarAlign,
@@ -82,7 +82,7 @@ def install_default_regions(registry: BottomBarRegistry) -> None:
 
 def install_default_components(
     registry: BottomBarRegistry,
-    ctx: "BottomBarContext | None" = None,
+    ctx: BottomBarContext | None = None,
     /,
     *,
     busy: Callable[[], bool] | None = None,

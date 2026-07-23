@@ -15,7 +15,6 @@ Layout (Grok/Cursor chrome):
 from __future__ import annotations
 
 import re
-import subprocess
 import threading
 import time
 from datetime import datetime
@@ -43,6 +42,20 @@ from synapse.multimodal import (
 )
 from synapse.session_recap import SessionRecapController
 from synapse.steer import format_steer_message, get_agent_steer_queue
+from synapse.ui.bottombar import (
+    BottomBarAlign,
+    BottomBarComponent,
+    BottomBarContext,
+    BottomBarRegion,
+    BottomBarRegionSpec,
+    BottomBarRegistry,
+)
+from synapse.ui.bottombar import (
+    install_default_components as install_default_bottombar_components,
+)
+from synapse.ui.bottombar import (
+    layout_from_registry as layout_bottombar_from_registry,
+)
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
 from synapse.ui.timeline import (
@@ -55,12 +68,6 @@ from synapse.ui.timeline import (
     parse_todo_preview_lines,
     summarize_items,
 )
-from synapse.ui.topbar.git_chrome import (
-    GitBranchChrome,
-    probe_git_branch_chrome,
-    render_branch_chrome,
-)
-from synapse.ui.topbar.git_changes_popover import TopBar
 from synapse.ui.topbar import (
     TopBarAlign,
     TopBarComponent,
@@ -68,21 +75,16 @@ from synapse.ui.topbar import (
     TopBarRegion,
     TopBarRegionSpec,
     TopBarRegistry,
-    center_in_width,
     display_width,
     install_default_components,
     layout_from_registry,
     truncate_to_width,
 )
-from synapse.ui.bottombar import (
-    BottomBarAlign,
-    BottomBarComponent,
-    BottomBarContext,
-    BottomBarRegion,
-    BottomBarRegionSpec,
-    BottomBarRegistry,
-    install_default_components as install_default_bottombar_components,
-    layout_from_registry as layout_bottombar_from_registry,
+from synapse.ui.topbar.git_changes_popover import TopBar
+from synapse.ui.topbar.git_chrome import (
+    GitBranchChrome,
+    probe_git_branch_chrome,
+    render_branch_chrome,
 )
 from synapse.ui.welcome import WelcomeView
 
@@ -692,7 +694,8 @@ def _stylize_strip_char_span(strip: object, start: int, end: int, style: object)
         mid_text = text[local_s:local_e]
         if mid_text:
             # Do not use ``base + theme_style``: theme fg often equals bg.
-            painted = _readable_selection_style(base, style if isinstance(style, RichStyle) else None)
+            simple_style = style if isinstance(style, RichStyle) else None
+            painted = _readable_selection_style(base, simple_style)
             out.append(Segment(mid_text, painted, seg.control))
         if local_e < n:
             out.append(Segment(text[local_e:], base, seg.control))
@@ -2606,8 +2609,6 @@ class CodingAgentApp(App[None]):
         from synapse.slash_complete import (
             complete_at_line,
             complete_slash,
-            cycle_at_completion,
-            cycle_completion,
         )
 
         prompt = self.query_one("#prompt", Input)
@@ -2663,7 +2664,6 @@ class CodingAgentApp(App[None]):
 
     def action_complete_slash_prev(self) -> None:
         """Cycle slash completions backwards (Shift+Tab)."""
-        from synapse.slash_complete import complete_at_line, complete_slash
 
         prompt = self.query_one("#prompt", Input)
         if not prompt.has_focus:
@@ -2790,7 +2790,8 @@ class CodingAgentApp(App[None]):
             self._set_prompt_value(nxt)
 
     def _current_completion_cands(self) -> list[str]:
-        """Return candidates for the active completion session (always  based on _complete_base_value)."""
+        """Return candidates for the active completion session
+        (always based on _complete_base_value)."""
         from synapse.slash_complete import complete_at_line, complete_slash
 
         if self.project_root and "@" in (self._complete_base_value or ""):
@@ -4007,7 +4008,9 @@ class CodingAgentApp(App[None]):
                 old = prompt.value or ""
                 prompt.value = old + placeholder
                 self.append_event(
-                    f"pasted text truncated: {len(text)} chars -> placeholder (content preserved)", "dim"
+                    f"pasted text truncated: {len(text)} chars -> "
+                    "placeholder (content preserved)",
+                    "dim",
                 )
             else:
                 old = prompt.value or ""

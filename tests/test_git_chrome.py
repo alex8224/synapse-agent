@@ -5,13 +5,13 @@ from __future__ import annotations
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
     GitChangedFile,
+    _parse_numstat,
+    _parse_porcelain_line,
+    _status_letter,
     format_branch_chrome_plain,
     format_changed_file_plain,
     render_branch_chrome,
     render_changed_file_row,
-    _parse_numstat,
-    _parse_porcelain_line,
-    _status_letter,
 )
 
 

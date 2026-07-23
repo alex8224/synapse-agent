@@ -9,7 +9,6 @@ from textual.app import ComposeResult
 from synapse.ui.dialogs.base import (
     DialogBase,
     OptionItem,
-    SectionHeader,
 )
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "max")

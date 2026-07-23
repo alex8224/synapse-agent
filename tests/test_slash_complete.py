@@ -7,12 +7,12 @@ from pathlib import Path
 from synapse.slash_complete import (
     SessionChoice,
     SlashCompleteContext,
+    _glob_at_candidates,
     best_completion,
     complete_at_line,
     complete_slash,
     cycle_completion,
     format_completion_hint,
-    _glob_at_candidates,
 )
 
 

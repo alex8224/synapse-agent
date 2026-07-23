@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual.geometry import Offset
 from textual.selection import Selection
 
+from synapse.ui.timeline import ToolItem
 from synapse.ui.tui import (
     AnswerBlock,
     SelectableStatic,
@@ -14,7 +15,6 @@ from synapse.ui.tui import (
     _annotate_strip_offsets,
     _stylize_strip_char_span,
 )
-from synapse.ui.timeline import ToolItem
 
 
 def test_annotate_strip_offsets_stamps_meta() -> None:

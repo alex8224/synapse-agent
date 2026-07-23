@@ -71,7 +71,6 @@ def build_session_tools(
             max_turns: 返回最近 N 轮。0 表示返回全部轮次。
             include_summary: 是否在开头附带会话元信息。
         """
-        from synapse.sessions import SessionStore
         from synapse.transcript import (
             format_turns_as_text,
             load_messages_from_sqlite_file,
@@ -100,11 +99,12 @@ def build_session_tools(
 
         if include_summary:
             bind = info.binding()
+            turns_display = min(max_turns, len(turns)) if max_turns else len(turns)
             header = (
                 f"会话: {info.thread_id}\n"
                 f"标题: {info.title}\n"
                 f"模型: {bind.display()}\n"
-                f"轮次: {len(turns)}（显示 {min(max_turns, len(turns)) if max_turns else len(turns)} 轮）\n"
+                f"轮次: {len(turns)}（显示 {turns_display} 轮）\n"
                 f"创建: {info.created_at}  更新: {info.updated_at}\n"
                 f"{'─' * 40}\n\n"
             )

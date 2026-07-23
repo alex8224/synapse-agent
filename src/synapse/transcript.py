@@ -652,7 +652,11 @@ def format_turns_as_text(
         lines.append(f"[共 {total_turns} 轮，以下为最后 {max_turns} 轮]\n")
 
     for i, turn in enumerate(target):
-        turn_idx = total_turns - len(target) + i + 1 if max_turns and max_turns < total_turns else i + 1
+        turn_idx = (
+            total_turns - len(target) + i + 1
+            if max_turns and max_turns < total_turns
+            else i + 1
+        )
         lines.append(f"--- 第 {turn_idx} 轮 ---")
         for msg in turn:
             item = message_to_export_dict(msg)

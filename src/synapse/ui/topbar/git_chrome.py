@@ -71,7 +71,9 @@ class GitChangedFile:
     @property
     def has_line_stats(self) -> bool:
         return (not self.is_untracked) and (
-            self.lines_added > 0 or self.lines_deleted > 0 or self.status in {"D", "A", "M", "R", "C", "T"}
+            self.lines_added > 0
+            or self.lines_deleted > 0
+            or self.status in {"D", "A", "M", "R", "C", "T"}
         )
 
 

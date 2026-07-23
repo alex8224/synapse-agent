@@ -13,12 +13,6 @@ from synapse.ui.topbar.core import (
     DEFAULT_COL_GAP,
     DEFAULT_REGION_GAP,
     PackedRegion,
-    TopBarAlign as BottomBarAlign,
-    TopBarComponent as BottomBarComponent,
-    TopBarLayout as BottomBarLayout,
-    TopBarRegion as BottomBarRegion,
-    TopBarRegionSpec as BottomBarRegionSpec,
-    TopBarRegistry as BottomBarRegistry,
     align_in_width,
     center_in_width,
     display_width,
@@ -28,10 +22,30 @@ from synapse.ui.topbar.core import (
     normalize_region_id,
     pack_layout_from_registry,
     pack_region_list,
-    pack_topbar_regions as pack_bottombar_regions,
     render_packed_line,
     render_region_text,
     truncate_to_width,
+)
+from synapse.ui.topbar.core import (
+    TopBarAlign as BottomBarAlign,
+)
+from synapse.ui.topbar.core import (
+    TopBarComponent as BottomBarComponent,
+)
+from synapse.ui.topbar.core import (
+    TopBarLayout as BottomBarLayout,
+)
+from synapse.ui.topbar.core import (
+    TopBarRegion as BottomBarRegion,
+)
+from synapse.ui.topbar.core import (
+    TopBarRegionSpec as BottomBarRegionSpec,
+)
+from synapse.ui.topbar.core import (
+    TopBarRegistry as BottomBarRegistry,
+)
+from synapse.ui.topbar.core import (
+    pack_topbar_regions as pack_bottombar_regions,
 )
 
 __all__ = [
