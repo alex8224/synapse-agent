@@ -183,6 +183,31 @@ cp .env.example .env
 
 通过 `AGENT_ACTIVE_MODEL` 环境变量或 CLI 参数切换 profile。
 
+#### 非多模态模型的图片识别
+
+主模型与识图模型独立配置。主模型 profile 不写 `image_input` 时，Synapse 会按常见模型名推断；未知的 OpenAI-compatible 模型默认按纯文本模型处理。需要覆盖推断时，在 profile 中写 `"image_input": true/false`。
+
+识图模型放在同一层 `models.json` 顶层的 `vision_model` 配置中（也支持 `settings.json`），可以自由更换任意兼容 OpenAI Chat Completions 图片输入的服务：
+
+```json
+{
+  "vision_model": {
+    "model": "qwen-vl-max",
+    "base_url": "https://your-vision-gateway.example/v1",
+    "api_key_env": "VISION_API_KEY",
+    "timeout_secs": 45,
+    "max_input_bytes": 10485760,
+    "max_retries": 2,
+    "fallback_model": "qwen-vl-plus",
+    "allow_remote_urls": false,
+    "think": true,
+    "prompt": "Describe the image for a text-only coding assistant. Extract visible text and errors."
+  }
+}
+```
+
+`vision_model.model`、`base_url`、`api_key_env` 均可更换；`api_key` 也支持，但建议使用环境变量。`think` 是识图模型独立的思考开关，开启后发送 `thinking: {"type": "enabled"}`；它不影响主模型。默认只处理本地/内存图片；将 `allow_remote_urls` 设为 `true` 才会把消息中的 HTTP(S) 图片 URL 转发给识图服务。该服务只用于把图片转换成文字，配置后图片内容会发送到指定服务。多模态主模型会跳过该 middleware，不调用识图服务。
+
 ### MCP 服务器配置
 
 在 `~/.synapse/` 或 `<workspace>/.synapse/` 下创建 `mcp.json`。

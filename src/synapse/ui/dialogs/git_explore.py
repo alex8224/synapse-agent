@@ -388,6 +388,17 @@ class GitExploreScreen(ModalScreen[None]):
         self._release_heavy_state()
 
     def dismiss(self, result: Any = None) -> AwaitComplete:
+        # Double-click / repeated outside clicks can re-enter dismiss after the
+        # screen is already gone; Textual then raises ScreenStackError.
+        if self._dismiss_started or not self.is_attached:
+            return AwaitComplete()
+        try:
+            if self.app.screen is not self:
+                self._begin_close()
+                return AwaitComplete()
+        except Exception:  # noqa: BLE001
+            self._begin_close()
+            return AwaitComplete()
         self._begin_close()
         return super().dismiss(result)
 

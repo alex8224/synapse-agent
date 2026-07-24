@@ -10,6 +10,7 @@ from typing import Any
 from synapse.backends import build_backend
 from synapse.config import Settings
 from synapse.context_compact import build_compact_tool_middleware
+from synapse.describe_image import VisionModelConfig
 from synapse.fs_permissions import build_filesystem_permissions
 from synapse.harness import apply_harness_exclusions
 from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs, load_mcp_tools
@@ -22,7 +23,11 @@ from synapse.middleware import (
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
 )
-from synapse.models_registry import build_model_from_settings, registry_from_settings
+from synapse.models_registry import (
+    build_model_from_settings,
+    model_supports_image_input,
+    registry_from_settings,
+)
 from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.steer import SteerQueue, build_steer_middleware
@@ -33,6 +38,7 @@ from synapse.tools import (  # type: ignore[attr-defined]
     git_status,
     run_tests,
 )
+from synapse.vision_middleware import build_describe_image_middleware
 
 
 def _build_checkpointer(settings: Settings):
@@ -299,7 +305,18 @@ def build_coding_agent(
         except Exception:  # noqa: BLE001
             pass
 
+    primary_image_input = model_supports_image_input(
+        model_spec,
+        getattr(selected_profile, "image_input", None),
+        getattr(selected_profile, "base_url", None) or getattr(settings, "openai_base_url", None),
+    )
+    vision_config = VisionModelConfig.from_registry(registry, settings)
+
     middleware: list[Any] = [
+        build_describe_image_middleware(
+            image_input=primary_image_input,
+            config=vision_config,
+        ),
         build_model_retry_middleware(),
         build_tool_error_recovery_middleware(),
         build_task_namespace_middleware(),

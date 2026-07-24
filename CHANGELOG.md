@@ -7,6 +7,27 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.5
+
+### 新功能
+
+- 新增独立识图服务：非多模态主模型可通过 `vision_model` 配置独立图片识别服务，自动将图片转为文字描述后交给主模型处理
+- 支持 `models.json` / `settings.json` 中配置 `vision_model`，可自由更换任意 OpenAI-compatible 识图服务（Qwen-VL 等）
+- 识图服务支持独立 `think` 开关（不影响主模型思考模式）、`allow_remote_urls` 安全策略、超时重试和 fallback 模型
+- 自动推断主模型是否原生支持图片输入（按 provider/model 名匹配），支持 `image_input` 显式覆盖
+
+### 修复
+
+- 修复 mermaid / git-explore 调用卡死问题
+- 修复 Windows 下 git 输出编码导致的乱码问题
+
+### 工程
+
+- 新增 `vision_middleware`、`describe_image` 模块
+- 新增识图服务测试和 API 检查脚本
+
+---
+
 ## v0.1.4
 
 ### 新功能

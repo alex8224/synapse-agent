@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
+import synapse.ui.topbar.git_chrome as git_chrome
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
     GitChangedFile,
@@ -13,6 +17,22 @@ from synapse.ui.topbar.git_chrome import (
     render_branch_chrome,
     render_changed_file_row,
 )
+
+
+def test_run_git_uses_utf8_replace_for_windows_output(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="feature/中文\n")
+
+    monkeypatch.setattr(git_chrome.subprocess, "run", fake_run)
+
+    result = git_chrome._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=Path("."))
+
+    assert result == "feature/中文"
+    assert calls[0][1]["encoding"] == "utf-8"
+    assert calls[0][1]["errors"] == "replace"
 
 
 def test_plain_clean_synced_no_star() -> None:
