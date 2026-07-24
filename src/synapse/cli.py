@@ -249,6 +249,7 @@ _PREVIEW_WARNING_TEXT = {
     "internal_user_message": "历史包含内部提示内容",
     "invalid_json": "历史文件不是有效的 JSONL",
     "legacy_compaction_unsupported": "历史使用了暂不支持的旧版压缩格式",
+    "no_visible_messages": "历史没有可导入的已完成用户或助手消息",
     "rollout_line_limit": "历史中有超过安全上限的单行内容",
     "rollout_not_utf8": "历史文件不是 UTF-8 文本",
     "rollout_read_failed": "历史文件无法读取",

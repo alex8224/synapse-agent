@@ -23,12 +23,29 @@ class CodexSessionListDialog(DialogBase):
         self._sessions: tuple[Any, ...] = ()
         self._warnings: tuple[str, ...] = ()
         try:
+            from synapse.codex_history import CodexHistoryProjector
             from synapse.codex_sessions import CodexSessionScanner
 
             workspace = Path(getattr(settings, "workspace", Path.cwd()))
-            result = CodexSessionScanner(codex_home).scan(workspace)
-            self._sessions = result.sessions
-            self._warnings = result.warnings
+            result = CodexSessionScanner(codex_home).scan(
+                workspace,
+                include_rollout_fallback=True,
+            )
+            projector = CodexHistoryProjector()
+            self._sessions = tuple(
+                session
+                for session in result.sessions
+                if (
+                    (snapshot := projector.project_path(session.rollout_path)).importable
+                    and snapshot.messages
+                )
+            )
+            skipped = len(result.sessions) - len(self._sessions)
+            self._warnings = (*result.warnings, *(
+                (f"{skipped} Codex session(s) have no importable visible text",)
+                if skipped
+                else ()
+            ))
         except Exception:  # noqa: BLE001
             self._sessions = ()
             self._warnings = ("Codex session discovery failed",)
@@ -39,7 +56,9 @@ class CodexSessionListDialog(DialogBase):
 
     def compose_body(self) -> ComposeResult:
         if not self._sessions:
-            yield SectionHeader("No readable Codex sessions for this workspace")
+            yield SectionHeader("No Codex sessions with importable visible text")
+            if self._warnings:
+                yield SectionHeader(self._warnings[-1])
             return
         yield SectionHeader("Select a safe text snapshot to import")
         self._items = [

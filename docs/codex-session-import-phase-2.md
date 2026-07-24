@@ -63,7 +63,9 @@ F7
 /codex import NATIVE_ID
 ```
 
-前两者打开只读 Codex session picker，只列出当前 Synapse workspace 中可读取的 Codex 会话。指定 `NATIVE_ID` 时直接执行导入。
+前两者打开只读 Codex session picker，只列出当前 Synapse workspace 中可读取、且含至少一条已完成用户或助手文本的 Codex 会话。指定 `NATIVE_ID` 时直接执行导入。
+
+导入发现会以 state DB 为主，并在导入场景下用有界 rollout header 扫描补充 state DB 未列出的会话。当前 Codex 可能创建只有 `session_meta` 的空 thread；这些没有可见文本的条目会从 picker 过滤，直接导入时返回 `no_visible_messages`，不会创建空 Synapse session。
 
 导入使用当前 TUI agent 的 checkpointer，在后台 worker 中完成。worker 与正常 turn 互斥，避免并发修改同一个 checkpoint。完成后 TUI 通过现有 `/switch <thread_id>` 路径切换会话、恢复 timeline 和刷新标题/状态栏；不会直接修改 `thread_id` 或手写 transcript。
 

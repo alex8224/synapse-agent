@@ -26,9 +26,9 @@ MAX_LIMIT = 200
 MAX_DB_ROWS = 5_000
 MAX_SCAN_FILES = 500
 MAX_ROLLOUT_BYTES = 32 * 1024 * 1024
-MAX_HEAD_BYTES = 128 * 1024
+MAX_HEAD_BYTES = 2 * 1024 * 1024
 MAX_HEAD_RECORDS = 50
-MAX_LINE_BYTES = 16 * 1024
+MAX_HEADER_LINE_BYTES = 64 * 1024
 MAX_TITLE_CHARS = 120
 
 _STATE_DB_RE = re.compile(r"state_(\d+)\.sqlite\Z")
@@ -96,7 +96,11 @@ class CodexSessionScanner:
         return self._codex_home
 
     def scan(
-        self, workspace: Path | str | None = None, *, limit: int = DEFAULT_LIMIT
+        self,
+        workspace: Path | str | None = None,
+        *,
+        limit: int = DEFAULT_LIMIT,
+        include_rollout_fallback: bool = False,
     ) -> CodexScanResult:
         """Return recent readable sessions, optionally scoped to one workspace.
 
@@ -147,6 +151,21 @@ class CodexSessionScanner:
             except sqlite3.Error as exc:
                 warnings.append(f"state DB read failed: {type(exc).__name__}")
             else:
+                if include_rollout_fallback:
+                    fallback_sessions, fallback_warnings = _scan_rollout_headers(
+                        self._codex_home,
+                        workspace_path,
+                        limit=limit,
+                    )
+                    warnings.extend(fallback_warnings)
+                    known_ids = {session.native_id for session in sessions}
+                    sessions.extend(
+                        session
+                        for session in fallback_sessions
+                        if session.native_id not in known_ids
+                    )
+                    sessions.sort(key=lambda session: session.updated_at, reverse=True)
+                    sessions = sessions[:limit]
                 return CodexScanResult(
                     codex_home=self._codex_home,
                     sessions=tuple(sessions),
@@ -166,10 +185,19 @@ class CodexSessionScanner:
         )
 
     def inspect(
-        self, native_id: str, *, workspace: Path | str | None = None, limit: int = MAX_LIMIT
+        self,
+        native_id: str,
+        *,
+        workspace: Path | str | None = None,
+        limit: int = MAX_LIMIT,
+        include_rollout_fallback: bool = False,
     ) -> CodexSession | None:
         """Look up one native session id, optionally scoped to one workspace."""
-        sessions = self.scan(workspace, limit=limit).sessions
+        sessions = self.scan(
+            workspace,
+            limit=limit,
+            include_rollout_fallback=include_rollout_fallback,
+        ).sessions
         return next((session for session in sessions if session.native_id == native_id), None)
 
 
@@ -183,10 +211,17 @@ def _resolve_codex_home(value: Path | str | None) -> Path:
 
 
 def _canonical_path(path: Path) -> Path:
+    raw = str(path)
+    if os.name == "nt":
+        if raw.startswith("\\\\?\\UNC\\"):
+            raw = "\\\\" + raw[8:]
+        elif raw.startswith("\\\\?\\"):
+            raw = raw[4:]
+    normalized = Path(raw)
     try:
-        return path.resolve(strict=False)
+        return normalized.resolve(strict=False)
     except OSError:
-        return Path(os.path.abspath(path))
+        return Path(os.path.abspath(normalized))
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -327,8 +362,9 @@ def _scan_rollout_headers(
         return [], warnings
 
     candidates: list[Path] = []
-    for directory, _, names in os.walk(sessions_root, followlinks=False):
-        for name in names:
+    for directory, dirs, names in os.walk(sessions_root, followlinks=False):
+        dirs.sort(reverse=True)
+        for name in sorted(names, reverse=True):
             if len(candidates) >= MAX_SCAN_FILES:
                 warnings.append("rollout scan truncated at file limit")
                 break
@@ -399,8 +435,8 @@ def _read_rollout_head(path: Path) -> dict[str, Any] | None:
                     records = _rollout_head_lines(compressed)
                     _read_rollout_header_records(records, metadata)
         else:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                _read_rollout_header_records(handle, metadata)
+            with path.open("rb") as raw:
+                _read_rollout_header_records(_rollout_head_lines(raw), metadata)
     except zstandard.ZstdError as exc:
         raise ValueError("invalid zstd data") from exc
     return metadata if isinstance(metadata["cwd"], Path) else None
@@ -410,36 +446,41 @@ def _rollout_head_lines(stream: Any):
     total = 0
     pending = b""
     records = 0
+    discarding = False
     while records < MAX_HEAD_RECORDS:
-        chunk = stream.read(MAX_LINE_BYTES)
+        chunk = stream.read(MAX_HEADER_LINE_BYTES)
         if not chunk:
             break
         total += len(chunk)
         if total > MAX_HEAD_BYTES:
             raise ValueError("header exceeds size limit")
+        if discarding:
+            newline = chunk.find(b"\n")
+            if newline < 0:
+                continue
+            records += 1
+            yield None
+            discarding = False
+            chunk = chunk[newline + 1 :]
         pending += chunk
         while b"\n" in pending and records < MAX_HEAD_RECORDS:
             line, pending = pending.split(b"\n", 1)
-            if len(line) > MAX_LINE_BYTES:
-                raise ValueError("line exceeds size limit")
             records += 1
-            yield line.decode("utf-8", errors="replace")
-        if len(pending) > MAX_LINE_BYTES:
-            raise ValueError("line exceeds size limit")
-    if pending and records < MAX_HEAD_RECORDS:
+            if len(line) > MAX_HEADER_LINE_BYTES:
+                yield None
+            else:
+                yield line.decode("utf-8", errors="replace")
+        if len(pending) > MAX_HEADER_LINE_BYTES:
+            pending = b""
+            discarding = True
+    if pending and not discarding and records < MAX_HEAD_RECORDS:
         yield pending.decode("utf-8", errors="replace")
 
 
 def _read_rollout_header_records(records: Any, metadata: dict[str, Any]) -> None:
-    total = 0
-    for index, line in enumerate(records):
-        if index >= MAX_HEAD_RECORDS:
-            return
-        if len(line) > MAX_LINE_BYTES:
-            raise ValueError("line exceeds size limit")
-        total += len(line.encode("utf-8", errors="replace"))
-        if total > MAX_HEAD_BYTES:
-            raise ValueError("header exceeds size limit")
+    for line in records:
+        if line is None:
+            continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
@@ -465,6 +506,12 @@ def _read_rollout_header_records(records: Any, metadata: dict[str, Any]) -> None
                 message = payload.get("message")
                 if isinstance(message, str):
                     metadata["title"] = _safe_title(message)
+        if (
+            isinstance(metadata["cwd"], Path)
+            and metadata["source"] != "unknown"
+            and metadata["title"]
+        ):
+            return
 
 
 def _validated_rollout_path(codex_home: Path, raw_path: str, native_id: str) -> Path | None:

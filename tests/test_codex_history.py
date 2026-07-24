@@ -196,6 +196,16 @@ def test_rejects_internal_only_user_message() -> None:
     assert _warning_codes(snapshot) == ["internal_user_message"]
 
 
+def test_empty_rollout_projects_an_empty_valid_snapshot() -> None:
+    snapshot = CodexHistoryProjector().project_lines(
+        ['{"type":"session_meta","payload":{"cwd":"/workspace"}}\n']
+    )
+
+    assert snapshot.importable is True
+    assert snapshot.messages == ()
+    assert snapshot.warnings == ()
+
+
 @pytest.mark.parametrize("name", ["normal_completed.jsonl", "replacement_history.jsonl"])
 def test_source_ids_are_stable_across_reads(name: str) -> None:
     first = _project(name)

@@ -125,6 +125,35 @@ def test_scanner_lists_all_supported_workspaces_when_unfiltered(tmp_path: Path) 
     ]
 
 
+def test_scanner_supplements_state_db_with_rollout_headers_when_requested(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_rollout = _rollout_path(home, ID_ONE)
+    fallback_rollout = _rollout_path(home, ID_TWO)
+    _write_rollout(state_rollout, workspace, title="State DB session")
+    _write_rollout(fallback_rollout, workspace, title="Supplemented rollout session")
+    _create_state_db(
+        home,
+        [(ID_ONE, state_rollout, workspace, "State DB session", 1_774_000_000_000)],
+    )
+
+    default = CodexSessionScanner(home).scan(workspace)
+    supplemented = CodexSessionScanner(home).scan(workspace, include_rollout_fallback=True)
+
+    assert [session.native_id for session in default.sessions] == [ID_ONE]
+    assert {session.native_id for session in supplemented.sessions} == {ID_ONE, ID_TWO}
+    supplemented_session = next(
+        session for session in supplemented.sessions if session.native_id == ID_TWO
+    )
+    assert supplemented_session.title == "Supplemented rollout session"
+    assert CodexSessionScanner(home).inspect(
+        ID_TWO,
+        workspace=workspace,
+        include_rollout_fallback=True,
+    ) is not None
+
+
 def test_scanner_falls_back_to_rollout_headers_when_state_db_is_missing(tmp_path: Path) -> None:
     home = tmp_path / "codex"
     workspace = tmp_path / "workspace"
@@ -158,6 +187,55 @@ def test_scanner_reads_compressed_rollout_headers(tmp_path: Path) -> None:
 
     assert [session.native_id for session in result.sessions] == [ID_ONE]
     assert result.sessions[0].title == "Compressed title"
+
+
+def test_scanner_reads_large_bounded_session_metadata_header(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    metadata = {
+        "type": "session_meta",
+        "payload": {
+            "cwd": str(workspace),
+            "source": "cli",
+            "base_instructions": "x" * (37 * 1024),
+        },
+    }
+    event = {
+        "type": "event_msg",
+        "payload": {"type": "user_message", "message": "Large header title"},
+    }
+    rollout.write_text("\n".join(map(json.dumps, (metadata, event))), encoding="utf-8")
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert [session.native_id for session in result.sessions] == [ID_ONE]
+    assert result.sessions[0].title == "Large header title"
+
+
+def test_scanner_skips_oversized_internal_record_before_user_title(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    records = (
+        {"type": "session_meta", "payload": {"cwd": str(workspace), "source": "cli"}},
+        {
+            "type": "response_item",
+            "payload": {"type": "message", "role": "developer", "content": "x" * (80 * 1024)},
+        },
+        {
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "Title after large record"},
+        },
+    )
+    rollout.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert [session.native_id for session in result.sessions] == [ID_ONE]
+    assert result.sessions[0].title == "Title after large record"
 
 
 def test_scanner_warns_for_invalid_compressed_rollout(tmp_path: Path) -> None:

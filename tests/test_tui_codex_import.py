@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -49,6 +50,41 @@ def test_codex_picker_degrades_to_empty_list_when_scanner_fails(monkeypatch) -> 
     assert dialog._sessions == ()
     assert dialog._warnings == ("Codex session discovery failed",)
     assert dialog.title_text == "Import Codex Session"
+
+
+def test_codex_picker_includes_rollout_only_session_and_hides_empty_thread(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sessions_dir = home / "sessions" / "2026" / "03" / "20"
+    sessions_dir.mkdir(parents=True)
+    visible_id = "11111111-1111-1111-1111-111111111111"
+    empty_id = "22222222-2222-2222-2222-222222222222"
+    visible = sessions_dir / f"rollout-2026-03-20T12-00-00-{visible_id}.jsonl"
+    empty = sessions_dir / f"rollout-2026-03-20T11-00-00-{empty_id}.jsonl"
+    metadata = {"type": "session_meta", "payload": {"cwd": str(workspace), "source": "cli"}}
+    fixture = Path(__file__).parent / "fixtures" / "codex_rollouts" / "normal_completed.jsonl"
+    visible.write_text(
+        json.dumps(metadata) + "\n" + fixture.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    empty.write_text(
+        json.dumps({"type": "session_meta", "payload": {"cwd": str(workspace), "source": "cli"}}),
+        encoding="utf-8",
+    )
+
+    from synapse.codex_sessions import CodexSessionScanner
+
+    scan = CodexSessionScanner(home).scan(workspace, include_rollout_fallback=True)
+    assert {session.native_id for session in scan.sessions} == {visible_id, empty_id}, scan.warnings
+
+    dialog = CodexSessionListDialog(
+        SimpleNamespace(workspace=workspace),
+        codex_home=home,
+    )
+
+    assert [session.native_id for session in dialog._sessions] == [visible_id], dialog._warnings
+    assert any("no importable visible text" in warning for warning in dialog._warnings)
 
 
 def test_codex_dialog_result_starts_background_import(monkeypatch) -> None:

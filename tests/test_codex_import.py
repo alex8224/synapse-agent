@@ -81,6 +81,22 @@ def test_import_creates_one_terminal_session_and_reuses_it(tmp_path) -> None:
     assert entry.snapshot_digest == snapshot_digest(snapshot)
 
 
+def test_import_rejects_empty_but_valid_snapshot_before_claiming_ledger(tmp_path) -> None:
+    service, _, _, ledger = _service(tmp_path)
+    snapshot = CodexTextSnapshot(
+        projection_kind=PROJECTION_KIND,
+        parser_version=PARSER_VERSION,
+        messages=(),
+        warnings=(),
+        importable=True,
+    )
+
+    with pytest.raises(CodexImportError, match="no_visible_messages"):
+        service.import_snapshot(native_id="codex-empty", snapshot=snapshot, title="Empty")
+
+    assert ledger.entry("codex:codex-empty") is None
+
+
 def test_import_rejects_same_source_with_changed_immutable_snapshot(tmp_path) -> None:
     service, _, _, _ = _service(tmp_path)
     service.import_snapshot(native_id="codex-1", snapshot=_snapshot(), title="Codex title")

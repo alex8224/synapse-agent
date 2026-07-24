@@ -169,7 +169,11 @@ def import_codex_session(
     from synapse.codex_sessions import CodexSessionScanner
 
     target_workspace = workspace or Path(getattr(settings, "workspace", Path.cwd()))
-    session = CodexSessionScanner(codex_home).inspect(native_id, workspace=target_workspace)
+    session = CodexSessionScanner(codex_home).inspect(
+        native_id,
+        workspace=target_workspace,
+        include_rollout_fallback=True,
+    )
     if session is None:
         raise CodexImportError(f"Codex session not found: {native_id}")
     snapshot = CodexHistoryProjector().project_path(session.rollout_path)
@@ -178,6 +182,8 @@ def import_codex_session(
         raise CodexImportError(
             f"Codex session cannot be imported safely: {warning_codes or 'unknown'}"
         )
+    if not snapshot.messages:
+        raise CodexImportError("Codex session cannot be imported safely: no_visible_messages")
 
     sessions_path = settings.resolved_sessions_path()
     store = SessionStore(sessions_path)
@@ -220,6 +226,8 @@ class CodexImportService:
         title: str,
     ) -> CodexImportResult:
         """Create or recover exactly one Synapse session for one Codex source."""
+        if not snapshot.messages:
+            raise CodexImportError("Codex session cannot be imported safely: no_visible_messages")
         digest = snapshot_digest(snapshot)
         source_id = _source_id(native_id)
         proposed_thread_id = f"codex-{uuid.uuid4().hex[:20]}"
