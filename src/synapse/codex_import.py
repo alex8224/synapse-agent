@@ -185,6 +185,11 @@ def import_codex_session(
     if not snapshot.messages:
         raise CodexImportError("Codex session cannot be imported safely: no_visible_messages")
 
+    title = next(
+        (message.text for message in snapshot.messages if message.role == "user"),
+        session.title,
+    )
+
     sessions_path = settings.resolved_sessions_path()
     store = SessionStore(sessions_path)
     ledger = CodexImportLedger(default_codex_import_ledger_path(sessions_path))
@@ -197,7 +202,7 @@ def import_codex_session(
         return service.import_snapshot(
             native_id=session.native_id,
             snapshot=snapshot,
-            title=session.title,
+            title=title,
         )
     finally:
         ledger.close()

@@ -14,6 +14,7 @@ from langgraph.graph.message import MessagesState
 from synapse.cli import _import_codex_session
 from synapse.codex_sessions import CodexSessionScanner
 from synapse.config import load_settings
+from synapse.sessions import SessionStore
 
 ID_ONE = "11111111-1111-1111-1111-111111111111"
 
@@ -75,6 +76,11 @@ def test_import_codex_session_helper_imports_and_reuses_thread(tmp_path: Path) -
     assert second.thread_id == first.thread_id
     state = agent.get_state({"configurable": {"thread_id": second.thread_id}})
     assert [message.content for message in state.values["messages"]] == ["Import me", "Imported"]
+    sessions = SessionStore(settings.resolved_sessions_path())
+    try:
+        assert sessions.get(first.thread_id).title == "Import me"
+    finally:
+        sessions.close()
 
 
 def test_import_codex_session_helper_rejects_unprojectable_history(tmp_path: Path) -> None:

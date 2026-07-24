@@ -89,7 +89,7 @@ def test_scanner_reads_matching_state_db_session_readonly(tmp_path: Path) -> Non
 
     assert result.discovery == "state_db"
     assert [session.native_id for session in result.sessions] == [ID_ONE]
-    assert result.sessions[0].title == "State DB title"
+    assert result.sessions[0].title == "fallback"
     assert result.sessions[0].source == "cli"
     assert result.sessions[0].rollout_path == rollout.resolve()
     assert result.sessions[0].fingerprint
@@ -188,7 +188,7 @@ def test_scanner_falls_back_to_rollout_headers_when_state_db_is_missing(tmp_path
     assert result.sessions[0].source == "cli"
 
 
-def test_scanner_uses_session_index_title_over_rollout_preview(tmp_path: Path) -> None:
+def test_scanner_ignores_session_index_title_for_picker_label(tmp_path: Path) -> None:
     home = tmp_path / "codex"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -203,10 +203,10 @@ def test_scanner_uses_session_index_title_over_rollout_preview(tmp_path: Path) -
 
     result = CodexSessionScanner(home).scan(workspace)
 
-    assert result.sessions[0].title == "Codex title"
+    assert result.sessions[0].title == "Rollout preview"
 
 
-def test_scanner_preserves_explicit_state_db_title_over_session_index(tmp_path: Path) -> None:
+def test_scanner_uses_first_user_title_over_state_db_title(tmp_path: Path) -> None:
     home = tmp_path / "codex"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -223,7 +223,7 @@ def test_scanner_preserves_explicit_state_db_title_over_session_index(tmp_path: 
 
     result = CodexSessionScanner(home).scan(workspace)
 
-    assert result.sessions[0].title == "Saved title"
+    assert result.sessions[0].title == "fallback"
 
 
 def test_scanner_accepts_thread_spawn_subagent_source(tmp_path: Path) -> None:
