@@ -30,12 +30,7 @@ from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.steer import SteerQueue, build_steer_middleware
 from synapse.subagents import build_default_subagents
-from synapse.tools import (  # type: ignore[attr-defined]
-    build_session_tools,
-    git_diff,
-    git_status,
-    run_tests,
-)
+from synapse.tools import build_session_tools
 from synapse.vision_middleware import build_describe_image_middleware
 
 
@@ -205,7 +200,7 @@ def build_coding_agent(
         deny_paths=settings.deny_fs_paths,
     )
 
-    tools: list[Any] = [git_status, git_diff, run_tests]
+    tools: list[Any] = []
     if extra_tools:
         tools.extend(extra_tools)
     # 跨会话查阅工具

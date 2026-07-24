@@ -63,7 +63,7 @@
 | 能力 | 工具/机制 | Coding Agent 用途 |
 |---|---|---|
 | 任务规划 | `write_todos` | 拆任务、跟踪进度 |
-| 文件读写 | `ls/read_file/write_file/edit_file/glob/grep` | 浏览与修改代码 |
+| 文件读写 | `read_file/write_file/edit_file/glob` | 浏览与修改代码 |
 | 命令执行 | `execute`（需 sandbox 或 LocalShell） | `uv run pytest`、`ruff`、`git` |
 | 子代理 | `task` | 并行调研/修复/写测试 |
 | 上下文管理 | summarization + offload | 长会话不爆 context |
@@ -375,9 +375,6 @@ Deep Agents 已有文件系统与 execute；本项目只补 coding 场景高频�
 
 | 工具 | 优先级 | 说明 |
 |---|---|---|
-| `git_status` | P1 | 看工作区状态 |
-| `git_diff` | P1 | 看变更 |
-| `run_tests` | P2 | 封装 `uv run pytest`（可只是 prompt 约定） |
 | `apply_patch` | P2 | 若 edit_file 不够稳再补 |
 | MCP tools | P3 | 接浏览器/issue 系统等 |
 

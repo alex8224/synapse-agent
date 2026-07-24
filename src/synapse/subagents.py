@@ -52,12 +52,10 @@ def build_default_subagents(
     When ``isolate_tools`` is True (LocalShell-safe):
     - researcher: exclude write_file/edit_file/execute
     - reviewer: exclude write_file/edit_file
-    - tester: includes project ``run_tests`` tool
+    - tester: uses built-in ``execute`` and project ``AGENTS.md`` commands
     """
     if not enabled:
         return None
-
-    from synapse.tools import run_tests
 
     tester: dict[str, Any] = {
         "name": "tester",
@@ -68,7 +66,7 @@ def build_default_subagents(
         "system_prompt": (
             "You are a testing specialist for a Python coding agent.\n"
             "- Prefer the narrowest useful pytest invocation first.\n"
-            "- Use project tools (run_tests, execute, read/edit) carefully.\n"
+            "- Follow the project's AGENTS.md for test steps and conventions.\n"
             "- Report failing tests, root cause, and exact commands run.\n"
             "- Do not expand scope beyond verifying the requested behavior.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
@@ -79,7 +77,8 @@ def build_default_subagents(
     if tester_model:
         tester["model"] = tester_model
     if isolate_tools:
-        tester["tools"] = [run_tests]
+        # Keep the tester on built-in tools; project commands belong in AGENTS.md.
+        tester["tools"] = []
 
     reviewer: dict[str, Any] = {
         "name": "reviewer",
@@ -113,7 +112,7 @@ def build_default_subagents(
         ),
         "system_prompt": (
             "You are a codebase researcher.\n"
-            "- Prefer glob/grep/read over broad shell scans.\n"
+            "- Prefer read_file/glob over broad shell scans.\n"
             "- Do not modify files.\n"
             "- Do not run destructive shell commands.\n"
             "- Return concrete file paths and short evidence snippets.\n"

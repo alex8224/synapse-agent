@@ -114,7 +114,7 @@ def test_subagents_isolation():
     assert "middleware" in by_name["reviewer"]
     assert "permissions" not in by_name["researcher"]
     assert "permissions" not in by_name["reviewer"]
-    assert by_name["tester"].get("tools")
+    assert by_name["tester"].get("tools") == []
     lines = format_subagents_lines(specs)
     assert any("researcher" in ln for ln in lines)
     assert any("tool-exclude" in ln for ln in lines)

@@ -8,11 +8,10 @@
 - Backend 仅使用 `LocalShellBackend`，无远程 sandbox。
 - 对用户回复与模型思考过程使用中文；代码标识符/路径/命令可保留原文。
 
-## 常用命令
-- 安装依赖：`uv sync`。若 Synapse 正在运行，先退出相关进程，避免 Windows 锁定 `synapse.exe`。
-- 运行 CLI：优先 `uv run --no-sync synapse ...`；仅在确认环境需要同步且没有运行中的 `synapse.exe` 时使用默认 `uv run synapse ...`。
-- 测试：优先 `uv run --no-sync pytest`；仅在需要同步依赖时使用 `uv sync`。
-- 检查：优先 `uv run --no-sync ruff check .`；仅在需要同步依赖时使用 `uv sync`。
+## 测试步骤
+- 优先运行针对性测试：`uv run --no-sync pytest tests/test_x.py -q`。
+- 针对性测试通过后，再运行完整测试：`uv run --no-sync pytest -q`。
+- 代码检查：`uv run --no-sync ruff check .`。
 
 ## 安全注意
 - 除非用户明确要求，不要 force-push 或 hard-reset。

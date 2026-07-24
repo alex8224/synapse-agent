@@ -500,6 +500,9 @@ def test_fs_permissions_and_harness(tmp_path: Path):
         shell_backend=False,
     )
     assert perms is not None
+    excluded = apply_harness_exclusions("openai:demo")
+    assert "ls" in excluded
+    assert "grep" in excluded
     excluded = apply_harness_exclusions("openai:demo", readonly=True)
     assert "write_file" in excluded
     assert "execute" in excluded

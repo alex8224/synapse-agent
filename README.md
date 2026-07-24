@@ -11,11 +11,11 @@
 
 | 能力 | 说明 |
 |---|---|
-| 读改代码 | `ls/read/write/edit/glob/grep` |
+| 读改代码 | `read/write/edit/glob`；目录和搜索通过 `execute` 调用项目命令 |
 | 执行命令 | `execute` 本地 shell |
 | 规划 | `write_todos` |
 | 子代理 | 默认 `researcher` / `tester` / `reviewer`（`task` 委派） |
-| 自定义工具 | `git_status` / `git_diff` / `run_tests` |
+| 自定义工具 | 会话查阅工具；git/测试/搜索等通过 `execute` 调用项目命令 |
 | 记忆 | `AGENTS.md` |
 | Skills | `skills/**`（Agent Skills frontmatter） |
 | 会话 | sqlite checkpointer + 会话元数据管理 |
@@ -359,7 +359,7 @@ src/synapse/
   fs_permissions.py  # FilesystemPermission
   prompts.py
   safety.py
-  tools/             # git / run_tests
+  tools/             # session tools
   ui/                # stream + TUI
 docs/design.md
 skills/              # agent skills
