@@ -99,6 +99,56 @@ from synapse.ui.welcome import WelcomeView
 _WS_RE = re.compile(r"\s+")
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy *text* to the system clipboard. Returns True on success."""
+    if not text:
+        return False
+    # Prefer pyperclip (cross-platform, lightweight).
+    try:
+        import pyperclip  # type: ignore[import-untyped]
+
+        pyperclip.copy(text)
+        return True
+    except ImportError:
+        pass
+    # Fallback: platform-specific subprocess.
+    import shutil
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"Set-Clipboard -Value {_ps_escape(text)}"],
+                check=False, timeout=5,
+            )
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    elif sys.platform == "darwin":
+        try:
+            subprocess.run(["pbcopy"], input=text, text=True, check=False, timeout=5)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        for cmd in ("xclip -selection clipboard", "wl-copy"):
+            if shutil.which(cmd.split()[0]):
+                try:
+                    subprocess.run(cmd.split(), input=text, text=True, check=False, timeout=5)
+                    return True
+                except Exception:  # noqa: BLE001
+                    pass
+    return False
+
+
+def _ps_escape(text: str) -> str:
+    """Minimal PowerShell single-quote escaping."""
+    return "'" + text.replace("'", "''") + "'"
+
+
 # Palette slots — kept as module globals so render paths stay cheap.
 # Values track ``synapse.ui.theme.get_theme()`` via ``_sync_theme_colors``.
 _C_FG = "#e8eaed"
@@ -1126,7 +1176,10 @@ class ThoughtBlock(SelectableStatic):
 
 
 class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live plain-text tail, then Markdown seal."""
+    """Assistant answer row; live plain-text tail, then Markdown seal.
+
+    Click to copy the answer text to the clipboard.
+    """
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -1153,6 +1206,22 @@ class AnswerBlock(SelectableStatic):
 
     def selectable_text(self) -> str:
         return self.body or ""
+
+    def on_click(self) -> None:
+        """Copy answer text to clipboard on mouse click."""
+        text = (self.body or "").strip()
+        if not text:
+            return
+        if _copy_to_clipboard(text):
+            self.app.bell()
+            try:
+                self.notify(
+                    f"已复制 {len(text)} 字符到剪贴板",
+                    timeout=2.0,
+                    severity="information",
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _render_block(self) -> None:
         body = self.body or ""
@@ -2107,6 +2176,9 @@ class CodingAgentApp(App[None]):
             show=False,
             priority=True,
         ),
+        Binding("ctrl+shift+c", "copy_last_answer", "Copy", show=False),
+        Binding("ctrl+shift+s", "open_selectable_view", "Select text", show=True, priority=True),
+        Binding("f7", "open_selectable_view", "Select text", show=False),
         Binding("alt+v", "clipboard_paste", "Paste image", show=False, priority=True),
         # priority: capture ESC even while the prompt Input has focus
         Binding("escape", "cancel_run", "Cancel", show=False, priority=True),
@@ -4315,6 +4387,39 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             pass
         self._show_welcome()
+
+    def action_copy_last_answer(self) -> None:
+        """Copy the most recent answer to the system clipboard."""
+        text = (self._last_answer_text or "").strip()
+        if not text:
+            self.append_event("nothing to copy", "dim")
+            return
+        _copy_to_clipboard(text)
+        self.append_event(f"copied {len(text)} chars", "dim")
+
+    def action_open_selectable_view(self) -> None:
+        """Open a full-conversation plain-text view for mouse selection & copy."""
+        from synapse.ui.selectable_text import (
+            SelectableTextModal,
+            build_transcript_from_log,
+        )
+
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            transcript = build_transcript_from_log(log)
+        except Exception:  # noqa: BLE001
+            transcript = "(empty)"
+
+        if not transcript.strip():
+            self.append_event("nothing to show", "dim")
+            return
+
+        self.push_screen(
+            SelectableTextModal(transcript, char_count=len(transcript))
+        )
+
+    # -- clipboard helpers ---------------------------------------------------
+
         self.set_activity("idle", "ready", True)
 
     def _reset_session_token_chrome(self) -> None:
@@ -5156,6 +5261,9 @@ class CodingAgentApp(App[None]):
             return True
         if cmd == "/safety" and len(parts) == 1:
             self._open_safety_dialog()
+            return True
+        if cmd == "/select":
+            self.action_open_selectable_view()
             return True
 
         prev_thread = self.thread_id

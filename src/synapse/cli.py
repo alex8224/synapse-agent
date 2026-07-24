@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import os
 from pathlib import Path
 
@@ -90,6 +92,76 @@ def _print_auth_error(settings, exc: Exception) -> None:
 # ---------------------------------------------------------------------------
 # Default callback: launch TUI when no subcommand is given
 # ---------------------------------------------------------------------------
+
+
+async def _enhance_task(
+    *,
+    agent: Any,
+    settings: Any,
+    task: str,
+) -> str:
+    """Enrich the task with long-term memory, RAG knowledge, and planning.
+
+    Returns the original task if all enhancements are disabled or fail.
+    """
+    enhanced = task
+    context_parts: list[str] = []
+
+    # 1. RAG: search project knowledge base
+    _kb = getattr(agent, "_coding_knowledge_base", None)
+    if _kb is not None and getattr(settings, "enable_rag", False):
+        try:
+            chunks = await _kb.search(task, top_k=settings.rag_top_k)
+            if chunks:
+                ctx = "## 项目知识库相关片段\n" + "\n".join(
+                    f"  [{c['source']}] {c['text'][:800]}" for c in chunks
+                )
+                context_parts.append(ctx)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2. Long-term memory: recall relevant past interactions
+    _ltm = getattr(agent, "_coding_long_term_memory", None)
+    if _ltm is not None and getattr(settings, "enable_long_term_memory", False):
+        try:
+            entries = await _ltm.recall(task, top_k=3)
+            if entries:
+                ctx = "## 相关历史记忆\n" + "\n".join(
+                    f"- {e.text[:500]}" for e in entries
+                )
+                context_parts.append(ctx)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Prepend context to the task
+    if context_parts:
+        enhanced = "\n\n".join(context_parts) + "\n\n---\n\n" + enhanced
+
+    return enhanced
+
+
+async def _auto_record_memory(
+    *,
+    ltm: Any,
+    model: Any = None,
+    task: str,
+    answer: str,
+    thread_id: str = "",
+) -> int:
+    """Auto-record valuable lessons after a completed turn.
+
+    Uses ``AutoRecorder`` with heuristic pre-filter + optional LLM extraction.
+    Returns the number of stored lessons.
+    """
+    from synapse.memory.auto_recorder import AutoRecorder
+
+    recorder = AutoRecorder(model=model)
+    return await recorder.record_if_valuable(
+        ltm,
+        task=task,
+        answer=answer,
+        thread_id=thread_id,
+    )
 
 
 def _launch_tui(

@@ -31,8 +31,11 @@ from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.middleware import (
     build_compact_tool_descriptions,
     build_intent_schema_middleware,
+    build_intent_schema_middleware,
+    build_memory_injection_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
+    build_plan_tracking_middleware,
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
@@ -273,6 +276,33 @@ def build_coding_agent(
     except Exception:  # noqa: BLE001
         pass
 
+    # -- 长期记忆 / 知识库（默认关闭，按需创建实例） --
+    # 实例存储为 agent 私有属性，由 CLI/TUI 在执行前异步查询。
+
+    _kb: Any = None
+    _ltm: Any = None
+
+    if getattr(settings, "enable_rag", False):
+        try:
+            from synapse.rag.knowledge_base import ProjectKnowledgeBase
+
+            _kb = ProjectKnowledgeBase(
+                project_root=root,
+                db_path=settings.resolved_rag_knowledge_path(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if getattr(settings, "enable_long_term_memory", False):
+        try:
+            from synapse.memory.long_term import LongTermMemory
+
+            _ltm = LongTermMemory(
+                db_path=settings.resolved_long_term_memory_path(),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     should_load_mcp = resolve_load_mcp(settings, load_mcp)
     mcp_deferred = bool(settings.enable_mcp) and not should_load_mcp and mcp_tools is None
 
@@ -432,6 +462,13 @@ def build_coding_agent(
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
     # All model I/O is async-only and bound to the process runtime loop.
+    # 长期记忆 / 知识库 / 规划（默认 None，在 CLI/TUI 层异步查询）
+    agent._coding_knowledge_base = _kb  # type: ignore[attr-defined]
+    agent._coding_long_term_memory = _ltm  # type: ignore[attr-defined]
+    # Planner model: 使用主模型做规划（如需节省成本可用更轻量的模型）
+    agent._coding_planner_model = model  # type: ignore[attr-defined]
+    # Expose process async runtime when using AsyncSqliteSaver so stream can
+    # schedule astream on the same loop the checkpointer is bound to.
     try:
         from synapse.runtime.async_runtime import get_async_runtime
 

@@ -81,6 +81,11 @@ HELP_TEXT = """## Slash Commands
 | `/theme list` | List themes |
 | `/theme <name>` | Apply theme |
 
+### Transcript
+| Command | Description |
+|---|---|
+| `/select` | Open plain-text view for mouse selection & copy |
+
 ### Safety / HITL
 | Command | Description |
 |---|---|
