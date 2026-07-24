@@ -1424,6 +1424,18 @@ def stream_agent(
     suppress_msg_ids: set[str] = set()
     compact_events = 0
 
+    # -- install retry notifier so the middleware can post status-bar updates --
+    from synapse.middleware import clear_retry_notifier, set_retry_notifier
+
+    def _retry_notify(attempt: int, delay: float, reason: str) -> None:
+        """Post a single-line retry notice through the sink."""
+        try:
+            sink.info(f"model retry #{attempt} in {delay:.1f}s ({reason})")
+        except Exception:  # noqa: BLE001
+            pass
+
+    set_retry_notifier(_retry_notify)
+
     def _note_compact() -> None:
         nonlocal compact_announced, compact_events
         compact_events += 1
@@ -1839,6 +1851,7 @@ def stream_agent(
                     else:
                         sink.activity_update("model", "working")
     finally:
+        clear_retry_notifier()
         sink.finalize_line()
         sink.activity_stop()
         # Seal any leftover open tool group (e.g. incomplete batch).

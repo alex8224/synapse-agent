@@ -1,9 +1,17 @@
-"""Agent middleware helpers."""
+"""Agent middleware helpers — retry + transit path normalisation.
+
+Exports:
+  - ``should_retry_transient_model_error``: classifier for retry middleware
+  - ``build_model_retry_middleware``: factory returning a ModelRetryMiddleware
+  - ``set_retry_notifier`` / ``clear_retry_notifier``: bridge so the UI can
+    show retry updates without a hard coupling to the middleware
+"""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +20,15 @@ from langchain.agents.middleware import (
     AgentState,
     ModelRetryMiddleware,
 )
+from langchain.agents.middleware._retry import calculate_delay, should_retry_exception
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 
 from synapse.pathing import rewrite_tool_args_paths
 
+# ---------------------------------------------------------------------------
+#  Transient error markers (text-based, no status code)
+# ---------------------------------------------------------------------------
 _TRANSIENT_MODEL_ERROR_MARKERS = (
     "empty model output",
     "overloaded",
@@ -26,6 +39,44 @@ _TRANSIENT_MODEL_ERROR_MARKERS = (
     "rate limit",
     "rate_limit",
 )
+
+# ---------------------------------------------------------------------------
+#  Transient *server* errors: 5xx status codes whose body indicates a
+#  recoverable infra hiccup (not a hard client / auth error).
+# ---------------------------------------------------------------------------
+_RETRYABLE_5XX_MARKERS = (
+    "auth_unavailable",
+    "overloaded",
+    "temporarily unavailable",
+    "service unavailable",
+    "upstream timeout",
+    "upstream request timeout",
+)
+
+_RETRYABLE_5XX_STATUSES = frozenset({429, 502, 503, 504})
+
+
+# ---------------------------------------------------------------------------
+#  Module-level retry notifier (set by stream / TUI before each turn)
+# ---------------------------------------------------------------------------
+_retry_notifier: Callable[[int, float, str], None] | None = None
+
+
+def set_retry_notifier(fn: Callable[[int, float, str], None] | None) -> None:
+    """Install a callback invoked before each retry delay.
+
+    ``fn(attempt, delay, reason)`` where *attempt* is 1-indexed,
+    *delay* is seconds about to be slept, and *reason* summarises
+    the exception that triggered the retry.
+    ``None`` clears the notifier.
+    """
+    global _retry_notifier
+    _retry_notifier = fn
+
+
+def clear_retry_notifier() -> None:
+    """Remove any installed retry notifier."""
+    set_retry_notifier(None)
 
 
 def _model_error_text(exc: Exception) -> str:
@@ -49,22 +100,124 @@ def _model_error_text(exc: Exception) -> str:
 
 
 def should_retry_transient_model_error(exc: Exception) -> bool:
-    """Retry transient provider errors emitted after an HTTP stream is established.
+    """Return ``True`` when *exc* is a recoverable transient model error.
 
-    HTTP/network failures with a status code remain the provider SDK's
-    responsibility, preventing nested SDK + middleware retry amplification.
+    Retried:
+      - Provider errors **without** an HTTP status code whose error text
+        matches a known transient marker (e.g. ``overloaded``).
+      - 5xx server errors (502 / 503 / 504) when the body text contains an
+        explicitly-recognised infrastructure marker such as
+        ``auth_unavailable`` — these are short-lived auth-infra hiccups that
+        recover within seconds.
+
+    **Not** retried:
+      - Any error carrying a 4xx status code (401, 429, …).
+      - 5xx errors whose body does not match a known marker (non-transient).
     """
 
-    if isinstance(getattr(exc, "status_code", None), int):
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in _RETRYABLE_5XX_STATUSES:
+            text = _model_error_text(exc)
+            if any(marker in text for marker in _RETRYABLE_5XX_MARKERS):
+                return True
         return False
     text = _model_error_text(exc)
     return any(marker in text for marker in _TRANSIENT_MODEL_ERROR_MARKERS)
 
 
-def build_model_retry_middleware() -> ModelRetryMiddleware:
-    """Retry recoverable model stream failures and re-raise after exhaustion."""
+def _format_retry_reason(exc: Exception) -> str:
+    """One-line summary of *exc* suitable for the status bar."""
+    status_code = getattr(exc, "status_code", None)
+    msg = str(exc)
+    body = getattr(exc, "body", None)
+    if isinstance(body, Mapping):
+        err = body.get("error") or {}
+        if isinstance(err, Mapping):
+            inner = err.get("message") or ""
+            if inner:
+                msg = str(inner)
+    short = msg.split("\n")[0].strip()
+    if len(short) > 120:
+        short = short[:117] + "..."
+    if isinstance(status_code, int):
+        return f"[{status_code}] {short}"
+    return short
 
-    return ModelRetryMiddleware(
+
+class NotifyingModelRetryMiddleware(ModelRetryMiddleware):
+    """``ModelRetryMiddleware`` subclass that fires a notifier on each retry."""
+
+    def _notify_retry(self, attempt: int, delay: float, exc: Exception) -> None:
+        if _retry_notifier is not None:
+            try:
+                reason = _format_retry_reason(exc)
+                _retry_notifier(attempt, delay, reason)
+            except Exception:  # noqa: BLE001
+                pass
+
+    # -- sync ----------------------------------------------------------------
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return handler(request)
+            except Exception as exc:
+                attempts_made = attempt + 1
+                if not should_retry_exception(exc, self.retry_on):
+                    return self._handle_failure(exc, attempts_made)
+                if attempt < self.max_retries:
+                    delay = calculate_delay(
+                        attempt,
+                        backoff_factor=self.backoff_factor,
+                        initial_delay=self.initial_delay,
+                        max_delay=self.max_delay,
+                        jitter=self.jitter,
+                    )
+                    self._notify_retry(attempts_made, delay, exc)
+                    if delay > 0:
+                        time.sleep(delay)
+                else:
+                    return self._handle_failure(exc, attempts_made)
+        msg = "Unexpected: retry loop completed without returning"
+        raise RuntimeError(msg)
+
+    # -- async ---------------------------------------------------------------
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await handler(request)
+            except Exception as exc:
+                attempts_made = attempt + 1
+                if not should_retry_exception(exc, self.retry_on):
+                    return self._handle_failure(exc, attempts_made)
+                if attempt < self.max_retries:
+                    delay = calculate_delay(
+                        attempt,
+                        backoff_factor=self.backoff_factor,
+                        initial_delay=self.initial_delay,
+                        max_delay=self.max_delay,
+                        jitter=self.jitter,
+                    )
+                    self._notify_retry(attempts_made, delay, exc)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                else:
+                    return self._handle_failure(exc, attempts_made)
+        msg = "Unexpected: retry loop completed without returning"
+        raise RuntimeError(msg)
+
+
+def build_model_retry_middleware() -> NotifyingModelRetryMiddleware:
+    """Retry recoverable model failures (stream + HTTP 5xx) with backoff."""
+    return NotifyingModelRetryMiddleware(
         max_retries=5,
         retry_on=should_retry_transient_model_error,
         on_failure="error",
@@ -120,6 +273,7 @@ def _dual_wrap_tool_call(*, name: str, apply):
         },
     )()
 
+
 def build_task_namespace_middleware():
     """Give each concurrent ``task`` invocation a distinct subgraph namespace."""
 
@@ -140,9 +294,7 @@ def build_task_namespace_middleware():
         configurable = dict(config.get("configurable") or {})
         parent_ns = str(configurable.get("checkpoint_ns") or "")
         segment = f"task_call:{call_id}"
-        configurable["checkpoint_ns"] = (
-            f"{parent_ns}|{segment}" if parent_ns else segment
-        )
+        configurable["checkpoint_ns"] = f"{parent_ns}|{segment}" if parent_ns else segment
         config["configurable"] = configurable
         return config
 
