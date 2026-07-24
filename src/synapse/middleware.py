@@ -331,3 +331,90 @@ def build_intent_schema_middleware():
         _dual_wrap_model_call(name="require_tool_intent", apply=_apply_inject),
         _dual_wrap_tool_call(name="strip_tool_intent", apply=_apply_strip),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Memory injection middleware – injects long-term memories into the system prompt
+# ---------------------------------------------------------------------------
+
+
+def build_memory_injection_middleware(memory_context: str) -> Any:
+    """Prepend relevant long-term memories before the first user message.
+
+    Args:
+        memory_context: Pre-formatted text from ``LongTermMemory.recall()``.
+            Empty string → no-op (the middleware is a transparent pass-through).
+
+    Usage::
+
+        ltm = LongTermMemory(...)
+        entries = await ltm.recall(task, top_k=3)
+        ctx = "\\n".join(f"- {e.text}" for e in entries)
+        middleware.append(build_memory_injection_middleware(ctx))
+    """
+    if not memory_context.strip():
+        # No-op: return a transparent middleware
+        return _dual_wrap_model_call(name="noop_memory", apply=lambda r: r)
+
+    prefix = (
+        "## 相关历史记忆\n"
+        f"{memory_context.strip()}\n"
+        "---\n"
+    )
+
+    def _apply(request):  # type: ignore[no-untyped-def]
+        messages = list(getattr(request, "messages", None) or [])
+        if not messages:
+            return request
+        # Find the first user message (skip system messages) and inject before it
+        from langchain_core.messages import HumanMessage
+
+        injected = HumanMessage(content=prefix, role="user")
+        for idx, msg in enumerate(messages):
+            if isinstance(msg, HumanMessage) or getattr(msg, "role", None) == "user":
+                messages.insert(idx, injected)
+                break
+        else:
+            messages.append(injected)
+        return request.override(messages=messages)
+
+    return _dual_wrap_model_call(name="inject_memory", apply=_apply)
+
+
+# ---------------------------------------------------------------------------
+# Plan tracking middleware – keeps the agent focused on the current step
+# ---------------------------------------------------------------------------
+
+
+def build_plan_tracking_middleware(
+    current_step: str,
+    step_index: int,
+    total_steps: int,
+) -> Any:
+    """Inject a step-context hint before each model call.
+
+    When the planner has decomposed a task into multiple steps, this
+    middleware reminds the agent which step it's on so it doesn't jump
+    ahead or fall behind.
+
+    Args:
+        current_step: The sub-task description for this step.
+        step_index: 1-based index.
+        total_steps: Total number of planned steps.
+    """
+    if total_steps <= 1:
+        return _dual_wrap_model_call(name="noop_plan", apply=lambda r: r)
+
+    hint = (
+        f"[当前任务步骤 {step_index}/{total_steps}] {current_step}\n"
+        "请只完成当前步骤，不要提前做后续步骤，也不要重复已完成的步骤。"
+    )
+
+    def _apply(request):  # type: ignore[no-untyped-def]
+        from langchain_core.messages import HumanMessage
+
+        messages = list(getattr(request, "messages", None) or [])
+        messages.append(HumanMessage(content=hint, role="user"))
+        return request.override(messages=messages)
+
+    return _dual_wrap_model_call(name="track_plan_step", apply=_apply)

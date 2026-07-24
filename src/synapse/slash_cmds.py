@@ -71,6 +71,9 @@ HELP_TEXT = """slash commands:
     /theme list
     /theme <name>              (persist to ~/.coding-agent/settings.json)
 
+  transcript:
+    /select                     open plain-text view for mouse selection & copy
+
   safety / HITL:
     /safety                     show profile
     /safety dev-autopass|dev-approve|readonly

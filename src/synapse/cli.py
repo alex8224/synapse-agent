@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import os
 from pathlib import Path
@@ -169,6 +170,77 @@ def _print_tokens_from_state(state: dict) -> None:
     if total_in or total_out:
         total = total_in + total_out
         print_info(f"tokens: {total} (in={total_in} out={total_out})")
+
+
+
+async def _enhance_task(
+    *,
+    agent: Any,
+    settings: Any,
+    task: str,
+) -> str:
+    """Enrich the task with long-term memory, RAG knowledge, and planning.
+
+    Returns the original task if all enhancements are disabled or fail.
+    """
+    enhanced = task
+    context_parts: list[str] = []
+
+    # 1. RAG: search project knowledge base
+    _kb = getattr(agent, "_coding_knowledge_base", None)
+    if _kb is not None and getattr(settings, "enable_rag", False):
+        try:
+            chunks = await _kb.search(task, top_k=settings.rag_top_k)
+            if chunks:
+                ctx = "## 项目知识库相关片段\n" + "\n".join(
+                    f"  [{c['source']}] {c['text'][:800]}" for c in chunks
+                )
+                context_parts.append(ctx)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2. Long-term memory: recall relevant past interactions
+    _ltm = getattr(agent, "_coding_long_term_memory", None)
+    if _ltm is not None and getattr(settings, "enable_long_term_memory", False):
+        try:
+            entries = await _ltm.recall(task, top_k=3)
+            if entries:
+                ctx = "## 相关历史记忆\n" + "\n".join(
+                    f"- {e.text[:500]}" for e in entries
+                )
+                context_parts.append(ctx)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Prepend context to the task
+    if context_parts:
+        enhanced = "\n\n".join(context_parts) + "\n\n---\n\n" + enhanced
+
+    return enhanced
+
+
+async def _auto_record_memory(
+    *,
+    ltm: Any,
+    model: Any = None,
+    task: str,
+    answer: str,
+    thread_id: str = "",
+) -> int:
+    """Auto-record valuable lessons after a completed turn.
+
+    Uses ``AutoRecorder`` with heuristic pre-filter + optional LLM extraction.
+    Returns the number of stored lessons.
+    """
+    from synapse.memory.auto_recorder import AutoRecorder
+
+    recorder = AutoRecorder(model=model)
+    return await recorder.record_if_valuable(
+        ltm,
+        task=task,
+        answer=answer,
+        thread_id=thread_id,
+    )
 
 
 def _run_once(
@@ -361,7 +433,21 @@ def run_cmd(
         "configurable": {"thread_id": tid},
         "max_concurrency": settings.max_concurrency,
     }
-    payload = {"messages": [{"role": "user", "content": task}]}
+
+    # -- 长期记忆 / 知识库 / 规划增强（默认关闭） --
+    enhanced_task = task
+    try:
+        enhanced_task = asyncio.run(
+            _enhance_task(
+                agent=agent,
+                settings=settings,
+                task=task,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass  # 增强失败不影响基本功能，退回到原始 task
+
+    payload = {"messages": [{"role": "user", "content": enhanced_task}]}
     print_info(f"thread_id={tid}")
     print_info(
         f"stream: token={settings.token_stream} parallel_tools={settings.parallel_tool_calls} "
@@ -424,6 +510,25 @@ def run_cmd(
     else:
         print_final("(empty response)")
     print_info(f"done. thread_id={tid}")
+
+    # -- 自动记录长期记忆（重要性评分，仅记录有价值经验） --
+    if answer and not already:
+        _ltm = getattr(agent, "_coding_long_term_memory", None)
+        if _ltm is not None and getattr(settings, "enable_long_term_memory", False):
+            try:
+                recorded = asyncio.run(
+                    _auto_record_memory(
+                        ltm=_ltm,
+                        model=getattr(agent, "_coding_planner_model", None),
+                        task=task,
+                        answer=answer,
+                        thread_id=tid,
+                    )
+                )
+                if recorded:
+                    print_info(f"memory: saved {recorded} lesson(s)")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 @app.command("chat")

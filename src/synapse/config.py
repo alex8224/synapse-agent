@@ -149,6 +149,35 @@ class Settings(BaseSettings):
     )
     deny_fs_paths: list[str] = Field(default_factory=list, validation_alias="AGENT_DENY_FS_PATHS")
 
+    # -- Memory: long-term knowledge retention (default off) --
+    enable_long_term_memory: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_LONG_TERM_MEMORY"
+    )
+    long_term_memory_path: Path | None = Field(
+        default=None, validation_alias="AGENT_LONG_TERM_MEMORY_PATH"
+    )
+
+    # -- Planner: task decomposition (default off) --
+    enable_planning: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_PLANNING"
+    )
+    # Maximum sub-steps the planner may produce.
+    max_plan_steps: int = Field(
+        default=8, ge=1, le=20, validation_alias="AGENT_MAX_PLAN_STEPS"
+    )
+
+    # -- RAG: project knowledge base (default off) --
+    enable_rag: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_RAG"
+    )
+    # Number of relevant chunks injected into the system prompt.
+    rag_top_k: int = Field(
+        default=3, ge=1, le=10, validation_alias="AGENT_RAG_TOP_K"
+    )
+    rag_knowledge_path: Path | None = Field(
+        default=None, validation_alias="AGENT_RAG_KNOWLEDGE_PATH"
+    )
+
     # MCP extension (tools= injection)
     enable_mcp: bool = Field(default=True, validation_alias="AGENT_ENABLE_MCP")
     # When False (default), skip MCP connect during agent build; TUI attaches later.
@@ -310,6 +339,16 @@ class Settings(BaseSettings):
             if path.exists():
                 paths.append(str(path.resolve()))
         return paths
+
+    def resolved_long_term_memory_path(self) -> Path:
+        if self.long_term_memory_path is not None:
+            return Path(self.long_term_memory_path).expanduser().resolve()
+        return self.checkpoint_path.parent / "long_term_memory.sqlite"
+
+    def resolved_rag_knowledge_path(self) -> Path:
+        if self.rag_knowledge_path is not None:
+            return Path(self.rag_knowledge_path).expanduser().resolve()
+        return self.checkpoint_path.parent / "knowledge.sqlite"
 
     def mask_openai_key(self) -> str:
         key = self.openai_api_key or ""
