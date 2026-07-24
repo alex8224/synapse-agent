@@ -15,7 +15,6 @@ Layout (Grok/Cursor chrome):
 from __future__ import annotations
 
 import re
-import subprocess
 import threading
 import time
 from datetime import datetime
@@ -43,6 +42,20 @@ from synapse.multimodal import (
 )
 from synapse.session_recap import SessionRecapController
 from synapse.steer import format_steer_message, get_agent_steer_queue
+from synapse.ui.bottombar import (
+    BottomBarAlign,
+    BottomBarComponent,
+    BottomBarContext,
+    BottomBarRegion,
+    BottomBarRegionSpec,
+    BottomBarRegistry,
+)
+from synapse.ui.bottombar import (
+    install_default_components as install_default_bottombar_components,
+)
+from synapse.ui.bottombar import (
+    layout_from_registry as layout_bottombar_from_registry,
+)
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
 from synapse.ui.timeline import (
@@ -55,12 +68,6 @@ from synapse.ui.timeline import (
     parse_todo_preview_lines,
     summarize_items,
 )
-from synapse.ui.topbar.git_chrome import (
-    GitBranchChrome,
-    probe_git_branch_chrome,
-    render_branch_chrome,
-)
-from synapse.ui.topbar.git_changes_popover import TopBar
 from synapse.ui.topbar import (
     TopBarAlign,
     TopBarComponent,
@@ -68,21 +75,16 @@ from synapse.ui.topbar import (
     TopBarRegion,
     TopBarRegionSpec,
     TopBarRegistry,
-    center_in_width,
     display_width,
     install_default_components,
     layout_from_registry,
     truncate_to_width,
 )
-from synapse.ui.bottombar import (
-    BottomBarAlign,
-    BottomBarComponent,
-    BottomBarContext,
-    BottomBarRegion,
-    BottomBarRegionSpec,
-    BottomBarRegistry,
-    install_default_components as install_default_bottombar_components,
-    layout_from_registry as layout_bottombar_from_registry,
+from synapse.ui.topbar.git_changes_popover import TopBar
+from synapse.ui.topbar.git_chrome import (
+    GitBranchChrome,
+    probe_git_branch_chrome,
+    render_branch_chrome,
 )
 from synapse.ui.welcome import WelcomeView
 
@@ -94,7 +96,6 @@ def _copy_to_clipboard(text: str) -> bool:
     """Copy *text* to the system clipboard. Returns True on success."""
     if not text:
         return False
-    # Prefer pyperclip (cross-platform, lightweight).
     try:
         import pyperclip  # type: ignore[import-untyped]
 
@@ -102,7 +103,6 @@ def _copy_to_clipboard(text: str) -> bool:
         return True
     except ImportError:
         pass
-    # Fallback: platform-specific subprocess.
     import shutil
     import subprocess
     import sys
@@ -637,7 +637,230 @@ def format_user_turn_meta(
     return " · ".join(bits)
 
 
-class UserTurnBlock(Static):
+def _annotate_strip_offsets(strip: object, y: int) -> object:
+    """Stamp Textual selection ``meta['offset']`` onto each segment of a strip.
+
+    Textual's compositor only resolves ``content_offset`` when segment styles
+    carry ``meta['offset'] = (char_x, line_y)``. ``RichVisual`` never writes
+    that meta, so drag-select never starts on Static/Rich content. Without it
+    ``content_widget`` stays ``None`` and no selection is recorded.
+    """
+    from rich.segment import Segment
+    from rich.style import Style as RichStyle
+    from textual.strip import Strip
+
+    if not isinstance(strip, Strip):
+        return strip
+    segments = list(strip)
+    if not segments:
+        return strip
+    out: list[Segment] = []
+    char_x = 0
+    for seg in segments:
+        text = seg.text or ""
+        base = seg.style if seg.style is not None else RichStyle.null()
+        # Preserve existing style; only inject/replace offset for this char run.
+        meta = dict(base.meta) if base.meta else {}
+        meta["offset"] = (char_x, int(y))
+        styled = base + RichStyle(meta=meta)
+        out.append(Segment(text, styled, seg.control))
+        char_x += len(text)
+    return Strip(out, strip.cell_length)
+
+
+def _readable_selection_style(base: object, theme_style: object | None = None) -> object:
+    """Build a selection style that keeps glyphs readable.
+
+    Textual's default ``screen--selection`` often resolves to the same fg/bg
+    (or transparent fg), which paints a solid bar and hides the text.
+    Always force light text on a blue selection background, and keep offset meta.
+    """
+    from rich.style import Style as RichStyle
+
+    meta: dict = {}
+    try:
+        if base is not None and getattr(base, "meta", None):
+            meta = dict(base.meta)
+    except Exception:  # noqa: BLE001
+        meta = {}
+
+    bg = "#264F78"
+    fg = "#e8eaed"
+    try:
+        if theme_style is not None and getattr(theme_style, "bgcolor", None) is not None:
+            # Prefer theme bg when it differs from theme fg (actually visible).
+            t_bg = theme_style.bgcolor
+            t_fg = getattr(theme_style, "color", None)
+            if t_bg is not None and (t_fg is None or t_bg != t_fg):
+                bg = t_bg
+    except Exception:  # noqa: BLE001
+        pass
+
+    return RichStyle(color=fg, bgcolor=bg, meta=meta)
+
+
+def _stylize_strip_char_span(strip: object, start: int, end: int, style: object) -> object:
+    """Apply a selection paint to a character-offset span (text stays visible)."""
+    from rich.segment import Segment
+    from rich.style import Style as RichStyle
+    from textual.strip import Strip
+
+    if not isinstance(strip, Strip):
+        return strip
+    segments = list(strip)
+    if not segments:
+        return strip
+    # Character length of the rendered line.
+    total_chars = sum(len(seg.text or "") for seg in segments)
+    if total_chars <= 0:
+        return strip
+    s = max(0, min(int(start), total_chars))
+    e = total_chars if end < 0 else max(s, min(int(end), total_chars))
+    if s >= e:
+        return strip
+
+    out: list[Segment] = []
+    cursor = 0
+    for seg in segments:
+        text = seg.text or ""
+        n = len(text)
+        if n == 0:
+            out.append(seg)
+            continue
+        seg_start = cursor
+        seg_end = cursor + n
+        cursor = seg_end
+        # No overlap with [s, e)
+        if seg_end <= s or seg_start >= e:
+            out.append(seg)
+            continue
+        local_s = max(0, s - seg_start)
+        local_e = min(n, e - seg_start)
+        base = seg.style if seg.style is not None else RichStyle.null()
+        if local_s > 0:
+            out.append(Segment(text[:local_s], base, seg.control))
+        mid_text = text[local_s:local_e]
+        if mid_text:
+            # Do not use ``base + theme_style``: theme fg often equals bg.
+            simple_style = style if isinstance(style, RichStyle) else None
+            painted = _readable_selection_style(base, simple_style)
+            out.append(Segment(mid_text, painted, seg.control))
+        if local_e < n:
+            out.append(Segment(text[local_e:], base, seg.control))
+    return Strip(out, strip.cell_length)
+
+
+def _strip_plain_text(strip: object) -> str:
+    from textual.strip import Strip
+
+    if isinstance(strip, Strip):
+        return str(strip.text)
+    return ""
+
+
+class SelectableStatic(Static):
+    """Static with working mouse text selection for Rich/Group content.
+
+    Textual's default path wraps Rich renderables in ``RichVisual``, which:
+
+    1. never stamps ``meta['offset']`` (so drag-select never starts)
+    2. ignores ``RenderOptions.selection`` (so no highlight even if it did)
+
+    This base class fixes both on ``render_line``, and extracts copy text from
+    the rendered lines so offsets match what the compositor reported.
+    """
+
+    ALLOW_SELECT = True
+
+    def selectable_text(self) -> str:
+        """Logical plain text (preferred for full-block copy / last-answer)."""
+        try:
+            visual = self._render()
+        except Exception:  # noqa: BLE001
+            return ""
+        try:
+            from rich.text import Text as RichText
+
+            if isinstance(visual, RichText):
+                return str(visual.plain)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return str(visual)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def rendered_plain_text(self) -> str:
+        """Plain text as currently painted (line-aligned with selection offsets)."""
+        try:
+            height = int(getattr(self.size, "height", 0) or 0)
+        except Exception:  # noqa: BLE001
+            height = 0
+        if height <= 0:
+            return self.selectable_text()
+        lines: list[str] = []
+        for y in range(height):
+            try:
+                # Base render without our selection paint / offset pass recursion:
+                # super().render_line already returns the Rich visual strip.
+                line = super().render_line(y)
+            except Exception:  # noqa: BLE001
+                lines.append("")
+                continue
+            lines.append(_strip_plain_text(line))
+        return "\n".join(lines).rstrip("\n")
+
+    def get_selection(self, selection: object) -> tuple[str, str] | None:
+        # SELECT_ALL → prefer logical body (cleaner markdown source).
+        start = getattr(selection, "start", "missing")
+        end = getattr(selection, "end", "missing")
+        if start is None and end is None:
+            text = self.selectable_text()
+        else:
+            text = self.rendered_plain_text()
+        if not text:
+            return None
+        extract = getattr(selection, "extract", None)
+        if not callable(extract):
+            return None
+        try:
+            extracted = extract(text)
+        except Exception:  # noqa: BLE001
+            return None
+        if extracted is None:
+            return None
+        return str(extracted), "\n"
+
+    def render_line(self, y: int) -> object:
+        from textual.strip import Strip
+
+        line = super().render_line(y)
+        if not isinstance(line, Strip):
+            return line
+        # Always stamp offsets so the compositor can resolve content_offset.
+        line = _annotate_strip_offsets(line, y)
+        if not isinstance(line, Strip):
+            return line
+        selection = self.text_selection
+        if selection is None:
+            return line
+        get_span = getattr(selection, "get_span", None)
+        if not callable(get_span):
+            return line
+        span = get_span(y)
+        if span is None:
+            return line
+        start, end = span
+        theme_style = None
+        try:
+            theme_style = self.screen.get_component_rich_style("screen--selection")
+        except Exception:  # noqa: BLE001
+            theme_style = None
+        # Paint via _readable_selection_style so fg never equals bg.
+        return _stylize_strip_char_span(line, start, end, theme_style)
+
+
+class UserTurnBlock(SelectableStatic):
     """User prompt bar; scroll anchor for the turn rail.
 
     Visual hierarchy:
@@ -774,7 +997,19 @@ class UserTurnBlock(Static):
         del event
         self._render_block()
 
+    def selectable_text(self) -> str:
+        return self.full_text or ""
+
     def on_click(self, event: Click) -> None:
+        # Only toggle expand on a click (not a drag-select).
+        if getattr(event, "chain", 1) != 1:
+            return
+        if self.screen is not None and getattr(self.screen, "get_selected_text", None):
+            try:
+                if self.screen.get_selected_text():
+                    return
+            except Exception:  # noqa: BLE001
+                pass
         event.stop()
         full_w = max(12, self._content_width() - display_width(f" {_MARK_USER}  ") - 14)
         full_lines, _ = wrap_user_turn_text(
@@ -935,7 +1170,7 @@ class TurnRail(Vertical):
             self.mount(TurnRailItem(indices, previews, targets))
 
 
-class ThoughtBlock(Static):
+class ThoughtBlock(SelectableStatic):
     """Thought row in the transcript; supports live streaming then seal."""
 
     def __init__(self, elapsed_s: float, body: str, *, live: bool = False) -> None:
@@ -1030,16 +1265,27 @@ class ThoughtBlock(Static):
         self.collapsed = not self.collapsed
         self._render_block()
 
+    def selectable_text(self) -> str:
+        header = f"Thought for {self.elapsed_s:.1f}s"
+        body = (self.body or "").strip()
+        if not body:
+            return header
+        if self.collapsed and not self.live:
+            preview = " ".join(body.split())
+            if len(preview) > 160:
+                preview = preview[:159].rstrip() + "..."
+            return f"{header}\n{preview}"
+        return f"{header}\n{body}"
+
     def on_click(self, event: Click) -> None:
+        if getattr(event, "chain", 1) != 1:
+            return
         event.stop()
         self.toggle()
 
 
-class AnswerBlock(Static):
-    """Assistant answer row; live plain-text tail, then Markdown seal.
-
-    Click to copy the answer text to the clipboard.
-    """
+class AnswerBlock(SelectableStatic):
+    """Assistant answer row; live plain-text tail, then Markdown seal."""
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -1064,21 +1310,8 @@ class AnswerBlock(Static):
         self.body = body or ""
         self._render_block()
 
-    def on_click(self) -> None:
-        """Copy answer text to clipboard on mouse click."""
-        text = (self.body or "").strip()
-        if not text:
-            return
-        if _copy_to_clipboard(text):
-            self.app.bell()
-            try:
-                self.notify(
-                    f"已复制 {len(text)} 字符到剪贴板",
-                    timeout=2.0,
-                    severity="information",
-                )
-            except Exception:  # noqa: BLE001
-                pass
+    def selectable_text(self) -> str:
+        return self.body or ""
 
     def _render_block(self) -> None:
         body = self.body or ""
@@ -1133,7 +1366,7 @@ class AnswerDivider(Static):
         self.update(Group(*(Text(row, style=_C_MUTED) for row in rows)))
 
 
-class ToolGroupBlock(Static):
+class ToolGroupBlock(SelectableStatic):
     """A timeline tool group with in-place collapse and preview updates."""
 
     # Expanded lists past this size become noise; keep the rest behind a count.
@@ -1230,10 +1463,24 @@ class ToolGroupBlock(Static):
                 existing.preview = item.preview
                 existing.error = item.error
                 existing.sub = item.sub
+                existing.parent_id = item.parent_id
+                existing.call_id = item.call_id
                 self._sync_summary_from_items()
                 self._render_block()
                 return
-        self.items.append(item)
+        if item.parent_id:
+            insert_at = next(
+                (
+                    i + 1
+                    for i, existing in reversed(list(enumerate(self.items)))
+                    if existing.id == item.parent_id
+                    or existing.parent_id == item.parent_id
+                ),
+                len(self.items),
+            )
+            self.items.insert(insert_at, item)
+        else:
+            self.items.append(item)
         # Never leave a stale header like "Read 4 files" after more tools land.
         self._sync_summary_from_items()
         self._render_block()
@@ -1284,6 +1531,16 @@ class ToolGroupBlock(Static):
         self.collapsed = not self.collapsed
         self._render_block()
 
+    def selectable_text(self) -> str:
+        mark = "▸" if self.collapsed else "▾"
+        lines = [f"{mark}  {self.summary}"]
+        if not self.collapsed:
+            for item in self.items:
+                label = item.label or item.name
+                status = "err" if item.error else item.status
+                lines.append(f"  {label} [{status}]")
+        return "\n".join(lines)
+
     def on_enter(self, event: Enter) -> None:
         # Faint left border while the pointer is over this group.
         event.stop()
@@ -1294,6 +1551,8 @@ class ToolGroupBlock(Static):
         self.remove_class("-hover")
 
     def on_click(self, event: Click) -> None:
+        if getattr(event, "chain", 1) != 1:
+            return
         event.stop()
         self.toggle()
 
@@ -1988,9 +2247,21 @@ class CodingAgentApp(App[None]):
         Binding("ctrl+l", "clear_log", "Clear", show=False),
         Binding("ctrl+e", "toggle_last_thought", "Expand thought", show=False),
         Binding("ctrl+t", "toggle_last_tools", "Toggle tools", show=False),
-        Binding("ctrl+shift+c", "copy_last_answer", "Copy", show=False),
-        Binding("ctrl+shift+s", "open_selectable_view", "Select text", show=True, priority=True),
-        Binding("f7", "open_selectable_view", "Select text", show=False),
+        # Copy selection (or last answer). Not ctrl+c — that quits the app.
+        Binding(
+            "alt+c",
+            "copy_selection",
+            "Copy selection",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+shift+y",
+            "copy_last_answer",
+            "Copy last answer",
+            show=False,
+            priority=True,
+        ),
         Binding("alt+v", "clipboard_paste", "Paste image", show=False, priority=True),
         # priority: capture ESC even while the prompt Input has focus
         Binding("escape", "cancel_run", "Cancel", show=False, priority=True),
@@ -2002,6 +2273,9 @@ class CodingAgentApp(App[None]):
         Binding("f4", "dialog_sessions", "Sessions", show=False),
         Binding("f5", "dialog_mcp", "MCP", show=False),
         Binding("f6", "dialog_safety", "Safety", show=False),
+        Binding("f7", "dialog_codex_import", "Import Codex", show=False),
+        Binding("ctrl+shift+s", "open_selectable_view", "Select text", show=True, priority=True),
+        Binding("f8", "open_selectable_view", "Select text", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2028,6 +2302,30 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_safety(self) -> None:
         self._open_safety_dialog()
+
+    def action_dialog_codex_import(self) -> None:
+        self._open_codex_import_dialog()
+
+    def action_open_selectable_view(self) -> None:
+        """Open a full-conversation plain-text view for mouse selection & copy."""
+        from synapse.ui.selectable_text import (
+            SelectableTextModal,
+            build_transcript_from_log,
+        )
+
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            transcript = build_transcript_from_log(log)
+        except Exception:  # noqa: BLE001
+            transcript = "(empty)"
+
+        if not transcript.strip():
+            self.append_event("nothing to show", "dim")
+            return
+
+        self.push_screen(
+            SelectableTextModal(transcript, char_count=len(transcript))
+        )
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -2386,8 +2684,6 @@ class CodingAgentApp(App[None]):
         from synapse.slash_complete import (
             complete_at_line,
             complete_slash,
-            cycle_at_completion,
-            cycle_completion,
         )
 
         prompt = self.query_one("#prompt", Input)
@@ -2443,7 +2739,6 @@ class CodingAgentApp(App[None]):
 
     def action_complete_slash_prev(self) -> None:
         """Cycle slash completions backwards (Shift+Tab)."""
-        from synapse.slash_complete import complete_at_line, complete_slash
 
         prompt = self.query_one("#prompt", Input)
         if not prompt.has_focus:
@@ -2570,7 +2865,8 @@ class CodingAgentApp(App[None]):
             self._set_prompt_value(nxt)
 
     def _current_completion_cands(self) -> list[str]:
-        """Return candidates for the active completion session (always  based on _complete_base_value)."""
+        """Return candidates for the active completion session
+        (always based on _complete_base_value)."""
         from synapse.slash_complete import complete_at_line, complete_slash
 
         if self.project_root and "@" in (self._complete_base_value or ""):
@@ -2921,9 +3217,9 @@ class CodingAgentApp(App[None]):
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
-                    "Tab complete · / commands · Esc cancel · F2 model · F4 sessions"
+                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions"
                 ),
-                busy_hints=lambda: "Esc cancel · Enter queue guidance",
+                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy",
                 model=lambda: model_status_label(self.settings),
                 mcp=self._mcp_label,
             ),
@@ -3715,6 +4011,55 @@ class CodingAgentApp(App[None]):
                 pass
 
     # ------------------------------------------------------------------
+    #  Copy selection / last answer (Alt+C / Ctrl+Shift+Y)
+    # ------------------------------------------------------------------
+    def action_copy_selection(self) -> None:
+        """Copy current text selection, or fall back to the last answer body."""
+        text: str | None = None
+        try:
+            text = self.screen.get_selected_text()
+        except Exception:  # noqa: BLE001
+            text = None
+        if text and str(text).strip():
+            self._copy_text_to_clipboard(str(text), label="selection")
+            return
+        self.action_copy_last_answer()
+
+    def action_copy_last_answer(self) -> None:
+        """Copy the most recent assistant answer body to the clipboard."""
+        body = self._last_answer_text()
+        if not body.strip():
+            self.append_event("nothing to copy", "dim")
+            return
+        self._copy_text_to_clipboard(body, label="answer")
+
+    def _last_answer_text(self) -> str:
+        try:
+            timeline = self.query_one("#log", VerticalScroll)
+            for child in reversed(list(timeline.children)):
+                if isinstance(child, AnswerBlock):
+                    return child.body or ""
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
+
+    def _copy_text_to_clipboard(self, text: str, *, label: str = "text") -> None:
+        body = text or ""
+        if not body:
+            self.append_event("nothing to copy", "dim")
+            return
+        try:
+            self.copy_to_clipboard(body)
+        except Exception as exc:  # noqa: BLE001
+            self.append_event(f"copy failed: {exc}", "yellow")
+            return
+        n = len(body)
+        preview = body.replace("\n", " ").strip()
+        if len(preview) > 48:
+            preview = preview[:47].rstrip() + "…"
+        self.append_event(f"copied {label} ({n} chars): {preview}", "dim")
+
+    # ------------------------------------------------------------------
     #  Alt+V clipboard paste (image or text)
     # ------------------------------------------------------------------
     def action_clipboard_paste(self) -> None:
@@ -3738,7 +4083,9 @@ class CodingAgentApp(App[None]):
                 old = prompt.value or ""
                 prompt.value = old + placeholder
                 self.append_event(
-                    f"pasted text truncated: {len(text)} chars -> placeholder (content preserved)", "dim"
+                    f"pasted text truncated: {len(text)} chars -> "
+                    "placeholder (content preserved)",
+                    "dim",
                 )
             else:
                 old = prompt.value or ""
@@ -4024,39 +4371,6 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             pass
         self._show_welcome()
-
-    def action_copy_last_answer(self) -> None:
-        """Copy the most recent answer to the system clipboard."""
-        text = (self._last_answer_text or "").strip()
-        if not text:
-            self.append_event("nothing to copy", "dim")
-            return
-        _copy_to_clipboard(text)
-        self.append_event(f"copied {len(text)} chars", "dim")
-
-    def action_open_selectable_view(self) -> None:
-        """Open a full-conversation plain-text view for mouse selection & copy."""
-        from synapse.ui.selectable_text import (
-            SelectableTextModal,
-            build_transcript_from_log,
-        )
-
-        try:
-            log = self.query_one("#log", VerticalScroll)
-            transcript = build_transcript_from_log(log)
-        except Exception:  # noqa: BLE001
-            transcript = "(empty)"
-
-        if not transcript.strip():
-            self.append_event("nothing to show", "dim")
-            return
-
-        self.push_screen(
-            SelectableTextModal(transcript, char_count=len(transcript))
-        )
-
-    # -- clipboard helpers ---------------------------------------------------
-
         self.set_activity("idle", "ready", True)
 
     def _reset_session_token_chrome(self) -> None:
@@ -4360,6 +4674,66 @@ class CodingAgentApp(App[None]):
             except Exception as exc:  # noqa: BLE001
                 self.append_event(f"theme failed: {exc}", "yellow")
 
+    def _open_codex_import_dialog(self) -> None:
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        from synapse.ui.dialogs import CodexSessionListDialog
+
+        self.push_screen(
+            CodexSessionListDialog(self.settings),
+            self._on_codex_import_dialog_done,
+        )
+
+    def _on_codex_import_dialog_done(self, result: object) -> None:
+        if result is None:
+            return
+        action, native_id = result
+        if action == "codex-import" and native_id:
+            self._start_codex_import(str(native_id))
+
+    def _start_codex_import(self, native_id: str) -> None:
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        self._busy = True
+        self.set_activity("importing", "importing Codex session", True)
+        self.flash_status("importing Codex session…", "dim")
+        self._sync_prompt_placeholder()
+        self._import_codex_session_bg(native_id)
+
+    @work(thread=True, exclusive=True, group="codex-import")
+    def _import_codex_session_bg(self, native_id: str) -> None:
+        """Seed one Codex text snapshot, then switch through the normal session path."""
+        if not self._agent_ready.wait(timeout=180) or self.agent is None:
+            self.call_from_thread(
+                self.append_event,
+                "Codex import unavailable: agent is still starting",
+                "yellow",
+            )
+            self.call_from_thread(self._turn_done)
+            return
+        try:
+            from synapse.codex_import import import_codex_session
+
+            result = import_codex_session(
+                native_id=native_id,
+                settings=self.settings,
+                agent=self.agent,
+                workspace=Path(self.settings.workspace),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.append_event, f"Codex import failed: {exc}", "yellow")
+        else:
+            self.call_from_thread(self._finish_codex_import, result)
+        finally:
+            self.call_from_thread(self._turn_done)
+
+    def _finish_codex_import(self, result: Any) -> None:
+        self._apply_session_switch(str(result.thread_id))
+        status = "reused" if result.reused else "recovered" if result.recovered else "imported"
+        self.flash_status(f"Codex session {status}: {result.thread_id}", "dim")
+
     def _open_session_dialog(self, parts: list[str]) -> None:
         mode = "switch"
         if len(parts) >= 2 and parts[1].casefold() in {"delete", "del", "rm"}:
@@ -4570,6 +4944,15 @@ class CodingAgentApp(App[None]):
             if len(parts) == 2:
                 self._open_session_dialog(parts)
                 return True
+        if cmd == "/codex":
+            if len(parts) == 1 or (len(parts) == 2 and parts[1].casefold() == "import"):
+                self._open_codex_import_dialog()
+                return True
+            if len(parts) == 3 and parts[1].casefold() == "import":
+                self._start_codex_import(parts[2])
+                return True
+            self.append_event("usage: /codex import [native_id]", "yellow")
+            return True
         if cmd == "/theme" and (len(parts) == 1 or parts[1].casefold() in {"list", "ls"}):
             self._open_theme_dialog()
             return True

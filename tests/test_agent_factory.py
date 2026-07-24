@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from langchain.agents.middleware import ModelRetryMiddleware
+
 from synapse.backends import build_backend
 from synapse.config import load_settings
 from synapse.prompts import (
@@ -107,6 +109,13 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert kwargs["backend"] is not None
         assert kwargs["checkpointer"] is not None
         assert kwargs["subagents"] is not None
+        model_retries = [
+            middleware
+            for middleware in (kwargs.get("middleware") or [])
+            if isinstance(middleware, ModelRetryMiddleware)
+        ]
+        assert len(model_retries) == 1
+        assert model_retries[0].on_failure == "error"
         # Mid-run steer middleware is wired by default.
         assert any(
             getattr(m, "name", None) == "inject_steer_queue"

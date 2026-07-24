@@ -340,6 +340,8 @@ DIALOG_CMDS = [
     "/theme ls",
     "/mcp",
     "/safety",
+    "/codex",
+    "/codex import",
 ]
 
 NOT_DIALOG_CMDS = [
@@ -409,6 +411,7 @@ class TestDialogShortcuts:
             ("action_dialog_sessions", "_open_session_dialog", (["switch"],)),
             ("action_dialog_mcp", "_open_mcp_dialog", ()),
             ("action_dialog_safety", "_open_safety_dialog", ()),
+            ("action_dialog_codex_import", "_open_codex_import_dialog", ()),
         ],
     )
     def test_function_key_action_opens_expected_dialog(

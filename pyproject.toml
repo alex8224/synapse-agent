@@ -1,6 +1,6 @@
 [project]
 name = "synapse"
-version = "0.1.0"
+version = "0.1.4"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
 authors = [
@@ -24,6 +24,7 @@ dependencies = [
     "textual>=1.0.0",
     "textual-diff-view>=0.1.5",
     "typer>=0.27.0",
+    "zstandard>=0.23.0",
 ]
 
 [project.scripts]

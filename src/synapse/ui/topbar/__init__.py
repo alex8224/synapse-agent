@@ -42,6 +42,7 @@ from synapse.ui.topbar.core import (
     render_region_text,
     truncate_to_width,
 )
+from synapse.ui.topbar.git_changes_popover import GitChangesPopover, TopBar
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
     GitChangedFile,
@@ -52,7 +53,6 @@ from synapse.ui.topbar.git_chrome import (
     render_branch_chrome,
     render_changed_file_row,
 )
-from synapse.ui.topbar.git_changes_popover import GitChangesPopover, TopBar
 
 __all__ = [
     "DEFAULT_COL_GAP",

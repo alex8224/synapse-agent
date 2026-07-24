@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extract changelog section
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}" python -c "
+          import os, re
+          ver = os.environ['VERSION']
+          with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
+              content = f.read()
+          pattern = rf'(?ms)^## {re.escape(ver)}\n.*?(?=\n## |\Z)'
+          m = re.search(pattern, content)
+          if m:
+              out = m.group().strip()
+              with open('release_body.md', 'w', encoding='utf-8') as f:
+                  f.write(out)
+              print(f'Extracted {len(out)} chars for {ver}')
+          else:
+              raise SystemExit(f'ERROR: ## {ver} section not found in CHANGELOG.md')
+          "
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: release_body.md

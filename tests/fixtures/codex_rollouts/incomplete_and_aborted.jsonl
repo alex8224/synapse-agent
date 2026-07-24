@@ -1,0 +1,10 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"finished"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Finished question."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Finished answer."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"finished"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"aborted"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Aborted question."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Partial answer."}}
+{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"aborted","reason":"interrupted"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"open"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Open question."}}

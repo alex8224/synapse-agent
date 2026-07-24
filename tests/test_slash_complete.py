@@ -7,17 +7,18 @@ from pathlib import Path
 from synapse.slash_complete import (
     SessionChoice,
     SlashCompleteContext,
+    _glob_at_candidates,
     best_completion,
     complete_at_line,
     complete_slash,
     cycle_completion,
     format_completion_hint,
-    _glob_at_candidates,
 )
 
 
 def test_root_command_prefix():
     assert "/session" in complete_slash("/se")
+    assert "/codex" in complete_slash("/co")
     assert "/sessions" in complete_slash("/se")
     assert best_completion("/m") in {"/mcp", "/model", "/memory"}
     assert complete_slash("hello") == []
@@ -30,6 +31,7 @@ def test_session_and_mcp_subcommands():
     assert "/mcp reload" in complete_slash("/mcp re")
     assert "/mcp tools" in complete_slash("/mcp t")
     assert "/export json" in complete_slash("/export j")
+    assert "/codex import" in complete_slash("/codex i")
 
 
 def test_dynamic_thread_and_model_completion():
