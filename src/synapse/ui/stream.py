@@ -1514,27 +1514,52 @@ def stream_agent(
     sub_tool_labels: dict[tuple[str, ...], dict[str, str]] = {}
     sub_scope_seq: dict[tuple[str, ...], int] = {}
     parent_task_items: dict[str, str] = {}
+    current_parent_task_ids: set[str] = set()
+
+    def _sub_task_call_id(namespace: tuple[str, ...]) -> str | None:
+        """Extract the nearest injected task call ID from the namespace."""
+        marker = "task_call:"
+        for segment in reversed(namespace):
+            for part in reversed(str(segment).split("|")):
+                if part.startswith(marker):
+                    call_id = part.removeprefix(marker).strip()
+                    if call_id:
+                        return call_id
+        return None
 
     def _sub_scope(namespace: tuple[str, ...]) -> tuple[str, ...]:
-        """Return the namespace through the injected parent task segment."""
-        for index, segment in enumerate(namespace):
-            if segment.startswith("task_call:"):
-                return namespace[: index + 1]
+        """Return a stable scope ending at the injected parent task ID."""
+        call_id = _sub_task_call_id(namespace)
+        if call_id:
+            return (f"task_call:{call_id}",)
         return namespace[:1] if namespace else ()
 
     def _sub_parent_id(namespace: tuple[str, ...]) -> str | None:
-        for segment in namespace:
-            if segment.startswith("task_call:"):
-                call_id = segment.removeprefix("task_call:")
-                return parent_task_items.get(call_id)
+        call_id = _sub_task_call_id(namespace)
+        if call_id:
+            return parent_task_items.get(call_id)
+
+        # Some stream adapters omit the injected checkpoint namespace. Only a
+        # batch that launched exactly one parent task is safe to infer. Once a
+        # batch was concurrent, late events must never be reassigned to the last
+        # remaining task.
+        task_items = [
+            item for item in pending_tool_items if item.name == "task" and not item.sub
+        ]
+        if len(current_parent_task_ids) == 1 and len(task_items) == 1:
+            task = task_items[0]
+            if task.status == "running":
+                return task.id
         return None
 
     def _pending_sub_item(namespace: tuple[str, ...], name: str, call_id: str) -> Any:
         parent_id = _sub_parent_id(namespace)
+        if parent_id is None:
+            return None
         for item in pending_tool_items:
             if not getattr(item, "sub", False):
                 continue
-            if parent_id is not None and getattr(item, "parent_id", None) != parent_id:
+            if getattr(item, "parent_id", None) != parent_id:
                 continue
             if call_id:
                 if getattr(item, "call_id", None) == call_id:
@@ -1907,11 +1932,13 @@ def stream_agent(
                                 sink.activity_update("subagent", detail, force=True)
                             except TypeError:
                                 sink.activity_update("subagent", detail)
-                            # Emit nested tool items next to their owning task row.
-                            if use_tool_items:
+                            # Emit nested tool items only when their task parent is
+                            # known. An orphan would otherwise be appended after the
+                            # last task and falsely appear to belong to that subagent.
+                            if use_tool_items and parent_id is not None:
                                 batch_seq = sub_scope_seq.get(scope, 0) + 1
                                 sub_scope_seq[scope] = batch_seq
-                                scope_key = str(parent_id or "orphan")
+                                scope_key = str(parent_id)
                                 for idx, call in enumerate(calls):
                                     call_id = _tool_call_id(call) or str(idx)
                                     item = build_tool_item(
@@ -1948,6 +1975,7 @@ def stream_agent(
                         sink.finalize_line()
                         sink.activity_stop()
                         names = [_tool_call_name(c) for c in calls]
+                        current_parent_task_ids.clear()
                         for n in names:
                             active_tools.append(n)
                             tool_calls += 1
@@ -1965,6 +1993,7 @@ def stream_agent(
                                 pending_tool_items.append(item)
                                 if item.name == "task" and item.call_id:
                                     parent_task_items[item.call_id] = item.id
+                                    current_parent_task_ids.add(item.call_id)
                                 sink.tool_item_started(item)
                         if any(n == "task" for n in names):
                             sink.activity_start(

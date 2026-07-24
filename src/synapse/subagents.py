@@ -18,14 +18,22 @@ def _intent_middleware() -> list[Any]:
     return list(build_intent_schema_middleware())
 
 
-def _readonly_middleware(*, allow_execute: bool = False) -> list[Any]:
-    """Strip write (and optionally execute) tools from the subagent model view."""
+_TODO_TOOL_NAMES = {"write_todos", "todo_write", "todos"}
+
+
+def _tool_exclusion_middleware(
+    excluded: set[str], *, allow_execute: bool = False
+) -> list[Any]:
+    """Hide restricted tools from subagents with one middleware instance."""
     from synapse.middleware import build_tool_exclusion_middleware
 
-    excluded = {"write_file", "edit_file"}
+    blocked = set(excluded) | _TODO_TOOL_NAMES
     if not allow_execute:
-        excluded.add("execute")
-    return [build_tool_exclusion_middleware(excluded)]
+        blocked.add("execute")
+    return [build_tool_exclusion_middleware(blocked)]
+
+
+_READONLY_TOOL_NAMES = {"write_file", "edit_file"}
 
 
 _PARALLEL_HINT = (
@@ -80,6 +88,8 @@ def build_default_subagents(
         # Keep the tester on built-in tools; project commands belong in AGENTS.md.
         tester["tools"] = []
 
+    tester["middleware"] = _tool_exclusion_middleware(set(), allow_execute=True)
+
     reviewer: dict[str, Any] = {
         "name": "reviewer",
         "description": (
@@ -100,9 +110,10 @@ def build_default_subagents(
     }
     if reviewer_model:
         reviewer["model"] = reviewer_model
-    if isolate_tools:
-        # Reviewer may run read-only shell (git diff, pytest -q) but not write.
-        reviewer["middleware"] = _readonly_middleware(allow_execute=True)
+    # Reviewer may run read-only shell (git diff, pytest -q) but not write.
+    reviewer["middleware"] = _tool_exclusion_middleware(
+        _READONLY_TOOL_NAMES if isolate_tools else set(), allow_execute=True
+    )
 
     researcher: dict[str, Any] = {
         "name": "researcher",
@@ -123,10 +134,13 @@ def build_default_subagents(
     }
     if researcher_model:
         researcher["model"] = researcher_model
-    if isolate_tools:
-        researcher["middleware"] = _readonly_middleware(allow_execute=False)
+    # Researcher is read-only and cannot run shell commands when isolated.
+    researcher["middleware"] = _tool_exclusion_middleware(
+        _READONLY_TOOL_NAMES if isolate_tools else set(),
+        allow_execute=not isolate_tools,
+    )
 
-    # Every subagent gets intent-schema middleware (parity with main agent).
+    # Every subagent gets intent-schema middleware plus one unique tool filter.
     for spec in (researcher, tester, reviewer):
         existing = list(spec.get("middleware") or [])
         spec["middleware"] = _intent_middleware() + existing

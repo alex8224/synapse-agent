@@ -1420,6 +1420,10 @@ class ToolGroupBlock(SelectableStatic):
                 self._sync_summary_from_items()
                 self._render_block()
                 return
+        if item.sub and not item.parent_id:
+            # Stream attribution failed. Do not append it after the last task,
+            # which would misrepresent ownership in the timeline.
+            return
         if item.parent_id:
             insert_at = next(
                 (

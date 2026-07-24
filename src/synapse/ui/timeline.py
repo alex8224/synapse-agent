@@ -359,7 +359,7 @@ def parse_todo_preview_lines(preview: str | None) -> list[TodoRow]:
     return rows
 
 
-def category_phrase(cat: str, n: int) -> str:
+def category_phrase(cat: str, n: int, *, running: bool = False) -> str:
     if cat == "read":
         return f"Read {n} file{'s' if n != 1 else ''}"
     if cat == "edit":
@@ -373,7 +373,8 @@ def category_phrase(cat: str, n: int) -> str:
     if cat == "run":
         return f"Ran {n} command{'s' if n != 1 else ''}"
     if cat == "task":
-        return f"Launched {n} subagent{'s' if n != 1 else ''}"
+        verb = "Running" if running else "Launched"
+        return f"{verb} {n} subagent{'s' if n != 1 else ''}"
     return f"{n} tools"
 
 
@@ -441,7 +442,7 @@ def summarize_categories(
     for cat, n in order.items():
         if cat == "other":
             continue
-        parts.append(category_phrase(cat, n))
+        parts.append(category_phrase(cat, n, running=running))
     for name in names:
         if tool_category(name) == "other" and name not in others:
             others.append(name)
@@ -452,11 +453,31 @@ def summarize_categories(
         parts.append(shown)
 
     body = ", ".join(parts) if parts else f"{len(names)} tools"
-    return f"Running {body}" if running else body
+    has_task = any(tool_category(name) == "task" for name in names)
+    return f"Running {body}" if running and not has_task else body
 
 
 def summarize_items(items: list[ToolItem], *, running: bool = False) -> str:
-    return summarize_categories([it.name for it in items], running=running)
+    top_level = [it for it in items if not it.sub]
+    if not top_level:
+        return summarize_categories([], running=running)
+
+    task_items = [it for it in top_level if tool_category(it.name) == "task"]
+    other_items = [it for it in top_level if tool_category(it.name) != "task"]
+    parts: list[str] = []
+    if task_items:
+        task_running = running and any(it.status == "running" for it in task_items)
+        parts.append(
+            category_phrase("task", len(task_items), running=task_running)
+        )
+    if other_items:
+        other_running = running and any(it.status == "running" for it in other_items)
+        parts.append(
+            summarize_categories(
+                [it.name for it in other_items], running=other_running
+            )
+        )
+    return ", ".join(parts)
 
 
 _WS = re.compile(r"\s+")

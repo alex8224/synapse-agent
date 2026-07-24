@@ -526,7 +526,7 @@ def test_close_tool_group_respects_tool_details_expanded_setting():
 
 
 def test_tool_group_block_places_nested_items_after_owning_task():
-    block = ToolGroupBlock("Launched 2 subagents")
+    block = ToolGroupBlock("Running 2 subagents")
     task_a = build_tool_item(
         {"name": "task", "args": {"description": "agent A"}},
         item_id="g1-0",
@@ -559,6 +559,24 @@ def test_tool_group_block_places_nested_items_after_owning_task():
         task_b.id,
         nested_b.id,
     ]
+    assert block.summary == "Running 2 subagents"
+
+
+def test_tool_group_block_ignores_unattributed_nested_item():
+    block = ToolGroupBlock("Launched 1 subagent")
+    task = build_tool_item(
+        {"name": "task", "args": {"description": "agent A"}},
+        item_id="g1-0",
+    )
+    orphan = build_tool_item(
+        {"name": "read_file", "args": {"intent": "unknown parent"}},
+        item_id="orphan-sub-1",
+        sub=True,
+    )
+    block.add_item(task)
+    block.add_item(orphan)
+
+    assert [item.id for item in block.items] == [task.id]
 
 
 def test_timeline_blocks_toggle_in_place():

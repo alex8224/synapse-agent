@@ -13,6 +13,7 @@ from synapse.ui.timeline import (
     match_tool_result,
     parse_todo_preview_lines,
     summarize_categories,
+    summarize_items,
     summarize_todos,
     tool_category,
     truncate_preview,
@@ -98,6 +99,27 @@ def test_summarize_running_prefix():
     s = summarize_categories(["read_file", "read_file"], running=True)
     assert s.startswith("Running ")
     assert "Read 2 files" in s
+
+
+def test_summarize_running_subagent_has_no_duplicate_verbs():
+    assert summarize_categories(["task"], running=True) == "Running 1 subagent"
+    assert summarize_categories(["task", "task"], running=True) == (
+        "Running 2 subagents"
+    )
+
+
+def test_summarize_items_uses_each_category_running_state():
+    task = build_tool_item(
+        {"name": "task", "args": {"description": "review"}}, item_id="task"
+    )
+    read = build_tool_item(
+        {"name": "read_file", "args": {"file_path": "/x"}}, item_id="read"
+    )
+    task.status = "ok"
+
+    assert summarize_items([task, read], running=True) == (
+        "Launched 1 subagent, Running Read 1 file"
+    )
 
 
 def test_truncate_preview_limits():
