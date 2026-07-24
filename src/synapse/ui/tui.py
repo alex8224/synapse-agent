@@ -4005,8 +4005,8 @@ class CodingAgentApp(App[None]):
         if result.kind == "text":
             text = result.text or ""
             prompt = self.query_one("#prompt", Input)
-            if len(text) > 200:
-                prefix = text[:20].replace("\n", " ").strip()
+            if len(text) > 200 or "\n" in text or "\r" in text:
+                prefix = text[:20].replace("\r", " ").replace("\n", " ").strip()
                 placeholder = f"[{prefix}... {len(text)} chars]"
                 self._paste_replacements[placeholder] = text
                 old = prompt.value or ""
