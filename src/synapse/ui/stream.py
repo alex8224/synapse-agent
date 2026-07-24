@@ -124,12 +124,147 @@ def render_math_in_text(text: str) -> str:
 
 _MERMAID_LANGS = frozenset({"mermaid", "mmd"})
 
+# Hard caps so dense graphs cannot pin the Textual event loop.
+# termaid pathfinding is CPU-bound; Textual layout/measure re-enters Rich
+# render many times for one answer seal.
+_MERMAID_MAX_SOURCE_CHARS = 6_000
+_MERMAID_MAX_EDGES = 48
+_MERMAID_MAX_NODES = 28
+_MERMAID_RENDER_TIMEOUT_S = 0.35
+_MERMAID_EDGE_RE = re.compile(
+    r"(?:-->|---|-\.-|==>|==|~~>|~~|-.->|-->>|<-+>|<-+|-+\.|o--+|x--+)"
+)
+_MERMAID_NODE_RE = re.compile(r"\b([A-Za-z][\w-]*)\b")
+_MERMAID_SKIP_TOKENS = frozenset(
+    {
+        "graph",
+        "flowchart",
+        "subgraph",
+        "end",
+        "classdef",
+        "class",
+        "style",
+        "linkstyle",
+        "click",
+        "direction",
+        "tb",
+        "td",
+        "bt",
+        "rl",
+        "lr",
+        "statediagram",
+        "statediagram-v2",
+        "sequencediagram",
+        "participant",
+        "actor",
+        "note",
+        "loop",
+        "alt",
+        "else",
+        "opt",
+        "par",
+        "and",
+        "rect",
+        "activate",
+        "deactivate",
+        "autonumber",
+    }
+)
+# source -> rendered Text, or None meaning "known bad / too heavy / timed out"
+_mermaid_render_cache: dict[str, Text | None] = {}
+_mermaid_executor = None
+_mermaid_executor_lock = threading.Lock()
+
+
+def _get_mermaid_executor():
+    """Single-worker pool so a timed-out render cannot pile up CPU workers."""
+    global _mermaid_executor
+    with _mermaid_executor_lock:
+        if _mermaid_executor is None:
+            import concurrent.futures
+
+            _mermaid_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="synapse-mermaid",
+            )
+        return _mermaid_executor
+
+
+def _replace_mermaid_executor() -> None:
+    """Drop a timed-out worker without waiting for termaid to finish."""
+    global _mermaid_executor
+    with _mermaid_executor_lock:
+        old = _mermaid_executor
+        _mermaid_executor = None
+    if old is not None:
+        try:
+            old.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _mermaid_complexity(source: str) -> tuple[int, int]:
+    """Rough (edge_count, node_count) estimate for cheap preflight limits."""
+    edges = len(_MERMAID_EDGE_RE.findall(source))
+    nodes: set[str] = set()
+    for token in _MERMAID_NODE_RE.findall(source):
+        low = token.lower()
+        if low in _MERMAID_SKIP_TOKENS:
+            continue
+        nodes.add(token)
+    return edges, len(nodes)
+
+
+def _render_mermaid_text(source: str) -> Text:
+    from termaid import render_rich
+
+    rendered = render_rich(source)
+    if isinstance(rendered, Text):
+        return rendered
+    return Text(str(rendered))
+
+
+def render_mermaid_diagram(source: str) -> Text | None:
+    """Render mermaid to Rich Text with cache, complexity caps, and a hard timeout.
+
+    Returns ``None`` when the diagram should fall back to the source fence.
+    """
+    text = (source or "").strip()
+    if not text:
+        return None
+    if text in _mermaid_render_cache:
+        return _mermaid_render_cache[text]
+
+    if len(text) > _MERMAID_MAX_SOURCE_CHARS:
+        _mermaid_render_cache[text] = None
+        return None
+
+    edges, nodes = _mermaid_complexity(text)
+    if edges > _MERMAID_MAX_EDGES or nodes > _MERMAID_MAX_NODES:
+        _mermaid_render_cache[text] = None
+        return None
+
+    # Mark in-flight as failed first so concurrent re-entries do not stampede.
+    _mermaid_render_cache[text] = None
+    try:
+        future = _get_mermaid_executor().submit(_render_mermaid_text, text)
+        rendered = future.result(timeout=_MERMAID_RENDER_TIMEOUT_S)
+    except TimeoutError:
+        # Abandon the busy worker so the next diagram is not queued behind it.
+        _replace_mermaid_executor()
+        return None
+    except Exception:  # noqa: BLE001 — parse / layout failures all fall back
+        return None
+
+    _mermaid_render_cache[text] = rendered
+    return rendered
+
 
 class _MermaidCodeBlock(_CodeBlock):
     """Code fence that draws mermaid via termaid ``render_rich`` (Rich Text).
 
     Non-mermaid fences keep Rich's default Syntax highlighting.
-    On termaid failure, falls back to the original source as a code block.
+    On termaid failure / timeout / oversize input, falls back to the source fence.
     """
 
     def __rich_console__(
@@ -139,14 +274,10 @@ class _MermaidCodeBlock(_CodeBlock):
         if lexer in _MERMAID_LANGS:
             source = str(self.text).strip()
             if source:
-                try:
-                    from termaid import render_rich
-
-                    # Colored Unicode diagram as Rich Text (not plain ASCII dump).
-                    yield render_rich(source)
+                rendered = render_mermaid_diagram(source)
+                if rendered is not None:
+                    yield rendered
                     return
-                except Exception:  # noqa: BLE001
-                    pass
         yield from super().__rich_console__(console, options)
 
 
