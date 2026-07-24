@@ -154,6 +154,25 @@ def test_scanner_supplements_state_db_with_rollout_headers_when_requested(tmp_pa
     ) is not None
 
 
+def test_scanner_reads_structured_subagent_source_from_state_db(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    _write_rollout(rollout, workspace, title="Subagent state DB")
+    _create_state_db(
+        home,
+        [(ID_ONE, rollout, workspace, "Subagent state DB", 1_774_000_000_000)],
+    )
+    source = json.dumps({"subagent": {"thread_spawn": {"parent_thread_id": ID_TWO, "depth": 1}}})
+    with sqlite3.connect(home / "state_12.sqlite") as connection:
+        connection.execute("UPDATE threads SET source = ? WHERE id = ?", (source, ID_ONE))
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert result.sessions[0].source == "subagent"
+
+
 def test_scanner_falls_back_to_rollout_headers_when_state_db_is_missing(tmp_path: Path) -> None:
     home = tmp_path / "codex"
     workspace = tmp_path / "workspace"
@@ -167,6 +186,76 @@ def test_scanner_falls_back_to_rollout_headers_when_state_db_is_missing(tmp_path
     assert [session.native_id for session in result.sessions] == [ID_ONE]
     assert result.sessions[0].title == "Header title"
     assert result.sessions[0].source == "cli"
+
+
+def test_scanner_uses_session_index_title_over_rollout_preview(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    _write_rollout(rollout, workspace, title="Rollout preview")
+    (home / "session_index.jsonl").write_text(
+        json.dumps(
+            {"id": ID_ONE, "thread_name": "Codex title", "updated_at": "2026-03-20T00:00:00Z"}
+        ),
+        encoding="utf-8",
+    )
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert result.sessions[0].title == "Codex title"
+
+
+def test_scanner_preserves_explicit_state_db_title_over_session_index(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    _write_rollout(rollout, workspace, title="Rollout preview")
+    _create_state_db(
+        home,
+        [(ID_ONE, rollout, workspace, "Saved title", 1_774_000_000_000)],
+    )
+    (home / "session_index.jsonl").write_text(
+        json.dumps({"id": ID_ONE, "thread_name": "Indexed title"}),
+        encoding="utf-8",
+    )
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert result.sessions[0].title == "Saved title"
+
+
+def test_scanner_accepts_thread_spawn_subagent_source(tmp_path: Path) -> None:
+    home = tmp_path / "codex"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    rollout = _rollout_path(home, ID_ONE)
+    records = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "cwd": str(workspace),
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": ID_TWO,
+                            "depth": 1,
+                            "agent_nickname": "Bohr",
+                        }
+                    }
+                },
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Subagent title"}},
+    ]
+    rollout.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+
+    result = CodexSessionScanner(home).scan(workspace)
+
+    assert [session.native_id for session in result.sessions] == [ID_ONE]
+    assert result.sessions[0].source == "subagent"
+    assert result.sessions[0].title == "Subagent title"
 
 
 def test_scanner_reads_compressed_rollout_headers(tmp_path: Path) -> None:

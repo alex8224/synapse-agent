@@ -13,7 +13,8 @@ import json
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ MAX_ROLLOUT_BYTES = 32 * 1024 * 1024
 MAX_HEAD_BYTES = 2 * 1024 * 1024
 MAX_HEAD_RECORDS = 50
 MAX_HEADER_LINE_BYTES = 64 * 1024
+MAX_SESSION_INDEX_BYTES = 4 * 1024 * 1024
+MAX_SESSION_INDEX_LINES = 20_000
 MAX_TITLE_CHARS = 120
 
 _STATE_DB_RE = re.compile(r"state_(\d+)\.sqlite\Z")
@@ -37,8 +40,9 @@ _ROLLOUT_RE = re.compile(
     r"([0-9a-fA-F-]{36})\.jsonl(?:\.zst)?\Z"
 )
 _ALLOWED_SOURCES = frozenset(
-    {"cli", "vscode", '{"custom":"atlas"}', '{"custom":"chatgpt"}'}
+    {"cli", "vscode", "exec", "mcp", '{"custom":"atlas"}', '{"custom":"chatgpt"}'}
 )
+_SUBAGENT_SOURCE_PREFIX = '{"subagent":'
 _INTERNAL_TITLE_MARKERS = (
     "<environment_context>",
     "<user_instructions>",
@@ -60,6 +64,7 @@ class CodexSession:
     fingerprint: str
     discovery: str
     warnings: tuple[str, ...] = ()
+    title_is_explicit: bool = False
 
     def to_dict(self) -> dict[str, str | list[str]]:
         return {
@@ -166,6 +171,7 @@ class CodexSessionScanner:
                     )
                     sessions.sort(key=lambda session: session.updated_at, reverse=True)
                     sessions = sessions[:limit]
+                sessions = _apply_session_index_titles(self._codex_home, sessions)
                 return CodexScanResult(
                     codex_home=self._codex_home,
                     sessions=tuple(sessions),
@@ -177,6 +183,7 @@ class CodexSessionScanner:
             self._codex_home, workspace_path, limit=limit
         )
         warnings.extend(fallback_warnings)
+        sessions = _apply_session_index_titles(self._codex_home, sessions)
         return CodexScanResult(
             codex_home=self._codex_home,
             sessions=tuple(sessions),
@@ -338,9 +345,11 @@ def _scan_state_db(
         except OSError:
             warnings.append(f"skipped unavailable rollout for {native_id}")
             continue
+        state_title = _safe_title(title)
+        first_user_title = _safe_title(first_user)
         session = CodexSession(
             native_id=native_id,
-            title=_safe_title(title) or _safe_title(first_user) or "(untitled Codex session)",
+            title=state_title or first_user_title or "(untitled Codex session)",
             cwd=cwd,
             updated_at=updated_at,
             source=_source_label(source),
@@ -348,6 +357,7 @@ def _scan_state_db(
             fingerprint=fingerprint,
             discovery="state_db",
             warnings=(),
+            title_is_explicit=bool(state_title and state_title != first_user_title),
         )
         sessions.append(session)
     return sessions, warnings
@@ -498,6 +508,8 @@ def _read_rollout_header_records(records: Any, metadata: dict[str, Any]) -> None
             source = payload.get("source")
             if isinstance(source, str) and _allowed_source(source):
                 metadata["source"] = _source_label(source)
+            elif isinstance(source, dict) and _is_thread_spawn_source(source):
+                metadata["source"] = "subagent"
             title = payload.get("title")
             if isinstance(title, str):
                 metadata["title"] = _safe_title(title)
@@ -543,12 +555,79 @@ def _valid_native_id(value: object) -> bool:
     return True
 
 
+def _is_thread_spawn_source(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    subagent = value.get("subagent")
+    if not isinstance(subagent, dict):
+        return False
+    thread_spawn = subagent.get("thread_spawn")
+    if not isinstance(thread_spawn, dict):
+        return False
+    parent_id = thread_spawn.get("parent_thread_id")
+    depth = thread_spawn.get("depth")
+    return _valid_native_id(parent_id) and isinstance(depth, int) and depth >= 1
+
+
+def _apply_session_index_titles(
+    codex_home: Path, sessions: list[CodexSession]
+) -> list[CodexSession]:
+    titles = _read_session_index_titles(codex_home)
+    if not titles:
+        return sessions
+    return [
+        replace(session, title=titles[session.native_id])
+        if session.native_id in titles and not session.title_is_explicit
+        else session
+        for session in sessions
+    ]
+
+
+def _read_session_index_titles(codex_home: Path) -> dict[str, str]:
+    index_path = codex_home / "session_index.jsonl"
+    try:
+        if not index_path.is_file() or index_path.stat().st_size > MAX_SESSION_INDEX_BYTES:
+            return {}
+    except OSError:
+        return {}
+    titles: dict[str, str] = {}
+    try:
+        with index_path.open("r", encoding="utf-8", errors="replace") as handle:
+            recent_lines = deque(handle, maxlen=MAX_SESSION_INDEX_LINES)
+        for line in recent_lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            native_id = record.get("id")
+            title = _safe_title(record.get("thread_name"))
+            if _valid_native_id(native_id) and title:
+                titles[native_id.lower()] = title
+    except OSError:
+        return {}
+    return titles
+
+
 def _allowed_source(value: object) -> bool:
-    return isinstance(value, str) and value.replace(" ", "") in _ALLOWED_SOURCES
+    if not isinstance(value, str) or not _text_within(value, 16 * 1024):
+        return False
+    normalized = value.replace(" ", "")
+    if normalized in _ALLOWED_SOURCES:
+        return True
+    if not normalized.startswith(_SUBAGENT_SOURCE_PREFIX):
+        return False
+    try:
+        return _is_thread_spawn_source(json.loads(value))
+    except json.JSONDecodeError:
+        return False
 
 
 def _source_label(value: str) -> str:
     normalized = value.replace(" ", "")
+    if normalized.startswith(_SUBAGENT_SOURCE_PREFIX):
+        return "subagent"
     if normalized == "cli":
         return "cli"
     if normalized == "vscode":
