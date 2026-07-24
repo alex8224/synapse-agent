@@ -21,13 +21,12 @@ jobs:
 
       - name: Extract changelog section
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          python -c "
+          VERSION="${GITHUB_REF#refs/tags/}" python -c "
           import os, re
           ver = os.environ['VERSION']
           with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
               content = f.read()
-          pattern = rf'(?s)^## {re.escape(ver)}\n.*?(?=\n## |\Z)'
+          pattern = rf'(?ms)^## {re.escape(ver)}\n.*?(?=\n## |\Z)'
           m = re.search(pattern, content)
           if m:
               out = m.group().strip()
@@ -35,7 +34,7 @@ jobs:
                   f.write(out)
               print(f'Extracted {len(out)} chars for {ver}')
           else:
-              print(f'WARNING: ## {ver} section not found in CHANGELOG.md')
+              raise SystemExit(f'ERROR: ## {ver} section not found in CHANGELOG.md')
           "
 
       - name: Build wheel
