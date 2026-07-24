@@ -2302,6 +2302,11 @@ class CodingAgentApp(App[None]):
         self._activity_started = time.monotonic()
         self._spin_i = 0
         self._steer_items: list[str] = []
+        # Keep just-applied guidance visible for the remainder of a busy turn.
+        # A fast middleware drain can otherwise hide the panel before Textual
+        # has a chance to paint the enqueue state.
+        self._steer_visible_items: list[str] = []
+        self._steer_force_hide = False
         self._steer_last_count = 0
         self._steer_listener_bound = False
         self._last_thought_body = ""
@@ -3745,11 +3750,19 @@ class CodingAgentApp(App[None]):
 
     def _on_steer_items_changed(self, items: list[str]) -> None:
         prev = self._steer_last_count
-        now = len(items)
-        self._steer_items = list(items)
+        self._steer_items = [str(item).strip() for item in items if str(item).strip()]
+        now = len(self._steer_items)
         self._steer_last_count = now
+        if self._steer_items:
+            self._steer_visible_items = list(self._steer_items)
+            self._steer_force_hide = False
+        elif self._steer_force_hide or not self._busy:
+            self._steer_visible_items = []
+            self._steer_force_hide = False
         try:
-            self.query_one("#steer-queue", SteerQueueWidget).set_items(self._steer_items)
+            self.query_one("#steer-queue", SteerQueueWidget).set_items(
+                self._steer_visible_items
+            )
         except Exception:  # noqa: BLE001
             pass
         self._render_status()
@@ -3777,6 +3790,8 @@ class CodingAgentApp(App[None]):
         q = get_agent_steer_queue(self.agent)
         if q is None:
             return
+        if q.peek_count() <= 1:
+            self._steer_force_hide = True
         q.remove_at(int(index))
 
     def clear_steer_queue(self) -> None:
@@ -3784,6 +3799,7 @@ class CodingAgentApp(App[None]):
         q = get_agent_steer_queue(self.agent)
         if q is None:
             return
+        self._steer_force_hide = True
         q.clear()
 
     def _tick_status(self) -> None:
@@ -5246,6 +5262,11 @@ class CodingAgentApp(App[None]):
 
     def _turn_done(self) -> None:
         self._busy = False
+        # An immediate middleware drain retains the panel while the turn is
+        # active. Reconcile it now so applied guidance disappears at turn end.
+        q = get_agent_steer_queue(self.agent)
+        if q is not None:
+            self._on_steer_items_changed(q.peek_items())
         try:
             self._commit_live_tools_to_log()
         except Exception:  # noqa: BLE001

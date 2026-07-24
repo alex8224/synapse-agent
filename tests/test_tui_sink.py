@@ -18,6 +18,44 @@ from synapse.ui.tui import (
 )
 
 
+def test_steer_panel_stays_visible_when_guidance_is_immediately_applied():
+    """A fast middleware drain must not erase the panel during the active turn."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    queue = SteerQueue()
+    agent = SimpleNamespace(_coding_steer_queue=queue)
+    panel = MagicMock()
+    app = object.__new__(CodingAgentApp)
+    app.agent = agent
+    app._busy = True
+    app._steer_items = []
+    app._steer_visible_items = []
+    app._steer_force_hide = False
+    app._steer_last_count = 0
+    app.query_one = MagicMock(return_value=panel)
+    app._render_status = MagicMock()
+    app._sync_prompt_placeholder = MagicMock()
+
+    queue.push("focus on the failing test")
+    app._on_steer_items_changed(queue.peek_items())
+    assert app._steer_visible_items == ["focus on the failing test"]
+
+    queue.drain()
+    app._on_steer_items_changed(queue.peek_items())
+    assert app._steer_items == []
+    assert app._steer_visible_items == ["focus on the failing test"]
+    panel.set_items.assert_called_with(["focus on the failing test"])
+
+    app._busy = False
+    app._on_steer_items_changed(queue.peek_items())
+    assert app._steer_visible_items == []
+    panel.set_items.assert_called_with([])
+
+
 class _FakeApp:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
