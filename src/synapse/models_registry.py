@@ -65,6 +65,8 @@ _PROFILE_META_KEYS = {
     "reasoning_effort",
     "thinking_levels",
     "parallel_tool_calls",
+    "image_input",
+    "capabilities",
     "extra",
     "model_kwargs",
     "extra_body",
@@ -134,6 +136,21 @@ def apply_context_window_to_model(model: Any, context_window: int | None) -> Any
         except Exception:  # noqa: BLE001
             pass
     return model
+
+
+def parse_optional_bool(value: Any) -> bool | None:
+    """Parse JSON and common string boolean values without truthiness surprises."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"false", "0", "no", "off", "disabled"}:
+            return False
+    raise ValueError("image_input must be a boolean")
 
 
 def normalize_thinking_level(value: Any) -> str | None:
@@ -302,6 +319,9 @@ class ModelProfile:
     model_kwargs: dict[str, Any] = field(default_factory=dict)
     # Provider-specific body (merged into extra_body)
     extra_body: dict[str, Any] = field(default_factory=dict)
+    # Whether the selected primary model accepts native image content.
+    # None means infer from provider/model name.
+    image_input: bool | None = None
 
     def resolved_api_key(self) -> str | None:
         if self.api_key:
@@ -331,6 +351,8 @@ class ModelRegistry:
     thinking_levels: list[str] = field(default_factory=default_thinking_levels)
     # Optional global default when a profile omits thinking config.
     default_thinking: str | None = None
+    # Independent image-to-text model configuration from models.json.
+    vision_model: dict[str, Any] | None = None
 
     def list_names(self) -> list[str]:
         return sorted(self.profiles)
@@ -505,6 +527,13 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
     top_levels = parse_thinking_levels(data.get("thinking_levels"))
     thinking_levels = top_levels or default_thinking_levels()
     default_thinking = normalize_thinking_level(data.get("default_thinking"))
+    vision_model = data.get("vision_model")
+    if vision_model is not None and not isinstance(vision_model, (str, dict)):
+        raise ValueError("vision_model must be an object or profile name")
+    if vision_model is None and isinstance(raw_models.get("vision_model"), dict):
+        # Backward-compatible convenience: allow the vision endpoint to live
+        # alongside primary model profiles under models.vision_model.
+        vision_model = dict(raw_models["vision_model"])
 
     profiles: dict[str, ModelProfile] = {}
     for name, cfg in raw_models.items():
@@ -560,6 +589,11 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         if parallel is None and "parallel_tool_calls" in expanded_params:
             parallel = expanded_params.pop("parallel_tool_calls")
 
+        image_input = cfg.get("image_input")
+        if image_input is None and isinstance(cfg.get("capabilities"), dict):
+            image_input = cfg["capabilities"].get("image_input")
+        image_input = parse_optional_bool(image_input)
+
         context_window = parse_context_window(cfg)
         # Peel accidental copies from free-form params (meta keys should already
         # exclude these; keep defensive cleanup for nested params/extra).
@@ -577,6 +611,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
             reasoning_effort=reasoning_effort,
             thinking_levels=tuple(profile_levels) if profile_levels else None,
             parallel_tool_calls=None if parallel is None else bool(parallel),
+            image_input=image_input,
             extra=expanded_params,
             model_kwargs=dict(model_kwargs),
             extra_body=dict(extra_body),
@@ -587,6 +622,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
     return ModelRegistry(
         profiles=profiles,
         default=default,
+        vision_model=dict(vision_model) if vision_model else None,
         thinking_levels=thinking_levels,
         default_thinking=default_thinking,
     )
@@ -651,6 +687,11 @@ def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelPro
             if override.parallel_tool_calls is not None
             else base.parallel_tool_calls
         ),
+        image_input=(
+            override.image_input
+            if override.image_input is not None
+            else base.image_input
+        ),
         extra={**base.extra, **override.extra},
         model_kwargs={**base.model_kwargs, **override.model_kwargs},
         extra_body={**base.extra_body, **override.extra_body},
@@ -689,6 +730,11 @@ def merge_model_registries(
     return ModelRegistry(
         profiles=profiles,
         default=default,
+        vision_model=(
+            {**base.vision_model, **override.vision_model}
+            if base.vision_model and override.vision_model
+            else override.vision_model or base.vision_model
+        ),
         thinking_levels=thinking_levels,
         default_thinking=default_thinking,
     )
@@ -767,6 +813,7 @@ def registry_from_settings(settings: Any) -> ModelRegistry:
                 enable_thinking=settings.enable_thinking,
                 reasoning_effort=settings.reasoning_effort,
                 parallel_tool_calls=settings.parallel_tool_calls,
+                image_input=None,
             )
         },
         default=name,
@@ -853,6 +900,53 @@ def model_provider(model: str | None) -> str:
     if ":" not in text:
         return ""
     return text.split(":", 1)[0].strip().casefold()
+
+
+def model_supports_image_input(
+    model: str | None,
+    explicit: bool | None = None,
+    base_url: str | None = None,
+) -> bool:
+    """Resolve native image support with explicit and endpoint-aware defaults.
+
+    Official model names are not enough to prove that a custom OpenAI-compatible
+    gateway accepts image blocks. Non-official OpenAI endpoints therefore default
+    to text-only; set ``image_input: true`` to opt in explicitly.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    raw = (model or "").strip().casefold()
+    provider, _, model_id = raw.partition(":")
+    name = model_id or raw
+    if provider in {"anthropic", "claude"}:
+        return "claude-3" in name or "claude-4" in name or "sonnet-4" in name or "opus-4" in name
+    if provider in {"google", "google_genai", "google_vertexai", "gemini", "vertexai"}:
+        return "gemini" in name
+    if provider in {"openai", "azure_openai", "azure"} or not provider:
+        if base_url and not _is_official_openai_endpoint(base_url):
+            return False
+        return any(
+            marker in name
+            for marker in (
+                "gpt-4o",
+                "gpt-4.1",
+                "gpt-4-turbo",
+                "gpt-5",
+                "gpt5",
+                "o3",
+                "o4",
+            )
+        )
+    return False
+
+
+def _is_official_openai_endpoint(base_url: str) -> bool:
+    normalized = base_url.strip().casefold().rstrip("/")
+    return normalized in {
+        "https://api.openai.com",
+        "https://api.openai.com/v1",
+        "https://chatgpt.com/backend-api/codex",
+    }
 
 
 def settings_fallback_api_key(settings: Any, model: str | None = None) -> str | None:
