@@ -7,6 +7,25 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.4
+
+### 新功能
+
+- 新增 Codex session 的只读发现、预览和导入，支持 CLI 与 TUI picker
+- 导入使用终态 checkpoint seeding 与 ledger，支持幂等重用和崩溃恢复
+
+### 修复
+
+- 修复 state DB 过期、空 thread、Windows 扩展路径、长 metadata header 导致 Codex 历史缺失的问题
+- 支持 `subagent.thread_spawn` 子代理会话，并按首条用户消息生成 picker 与导入标题
+- 对可恢复的模型服务 5xx 故障增加退避重试，并向 TUI 显示重试状态
+
+### 工程
+
+- 扩充 Codex discovery、import、TUI 和 retry 回归覆盖
+
+---
+
 ## v0.1.3
 
 ### 修复
