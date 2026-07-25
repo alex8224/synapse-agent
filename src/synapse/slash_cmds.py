@@ -96,6 +96,9 @@ class SlashResult:
     thread_id: str | None = None
     agent: Any | None = None
     settings_changed: bool = False
+    # TUI should attach MCP after applying the rebuilt agent, without blocking
+    # the slash command/model switch worker.
+    mcp_attach_pending: bool = False
     # UI theme switch (TUI should re-apply CSS / palette).
     theme_name: str | None = None
     # HITL: UI should resume the paused graph with this decision.
@@ -529,6 +532,7 @@ def _rebuild_agent(
     model_name: str | None,
     agent: Any,
     load_mcp: bool | None = None,
+    defer_mcp_reconnect: bool = False,
 ) -> Any:
     checkpointer = getattr(agent, "_coding_checkpointer", None)
     steer_queue = getattr(agent, "_coding_steer_queue", None)
@@ -536,6 +540,7 @@ def _rebuild_agent(
     reuse_model = model_name is None
     model = getattr(agent, "_coding_model", None) if reuse_model else None
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
+    model_cache = getattr(agent, "_coding_model_cache", None)
     mcp_tools: list[Any] | None = None
     if load_mcp is not None:
         # Explicit caller intent (/mcp reload, /mcp disable, ...).
@@ -554,8 +559,9 @@ def _rebuild_agent(
             mcp_tools = pool_tools
             want_mcp = False
         elif bool(getattr(agent, "_coding_mcp_attached", False)):
-            # Was attached but pool vanished — reconnect once.
-            want_mcp = True
+            # Model switching may defer this network I/O to a TUI worker. Other
+            # rebuild callers keep the historical synchronous reconnect behavior.
+            want_mcp = not defer_mcp_reconnect
         else:
             # MCP was deferred at startup and no pool yet: stay deferred.
             want_mcp = False
@@ -566,9 +572,17 @@ def _rebuild_agent(
         checkpointer=checkpointer,
         model=model,
         model_registry=registry,
+        model_cache=model_cache,
         load_mcp=want_mcp,
         mcp_tools=mcp_tools,
         steer_queue=steer_queue,
+    )
+
+
+def _mcp_attach_pending(settings: Any) -> bool:
+    return bool(
+        getattr(settings, "enable_mcp", True)
+        and get_active_mcp_pool() is None
     )
 
 
@@ -599,6 +613,18 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
             copied = True
         except Exception:  # noqa: BLE001
             return False
+    if copied:
+        try:
+            from synapse.models_registry import model_cache_key
+
+            cache = getattr(agent, "_coding_model_cache", None)
+            if isinstance(cache, dict):
+                stale = [key for key, value in cache.items() if value is live]
+                for key in stale:
+                    cache.pop(key, None)
+                cache[model_cache_key(settings, model_name=model_name)] = live
+        except Exception:  # noqa: BLE001
+            pass
     return copied
 
 
@@ -918,6 +944,7 @@ def _handle_model(
                     project_root=project_root,
                     model_name=model_name,
                     agent=agent,
+                    defer_mcp_reconnect=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 return SlashResult(
@@ -931,6 +958,7 @@ def _handle_model(
             lines=[f"thinking set to {label}{note}  ({format_model_status(settings)})"],
             agent=new_agent,
             settings_changed=True,
+            mcp_attach_pending=bool(new_agent is not None and _mcp_attach_pending(settings)),
         )
 
     target = args[0].strip()
@@ -985,6 +1013,7 @@ def _handle_model(
             project_root=project_root,
             model_name=profile.name,
             agent=agent,
+            defer_mcp_reconnect=True,
         )
     except Exception as exc:  # noqa: BLE001
         return SlashResult(
@@ -993,6 +1022,7 @@ def _handle_model(
             error=True,
         )
     _persist_model_binding(settings, thread_id)
+    mcp_attach_pending = _mcp_attach_pending(settings)
     return SlashResult(
         handled=True,
         lines=[
@@ -1000,6 +1030,7 @@ def _handle_model(
         ],
         agent=new_agent,
         settings_changed=True,
+        mcp_attach_pending=mcp_attach_pending,
     )
 
 

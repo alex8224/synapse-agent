@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 
 def _env_enabled() -> bool:
@@ -73,22 +75,53 @@ class StartupTrace:
 
 
 TRACE = StartupTrace()
+_LOCAL = threading.local()
+
+
+def _current_trace() -> StartupTrace:
+    if threading.current_thread() is threading.main_thread():
+        return TRACE
+    trace = getattr(_LOCAL, "trace", None)
+    if trace is None:
+        trace = StartupTrace()
+        _LOCAL.trace = trace
+    return trace
+
+
+def reset() -> None:
+    _current_trace().reset()
 
 
 def mark(name: str) -> None:
-    TRACE.mark(name)
+    _current_trace().mark(name)
 
 
 def span(name: str):
-    return TRACE.span(name)
+    return _current_trace().span(name)
 
 
 def dump(**kwargs) -> None:
-    TRACE.dump(**kwargs)
+    _current_trace().dump(**kwargs)
+
+
+def duration(name: str, started: float, *, file=None, **fields: Any) -> None:
+    """Emit one independent duration line without mutating cumulative stage state."""
+    if not _current_trace().enabled:
+        return
+    elapsed = (time.perf_counter() - started) * 1000
+    suffix = " ".join(f"{key}={value}" for key, value in fields.items())
+    detail = f" {suffix}" if suffix else ""
+    out = file or sys.stderr
+    print(
+        f"[perf] thread={threading.current_thread().name} event={name} "
+        f"elapsed_ms={elapsed:.1f}{detail}",
+        file=out,
+    )
 
 
 def ensure_started() -> None:
     """Call near process entry so t0 is close to CLI start when enabled late."""
-    if TRACE.enabled and not TRACE.marks:
-        TRACE.reset()
-        TRACE.mark("trace-enabled")
+    trace = _current_trace()
+    if trace.enabled and not trace.marks:
+        trace.reset()
+        trace.mark("trace-enabled")

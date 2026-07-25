@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
+import time
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
@@ -89,12 +90,14 @@ class AsyncRuntime:
         self._owned_conns.append(conn)
 
     def close(self) -> None:
+        started = time.perf_counter()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             loop = self._loop
             thread = self._thread
+        connection_count = len(self._owned_conns)
         if loop is not None and loop.is_running():
 
             async def _shutdown() -> None:
@@ -104,11 +107,12 @@ class AsyncRuntime:
                     except Exception:  # noqa: BLE001
                         pass
                 self._owned_conns.clear()
-                loop.stop()
 
             try:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=3.0)
             except Exception:  # noqa: BLE001
+                pass
+            finally:
                 try:
                     loop.call_soon_threadsafe(loop.stop)
                 except Exception:  # noqa: BLE001
@@ -117,6 +121,12 @@ class AsyncRuntime:
             thread.join(timeout=2.0)
         self._loop = None
         self._thread = None
+        try:
+            from synapse.startup_trace import duration
+
+            duration("runtime.close", started, connections=connection_count)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _RUNTIME = AsyncRuntime()

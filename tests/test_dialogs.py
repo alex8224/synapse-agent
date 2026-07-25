@@ -561,6 +561,7 @@ class TestApplyOkResult:
             "_render_status",
             "action_clear_log",
             "append_event",
+            "flash_status",
             "apply_theme",
             "set_activity",
             "query_one",
@@ -601,6 +602,46 @@ class TestApplyOkResult:
 
         app._apply_ok_result(ok)
         app.apply_theme.assert_called_once()
+
+    def test_short_notice_ttl_for_background_model_switch(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        ok = MagicMock(
+            agent=None,
+            thread_id=None,
+            settings_changed=True,
+            clear_log=False,
+            reload_transcript=False,
+            theme_name=None,
+            error=False,
+            notice=None,
+            lines=["model switched to demo"],
+        )
+
+        app._apply_ok_result(ok, 1.5)
+
+        app.flash_status.assert_called_once_with(
+            "model switched to demo", "dim", ttl=1.5
+        )
+
+    def test_short_error_notice_keeps_warning_style(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        ok = MagicMock(
+            agent=None,
+            thread_id=None,
+            settings_changed=False,
+            clear_log=False,
+            reload_transcript=False,
+            theme_name=None,
+            error=True,
+            notice=None,
+            lines=["model switch failed"],
+        )
+
+        app._apply_ok_result(ok, 1.5)
+
+        app.flash_status.assert_called_once_with(
+            "model switch failed", "yellow", ttl=1.5
+        )
 
     def test_idempotent_on_empty(self, monkeypatch):
         app = self._make_app(monkeypatch)

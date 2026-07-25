@@ -126,6 +126,37 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert getattr(agent, "_coding_steer_queue", None) is not None
 
 
+def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Path):
+    settings = load_settings(
+        workspace=tmp_path,
+        model="openai:gpt-4.1",
+        active_model="openai:gpt-4.1",
+        checkpoint_backend="memory",
+        enable_mcp=False,
+    )
+    cache: dict[str, object] = {}
+
+    with (
+        patch("synapse.models_registry.init_chat_model", side_effect=[object(), object()]) as init,
+        patch("deepagents.create_deep_agent", side_effect=[MagicMock(), MagicMock(), MagicMock()]),
+        patch("deepagents.register_harness_profile", MagicMock()),
+        patch("deepagents.HarnessProfile", MagicMock()),
+    ):
+        from synapse.agent import build_coding_agent
+
+        first = build_coding_agent(settings, project_root=tmp_path, model_cache=cache)
+        second = build_coding_agent(settings, project_root=tmp_path, model_cache=cache)
+        settings.reasoning_effort = "low"
+        third = build_coding_agent(settings, project_root=tmp_path, model_cache=cache)
+
+    assert first._coding_model is second._coding_model
+    assert third._coding_model is not first._coding_model
+    assert init.call_count == 2
+    assert first._coding_model_cache is cache
+    assert second._coding_model_cache is cache
+    assert third._coding_model_cache is cache
+
+
 def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
     from synapse.steer import SteerQueue
 
@@ -170,8 +201,37 @@ def test_attach_mcp_to_agent_preserves_steer_queue(tmp_path: Path):
     )
     settings = SimpleNamespace(enable_mcp=True)
 
-    with patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build:
+    with (
+        patch("synapse.agent.get_active_mcp_pool", return_value=None),
+        patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build,
+    ):
         rebuilt = attach_mcp_to_agent(settings, current, project_root=tmp_path)
 
     assert rebuilt == "rebuilt"
     assert build.call_args.kwargs["steer_queue"] is queue
+    assert build.call_args.kwargs["load_mcp"] is True
+    assert build.call_args.kwargs["mcp_tools"] is None
+
+
+def test_attach_mcp_to_agent_reuses_live_pool_tools(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from synapse.agent import attach_mcp_to_agent
+
+    tool = object()
+    pool = SimpleNamespace(tools=[tool])
+    current = SimpleNamespace(
+        _coding_checkpointer="checkpointer",
+        _coding_model="model",
+        _coding_model_registry="registry",
+    )
+    settings = SimpleNamespace(enable_mcp=True)
+
+    with (
+        patch("synapse.agent.get_active_mcp_pool", return_value=pool),
+        patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build,
+    ):
+        attach_mcp_to_agent(settings, current, project_root=tmp_path)
+
+    assert build.call_args.kwargs["load_mcp"] is False
+    assert build.call_args.kwargs["mcp_tools"] == [tool]

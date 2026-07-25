@@ -2445,7 +2445,9 @@ class CodingAgentApp(App[None]):
     def _bg_build_agent(self) -> None:
         """Build agent off the UI thread; attach MCP in a second phase."""
         from synapse.agent import attach_mcp_to_agent, build_coding_agent
+        from synapse.startup_trace import duration
 
+        startup_started = time.perf_counter()
         try:
             self.call_from_thread(
                 self.set_activity, "starting", "build model/backend…", True
@@ -2457,6 +2459,7 @@ class CodingAgentApp(App[None]):
             )
             self.agent = agent
             self._agent_ready.set()
+            duration("agent.ready", startup_started, phase="startup")
             self.call_from_thread(self._on_agent_ready, False)
         except Exception as exc:  # noqa: BLE001
             self._agent_error = str(exc)
@@ -2473,6 +2476,7 @@ class CodingAgentApp(App[None]):
             return
         if getattr(agent, "_coding_mcp_attached", False):
             return
+        mcp_started = time.perf_counter()
         try:
             self._mcp_attaching = True
             self.call_from_thread(
@@ -2484,14 +2488,21 @@ class CodingAgentApp(App[None]):
                 project_root=self.project_root,
             )
             if self.agent is not agent:
-                # Agent was replaced while connecting (e.g. /model switch).
-                # Do not clobber the new agent; pool now exists, so a later
-                # rebuild reuses MCP tools without reconnecting.
-                self.call_from_thread(
-                    self.append_event,
-                    "MCP connected; current agent unchanged (tools apply on next rebuild)",
-                    "dim",
+                # A model switch replaced phase-1 while MCP was connecting.
+                # Rebuild the current graph with the now-live pool; this path
+                # reuses tools and performs no second network connection.
+                current = self.agent
+                if current is None:
+                    return
+                current_with_mcp = attach_mcp_to_agent(
+                    self.settings,
+                    current,
+                    project_root=self.project_root,
                 )
+                if self.agent is current:
+                    self.agent = current_with_mcp
+                    self.call_from_thread(self._bind_steer_queue)
+                    self.call_from_thread(self._on_mcp_attached)
                 return
             self.agent = agent2
             self.call_from_thread(self._bind_steer_queue)
@@ -2510,6 +2521,7 @@ class CodingAgentApp(App[None]):
                 "yellow",
             )
         finally:
+            duration("mcp.attach", mcp_started, phase="startup")
             self._mcp_attaching = False
             if not self._busy:
                 self.call_from_thread(self.set_activity, "idle", "ready", True)
@@ -4603,9 +4615,11 @@ class CodingAgentApp(App[None]):
     def _switch_model_bg(self, command: str, activity: str) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
         from synapse.slash_cmds import handle_slash
+        from synapse.startup_trace import duration
 
+        switch_started = time.perf_counter()
+        self.call_from_thread(self._clear_status_notice)
         self.call_from_thread(self.set_activity, "switching", activity, True)
-        self.call_from_thread(self.flash_status, f"{activity}…", "dim")
         try:
             ok = handle_slash(
                 command,
@@ -4615,13 +4629,57 @@ class CodingAgentApp(App[None]):
                 project_root=self.project_root,
             )
         except Exception as exc:  # noqa: BLE001
+            duration("model.switch", switch_started, command=command, success=False)
             self.call_from_thread(
                 self.append_event, f"{activity} failed: {exc}", "yellow"
             )
             self.call_from_thread(self.set_activity, "idle", "", True)
             return
-        self.call_from_thread(self._apply_ok_result, ok)
+        duration(
+            "model.switch",
+            switch_started,
+            command=command,
+            success=not bool(getattr(ok, "error", False)),
+        )
+        self.call_from_thread(self._apply_ok_result, ok, 1.5)
         self.call_from_thread(self.set_activity, "idle", "", True)
+        if getattr(ok, "mcp_attach_pending", False):
+            self.call_from_thread(self._attach_mcp_after_switch)
+
+    def _attach_mcp_after_switch(self) -> None:
+        if self._mcp_attaching or self.agent is None:
+            return
+        self._mcp_attaching = True
+        self._attach_mcp_after_switch_bg(self.agent)
+
+    @work(thread=True, exclusive=True, group="model-switch-mcp")
+    def _attach_mcp_after_switch_bg(self, base_agent: Any) -> None:
+        from synapse.agent import attach_mcp_to_agent
+        from synapse.startup_trace import duration
+
+        mcp_started = time.perf_counter()
+        self.call_from_thread(self.flash_status, "reconnecting MCP…", "dim", ttl=1.5)
+        try:
+            agent = attach_mcp_to_agent(
+                self.settings,
+                base_agent,
+                project_root=self.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.append_event,
+                f"MCP reconnect failed (agent still usable): {exc}",
+                "yellow",
+            )
+            return
+        finally:
+            duration("mcp.attach", mcp_started, phase="model_switch")
+            self._mcp_attaching = False
+        if self.agent is not base_agent:
+            return
+        self.agent = agent
+        self.call_from_thread(self._bind_steer_queue)
+        self.call_from_thread(self.flash_status, "MCP reconnected", "dim", ttl=1.5)
 
     def _open_theme_dialog(self) -> None:
         from synapse.ui.dialogs import ThemePickerDialog
@@ -4839,7 +4897,7 @@ class CodingAgentApp(App[None]):
                 return
             self._apply_ok_result(ok)
 
-    def _apply_ok_result(self, ok: object) -> None:
+    def _apply_ok_result(self, ok: object, notice_ttl: float = 4.0) -> None:
         """Apply a SlashResult returned by handle_slash after a dialog pick."""
         agent = getattr(ok, "agent", None)
         if agent is not None:
@@ -4865,12 +4923,21 @@ class CodingAgentApp(App[None]):
                 self.append_event(f"theme apply failed: {exc}", "yellow")
         _notice = (getattr(ok, "notice", None) or "").strip()
         if _notice and not getattr(ok, "error", False):
-            self.flash_status(_notice, "dim")
+            self.flash_status(_notice, "dim", ttl=notice_ttl)
         else:
-            self._emit_system_lines(
-                getattr(ok, "lines", []) or [],
-                error=bool(getattr(ok, "error", False)),
-            )
+            lines = getattr(ok, "lines", []) or []
+            if notice_ttl != 4.0 and len(lines) <= 2:
+                cleaned = [str(x).strip() for x in lines if str(x or "").strip()]
+                if cleaned and sum(len(x) for x in cleaned) <= 140:
+                    style = "yellow" if getattr(ok, "error", False) else "dim"
+                    self.flash_status(" · ".join(cleaned), style, ttl=notice_ttl)
+                else:
+                    self._emit_system_lines(lines, error=bool(getattr(ok, "error", False)))
+            else:
+                self._emit_system_lines(
+                    lines,
+                    error=bool(getattr(ok, "error", False)),
+                )
         self._reload_session_title()
         self._refresh_topbar()
 

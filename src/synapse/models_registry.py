@@ -28,6 +28,7 @@ only seed defaults when a model is selected; they do not lock the effort level.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -869,6 +870,29 @@ def apply_models_config_to_settings(settings: Any) -> Any:
         updates["anthropic_api_key"] = None
 
     return settings.model_copy(update=updates)
+
+
+def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
+    """Stable key for reusing one configured ChatModel within an agent session."""
+    reg = registry_from_settings(settings)
+    selected = model_name or getattr(settings, "active_model", None) or reg.default
+    profile = reg.get(selected)
+    api_key = profile.resolved_api_key() or settings_fallback_api_key(settings, profile.model)
+    payload = {
+        "selected": selected,
+        "model": profile.model,
+        "base_url": profile.base_url or getattr(settings, "openai_base_url", None),
+        "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
+        "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
+        "reasoning_effort": getattr(settings, "reasoning_effort", None),
+        "parallel_tool_calls": getattr(settings, "parallel_tool_calls", True),
+        "stream_chunk_timeout": getattr(settings, "stream_chunk_timeout", None),
+        "context_window": profile.context_window,
+        "extra": profile.extra,
+        "model_kwargs": profile.model_kwargs,
+        "extra_body": profile.extra_body,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def build_model_from_settings(settings: Any, *, model_name: str | None = None):
