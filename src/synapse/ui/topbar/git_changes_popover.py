@@ -117,8 +117,10 @@ class GitChangesPopover(Vertical):
         color_orange: str = "#f4b183",
         color_added: str = "#81c995",
         color_deleted: str = "#f28b82",
-        id: str | None = "git-changes-popover",
+        id: str | None = None,
     ) -> None:
+        # Callers that mount onto Screen should pass a unique id; fixed default
+        # ids collide when Textual remove() is still draining the previous node.
         super().__init__(id=id)
         self.files = list(files or [])
         self._colors = {
@@ -225,6 +227,8 @@ class TopBar(Static):
         self._popover_hover = False
         self._hide_timer: Timer | None = None
         self._popover: GitChangesPopover | None = None
+        self._popover_mounting = False
+        self._popover_seq = 0
         self._files_cache: list[GitChangedFile] | None = None
         self._files_cache_key: str | None = None
 
@@ -284,7 +288,7 @@ class TopBar(Static):
         self._files_cache_key = None
 
     def is_popover_open(self) -> bool:
-        return self._popover is not None
+        return self._popover_is_attached(self._popover)
 
     def on_popover_enter(self) -> None:
         """Popover mouse enter: keep open without faking branch hover."""
@@ -320,6 +324,60 @@ class TopBar(Static):
             return
         self._remove_popover()
 
+    @staticmethod
+    def _popover_is_attached(pop: Widget | None) -> bool:
+        """True when popover is still part of a live screen tree."""
+        if pop is None:
+            return False
+        try:
+            if getattr(pop, "is_mounted", False):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return getattr(pop, "parent", None) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _clamp_popover_left(self, left: int, width: int) -> int:
+        try:
+            screen_w = int(getattr(self.screen.size, "width", 0) or 0)
+            if screen_w > 0 and left + width > screen_w:
+                return max(0, screen_w - width)
+        except Exception:  # noqa: BLE001
+            pass
+        return left
+
+    def _position_popover(self, pop: GitChangesPopover, left: int) -> None:
+        width = pop.measure_width()
+        left = self._clamp_popover_left(left, width)
+        pop.styles.offset = (left, 1)
+        pop.styles.width = width
+        pop.styles.layer = "overlay"
+
+    def _purge_screen_popovers(self, *, keep: Widget | None = None) -> None:
+        """Drop any leftover GitChangesPopover nodes.
+
+        Textual ``Widget.remove()`` is asynchronous. A second hover can try to
+        mount another ``#git-changes-popover`` before the previous node is
+        actually gone, which raises ``DuplicateIds``.
+        """
+        try:
+            screen = self.screen
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            orphans = list(screen.query(GitChangesPopover))
+        except Exception:  # noqa: BLE001
+            orphans = []
+        for widget in orphans:
+            if keep is not None and widget is keep:
+                continue
+            try:
+                widget.remove()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _remove_popover(self) -> None:
         pop = self._popover
         self._popover = None
@@ -329,8 +387,12 @@ class TopBar(Static):
                 pop.remove()
             except Exception:  # noqa: BLE001
                 pass
+        # Also clear any detached-but-still-registered duplicates.
+        self._purge_screen_popovers()
 
     def show_popover(self, *, force_reload: bool = False) -> None:
+        if self._popover_mounting:
+            return
         if not self._is_dirty():
             self.dismiss()
             return
@@ -344,19 +406,18 @@ class TopBar(Static):
         if span is not None:
             left = max(0, int(span[0]) + 1)  # + CSS padding
 
-        # Already open: keep instance and re-position only.
-        if self._popover is not None:
-            width = self._popover.measure_width()
-            try:
-                screen_w = int(getattr(self.screen.size, "width", 0) or 0)
-                if screen_w > 0 and left + width > screen_w:
-                    left = max(0, screen_w - width)
-            except Exception:  # noqa: BLE001
-                pass
-            self._popover.styles.offset = (left, 1)
-            self._popover.styles.width = width
+        # Already open and still attached: keep instance and re-position only.
+        if self._popover_is_attached(self._popover):
+            assert self._popover is not None
+            self._position_popover(self._popover, left)
             return
 
+        # Stale handle or async-removed node: drop reference and sweep screen.
+        self._popover = None
+        self._purge_screen_popovers()
+
+        # Unique id so a dying previous node cannot collide during remove lag.
+        self._popover_seq += 1
         pop = GitChangesPopover(
             files,
             color_clean=self._colors.get("clean", "#81c995"),
@@ -366,21 +427,24 @@ class TopBar(Static):
             color_orange=self._colors.get("orange", "#f4b183"),
             color_added=self._colors.get("added", "#81c995"),
             color_deleted=self._colors.get("deleted", "#f28b82"),
+            id=f"git-changes-popover-{self._popover_seq}",
         )
         pop._owner = self
-        width = pop.measure_width()
-        try:
-            screen_w = int(getattr(self.screen.size, "width", 0) or 0)
-            if screen_w > 0 and left + width > screen_w:
-                left = max(0, screen_w - width)
-        except Exception:  # noqa: BLE001
-            pass
+        self._position_popover(pop, left)
 
-        self._popover = pop
-        self.screen.mount(pop)
-        pop.styles.offset = (left, 1)
-        pop.styles.width = width
-        pop.styles.layer = "overlay"
+        self._popover_mounting = True
+        try:
+            self._popover = pop
+            self.screen.mount(pop)
+        except Exception:
+            self._popover = None
+            try:
+                pop.remove()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        finally:
+            self._popover_mounting = False
 
     def on_enter(self, event: Enter) -> None:
         # Enter alone may not carry a stable x on all backends; MouseMove refines.
