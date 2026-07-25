@@ -218,7 +218,7 @@ class NotifyingModelRetryMiddleware(ModelRetryMiddleware):
 def build_model_retry_middleware() -> NotifyingModelRetryMiddleware:
     """Retry recoverable model failures (stream + HTTP 5xx) with backoff."""
     return NotifyingModelRetryMiddleware(
-        max_retries=5,
+        max_retries=999,
         retry_on=should_retry_transient_model_error,
         on_failure="error",
         initial_delay=1.0,
