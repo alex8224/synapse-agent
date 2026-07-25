@@ -531,6 +531,7 @@ def _rebuild_agent(
     load_mcp: bool | None = None,
 ) -> Any:
     checkpointer = getattr(agent, "_coding_checkpointer", None)
+    steer_queue = getattr(agent, "_coding_steer_queue", None)
     # Reuse live model only when not switching profiles.
     reuse_model = model_name is None
     model = getattr(agent, "_coding_model", None) if reuse_model else None
@@ -567,6 +568,7 @@ def _rebuild_agent(
         model_registry=registry,
         load_mcp=want_mcp,
         mcp_tools=mcp_tools,
+        steer_queue=steer_queue,
     )
 
 

@@ -132,6 +132,7 @@ def build_coding_agent(
     load_mcp: bool | None = None,
     model: Any | None = None,
     model_registry: Any | None = None,
+    steer_queue: SteerQueue | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -291,8 +292,10 @@ def build_coding_agent(
         build_path_normalize_middleware(root),
         *build_intent_schema_middleware(),
     ]
-    # Mid-run guidance queue: drain into HumanMessage before each model call.
-    steer_queue = SteerQueue()
+    # Keep one queue across graph rebuilds so an active turn and the TUI never
+    # route guidance to different middleware instances.
+    if steer_queue is None:
+        steer_queue = SteerQueue()
     middleware.append(build_steer_middleware(steer_queue))
     if getattr(settings, "enable_compact_tool", True):
         try:
@@ -353,6 +356,7 @@ def attach_mcp_to_agent(
     checkpointer = getattr(agent, "_coding_checkpointer", None)
     model = getattr(agent, "_coding_model", None)
     registry = getattr(agent, "_coding_model_registry", None)
+    steer_queue = getattr(agent, "_coding_steer_queue", None)
     return build_coding_agent(
         settings,
         project_root=project_root,
@@ -360,6 +364,7 @@ def attach_mcp_to_agent(
         model=model,
         model_registry=registry,
         load_mcp=True,
+        steer_queue=steer_queue,
     )
 
 

@@ -78,6 +78,27 @@ def test_fold_skips_system():
     assert [e.kind for e in events] == ["user", "answer"]
 
 
+def test_fold_skips_model_only_steer_human_message():
+    from langchain_core.messages import HumanMessage
+
+    from synapse.steer import format_steer_message
+
+    messages = [
+        _Human("visible question"),
+        HumanMessage(
+            content=format_steer_message(["测试"]),
+            additional_kwargs={"coding_steer": True},
+        ),
+        _AI("visible answer"),
+    ]
+
+    events = fold_messages_for_ui(messages)
+    assert [(event.kind, event.text) for event in events] == [
+        ("user", "visible question"),
+        ("answer", "visible answer"),
+    ]
+
+
 def test_fold_anthropic_tool_use_blocks_not_dumped_as_answer():
     """tool_use content blocks must become tools, never raw JSON answers."""
     block = {

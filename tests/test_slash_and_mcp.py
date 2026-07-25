@@ -459,11 +459,13 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     calls = _capture_build(monkeypatch)
 
     model = object()
+    steer_queue = object()
     agent = SimpleNamespace(
         _coding_checkpointer="cp",
         _coding_model=model,
         _coding_model_registry="reg",
         _coding_mcp_attached=True,
+        _coding_steer_queue=steer_queue,
     )
     slash_cmds._rebuild_agent(
         settings, project_root=tmp_path, model_name=None, agent=agent
@@ -474,6 +476,7 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     assert kw["mcp_tools"] == [tool]
     assert kw["model"] is model
     assert kw["checkpointer"] == "cp"
+    assert kw["steer_queue"] is steer_queue
 
 
 def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):

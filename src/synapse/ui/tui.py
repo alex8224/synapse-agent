@@ -41,7 +41,7 @@ from synapse.multimodal import (
     read_clipboard,
 )
 from synapse.session_recap import SessionRecapController
-from synapse.steer import format_steer_message, get_agent_steer_queue
+from synapse.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -2306,13 +2306,13 @@ class CodingAgentApp(App[None]):
         self._activity_started = time.monotonic()
         self._spin_i = 0
         self._steer_items: list[str] = []
-        # Keep just-applied guidance visible for the remainder of a busy turn.
-        # A fast middleware drain can otherwise hide the panel before Textual
-        # has a chance to paint the enqueue state.
-        self._steer_visible_items: list[str] = []
-        self._steer_force_hide = False
         self._steer_last_count = 0
-        self._steer_listener_bound = False
+        self._steer_bound_queue: SteerQueue | None = None
+        self._steer_listener: Any | None = None
+        self._active_turn_agent: Any | None = None
+        self._active_turn_thread_id: str | None = None
+        self._active_steer_queue: SteerQueue | None = None
+        self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
         self._thought_expanded = False
@@ -2494,6 +2494,7 @@ class CodingAgentApp(App[None]):
                 )
                 return
             self.agent = agent2
+            self.call_from_thread(self._bind_steer_queue)
             if not self._busy:
                 self.call_from_thread(self._on_mcp_attached)
             else:
@@ -2517,7 +2518,6 @@ class CodingAgentApp(App[None]):
         label = "agent ready" + (" + MCP" if with_mcp else " (MCP pending)")
         self.append_event(label, "dim")
         self.set_activity("idle", "ready", True)
-        self._steer_listener_bound = False
         self._bind_steer_queue()
         self._restore_session_transcript(announce=True)
 
@@ -3733,46 +3733,67 @@ class CodingAgentApp(App[None]):
         self._refresh_bottombar()
 
     def _bind_steer_queue(self) -> None:
-        """Attach live UI listener to the agent steer queue."""
-        q = get_agent_steer_queue(self.agent)
-        if q is None:
-            return
-        if self._steer_listener_bound:
-            self._on_steer_items_changed(q.peek_items())
+        """Attach the UI listener to the queue owned by the current agent."""
+        queue = self._turn_steer_queue()
+        if queue is self._steer_bound_queue:
+            if queue is not None:
+                self._on_steer_items_changed(queue.peek_items())
             return
 
-        def _on_change(items: list[str]) -> None:
-            # Middleware drain may fire from the worker thread.
+        old_queue = self._steer_bound_queue
+        old_listener = self._steer_listener
+        if old_queue is not None and old_listener is not None:
+            old_queue.remove_listener(old_listener)
+
+        self._steer_bound_queue = queue
+        self._steer_listener = None
+        if queue is None:
+            self._on_steer_items_changed([])
+            return
+
+        def _on_change(items: list[str], *, source: SteerQueue = queue) -> None:
+            def _apply(snapshot: list[str]) -> None:
+                if self._steer_bound_queue is source:
+                    self._on_steer_items_changed(snapshot)
+
             try:
-                self.call_from_thread(self._on_steer_items_changed, list(items))
+                self.call_from_thread(_apply, list(items))
             except Exception:  # noqa: BLE001
-                self._on_steer_items_changed(list(items))
+                _apply(list(items))
 
-        q.add_listener(_on_change)
-        self._steer_listener_bound = True
-        self._on_steer_items_changed(q.peek_items())
+        self._steer_listener = _on_change
+        queue.add_listener(_on_change)
+        self._on_steer_items_changed(queue.peek_items())
+
+    def _turn_steer_queue(self) -> SteerQueue | None:
+        """Return the queue consumed by the active graph run."""
+        if self._busy and self._active_steer_queue is not None:
+            return self._active_steer_queue
+        return get_agent_steer_queue(self.agent)
+
+    def _capture_turn_context(self) -> None:
+        """Freeze the agent, thread, and queue used by one graph run."""
+        turn_agent = self.agent
+        self._active_turn_agent = turn_agent
+        self._active_turn_thread_id = self.thread_id
+        self._active_steer_queue = get_agent_steer_queue(turn_agent)
+
+    def _clear_turn_context(self) -> None:
+        self._active_turn_agent = None
+        self._active_turn_thread_id = None
+        self._active_steer_queue = None
 
     def _on_steer_items_changed(self, items: list[str]) -> None:
-        prev = self._steer_last_count
         self._steer_items = [str(item).strip() for item in items if str(item).strip()]
-        now = len(self._steer_items)
-        self._steer_last_count = now
-        if self._steer_items:
-            self._steer_visible_items = list(self._steer_items)
-            self._steer_force_hide = False
-        elif self._steer_force_hide or not self._busy:
-            self._steer_visible_items = []
-            self._steer_force_hide = False
+        self._steer_last_count = len(self._steer_items)
         try:
             self.query_one("#steer-queue", SteerQueueWidget).set_items(
-                self._steer_visible_items
+                self._steer_items
             )
         except Exception:  # noqa: BLE001
             pass
         self._render_status()
         self._sync_prompt_placeholder()
-        # Applied drain: panel empties itself; never flash status / transcript.
-        del prev  # count transition only drives panel via set_items
 
     def _sync_prompt_placeholder(self) -> None:
         """Prompt copy guides mode: normal vs mid-run queue."""
@@ -3791,19 +3812,16 @@ class CodingAgentApp(App[None]):
 
     def drop_steer_at(self, index: int) -> None:
         """UI: remove one pending steer note by index."""
-        q = get_agent_steer_queue(self.agent)
+        q = self._turn_steer_queue()
         if q is None:
             return
-        if q.peek_count() <= 1:
-            self._steer_force_hide = True
         q.remove_at(int(index))
 
     def clear_steer_queue(self) -> None:
         """UI: clear all pending steer notes."""
-        q = get_agent_steer_queue(self.agent)
+        q = self._turn_steer_queue()
         if q is None:
             return
-        self._steer_force_hide = True
         q.clear()
 
     def _tick_status(self) -> None:
@@ -4645,6 +4663,7 @@ class CodingAgentApp(App[None]):
         if self._busy:
             self.append_event("still running previous turn…", "yellow")
             return
+        self._capture_turn_context()
         self._busy = True
         self.set_activity("importing", "importing Codex session", True)
         self.flash_status("importing Codex session…", "dim")
@@ -4654,7 +4673,8 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="codex-import")
     def _import_codex_session_bg(self, native_id: str) -> None:
         """Seed one Codex text snapshot, then switch through the normal session path."""
-        if not self._agent_ready.wait(timeout=180) or self.agent is None:
+        turn_agent = self._active_turn_agent or self.agent
+        if not self._agent_ready.wait(timeout=180) or turn_agent is None:
             self.call_from_thread(
                 self.append_event,
                 "Codex import unavailable: agent is still starting",
@@ -4668,7 +4688,7 @@ class CodingAgentApp(App[None]):
             result = import_codex_session(
                 native_id=native_id,
                 settings=self.settings,
-                agent=self.agent,
+                agent=turn_agent,
                 workspace=Path(self.settings.workspace),
             )
         except Exception as exc:  # noqa: BLE001
@@ -4824,7 +4844,6 @@ class CodingAgentApp(App[None]):
         agent = getattr(ok, "agent", None)
         if agent is not None:
             self.agent = agent
-            self._steer_listener_bound = False
             self._bind_steer_queue()
         thread_id = getattr(ok, "thread_id", None)
         if thread_id is not None and thread_id != self.thread_id:
@@ -4928,7 +4947,6 @@ class CodingAgentApp(App[None]):
 
         if result.agent is not None:
             self.agent = result.agent
-            self._steer_listener_bound = False
             self._bind_steer_queue()
 
         thread_changed = False
@@ -4976,6 +4994,7 @@ class CodingAgentApp(App[None]):
             if self._busy:
                 self.append_event("still running previous turn…", "yellow")
                 return True
+            self._capture_turn_context()
             self._busy = True
             self.set_activity("tool", f"HITL {resume_action}", True)
             self.run_resume(
@@ -5020,7 +5039,7 @@ class CodingAgentApp(App[None]):
         if self._busy:
             # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
             self._bind_steer_queue()
-            q = get_agent_steer_queue(self.agent)
+            q = self._turn_steer_queue()
             if q is not None:
                 pending = q.push(text)
                 if pending:
@@ -5059,6 +5078,7 @@ class CodingAgentApp(App[None]):
         display = text
 
         self.append_user(display, images=turn_images or None)
+        self._capture_turn_context()
         self._busy = True
         self._skip_steer_followup = False
         self._cancel_event = threading.Event()
@@ -5079,19 +5099,23 @@ class CodingAgentApp(App[None]):
                 "agent start timeout (180s)",
                 "bold red",
             )
+            self.call_from_thread(self._turn_done)
             return
-        if self._agent_error or self.agent is None:
+        turn_agent = self._active_turn_agent or self.agent
+        turn_thread_id = self._active_turn_thread_id or self.thread_id
+        if self._agent_error or turn_agent is None:
             self.call_from_thread(
                 self.append_event,
                 f"agent unavailable: {self._agent_error or 'not built'}",
                 "bold red",
             )
+            self.call_from_thread(self._turn_done)
             return
 
         self._begin_turn_usage()
         sink = TextualStreamSink(self)
         config = {
-            "configurable": {"thread_id": self.thread_id},
+            "configurable": {"thread_id": turn_thread_id},
             "max_concurrency": self.settings.max_concurrency,
         }
         provider = provider_from_settings(self.settings)
@@ -5105,7 +5129,7 @@ class CodingAgentApp(App[None]):
         payload = {"messages": [{"role": "user", "content": content}]}
         try:
             result = stream_agent(
-                self.agent,
+                turn_agent,
                 payload,
                 config,
                 token_stream=self.settings.token_stream,
@@ -5182,7 +5206,6 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True)
     def run_resume(self, action: str, message: str | None = None) -> None:
         """Resume graph after /approve or /reject."""
-        self._begin_turn_usage()
         from synapse.hitl import (
             build_decisions,
             build_resume_payload,
@@ -5190,15 +5213,22 @@ class CodingAgentApp(App[None]):
             format_interrupt_lines,
         )
 
+        turn_agent = self._active_turn_agent or self.agent
+        turn_thread_id = self._active_turn_thread_id or self.thread_id
+        if turn_agent is None:
+            self.call_from_thread(self.append_event, "agent unavailable", "bold red")
+            self.call_from_thread(self._turn_done)
+            return
+        self._begin_turn_usage()
         sink = TextualStreamSink(self)
         # Allow Esc to abort resume stream as well.
         self._cancel_event = threading.Event()
         config = {
-            "configurable": {"thread_id": self.thread_id},
+            "configurable": {"thread_id": turn_thread_id},
             "max_concurrency": self.settings.max_concurrency,
         }
         try:
-            pending = extract_pending_interrupt(self.agent, config)
+            pending = extract_pending_interrupt(turn_agent, config)
             if pending is None or (not pending.actions and not pending.raw):
                 self.call_from_thread(self.append_event, "no pending approval", "yellow")
                 return
@@ -5207,7 +5237,7 @@ class CodingAgentApp(App[None]):
             decisions = build_decisions(pending, action=action, message=message)
             payload = build_resume_payload(decisions)
             result = stream_agent(
-                self.agent,
+                turn_agent,
                 payload,
                 config,
                 token_stream=self.settings.token_stream,
@@ -5265,12 +5295,12 @@ class CodingAgentApp(App[None]):
             self.call_from_thread(self._turn_done)
 
     def _turn_done(self) -> None:
+        completed_queue = self._active_steer_queue or get_agent_steer_queue(self.agent)
         self._busy = False
         # An immediate middleware drain retains the panel while the turn is
         # active. Reconcile it now so applied guidance disappears at turn end.
-        q = get_agent_steer_queue(self.agent)
-        if q is not None:
-            self._on_steer_items_changed(q.peek_items())
+        if completed_queue is not None:
+            self._on_steer_items_changed(completed_queue.peek_items())
         try:
             self._commit_live_tools_to_log()
         except Exception:  # noqa: BLE001
@@ -5286,11 +5316,16 @@ class CodingAgentApp(App[None]):
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
         if getattr(self, "_skip_steer_followup", False):
             self._skip_steer_followup = False
+            self._clear_turn_context()
+            self._bind_steer_queue()
             self._note_session_recap_turn()
             return
         # Capture snapshot before steer follow-up may start another busy turn.
         self._note_session_recap_turn()
-        self._maybe_followup_steer()
+        if self._schedule_followup_steer(completed_queue):
+            return
+        self._clear_turn_context()
+        self._bind_steer_queue()
 
     def _note_session_recap_turn(self) -> None:
         """Remember latest turn facts for idle recap."""
@@ -5332,8 +5367,31 @@ class CodingAgentApp(App[None]):
             return
         self.append_event(line, "dim")
 
-    def _maybe_followup_steer(self) -> None:
-        q = get_agent_steer_queue(self.agent)
+    def _schedule_followup_steer(self, queue: SteerQueue | None) -> bool:
+        if queue is None or queue.peek_count() <= 0:
+            return False
+        self._busy = True
+        self._sync_prompt_placeholder()
+        if self.call_after_refresh(self._start_followup_steer, queue):
+            return True
+        self._busy = False
+        return False
+
+    def _start_followup_steer(self, queue: SteerQueue) -> None:
+        if self._cancel_event.is_set():
+            self._skip_steer_followup = True
+            self._turn_done()
+            return
+        if queue.peek_count() <= 0:
+            self._busy = False
+            self._clear_turn_context()
+            self._bind_steer_queue()
+            self.set_activity("idle", "ready", True)
+            return
+        self._maybe_followup_steer(queue)
+
+    def _maybe_followup_steer(self, queue: SteerQueue | None = None) -> None:
+        q = queue or get_agent_steer_queue(self.agent)
         if q is None or q.peek_count() <= 0:
             return
         items = q.drain()
@@ -5341,6 +5399,9 @@ class CodingAgentApp(App[None]):
         if not content:
             return
         # Silent follow-up: model gets content; no transcript/status steer copy.
+        if self._active_turn_agent is None:
+            self._capture_turn_context()
+        self._active_steer_queue = q
         self._busy = True
         self._skip_steer_followup = False
         self._cancel_event = threading.Event()

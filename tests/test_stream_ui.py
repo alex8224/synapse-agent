@@ -108,6 +108,30 @@ def test_extract_last_ai_text_from_messages():
     assert text == "final answer"
 
 
+def test_extract_last_ai_text_ignores_model_only_steer_human_message():
+    from langchain_core.messages import HumanMessage
+
+    from synapse.steer import format_steer_message
+
+    steer = HumanMessage(
+        content=format_steer_message(["测试"]),
+        additional_kwargs={"coding_steer": True},
+    )
+    assert extract_last_ai_text({"messages": [steer]}) == ""
+
+
+def test_extract_last_ai_text_skips_steer_and_returns_previous_ai_message():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from synapse.steer import format_steer_message
+
+    messages = [
+        AIMessage(content="visible answer"),
+        HumanMessage(content=format_steer_message(["测试"])),
+    ]
+    assert extract_last_ai_text({"messages": messages}) == "visible answer"
+
+
 def test_extract_last_ai_text_ignores_middleware_jump_map():
     from synapse.ui.stream import _looks_like_middleware_update
 

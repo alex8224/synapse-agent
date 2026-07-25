@@ -94,6 +94,56 @@ class _Chunk:
             setattr(self, k, v)
 
 
+class _SteerUpdateAgent:
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        from langchain_core.messages import HumanMessage
+
+        from synapse.steer import format_steer_message
+
+        content = format_steer_message(["测试"])
+        yield (
+            "messages",
+            (
+                _Chunk(type="ai", content=content, id="steer-message"),
+                {"langgraph_node": "model"},
+            ),
+        )
+        yield (
+            "updates",
+            {
+                "inject_steer_queue.before_model": {
+                    "messages": [
+                        HumanMessage(
+                            content=content,
+                            id="steer-message",
+                            additional_kwargs={"coding_steer": True},
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_hides_model_only_steer_messages():
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _SteerUpdateAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    assert not [event for event in sink.events if event[0] == "answer"]
+    assert sink.answer_buf == []
+    assert result.final_text == ""
+    assert result.streamed_answer is False
+
+
 class _FakeAgent:
     """Yield a complete tool_calls batch then a tool result."""
 

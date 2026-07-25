@@ -65,6 +65,10 @@ class SteerQueue:
         self._items: deque[str] = deque()
         self._lock = threading.Lock()
         self._listeners: list[SteerListener] = []
+        self._pending_notifications: deque[
+            tuple[list[str], list[SteerListener]]
+        ] = deque()
+        self._notifying = False
 
     def add_listener(self, callback: SteerListener) -> None:
         """Register a callback invoked with a snapshot after each change."""
@@ -81,14 +85,28 @@ class SteerQueue:
     def _snapshot(self) -> list[str]:
         return list(self._items)
 
-    def _notify_unlocked(self) -> None:
-        snap = self._snapshot()
-        listeners = list(self._listeners)
-        for cb in listeners:
-            try:
-                cb(snap)
-            except Exception:  # noqa: BLE001
-                pass
+    def _enqueue_notification_unlocked(self) -> bool:
+        self._pending_notifications.append(
+            (self._snapshot(), list(self._listeners))
+        )
+        if self._notifying:
+            return False
+        self._notifying = True
+        return True
+
+    def _dispatch_notifications(self) -> None:
+        # Preserve mutation order without invoking application code under _lock.
+        while True:
+            with self._lock:
+                if not self._pending_notifications:
+                    self._notifying = False
+                    return
+                snap, listeners = self._pending_notifications.popleft()
+            for callback in listeners:
+                try:
+                    callback(snap)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def push(self, text: str) -> int:
         """Enqueue guidance. Returns pending count after push (0 if empty text)."""
@@ -98,17 +116,20 @@ class SteerQueue:
         with self._lock:
             self._items.append(body)
             n = len(self._items)
-            self._notify_unlocked()
-            return n
+            should_dispatch = self._enqueue_notification_unlocked()
+        if should_dispatch:
+            self._dispatch_notifications()
+        return n
 
     def drain(self) -> list[str]:
         """Pop all pending guidance (order preserved)."""
         with self._lock:
             items = list(self._items)
             self._items.clear()
-            if items:
-                self._notify_unlocked()
-            return items
+            should_dispatch = bool(items) and self._enqueue_notification_unlocked()
+        if should_dispatch:
+            self._dispatch_notifications()
+        return items
 
     def peek_count(self) -> int:
         with self._lock:
@@ -128,8 +149,10 @@ class SteerQueue:
             items = list(self._items)
             removed = items.pop(index)
             self._items = deque(items)
-            self._notify_unlocked()
-            return removed
+            should_dispatch = self._enqueue_notification_unlocked()
+        if should_dispatch:
+            self._dispatch_notifications()
+        return removed
 
     def clear(self) -> list[str]:
         """Drop all pending items. Returns the previous list."""
@@ -138,8 +161,10 @@ class SteerQueue:
                 return []
             items = list(self._items)
             self._items.clear()
-            self._notify_unlocked()
-            return items
+            should_dispatch = self._enqueue_notification_unlocked()
+        if should_dispatch:
+            self._dispatch_notifications()
+        return items
 
 
 def format_steer_message(items: list[str]) -> str:

@@ -124,3 +124,54 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             for m in (kwargs.get("middleware") or [])
         )
         assert getattr(agent, "_coding_steer_queue", None) is not None
+
+
+def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
+    from synapse.steer import SteerQueue
+
+    settings = load_settings(
+        workspace=tmp_path,
+        model="openai:gpt-4.1",
+        require_approval=False,
+        checkpoint_backend="memory",
+        enable_mcp=False,
+    )
+    queue = SteerQueue()
+
+    with (
+        patch("synapse.models_registry.init_chat_model", return_value=object()),
+        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")),
+        patch("deepagents.register_harness_profile", MagicMock()),
+        patch("deepagents.HarnessProfile", MagicMock()),
+    ):
+        from synapse.agent import build_coding_agent
+
+        agent = build_coding_agent(
+            settings,
+            project_root=tmp_path,
+            steer_queue=queue,
+        )
+
+    assert agent._coding_steer_queue is queue
+
+
+def test_attach_mcp_to_agent_preserves_steer_queue(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from synapse.agent import attach_mcp_to_agent
+    from synapse.steer import SteerQueue
+
+    queue = SteerQueue()
+    current = SimpleNamespace(
+        _coding_checkpointer="checkpointer",
+        _coding_model="model",
+        _coding_model_registry="registry",
+        _coding_steer_queue=queue,
+    )
+    settings = SimpleNamespace(enable_mcp=True)
+
+    with patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build:
+        rebuilt = attach_mcp_to_agent(settings, current, project_root=tmp_path)
+
+    assert rebuilt == "rebuilt"
+    assert build.call_args.kwargs["steer_queue"] is queue

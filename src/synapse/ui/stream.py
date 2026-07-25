@@ -41,6 +41,7 @@ from synapse.context_compact import (
     is_stream_meta_summarization,
 )
 from synapse.pathing import summarize_tool_result
+from synapse.steer import is_steer_message
 from synapse.ui.sink import StreamSink, sink_supports_tool_items
 from synapse.ui.timeline import (
     build_tool_item,
@@ -429,17 +430,12 @@ def extract_last_ai_text(result: dict[str, Any] | Any) -> str:
     if not messages:
         return ""
     for msg in reversed(messages):
-        if not _is_ai_message(msg):
+        if not _is_ai_message(msg) or is_steer_message(msg):
             continue
         text = _normalize_content(getattr(msg, "content", "")).strip()
-        if text:
+        if text and not is_steer_message(text=text):
             return text
-    last = messages[-1]
-    content = getattr(last, "content", None)
-    if content is None:
-        return ""
-    text = content if isinstance(content, str) else _normalize_content(content)
-    return text.strip()
+    return ""
 
 
 def _normalize_content(content: Any) -> str:
@@ -982,11 +978,14 @@ def _is_tool_message(msg: Any) -> bool:
 
 
 def _is_ai_message(msg: Any) -> bool:
+    if isinstance(msg, dict):
+        role = str(msg.get("role") or msg.get("type") or "").lower()
+        return role in {"ai", "assistant", "aimessage", "aimessagechunk"}
     type_name = (getattr(msg, "type", None) or "").lower()
-    if type_name in {"ai", "aimessage", "aimessagechunk"}:
+    if type_name in {"ai", "assistant", "aimessage", "aimessagechunk"}:
         return True
-    cls_name = msg.__class__.__name__.lower()
-    return cls_name in {"aimessage", "aimessagechunk"}
+    cls_name = msg.__class__.__name__.lower().lstrip("_")
+    return cls_name in {"ai", "aimessage", "aimessagechunk"}
 
 
 def _reasoning_token_count(msg: Any) -> int | None:
@@ -1703,6 +1702,14 @@ def stream_agent(
                     _drop_leaked_stream()
                     continue
 
+                # Model-only guidance must not enter visible token/reasoning buffers.
+                if is_steer_message(msg_chunk):
+                    mid = getattr(msg_chunk, "id", None)
+                    if mid is not None:
+                        suppress_msg_ids.add(str(mid))
+                    _drop_leaked_stream()
+                    continue
+
                 mid = getattr(msg_chunk, "id", None)
                 if mid is not None and str(mid) in suppress_msg_ids:
                     continue
@@ -1768,6 +1775,11 @@ def stream_agent(
                     if dedupe_key in printed_ids:
                         continue
                     printed_ids.add(dedupe_key)
+
+                    if is_steer_message(msg):
+                        suppress_msg_ids.add(str(msg_id))
+                        _drop_leaked_stream()
+                        continue
 
                     if _is_tool_message(msg):
                         name = getattr(msg, "name", "tool")
@@ -1906,6 +1918,12 @@ def stream_agent(
                     msg_id = getattr(msg, "id", None)
                     if msg_id is not None:
                         msg_id = str(msg_id)
+
+                    if is_steer_message(msg, text=text):
+                        if msg_id:
+                            suppress_msg_ids.add(msg_id)
+                        _drop_leaked_stream()
+                        continue
 
                     if is_lc_summarization_message(msg) or is_context_compact_text(text):
                         if msg_id:
