@@ -167,6 +167,30 @@ def test_stream_agent_falls_back_when_sqlite_blocks_async():
     assert result.cancelled is False
 
 
+def test_stream_agent_async_only_does_not_fallback_to_sync():
+    agent = _SqliteOnlyAgent()
+    agent._coding_checkpointer = object()
+    agent._coding_async_only = True
+    sink = _Sink()
+
+    try:
+        stream_agent(
+            agent,
+            {"messages": [{"role": "user", "content": "x"}]},
+            {"configurable": {"thread_id": "async-only"}},
+            token_stream=False,
+            prefer_async=True,
+            sink=sink,
+        )
+        raised = False
+    except RuntimeError as exc:
+        raised = "does not support async" in str(exc)
+
+    assert raised is True
+    assert agent.astream_calls >= 1
+    assert agent.stream_calls == 0
+
+
 def test_stream_agent_skips_async_for_sqlite_checkpointer():
     agent = _SqliteOnlyAgent()
     sink = _Sink()

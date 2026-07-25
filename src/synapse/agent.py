@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,7 @@ def build_coding_agent(
     model_registry: Any | None = None,
     model_cache: dict[str, Any] | None = None,
     steer_queue: SteerQueue | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -167,6 +169,8 @@ def build_coding_agent(
     root = Path(settings.workspace).resolve()
     project_root = Path(project_root or Path.cwd()).resolve()
 
+    if progress is not None:
+        progress("preparing backend")
     with span("backend"):
         backend = build_backend(settings)
 
@@ -178,12 +182,24 @@ def build_coding_agent(
         cached = model_cache.get(cache_key)
         if cached is None:
             with span("model"):
-                registry, model = build_model_from_settings(settings, model_name=model_name)
+                registry, model = build_model_from_settings(
+                    settings,
+                    model_name=model_name,
+                    progress=progress,
+                )
             if len(model_cache) >= 8:
-                model_cache.pop(next(iter(model_cache)))
+                evicted = model_cache.pop(next(iter(model_cache)))
+                try:
+                    from synapse.http_clients import close_model_async_http_client
+
+                    close_model_async_http_client(evicted)
+                except Exception:  # noqa: BLE001
+                    pass
             model_cache[cache_key] = model
         else:
             model_cache_hit = True
+            if progress is not None:
+                progress("reusing cached model client")
             with span("model:cache_hit"):
                 registry = registry_from_settings(settings)
                 model = cached
@@ -323,6 +339,8 @@ def build_coding_agent(
         except Exception:  # noqa: BLE001
             pass
 
+    if progress is not None:
+        progress("compiling agent graph")
     with span("create_deep_agent"):
         agent = create_deep_agent(
             model=model,
@@ -346,17 +364,16 @@ def build_coding_agent(
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
     agent._coding_model_cache = model_cache  # type: ignore[attr-defined]
+    agent._coding_async_only = bool(  # type: ignore[attr-defined]
+        getattr(model, "_coding_async_only", False)
+    )
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
-    # Expose process async runtime when using AsyncSqliteSaver so stream can
-    # schedule astream on the same loop the checkpointer is bound to.
+    # All model I/O is async-only and bound to the process runtime loop.
     try:
         from synapse.async_runtime import get_async_runtime
 
-        if type(saver).__name__ == "AsyncSqliteSaver":
-            agent._coding_async_runtime = get_async_runtime()  # type: ignore[attr-defined]
-        else:
-            agent._coding_async_runtime = None  # type: ignore[attr-defined]
+        agent._coding_async_runtime = get_async_runtime()  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001
         agent._coding_async_runtime = None  # type: ignore[attr-defined]
     mark("build_coding_agent:done")

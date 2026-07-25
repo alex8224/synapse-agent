@@ -179,6 +179,9 @@ def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch)
         kwargs = init_mock.call_args.kwargs
         assert kwargs["reasoning_effort"] == "low"
         assert kwargs["extra_body"]["thinking"]["type"] == "enabled"
+        assert callable(kwargs["api_key"])
+        assert kwargs["http_async_client"] is not None
+        assert "http_client" not in kwargs
 
     # Disallowed level for restricted profile.
     try:

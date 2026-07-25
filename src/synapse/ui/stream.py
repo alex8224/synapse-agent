@@ -1432,7 +1432,8 @@ def _iter_stream_events(
             # - sync-only checkpointer used under astream (SqliteSaver)
             # Other runtime/API failures must still surface.
             if isinstance(err, TypeError) or _is_sync_only_checkpointer_error(err):
-                pass
+                if bool(getattr(agent, "_coding_async_only", False)):
+                    raise err
             else:
                 raise err
         else:

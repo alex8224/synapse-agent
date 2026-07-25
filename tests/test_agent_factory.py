@@ -85,7 +85,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         enable_mcp=False,
     )
 
-    fake_model = object()
+    fake_model = MagicMock(name="model")
     with (
         patch(
             "synapse.models_registry.init_chat_model",
@@ -100,7 +100,12 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
     ):
         from synapse.agent import build_coding_agent
 
-        agent = build_coding_agent(settings, project_root=tmp_path)
+        progress: list[str] = []
+        agent = build_coding_agent(
+            settings,
+            project_root=tmp_path,
+            progress=progress.append,
+        )
         assert agent is mock_cda.return_value
         mock_model.assert_called_once()
         kwargs = mock_cda.call_args.kwargs
@@ -124,6 +129,12 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             for m in (kwargs.get("middleware") or [])
         )
         assert getattr(agent, "_coding_steer_queue", None) is not None
+        assert progress == [
+            "preparing backend",
+            "loading OpenAI SDK",
+            "creating async model client",
+            "compiling agent graph",
+        ]
 
 
 def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Path):
@@ -137,7 +148,10 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
     cache: dict[str, object] = {}
 
     with (
-        patch("synapse.models_registry.init_chat_model", side_effect=[object(), object()]) as init,
+        patch(
+            "synapse.models_registry.init_chat_model",
+            side_effect=[MagicMock(name="model-1"), MagicMock(name="model-2")],
+        ) as init,
         patch("deepagents.create_deep_agent", side_effect=[MagicMock(), MagicMock(), MagicMock()]),
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),
@@ -170,7 +184,7 @@ def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
     queue = SteerQueue()
 
     with (
-        patch("synapse.models_registry.init_chat_model", return_value=object()),
+        patch("synapse.models_registry.init_chat_model", return_value=MagicMock(name="model")),
         patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")),
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),

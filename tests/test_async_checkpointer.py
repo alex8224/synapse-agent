@@ -41,6 +41,22 @@ def test_async_runtime_close_finishes_without_timeout_delay():
     assert elapsed < 1.0
 
 
+def test_async_runtime_close_supports_aclose_clients():
+    runtime = AsyncRuntime(name="async-runtime-aclose-test")
+    closed = False
+
+    class AsyncClient:
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    runtime.start()
+    runtime.track_connection(AsyncClient())
+    runtime.close()
+
+    assert closed is True
+
+
 def test_build_async_sqlite_checkpointer(tmp_path: Path):
     reset_async_runtime_for_tests()
     db = tmp_path / "ckpt.sqlite"

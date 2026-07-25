@@ -87,7 +87,12 @@ def force_compact_via_agent(
     )
     payload = {"messages": [{"role": "user", "content": prompt}]}
     try:
-        result = agent.invoke(payload, run_config)
+        ainvoke = getattr(agent, "ainvoke", None)
+        runtime = getattr(agent, "_coding_async_runtime", None)
+        if callable(ainvoke) and runtime is not None:
+            result = runtime.run(ainvoke(payload, run_config))
+        else:
+            result = agent.invoke(payload, run_config)
     except Exception as exc:  # noqa: BLE001
         return False, [f"compact failed: {exc}"]
 

@@ -602,30 +602,38 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
         _, fresh = build_model_from_settings(settings, model_name=model_name)
     except Exception:  # noqa: BLE001
         return False
-    if type(fresh) is not type(live):
-        return False
-    copied = False
-    for attr in ("reasoning_effort", "extra_body", "thinking", "model_kwargs"):
-        if not (hasattr(fresh, attr) and hasattr(live, attr)):
-            continue
-        try:
-            setattr(live, attr, getattr(fresh, attr))
-            copied = True
-        except Exception:  # noqa: BLE001
+    try:
+        if type(fresh) is not type(live):
             return False
-    if copied:
-        try:
-            from synapse.models_registry import model_cache_key
+        copied = False
+        for attr in ("reasoning_effort", "extra_body", "thinking", "model_kwargs"):
+            if not (hasattr(fresh, attr) and hasattr(live, attr)):
+                continue
+            try:
+                setattr(live, attr, getattr(fresh, attr))
+                copied = True
+            except Exception:  # noqa: BLE001
+                return False
+        if copied:
+            try:
+                from synapse.models_registry import model_cache_key
 
-            cache = getattr(agent, "_coding_model_cache", None)
-            if isinstance(cache, dict):
-                stale = [key for key, value in cache.items() if value is live]
-                for key in stale:
-                    cache.pop(key, None)
-                cache[model_cache_key(settings, model_name=model_name)] = live
+                cache = getattr(agent, "_coding_model_cache", None)
+                if isinstance(cache, dict):
+                    stale = [key for key, value in cache.items() if value is live]
+                    for key in stale:
+                        cache.pop(key, None)
+                    cache[model_cache_key(settings, model_name=model_name)] = live
+            except Exception:  # noqa: BLE001
+                pass
+        return copied
+    finally:
+        try:
+            from synapse.http_clients import close_model_async_http_client
+
+            close_model_async_http_client(fresh)
         except Exception:  # noqa: BLE001
             pass
-    return copied
 
 
 def _handle_mcp(

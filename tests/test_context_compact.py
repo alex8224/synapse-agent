@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from synapse.context_compact import (
+    force_compact_via_agent,
     is_context_compact_text,
     is_lc_summarization_message,
     is_stream_meta_summarization,
@@ -43,6 +44,31 @@ def test_detect_wrapper_and_meta():
         content = "x"
 
     assert is_lc_summarization_message(_Msg())
+
+
+def test_force_compact_uses_agent_async_runtime():
+    calls: list[str] = []
+
+    class Runtime:
+        def run(self, awaitable):
+            calls.append("run")
+            awaitable.close()
+            return {"messages": []}
+
+    class Agent:
+        _coding_async_runtime = Runtime()
+
+        async def ainvoke(self, payload, config):
+            return {"messages": []}
+
+        def invoke(self, payload, config):
+            raise AssertionError("sync invoke must not be used")
+
+    ok, lines = force_compact_via_agent(Agent(), thread_id="t1")
+
+    assert ok is True
+    assert lines == ["compact requested (no status detail)"]
+    assert calls == ["run"]
 
 
 def test_fold_hides_compact_messages():

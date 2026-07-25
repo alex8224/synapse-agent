@@ -2448,14 +2448,16 @@ class CodingAgentApp(App[None]):
         from synapse.startup_trace import duration
 
         startup_started = time.perf_counter()
+
+        def report_progress(detail: str) -> None:
+            self.call_from_thread(self.set_activity, "starting", detail, False)
+
         try:
-            self.call_from_thread(
-                self.set_activity, "starting", "build model/backend…", True
-            )
             agent = build_coding_agent(
                 self.settings,
                 project_root=self.project_root,
                 load_mcp=False,
+                progress=report_progress,
             )
             self.agent = agent
             self._agent_ready.set()

@@ -86,8 +86,29 @@ class AsyncRuntime:
         return self.submit(coro).result(timeout=timeout)
 
     def track_connection(self, conn: Any) -> None:
-        """Remember an aiosqlite connection for shutdown."""
-        self._owned_conns.append(conn)
+        """Remember an async connection/client for shutdown."""
+        if conn not in self._owned_conns:
+            self._owned_conns.append(conn)
+
+    def close_connection(self, conn: Any) -> None:
+        """Close and forget one tracked async client on the runtime loop."""
+        try:
+            self._owned_conns.remove(conn)
+        except ValueError:
+            pass
+        close = getattr(conn, "aclose", None) or getattr(conn, "close", None)
+        if not callable(close):
+            return
+
+        async def _close() -> None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+
+        try:
+            self.run(_close(), timeout=3.0)
+        except Exception:  # noqa: BLE001
+            pass
 
     def close(self) -> None:
         started = time.perf_counter()
@@ -103,7 +124,12 @@ class AsyncRuntime:
             async def _shutdown() -> None:
                 for conn in list(self._owned_conns):
                     try:
-                        await conn.close()
+                        close = getattr(conn, "aclose", None) or getattr(conn, "close", None)
+                        if not callable(close):
+                            continue
+                        result = close()
+                        if asyncio.iscoroutine(result):
+                            await result
                     except Exception:  # noqa: BLE001
                         pass
                 self._owned_conns.clear()

@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -402,6 +403,7 @@ class ModelRegistry:
         fallback_stream_chunk_timeout: float | None = None,
         enable_thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        progress: Callable[[str], None] | None = None,
     ):
         """Construct a LangChain chat model for the selected profile.
 
@@ -417,8 +419,6 @@ class ModelRegistry:
         """
         from synapse.startup_trace import span
 
-        with span("model:openai_compat_patch"):
-            enable_openai_compat_reasoning_patch()
         profile = self.get(name)
         kwargs: dict[str, Any] = dict(profile.extra or {})
         model_name = profile.model
@@ -450,6 +450,10 @@ class ModelRegistry:
         )
 
         if model_name.startswith("openai:"):
+            if progress is not None:
+                progress("loading OpenAI SDK")
+            with span("model:openai_compat_patch"):
+                enable_openai_compat_reasoning_patch()
             if base_url:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:
@@ -489,11 +493,26 @@ class ModelRegistry:
             existing_body = dict(kwargs.get("extra_body") or {})
             existing_body.update(extra_body)
             kwargs["extra_body"] = existing_body
-            # Long keep-alive for SDK-default httpx pools (no shared client injection).
-            from synapse.http_clients import enable_long_keepalive_http_defaults
+            # Build an async-only OpenAI path. An async API-key callable tells
+            # ChatOpenAI not to construct its otherwise eager sync OpenAI client.
+            from synapse.http_clients import build_openai_async_http_client
 
-            enable_long_keepalive_http_defaults()
+            if progress is not None:
+                progress("creating async model client")
+            async_client = build_openai_async_http_client(
+                timeout=kwargs.get("timeout"),
+                proxy=kwargs.pop("openai_proxy", None),
+            )
+
+            async def _async_api_key() -> str:
+                return str(api_key or "")
+
+            kwargs["api_key"] = _async_api_key
+            kwargs["http_async_client"] = async_client
+            kwargs.setdefault("http_socket_options", ())
         elif model_name.startswith("anthropic:"):
+            if progress is not None:
+                progress("loading Anthropic SDK")
             if api_key:
                 kwargs["api_key"] = api_key
                 kwargs["anthropic_api_key"] = api_key
@@ -514,9 +533,24 @@ class ModelRegistry:
                 mk = dict(kwargs.get("model_kwargs") or {})
                 mk.update(body)
                 kwargs["model_kwargs"] = mk
+            from synapse.http_clients import enable_anthropic_long_keepalive_defaults
 
-        with span("model:init_chat_model"):
-            chat_model = init_chat_model(model_name, **kwargs)
+            enable_anthropic_long_keepalive_defaults()
+
+        if progress is not None and not model_name.startswith("openai:"):
+            progress("creating async model client")
+        try:
+            with span("model:init_chat_model"):
+                chat_model = init_chat_model(model_name, **kwargs)
+        except Exception:
+            if model_name.startswith("openai:"):
+                from synapse.async_runtime import get_async_runtime
+
+                get_async_runtime().close_connection(async_client)
+            raise
+        if model_name.startswith("openai:"):
+            chat_model._coding_http_async_client = async_client
+            chat_model._coding_async_only = True
         return apply_context_window_to_model(chat_model, profile.context_window)
 
 
@@ -895,7 +929,12 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def build_model_from_settings(settings: Any, *, model_name: str | None = None):
+def build_model_from_settings(
+    settings: Any,
+    *,
+    model_name: str | None = None,
+    progress: Callable[[str], None] | None = None,
+):
     """Convenience: registry + construct selected model."""
     reg = registry_from_settings(settings)
     selected = model_name or getattr(settings, "active_model", None) or reg.default
@@ -913,6 +952,7 @@ def build_model_from_settings(settings: Any, *, model_name: str | None = None):
         # Session Settings always win over profile defaults.
         enable_thinking=bool(settings.enable_thinking),
         reasoning_effort=settings.reasoning_effort,
+        progress=progress,
     )
 
 
