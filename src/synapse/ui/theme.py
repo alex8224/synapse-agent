@@ -96,6 +96,7 @@ _PALETTE_KEYS = frozenset(
         "css_error",
         "css_border",
         "css_border_focus",
+        "prompt_border",
     }
 )
 
@@ -154,6 +155,8 @@ class Theme:
     css_error: str = ""
     css_border: str = ""
     css_border_focus: str = ""
+    # Border style for #prompt input: tall, heavy, dashed, dotted, double, round, solid.
+    prompt_border: str = "tall"
 
     def css_variables(self) -> dict[str, str]:
         """Textual stylesheet variables (names without leading ``$``)."""
@@ -172,6 +175,7 @@ class Theme:
             "theme-border-focus": self.css_border_focus or self.border_focus,
             "theme-error": self.css_error or self.error,
             "theme-top-pad-x": str(pad),
+            "theme-prompt-border-style": self.prompt_border,
         }
 
     @property
@@ -251,6 +255,7 @@ def _t(
     css_error: str = "",
     css_border: str = "",
     css_border_focus: str = "",
+    prompt_border: str = "tall",
 ) -> Theme:
     return Theme(
         name=name,
@@ -289,6 +294,7 @@ def _t(
         css_error=css_error,
         css_border=css_border,
         css_border_focus=css_border_focus,
+        prompt_border=prompt_border,
     )
 
 
@@ -727,6 +733,11 @@ def _theme_from_dict(
         raw = data[key]
         if key == "code_theme":
             val = str(raw).strip() if raw is not None else ""
+            if val:
+                updates[key] = val
+            continue
+        if key == "prompt_border":
+            val = str(raw).strip().casefold() if raw is not None else ""
             if val:
                 updates[key] = val
             continue

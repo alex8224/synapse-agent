@@ -2148,13 +2148,13 @@ class CodingAgentApp(App[None]):
     #prompt {
         background: $theme-bg;
         color: $theme-fg;
-        border: tall $theme-border;
+        border: $theme-prompt-border-style $theme-border;
         padding: 0 1;
         margin: 0 1 0 1;
         height: 3;
     }
     #prompt:focus {
-        border: tall $theme-border-focus;
+        border: $theme-prompt-border-style $theme-border-focus;
     }
     #bottombar {
         height: 1.5;
