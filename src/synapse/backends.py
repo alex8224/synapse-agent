@@ -24,6 +24,7 @@ from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 from synapse.config import Settings
+from synapse.tool_ignore import ToolIgnoreMatcher, relative_to_root
 
 # Default shell for this project (PowerShell 7+). Falls back if not on PATH.
 DEFAULT_SHELL_EXECUTABLE = "pwsh"
@@ -135,6 +136,7 @@ class CodingLocalShellBackend(LocalShellBackend):
         shell_executable: str | None = DEFAULT_SHELL_EXECUTABLE,
         shell_encoding: str = "utf-8",
         shell_encoding_errors: str = "replace",
+        deny_paths: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -145,6 +147,18 @@ class CodingLocalShellBackend(LocalShellBackend):
         # Prefer UTF-8 for Python children; does not fix every native CLI, but helps.
         self._env.setdefault("PYTHONUTF8", "1")
         self._env.setdefault("PYTHONIOENCODING", "utf-8")
+
+        if deny_paths:
+            matcher = ToolIgnoreMatcher.from_patterns(deny_paths)
+            self._tool_ignore_dedicated = True
+        else:
+            try:
+                root = Path(self.cwd).resolve()
+                matcher = ToolIgnoreMatcher.from_workspace(root)
+            except Exception:  # noqa: BLE001
+                matcher = ToolIgnoreMatcher([])
+            self._tool_ignore_dedicated = False
+        self._tool_ignore: ToolIgnoreMatcher = matcher
 
     def _ripgrep_search(
         self,
@@ -262,6 +276,43 @@ class CodingLocalShellBackend(LocalShellBackend):
             results.setdefault(virt, []).append((int(ln), lt))
 
         return results
+
+    # --- filesystem tool overrides: respect gitignore / deny paths ---
+
+    def grep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> Any:
+        result = super().grep(pattern, path=path, glob=glob)
+        if not self._tool_ignore.rule_count or not getattr(result, "matches", None):
+            return result
+        root = Path(self.cwd).resolve()
+        kept = [
+            m
+            for m in result.matches
+            if not self._tool_ignore.is_ignored(
+                relative_to_root(m["path"], root)
+            )
+        ]
+        result.matches = kept
+        return result
+
+    def glob(self, pattern: str, path: str | None = None) -> Any:
+        result = super().glob(pattern, path=path)
+        if not self._tool_ignore.rule_count or not getattr(result, "matches", None):
+            return result
+        root = Path(self.cwd).resolve()
+        kept = [
+            f
+            for f in result.matches
+            if not self._tool_ignore.is_ignored(
+                relative_to_root(f["path"], root)
+            )
+        ]
+        result.matches = kept
+        return result
 
     def execute(
         self,
@@ -390,4 +441,5 @@ def build_backend(settings: Settings) -> CodingLocalShellBackend:
         shell_executable=executable,
         shell_encoding=settings.shell_encoding,
         shell_encoding_errors=settings.shell_encoding_errors,
+        deny_paths=settings.deny_fs_paths or None,
     )

@@ -19,7 +19,7 @@ from synapse.prompts import (
 def test_build_system_prompt_includes_workspace(tmp_path: Path):
     text = build_system_prompt(tmp_path)
     assert str(tmp_path) in text
-    assert "senior software engineer" in text or "Virtual filesystem" in text
+    assert "senior software engineer" in text or "Virtual filesystem" in text or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
     assert "Chinese" in text
     assert "Current workspace" in text
 
