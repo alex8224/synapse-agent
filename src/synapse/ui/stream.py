@@ -2100,11 +2100,9 @@ def stream_agent(
         try:
             from synapse.cancel_repair import repair_thread_after_cancel
 
-            for note in repair_thread_after_cancel(agent, run_config)[:5]:
-                sink.info(f"cancel-seal: {note}")
-        except Exception as exc:  # noqa: BLE001
-            sink.info(f"cancel-seal failed: {exc}")
-        sink.info(f"cancelled in {result.elapsed_s:.1f}s | tools={result.tool_calls}")
+            repair_thread_after_cancel(agent, run_config)
+        except Exception:  # noqa: BLE001
+            pass
     elif interrupted:
         sink.info(
             f"paused for approval in {result.elapsed_s:.1f}s | "
