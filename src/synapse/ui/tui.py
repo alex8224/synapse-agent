@@ -2230,6 +2230,7 @@ class CodingAgentApp(App[None]):
         Binding("f5", "dialog_mcp", "MCP", show=False),
         Binding("f6", "dialog_safety", "Safety", show=False),
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
+        Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2259,6 +2260,9 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_codex_import(self) -> None:
         self._open_codex_import_dialog()
+
+    def action_dialog_theme_designer(self) -> None:
+        self._open_theme_designer()
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -4688,6 +4692,14 @@ class CodingAgentApp(App[None]):
 
         self.push_screen(
             ThemePickerDialog(self.settings, project_root=self.project_root),
+            self._on_theme_dialog_done,
+        )
+
+    def _open_theme_designer(self) -> None:
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+
+        self.push_screen(
+            ThemeDesignerDialog(self.settings, project_root=self.project_root),
             self._on_theme_dialog_done,
         )
 
