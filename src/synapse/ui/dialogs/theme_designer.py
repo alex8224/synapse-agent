@@ -342,7 +342,9 @@ class ThemeDesignerDialog(ModalScreen[Any]):
     DEFAULT_CSS = """
     ThemeDesignerDialog {
         align: center middle;
-        background: $theme-bg 60%;
+        /* The inline style in __init__ guarantees this wins over Screen's
+           inherited default background at runtime. */
+        background: transparent;
     }
     ThemeDesignerDialog > #designer-window {
         layer: overlay;
@@ -497,6 +499,11 @@ class ThemeDesignerDialog(ModalScreen[Any]):
 
     def __init__(self, settings: Any, project_root: Any = None) -> None:
         super().__init__()
+        # ``Screen.DEFAULT_CSS`` may otherwise win the root background cascade
+        # on non-ANSI themes and paint an opaque full-screen layer. Inline
+        # styles have the required priority while the designer window itself
+        # remains opaque via ``#designer-window``.
+        self.styles.background = "transparent"
         self._settings = settings
         self._project_root = project_root
 
