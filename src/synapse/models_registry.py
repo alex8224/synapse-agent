@@ -9,7 +9,7 @@ Top-level fields:
   default_thinking: optional global default when a profile omits thinking
 
 Profile fields:
-  model, api_key_env, base_url,
+  model, api_key_env, base_url, websocket,
   context_window / contextwindow / max_input_tokens (int): model context size in
     tokens. Wired into LangChain ``model.profile["max_input_tokens"]`` so
     deepagents summarization can use fraction-based compact triggers
@@ -58,6 +58,7 @@ _PROFILE_META_KEYS = {
     "api_key",
     "api_key_env",
     "base_url",
+    "websocket",
     "context_window",
     "contextwindow",
     "max_input_tokens",
@@ -140,7 +141,7 @@ def apply_context_window_to_model(model: Any, context_window: int | None) -> Any
     return model
 
 
-def parse_optional_bool(value: Any) -> bool | None:
+def parse_optional_bool(value: Any, *, field_name: str = "image_input") -> bool | None:
     """Parse JSON and common string boolean values without truthiness surprises."""
     if value is None:
         return None
@@ -152,7 +153,7 @@ def parse_optional_bool(value: Any) -> bool | None:
             return True
         if normalized in {"false", "0", "no", "off", "disabled"}:
             return False
-    raise ValueError("image_input must be a boolean")
+    raise ValueError(f"{field_name} must be a boolean")
 
 
 def normalize_thinking_level(value: Any) -> str | None:
@@ -315,6 +316,8 @@ class ModelProfile:
     # Optional allowed levels for this model (subset of registry.thinking_levels)
     thinking_levels: tuple[str, ...] | None = None
     parallel_tool_calls: bool | None = None
+    # Use the ordinary Responses API WebSocket instead of HTTP/SSE.
+    websocket: bool | None = None
     # Free-form kwargs for init_chat_model (temperature, max_tokens, timeout, ...)
     extra: dict[str, Any] = field(default_factory=dict)
     # Request body kwargs merged into model_kwargs
@@ -400,6 +403,7 @@ class ModelRegistry:
         fallback_enable_thinking: bool = True,
         fallback_reasoning_effort: str = "high",
         fallback_parallel_tool_calls: bool = True,
+        fallback_websocket: bool = False,
         fallback_stream_chunk_timeout: float | None = None,
         enable_thinking: bool | None = None,
         reasoning_effort: str | None = None,
@@ -448,6 +452,7 @@ class ModelRegistry:
             if profile.parallel_tool_calls is None
             else profile.parallel_tool_calls
         )
+        websocket = fallback_websocket if profile.websocket is None else profile.websocket
 
         if model_name.startswith("openai:"):
             if progress is not None:
@@ -458,7 +463,9 @@ class ModelRegistry:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:
                 kwargs["api_key"] = api_key
-            kwargs.setdefault("use_responses_api", False)
+            kwargs.setdefault("use_responses_api", bool(websocket))
+            if websocket:
+                kwargs["use_responses_api"] = True
             kwargs.setdefault("streaming", True)
             # Override langchain-openai default 120s silence killer unless profile set it.
             if "stream_chunk_timeout" not in kwargs:
@@ -541,7 +548,15 @@ class ModelRegistry:
             progress("creating async model client")
         try:
             with span("model:init_chat_model"):
-                chat_model = init_chat_model(model_name, **kwargs)
+                if model_name.startswith("openai:") and websocket:
+                    from synapse.llm_openai_websocket import ResponsesWebSocketChatOpenAI
+
+                    chat_model = ResponsesWebSocketChatOpenAI(
+                        model=short_model_id(model_name),
+                        **kwargs,
+                    )
+                else:
+                    chat_model = init_chat_model(model_name, **kwargs)
         except Exception:
             if model_name.startswith("openai:"):
                 from synapse.async_runtime import get_async_runtime
@@ -551,6 +566,11 @@ class ModelRegistry:
         if model_name.startswith("openai:"):
             chat_model._coding_http_async_client = async_client
             chat_model._coding_async_only = True
+            chat_model._coding_websocket = bool(websocket)
+            if websocket:
+                from synapse.async_runtime import get_async_runtime
+
+                get_async_runtime().track_connection(chat_model)
         return apply_context_window_to_model(chat_model, profile.context_window)
 
 
@@ -628,6 +648,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         if image_input is None and isinstance(cfg.get("capabilities"), dict):
             image_input = cfg["capabilities"].get("image_input")
         image_input = parse_optional_bool(image_input)
+        websocket = parse_optional_bool(cfg.get("websocket"), field_name="websocket")
 
         context_window = parse_context_window(cfg)
         # Peel accidental copies from free-form params (meta keys should already
@@ -646,6 +667,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
             reasoning_effort=reasoning_effort,
             thinking_levels=tuple(profile_levels) if profile_levels else None,
             parallel_tool_calls=None if parallel is None else bool(parallel),
+            websocket=websocket,
             image_input=image_input,
             extra=expanded_params,
             model_kwargs=dict(model_kwargs),
@@ -721,6 +743,9 @@ def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelPro
             override.parallel_tool_calls
             if override.parallel_tool_calls is not None
             else base.parallel_tool_calls
+        ),
+        websocket=(
+            override.websocket if override.websocket is not None else base.websocket
         ),
         image_input=(
             override.image_input
@@ -848,6 +873,7 @@ def registry_from_settings(settings: Any) -> ModelRegistry:
                 enable_thinking=settings.enable_thinking,
                 reasoning_effort=settings.reasoning_effort,
                 parallel_tool_calls=settings.parallel_tool_calls,
+                websocket=getattr(settings, "openai_websocket", False),
                 image_input=None,
             )
         },
@@ -889,6 +915,10 @@ def apply_models_config_to_settings(settings: Any) -> Any:
         updates["reasoning_effort"] = profile.reasoning_effort
     if profile.parallel_tool_calls is not None:
         updates["parallel_tool_calls"] = bool(profile.parallel_tool_calls)
+    # Keep OPENAI_WEBSOCKET as the global/legacy fallback. A profile-local
+    # websocket value is resolved directly from ModelProfile when that model is
+    # built; copying it into Settings would make later profiles without an
+    # explicit value inherit the previous model's transport.
 
     # Prefer keys from models.json so the agent can run without .env.
     key = profile.resolved_api_key()
@@ -920,6 +950,11 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
         "reasoning_effort": getattr(settings, "reasoning_effort", None),
         "parallel_tool_calls": getattr(settings, "parallel_tool_calls", True),
+        "websocket": (
+            profile.websocket
+            if profile.websocket is not None
+            else getattr(settings, "openai_websocket", False)
+        ),
         "stream_chunk_timeout": getattr(settings, "stream_chunk_timeout", None),
         "context_window": profile.context_window,
         "extra": profile.extra,
@@ -946,6 +981,7 @@ def build_model_from_settings(
         fallback_enable_thinking=settings.enable_thinking,
         fallback_reasoning_effort=settings.reasoning_effort,
         fallback_parallel_tool_calls=settings.parallel_tool_calls,
+        fallback_websocket=getattr(settings, "openai_websocket", False),
         fallback_stream_chunk_timeout=getattr(
             settings, "stream_chunk_timeout", None
         ),

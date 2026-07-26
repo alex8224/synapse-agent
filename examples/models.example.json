@@ -16,6 +16,7 @@
       "model": "openai:gpt-4.1",
       "api_key": "sk-REPLACE_ME",
       "base_url": null,
+      "websocket": false,
       "context_window": 128000,
       "parallel_tool_calls": true,
       "temperature": 0.2,

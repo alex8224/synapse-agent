@@ -139,6 +139,13 @@ def build_openai_async_http_client(
 
 
 def close_model_async_http_client(model: Any) -> None:
+    if bool(getattr(model, "_coding_websocket", False)):
+        try:
+            from synapse.async_runtime import get_async_runtime
+
+            get_async_runtime().close_connection(model)
+        except Exception:  # noqa: BLE001
+            pass
     client = getattr(model, "_coding_http_async_client", None)
     if client is None:
         return
