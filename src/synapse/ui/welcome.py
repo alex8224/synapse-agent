@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +11,13 @@ from textual.widgets import Static
 
 _BRAILLE_BLANK = "\u2800"
 _SHIMMER_FPS = 12.0
-_PULSE_SECONDS = 5.0
-_RIPPLE_SECONDS = 3.4
-_APPEAR_SPREAD = 0.08
-_APPEAR_RAMP = 0.5
+_REVEAL_DURATION = 3.0
+_VISIBLE_DURATION = 3.0
+_ERASE_DURATION = 3.0
+_HIDDEN_DURATION = 0.8
+_CYCLE_SECONDS = (
+    _REVEAL_DURATION + _VISIBLE_DURATION + _ERASE_DURATION + _HIDDEN_DURATION
+)
 _BRAILLE_DOTS = (
     ((0, 0, 1), (1, 0, 2), (2, 0, 4), (3, 0, 64)),
     ((0, 1, 8), (1, 1, 16), (2, 1, 32), (3, 1, 128)),
@@ -80,46 +82,46 @@ def _workspace_label(workspace: str | Path) -> str:
     return Path(value).name or value or "workspace"
 
 
-def _blend_color(start: str, end: str, amount: float) -> str:
-    """Blend theme colors without requiring them to be literal hex values."""
-    amount = max(0.0, min(1.0, amount))
-    start = start.strip()
-    end = end.strip()
-    if not (
-        start.startswith("#")
-        and end.startswith("#")
-        and len(start) == 7
-        and len(end) == 7
-    ):
-        return end if amount >= 0.5 else start
-    try:
-        start_rgb = tuple(int(start[index : index + 2], 16) for index in (1, 3, 5))
-        end_rgb = tuple(int(end[index : index + 2], 16) for index in (1, 3, 5))
-    except ValueError:
-        return end if amount >= 0.5 else start
-    rgb = tuple(
-        round(left + (right - left) * amount)
-        for left, right in zip(start_rgb, end_rgb, strict=True)
-    )
-    return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+def _logo_phase(elapsed: float) -> tuple[str, float]:
+    """Return the cycle phase and its elapsed time in seconds."""
+    cycle_elapsed = elapsed % _CYCLE_SECONDS
+    reveal_end = _REVEAL_DURATION
+    visible_end = reveal_end + _VISIBLE_DURATION
+    erase_end = visible_end + _ERASE_DURATION
+    if cycle_elapsed < reveal_end:
+        return "revealing", cycle_elapsed
+    if cycle_elapsed < visible_end:
+        return "visible", cycle_elapsed - reveal_end
+    if cycle_elapsed < erase_end:
+        return "erasing", cycle_elapsed - visible_end
+    return "hidden", cycle_elapsed - erase_end
 
 
-def _breathing_intensity(frame: int, column: int, row: int, width: int) -> float:
-    """Return a gentle breathing glow with a subtle ripple from the center."""
+def _logo_style(
+    frame: int,
+    column: int,
+    row: int,
+    width: int,
+    *,
+    muted: str,
+    fg: str,
+    total_rows: int = 7,
+) -> str:
+    """Show the logo left-to-right, then erase it top-to-bottom."""
     elapsed = frame / _SHIMMER_FPS
-    breath = 0.5 + 0.5 * math.sin(
-        2 * math.pi * elapsed / _PULSE_SECONDS - math.pi / 2
-    )
-    center_distance = abs(column - (width - 1) / 2)
-    ripple_phase = (
-        2 * math.pi * elapsed / _RIPPLE_SECONDS
-        - center_distance * 0.62
-        + row * 0.3
-    )
-    ripple = 0.5 + 0.5 * math.sin(ripple_phase)
-    intensity = max(0.18, min(0.94, 0.26 + 0.54 * breath + 0.14 * ripple))
-    alpha = max(0.0, min(1.0, (elapsed - center_distance * _APPEAR_SPREAD) / _APPEAR_RAMP))
-    return intensity * alpha
+    phase, phase_elapsed = _logo_phase(elapsed)
+
+    if phase == "hidden":
+        return muted
+    if phase == "revealing":
+        reveal_column = (phase_elapsed / _REVEAL_DURATION) * width
+        return fg if column <= reveal_column else muted
+    if phase == "erasing":
+        column_norm = column / max(1, width - 1)
+        position = row + column_norm * 0.4
+        progress = (phase_elapsed / _ERASE_DURATION) * (total_rows + 0.4)
+        return muted if position <= progress else fg
+    return fg
 
 
 def render_welcome_frame(
@@ -138,33 +140,27 @@ def render_welcome_frame(
     fg = str(getattr(theme, "fg", "#e8eaed"))
     dim = str(getattr(theme, "dim", "#9aa0a6"))
     muted = str(getattr(theme, "muted", "#5f6368"))
-    accent = str(getattr(theme, "user", "#8ab4f8"))
     green = str(getattr(theme, "green", "#81c995"))
 
     out = Text(justify="center")
     logo = _COMPACT_LOGO if compact else _LOGO
     logo_width = max(cell_len(line) for line in logo)
+    logo_rows = len(logo)
     for row, line in enumerate(logo):
         left = max(0, (logo_width - cell_len(line)) // 2)
         for column, char in enumerate(line):
             if char in {" ", _BRAILLE_BLANK}:
                 style = muted
             else:
-                intensity = _breathing_intensity(
+                style = _logo_style(
                     frame,
                     left + column,
                     row,
                     logo_width,
+                    muted=muted,
+                    fg=fg,
+                    total_rows=logo_rows,
                 )
-                if intensity >= 0.72:
-                    color = _blend_color(
-                        fg,
-                        accent,
-                        (intensity - 0.72) / 0.28,
-                    )
-                    style = f"bold {color}"
-                else:
-                    style = _blend_color(dim, fg, intensity / 0.72)
             out.append(char, style=style)
         out.append("\n")
 
