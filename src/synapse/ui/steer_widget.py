@@ -2,7 +2,7 @@
 
 Layout (narrow, not full-width)::
 
-  +-- 引导 · 2 ----------------------------------+
+  +-- 排队 · 2 ----------------------------------+
   | *  first note…                           x  |
   | o  second…                               x  |
   +----------------------------------------------+
@@ -185,7 +185,7 @@ class SteerRow(Static):
 
 
 class SteerHeader(Static):
-    """Compact title: 引导 · N   清空."""
+    """Compact title: 排队 · N   清空."""
 
     DEFAULT_CSS = """
     SteerHeader {
@@ -218,7 +218,7 @@ class SteerHeader(Static):
             w = 48
         usable = max(12, w - 2)
         mark = "▸" if self._collapsed else "▾"
-        left = f"{mark}  引导"
+        left = f"{mark}  排队"
         if self._n:
             left = f"{left} · {self._n}"
         right = "清空"

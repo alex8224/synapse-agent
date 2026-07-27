@@ -3191,12 +3191,7 @@ class CodingAgentApp(App[None]):
         return f"{tid[:4]}…{tid[-4:]}"
 
     def _bottombar_mode_label(self) -> str:
-        """Optional center mode badge (steer count while busy)."""
-        if not self._busy:
-            return ""
-        n = len(getattr(self, "_steer_items", None) or [])
-        if n:
-            return f"steer×{n}"
+        """Optional center mode badge. Steer count shown in status line only."""
         return ""
 
     def register_bottombar_region(
@@ -3725,7 +3720,7 @@ class CodingAgentApp(App[None]):
             return "", _C_MUTED
         spin = _SPINNER[self._spin_i % len(_SPINNER)]
         detail = f" {self._detail}" if self._detail else ""
-        steer_badge = f" · steer×{steer_n}" if steer_n else ""
+        steer_badge = f" · queue×{steer_n}" if steer_n else ""
         left = f"{spin} {self._phase}{detail}{steer_badge} · {elapsed:.1f}s"
         return truncate_to_width(left, left_budget), _C_ORANGE
 
@@ -3822,9 +3817,9 @@ class CodingAgentApp(App[None]):
         if self._busy:
             n = len(self._steer_items)
             if n:
-                prompt.placeholder = f"{_MARK_INPUT}  继续添加引导（已有 {n}）…"
+                prompt.placeholder = f"{_MARK_INPUT}  Add guidance ({n} queued)…"
             else:
-                prompt.placeholder = f"{_MARK_INPUT}  输入引导，下轮生效…"
+                prompt.placeholder = f"{_MARK_INPUT}  Enter guidance, takes effect next turn…"
         else:
             prompt.placeholder = f"{_MARK_INPUT}  Build anything  (/ for commands, Tab complete)"
 
@@ -5378,6 +5373,7 @@ class CodingAgentApp(App[None]):
     def _turn_done(self) -> None:
         completed_queue = self._active_steer_queue or get_agent_steer_queue(self.agent)
         self._busy = False
+        self._sync_prompt_placeholder()
         # An immediate middleware drain retains the panel while the turn is
         # active. Reconcile it now so applied guidance disappears at turn end.
         if completed_queue is not None:
@@ -5456,6 +5452,7 @@ class CodingAgentApp(App[None]):
         if self.call_after_refresh(self._start_followup_steer, queue):
             return True
         self._busy = False
+        self._sync_prompt_placeholder()
         return False
 
     def _start_followup_steer(self, queue: SteerQueue) -> None:
@@ -5465,6 +5462,7 @@ class CodingAgentApp(App[None]):
             return
         if queue.peek_count() <= 0:
             self._busy = False
+            self._sync_prompt_placeholder()
             self._clear_turn_context()
             self._bind_steer_queue()
             self.set_activity("idle", "ready", True)
