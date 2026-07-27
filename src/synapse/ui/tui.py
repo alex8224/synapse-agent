@@ -261,6 +261,7 @@ def format_mcp_status_label(
     servers: list[str] | None = None,
     tools: list[str] | None = None,
     warnings: list[str] | None = None,
+    deferred: bool = False,
 ) -> str:
     """MCP chrome: ``mcp on`` / ``mcp off`` / ``mcp err`` (no server/tool counts)."""
     if not enabled:
@@ -271,6 +272,8 @@ def format_mcp_status_label(
     n_s = len(servers)
     n_t = len(tools)
     if warnings and n_s == 0:
+        if deferred:
+            return "mcp off"
         return "mcp err"
     if n_s == 0 and n_t == 0:
         return "mcp off"
@@ -2887,20 +2890,22 @@ class CodingAgentApp(App[None]):
                 self._complete_base_value = ""
         self._set_complete_hint(value)
 
-    def _mcp_snapshot(self) -> tuple[bool, list[str], list[str], list[str]]:
+    def _mcp_snapshot(self) -> tuple[bool, list[str], list[str], list[str], bool]:
         enabled = bool(getattr(self.settings, "enable_mcp", True))
         servers = list(getattr(build_coding_agent, "last_mcp_servers", []) or [])
         tools = list(getattr(build_coding_agent, "last_mcp_tool_names", []) or [])
         warnings = list(getattr(build_coding_agent, "last_mcp_warnings", []) or [])
-        return enabled, servers, tools, warnings
+        deferred = bool(getattr(build_coding_agent, "last_mcp_deferred", False))
+        return enabled, servers, tools, warnings, deferred
 
     def _mcp_label(self) -> str:
-        enabled, servers, tools, warnings = self._mcp_snapshot()
+        enabled, servers, tools, warnings, deferred = self._mcp_snapshot()
         return format_mcp_status_label(
             enabled=enabled,
             servers=servers,
             tools=tools,
             warnings=warnings,
+            deferred=deferred,
         )
 
     def _reload_session_title(self) -> None:
