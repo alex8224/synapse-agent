@@ -762,6 +762,8 @@ def _handle_mcp(
                     "headers": s.headers,
                     "enabled": s.enabled,
                     "tool_prefix": s.tool_prefix,
+                    "include_tools": s.include_tools,
+                    "exclude_tools": s.exclude_tools,
                 }
                 for s in servers
             ]

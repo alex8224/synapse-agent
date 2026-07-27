@@ -15,7 +15,8 @@
         "Authorization": "Bearer ${ANYSEARCH_API_KEY}"
       },
       "enabled": false,
-      "tool_prefix": "anysearch__"
+      "tool_prefix": "anysearch__",
+      "include_tools": ["search", "batch_search"]
     },
     {
       "name": "remote-sse",

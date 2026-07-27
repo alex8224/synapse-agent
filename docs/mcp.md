@@ -37,6 +37,48 @@ Synapse 支持 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)�
 | `headers` | dict | HTTP 请求头 |
 | `enabled` | bool | 是否启用（默认 true） |
 | `tool_prefix` | str | 工具名前缀，避免冲突 |
+| `include_tools` | list[str] | 白名单：只加载列表中的工具。不设置则加载全部 |
+| `exclude_tools` | list[str] | 黑名单：排除列表中的工具（在 include 之后生效） |
+
+## Per-Tool 过滤
+
+通过 `include_tools` / `exclude_tools` 可以精确控制每个 MCP Server 加载哪些工具：
+
+```json
+{
+  "servers": [
+    {
+      "name": "anysearch",
+      "transport": "streamable_http",
+      "url": "https://api.anysearch.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANYSEARCH_API_KEY}"
+      },
+      "enabled": true,
+      "tool_prefix": "anysearch__",
+      "include_tools": ["search", "batch_search"]
+    }
+  ]
+}
+```
+
+上例中 anysearch 的 `extract` 工具不会被加载。
+
+**过滤规则**：
+- `include_tools` 不设置 → 加载所有工具
+- `include_tools: ["a", "b"]` → 只加载 `a` 和 `b`
+- `exclude_tools: ["c"]` → 排除 `c`，其余加载
+- 两者同时设置 → 先 include 再 exclude
+
+## UI 工具选择面板
+
+按 **F5** 或输入 `/mcp` 打开 MCP Tools 面板，可以：
+- 查看每个 Server 提供的所有工具
+- `Enter` 勾选/取消勾选单个工具
+- `a` 全选当前 Server 的所有工具
+- `d` 取消全选当前 Server 的所有工具
+- `s` **保存到配置文件** + 重新加载
+- `r` 重新连接 MCP Server 并刷新工具列表
 
 ## 环境变量展开
 

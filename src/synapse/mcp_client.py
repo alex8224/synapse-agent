@@ -33,6 +33,10 @@ class McpServerConfig:
     headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     tool_prefix: str | None = None
+    # Per-tool filtering: if include_tools is set, only those tools are loaded.
+    # exclude_tools removes tools from the final list (applied after include).
+    include_tools: list[str] | None = None
+    exclude_tools: list[str] | None = None
 
 
 @dataclass
@@ -73,6 +77,8 @@ def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
         raise ValueError("mcp server missing name")
     command = raw.get("command")
     url = raw.get("url")
+    include_tools = raw.get("include_tools")
+    exclude_tools = raw.get("exclude_tools")
     return McpServerConfig(
         name=name,
         transport=str(raw.get("transport") or "stdio").strip().lower(),
@@ -83,6 +89,8 @@ def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
         headers=_expand_mapping(raw.get("headers")),
         enabled=bool(raw.get("enabled", True)),
         tool_prefix=raw.get("tool_prefix"),
+        include_tools=list(include_tools) if isinstance(include_tools, list) else None,
+        exclude_tools=list(exclude_tools) if isinstance(exclude_tools, list) else None,
     )
 
 
@@ -345,6 +353,8 @@ class McpSessionPool:
         self.warnings: list[str] = []
         self.tool_names: list[str] = []
         self.tools: list[Any] = []
+        # server_name → list of raw tool names (before prefix / filtering)
+        self.discovered_tools: dict[str, list[str]] = {}
 
     @property
     def server_names(self) -> list[str]:
@@ -497,6 +507,10 @@ class McpSessionPool:
                 self._servers.pop(server.name, None)
                 continue
 
+            # Record all discovered tool names (pre-filtering) for UI introspection.
+            all_raw_names = [getattr(item, "name", "") for item in listed.tools]
+            self.discovered_tools[server.name] = all_raw_names
+
             def make_call(server_name: str = server.name):
                 def _call(name: str, arguments: dict[str, Any]) -> str:
                     return self.call_tool(server_name, name, arguments)
@@ -504,19 +518,48 @@ class McpSessionPool:
                 return _call
 
             call_fn = make_call()
+            include_set: set[str] | None = None
+            if server.include_tools:
+                include_set = set(server.include_tools)
+            exclude_set: set[str] | None = None
+            if server.exclude_tools:
+                exclude_set = set(server.exclude_tools)
+
+            server_tool_count = 0
             for item in listed.tools:
+                tool_name_raw = getattr(item, "name", "")
+                # Per-tool filtering: include → exclude → load.
+                if include_set is not None and tool_name_raw not in include_set:
+                    continue
+                if exclude_set is not None and tool_name_raw in exclude_set:
+                    continue
+                server_tool_count += 1
                 tool = _make_tool(
                     server=server,
-                    tool_name=item.name,
+                    tool_name=tool_name_raw,
                     description=getattr(item, "description", "") or "",
                     input_schema=getattr(item, "inputSchema", None),
                     call_fn=call_fn,
                 )
                 tools.append(tool)
-                tool_names.append(getattr(tool, "name", item.name))
-            ok_servers.append(server.name)
-            if not listed.tools:
+                tool_names.append(getattr(tool, "name", tool_name_raw))
+
+            total_available = len(listed.tools)
+            if include_set is not None or exclude_set is not None:
+                if server_tool_count == 0:
+                    warnings.append(
+                        f"mcp server {server.name}: {total_available} tools discovered "
+                        f"but all filtered out (include={sorted(include_set) if include_set else None}, "
+                        f"exclude={sorted(exclude_set) if exclude_set else None})"
+                    )
+                elif server_tool_count < total_available:
+                    logger.info(
+                        "mcp server %s: %d/%d tools loaded (filtered)",
+                        server.name, server_tool_count, total_available,
+                    )
+            elif server_tool_count == 0:
                 warnings.append(f"mcp server {server.name}: no tools discovered")
+            ok_servers.append(server.name)
 
         self.warnings = warnings
         self.tool_names = tool_names

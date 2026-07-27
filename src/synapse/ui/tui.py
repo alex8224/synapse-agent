@@ -2294,6 +2294,7 @@ class CodingAgentApp(App[None]):
         self._agent_ready = threading.Event()
         self._agent_error: str | None = None
         self._mcp_attaching = False
+        self._mcp_reloading = False
         self._image_bank = ImageBank()
         # 粘贴截断映射: {占位符: 完整原始文本}
         self._paste_replacements: dict[str, str] = {}
@@ -4832,7 +4833,10 @@ class CodingAgentApp(App[None]):
         from synapse.ui.dialogs import McpPanelDialog
 
         self.push_screen(
-            McpPanelDialog(self.settings, project_root=self.project_root),
+            McpPanelDialog(
+                self.settings,
+                project_root=self.project_root,
+            ),
             self._on_mcp_dialog_done,
         )
 
@@ -4840,31 +4844,74 @@ class CodingAgentApp(App[None]):
         if result is None:
             return
         action = result[0] if result else None
-        if action == "mcp-toggle":
-            server_name = result[1]
-            self._apply_mcp_toggle(server_name)
-        elif action == "mcp-reload":
+        if action == "mcp-reload":
             self._apply_mcp_reload()
+        elif action == "mcp-save":
+            to_save = result[1] if len(result) > 1 else {}
+            self._apply_mcp_save(to_save)
 
-    def _apply_mcp_toggle(self, server_name: str) -> None:
-        from synapse.slash_cmds import handle_slash
-
-        try:
-            ok = handle_slash(
-                f"/mcp toggle {server_name}",
-                settings=self.settings,
-                agent=self.agent,
-                thread_id=self.thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.append_event(f"MCP toggle failed: {exc}", "yellow")
+    def _apply_mcp_save(self, to_save: dict[str, list[str] | None]) -> None:
+        """Write include_tools to config, then reload — all on a worker thread."""
+        if not to_save:
+            self._apply_mcp_reload()
             return
-        self._apply_ok_result(ok)
+        if getattr(self, "_mcp_reloading", False):
+            return
+        self._mcp_reloading = True
+        self.set_activity("switching", "saving MCP config\u2026", True)
+        self._apply_mcp_save_bg(to_save)
 
-    def _apply_mcp_reload(self) -> None:
+    @work(thread=True, exclusive=True, group="mcp-save")
+    def _apply_mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
+        from synapse.mcp_client import load_mcp_server_configs
         from synapse.slash_cmds import handle_slash
+        from synapse.startup_trace import duration
+        from synapse.ui.dialogs.mcp_panel import _save_include_tools_to_config
 
+        save_started = time.perf_counter()
+        # 1. Write include_tools to config file for each changed server.
+        for server_name, include_tools in to_save.items():
+            try:
+                _save_include_tools_to_config(
+                    self.settings,
+                    server_name,
+                    include_tools,
+                    self.project_root,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 2. Reload in-memory settings from the updated config files.
+        try:
+            fresh = load_mcp_server_configs(
+                path=getattr(self.settings, "mcp_config_path", None),
+                workspace=getattr(self.settings, "workspace", None),
+            )
+            import json
+
+            raw = {
+                "servers": [
+                    {
+                        "name": s.name,
+                        "transport": s.transport,
+                        "command": s.command,
+                        "args": s.args,
+                        "env": s.env,
+                        "url": s.url,
+                        "headers": s.headers,
+                        "enabled": s.enabled,
+                        "tool_prefix": s.tool_prefix,
+                        "include_tools": s.include_tools,
+                        "exclude_tools": s.exclude_tools,
+                    }
+                    for s in fresh
+                ]
+            }
+            self.settings.mcp_servers_json = json.dumps(raw)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 3. Reload the agent with updated MCP tools.
         try:
             ok = handle_slash(
                 "/mcp reload",
@@ -4874,9 +4921,56 @@ class CodingAgentApp(App[None]):
                 project_root=self.project_root,
             )
         except Exception as exc:  # noqa: BLE001
-            self.append_event(f"MCP reload failed: {exc}", "yellow")
+            duration("mcp.save", save_started, success=False)
+            self.call_from_thread(
+                self.append_event, f"MCP save/reload failed: {exc}", "yellow"
+            )
+            self.call_from_thread(self.set_activity, "idle", "", True)
+            self._mcp_reloading = False
             return
-        self._apply_ok_result(ok)
+        duration(
+            "mcp.save", save_started, success=not bool(getattr(ok, "error", False))
+        )
+        self.call_from_thread(self._apply_ok_result, ok)
+        self.call_from_thread(self.set_activity, "idle", "", True)
+        self._mcp_reloading = False
+
+    def _apply_mcp_reload(self) -> None:
+        """Dispatch MCP reload to a background worker so the UI stays responsive."""
+        if getattr(self, "_mcp_reloading", False):
+            return
+        self._mcp_reloading = True
+        self.set_activity("switching", "reloading MCP\u2026", True)
+        self._apply_mcp_reload_bg()
+
+    @work(thread=True, exclusive=True, group="mcp-reload")
+    def _apply_mcp_reload_bg(self) -> None:
+        from synapse.slash_cmds import handle_slash
+        from synapse.startup_trace import duration
+
+        reload_started = time.perf_counter()
+        try:
+            ok = handle_slash(
+                "/mcp reload",
+                settings=self.settings,
+                agent=self.agent,
+                thread_id=self.thread_id,
+                project_root=self.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            duration("mcp.reload", reload_started, success=False)
+            self.call_from_thread(
+                self.append_event, f"MCP reload failed: {exc}", "yellow"
+            )
+            self.call_from_thread(self.set_activity, "idle", "", True)
+            self._mcp_reloading = False
+            return
+        duration(
+            "mcp.reload", reload_started, success=not bool(getattr(ok, "error", False))
+        )
+        self.call_from_thread(self._apply_ok_result, ok)
+        self.call_from_thread(self.set_activity, "idle", "", True)
+        self._mcp_reloading = False
 
     def _open_safety_dialog(self) -> None:
         from synapse.ui.dialogs import SafetyPanelDialog
