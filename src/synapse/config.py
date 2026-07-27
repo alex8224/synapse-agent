@@ -100,9 +100,9 @@ class Settings(BaseSettings):
     max_output_bytes: int = Field(default=100_000, validation_alias="MAX_OUTPUT_BYTES")
     inherit_env: bool = Field(default=True, validation_alias="INHERIT_ENV")
     virtual_mode: bool = Field(default=True, validation_alias="VIRTUAL_MODE")
-    # Shell executable. Default: pwsh (PowerShell 7+).
-    # Values: pwsh | powershell | cmd | bash | system | absolute path
-    shell_executable: str | None = Field(default="pwsh", validation_alias="SHELL_EXECUTABLE")
+    # Shell executable. None => auto-detect (pwsh on Windows, bash elsewhere).
+    # Values: pwsh | powershell | cmd | bash | system | absolute path | None (auto)
+    shell_executable: str | None = Field(default=None, validation_alias="SHELL_EXECUTABLE")
     # Decode shell stdout/stderr with this codec (avoids GBK UnicodeDecodeError on Windows).
     shell_encoding: str = Field(default="utf-8", validation_alias="SHELL_ENCODING")
     shell_encoding_errors: str = Field(

@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +27,8 @@ from deepagents.backends.protocol import ExecuteResponse
 from synapse.config import Settings
 from synapse.tool_ignore import ToolIgnoreMatcher, relative_to_root
 
-# Default shell for this project (PowerShell 7+). Falls back if not on PATH.
-DEFAULT_SHELL_EXECUTABLE = "pwsh"
+# Default shell for this project: pwsh on Windows, bash elsewhere.
+DEFAULT_SHELL_EXECUTABLE = "pwsh" if sys.platform == "win32" else "bash"
 
 
 def _basename(path_or_name: str) -> str:
@@ -64,6 +65,10 @@ def resolve_shell_invocation(
             # Prefer pwsh; fall back to Windows PowerShell if Core is missing.
             exe = shutil.which("pwsh") or shutil.which("powershell")
         if exe is None:
+            if sys.platform != "win32":
+                # Non-Windows: pwsh not available, fall back to bash.
+                exe = shutil.which("bash") or shutil.which("sh") or "bash"
+                return [exe, "-lc", command], False, None
             exe = raw
         return [exe, "-NoProfile", "-NonInteractive", "-Command", command], False, None
 

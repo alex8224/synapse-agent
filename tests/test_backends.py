@@ -15,21 +15,31 @@ from synapse.backends import (
 from synapse.config import Settings, load_settings
 
 
-def test_default_shell_is_pwsh():
-    assert DEFAULT_SHELL_EXECUTABLE == "pwsh"
+def test_default_shell_platform_aware():
+    """Default shell: pwsh on Windows, bash elsewhere."""
+    if sys.platform == "win32":
+        assert DEFAULT_SHELL_EXECUTABLE == "pwsh"
+    else:
+        assert DEFAULT_SHELL_EXECUTABLE == "bash"
+    # config default is None => backend auto-detects via DEFAULT_SHELL_EXECUTABLE
     settings = Settings(_env_file=None)
-    assert settings.shell_executable == "pwsh"
+    assert settings.shell_executable is None
 
 
 def test_resolve_pwsh_uses_argument_list():
+    """pwsh -> argument list; falls back to bash on non-Windows if not found."""
     args, shell, executable = resolve_shell_invocation("Get-Location", "pwsh")
     assert shell is False
     assert executable is None
     assert isinstance(args, list)
     exe = args[0].lower()
-    assert exe.endswith("pwsh.exe") or exe.endswith("pwsh") or "powershell" in exe
-    assert args[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
-    assert args[4] == "Get-Location"
+    if "pwsh" in exe or "powershell" in exe:
+        # pwsh found: expect PowerShell-style invocation
+        assert args[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
+        assert args[4] == "Get-Location"
+    else:
+        # Non-Windows fallback to bash
+        assert args[1:] == ["-lc", "Get-Location"]
 
 
 def test_resolve_cmd_uses_shell_true():
@@ -53,7 +63,8 @@ def test_resolve_bash_uses_argument_list():
     assert args == ["/usr/bin/bash", "-lc", "ls -la"]
 
 
-def test_build_backend_defaults_to_pwsh(tmp_path: Path):
+def test_build_backend_default_shell_platform_aware(tmp_path: Path):
+    """build_backend uses platform-aware default when shell_executable is None."""
     settings = load_settings(
         workspace=tmp_path,
         inherit_env=True,
@@ -64,7 +75,8 @@ def test_build_backend_defaults_to_pwsh(tmp_path: Path):
     )
     backend = build_backend(settings)
     assert isinstance(backend, CodingLocalShellBackend)
-    assert backend._shell_executable == "pwsh"
+    expected = "pwsh" if sys.platform == "win32" else "bash"
+    assert backend._shell_executable == expected
     assert backend._shell_encoding == "utf-8"
     assert backend._env.get("PYTHONUTF8") == "1"
 
