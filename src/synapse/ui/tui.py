@@ -3948,6 +3948,17 @@ class CodingAgentApp(App[None]):
     def _scroll_timeline(self) -> None:
         self.query_one("#log", VerticalScroll).scroll_end(animate=False)
 
+    def _mount_markdown_block(self, text: str) -> None:
+        """Render a Markdown string into the transcript, dismissing welcome."""
+        if not isinstance(text, str) or not text.strip():
+            return
+        self._dismiss_welcome()
+        if len(text) > _MARKDOWN_MAX_CHARS:
+            renderable: Any = Text(text, style=_C_FG)
+        else:
+            renderable = render_markdown(text)
+        self._mount_block(Static(renderable), dismiss_welcome=False)
+
     def append_user(
         self,
         text: str,
@@ -5150,7 +5161,15 @@ class CodingAgentApp(App[None]):
                 self.append_event(f"theme apply failed: {exc}", "yellow")
 
         _notice = (getattr(result, "notice", None) or "").strip()
-        if _notice and not result.error:
+        _has_lines = bool([x for x in (result.lines or []) if str(x or "").strip()])
+        _markdown = getattr(result, "markdown", None)
+        if isinstance(_markdown, str) and _markdown.strip():
+            self._mount_markdown_block(_markdown)
+        elif _notice or _has_lines:
+            self._dismiss_welcome()
+        if isinstance(_markdown, str) and _markdown.strip():
+            pass  # already rendered
+        elif _notice and not result.error:
             self.flash_status(_notice, "dim")
         else:
             self._emit_system_lines(result.lines, error=bool(result.error))

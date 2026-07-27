@@ -31,52 +31,77 @@ from synapse.transcript import (
     load_thread_messages,
 )
 
-HELP_TEXT = """slash commands:
-  /help
-  /thread | /id
-  /clear                  (tui only)
-  /exit | /quit
+HELP_TEXT = """## Slash Commands
 
-  completion:
-    Tab / Right     accept suggestion
-    Shift+Tab       previous candidate (tui)
-    Ctrl+Space      list candidates (tui)
-    Tab             complete (chat readline)
+### General
+| Command | Description |
+|---|---|
+| `/help`, `/?` | Show this help |
+| `/thread`, `/id` | Show current thread ID |
+| `/clear` | Clear transcript (TUI only) |
+| `/exit`, `/quit` | Exit |
 
-  session:
-    /sessions | /session list [n]
-    /session | /session show
-    /new
-    /switch <thread_id>
-    /rename <title>
-    /session delete <thread_id>
-    /session search <query>
-    /export [md|json] [path]   (always writes a file; default: .coding-agent/exports/<thread>.md)
-  /codex import [native_id]  (TUI picker or import one Codex session)
+### Completion
+| Key | Action |
+|---|---|
+| Tab / Right | Accept suggestion |
+| Shift+Tab | Previous candidate (TUI) |
+| Ctrl+Space | List candidates (TUI) |
 
-  mcp:
-    /mcp | /mcp list
-    /mcp tools
-    /mcp test
-    /mcp reload
-    /mcp enable | /mcp disable
-    /mcp config
+### Session
+| Command | Description |
+|---|---|
+| `/sessions`, `/session list [n]` | List recent sessions |
+| `/session`, `/session show` | Show current session |
+| `/new` | Create new session |
+| `/switch <id>` | Switch to session |
+| `/rename <title>` | Rename current session |
+| `/session delete <id>` | Delete session metadata |
+| `/session search <query>` | Search sessions |
+| `/session prune` | Remove empty sessions |
+| `/export [md\\|json] [path]` | Export transcript to file |
+| `/codex import [id]` | Import Codex session (TUI) |
 
-  model:
-    /model
-    /model <alias|provider:model>
-    /model thinking <off|low|medium|high|max>
+### MCP
+| Command | Description |
+|---|---|
+| `/mcp`, `/mcp list` | List MCP servers |
+| `/mcp tools` | List MCP tools |
+| `/mcp test` | Test MCP connectivity |
+| `/mcp reload` | Reload MCP servers |
+| `/mcp enable`, `/mcp disable` | Toggle MCP |
+| `/mcp config` | Show MCP config |
 
-  appearance:
-    /theme
-    /theme list
-    /theme <name>              (persist to ~/.coding-agent/settings.json)
+### Model
+| Command | Description |
+|---|---|
+| `/model` | Open model picker (TUI) |
+| `/model <alias\\|provider:model>` | Switch model |
+| `/model thinking <level>` | Set thinking level |
 
-  safety / HITL:
-    /safety                     show profile
-    /safety dev-autopass|dev-approve|readonly
-    /approve                    approve pending tool call(s)
-    /reject [reason]            reject pending tool call(s)
+### Appearance
+| Command | Description |
+|---|---|
+| `/theme` | Open theme picker (TUI) |
+| `/theme list` | List themes |
+| `/theme <name>` | Apply theme |
+
+### Safety / HITL
+| Command | Description |
+|---|---|
+| `/safety` | Show safety profile |
+| `/safety <profile>` | Switch profile |
+| `/approve` | Approve pending tools |
+| `/reject [reason]` | Reject pending tools |
+
+### Diagnostics
+| Command | Description |
+|---|---|
+| `/context` | Context usage stats |
+| `/compact` | Force context compact |
+| `/skills` | List skills |
+| `/memory` | List memory files |
+| `/subagents` | List sub-agents |
 """
 
 
@@ -98,6 +123,9 @@ class SlashResult:
     settings_changed: bool = False
     # TUI should attach MCP after applying the rebuilt agent, without blocking
     # the slash command/model switch worker.
+    # Rich Markdown text rendered directly into the transcript (#log).  When set,
+    # the TUI renders it as a Markdown block instead of plain lines.
+    markdown: str | None = None
     mcp_attach_pending: bool = False
     # UI theme switch (TUI should re-apply CSS / palette).
     theme_name: str | None = None
@@ -136,6 +164,55 @@ def _session_show(store: SessionStore, thread_id: str, settings: Any) -> list[st
         f"  updated: {info.updated_at}",
         f"  tags: {', '.join(info.tags) if info.tags else '-'}",
     ]
+
+
+def _md_escape(text: str) -> str:
+    """Escape pipe and backtick for Markdown table cells."""
+    return str(text).replace("|", "\\|").replace("`", "\\`")
+
+
+def _md_session_show(store: SessionStore, thread_id: str, settings: Any) -> str:
+    """Format current session info as a Markdown table."""
+    info = store.get(thread_id) or store.ensure(
+        thread_id,
+        model=_model_name(settings),
+        active_model=getattr(settings, "active_model", None),
+        thinking=binding_from_settings(settings).thinking,
+    )
+    bind = info.binding()
+    rows = [
+        ("thread_id", f"`{info.thread_id}`"),
+        ("title", info.title),
+        ("model", bind.display()),
+        ("active_model", info.active_model or "-"),
+        ("thinking", info.thinking or "-"),
+        ("created", info.created_at),
+        ("updated", info.updated_at),
+        ("tags", ", ".join(info.tags) if info.tags else "-"),
+    ]
+    lines = ["## Current Session", "", "| Property | Value |", "|---|---|"]
+    for k, v in rows:
+        lines.append(f"| {_md_escape(k)} | {_md_escape(v)} |")
+    return "\n".join(lines)
+
+
+def _md_session_table(items: list[Any]) -> str:
+    """Format session list as a Markdown table."""
+    if not items:
+        return "*No sessions found*"
+    lines = [f"## Sessions ({len(items)})", ""]
+    lines.append("| ID | Title | Model | Updated |")
+    lines.append("|---|---|---|---|")
+    for s in items:
+        tid = s.thread_id[:12]
+        title = (s.title or "-")[:48]
+        model = (s.binding().display() or "-")[:20]
+        updated = s.updated_at or "-"
+        lines.append(
+            f"| `{_md_escape(tid)}` | {_md_escape(title)} "
+            f"| {_md_escape(model)} | {_md_escape(updated)} |"
+        )
+    return "\n".join(lines)
 
 
 def _persist_model_binding(settings: Any, thread_id: str | None) -> None:
@@ -252,6 +329,12 @@ def _export_lines(
         handled=True,
         lines=[confirm, f"messages: {len(messages)}"],
         notice=confirm,
+        markdown=(
+            "## Export\n\n"
+            f"- **format**: {fmt_n}\n"
+            f"- **path**: `{target}`\n"
+            f"- **messages**: {len(messages)}\n"
+        ),
     )
 
 
@@ -268,10 +351,15 @@ def _handle_session(
 
     if cmd in {"/sessions", "/session"} and not args:
         if cmd == "/session":
-            return SlashResult(handled=True, lines=_session_show(store, thread_id, settings))
+            return SlashResult(
+                handled=True,
+                lines=_session_show(store, thread_id, settings),
+                markdown=_md_session_show(store, thread_id, settings),
+            )
         return SlashResult(
             handled=True,
             lines=[format_session_table(store.list_nonempty())],
+            markdown=_md_session_table(store.list_nonempty()),
         )
 
     if cmd == "/sessions" and args:
@@ -296,6 +384,12 @@ def _handle_session(
                 f"new session thread_id={tid}  model={bind.display()}",
                 "session metadata is saved on the first message",
             ],
+            markdown=(
+                "## New Session\n\n"
+                f"- **thread_id**: `{tid}`\n"
+                f"- **model**: {bind.display()}\n\n"
+                "*Session metadata is saved on the first message.*"
+            ),
             thread_id=tid,
             clear_log=True,
             reload_transcript=False,
@@ -325,6 +419,7 @@ def _handle_session(
             return SlashResult(
                 handled=True,
                 lines=[f"switched thread_id={tid}"],
+                markdown=f"## Switched\n\n- **thread_id**: `{tid}`",
                 thread_id=tid,
                 settings_changed=True,
                 clear_log=True,
@@ -333,6 +428,11 @@ def _handle_session(
         return SlashResult(
             handled=True,
             lines=[f"switched thread_id={info.thread_id}  title={info.title}"],
+            markdown=(
+                "## Switched\n\n"
+                f"- **thread_id**: `{info.thread_id}`\n"
+                f"- **title**: {_md_escape(info.title)}"
+            ),
             thread_id=info.thread_id,
             settings_changed=True,
             clear_log=True,
@@ -345,9 +445,11 @@ def _handle_session(
         title = " ".join(args).strip()
         store.ensure(thread_id, model=model)
         info = store.rename(thread_id, title)
+        new_title = info.title if info else title
         return SlashResult(
             handled=True,
-            lines=[f"renamed to: {info.title if info else title}"],
+            lines=[f"renamed to: {new_title}"],
+            markdown=f"## Renamed\n\n- **title**: {_md_escape(new_title)}",
         )
 
     if cmd == "/export":
@@ -379,7 +481,11 @@ def _handle_session(
         return SlashResult(handled=False)
 
     if not args:
-        return SlashResult(handled=True, lines=_session_show(store, thread_id, settings))
+        return SlashResult(
+            handled=True,
+            lines=_session_show(store, thread_id, settings),
+            markdown=_md_session_show(store, thread_id, settings),
+        )
 
     sub = args[0].lower()
     rest = args[1:]
@@ -395,9 +501,11 @@ def _handle_session(
                     lines=["usage: /session list [n]"],
                     error=True,
                 )
+        sessions = store.list_nonempty(limit=limit)
         return SlashResult(
             handled=True,
-            lines=[format_session_table(store.list_nonempty(limit=limit))],
+            lines=[format_session_table(sessions)],
+            markdown=_md_session_table(sessions),
         )
 
     if sub == "prune":
@@ -406,7 +514,12 @@ def _handle_session(
         lines.extend(f"  - {tid}" for tid in deleted[:20])
         if len(deleted) > 20:
             lines.append(f"  … and {len(deleted) - 20} more")
-        return SlashResult(handled=True, lines=lines)
+        md = f"## Pruned\n\n**{len(deleted)}** empty session(s) removed.\n"
+        if deleted:
+            md += "\n" + "\n".join(f"- `{tid}`" for tid in deleted[:20])
+            if len(deleted) > 20:
+                md += f"\n- *… and {len(deleted) - 20} more*"
+        return SlashResult(handled=True, lines=lines, markdown=md)
 
     if sub == "show":
         if rest:
@@ -421,7 +534,11 @@ def _handle_session(
         else:
             tid = thread_id
         store.ensure(tid, model=model)
-        return SlashResult(handled=True, lines=_session_show(store, tid, settings))
+        return SlashResult(
+            handled=True,
+            lines=_session_show(store, tid, settings),
+            markdown=_md_session_show(store, tid, settings),
+        )
 
     if sub == "new":
         return _handle_session(
@@ -460,6 +577,11 @@ def _handle_session(
             return SlashResult(
                 handled=True,
                 lines=[f"deleted session metadata: {tid}  ({label})"],
+                markdown=(
+                    "## Deleted\n\n"
+                    f"- **thread_id**: `{tid}`\n"
+                    f"- **title**: {_md_escape(label)}"
+                ),
             )
         return SlashResult(handled=True, lines=[f"session not found: {query}"], error=True)
 
@@ -471,9 +593,11 @@ def _handle_session(
                 error=True,
             )
         q = " ".join(rest)
+        results = store.search(q)
         return SlashResult(
             handled=True,
-            lines=[format_session_table(store.search(q))],
+            lines=[format_session_table(results)],
+            markdown=_md_session_table(results),
         )
 
     if sub == "export":
@@ -523,6 +647,61 @@ def _mcp_list_lines(settings: Any) -> list[str]:
     for w in warnings:
         lines.append(f"warn: {w}")
     return lines
+
+
+def _md_mcp_list(settings: Any) -> str:
+    """Format MCP server config as a Markdown table."""
+    servers = load_mcp_server_configs(
+        path=getattr(settings, "mcp_config_path", None),
+        json_blob=getattr(settings, "mcp_servers_json", None),
+    )
+    enable = bool(getattr(settings, "enable_mcp", True))
+    lines = [f"## MCP Servers  (`mcp enabled={enable}`)", ""]
+    pool = get_active_mcp_pool()
+    if pool is not None:
+        lines.append(f"**live pool**: {', '.join(pool.server_names) or '(none)'}")
+        lines.append("")
+    if not servers:
+        lines.append("*No MCP servers configured*")
+        path = getattr(settings, "mcp_config_path", None)
+        if path:
+            lines.append(f"\nconfig path: `{path}`")
+        return "\n".join(lines)
+    lines.append("| Name | Transport | Enabled | Endpoint |")
+    lines.append("|---|---|---|---|")
+    for s in servers:
+        if s.transport == "stdio":
+            dest = f"`{s.command or '-'}`"
+            if s.args:
+                dest += " " + " ".join(str(a) for a in s.args)
+        else:
+            dest = s.url or "-"
+        lines.append(
+            f"| {_md_escape(s.name)} | {_md_escape(s.transport)} "
+            f"| {'yes' if s.enabled else 'no'} | {_md_escape(dest)} |"
+        )
+    loaded = getattr(build_coding_agent, "last_mcp_servers", []) or []
+    tool_names = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
+    warnings_list = getattr(build_coding_agent, "last_mcp_warnings", []) or []
+    lines.append("")
+    lines.append(f"**loaded at agent build**: {', '.join(loaded) or '(none)'}")
+    lines.append(f"**tools bound**: {len(tool_names)}")
+    for w in warnings_list:
+        lines.append(f"- warn: {w}")
+    return "\n".join(lines)
+
+
+def _md_tool_list(names: list[str], warnings: list[str] | None = None) -> str:
+    """Format MCP tool names as a Markdown list."""
+    lines = [f"## MCP Tools ({len(names)})", ""]
+    if not names:
+        lines.append("*(no tools discovered)*")
+    else:
+        for n in sorted(names):
+            lines.append(f"- `{_md_escape(n)}`")
+    for w in (warnings or []):
+        lines.append(f"\nwarn: {w}")
+    return "\n".join(lines)
 
 
 def _rebuild_agent(
@@ -647,7 +826,8 @@ def _handle_mcp(
     sub = (args[0].lower() if args else "list").strip()
 
     if sub in {"list", "ls", "status"}:
-        return SlashResult(handled=True, lines=_mcp_list_lines(settings))
+        lines = _mcp_list_lines(settings)
+        return SlashResult(handled=True, lines=lines, markdown=_md_mcp_list(settings))
 
     if sub == "config":
         path = getattr(settings, "mcp_config_path", None)
@@ -662,7 +842,22 @@ def _handle_mcp(
             lines.append(f"config file exists: {path}")
         elif path:
             lines.append(f"config file missing: {path}")
-        return SlashResult(handled=True, lines=lines)
+        file_status = ""
+        if path:
+            file_status = "exists" if Path(path).is_file() else "missing"
+        return SlashResult(
+            handled=True,
+            lines=lines,
+            markdown=(
+                "## MCP Config\n\n"
+                "| Setting | Value |\n|---|---|\n"
+                f"| enable_mcp | `{getattr(settings, 'enable_mcp', True)}` |\n"
+                f"| config_path | `{path}` |\n"
+                f"| config_json_set | `{bool(blob and str(blob).strip())}` |\n"
+                f"| transports | stdio, sse, streamable_http |\n"
+                + (f"| file_status | {file_status} |\n" if path else "")
+            ),
+        )
 
     if sub == "tools":
         names = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
@@ -692,11 +887,12 @@ def _handle_mcp(
                 lines.append(f"- {n}")
             for w in result.warnings:
                 lines.append(f"warn: {w}")
-            return SlashResult(handled=True, lines=lines)
+            md = _md_tool_list(names, result.warnings)
+            return SlashResult(handled=True, lines=lines, markdown=md)
         lines = [f"mcp tools ({len(names)}):"]
         for n in names:
             lines.append(f"- {n}")
-        return SlashResult(handled=True, lines=lines)
+        return SlashResult(handled=True, lines=lines, markdown=_md_tool_list(names, []))
 
     if sub == "test":
         servers = load_mcp_server_configs(
@@ -723,7 +919,25 @@ def _handle_mcp(
             lines.append(f"... and {len(result.tools) - 30} more")
         for w in result.warnings:
             lines.append(f"warn: {w}")
-        return SlashResult(handled=True, lines=lines)
+        # Build markdown
+        md_lines = ["## MCP Test Results", ""]
+        md_lines.append(f"- **servers ok**: {', '.join(result.servers) or '-'}")
+        md_lines.append(f"- **tools discovered**: {len(result.tools)}")
+        md_lines.append("")
+        md_lines.append("| Transport | Servers |")
+        md_lines.append("|---|---|")
+        for transport, names in sorted(by_transport.items()):
+            md_lines.append(f"| {_md_escape(transport)} | {_md_escape(', '.join(names))} |")
+        if result.tools:
+            md_lines.append("")
+            md_lines.append(f"### Tools ({len(result.tools)})")
+            for tool in result.tools[:30]:
+                md_lines.append(f"- `{_md_escape(getattr(tool, 'name', str(tool)))}`")
+            if len(result.tools) > 30:
+                md_lines.append(f"- *… and {len(result.tools) - 30} more*")
+        for w in result.warnings:
+            md_lines.append(f"\nwarn: {w}")
+        return SlashResult(handled=True, lines=lines, markdown="\n".join(md_lines))
 
     if sub == "toggle":
         if len(args) < 2:
@@ -797,10 +1011,21 @@ def _handle_mcp(
         ]
         for w in warnings_list:
             lines.append(f"warn: {w}")
+        md_lines = [
+            "## MCP Toggle",
+            "",
+            f"**{target}**: {'enabled' if changed.enabled else 'disabled'}",
+            "",
+            f"- loaded servers: {', '.join(loaded) or '(none)'}",
+            f"- tools bound: {len(tools)}",
+        ]
+        for w in warnings_list:
+            md_lines.append(f"- warn: {w}")
         return SlashResult(
             handled=True,
             lines=lines,
             notice=notice,
+            markdown="\n".join(md_lines),
             agent=new_agent,
             settings_changed=True,
         )
@@ -867,7 +1092,19 @@ def _handle_mcp(
         ]
         for w in warnings:
             lines.append(f"warn: {w}")
-        return SlashResult(handled=True, lines=lines, notice=notice, agent=new_agent)
+        md_lines = [
+            "## MCP Reloaded",
+            "",
+            f"- **enabled**: `{enabled_flag}`",
+            f"- **servers**: {', '.join(loaded) or '(none)'}",
+            f"- **tools**: {len(tools)}",
+        ]
+        for w in warnings:
+            md_lines.append(f"- warn: {w}")
+        return SlashResult(
+            handled=True, lines=lines, notice=notice,
+            markdown="\n".join(md_lines), agent=new_agent,
+        )
 
     return SlashResult(
         handled=True,
@@ -1063,7 +1300,32 @@ def _handle_theme(
     reload_theme_catalog(project_root)
     if not args or args[0].casefold() in {"list", "ls", "show"}:
         active = getattr(settings, "theme", None) or get_theme().name
-        return SlashResult(handled=True, lines=format_theme_list_lines(active=active))
+        plain = format_theme_list_lines(active=active)
+        from synapse.ui.theme import list_themes, theme_kind
+        md = (
+            "## Themes\n\n"
+            f"**current**: `{active}`\n\n"
+            "|   | Name | Label | Kind |\n|---|---|---|---|\n"
+        )
+        for t in list_themes():
+            mark = "*" if t.name == active else " "
+            tone = theme_kind(t)
+            from synapse.ui.theme import BUILTIN_THEMES, _custom
+            if t.name in _custom and t.name not in BUILTIN_THEMES:
+                kind = f"custom/{tone}"
+            elif t.name in _custom:
+                kind = f"override/{tone}"
+            else:
+                kind = f"built-in/{tone}"
+            md += (
+                f"| {mark} | `{_md_escape(t.name)}` "
+                f"| {_md_escape(t.label)} | {_md_escape(kind)} |\n"
+            )
+        md += (
+            "\nusage: `/theme <name>`\n\n"
+            "config: `settings.json` theme + optional `themes.json`"
+        )
+        return SlashResult(handled=True, lines=plain, markdown=md)
 
     name = args[0].strip()
     # Optional: /theme set <name> | /theme use <name>
@@ -1101,6 +1363,12 @@ def _handle_theme(
             f"theme switched to {theme.name} ({theme.label})",
             "saved to ~/.coding-agent/settings.json",
         ],
+        markdown=(
+            "## Theme\n\n"
+            f"- **name**: `{_md_escape(theme.name)}`\n"
+            f"- **label**: {_md_escape(theme.label)}\n\n"
+            "*saved to `~/.coding-agent/settings.json`*"
+        ),
         settings_changed=True,
         theme_name=theme.name,
     )
@@ -1133,7 +1401,9 @@ def handle_slash(
     if raw == "/clear":
         return SlashResult(handled=True, clear_log=True, lines=["log cleared"])
     if raw in {"/help", "/?"}:
-        return SlashResult(handled=True, lines=HELP_TEXT.splitlines())
+        return SlashResult(
+            handled=True, lines=HELP_TEXT.splitlines(), markdown=HELP_TEXT,
+        )
 
     parts = _parts(raw)
     cmd = parts[0].lower()
@@ -1196,12 +1466,27 @@ def handle_slash(
         from synapse.context_compact import force_compact_via_agent
 
         ok, lines = force_compact_via_agent(agent, thread_id=thread_id)
-        return SlashResult(handled=True, lines=lines, error=not ok)
+        md = "## Compact\n\n" + "\n".join(f"- {x}" for x in lines)
+        return SlashResult(handled=True, lines=lines, error=not ok, markdown=md)
 
     if cmd == "/context":
         from synapse.context_compact import context_status_lines
 
-        return SlashResult(handled=True, lines=context_status_lines(agent, thread_id))
+        plain = context_status_lines(agent, thread_id)
+        rows = []
+        for line in plain:
+            if "=" in line:
+                k, v = line.split("=", 1)
+                rows.append((k.strip(), v.strip()))
+            elif ": " in line:
+                k, v = line.split(": ", 1)
+                rows.append((k.strip(), v.strip()))
+            else:
+                rows.append(("", line.strip()))
+        md = "## Context\n\n| Key | Value |\n|---|---|\n"
+        for k, v in rows:
+            md += f"| {_md_escape(k)} | {_md_escape(v)} |\n"
+        return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/safety":
         from synapse.safety import (
@@ -1211,7 +1496,15 @@ def handle_slash(
         )
 
         if not args:
-            return SlashResult(handled=True, lines=format_safety_status(settings))
+            plain = format_safety_status(settings)
+            md = "## Safety\n\n| Setting | Value |\n|---|---|\n"
+            for line in plain:
+                if ": " in line:
+                    k, v = line.split(": ", 1)
+                    md += f"| {_md_escape(k.strip())} | {_md_escape(v.strip())} |\n"
+                elif line.startswith("profiles:") or line.startswith("switch:"):
+                    md += f"\n*{_md_escape(line)}*\n"
+            return SlashResult(handled=True, lines=plain, markdown=md)
         profile = get_safety_profile(args[0])
         notes = apply_safety_to_settings(settings, profile)
         try:
@@ -1228,9 +1521,11 @@ def handle_slash(
                 error=True,
                 settings_changed=True,
             )
+        md = "## Safety\n\n" + "\n".join(f"- {n}" for n in notes) + "\n- agent rebuilt"
         return SlashResult(
             handled=True,
             lines=[*notes, "agent rebuilt"],
+            markdown=md,
             agent=new_agent,
             settings_changed=True,
         )
@@ -1259,7 +1554,18 @@ def handle_slash(
         )
 
         paths = skills_paths_from_settings(settings, root)
-        return SlashResult(handled=True, lines=format_skills_lines(discover_skills(paths)))
+        skills = discover_skills(paths)
+        plain = format_skills_lines(skills)
+        if not skills:
+            md = "## Skills\n\n*(none found)*\n\ntip: put `SKILL.md` under `skills/<name>/`"
+        else:
+            md = f"## Skills ({len(skills)})\n\n| Name | Description | Path |\n|---|---|---|\n"
+            for s in skills:
+                desc = s.description or "-"
+                if len(desc) > 80:
+                    desc = desc[:79] + "..."
+                md += f"| {_md_escape(s.name)} | {_md_escape(desc)} | `{_md_escape(s.path)}` |\n"
+        return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/memory":
         from synapse.skills_catalog import (
@@ -1269,7 +1575,17 @@ def handle_slash(
         )
 
         paths = memory_paths_from_settings(settings, root)
-        return SlashResult(handled=True, lines=format_memory_lines(list_memory_files(paths)))
+        entries = list_memory_files(paths)
+        plain = format_memory_lines(entries)
+        if not entries:
+            md = "## Memory\n\n*(no paths configured)*"
+        else:
+            md = f"## Memory Files ({len(entries)})\n\n| Path | Size | Status |\n|---|---|---|\n"
+            for path, exists, size in entries:
+                status = "ok" if exists else "missing"
+                md += f"| `{_md_escape(path)}` | {size} | {status} |\n"
+            md += "\n*Existing files are injected via `create_deep_agent(memory=...)`*"
+        return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd in {"/subagents", "/subagent"}:
         from synapse.subagents import build_default_subagents, format_subagents_lines
@@ -1280,7 +1596,26 @@ def handle_slash(
                 enabled=getattr(settings, "enable_subagents", True),
                 isolate_tools=True,
             )
-        return SlashResult(handled=True, lines=format_subagents_lines(specs))
+        plain = format_subagents_lines(specs)
+        if not specs:
+            md = "## Sub-agents\n\n*disabled*"
+        else:
+            md = f"## Sub-agents ({len(specs)})\n\n"
+            md += "| Name | Model | Isolation | Tools |\n|---|---|---|---|\n"
+            for spec in specs:
+                name = spec.get("name") or "?"
+                model = spec.get("model") or "(inherit)"
+                tools = spec.get("tools") or []
+                tool_names = [getattr(t, "name", getattr(t, "__name__", str(t))) for t in tools]
+                mw = spec.get("middleware") or []
+                isolation = "tool-exclude" if mw else ("tools+" if tools else "default")
+                tool_list = ", ".join(str(n) for n in tool_names) if tool_names else "-"
+                md += (
+                    f"| {_md_escape(name)} | {_md_escape(model)} "
+                    f"| {_md_escape(isolation)} "
+                    f"| {_md_escape(tool_list)} |\n"
+                )
+        return SlashResult(handled=True, lines=plain, markdown=md)
 
     if raw.startswith("/"):
         return SlashResult(
