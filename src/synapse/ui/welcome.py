@@ -18,6 +18,7 @@ _HIDDEN_DURATION = 0.8
 _CYCLE_SECONDS = (
     _REVEAL_DURATION + _VISIBLE_DURATION + _ERASE_DURATION + _HIDDEN_DURATION
 )
+_LEFT_COL_MASK = 0x4D  # braille left-column bits: 1+2+4+64
 _BRAILLE_DOTS = (
     ((0, 0, 1), (1, 0, 2), (2, 0, 4), (3, 0, 64)),
     ((0, 1, 8), (1, 1, 16), (2, 1, 32), (3, 1, 128)),
@@ -97,31 +98,70 @@ def _logo_phase(elapsed: float) -> tuple[str, float]:
     return "hidden", cycle_elapsed - erase_end
 
 
+def _dot_char(full_value: int, fraction: float) -> str:
+    """Build a Braille glyph with only a subset of dots active.
+
+    ``fraction`` 0→1 reveals left-column first, then right-column.
+    ``fraction >= 1`` returns the full glyph.
+    """
+    if full_value == 0:
+        return _BRAILLE_BLANK
+    if fraction >= 1.0:
+        return chr(0x2800 + full_value)
+    if fraction < 0.5:
+        partial = full_value & _LEFT_COL_MASK
+    else:
+        partial = full_value
+    return chr(0x2800 + partial) if partial else _BRAILLE_BLANK
+
+
+def _dot_char_erase(full_value: int, fraction: float) -> str:
+    """Build a Braille glyph erasing right-column then left-column.
+
+    ``fraction`` 0→1 removes right-column first, then everything.
+    """
+    if full_value == 0:
+        return _BRAILLE_BLANK
+    if fraction >= 1.0:
+        return _BRAILLE_BLANK
+    if fraction < 0.5:
+        partial = full_value & _LEFT_COL_MASK
+    else:
+        partial = 0
+    return chr(0x2800 + partial) if partial else _BRAILLE_BLANK
+
+
 def _logo_style(
     frame: int,
     column: int,
     row: int,
     width: int,
+    full_value: int,
     *,
     muted: str,
     fg: str,
     total_rows: int = 7,
-) -> str:
-    """Show the logo left-to-right, then erase it top-to-bottom."""
+) -> tuple[str, str]:
+    """Return ``(braille_char, style)`` for one animation frame."""
     elapsed = frame / _SHIMMER_FPS
     phase, phase_elapsed = _logo_phase(elapsed)
 
     if phase == "hidden":
-        return muted
+        return _dot_char(full_value, 0), muted
     if phase == "revealing":
         reveal_column = (phase_elapsed / _REVEAL_DURATION) * width
-        return fg if column <= reveal_column else muted
+        if column > reveal_column:
+            return _dot_char(full_value, 0), muted
+        # within-cell reveal: left column then right
+        local = max(0.0, min(1.0, reveal_column - column + 0.35))
+        return _dot_char(full_value, local), fg
     if phase == "erasing":
         column_norm = column / max(1, width - 1)
         position = row + column_norm * 0.4
         progress = (phase_elapsed / _ERASE_DURATION) * (total_rows + 0.4)
-        return muted if position <= progress else fg
-    return fg
+        local = max(0.0, min(1.0, (progress - position) / 0.6))
+        return _dot_char_erase(full_value, local), fg
+    return _dot_char(full_value, 1.0), fg
 
 
 def render_welcome_frame(
@@ -150,18 +190,19 @@ def render_welcome_frame(
         left = max(0, (logo_width - cell_len(line)) // 2)
         for column, char in enumerate(line):
             if char in {" ", _BRAILLE_BLANK}:
-                style = muted
+                out.append(char, style=muted)
             else:
-                style = _logo_style(
+                anim_char, style = _logo_style(
                     frame,
                     left + column,
                     row,
                     logo_width,
+                    ord(char) - 0x2800,
                     muted=muted,
                     fg=fg,
                     total_rows=logo_rows,
                 )
-            out.append(char, style=style)
+                out.append(anim_char, style=style)
         out.append("\n")
 
     out.append("\n", style=muted)

@@ -37,12 +37,24 @@ def test_welcome_frame_has_large_logo_and_product_copy() -> None:
     assert max(len(line) for line in frame.plain.splitlines()) >= 60
 
 
-def test_welcome_animation_changes_styles_without_changing_logo_shape() -> None:
-    first = render_welcome_frame(0, workspace="repo", theme=_THEME)
-    second = render_welcome_frame(10, workspace="repo", theme=_THEME)
+def test_welcome_reveal_fills_braille_dots_progressively() -> None:
+    early = render_welcome_frame(0, workspace="repo", theme=_THEME)
+    later = render_welcome_frame(10, workspace="repo", theme=_THEME)
+    mid = render_welcome_frame(
+        round(_SHIMMER_FPS * (_REVEAL_DURATION + _VISIBLE_DURATION / 2)),
+        workspace="repo",
+        theme=_THEME,
+    )
+    mid2 = render_welcome_frame(
+        round(_SHIMMER_FPS * (_REVEAL_DURATION + _VISIBLE_DURATION / 2 + 0.5)),
+        workspace="repo",
+        theme=_THEME,
+    )
 
-    assert first.plain == second.plain
-    assert first.spans != second.spans
+    # Early reveal chars differ from later reveal (partial braille dots)
+    assert early.plain != later.plain
+    # Visible phase: full braille chars, shape stable across frames
+    assert mid.plain == mid2.plain
 
 
 def test_welcome_animation_uses_only_theme_colors() -> None:
