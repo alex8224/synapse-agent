@@ -48,10 +48,24 @@ class _FakeResponses:
     def __init__(self, manager):
         self.manager = manager
         self.connect_count = 0
+        self.connect_options = []
 
-    def connect(self):
+    def connect(self, **kwargs):
         self.connect_count += 1
+        self.connect_options.append(kwargs)
         return self.manager
+
+
+class _FakeAsyncOpenAI:
+    def __init__(self, responses):
+        self.responses = responses
+        self.api_key = ""
+        self.refresh_count = 0
+
+    async def _refresh_api_key(self):
+        self.refresh_count += 1
+        self.api_key = "test-key"
+        return self.api_key
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -63,13 +77,14 @@ def test_prepare_responses_websocket_event(stream):
             "stream": stream,
             "background": False,
             "extra_body": {"thinking": {"type": "enabled"}},
+            "reasoning": {"effort": "high"},
         }
     )
     assert event == {
         "type": "response.create",
         "model": "gpt-test",
         "input": "hello",
-        "thinking": {"type": "enabled"},
+        "reasoning": {"effort": "high"},
     }
 
 
@@ -118,6 +133,30 @@ def test_websocket_stream_reuses_connection():
         "response.create",
         "response.create",
     ]
+
+
+def test_websocket_refreshes_async_api_key_before_handshake():
+    connection = _FakeConnection([])
+    manager = _FakeManager(connection)
+    responses = _FakeResponses(manager)
+    client = _FakeAsyncOpenAI(responses)
+    model = ResponsesWebSocketChatOpenAI(model="gpt-test", api_key="test-key")
+    object.__setattr__(model, "root_async_client", client)
+
+    opened = asyncio.run(model._ensure_responses_websocket())
+
+    assert opened is connection
+    assert client.refresh_count == 1
+    assert client.api_key == "test-key"
+    assert responses.connect_count == 1
+    assert responses.connect_options == [
+        {"websocket_connection_options": {"ping_timeout": None}}
+    ]
+
+    # Reusing an established socket must not refresh credentials or reconnect.
+    assert asyncio.run(model._ensure_responses_websocket()) is connection
+    assert client.refresh_count == 1
+    assert responses.connect_count == 1
 
 
 def test_websocket_error_closes_dirty_connection():

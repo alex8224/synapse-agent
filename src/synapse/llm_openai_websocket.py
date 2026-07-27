@@ -29,6 +29,10 @@ def prepare_responses_websocket_event(payload: dict[str, Any]) -> dict[str, Any]
     extra_body = event.pop("extra_body", None)
     if isinstance(extra_body, dict):
         event.update(extra_body)
+    # ``thinking`` is a Chat Completions extension used by some compatible
+    # providers. Responses WebSocket servers reject it; LangChain has already
+    # mapped reasoning effort to the standard top-level ``reasoning`` field.
+    event.pop("thinking", None)
     event["type"] = "response.create"
     return event
 
@@ -49,7 +53,22 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
         connection = self._responses_ws_connection
         if connection is not None:
             return connection
-        manager = self.root_async_client.responses.connect()
+        client = self.root_async_client
+        # ChatOpenAI accepts an async API-key callable so it can avoid creating an
+        # eager sync OpenAI client. HTTP requests refresh that callable in
+        # AsyncOpenAI._prepare_options(), but the SDK's responses.connect() path
+        # reads auth_headers directly. Refresh it here or the WebSocket handshake
+        # is sent without Authorization and OpenAI-compatible servers return 401.
+        refresh_api_key = getattr(client, "_refresh_api_key", None)
+        if callable(refresh_api_key):
+            await refresh_api_key()
+        # Some OpenAI-compatible gateways don't answer WebSocket ping frames while
+        # a model is reasoning. Keep sending pings to keep intermediaries awake,
+        # but don't terminate an otherwise healthy response solely for a missing
+        # pong (websockets defaults to a 20-second ping timeout).
+        manager = client.responses.connect(
+            websocket_connection_options={"ping_timeout": None}
+        )
         connection = await manager.enter()
         self._responses_ws_manager = manager
         self._responses_ws_connection = connection
