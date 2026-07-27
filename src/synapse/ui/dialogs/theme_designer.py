@@ -46,7 +46,7 @@ _COLOR_FIELDS: list[tuple[str, str]] = [
     ("top_right", "Top right"),
 ]
 _COLOR_LABELS = dict(_COLOR_FIELDS)
-_BORDER_STYLES = ("tall", "heavy", "solid", "round", "dashed", "dotted", "double")
+_BORDER_STYLES = ("tall", "heavy", "solid", "round", "dashed", "double", "panel")
 _HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _PREVIEW_DEBOUNCE_S = 0.18
 _PLANE_WIDTH = 30

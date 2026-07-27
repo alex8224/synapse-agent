@@ -103,6 +103,29 @@ _PALETTE_KEYS = frozenset(
 # Integer layout keys in themes.json (not colors).
 _INT_PALETTE_KEYS = frozenset({"top_pad_x", "top_gap"})
 
+# Textual 支持的 border 类型。
+_VALID_PROMPT_BORDER_STYLES: frozenset[str] = frozenset({
+    "ascii",
+    "blank",
+    "block",
+    "dashed",
+    "double",
+    "heavy",
+    "hidden",
+    "hkey",
+    "inner",
+    "none",
+    "outer",
+    "panel",
+    "round",
+    "solid",
+    "tab",
+    "tall",
+    "thick",
+    "vkey",
+    "wide",
+})
+
 
 @dataclass(frozen=True)
 class Theme:
@@ -155,12 +178,15 @@ class Theme:
     css_error: str = ""
     css_border: str = ""
     css_border_focus: str = ""
-    # Border style for #prompt input: tall, heavy, dashed, dotted, double, round, solid.
+    # Border style for #prompt input: tall, heavy, dashed, double, round, solid.
     prompt_border: str = "tall"
 
     def css_variables(self) -> dict[str, str]:
         """Textual stylesheet variables (names without leading ``$``)."""
         pad = max(0, int(self.top_pad_x or 0))
+        border_style = self.prompt_border
+        if border_style not in _VALID_PROMPT_BORDER_STYLES:
+            border_style = "tall"
         return {
             "theme-fg": self.css_fg or self.fg,
             "theme-dim": self.css_dim or self.dim,
@@ -175,7 +201,7 @@ class Theme:
             "theme-border-focus": self.css_border_focus or self.border_focus,
             "theme-error": self.css_error or self.error,
             "theme-top-pad-x": str(pad),
-            "theme-prompt-border-style": self.prompt_border,
+            "theme-prompt-border-style": border_style,
         }
 
     @property
@@ -737,8 +763,8 @@ def _theme_from_dict(
                 updates[key] = val
             continue
         if key == "prompt_border":
-            val = str(raw).strip().casefold() if raw is not None else ""
-            if val:
+            val = str(raw).strip() if raw is not None else ""
+            if val and val in _VALID_PROMPT_BORDER_STYLES:
                 updates[key] = val
             continue
         if key == "ansi":
