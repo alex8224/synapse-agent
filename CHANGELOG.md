@@ -7,6 +7,44 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.6
+
+### 新功能
+
+- 支持 OpenAI Responses API WebSocket 传输，降低延迟
+- Welcome 页面动画重构：左到右打字光标出现 + 斜扫逐点删除循环
+- Braille Logo 点阵逐点显隐动画，仅用 muted/fg 两种主题色无中间杂色
+- 打字光标效果：新字符短暂高亮 accent 后降为 fg
+- `prompt_border` 字段支持主题自定义输入框边框样式（tall/heavy/dashed/dotted/double/round/solid）
+- 后端 glob/grep 工具自动跳过 `.gitignore` 匹配路径
+
+### 修复
+
+- WebSocket：握手前刷新异步 API key，避免网关 401
+- WebSocket：关闭 ping timeout，防止推理期间误断连
+- WebSocket：过滤 Chat Completions 专用 `thinking` 字段
+- TUI：主题设计器 backdrop 完全透明
+- TUI：修复 `_open_theme_designer` 缺失回调
+- TUI：移除 `_save_theme` 重复 `apply_theme` 调用，避免 UI 卡死
+- TUI：git changes popover 重新挂载避免 DuplicateIds 异常
+- SteerQueue：修复可重入死锁和 graph 重建后队列丢失
+- 修复子 agent 工具调用的时间线渲染
+- 修复 alt-v 多行粘贴被截断
+
+### 性能
+
+- 纯异步 model clients，消除同步 OpenAI 客户端的阻塞
+- 加速模型切换和 shutdown 流程
+
+### 工程
+
+- 移除 cancel-seal 诊断日志输出
+- SteerQueue 在活跃 turn 期间保持可见
+- 简化 agent 工具表面，减少不必要的工具暴露
+- 上调模型瞬时故障重试上限
+
+---
+
 ## v0.1.5
 
 ### 新功能
