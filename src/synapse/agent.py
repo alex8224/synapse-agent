@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from synapse.backends import build_backend
+from synapse.agent_md import build_agent_md_middleware
 from synapse.config import Settings
 from synapse.context_compact import build_compact_tool_middleware
 from synapse.describe_image import VisionModelConfig
@@ -223,7 +224,11 @@ def build_coding_agent(
     memory_paths: list[str] = []
     if getattr(settings, "enable_memory", True):
         memory_paths = settings.resolved_memory_paths(project_root)
-        memory_paths = [p for p in memory_paths if Path(p).exists()]
+        # Exclude AGENTS.md — it is always injected by AgentMdMiddleware.
+        memory_paths = [
+            p for p in memory_paths
+            if Path(p).exists() and Path(p).name != "AGENTS.md"
+        ]
     skills_paths = settings.resolved_skills_paths(project_root)
 
     with span("subagents"):
@@ -320,6 +325,7 @@ def build_coding_agent(
     vision_config = VisionModelConfig.from_registry(registry, settings)
 
     middleware: list[Any] = [
+        build_agent_md_middleware(project_root),
         build_describe_image_middleware(
             image_input=primary_image_input,
             config=vision_config,

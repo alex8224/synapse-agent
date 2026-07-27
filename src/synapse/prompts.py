@@ -102,7 +102,6 @@ For a clear coding or debugging task:
    * How it was verified
    * Remaining risks, if any
 
-Follow the project's `AGENTS.md` for test steps and project-specific conventions.
 Prefer the repository's existing package and test commands.
 
 ## Tool usage

@@ -137,7 +137,7 @@ class Settings(BaseSettings):
         default=False, validation_alias="AGENT_ENABLE_MEMORY"
     )
     memory_paths: list[str] = Field(
-        default_factory=lambda: ["AGENTS.md", "MEMORY.md", ".coding-agent/MEMORY.md"]
+        default_factory=lambda: ["MEMORY.md", ".coding-agent/MEMORY.md"]
     )
     skills_paths: list[str] = Field(default_factory=lambda: ["skills"])
 
