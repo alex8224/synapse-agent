@@ -122,6 +122,10 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         ]
         assert len(model_retries) == 1
         assert model_retries[0].on_failure == "error"
+        assert any(
+            type(m).__name__ == "archive_large_tool_results"
+            for m in (kwargs.get("middleware") or [])
+        )
         # Mid-run steer middleware is wired by default.
         assert any(
             getattr(m, "name", None) == "inject_steer_queue"

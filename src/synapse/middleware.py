@@ -23,8 +23,11 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware._retry import calculate_delay, should_retry_exception
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
+from synapse.execute_capture import begin_execute_capture, end_execute_capture
 from synapse.pathing import rewrite_tool_args_paths
+from synapse.tool_results import ToolResultStore, build_model_preview, content_to_text
 
 # ---------------------------------------------------------------------------
 #  Transient error markers (text-based, no status code)
@@ -371,6 +374,185 @@ def build_path_normalize_middleware(workspace: Path):
         return request
 
     return _dual_wrap_tool_call(name="normalize_virtual_paths", apply=_apply)
+
+
+def build_tool_result_offload_middleware(
+    store: ToolResultStore,
+    *,
+    threshold_bytes: int = 8_192,
+    preview_head_chars: int = 4_096,
+    preview_tail_chars: int = 1_024,
+):
+    """Archive all tool results and reference large ones in subsequent model calls.
+
+    Tool execution remains unchanged. Once a tool returns, the final ToolMessage is
+    durably appended to the current thread journal. Small messages retain their
+    original model-visible body; large messages retain only a bounded preview and
+    an opaque ``tool-result://`` reference. ``read_tool_result`` is explicitly
+    excluded to avoid reference-on-reference recursion.
+    """
+
+    threshold = max(0, int(threshold_bytes))
+    excluded = frozenset({"read_tool_result", "compact_conversation"})
+
+    def _runtime_identity(request: Any) -> tuple[str, str]:
+        config = dict(getattr(request.runtime, "config", None) or {})
+        # ``task`` scopes its handler through set_config_context instead of
+        # mutating ToolCallRequest.runtime; prefer that live config so records
+        # retain the subgraph namespace of concurrent delegated work.
+        try:
+            from langchain_core.runnables.config import get_config
+
+            active = get_config()
+            if active:
+                config = dict(active)
+        except (RuntimeError, ImportError):
+            pass
+        configurable = dict(config.get("configurable") or {})
+        thread_id = str(configurable.get("thread_id") or "unknown-thread")
+        checkpoint_ns = str(configurable.get("checkpoint_ns") or "")
+        return thread_id, checkpoint_ns
+
+    def _call_value(request: Any, key: str, default: str = "") -> str:
+        call = getattr(request, "tool_call", None)
+        if isinstance(call, dict):
+            return str(call.get(key) or default)
+        return str(getattr(call, key, None) or default)
+
+    def _archive_message(
+        request: Any,
+        message: ToolMessage,
+        *,
+        original_content: str | None = None,
+        execute_output_truncated: bool = False,
+    ) -> ToolMessage:
+        name = str(message.name or _call_value(request, "name", "tool"))
+        if name in excluded:
+            return message
+        original = (
+            original_content
+            if original_content is not None
+            else content_to_text(message.content)
+        )
+        thread_id, checkpoint_ns = _runtime_identity(request)
+        try:
+            record = store.append(
+                thread_id=thread_id,
+                checkpoint_ns=checkpoint_ns,
+                tool_call_id=str(message.tool_call_id or _call_value(request, "id")),
+                tool_name=name,
+                status=str(message.status or "success"),
+                content=original,
+            )
+        except Exception:  # noqa: BLE001
+            # Archival is an optimization: never hide a real tool result if disk I/O fails.
+            return message
+
+        metadata = dict(message.artifact) if isinstance(message.artifact, dict) else {}
+        metadata["tool_result_ref"] = record.ref
+        metadata["tool_result_size_bytes"] = record.size_bytes
+        metadata["tool_result_sha256"] = record.sha256
+        if execute_output_truncated:
+            metadata["tool_result_contains_untruncated_execute_output"] = True
+        message.artifact = metadata
+
+        # Errors need enough directly-visible content to let the model repair the call.
+        if (
+            record.status == "error"
+            or (record.size_bytes <= threshold and not execute_output_truncated)
+        ):
+            return message
+        message.content = build_model_preview(
+            record,
+            head_chars=preview_head_chars,
+            tail_chars=preview_tail_chars,
+        )
+        return message
+
+    def _rewrite_result(
+        request: Any,
+        result: Any,
+        *,
+        original_content: str | None = None,
+        execute_output_truncated: bool = False,
+    ) -> Any:
+        if isinstance(result, ToolMessage):
+            return _archive_message(
+                request,
+                result,
+                original_content=original_content,
+                execute_output_truncated=execute_output_truncated,
+            )
+        if isinstance(result, Command):
+            update = result.update
+            if not isinstance(update, dict):
+                return result
+            messages = update.get("messages")
+            if not isinstance(messages, list):
+                return result
+            changed = False
+            rewritten: list[Any] = []
+            for message in messages:
+                if isinstance(message, ToolMessage):
+                    rewritten.append(_archive_message(request, message))
+                    changed = True
+                else:
+                    rewritten.append(message)
+            if changed:
+                return Command(
+                    graph=result.graph,
+                    update={**update, "messages": rewritten},
+                    resume=result.resume,
+                    goto=result.goto,
+                )
+            return result
+        if isinstance(result, list):
+            return [_rewrite_result(request, item) for item in result]
+        return result
+
+    def _is_execute(request: Any) -> bool:
+        return _call_value(request, "name") == "execute"
+
+    def wrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        if not _is_execute(request):
+            return _rewrite_result(request, handler(request))
+        capture, token = begin_execute_capture()
+        try:
+            result = handler(request)
+        finally:
+            end_execute_capture(token)
+        return _rewrite_result(
+            request,
+            result,
+            original_content=capture.full_output,
+            execute_output_truncated=capture.truncated,
+        )
+
+    async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        if not _is_execute(request):
+            return _rewrite_result(request, await handler(request))
+        capture, token = begin_execute_capture()
+        try:
+            result = await handler(request)
+        finally:
+            end_execute_capture(token)
+        return _rewrite_result(
+            request,
+            result,
+            original_content=capture.full_output,
+            execute_output_truncated=capture.truncated,
+        )
+
+    return type(
+        "archive_large_tool_results",
+        (AgentMiddleware,),
+        {
+            "state_schema": AgentState,
+            "tools": [],
+            "wrap_tool_call": wrap_tool_call,
+            "awrap_tool_call": awrap_tool_call,
+        },
+    )()
 
 
 def build_tool_error_recovery_middleware():

@@ -8,7 +8,15 @@ permissions.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from synapse.middleware import (
+    build_tool_error_recovery_middleware,
+    build_tool_result_offload_middleware,
+)
+from synapse.tool_results import ToolResultStore
+from synapse.tools import build_tool_result_reader_tool
 
 
 def _intent_middleware() -> list[Any]:
@@ -51,6 +59,10 @@ def build_default_subagents(
     reviewer_model: str | None = None,
     researcher_model: str | None = None,
     isolate_tools: bool = True,
+    tool_results_path: Path | str | None = None,
+    tool_result_offload_threshold_bytes: int = 8_192,
+    tool_result_preview_head_chars: int = 4_096,
+    tool_result_preview_tail_chars: int = 1_024,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -141,9 +153,26 @@ def build_default_subagents(
     )
 
     # Every subagent gets intent-schema middleware plus one unique tool filter.
+    # Add the same result reader and archival policy as the parent so delegated
+    # tasks neither lose large output nor re-inject it into the parent context.
+    result_middleware: list[Any] = []
+    result_reader: Any | None = None
+    if tool_results_path is not None:
+        result_middleware = [
+            build_tool_result_offload_middleware(
+                ToolResultStore(tool_results_path),
+                threshold_bytes=tool_result_offload_threshold_bytes,
+                preview_head_chars=tool_result_preview_head_chars,
+                preview_tail_chars=tool_result_preview_tail_chars,
+            ),
+            build_tool_error_recovery_middleware(),
+        ]
+        result_reader = build_tool_result_reader_tool(tool_results_path)
     for spec in (researcher, tester, reviewer):
         existing = list(spec.get("middleware") or [])
-        spec["middleware"] = _intent_middleware() + existing
+        spec["middleware"] = result_middleware + _intent_middleware() + existing
+        if result_reader is not None:
+            spec["tools"] = [*list(spec.get("tools") or []), result_reader]
 
     return [researcher, tester, reviewer]
 

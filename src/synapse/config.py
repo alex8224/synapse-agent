@@ -121,6 +121,20 @@ class Settings(BaseSettings):
     enable_compact_tool: bool = Field(
         default=True, validation_alias="AGENT_ENABLE_COMPACT_TOOL"
     )
+    # Persist every tool result in a session-scoped JSONL journal. Results above
+    # the threshold are replaced in model context by a bounded preview + reference.
+    enable_tool_result_offload: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_TOOL_RESULT_OFFLOAD"
+    )
+    tool_result_offload_threshold_bytes: int = Field(
+        default=8_192, validation_alias="AGENT_TOOL_RESULT_OFFLOAD_THRESHOLD_BYTES"
+    )
+    tool_result_preview_head_chars: int = Field(
+        default=4_096, validation_alias="AGENT_TOOL_RESULT_PREVIEW_HEAD_CHARS"
+    )
+    tool_result_preview_tail_chars: int = Field(
+        default=1_024, validation_alias="AGENT_TOOL_RESULT_PREVIEW_TAIL_CHARS"
+    )
 
     # Session / checkpoint
     checkpoint_backend: Literal["memory", "sqlite"] = Field(
@@ -295,11 +309,16 @@ class Settings(BaseSettings):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         if self.sessions_path is not None:
             self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
+        self.resolved_tool_results_path().mkdir(parents=True, exist_ok=True)
 
     def resolved_sessions_path(self) -> Path:
         if self.sessions_path is not None:
             return Path(self.sessions_path).expanduser().resolve()
         return self.checkpoint_path.parent / "sessions.sqlite"
+
+    def resolved_tool_results_path(self) -> Path:
+        """Directory containing append-only tool-result journals by thread id."""
+        return self.resolved_sessions_path().parent / "tool-results"
 
     def resolved_memory_paths(self, project_root: Path | None = None) -> list[str]:
         root = project_root or Path.cwd()

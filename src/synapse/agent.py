@@ -9,8 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from synapse.backends import build_backend
 from synapse.agent_md import build_agent_md_middleware
+from synapse.backends import build_backend
 from synapse.config import Settings
 from synapse.context_compact import build_compact_tool_middleware
 from synapse.describe_image import VisionModelConfig
@@ -24,6 +24,7 @@ from synapse.middleware import (
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
+    build_tool_result_offload_middleware,
 )
 from synapse.models_registry import (
     build_model_from_settings,
@@ -35,6 +36,7 @@ from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.steer import SteerQueue, build_steer_middleware
 from synapse.subagents import build_default_subagents
+from synapse.tool_results import ToolResultStore
 from synapse.tools import build_session_tools
 from synapse.vision_middleware import build_describe_image_middleware
 
@@ -237,6 +239,10 @@ def build_coding_agent(
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
+            tool_results_path=settings.resolved_tool_results_path(),
+            tool_result_offload_threshold_bytes=settings.tool_result_offload_threshold_bytes,
+            tool_result_preview_head_chars=settings.tool_result_preview_head_chars,
+            tool_result_preview_tail_chars=settings.tool_result_preview_tail_chars,
         )
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
@@ -252,6 +258,7 @@ def build_coding_agent(
         session_tools = build_session_tools(
             sessions_path=settings.resolved_sessions_path(),
             checkpoint_path=settings.checkpoint_path,
+            tool_results_path=settings.resolved_tool_results_path(),
         )
         tools.extend(session_tools)
     except Exception:  # noqa: BLE001
@@ -331,11 +338,25 @@ def build_coding_agent(
             config=vision_config,
         ),
         build_model_retry_middleware(),
-        build_tool_error_recovery_middleware(),
         build_task_namespace_middleware(),
+    ]
+    if getattr(settings, "enable_tool_result_offload", True):
+        middleware.append(
+            build_tool_result_offload_middleware(
+                ToolResultStore(settings.resolved_tool_results_path()),
+                threshold_bytes=getattr(settings, "tool_result_offload_threshold_bytes", 8_192),
+                preview_head_chars=getattr(settings, "tool_result_preview_head_chars", 4_096),
+                preview_tail_chars=getattr(settings, "tool_result_preview_tail_chars", 1_024),
+            )
+        )
+    # Tool middleware compose in declaration order (first = outermost). Keep
+    # recovery inside archival so both normal and recovered error ToolMessages
+    # are durable before the graph checkpoints them.
+    middleware.append(build_tool_error_recovery_middleware())
+    middleware.extend([
         build_path_normalize_middleware(root),
         *build_intent_schema_middleware(),
-    ]
+    ])
     # Keep one queue across graph rebuilds so an active turn and the TUI never
     # route guidance to different middleware instances.
     if steer_queue is None:

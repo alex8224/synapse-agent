@@ -13,6 +13,7 @@ from synapse.backends import (
     resolve_shell_invocation,
 )
 from synapse.config import Settings, load_settings
+from synapse.execute_capture import begin_execute_capture, end_execute_capture
 
 
 def test_default_shell_platform_aware():
@@ -122,6 +123,38 @@ def test_execute_pwsh_invocation_kwargs(tmp_path: Path):
         assert kwargs["errors"] == "replace"
         assert kwargs["args"][0] == "pwsh"
         assert "executable" not in kwargs
+
+
+def test_execute_captures_full_output_before_response_truncation(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+        shell_executable="pwsh",
+        max_output_bytes=10,
+    )
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = ("0123456789ABCDEFGHIJ", "")
+    mock_proc.returncode = 0
+    capture, token = begin_execute_capture()
+    try:
+        with (
+            patch(
+                "synapse.backends.resolve_shell_invocation",
+                return_value=(["pwsh", "-Command", "echo hi"], False, None),
+            ),
+            patch("synapse.backends.subprocess.Popen", return_value=mock_proc),
+        ):
+            response = backend.execute("echo hi")
+    finally:
+        end_execute_capture(token)
+
+    assert response.truncated is True
+    assert "Output truncated" in response.output
+    assert capture.truncated is True
+    assert capture.full_output == "0123456789ABCDEFGHIJ"
+    assert capture.displayed_output == response.output
 
 
 def test_ripgrep_search_uses_utf8_encoding(tmp_path: Path):

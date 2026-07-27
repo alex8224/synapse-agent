@@ -514,6 +514,12 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
                 or "tool"
             )
             content = _message_content(msg)
+            artifact = getattr(msg, "artifact", None)
+            if artifact is None and isinstance(msg, dict):
+                artifact = msg.get("artifact")
+            if isinstance(artifact, dict) and artifact.get("tool_result_ref"):
+                ref = str(artifact["tool_result_ref"])
+                content = f"{content}\n\n[full result: {ref}]"
             status = "error" if _looks_error(content) else "ok"
             key = cid or f"anon-{len(pending_results)}"
             pending_results[key] = {

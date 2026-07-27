@@ -25,6 +25,7 @@ from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 from synapse.config import Settings
+from synapse.execute_capture import capture_execute_output
 from synapse.tool_ignore import ToolIgnoreMatcher, relative_to_root
 
 # Default shell for this project: pwsh on Windows, bash elsewhere.
@@ -398,17 +399,24 @@ class CodingLocalShellBackend(LocalShellBackend):
             stderr_lines = stderr.strip().split("\n")
             output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
-        output = "\n".join(output_parts) if output_parts else "<no output>"
+        full_output = "\n".join(output_parts) if output_parts else "<no output>"
 
         truncated = False
+        output = full_output
         if len(output) > self._max_output_bytes:
             output = output[: self._max_output_bytes]
             output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
             truncated = True
 
         if returncode != 0:
+            full_output = f"{full_output.rstrip()}\n\nExit code: {returncode}"
             output = f"{output.rstrip()}\n\nExit code: {returncode}"
 
+        capture_execute_output(
+            full_output=full_output,
+            displayed_output=output,
+            truncated=truncated,
+        )
         return ExecuteResponse(
             output=output,
             exit_code=returncode,

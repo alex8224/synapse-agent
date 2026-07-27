@@ -17,6 +17,20 @@ def test_default_approval_is_off(monkeypatch):
     assert build_interrupt_on(require_approval=settings.require_approval) is None
 
 
+def test_tool_result_offload_defaults_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_ENABLE_TOOL_RESULT_OFFLOAD", raising=False)
+    monkeypatch.delenv("AGENT_TOOL_RESULT_OFFLOAD_THRESHOLD_BYTES", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.enable_tool_result_offload is True
+    assert settings.tool_result_offload_threshold_bytes == 8_192
+
+    monkeypatch.setenv("AGENT_ENABLE_TOOL_RESULT_OFFLOAD", "false")
+    monkeypatch.setenv("AGENT_TOOL_RESULT_OFFLOAD_THRESHOLD_BYTES", "4096")
+    disabled = Settings(_env_file=None)
+    assert disabled.enable_tool_result_offload is False
+    assert disabled.tool_result_offload_threshold_bytes == 4_096
+
+
 def test_tool_details_expanded_default_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_TOOL_DETAILS_EXPANDED", raising=False)
     settings = Settings(_env_file=None)

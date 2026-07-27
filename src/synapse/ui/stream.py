@@ -1624,7 +1624,13 @@ def stream_agent(
 
     def _mark_cancelled() -> None:
         nonlocal cancelled
+        if cancelled:
+            return
         cancelled = True
+        try:
+            sink.info("stream cancelled")
+        except Exception:  # noqa: BLE001
+            pass
         # Best-effort: close open tool rows so the timeline does not stick on "running".
         if use_tool_items and pending_tool_items:
             for item in list(pending_tool_items):

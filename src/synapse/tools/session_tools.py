@@ -9,12 +9,66 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
+
+from synapse.tool_results import ToolResultStore
+
+
+def build_tool_result_reader_tool(tool_results_path: Path | str) -> Any:
+    """Create the guarded result reader shared by the main agent and subagents."""
+    results = ToolResultStore(tool_results_path)
+
+    @tool
+    def read_tool_result(
+        runtime: ToolRuntime,
+        ref: str,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> str:
+        """按行读取当前会话已归档的大型工具结果。
+
+        仅在工具返回的 ``tool-result://...`` 引用明确需要更多细节时调用。
+        不接受文件路径，避免读取会话目录外的任意文件。使用 offset/limit 分页，
+        不要一次取回整个大型结果。
+
+        Args:
+            ref: 工具结果返回中的 ``tool-result://`` 引用。
+            offset: 起始行号（0-indexed）。
+            limit: 最多读取的行数，默认 200，最大 500。
+        """
+        config = dict(getattr(runtime, "config", None) or {})
+        configurable = dict(config.get("configurable") or {})
+        thread_id = str(configurable.get("thread_id") or "")
+        # ToolRuntime is always injected by ToolNode. The fallback keeps direct
+        # unit/tool invocation usable without weakening graph-time isolation.
+        record = results.get(ref, expected_thread_id=thread_id or None)
+        if record is None:
+            return "工具结果引用未找到、已损坏或无权读取。"
+        start = max(0, int(offset))
+        count = min(500, max(1, int(limit)))
+        lines = record.content.splitlines()
+        selected = lines[start : start + count]
+        body = "\n".join(selected) or "(empty result)"
+        end = start + len(selected)
+        suffix = ""
+        if end < len(lines):
+            suffix = f"\n\n[还有 {len(lines) - end} 行，使用 offset={end} 继续读取]"
+        return (
+            f"工具: {record.tool_name}\n"
+            f"状态: {record.status}\n"
+            f"引用: {record.ref}\n"
+            f"行: {start}-{max(start, end - 1)} / {max(0, len(lines) - 1)}\n"
+            f"{'─' * 40}\n{body}{suffix}"
+        )
+
+    return read_tool_result
 
 
 def build_session_tools(
     sessions_path: Path | str,
     checkpoint_path: Path | str,
+    tool_results_path: Path | str | None = None,
 ) -> list[Any]:
     """创建会话查阅工具列表。
 
@@ -28,7 +82,6 @@ def build_session_tools(
 
     store = SessionStore(sessions_path)
     ckpt = Path(checkpoint_path)
-
     @tool
     def list_sessions(query: str = "", limit: int = 20) -> str:
         """列出本地会话记录，支持按标题/ID 模糊搜索。
@@ -111,4 +164,5 @@ def build_session_tools(
             return header + body
         return body
 
-    return [list_sessions, read_session]
+    result_root = tool_results_path or (Path(sessions_path).parent / "tool-results")
+    return [list_sessions, read_session, build_tool_result_reader_tool(result_root)]
