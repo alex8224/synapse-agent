@@ -133,13 +133,16 @@ class Settings(BaseSettings):
     sessions_path: Path | None = Field(default=None, validation_alias="SESSIONS_PATH")
 
     # Project memory / skills (paths relative to project root or absolute)
+    enable_memory: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_MEMORY"
+    )
     memory_paths: list[str] = Field(
         default_factory=lambda: ["AGENTS.md", "MEMORY.md", ".coding-agent/MEMORY.md"]
     )
     skills_paths: list[str] = Field(default_factory=lambda: ["skills"])
 
     # Framework wiring (deepagents native)
-    enable_subagents: bool = Field(default=True, validation_alias="AGENT_ENABLE_SUBAGENTS")
+    enable_subagents: bool = Field(default=False, validation_alias="AGENT_ENABLE_SUBAGENTS")
     subagent_tester_model: str | None = Field(
         default=None, validation_alias="AGENT_SUBAGENT_TESTER_MODEL"
     )

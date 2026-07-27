@@ -83,6 +83,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         require_approval=False,
         checkpoint_backend="memory",
         enable_mcp=False,
+        enable_subagents=True,
     )
 
     fake_model = MagicMock(name="model")

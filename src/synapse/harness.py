@@ -37,9 +37,16 @@ def apply_harness_exclusions(
     if not excluded:
         return frozenset()
 
-    from deepagents import HarnessProfile, register_harness_profile
+    from deepagents import (
+        GeneralPurposeSubagentProfile,
+        HarnessProfile,
+        register_harness_profile,
+    )
 
-    profile = HarnessProfile(excluded_tools=excluded)
+    profile = HarnessProfile(
+        excluded_tools=excluded,
+        general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+    )
     # Model-level and provider-level keys so both string specs and prebuilt
     # BaseChatModel resolution paths can match.
     register_harness_profile(model_spec, profile)

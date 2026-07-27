@@ -20,6 +20,7 @@ from synapse.middleware import (
     build_intent_schema_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
+    build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
 )
@@ -219,8 +220,10 @@ def build_coding_agent(
     with span("checkpointer"):
         saver = checkpointer if checkpointer is not None else _build_checkpointer(settings)
 
-    memory_paths = settings.resolved_memory_paths(project_root)
-    memory_paths = [p for p in memory_paths if Path(p).exists()]
+    memory_paths: list[str] = []
+    if getattr(settings, "enable_memory", True):
+        memory_paths = settings.resolved_memory_paths(project_root)
+        memory_paths = [p for p in memory_paths if Path(p).exists()]
     skills_paths = settings.resolved_skills_paths(project_root)
 
     with span("subagents"):
@@ -338,6 +341,10 @@ def build_coding_agent(
                 middleware.append(build_compact_tool_middleware(model, backend))
         except Exception:  # noqa: BLE001
             pass
+
+    # Strip redundant prompt blocks injected by deepagents built-in middleware
+    # (TodoList, Filesystem, Skills) that duplicate tool definitions.
+    middleware.append(build_strip_redundant_prompt_blocks())
 
     if progress is not None:
         progress("compiling agent graph")

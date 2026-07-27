@@ -604,3 +604,48 @@ def build_intent_schema_middleware():
         _dual_wrap_model_call(name="require_tool_intent", apply=_apply_inject),
         _dual_wrap_tool_call(name="strip_tool_intent", apply=_apply_strip),
     ]
+
+
+# ---------------------------------------------------------------------------
+#  Strip redundant prompt blocks injected by deepagents built-in middleware
+# ---------------------------------------------------------------------------
+
+# Text block prefixes injected by deepagents middleware.  Each block
+# duplicates content already present in the corresponding tool definition
+# (e.g. ``write_todos`` description, filesystem tool docs).  Stripping them
+# saves ~720 tokens per model call without losing any capability.
+
+_REDUNDANT_BLOCK_PREFIXES: tuple[str, ...] = (
+    "\n\n## `write_todos`",
+    "\n\n## Skills System",
+    "\n\n## Following Conventions",
+)
+
+
+def build_strip_redundant_prompt_blocks():
+    """Remove middleware-injected prompt blocks that duplicate tool definitions."""
+
+    def _apply(request):  # type: ignore[no-untyped-def]
+        msg = getattr(request, "system_message", None)
+        if msg is None or not hasattr(msg, "content_blocks"):
+            return request
+        blocks = msg.content_blocks
+        if not blocks:
+            return request
+
+        filtered = []
+        changed = False
+        for block in blocks:
+            text = block.get("text", "") if isinstance(block, dict) else ""
+            if any(text.startswith(p) for p in _REDUNDANT_BLOCK_PREFIXES):
+                changed = True
+                continue
+            filtered.append(block)
+
+        if not changed:
+            return request
+
+        new_msg = msg.__class__(content_blocks=filtered)
+        return request.override(system_message=new_msg)
+
+    return _dual_wrap_model_call(name="strip_redundant_prompt", apply=_apply)
