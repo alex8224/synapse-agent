@@ -15,7 +15,7 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.binding import Binding
 
-from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
+from synapse.ui.dialogs.base import DialogBase, OptionItem
 
 # Wider dialog with visible scrollbar for potentially long tool lists.
 MCP_DIALOG_CSS = """
@@ -161,15 +161,14 @@ class McpPanelDialog(DialogBase):
     DEFAULT_CSS = MCP_DIALOG_CSS
     BINDINGS = [
         *DialogBase.BINDINGS,
-        Binding("a", "select_all", "All", show=False, priority=True),
-        Binding("d", "deselect_all", "None", show=False, priority=True),
+        Binding("space", "toggle_check", "Toggle", show=False, priority=True),
         Binding("s", "save", "Save", show=False, priority=True),
         Binding("r", "reload", "Reload", show=False, priority=True),
     ]
-    _title_icon = "\u2b21"
+    _title_icon = ""
     _title_keys = (
-        "\u2191\u2193 move \u00b7 enter toggle \u00b7"
-        " a all \u00b7 d none \u00b7 s save \u00b7 r reload \u00b7 esc close"
+        "\u2191\u2193 move \u00b7 space/\u21b5 fold/toggle \u00b7"
+        " ctrl+a all \u00b7 s save \u00b7 r reload \u00b7 esc close"
     )
 
     def __init__(
@@ -185,8 +184,7 @@ class McpPanelDialog(DialogBase):
         self._on_save = on_save
 
         try:
-            from synapse.mcp_client import get_active_mcp_pool
-            from synapse.mcp_client import load_mcp_server_configs
+            from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs
 
             self._servers = load_mcp_server_configs(
                 path=getattr(settings, "mcp_config_path", None),
@@ -204,6 +202,8 @@ class McpPanelDialog(DialogBase):
 
         # server_name → (all_discovered_tools, currently_included)
         self._server_tools: dict[str, tuple[list[str], set[str]]] = {}
+        # server_name → collapsed flag
+        self._collapsed: dict[str, bool] = {}
         for srv in self._servers:
             discovered: list[str] = []
             if pool is not None:
@@ -223,22 +223,41 @@ class McpPanelDialog(DialogBase):
     def compose_body(self) -> ComposeResult:
         items: list[OptionItem] = self._build_item_list()
         self._items = items
-        yield SectionHeader("Servers & Tools")
+        # Options are mounted in on_mount via set_options.
+        yield from ()
 
     def _build_item_list(self) -> list[OptionItem]:
         items: list[OptionItem] = []
         if not self._servers:
-            items.append(OptionItem(key="none", label="(no servers configured)"))
+            items.append(
+                OptionItem(
+                    key="none",
+                    label="(no servers configured)",
+                    checkable=False,
+                    show_bullet=False,
+                )
+            )
             return items
 
         for srv in self._servers:
             discovered, included = self._server_tools.get(srv.name, ([], set()))
+            collapsed = self._collapsed.get(srv.name, False)
+            arrow = "\u25b6" if collapsed else "\u25bc"  # ▶ / ▼
             status = "enabled" if srv.enabled else "disabled"
+            if srv.enabled and discovered:
+                n_sel = len(included)
+                n_tot = len(discovered)
+                sel_info = f"{n_sel}/{n_tot} selected" if n_sel < n_tot else "all selected"
+                meta = f"{sel_info} \u00b7 {srv.transport} \u00b7 {status}"
+            else:
+                meta = f"{srv.transport} \u00b7 {status}"
             items.append(
                 OptionItem(
                     key=f"__srv__{srv.name}",
-                    label=f"Server: {srv.name}",
-                    meta=f"{srv.transport} \u00b7 {status}",
+                    label=f"{arrow} Server: {srv.name}",
+                    meta=meta,
+                    checkable=False,
+                    show_bullet=False,
                 )
             )
             if not srv.enabled:
@@ -247,30 +266,24 @@ class McpPanelDialog(DialogBase):
                 items.append(
                     OptionItem(
                         key=f"__hint__{srv.name}",
-                        label="  (no tools \u2014 press 'r' to connect)",
+                        label="(no tools \u2014 press 'r' to connect)",
+                        checkable=False,
+                        show_bullet=False,
+                        indent="    ",
                     )
                 )
                 continue
-            n_selected = len(included)
-            n_total = len(discovered)
-            summary = (
-                f"{n_selected}/{n_total} selected"
-                if n_selected < n_total
-                else "all selected"
-            )
-            items.append(
-                OptionItem(
-                    key=f"__summary__{srv.name}",
-                    label=f"  {summary}",
-                )
-            )
+            if collapsed:
+                continue  # skip tool rows when collapsed
             for tool_name in discovered:
                 checked = tool_name in included
-                mark = "\u25cf" if checked else "\u25cb"
                 items.append(
                     OptionItem(
                         key=f"__tool__{srv.name}__{tool_name}",
-                        label=f"  {mark}  {tool_name}",
+                        label=tool_name,
+                        checkable=True,
+                        checked=checked,
+                        indent="    ",
                     )
                 )
         return items
@@ -278,7 +291,7 @@ class McpPanelDialog(DialogBase):
     def on_mount(self) -> None:
         super().on_mount()
         body = self.query_one("#dialog-body")
-        body.set_options(self._items, mark="")
+        body.set_options(self._items, mark="", checkable=True)
 
     def action_reload(self) -> None:
         self.dismiss(("mcp-reload",))
@@ -305,71 +318,78 @@ class McpPanelDialog(DialogBase):
 
         self.dismiss(("mcp-save", to_save))
 
-    def _find_server_name_for_index(self, idx: int) -> str | None:
-        if idx < 0 or idx >= len(self._items):
-            return None
-        key = self._items[idx].key
-        for prefix in ("__tool__", "__summary__", "__hint__", "__srv__"):
-            if key.startswith(prefix):
-                parts = key.split("__", 3)
-                if len(parts) >= 3:
-                    return parts[2]
-        return None
+    def _toggle_fold(self, server_name: str) -> None:
+        """Toggle collapse state for a server group."""
+        self._collapsed[server_name] = not self._collapsed.get(server_name, False)
+        self._rebuild()
+
+    def _toggle_current_tool(self) -> None:
+        """Toggle the tool at the current cursor position."""
+        body = self.query_one("#dialog-body")
+        key = body.selected_key
+        if key is None or not key.startswith("__tool__"):
+            return
+        parts = key.split("__", 3)
+        if len(parts) < 4:
+            return
+        server_name = parts[2]
+        tool_name = parts[3]
+        discovered, included = self._server_tools.get(server_name, ([], set()))
+        if tool_name not in discovered:
+            return
+        if tool_name in included:
+            included.discard(tool_name)
+        else:
+            included.add(tool_name)
+        self._server_tools[server_name] = (discovered, included)
+        self._rebuild()
 
     def _on_selected(self, key: str | None) -> None:
         if key is None:
             self.dismiss(None)
             return
         if key.startswith("__tool__"):
-            parts = key.split("__", 3)
-            if len(parts) < 4:
-                return
-            server_name = parts[2]
-            tool_name = parts[3]
-            discovered, included = self._server_tools.get(server_name, ([], set()))
-            if tool_name not in discovered:
-                return
-            if tool_name in included:
-                included.discard(tool_name)
-            else:
-                included.add(tool_name)
-            self._server_tools[server_name] = (discovered, included)
-            self._rebuild()
+            self._toggle_current_tool()
+        elif key.startswith("__srv__"):
+            server_name = key.split("__", 3)[2]
+            self._toggle_fold(server_name)
+
+    def action_toggle_check(self) -> None:
+        body = self.query_one("#dialog-body")
+        key = body.selected_key
+        if key and key.startswith("__srv__"):
+            server_name = key.split("__", 3)[2]
+            self._toggle_fold(server_name)
+        else:
+            self._toggle_current_tool()
 
     def action_select_all(self) -> None:
-        server_name = self._resolve_server_context()
-        if server_name is None:
-            return
-        discovered, _ = self._server_tools.get(server_name, ([], set()))
-        self._server_tools[server_name] = (discovered, set(discovered))
+        """Toggle: select all tools across all servers, or deselect all."""
+        all_selected = True
+        for srv in self._servers:
+            if not srv.enabled:
+                continue
+            discovered, included = self._server_tools.get(srv.name, ([], set()))
+            if discovered and included != set(discovered):
+                all_selected = False
+                break
+        target = not all_selected
+        for srv in self._servers:
+            if not srv.enabled:
+                continue
+            discovered, _ = self._server_tools.get(srv.name, ([], set()))
+            if discovered:
+                self._server_tools[srv.name] = (
+                    discovered,
+                    set(discovered) if target else set(),
+                )
         self._rebuild()
-
-    def action_deselect_all(self) -> None:
-        server_name = self._resolve_server_context()
-        if server_name is None:
-            return
-        discovered, _ = self._server_tools.get(server_name, ([], set()))
-        self._server_tools[server_name] = (discovered, set())
-        self._rebuild()
-
-    def _resolve_server_context(self) -> str | None:
-        body = self.query_one("#dialog-body")
-        idx = body._selected_idx
-        for offset in range(0, -len(self._items), -1):
-            s = self._find_server_name_for_index(idx + offset)
-            if s:
-                return s
-        for offset in range(1, len(self._items)):
-            s = self._find_server_name_for_index(idx + offset)
-            if s:
-                return s
-        return None
 
     def _rebuild(self) -> None:
         body = self.query_one("#dialog-body")
         old_idx = body._selected_idx
         items = self._build_item_list()
         self._items = items
-        body.set_options(items, mark="")
+        body.set_options(items, mark="", checkable=True)
         body._selected_idx = min(old_idx, len(items) - 1) if items else 0
         body._sync_hover()

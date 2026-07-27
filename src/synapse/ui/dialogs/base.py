@@ -23,6 +23,10 @@ class OptionItem:
     detail: str = ""
     selected: bool = False
     meta: str = ""  # right-aligned hint (e.g. "enabled" / "3 turns")
+    checked: bool = False  # multi-select toggle state
+    checkable: bool = True  # whether this row shows checkbox
+    show_bullet: bool = True  # whether to show ○/● (non-checkable) or ☑/☐ prefix
+    indent: str = ""  # left-padding before bullet, e.g. "    " for tree indent
 
 
 # Window-like modal: title bar + list + keyboard-only footer.
@@ -95,6 +99,7 @@ class OptionRow(Static):
       -selected   -> active / hovered
       -detail     -> second-line detail
       -meta       -> right-aligned hint
+      -checked    -> multi-select toggled on
     """
 
     def __init__(
@@ -102,17 +107,25 @@ class OptionRow(Static):
         item: OptionItem,
         *,
         mark: str = "  ",
+        checkable: bool = False,
     ) -> None:
         super().__init__(Text(""))
         self.item = item
         self._mark = mark
+        self._checkable = checkable  # effective checkable (global & per-item combined)
         self._update_content()
 
     def _update_content(self) -> None:
         item = self.item
-        bullet = "\u25cf" if item.selected else "\u25cb"
-        # Single line only: label + optional muted detail/meta (no wrap row).
-        row = Text(f"{self._mark}{bullet}  {item.label}")
+        prefix = self._mark + item.indent
+        if not item.show_bullet:
+            row = Text(f"{prefix}{item.label}")
+        elif self._checkable:
+            bullet = "\u2612" if item.checked else "\u2610"  # ☑ / ☐
+            row = Text(f"{prefix}{bullet}  {item.label}")
+        else:
+            bullet = "\u25cf" if item.selected else "\u25cb"  # ● / ○
+            row = Text(f"{prefix}{bullet}  {item.label}")
         if item.detail:
             row.append(f"  {item.detail}", style="dim")
         if item.meta:
@@ -124,6 +137,11 @@ class OptionRow(Static):
             self.add_class("-selected")
         else:
             self.remove_class("-selected")
+        if self._checkable:
+            if on:
+                self.add_class("-checked")
+            else:
+                self.remove_class("-checked")
 
 
 class DetailRow(Static):
@@ -149,12 +167,17 @@ class DialogBody(VerticalScroll):
         self._rows: list[OptionRow] = []
         self._selected_idx: int = 0
         self._option_keys: list[str] = []
+        self._checkable: bool = False
+        self.on_row_click: Any | None = None  # callable(key) on click
 
-    def set_options(self, items: list[OptionItem], *, mark: str = "  ") -> None:
+    def set_options(
+        self, items: list[OptionItem], *, mark: str = "  ", checkable: bool = False
+    ) -> None:
         self._rows.clear()
         self._option_keys.clear()
         self.remove_children()
         self._selected_idx = 0
+        self._checkable = checkable
         for i, item in enumerate(items):
             if item.selected:
                 self._selected_idx = i
@@ -168,7 +191,8 @@ class DialogBody(VerticalScroll):
     def append_options(self, items: list[OptionItem], *, mark: str = "  ") -> None:
         """Append selectable options while preserving existing navigation state."""
         for item in items:
-            row = OptionRow(item, mark=mark)
+            effective = self._checkable and item.checkable
+            row = OptionRow(item, mark=mark, checkable=effective)
             self._rows.append(row)
             self._option_keys.append(item.key)
             self.mount(row)
@@ -184,6 +208,47 @@ class DialogBody(VerticalScroll):
         if 0 <= self._selected_idx < len(self._option_keys):
             return self._option_keys[self._selected_idx]
         return None
+
+    @property
+    def checked_keys(self) -> list[str]:
+        """Return keys of all checked items (multi-select mode)."""
+        return [
+            r.item.key
+            for r in self._rows
+            if self._checkable and r.item.checkable and r.item.checked
+        ]
+
+    @property
+    def _all_checked(self) -> bool:
+        """True if every checkable row is checked (and there's at least one)."""
+        if not self._checkable:
+            return False
+        checkable_rows = [r for r in self._rows if r.item.checkable]
+        if not checkable_rows:
+            return False
+        return all(r.item.checked for r in checkable_rows)
+
+    def toggle_check(self) -> None:
+        """Toggle checked state of the currently hovered row."""
+        if not self._checkable or not self._rows:
+            return
+        idx = self._selected_idx
+        if 0 <= idx < len(self._rows):
+            row = self._rows[idx]
+            if not row.item.checkable:
+                return
+            row.item.checked = not row.item.checked
+            row._update_content()
+
+    def select_all(self) -> None:
+        """Toggle: check all or uncheck all checkable rows."""
+        if not self._checkable:
+            return
+        target = not self._all_checked
+        for row in self._rows:
+            if row.item.checkable:
+                row.item.checked = target
+                row._update_content()
 
     def move_up(self) -> None:
         if self._selected_idx > 0:
@@ -202,6 +267,8 @@ class DialogBody(VerticalScroll):
         if isinstance(event.widget, OptionRow):
             self._selected_idx = self._rows.index(event.widget)
             self._sync_hover()
+            if self.on_row_click is not None:
+                self.on_row_click(event.widget.item.key)
             event.stop()
 
 
@@ -218,6 +285,9 @@ class DialogBase(ModalScreen[Any]):
       Esc      -> ``dismiss(None)``
       Up/Down  -> body option navigation
       Enter    -> confirm / select
+      Space    -> toggle check (multi-select mode)
+      Ctrl+A   -> select all (multi-select mode)
+      Ctrl+D   -> deselect all (multi-select mode)
     """
 
     DEFAULT_CSS = dialog_css
@@ -226,6 +296,8 @@ class DialogBase(ModalScreen[Any]):
         Binding("up", "select_previous", "Previous", show=False, priority=True),
         Binding("down", "select_next", "Next", show=False, priority=True),
         Binding("enter", "confirm", "Apply", show=False, priority=True),
+        Binding("space", "toggle_check", "Toggle", show=False),
+        Binding("ctrl+a", "select_all", "All", show=False),
     ]
 
     # Left title-bar glyph (ASCII/Unicode mark, not emoji).
@@ -254,7 +326,9 @@ class DialogBase(ModalScreen[Any]):
         win.border_title = f"{icon} {title}".strip() if icon else title
         win.border_subtitle = self._title_keys
         # Keep keyboard input inside the modal list.
-        self.set_focus(self.query_one("#dialog-body", DialogBody))
+        body = self.query_one("#dialog-body", DialogBody)
+        body.on_row_click = self._on_selected
+        self.set_focus(body)
 
     def _on_apply(self) -> None:
         """Override in subclass."""
@@ -274,6 +348,14 @@ class DialogBase(ModalScreen[Any]):
     def action_confirm(self) -> None:
         body = self.query_one("#dialog-body", DialogBody)
         self._on_selected(body.selected_key)
+
+    def action_toggle_check(self) -> None:
+        body = self.query_one("#dialog-body", DialogBody)
+        body.toggle_check()
+
+    def action_select_all(self) -> None:
+        body = self.query_one("#dialog-body", DialogBody)
+        body.select_all()
 
     def _on_selected(self, key: str | None) -> None:
         """Override in subclass. Called for the selected option on Enter."""

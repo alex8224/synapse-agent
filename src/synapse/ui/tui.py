@@ -2250,7 +2250,7 @@ class CodingAgentApp(App[None]):
         self._open_theme_dialog()
 
     def action_dialog_sessions(self) -> None:
-        self._open_session_dialog(["switch"])
+        self._open_session_dialog(["session", "multi_delete"])
 
     def action_dialog_mcp(self) -> None:
         self._open_mcp_dialog()
@@ -4788,6 +4788,8 @@ class CodingAgentApp(App[None]):
             mode = "delete"
         elif len(parts) >= 2 and parts[1].casefold() in {"switch", "sel"}:
             mode = "switch"
+        elif len(parts) >= 2 and parts[1].casefold() in {"multi_delete", "multi"}:
+            mode = "multi_delete"
         from synapse.ui.dialogs import SessionListDialog
 
         self.push_screen(
@@ -4802,11 +4804,50 @@ class CodingAgentApp(App[None]):
     def _on_session_dialog_done(self, result: object) -> None:
         if result is None:
             return
-        action, thread_id = result
+        action, thread_ids = result
+        # Always a list now (single-select modes wrap in list too).
         if action == "switch":
-            self._apply_session_switch(thread_id)
-        elif action == "delete":
-            self._apply_session_delete(thread_id)
+            if thread_ids:
+                self._apply_session_switch(thread_ids[0])
+        elif action == "delete" or action == "multi_delete":
+            if thread_ids:
+                self._apply_session_multi_delete(thread_ids)
+
+    def _apply_session_multi_delete(self, thread_ids: list[str]) -> None:
+        """Batch delete sessions, one by one."""
+        from synapse.slash_cmds import handle_slash
+
+        deleted = 0
+        failed = 0
+        for tid in thread_ids:
+            try:
+                ok = handle_slash(
+                    f"/session delete {tid}",
+                    settings=self.settings,
+                    agent=self.agent,
+                    thread_id=self.thread_id,
+                    project_root=self.project_root,
+                )
+                if ok:
+                    deleted += 1
+                else:
+                    failed += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        if deleted:
+            self.append_event(
+                f"Deleted {deleted} session{'s' if deleted != 1 else ''}",
+                "green",
+            )
+        if failed:
+            self.append_event(
+                f"Failed to delete {failed} session{'s' if failed != 1 else ''}",
+                "yellow",
+            )
+        # If current session was among the deleted ones, the last
+        # handle_slash call for the current thread_id will have switched
+        # or will show an error — the apply_ok_result below handles that.
+        self._apply_ok_result(deleted > 0)
 
     def _apply_session_switch(self, thread_id: str) -> None:
         from synapse.slash_cmds import handle_slash
