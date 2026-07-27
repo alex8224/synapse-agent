@@ -140,6 +140,7 @@ def _logo_style(
     *,
     muted: str,
     fg: str,
+    accent: str,
     total_rows: int = 7,
 ) -> tuple[str, str]:
     """Return ``(braille_char, style)`` for one animation frame."""
@@ -152,9 +153,13 @@ def _logo_style(
         reveal_column = (phase_elapsed / _REVEAL_DURATION) * width
         if column > reveal_column:
             return _dot_char(full_value, 0), muted
-        # within-cell reveal: left column then right
-        local = max(0.0, min(1.0, reveal_column - column + 0.35))
-        return _dot_char(full_value, local), fg
+        # typing cursor: recently-revealed chars flash accent then settle to fg
+        distance = reveal_column - column
+        if distance < 1.2:
+            return _dot_char(full_value, 1.0), f"bold {accent}"
+        if distance < 3.5:
+            return _dot_char(full_value, 1.0), fg
+        return _dot_char(full_value, 1.0), fg
     if phase == "erasing":
         column_norm = column / max(1, width - 1)
         position = row + column_norm * 0.4
@@ -180,6 +185,7 @@ def render_welcome_frame(
     fg = str(getattr(theme, "fg", "#e8eaed"))
     dim = str(getattr(theme, "dim", "#9aa0a6"))
     muted = str(getattr(theme, "muted", "#5f6368"))
+    accent = str(getattr(theme, "user", "#8ab4f8"))
     green = str(getattr(theme, "green", "#81c995"))
 
     out = Text(justify="center")
@@ -200,6 +206,7 @@ def render_welcome_frame(
                     ord(char) - 0x2800,
                     muted=muted,
                     fg=fg,
+                    accent=accent,
                     total_rows=logo_rows,
                 )
                 out.append(anim_char, style=style)

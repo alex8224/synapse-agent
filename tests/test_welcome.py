@@ -63,6 +63,7 @@ def test_welcome_animation_uses_only_theme_colors() -> None:
         _THEME.dim,
         _THEME.fg,
         f"bold {_THEME.fg}",
+        f"bold {_THEME.user}",
         f"bold {_THEME.green}",
     }
     frames = (
