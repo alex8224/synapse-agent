@@ -7,6 +7,28 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.7
+
+### 新功能
+
+- 斜杠命令 TUI 输出升级为 Markdown 渲染，会话/MCP/主题等数据使用 Rich 表格展示
+- AgentMdMiddleware：将 `AGENTS.md` 静态注入 system prompt，与 memory 解耦
+- MCP per-tool 过滤：支持 UI 勾选工具并持久化到配置
+
+### 修复
+
+- 全新 session 输入斜杠命令不会在 TUI 显示内容（welcome 页面遮挡 `#log`）
+- shell 默认值平台感知：非 Windows 用 `bash` 替代 `pwsh`
+- prompt_border 校验 Textual 白名单，新增 `panel` 样式支持
+
+### 工程改进
+
+- 添加 MkDocs + GitHub Pages 文档站点
+- subagents 和 memory 默认关闭，精简冗余 middleware prompt 块
+- UI：steer 更名为 queue，简化 bottombar mode 标签
+
+---
+
 ## v0.1.6
 
 ### 新功能
