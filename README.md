@@ -11,11 +11,11 @@
 
 | 能力 | 说明 |
 |---|---|
-| 读改代码 | `ls/read/write/edit/glob/grep` |
+| 读改代码 | `read/write/edit/glob`；目录和搜索通过 `execute` 调用项目命令 |
 | 执行命令 | `execute` 本地 shell |
 | 规划 | `write_todos` |
 | 子代理 | 默认 `researcher` / `tester` / `reviewer`（`task` 委派） |
-| 自定义工具 | `git_status` / `git_diff` / `run_tests` |
+| 自定义工具 | 会话查阅工具；git/测试/搜索等通过 `execute` 调用项目命令 |
 | 记忆 | `AGENTS.md` |
 | Skills | `skills/**`（Agent Skills frontmatter） |
 | 会话 | sqlite checkpointer + 会话元数据管理 |
@@ -143,6 +143,7 @@ cp .env.example .env
 | `MODEL` | 是 | 模型标识，如 `openai:gpt-4.1`、`openai:deepseek-chat` |
 | `OPENAI_API_KEY` | 是* | OpenAI 兼容 API 密钥 |
 | `OPENAI_BASE_URL` | 否 | 自定义 API 端点（中转/本地服务需填） |
+| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE） |
 | `ANTHROPIC_API_KEY` | 否 | Anthropic 原生 API 密钥 |
 | `WORKSPACE` | 否 | 工作区路径，默认 `.` |
 | `SHELL_EXECUTABLE` | 否 | Shell 类型，默认 `pwsh`（可选 `cmd`/`bash`） |
@@ -165,6 +166,7 @@ cp .env.example .env
     "primary": {
       "model": "openai:gpt-4.1",
       "api_key": "sk-REPLACE_ME",
+      "websocket": false,
       "context_window": 128000,
       "temperature": 0.2,
       "max_tokens": 8192
@@ -180,6 +182,11 @@ cp .env.example .env
   }
 }
 ```
+
+OpenAI Responses API 同时支持 HTTP/SSE 与普通 LLM WebSocket。profile 中设置
+`"websocket": true` 后，Synapse 使用持久 `/v1/responses` WebSocket；省略或设为
+`false` 时保持现有 HTTP/SSE。自定义 OpenAI-compatible 网关必须实现该 WebSocket
+端点，否则请保持关闭。WebSocket 模式会自动启用 `use_responses_api`。
 
 通过 `AGENT_ACTIVE_MODEL` 环境变量或 CLI 参数切换 profile。
 
@@ -359,7 +366,7 @@ src/synapse/
   fs_permissions.py  # FilesystemPermission
   prompts.py
   safety.py
-  tools/             # git / run_tests
+  tools/             # session tools
   ui/                # stream + TUI
 docs/design.md
 skills/              # agent skills

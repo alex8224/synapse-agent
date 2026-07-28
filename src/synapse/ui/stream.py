@@ -41,6 +41,7 @@ from synapse.context_compact import (
     is_stream_meta_summarization,
 )
 from synapse.pathing import summarize_tool_result
+from synapse.steer import is_steer_message
 from synapse.ui.sink import StreamSink, sink_supports_tool_items
 from synapse.ui.timeline import (
     build_tool_item,
@@ -429,17 +430,12 @@ def extract_last_ai_text(result: dict[str, Any] | Any) -> str:
     if not messages:
         return ""
     for msg in reversed(messages):
-        if not _is_ai_message(msg):
+        if not _is_ai_message(msg) or is_steer_message(msg):
             continue
         text = _normalize_content(getattr(msg, "content", "")).strip()
-        if text:
+        if text and not is_steer_message(text=text):
             return text
-    last = messages[-1]
-    content = getattr(last, "content", None)
-    if content is None:
-        return ""
-    text = content if isinstance(content, str) else _normalize_content(content)
-    return text.strip()
+    return ""
 
 
 def _normalize_content(content: Any) -> str:
@@ -982,11 +978,14 @@ def _is_tool_message(msg: Any) -> bool:
 
 
 def _is_ai_message(msg: Any) -> bool:
+    if isinstance(msg, dict):
+        role = str(msg.get("role") or msg.get("type") or "").lower()
+        return role in {"ai", "assistant", "aimessage", "aimessagechunk"}
     type_name = (getattr(msg, "type", None) or "").lower()
-    if type_name in {"ai", "aimessage", "aimessagechunk"}:
+    if type_name in {"ai", "assistant", "aimessage", "aimessagechunk"}:
         return True
-    cls_name = msg.__class__.__name__.lower()
-    return cls_name in {"aimessage", "aimessagechunk"}
+    cls_name = msg.__class__.__name__.lower().lstrip("_")
+    return cls_name in {"ai", "aimessage", "aimessagechunk"}
 
 
 def _reasoning_token_count(msg: Any) -> int | None:
@@ -1433,7 +1432,8 @@ def _iter_stream_events(
             # - sync-only checkpointer used under astream (SqliteSaver)
             # Other runtime/API failures must still surface.
             if isinstance(err, TypeError) or _is_sync_only_checkpointer_error(err):
-                pass
+                if bool(getattr(agent, "_coding_async_only", False)):
+                    raise err
             else:
                 raise err
         else:
@@ -1514,27 +1514,52 @@ def stream_agent(
     sub_tool_labels: dict[tuple[str, ...], dict[str, str]] = {}
     sub_scope_seq: dict[tuple[str, ...], int] = {}
     parent_task_items: dict[str, str] = {}
+    current_parent_task_ids: set[str] = set()
+
+    def _sub_task_call_id(namespace: tuple[str, ...]) -> str | None:
+        """Extract the nearest injected task call ID from the namespace."""
+        marker = "task_call:"
+        for segment in reversed(namespace):
+            for part in reversed(str(segment).split("|")):
+                if part.startswith(marker):
+                    call_id = part.removeprefix(marker).strip()
+                    if call_id:
+                        return call_id
+        return None
 
     def _sub_scope(namespace: tuple[str, ...]) -> tuple[str, ...]:
-        """Return the namespace through the injected parent task segment."""
-        for index, segment in enumerate(namespace):
-            if segment.startswith("task_call:"):
-                return namespace[: index + 1]
+        """Return a stable scope ending at the injected parent task ID."""
+        call_id = _sub_task_call_id(namespace)
+        if call_id:
+            return (f"task_call:{call_id}",)
         return namespace[:1] if namespace else ()
 
     def _sub_parent_id(namespace: tuple[str, ...]) -> str | None:
-        for segment in namespace:
-            if segment.startswith("task_call:"):
-                call_id = segment.removeprefix("task_call:")
-                return parent_task_items.get(call_id)
+        call_id = _sub_task_call_id(namespace)
+        if call_id:
+            return parent_task_items.get(call_id)
+
+        # Some stream adapters omit the injected checkpoint namespace. Only a
+        # batch that launched exactly one parent task is safe to infer. Once a
+        # batch was concurrent, late events must never be reassigned to the last
+        # remaining task.
+        task_items = [
+            item for item in pending_tool_items if item.name == "task" and not item.sub
+        ]
+        if len(current_parent_task_ids) == 1 and len(task_items) == 1:
+            task = task_items[0]
+            if task.status == "running":
+                return task.id
         return None
 
     def _pending_sub_item(namespace: tuple[str, ...], name: str, call_id: str) -> Any:
         parent_id = _sub_parent_id(namespace)
+        if parent_id is None:
+            return None
         for item in pending_tool_items:
             if not getattr(item, "sub", False):
                 continue
-            if parent_id is not None and getattr(item, "parent_id", None) != parent_id:
+            if getattr(item, "parent_id", None) != parent_id:
                 continue
             if call_id:
                 if getattr(item, "call_id", None) == call_id:
@@ -1678,6 +1703,14 @@ def stream_agent(
                     _drop_leaked_stream()
                     continue
 
+                # Model-only guidance must not enter visible token/reasoning buffers.
+                if is_steer_message(msg_chunk):
+                    mid = getattr(msg_chunk, "id", None)
+                    if mid is not None:
+                        suppress_msg_ids.add(str(mid))
+                    _drop_leaked_stream()
+                    continue
+
                 mid = getattr(msg_chunk, "id", None)
                 if mid is not None and str(mid) in suppress_msg_ids:
                     continue
@@ -1743,6 +1776,11 @@ def stream_agent(
                     if dedupe_key in printed_ids:
                         continue
                     printed_ids.add(dedupe_key)
+
+                    if is_steer_message(msg):
+                        suppress_msg_ids.add(str(msg_id))
+                        _drop_leaked_stream()
+                        continue
 
                     if _is_tool_message(msg):
                         name = getattr(msg, "name", "tool")
@@ -1882,6 +1920,12 @@ def stream_agent(
                     if msg_id is not None:
                         msg_id = str(msg_id)
 
+                    if is_steer_message(msg, text=text):
+                        if msg_id:
+                            suppress_msg_ids.add(msg_id)
+                        _drop_leaked_stream()
+                        continue
+
                     if is_lc_summarization_message(msg) or is_context_compact_text(text):
                         if msg_id:
                             suppress_msg_ids.add(msg_id)
@@ -1907,11 +1951,13 @@ def stream_agent(
                                 sink.activity_update("subagent", detail, force=True)
                             except TypeError:
                                 sink.activity_update("subagent", detail)
-                            # Emit nested tool items next to their owning task row.
-                            if use_tool_items:
+                            # Emit nested tool items only when their task parent is
+                            # known. An orphan would otherwise be appended after the
+                            # last task and falsely appear to belong to that subagent.
+                            if use_tool_items and parent_id is not None:
                                 batch_seq = sub_scope_seq.get(scope, 0) + 1
                                 sub_scope_seq[scope] = batch_seq
-                                scope_key = str(parent_id or "orphan")
+                                scope_key = str(parent_id)
                                 for idx, call in enumerate(calls):
                                     call_id = _tool_call_id(call) or str(idx)
                                     item = build_tool_item(
@@ -1948,6 +1994,7 @@ def stream_agent(
                         sink.finalize_line()
                         sink.activity_stop()
                         names = [_tool_call_name(c) for c in calls]
+                        current_parent_task_ids.clear()
                         for n in names:
                             active_tools.append(n)
                             tool_calls += 1
@@ -1965,6 +2012,7 @@ def stream_agent(
                                 pending_tool_items.append(item)
                                 if item.name == "task" and item.call_id:
                                     parent_task_items[item.call_id] = item.id
+                                    current_parent_task_ids.add(item.call_id)
                                 sink.tool_item_started(item)
                         if any(n == "task" for n in names):
                             sink.activity_start(
@@ -2052,11 +2100,9 @@ def stream_agent(
         try:
             from synapse.cancel_repair import repair_thread_after_cancel
 
-            for note in repair_thread_after_cancel(agent, run_config)[:5]:
-                sink.info(f"cancel-seal: {note}")
-        except Exception as exc:  # noqa: BLE001
-            sink.info(f"cancel-seal failed: {exc}")
-        sink.info(f"cancelled in {result.elapsed_s:.1f}s | tools={result.tool_calls}")
+            repair_thread_after_cancel(agent, run_config)
+        except Exception:  # noqa: BLE001
+            pass
     elif interrupted:
         sink.info(
             f"paused for approval in {result.elapsed_s:.1f}s | "

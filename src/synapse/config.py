@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     model: str = Field(default="openai:gpt-4.1", validation_alias="MODEL")
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
+    openai_websocket: bool = Field(default=False, validation_alias="OPENAI_WEBSOCKET")
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     # Multi-model catalog (JSON file or inline JSON). Empty => legacy single model.
     models_config_path: Path | None = Field(default=None, validation_alias="AGENT_MODELS_CONFIG")

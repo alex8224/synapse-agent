@@ -134,6 +134,71 @@ def test_models_config_thinking_and_params(tmp_path: Path, monkeypatch):
         assert kwargs["extra_body"]["thinking"]["type"] == "disabled"
 
 
+def test_models_config_can_enable_responses_websocket(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
+    monkeypatch.delenv("MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_WEBSOCKET", raising=False)
+    cfg = {
+        "default": "ws",
+        "models": {
+            "ws": {
+                "model": "openai:gpt-test",
+                "api_key": "test-key",
+                "websocket": True,
+                "thinking": "off",
+            },
+            "http": {
+                "model": "openai:gpt-http",
+                "api_key": "http-key",
+                "thinking": "off",
+            },
+        },
+    }
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=path,
+        checkpoint_backend="memory",
+    )
+    # A profile-local transport must not overwrite the global fallback. Otherwise
+    # later profiles without an explicit value inherit WebSocket from this model.
+    assert settings.openai_websocket is False
+    reg = registry_from_settings(settings)
+    assert reg.get("ws").websocket is True
+    assert reg.get("http").websocket is None
+
+    fake_model = MagicMock(name="websocket-chat-model")
+    fake_client = MagicMock(name="async-http-client")
+    fake_runtime = MagicMock(name="async-runtime")
+    with (
+        patch("synapse.models_registry.init_chat_model") as init_mock,
+        patch(
+            "synapse.llm_openai_websocket.ResponsesWebSocketChatOpenAI",
+            return_value=fake_model,
+        ) as ws_model,
+        patch(
+            "synapse.http_clients.build_openai_async_http_client",
+            return_value=fake_client,
+        ),
+        patch("synapse.async_runtime.get_async_runtime", return_value=fake_runtime),
+    ):
+        built = reg.build_chat_model("ws")
+        init_mock.return_value = MagicMock(name="http-chat-model")
+        _, http_model = build_model_from_settings(settings, model_name="http")
+
+    assert built is fake_model
+    assert http_model is init_mock.return_value
+    init_mock.assert_called_once()
+    assert init_mock.call_args.args == ("openai:gpt-http",)
+    assert init_mock.call_args.kwargs["use_responses_api"] is False
+    assert ws_model.call_args.kwargs["model"] == "gpt-test"
+    assert ws_model.call_args.kwargs["use_responses_api"] is True
+    assert ws_model.call_args.kwargs["streaming"] is True
+    assert fake_model._coding_websocket is True
+    fake_runtime.track_connection.assert_called_once_with(fake_model)
+
+
 def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
@@ -179,6 +244,9 @@ def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch)
         kwargs = init_mock.call_args.kwargs
         assert kwargs["reasoning_effort"] == "low"
         assert kwargs["extra_body"]["thinking"]["type"] == "enabled"
+        assert callable(kwargs["api_key"])
+        assert kwargs["http_async_client"] is not None
+        assert "http_client" not in kwargs
 
     # Disallowed level for restricted profile.
     try:
@@ -500,6 +568,9 @@ def test_fs_permissions_and_harness(tmp_path: Path):
         shell_backend=False,
     )
     assert perms is not None
+    excluded = apply_harness_exclusions("openai:demo")
+    assert "ls" in excluded
+    assert "grep" in excluded
     excluded = apply_harness_exclusions("openai:demo", readonly=True)
     assert "write_file" in excluded
     assert "execute" in excluded

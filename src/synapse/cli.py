@@ -99,7 +99,6 @@ def _launch_tui(
     thread_id: str | None,
     debug: bool,
 ) -> None:
-    """Bootstrap settings and open the full-screen Textual TUI."""
     env_path = _bootstrap_env()
     settings = _resolve_settings(
         workspace=workspace,
@@ -126,6 +125,69 @@ def _launch_tui(
     except Exception as exc:  # noqa: BLE001
         _print_auth_error(settings, exc)
         raise typer.Exit(code=1) from exc
+
+
+@app.callback(invoke_without_command=True)
+def _default_tui(
+    ctx: typer.Context,
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Model profile alias or provider:model"
+    ),
+    require_approval: bool = typer.Option(
+        False,
+        "--require-approval/--no-require-approval",
+        help="Enable HITL approval (default: disabled, auto-pass)",
+    ),
+    readonly: bool = typer.Option(
+        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
+    ),
+    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
+    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+) -> None:
+    """Full-screen Textual TUI - the default interface."""
+    if ctx.invoked_subcommand is not None:
+        return
+    _launch_tui(
+        workspace=workspace,
+        model=model,
+        require_approval=require_approval,
+        readonly=readonly,
+        thread_id=thread_id,
+        debug=debug,
+    )
+
+
+@app.command("tui")
+def tui(
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Model profile alias or provider:model"
+    ),
+    require_approval: bool = typer.Option(
+        False,
+        "--require-approval/--no-require-approval",
+        help="Enable HITL approval (default: disabled, auto-pass)",
+    ),
+    readonly: bool = typer.Option(
+        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
+    ),
+    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
+    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+) -> None:
+    """Launch the full-screen Textual TUI."""
+    _launch_tui(
+        workspace=workspace,
+        model=model,
+        require_approval=require_approval,
+        readonly=readonly,
+        thread_id=thread_id,
+        debug=debug,
+    )
 
 
 # ---------------------------------------------------------------------------

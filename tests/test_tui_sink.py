@@ -18,6 +18,176 @@ from synapse.ui.tui import (
 )
 
 
+def test_steer_queue_listener_rebinds_when_agent_changes():
+    """A rebuilt agent must not leave the queue widget bound to the old queue."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    old_queue = SteerQueue()
+    new_queue = SteerQueue()
+    app = object.__new__(CodingAgentApp)
+    app.agent = SimpleNamespace(_coding_steer_queue=old_queue)
+    app._busy = False
+    app._active_turn_agent = None
+    app._active_turn_thread_id = None
+    app._active_steer_queue = None
+    app._steer_bound_queue = None
+    app._steer_listener = None
+    app._steer_items = []
+    app._steer_last_count = 0
+    app.call_from_thread = lambda fn, *args: fn(*args)
+    app.query_one = MagicMock(return_value=MagicMock())
+    app._render_status = MagicMock()
+    app._sync_prompt_placeholder = MagicMock()
+
+    app._bind_steer_queue()
+    old_queue.push("old")
+    assert app._steer_items == ["old"]
+
+    app.agent = SimpleNamespace(_coding_steer_queue=new_queue)
+    app._bind_steer_queue()
+    assert app._steer_bound_queue is new_queue
+    assert app._steer_items == []
+
+    old_queue.push("stale")
+    assert app._steer_items == []
+    new_queue.push("current")
+    assert app._steer_items == ["current"]
+
+
+def test_turn_context_snapshot_survives_agent_and_thread_replacement():
+    from types import SimpleNamespace
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    original_queue = SteerQueue()
+    original_agent = SimpleNamespace(_coding_steer_queue=original_queue)
+    app = object.__new__(CodingAgentApp)
+    app.agent = original_agent
+    app.thread_id = "original-thread"
+
+    app._capture_turn_context()
+    app.agent = SimpleNamespace(_coding_steer_queue=SteerQueue())
+    app.thread_id = "replacement-thread"
+    app._busy = True
+
+    assert app._active_turn_agent is original_agent
+    assert app._active_turn_thread_id == "original-thread"
+    assert app._turn_steer_queue() is original_queue
+
+
+def test_busy_steer_queue_keeps_targeting_active_graph_after_agent_rebuild():
+    from types import SimpleNamespace
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    active_queue = SteerQueue()
+    replacement_queue = SteerQueue()
+    app = object.__new__(CodingAgentApp)
+    app.agent = SimpleNamespace(_coding_steer_queue=replacement_queue)
+    app._busy = True
+    app._active_turn_agent = app.agent
+    app._active_turn_thread_id = "thread"
+    app._active_steer_queue = active_queue
+
+    assert app._turn_steer_queue() is active_queue
+
+
+def test_steer_followup_is_deferred_until_after_refresh():
+    from unittest.mock import MagicMock
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    queue = SteerQueue()
+    queue.push("apply after final model call")
+    scheduled: list[tuple[object, tuple[object, ...]]] = []
+    app = object.__new__(CodingAgentApp)
+    app._busy = False
+    app._sync_prompt_placeholder = MagicMock()
+    app.call_after_refresh = lambda callback, *args: (
+        scheduled.append((callback, args)) or True
+    )
+
+    assert app._schedule_followup_steer(queue) is True
+    assert app._busy is True
+    assert len(scheduled) == 1
+    callback, args = scheduled[0]
+    assert callback == app._start_followup_steer
+    assert args == (queue,)
+
+
+def test_deferred_followup_does_not_cancel_completed_textual_worker():
+    import asyncio
+    import threading
+
+    from textual import work
+    from textual.app import App
+    from textual.worker import WorkerState
+
+    class WorkerApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.second_done = threading.Event()
+
+        @work(thread=True, exclusive=True)
+        def run_step(self, step: int) -> None:
+            if step == 1:
+                self.call_from_thread(self.call_after_refresh, self.run_step, 2)
+            else:
+                self.second_done.set()
+
+    async def exercise() -> None:
+        app = WorkerApp()
+        async with app.run_test():
+            first = app.run_step(1)
+            completed = await asyncio.wait_for(
+                asyncio.to_thread(app.second_done.wait),
+                timeout=2,
+            )
+            assert completed is True
+            await first.wait()
+            assert first.state is WorkerState.SUCCESS
+
+    asyncio.run(exercise())
+
+
+def test_steer_panel_hides_immediately_when_guidance_is_consumed():
+    """The component represents pending items only, not already applied guidance."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from synapse.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    queue = SteerQueue()
+    agent = SimpleNamespace(_coding_steer_queue=queue)
+    panel = MagicMock()
+    app = object.__new__(CodingAgentApp)
+    app.agent = agent
+    app._busy = True
+    app._steer_items = []
+    app._steer_last_count = 0
+    app.query_one = MagicMock(return_value=panel)
+    app._render_status = MagicMock()
+    app._sync_prompt_placeholder = MagicMock()
+
+    queue.push("focus on the failing test")
+    app._on_steer_items_changed(queue.peek_items())
+    assert app._steer_items == ["focus on the failing test"]
+    panel.set_items.assert_called_with(["focus on the failing test"])
+
+    queue.drain()
+    app._on_steer_items_changed(queue.peek_items())
+    assert app._steer_items == []
+    panel.set_items.assert_called_with([])
+
+
 class _FakeApp:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -488,7 +658,7 @@ def test_close_tool_group_respects_tool_details_expanded_setting():
 
 
 def test_tool_group_block_places_nested_items_after_owning_task():
-    block = ToolGroupBlock("Launched 2 subagents")
+    block = ToolGroupBlock("Running 2 subagents")
     task_a = build_tool_item(
         {"name": "task", "args": {"description": "agent A"}},
         item_id="g1-0",
@@ -521,6 +691,24 @@ def test_tool_group_block_places_nested_items_after_owning_task():
         task_b.id,
         nested_b.id,
     ]
+    assert block.summary == "Running 2 subagents"
+
+
+def test_tool_group_block_ignores_unattributed_nested_item():
+    block = ToolGroupBlock("Launched 1 subagent")
+    task = build_tool_item(
+        {"name": "task", "args": {"description": "agent A"}},
+        item_id="g1-0",
+    )
+    orphan = build_tool_item(
+        {"name": "read_file", "args": {"intent": "unknown parent"}},
+        item_id="orphan-sub-1",
+        sub=True,
+    )
+    block.add_item(task)
+    block.add_item(orphan)
+
+    assert [item.id for item in block.items] == [task.id]
 
 
 def test_timeline_blocks_toggle_in_place():

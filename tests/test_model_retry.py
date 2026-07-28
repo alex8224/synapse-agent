@@ -149,10 +149,10 @@ def test_model_retry_middleware_notifier_called(monkeypatch) -> None:  # noqa: A
     finally:
         clear_retry_notifier()
 
-    # 1 initial + 5 retries = 5 retry notifications
-    assert len(calls) == 5
+    # 1 initial + max_retries retries = max_retries retry notifications
+    assert len(calls) == middleware.max_retries
     for attempt, delay, reason in calls:
-        assert 1 <= attempt <= 5
+        assert 1 <= attempt <= middleware.max_retries
         assert delay >= 0
         assert "auth_unavailable" in reason or "503" in reason
 
@@ -182,7 +182,7 @@ def test_model_retry_middleware_configuration() -> None:
     middleware = build_model_retry_middleware()
 
     assert isinstance(middleware, NotifyingModelRetryMiddleware)
-    assert middleware.max_retries == 5
+    assert middleware.max_retries == 999
     assert middleware.on_failure == "error"
     assert middleware.initial_delay == 1.0
     assert middleware.max_delay == 8.0

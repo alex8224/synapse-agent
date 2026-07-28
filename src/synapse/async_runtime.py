@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
+import time
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
@@ -85,30 +86,59 @@ class AsyncRuntime:
         return self.submit(coro).result(timeout=timeout)
 
     def track_connection(self, conn: Any) -> None:
-        """Remember an aiosqlite connection for shutdown."""
-        self._owned_conns.append(conn)
+        """Remember an async connection/client for shutdown."""
+        if conn not in self._owned_conns:
+            self._owned_conns.append(conn)
+
+    def close_connection(self, conn: Any) -> None:
+        """Close and forget one tracked async client on the runtime loop."""
+        try:
+            self._owned_conns.remove(conn)
+        except ValueError:
+            pass
+        close = getattr(conn, "aclose", None) or getattr(conn, "close", None)
+        if not callable(close):
+            return
+
+        async def _close() -> None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+
+        try:
+            self.run(_close(), timeout=3.0)
+        except Exception:  # noqa: BLE001
+            pass
 
     def close(self) -> None:
+        started = time.perf_counter()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             loop = self._loop
             thread = self._thread
+        connection_count = len(self._owned_conns)
         if loop is not None and loop.is_running():
 
             async def _shutdown() -> None:
                 for conn in list(self._owned_conns):
                     try:
-                        await conn.close()
+                        close = getattr(conn, "aclose", None) or getattr(conn, "close", None)
+                        if not callable(close):
+                            continue
+                        result = close()
+                        if asyncio.iscoroutine(result):
+                            await result
                     except Exception:  # noqa: BLE001
                         pass
                 self._owned_conns.clear()
-                loop.stop()
 
             try:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(timeout=3.0)
             except Exception:  # noqa: BLE001
+                pass
+            finally:
                 try:
                     loop.call_soon_threadsafe(loop.stop)
                 except Exception:  # noqa: BLE001
@@ -117,6 +147,12 @@ class AsyncRuntime:
             thread.join(timeout=2.0)
         self._loop = None
         self._thread = None
+        try:
+            from synapse.startup_trace import duration
+
+            duration("runtime.close", started, connections=connection_count)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _RUNTIME = AsyncRuntime()

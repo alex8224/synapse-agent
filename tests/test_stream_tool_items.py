@@ -94,6 +94,56 @@ class _Chunk:
             setattr(self, k, v)
 
 
+class _SteerUpdateAgent:
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        from langchain_core.messages import HumanMessage
+
+        from synapse.steer import format_steer_message
+
+        content = format_steer_message(["测试"])
+        yield (
+            "messages",
+            (
+                _Chunk(type="ai", content=content, id="steer-message"),
+                {"langgraph_node": "model"},
+            ),
+        )
+        yield (
+            "updates",
+            {
+                "inject_steer_queue.before_model": {
+                    "messages": [
+                        HumanMessage(
+                            content=content,
+                            id="steer-message",
+                            additional_kwargs={"coding_steer": True},
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_hides_model_only_steer_messages():
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _SteerUpdateAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    assert not [event for event in sink.events if event[0] == "answer"]
+    assert sink.answer_buf == []
+    assert result.final_text == ""
+    assert result.streamed_answer is False
+
+
 class _FakeAgent:
     """Yield a complete tool_calls batch then a tool result."""
 
@@ -203,8 +253,16 @@ class _ConcurrentSubagentAgent:
             },
         )
         for namespace, call_id, intent in (
-            (("tools:parent", "task_call:task-a", "model:one"), "read-a", "read for A"),
-            (("tools:parent", "task_call:task-b", "model:one"), "read-b", "read for B"),
+            (
+                ("tools:parent|task_call:ancestor|task_call:task-a", "model:one"),
+                "read-a",
+                "read for A",
+            ),
+            (
+                ("tools:parent|task_call:ancestor|task_call:task-b", "model:one"),
+                "read-b",
+                "read for B",
+            ),
         ):
             yield (
                 namespace,
@@ -229,8 +287,14 @@ class _ConcurrentSubagentAgent:
                 },
             )
         for namespace, call_id in (
-            (("tools:parent", "task_call:task-b", "tools:one"), "read-b"),
-            (("tools:parent", "task_call:task-a", "tools:one"), "read-a"),
+            (
+                ("tools:parent|task_call:ancestor|task_call:task-b", "tools:one"),
+                "read-b",
+            ),
+            (
+                ("tools:parent|task_call:ancestor|task_call:task-a", "tools:one"),
+                "read-a",
+            ),
         ):
             yield (
                 namespace,
@@ -299,6 +363,160 @@ def test_stream_agent_scopes_nested_tools_to_concurrent_parent_tasks():
         if event[0] == "tool_item_finished" and event[1] in {"g1-0", "g1-1"}
     ]
     assert [event[1] for event in finished_parents] == ["g1-1", "g1-0"]
+
+
+class _UnattributedSubagentAgent:
+    """Emit nested traffic without the task namespace metadata."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                },
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent B"},
+                                    "id": "task-b",
+                                },
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "messages": [
+                        _Chunk(
+                            type="tool",
+                            name="task",
+                            content="done task-a",
+                            id="result-task-a",
+                            tool_call_id="task-a",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            ("subagent:model",),
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {"file_path": "/x", "intent": "read"},
+                                    "id": "read-orphan",
+                                }
+                            ],
+                            id="nested-call",
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_does_not_render_unattributed_nested_tools():
+    sink = _ItemSink()
+    stream_agent(
+        _UnattributedSubagentAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    started = [event for event in sink.events if event[0] == "tool_item_started"]
+    assert [event[3] for event in started] == ["task", "task"]
+
+
+class _SingleUnattributedSubagentAgent:
+    """Emit one subagent whose nested stream omits task namespace metadata."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                }
+                            ],
+                            id="parent-call",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            ("subagent:model",),
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {"file_path": "/x", "intent": "read"},
+                                    "id": "read-child",
+                                }
+                            ],
+                            id="nested-call",
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_attributes_unscoped_nested_tool_to_only_running_task():
+    sink = _ItemSink()
+    stream_agent(
+        _SingleUnattributedSubagentAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    started = [event for event in sink.events if event[0] == "tool_item_started"]
+    assert [event[3] for event in started] == ["task", "read_file"]
+    assert started[1][4] == started[0][1]
 
 
 def test_build_tool_item_todo_preview_unit():

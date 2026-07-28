@@ -114,7 +114,28 @@ def test_subagents_isolation():
     assert "middleware" in by_name["reviewer"]
     assert "permissions" not in by_name["researcher"]
     assert "permissions" not in by_name["reviewer"]
-    assert by_name["tester"].get("tools")
+    assert by_name["tester"].get("tools") == []
+
+    class _Request:
+        def __init__(self, tools):  # noqa: ANN001
+            self.tools = tools
+
+        def override(self, **changes):  # noqa: ANN003
+            return _Request(changes.get("tools", self.tools))
+
+    tools = [
+        SimpleNamespace(name="read_file"),
+        SimpleNamespace(name="write_todos"),
+        SimpleNamespace(name="todo_write"),
+        SimpleNamespace(name="todos"),
+    ]
+    for spec in specs:
+        request = _Request(tools)
+        for middleware in spec["middleware"]:
+            if type(middleware).__name__ == "exclude_tools":
+                request = middleware.wrap_model_call(request, lambda current: current)
+        assert [tool.name for tool in request.tools] == ["read_file"]
+
     lines = format_subagents_lines(specs)
     assert any("researcher" in ln for ln in lines)
     assert any("tool-exclude" in ln for ln in lines)

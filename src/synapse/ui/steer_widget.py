@@ -7,7 +7,7 @@ Layout (narrow, not full-width)::
   | o  second…                               x  |
   +----------------------------------------------+
 
-- Only unapplied notes (drain removes applied).
+- Pending notes, plus notes already applied during the active turn.
 - Click row body or x drops that note.
 - Header right "清空" clears all; left chevron toggles collapse.
 - Minimal copy: no English essay.

@@ -459,11 +459,13 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     calls = _capture_build(monkeypatch)
 
     model = object()
+    steer_queue = object()
     agent = SimpleNamespace(
         _coding_checkpointer="cp",
         _coding_model=model,
         _coding_model_registry="reg",
         _coding_mcp_attached=True,
+        _coding_steer_queue=steer_queue,
     )
     slash_cmds._rebuild_agent(
         settings, project_root=tmp_path, model_name=None, agent=agent
@@ -474,6 +476,7 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     assert kw["mcp_tools"] == [tool]
     assert kw["model"] is model
     assert kw["checkpointer"] == "cp"
+    assert kw["steer_queue"] is steer_queue
 
 
 def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):
@@ -497,6 +500,41 @@ def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):
     kw = calls[0]
     assert kw["load_mcp"] is False
     assert kw["mcp_tools"] is None
+
+
+def test_rebuild_agent_defers_mcp_reconnect_when_pool_is_missing(tmp_path, monkeypatch):
+    """An attached old graph must not make model switching wait for MCP network I/O."""
+    from synapse import slash_cmds
+
+    settings = _FakeSettings(tmp_path)
+    monkeypatch.setattr(slash_cmds, "get_active_mcp_pool", lambda: None)
+    calls = _capture_build(monkeypatch)
+    cache = {"profile": object()}
+    agent = SimpleNamespace(
+        _coding_checkpointer="cp",
+        _coding_model=object(),
+        _coding_model_registry="reg",
+        _coding_model_cache=cache,
+        _coding_mcp_attached=True,
+    )
+
+    slash_cmds._rebuild_agent(
+        settings,
+        project_root=tmp_path,
+        model_name="openai:other",
+        agent=agent,
+        defer_mcp_reconnect=True,
+    )
+
+    kw = calls[0]
+    assert kw["load_mcp"] is False
+    assert kw["mcp_tools"] is None
+    assert kw["model_cache"] is cache
+
+    slash_cmds._rebuild_agent(
+        settings, project_root=tmp_path, model_name="openai:other", agent=agent
+    )
+    assert calls[1]["load_mcp"] is True
 
 
 def test_mcp_reload_forces_reconnect(tmp_path, monkeypatch):
@@ -543,11 +581,16 @@ def test_apply_thinking_inplace_copies_attrs(monkeypatch):
     monkeypatch.setattr(
         reg_mod, "build_model_from_settings", lambda s, model_name=None: (None, fresh)
     )
-    agent = SimpleNamespace(_coding_model=live)
+    monkeypatch.setattr(reg_mod, "model_cache_key", lambda s, model_name=None: "new-key")
+    cache = {"old-key": live, "other": object()}
+    agent = SimpleNamespace(_coding_model=live, _coding_model_cache=cache)
 
     assert _apply_thinking_inplace(object(), agent, "demo") is True
     assert live.reasoning_effort == "low"
     assert live.extra_body == {"new": 2}
+    assert "old-key" not in cache
+    assert cache["new-key"] is live
+    assert "other" in cache
 
 
 def test_apply_thinking_inplace_fallbacks(monkeypatch):

@@ -1570,6 +1570,7 @@ dependencies = [
     { name = "textual" },
     { name = "textual-diff-view" },
     { name = "typer" },
+    { name = "websockets" },
     { name = "zstandard" },
 ]
 
@@ -1597,6 +1598,7 @@ requires-dist = [
     { name = "textual", specifier = ">=1.0.0" },
     { name = "textual-diff-view", specifier = ">=0.1.5" },
     { name = "typer", specifier = ">=0.27.0" },
+    { name = "websockets", specifier = ">=13,<16" },
     { name = "zstandard", specifier = ">=0.23.0" },
 ]
 

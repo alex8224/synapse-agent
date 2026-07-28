@@ -99,6 +99,219 @@ class TestThemePickerInit:
         assert dlg._current == "cursor-dark"
 
 
+class TestThemeDesignerDialog:
+    def test_init_loads_current_palette(self):
+        from synapse.config import Settings
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+        from synapse.ui.theme import bootstrap_theme, get_theme
+
+        bootstrap_theme("cursor-dark")
+        settings = Settings(_env_file=None, theme="cursor-dark")
+        dlg = ThemeDesignerDialog(settings, project_root=Path.cwd())
+        theme = get_theme()
+        assert dlg._original == "cursor-dark"
+        assert dlg._extends == "cursor-dark"
+        assert dlg._values["bg"] == theme.bg
+        assert dlg._values["fg"] == theme.fg
+
+    def test_unified_modal_css_and_preview_debounce_guards(self, monkeypatch):
+        """Designer uses standard modal chrome and guards expensive previews."""
+        from synapse.config import Settings
+        from synapse.ui.dialogs.theme_designer import (
+            _HEX_RE,
+            ThemeDesignerDialog,
+            _DesignerColorChanged,
+        )
+        from synapse.ui.theme import bootstrap_theme, get_theme, set_theme
+
+        bootstrap_theme("cursor-dark")
+        original = get_theme().name
+        settings = Settings(_env_file=None, theme="cursor-dark")
+        dialog = ThemeDesignerDialog(settings, project_root=Path.cwd())
+
+        assert "background: transparent" in ThemeDesignerDialog.DEFAULT_CSS
+        assert "background: $theme-bg 60%" not in ThemeDesignerDialog.DEFAULT_CSS
+        assert "background: $theme-bg;" in ThemeDesignerDialog.DEFAULT_CSS
+        assert dialog.styles.background.a == 0
+        assert "border: round $theme-user" in ThemeDesignerDialog.DEFAULT_CSS
+        assert "layer: overlay" in ThemeDesignerDialog.DEFAULT_CSS
+        assert ".color-input" not in ThemeDesignerDialog.DEFAULT_CSS
+        assert "#color-plane" in ThemeDesignerDialog.DEFAULT_CSS
+        assert "#hue-strip" in ThemeDesignerDialog.DEFAULT_CSS
+
+        scheduled: list[str] = []
+        monkeypatch.setattr(dialog, "_schedule_preview", lambda: scheduled.append("go"))
+
+        # Not ready yet: color change with valid hex still ignored by readiness gate
+        # only if routed through _schedule_preview path after ready flag.
+        dialog._ready = False
+        dialog._on_color_changed(_DesignerColorChanged("bg", "#112233"))
+        # _on_color_changed still calls _schedule_preview for valid hex; our stub records it.
+        assert scheduled == ["go"]
+        scheduled.clear()
+
+        dialog._on_color_changed(_DesignerColorChanged("bg", "#11223"))  # incomplete
+        assert scheduled == []
+        assert not _HEX_RE.match("#11223")
+
+        # Direct apply + cancel restore path (no Textual pilot needed).
+        dialog._ready = True
+        dialog._values["bg"] = "#1a1b2e"
+        refresh_calls: list[bool] = []
+        deferred_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        class FakeApp:
+            def refresh_css(self, animate: bool = True):  # noqa: ARG002
+                refresh_calls.append(True)
+
+            def call_later(self, callback, *args, **kwargs):  # noqa: ANN001
+                deferred_calls.append((callback, args, kwargs))
+
+            def _repaint_themed_widgets(self) -> None:
+                return None
+
+            def apply_theme(self, name, *, persist=False, announce=False):  # noqa: ANN001
+                set_theme(name, persist=False, reload=False)
+                refresh_calls.append(True)
+
+        monkeypatch.setattr(type(dialog), "app", property(lambda self: FakeApp()))
+        dialog._apply_preview()
+        assert get_theme().bg.casefold() == "#1a1b2e"
+        assert refresh_calls
+        before = len(refresh_calls)
+        dialog._apply_preview()  # same signature → no thrash
+        assert len(refresh_calls) == before
+
+        dismissed: list[object] = []
+        dialog._dismiss_started = False
+        monkeypatch.setattr(dialog, "dismiss", lambda result=None: dismissed.append(result))
+        dialog.action_cancel()
+        assert dialog._dismiss_started is True
+        # ``_closing`` belongs to Textual's MessagePump. Reusing it as a
+        # dialog guard prevents Prune delivery and deadlocks screen removal.
+        assert dialog._closing is False
+        assert dismissed == [None]
+        assert get_theme().name == original
+        assert len(deferred_calls) == 1
+        callback, args, kwargs = deferred_calls.pop()
+        callback(*args, **kwargs)
+        assert refresh_calls
+
+    def test_cancel_and_save_restore_host_input_dispatch(self, monkeypatch, tmp_path):
+        """Closing the designer must leave the host message pump responsive."""
+        from textual.containers import VerticalScroll
+        from textual.widgets import Input
+
+        from synapse.config import Settings
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+        from synapse.ui.theme import bootstrap_theme
+        from synapse.ui.tui import CodingAgentApp
+
+        class ThemeDialogHost(CodingAgentApp):
+            def on_mount(self) -> None:
+                log = self.query_one("#log", VerticalScroll)
+                log.show_vertical_scrollbar = False
+                log.show_horizontal_scrollbar = False
+                self.query_one("#prompt", Input).focus()
+
+        # Keep this lifecycle regression test isolated from user config files.
+        monkeypatch.setattr(ThemeDesignerDialog, "_save_theme", lambda _self, _name: None)
+        bootstrap_theme("cursor-dark")
+        app = ThemeDialogHost(
+            agent=MagicMock(),
+            settings=Settings(_env_file=None, theme="cursor-dark"),
+            thread_id="theme-dialog-lifecycle",
+            project_root=tmp_path,
+        )
+
+        async def exercise() -> None:
+            async with app.run_test(size=(100, 40)) as pilot:
+                host_screen = app.screen
+                prompt = app.query_one("#prompt", Input)
+
+                app._open_theme_designer()
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.press("a")
+                assert app.screen is host_screen
+                assert prompt.value == "a"
+
+                app._open_theme_designer()
+                await pilot.pause()
+                app.screen.query_one("#meta-name", Input).value = "cursor-dark"
+                await pilot.press("ctrl+s")
+                await pilot.press("b")
+                assert app.screen is host_screen
+                assert prompt.value == "ab"
+
+        asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+
+    def test_color_picker_supports_mouse_keyboard_and_inherit(self, tmp_path):
+        """Colors are selected visually; no editable hex field is exposed."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Input
+
+        from synapse.config import Settings
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+        from synapse.ui.theme import bootstrap_theme
+
+        class PickerHost(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                from synapse.ui.theme import get_theme
+
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+            def compose(self) -> ComposeResult:
+                yield Input(id="host-input")
+
+            def on_mount(self) -> None:
+                self.push_screen(
+                    ThemeDesignerDialog(
+                        Settings(_env_file=None, theme="cursor-dark"),
+                        project_root=tmp_path,
+                    )
+                )
+
+        bootstrap_theme("cursor-dark")
+        app = PickerHost()
+
+        async def exercise() -> None:
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                dialog = app.screen
+                assert isinstance(dialog, ThemeDesignerDialog)
+                assert not list(dialog.query(".color-input"))
+
+                await pilot.click("#role-user")
+                assert dialog._selected_color_key == "user"
+
+                original = dialog._values["user"]
+                await pilot.click("#hue-strip", offset=(17, 1))
+                await pilot.click("#color-plane", offset=(24, 2))
+                await pilot.pause()
+                picked = dialog._values["user"]
+                assert picked != original
+                assert picked.startswith("#") and len(picked) == 7
+
+                await pilot.press("left")
+                await pilot.pause()
+                assert dialog._values["user"] != picked
+
+                await pilot.click("#inherit-color")
+                assert dialog._values["user"] == ""
+
+        asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+
+    def test_open_theme_designer_action_pushes_screen(self, monkeypatch):
+        app = _make_app(monkeypatch)
+        app._open_theme_designer()
+        assert app.push_screen.call_count == 1
+        pushed = app.push_screen.call_args[0][0]
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+
+        assert isinstance(pushed, ThemeDesignerDialog)
+
+
 class TestSafetyPanelInit:
     def test_profiles_map(self):
         assert len(PROFILES) == 3
@@ -408,6 +621,7 @@ class TestDialogShortcuts:
         [
             ("action_dialog_model", "_open_model_dialog", ([],)),
             ("action_dialog_theme", "_open_theme_dialog", ()),
+            ("action_dialog_theme_designer", "_open_theme_designer", ()),
             ("action_dialog_sessions", "_open_session_dialog", (["switch"],)),
             ("action_dialog_mcp", "_open_mcp_dialog", ()),
             ("action_dialog_safety", "_open_safety_dialog", ()),
@@ -561,6 +775,7 @@ class TestApplyOkResult:
             "_render_status",
             "action_clear_log",
             "append_event",
+            "flash_status",
             "apply_theme",
             "set_activity",
             "query_one",
@@ -601,6 +816,46 @@ class TestApplyOkResult:
 
         app._apply_ok_result(ok)
         app.apply_theme.assert_called_once()
+
+    def test_short_notice_ttl_for_background_model_switch(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        ok = MagicMock(
+            agent=None,
+            thread_id=None,
+            settings_changed=True,
+            clear_log=False,
+            reload_transcript=False,
+            theme_name=None,
+            error=False,
+            notice=None,
+            lines=["model switched to demo"],
+        )
+
+        app._apply_ok_result(ok, 1.5)
+
+        app.flash_status.assert_called_once_with(
+            "model switched to demo", "dim", ttl=1.5
+        )
+
+    def test_short_error_notice_keeps_warning_style(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        ok = MagicMock(
+            agent=None,
+            thread_id=None,
+            settings_changed=False,
+            clear_log=False,
+            reload_transcript=False,
+            theme_name=None,
+            error=True,
+            notice=None,
+            lines=["model switch failed"],
+        )
+
+        app._apply_ok_result(ok, 1.5)
+
+        app.flash_status.assert_called_once_with(
+            "model switch failed", "yellow", ttl=1.5
+        )
 
     def test_idempotent_on_empty(self, monkeypatch):
         app = self._make_app(monkeypatch)

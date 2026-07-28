@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ from synapse.middleware import (
 )
 from synapse.models_registry import (
     build_model_from_settings,
+    model_cache_key,
     model_supports_image_input,
     registry_from_settings,
 )
@@ -32,12 +35,7 @@ from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.steer import SteerQueue, build_steer_middleware
 from synapse.subagents import build_default_subagents
-from synapse.tools import (  # type: ignore[attr-defined]
-    build_session_tools,
-    git_diff,
-    git_status,
-    run_tests,
-)
+from synapse.tools import build_session_tools
 from synapse.vision_middleware import build_describe_image_middleware
 
 
@@ -139,6 +137,9 @@ def build_coding_agent(
     load_mcp: bool | None = None,
     model: Any | None = None,
     model_registry: Any | None = None,
+    model_cache: dict[str, Any] | None = None,
+    steer_queue: SteerQueue | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -154,8 +155,10 @@ def build_coding_agent(
     from deepagents import create_deep_agent
 
     from synapse.startup_trace import dump as dump_startup_trace
-    from synapse.startup_trace import mark, span
+    from synapse.startup_trace import duration, mark, reset, span
 
+    build_started = time.perf_counter()
+    reset()
     mark("build_coding_agent:start")
     _apply_observability(settings)
 
@@ -168,12 +171,40 @@ def build_coding_agent(
     root = Path(settings.workspace).resolve()
     project_root = Path(project_root or Path.cwd()).resolve()
 
+    if progress is not None:
+        progress("preparing backend")
     with span("backend"):
         backend = build_backend(settings)
 
+    model_cache_hit = False
+    if model_cache is None:
+        model_cache = {}
     if model is None:
-        with span("model"):
-            registry, model = build_model_from_settings(settings, model_name=model_name)
+        cache_key = model_cache_key(settings, model_name=model_name)
+        cached = model_cache.get(cache_key)
+        if cached is None:
+            with span("model"):
+                registry, model = build_model_from_settings(
+                    settings,
+                    model_name=model_name,
+                    progress=progress,
+                )
+            if len(model_cache) >= 8:
+                evicted = model_cache.pop(next(iter(model_cache)))
+                try:
+                    from synapse.http_clients import close_model_async_http_client
+
+                    close_model_async_http_client(evicted)
+                except Exception:  # noqa: BLE001
+                    pass
+            model_cache[cache_key] = model
+        else:
+            model_cache_hit = True
+            if progress is not None:
+                progress("reusing cached model client")
+            with span("model:cache_hit"):
+                registry = registry_from_settings(settings)
+                model = cached
     else:
         registry = model_registry or registry_from_settings(settings)
 
@@ -207,7 +238,7 @@ def build_coding_agent(
         deny_paths=settings.deny_fs_paths,
     )
 
-    tools: list[Any] = [git_status, git_diff, run_tests]
+    tools: list[Any] = []
     if extra_tools:
         tools.extend(extra_tools)
     # 跨会话查阅工具
@@ -323,8 +354,10 @@ def build_coding_agent(
         build_path_normalize_middleware(root),
         *build_intent_schema_middleware(),
     ]
-    # Mid-run guidance queue: drain into HumanMessage before each model call.
-    steer_queue = SteerQueue()
+    # Keep one queue across graph rebuilds so an active turn and the TUI never
+    # route guidance to different middleware instances.
+    if steer_queue is None:
+        steer_queue = SteerQueue()
     middleware.append(build_steer_middleware(steer_queue))
     if getattr(settings, "enable_compact_tool", True):
         try:
@@ -333,6 +366,8 @@ def build_coding_agent(
         except Exception:  # noqa: BLE001
             pass
 
+    if progress is not None:
+        progress("compiling agent graph")
     with span("create_deep_agent"):
         agent = create_deep_agent(
             model=model,
@@ -355,17 +390,17 @@ def build_coding_agent(
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
+    agent._coding_model_cache = model_cache  # type: ignore[attr-defined]
+    agent._coding_async_only = bool(  # type: ignore[attr-defined]
+        getattr(model, "_coding_async_only", False)
+    )
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
-    # Expose process async runtime when using AsyncSqliteSaver so stream can
-    # schedule astream on the same loop the checkpointer is bound to.
+    # All model I/O is async-only and bound to the process runtime loop.
     try:
         from synapse.async_runtime import get_async_runtime
 
-        if type(saver).__name__ == "AsyncSqliteSaver":
-            agent._coding_async_runtime = get_async_runtime()  # type: ignore[attr-defined]
-        else:
-            agent._coding_async_runtime = None  # type: ignore[attr-defined]
+        agent._coding_async_runtime = get_async_runtime()  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001
         agent._coding_async_runtime = None  # type: ignore[attr-defined]
     # 长期记忆 / 知识库 / 规划（默认 None，在 CLI/TUI 层异步查询）
@@ -373,6 +408,13 @@ def build_coding_agent(
     agent._coding_long_term_memory = _ltm  # type: ignore[attr-defined]
     agent._coding_planner_model = model  # type: ignore[attr-defined]
     mark("build_coding_agent:done")
+    duration(
+        "agent.build",
+        build_started,
+        profile=selected_profile.name,
+        model_cache_hit=model_cache_hit,
+        mcp_attached=not mcp_deferred,
+    )
     dump_startup_trace(header="build_coding_agent")
     return agent
 
@@ -389,13 +431,20 @@ def attach_mcp_to_agent(
     checkpointer = getattr(agent, "_coding_checkpointer", None)
     model = getattr(agent, "_coding_model", None)
     registry = getattr(agent, "_coding_model_registry", None)
+    model_cache = getattr(agent, "_coding_model_cache", None)
+    steer_queue = getattr(agent, "_coding_steer_queue", None)
+    pool = get_active_mcp_pool()
+    pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else None
     return build_coding_agent(
         settings,
         project_root=project_root,
         checkpointer=checkpointer,
         model=model,
         model_registry=registry,
-        load_mcp=True,
+        model_cache=model_cache,
+        mcp_tools=pool_tools,
+        load_mcp=pool is None,
+        steer_queue=steer_queue,
     )
 
 

@@ -102,7 +102,7 @@ For a clear coding or debugging task:
    * How it was verified
    * Remaining risks, if any
 
-Use `git_status` and `git_diff` when relevant.
+Follow the project's `AGENTS.md` for test steps and project-specific conventions.
 Prefer the repository's existing package and test commands.
 
 ## Tool usage
@@ -142,8 +142,8 @@ Run independent tool calls in parallel within the same turn.
 Parallelize when arguments are already known and results do not depend on each other, including:
 
 * Multiple file reads
-* `glob`, `grep`, `ls`, and known file reads
-* `git_status`, `git_diff`, and related reads
+* `glob` and related file reads
+* `execute` and related reads
 * Edits to different files
 * Independent test or lint commands
 

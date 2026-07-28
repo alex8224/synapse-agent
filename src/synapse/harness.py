@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+_DEFAULT_EXCLUDES = frozenset({"ls", "grep"})
 _DEFAULT_READONLY_EXCLUDES = frozenset(
     {
         "execute",
@@ -21,10 +22,15 @@ def apply_harness_exclusions(
 ) -> frozenset[str]:
     """Register harness excluded_tools for the active model/provider.
 
+    ``ls`` and ``grep`` are excluded by default because ``execute`` can run the
+    project's native directory and search commands. Read-only mode additionally
+    excludes ``execute``, ``write_file``, and ``edit_file``.
+
     deepagents only removes built-in tools via HarnessProfile.excluded_tools
     (tools= is additive). Registration is additive/merge under the same key.
     """
-    names = set(excluded_tools or [])
+    names = set(_DEFAULT_EXCLUDES)
+    names.update(excluded_tools or [])
     if readonly:
         names |= set(_DEFAULT_READONLY_EXCLUDES)
     excluded = frozenset(n.strip() for n in names if n and n.strip())

@@ -7,18 +7,58 @@ import httpx
 from synapse import http_clients as hc
 from synapse.http_clients import (
     HTTP_KEEPALIVE_EXPIRY_SECONDS,
+    client_keepalive_expiry,
+    enable_anthropic_long_keepalive_defaults,
     enable_long_keepalive_http_defaults,
+    enable_openai_long_keepalive_defaults,
     long_keepalive_limits,
 )
 
 
 def setup_function() -> None:
     hc._PATCHED = False
+    hc._OPENAI_PATCHED = False
+    hc._ANTHROPIC_PATCHED = False
 
 
 def test_keepalive_expiry_is_five_minutes():
     assert HTTP_KEEPALIVE_EXPIRY_SECONDS == 300.0
     assert long_keepalive_limits().keepalive_expiry == 300.0
+
+
+def test_provider_specific_patches_do_not_cross_import(monkeypatch):
+    import builtins
+
+    imported: list[str] = []
+    original = builtins.__import__
+
+    def tracking_import(name, *args, **kwargs):
+        imported.append(name)
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+    enable_openai_long_keepalive_defaults()
+    assert not any(name.startswith("anthropic") for name in imported)
+
+    imported.clear()
+    enable_anthropic_long_keepalive_defaults()
+    assert not any(name.startswith("openai") for name in imported)
+
+
+def test_openai_async_client_uses_sdk_default_timeout(monkeypatch):
+    from synapse.async_runtime import AsyncRuntime
+
+    runtime = AsyncRuntime(name="http-client-timeout-test")
+    monkeypatch.setattr("synapse.async_runtime._RUNTIME", runtime)
+    client = hc.build_openai_async_http_client()
+    try:
+        assert client.timeout.connect == 5.0
+        assert client.timeout.read == 600
+        assert client.timeout.write == 600
+        assert client.timeout.pool == 600
+        assert client_keepalive_expiry(client) == 300.0
+    finally:
+        runtime.close()
 
 
 def test_enable_patches_openai_and_anthropic_defaults():
