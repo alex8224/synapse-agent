@@ -59,6 +59,26 @@ class CompressionDiagnosticsDialog(DialogBase):
 
     def _build_items(self) -> list[OptionItem]:
         items: list[OptionItem] = []
+        for zone, tokens in sorted((self._stats.get("live_zone_tokens") or {}).items()):
+            items.append(
+                OptionItem(
+                    key=f"zone:{zone}",
+                    label=f"live-zone · {zone}",
+                    detail="provider-aware request mutation boundary",
+                    meta=_fmt_tokens(tokens),
+                    show_bullet=False,
+                )
+            )
+        for name, tokens in self._stats.get("top_schema_tools") or []:
+            items.append(
+                OptionItem(
+                    key=f"schema:{name}",
+                    label=f"tool schema · {name}",
+                    detail="cumulative request schema overhead",
+                    meta=_fmt_tokens(tokens),
+                    show_bullet=False,
+                )
+            )
         breakdown = self._stats.get("content_breakdown") or {}
         for source, tokens in sorted(
             breakdown.items(), key=lambda item: int(item[1] or 0), reverse=True
@@ -170,8 +190,11 @@ class CompressionDiagnosticsDialog(DialogBase):
             f"{_fmt_bytes(stats.get('visible_bytes', 0))} model-visible\n"
             f"  saved {_fmt_tokens(stats.get('estimated_saved_tokens', 0))} · "
             f"reused {_fmt_tokens(stats.get('estimated_reused_tokens', 0))}\n"
-            f"  {stats.get('model_requests', 0)} model requests · "
-            f"whole {stats.get('whole_request_savings_ratio', 0.0):.1%} · "
+            f"  {stats.get('turns', 0)} turns · {stats.get('model_requests', 0)} model calls · "
+            f"{stats.get('tool_calls', 0)} tool calls\n"
+            f"  {stats.get('compression_managed_tool_calls', 0)} compression-managed · "
+            f"{stats.get('cache_bust_suspected_requests', 0)} cache-bust suspects\n"
+            f"  whole {stats.get('whole_request_savings_ratio', 0.0):.1%} · "
             f"new input {stats.get('new_input_savings_ratio', 0.0):.1%}\n"
             f"  {len(stats.get('content_breakdown') or {})} profiled sources · "
             f"{len(stats.get('top_opportunities') or [])} ranked opportunities"

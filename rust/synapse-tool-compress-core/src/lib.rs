@@ -169,14 +169,14 @@ fn compress_log(
     output.unbind()
 }
 
-#[pyfunction(signature = (content, context_lines=2))]
-fn compress_diff(py: Python<'_>, content: &str, context_lines: usize) -> Py<PyDict> {
+#[pyfunction(signature = (content, context="", context_lines=2))]
+fn compress_diff(py: Python<'_>, content: &str, context: &str, context_lines: usize) -> Py<PyDict> {
     let config = DiffCompressorConfig {
         max_context_lines: context_lines,
         enable_ccr: false,
         ..Default::default()
     };
-    let result = DiffCompressor::new(config).compress(content, "");
+    let result = DiffCompressor::new(config).compress(content, context);
     let output = PyDict::new(py);
     output
         .set_item("content", result.compressed)

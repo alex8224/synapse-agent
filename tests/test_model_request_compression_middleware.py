@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables.config import var_child_runnable_config
 
+from synapse.interaction_ledger import clear_interaction_positions
 from synapse.middleware import build_strip_redundant_prompt_blocks
 from synapse.model_request_compression_middleware import (
     build_model_request_compression_middleware,
@@ -160,6 +161,104 @@ def test_request_content_breakdown_classifies_history_reasoning_args_and_schemas
     assert opportunities["tool_schema_fixed_overhead"] > 0
     assert opportunities["reasoning_not_in_pipeline"] > 0
     assert opportunities["tool_call_arguments_not_in_pipeline"] > 0
+
+
+def test_turn_live_zone_wire_and_schema_profiles(tmp_path) -> None:
+    clear_interaction_positions()
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_model_request_compression_middleware(repo)
+    response = SimpleNamespace(
+        result=[
+            AIMessage(
+                content="done",
+                usage_metadata={
+                    "input_tokens": 1000,
+                    "output_tokens": 20,
+                    "total_tokens": 1020,
+                    "input_token_details": {"cache_read": 100},
+                },
+            )
+        ]
+    )
+    first = _Request([HumanMessage(content="turn one")])
+    first.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "large_tool",
+                "description": "description" * 30,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    middleware.wrap_model_call(first, lambda _request: response)
+    middleware.wrap_model_call(first, lambda _request: response)
+    second = _Request(
+        [
+            HumanMessage(content="turn one"),
+            AIMessage(content="done"),
+            HumanMessage(content="turn two"),
+        ]
+    )
+    second.tools = first.tools
+    middleware.wrap_model_call(second, lambda _request: response)
+
+    events = list(reversed(repo.model_request_events(thread_id="thread-a")))
+    assert [item["turn_index"] for item in events] == [1, 1, 2]
+    assert [item["model_call_index"] for item in events] == [1, 2, 1]
+    assert events[0]["turn_id"] == events[1]["turn_id"]
+    assert events[2]["turn_id"] != events[1]["turn_id"]
+    assert events[0]["live_zone_tokens"]["live"] > 0
+    assert events[0]["wire_fingerprints"]["tools_hash"]
+    assert events[0]["tool_schema_profiles"][0]["tool_name"] == "large_tool"
+    assert events[1]["cache_diagnostics"]["previous_request_available"] is True
+    assert events[1]["cache_diagnostics"]["cache_bust_suspected"] is True
+
+
+def test_read_lifecycle_classifies_historical_read_as_frozen(tmp_path) -> None:
+    clear_interaction_positions()
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_model_request_compression_middleware(repo)
+    read_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "read-1", "name": "read_file", "args": {"file_path": "/src/app.py"}}
+        ],
+    )
+    read_result = ToolMessage(
+        content="original source",
+        tool_call_id="read-1",
+        name="read_file",
+    )
+    edit_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "edit-1", "name": "edit_file", "args": {"file_path": "/src/app.py"}}
+        ],
+    )
+    edit_result = ToolMessage(content="edited", tool_call_id="edit-1", name="edit_file")
+    request = _Request(
+        [
+            HumanMessage(content="first"),
+            read_call,
+            read_result,
+            edit_call,
+            edit_result,
+            HumanMessage(content="continue"),
+        ]
+    )
+    response = SimpleNamespace(result=[AIMessage(content="done")])
+
+    seen: list[_Request] = []
+    middleware.wrap_model_call(request, lambda prepared: seen.append(prepared) or response)
+
+    assert seen[0].messages[2].content == "original source"
+    event = repo.model_request_events(thread_id="thread-a")[0]
+    lifecycle = event["cache_diagnostics"]["read_lifecycle"]
+    assert lifecycle[0]["state"] == "stale"
+    assert lifecycle[0]["zone"] == "frozen"
+    assert lifecycle[0]["replaceable"] is False
 
 
 def test_openai_and_codex_provider_safety_classification(tmp_path) -> None:

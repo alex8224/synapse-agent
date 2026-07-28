@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
@@ -11,6 +12,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from synapse.execute_capture import begin_execute_capture, end_execute_capture
+from synapse.interaction_ledger import current_position
 from synapse.tool_output import (
     CompressionStageEvent,
     ToolOutputRepository,
@@ -79,6 +81,28 @@ def build_tool_output_transform_middleware(
         if isinstance(call, dict):
             return str(call.get(key) or default)
         return str(getattr(call, key, None) or default)
+
+    def call_args(request: Any) -> dict[str, Any]:
+        call = getattr(request, "tool_call", None)
+        value = call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
+        return dict(value) if isinstance(value, dict) else {}
+
+    def summarized_args(args: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        for key, value in args.items():
+            if key in {"content", "new_string", "old_string"}:
+                text = str(value or "")
+                summary[key] = {
+                    "bytes": len(text.encode("utf-8")),
+                    "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+                }
+            elif isinstance(value, str):
+                summary[key] = value if len(value) <= 500 else value[:500] + "..."
+            elif isinstance(value, int | float | bool | type(None)):
+                summary[key] = value
+            else:
+                summary[key] = str(value)[:500]
+        return summary
 
     def current_query(request: Any) -> str:
         """Best-effort latest human text without changing graph state."""
@@ -229,10 +253,20 @@ def build_tool_output_transform_middleware(
             )
             return message
 
+        args = call_args(request)
+        file_path = str(args.get("file_path") or args.get("path") or "")
+        file_suffix = Path(file_path).suffix.casefold() if file_path else ""
         try:
             transformed = pipeline.transform(
                 original,
-                TransformContext(tool_name=name, status=status, query=current_query(request)),
+                TransformContext(
+                    tool_name=name,
+                    status=status,
+                    query=current_query(request),
+                    tool_args=args,
+                    file_path=file_path,
+                    file_suffix=file_suffix,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             record_decision(
@@ -259,7 +293,8 @@ def build_tool_output_transform_middleware(
         execution_path = str(transformed.metadata.get("execution_path", "python_only"))
         fallback_reason = str(transformed.metadata.get("fallback") or "no_byte_savings")
         if transformed.content == original:
-            decision = "skipped" if fallback_reason == "disabled" else "fallback"
+            skipped_reasons = {"disabled", "fresh_read_source_protected"}
+            decision = "skipped" if fallback_reason in skipped_reasons else "fallback"
             reason_code = (
                 "disabled_content_type" if fallback_reason == "disabled" else fallback_reason
             )
@@ -292,26 +327,50 @@ def build_tool_output_transform_middleware(
             "or offset/limit for exact lines."
         )
         envelope_tokens = _estimate_tokens(envelope_template)
-        token_guard_stage = CompressionStageEvent(
-            phase="token-guard",
-            algorithm="langchain-approximate-envelope-v1",
-            applied=envelope_tokens < original_tokens,
-            reason_code=(
-                "accepted"
+        saved_tokens = max(0, original_tokens - envelope_tokens)
+        savings_ratio = saved_tokens / original_tokens if original_tokens else 0.0
+        diff_effective = (
+            transformed.content_type.value != "diff"
+            or saved_tokens >= 128
+            or (saved_tokens >= 32 and savings_ratio >= 0.05)
+        )
+        token_guard_accepted = envelope_tokens < original_tokens and diff_effective
+        token_guard_reason = (
+            "accepted"
+            if token_guard_accepted
+            else (
+                "insufficient_effective_savings"
                 if envelope_tokens < original_tokens
                 else "envelope_erased_savings"
-            ),
+            )
+        )
+        token_guard_stage = CompressionStageEvent(
+            phase="token-guard",
+            algorithm="langchain-approximate-envelope-v2",
+            applied=token_guard_accepted,
+            reason_code=token_guard_reason,
             input_bytes=original_bytes,
             output_bytes=len(envelope_template.encode("utf-8")),
             input_tokens=original_tokens,
             output_tokens=envelope_tokens,
+            metadata={
+                "saved_tokens": saved_tokens,
+                "savings_ratio": round(savings_ratio, 4),
+                "min_absolute_tokens": 128,
+                "min_conditional_tokens": 32,
+                "min_conditional_ratio": 0.05,
+            },
         )
         stages = (*transformed.stages, token_guard_stage)
-        if envelope_tokens >= original_tokens:
+        if not token_guard_accepted:
             record_decision(
                 decision="fallback",
-                reason_code="envelope_erased_savings",
-                reason_detail="final model-visible wrapper did not reduce estimated tokens",
+                reason_code=token_guard_reason,
+                reason_detail=(
+                    "final diff envelope savings did not clear the effective savings floor"
+                    if token_guard_reason == "insufficient_effective_savings"
+                    else "final model-visible wrapper did not reduce estimated tokens"
+                ),
                 content_type=transformed.content_type.value,
                 transformer=transformed.transformer,
                 algorithm_output=transformed.content,
@@ -414,35 +473,87 @@ def build_tool_output_transform_middleware(
     def is_execute(request: Any) -> bool:
         return call_value(request, "name") == "execute"
 
+    def record_tool_interaction(request: Any, result: Any, *, started: float) -> None:
+        thread_id, checkpoint_ns = runtime_identity(request)
+        name = call_value(request, "name", "tool")
+        args = call_args(request)
+        position = current_position(thread_id)
+        messages: list[ToolMessage] = []
+        if isinstance(result, ToolMessage):
+            messages = [result]
+        elif isinstance(result, Command) and isinstance(result.update, dict):
+            messages = [m for m in result.update.get("messages", []) if isinstance(m, ToolMessage)]
+        elif isinstance(result, list):
+            messages = [m for m in result if isinstance(m, ToolMessage)]
+        message = messages[0] if messages else None
+        artifact = getattr(message, "artifact", None) if message is not None else None
+        transform = artifact.get("tool_output_transform") if isinstance(artifact, dict) else None
+        output = content_to_text(message.content) if message is not None else ""
+        repository.record_interaction(
+            thread_id=thread_id,
+            event={
+                "event_type": "tool_call",
+                "turn_id": position.turn_id,
+                "turn_index": position.turn_index,
+                "model_call_index": position.model_call_index,
+                "tool_call_id": str(
+                    getattr(message, "tool_call_id", None) or call_value(request, "id")
+                ),
+                "tool_name": name,
+                "tool_args": summarized_args(args),
+                "checkpoint_ns": checkpoint_ns,
+                "status": str(getattr(message, "status", None) or "success"),
+                "output_bytes": len(output.encode("utf-8")),
+                "compression_managed": name not in excluded,
+                "compression_decision": (
+                    str(transform.get("decision")) if isinstance(transform, dict) else ""
+                ),
+                "compression_reason": (
+                    str(transform.get("reason_code")) if isinstance(transform, dict) else ""
+                ),
+                "duration_ms": (time.perf_counter() - started) * 1000,
+            },
+        )
+
     def wrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        started = time.perf_counter()
         if not is_execute(request):
-            return rewrite_result(request, handler(request))
+            result = rewrite_result(request, handler(request))
+            record_tool_interaction(request, result, started=started)
+            return result
         capture, token = begin_execute_capture()
         try:
             result = handler(request)
         finally:
             end_execute_capture(token)
-        return rewrite_result(
+        rewritten = rewrite_result(
             request,
             result,
             original_content=capture.full_output,
             execute_output_truncated=capture.truncated,
         )
+        record_tool_interaction(request, rewritten, started=started)
+        return rewritten
 
     async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        started = time.perf_counter()
         if not is_execute(request):
-            return rewrite_result(request, await handler(request))
+            result = rewrite_result(request, await handler(request))
+            record_tool_interaction(request, result, started=started)
+            return result
         capture, token = begin_execute_capture()
         try:
             result = await handler(request)
         finally:
             end_execute_capture(token)
-        return rewrite_result(
+        rewritten = rewrite_result(
             request,
             result,
             original_content=capture.full_output,
             execute_output_truncated=capture.truncated,
         )
+        record_tool_interaction(request, rewritten, started=started)
+        return rewritten
 
     return type(
         "transform_tool_outputs",

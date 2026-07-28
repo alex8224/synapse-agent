@@ -33,6 +33,32 @@ _STACK_LINE = re.compile(r"(^\s+at\s+|^\s*File .+, line \d+|^\s*\d+\s*\||^\s*-->
 _NUMBER_OR_PATH = re.compile(r"\b\d+\b|(?:[A-Za-z]:)?[/\\][\w./\\-]+")
 _LOG_SUMMARY = re.compile(r"\b(passed|failed|skipped|collected|tests? run|exit code)\b", re.I)
 _TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
+_NUMBERED_SOURCE_LINE = re.compile(r"^(?P<indent>\s*)\d+(?:\.\d+)?\t(?P<body>.*)$")
+_CODE_SUFFIXES = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cs",
+        ".go",
+        ".h",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".php",
+        ".py",
+        ".pyi",
+        ".rb",
+        ".rs",
+        ".scala",
+        ".sh",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
 
 # Process-local UI hook. Persistence remains in ToolOutputRepository; the hook
 # only lets an active UI refresh its in-memory metrics promptly.
@@ -84,6 +110,9 @@ class TransformContext:
     tool_name: str
     status: str
     query: str = ""
+    tool_args: dict[str, Any] = field(default_factory=dict)
+    file_path: str = ""
+    file_suffix: str = ""
 
 
 @dataclass(frozen=True)
@@ -155,7 +184,14 @@ class ModelRequestCompressionEvent:
     protected_tokens_by_reason: dict[str, int] = field(default_factory=dict)
     content_breakdown: dict[str, int] = field(default_factory=dict)
     opportunity_tokens_by_reason: dict[str, int] = field(default_factory=dict)
+    turn_id: str = ""
+    turn_index: int = 0
     model_call_index: int = 0
+    live_zone_plan: list[dict[str, Any]] = field(default_factory=list)
+    live_zone_tokens: dict[str, int] = field(default_factory=dict)
+    wire_fingerprints: dict[str, Any] = field(default_factory=dict)
+    cache_diagnostics: dict[str, Any] = field(default_factory=dict)
+    tool_schema_profiles: list[dict[str, Any]] = field(default_factory=list)
     token_count_method: str = "langchain_approximate"
     duration_ms: float = 0.0
 
@@ -313,6 +349,14 @@ class ToolOutputRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_model_request_compression_thread
                     ON model_request_compression_events(thread_id, id);
+                CREATE TABLE IF NOT EXISTS interaction_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_interaction_events_thread
+                    ON interaction_events(thread_id, id);
                 """
             )
 
@@ -449,6 +493,54 @@ class ToolOutputRepository:
             )
         notify_metrics_changed(thread_id)
 
+    def record_interaction(self, *, thread_id: str, event: dict[str, Any]) -> None:
+        """Persist one model/tool interaction independently of compression eligibility."""
+        if not thread_id:
+            return
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "INSERT INTO interaction_events(thread_id, event_json, created_at) "
+                "VALUES (?, ?, ?)",
+                (thread_id, json.dumps(event, ensure_ascii=False), created),
+            )
+        notify_metrics_changed(thread_id)
+
+    def interaction_events(
+        self, *, thread_id: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
+        bounded = max(1, min(5000, int(limit)))
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, thread_id, event_json, created_at "
+                f"FROM interaction_events{where} ORDER BY id DESC LIMIT ?",
+                (*params, bounded),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in rows
+        ]
+
+    def latest_request_position(self, *, thread_id: str) -> tuple[int, int]:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT event_json FROM model_request_compression_events "
+                "WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            return 0, 0
+        event = json.loads(row["event_json"])
+        return int(event.get("turn_index", 0) or 0), int(
+            event.get("model_call_index", 0) or 0
+        )
+
     def record_model_request(
         self, *, thread_id: str, event: ModelRequestCompressionEvent
     ) -> None:
@@ -562,6 +654,11 @@ class ToolOutputRepository:
                 "FROM tool_output_model_reuse_events WHERE thread_id = ? ORDER BY id ASC",
                 (thread_id,),
             ).fetchall()
+            interaction_rows = conn.execute(
+                "SELECT id, thread_id, event_json, created_at "
+                "FROM interaction_events WHERE thread_id = ? ORDER BY id ASC",
+                (thread_id,),
+            ).fetchall()
 
         tool_events = [
             {
@@ -603,9 +700,19 @@ class ToolOutputRepository:
             }
             for row in reuse_rows
         ]
+        interaction_events = [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in interaction_rows
+        ]
         return {
             "summary": self.stats(thread_id=thread_id),
             "model_request_events": request_events,
+            "interaction_events": interaction_events,
             "tool_output_events": tool_events,
             "retrieval_events": retrieval_events,
             "model_reuse_events": model_reuse_events,
@@ -628,8 +735,28 @@ class ToolOutputRepository:
             request_rows = conn.execute(
                 f"SELECT event_json FROM model_request_compression_events{where}", params
             ).fetchall()
+            interaction_rows = conn.execute(
+                f"SELECT event_json FROM interaction_events{where}", params
+            ).fetchall()
         events = [json.loads(row["event_json"]) for row in rows]
         request_events = [json.loads(row["event_json"]) for row in request_rows]
+        interaction_events = [json.loads(row["event_json"]) for row in interaction_rows]
+        turn_ids = {str(item.get("turn_id") or "") for item in request_events}
+        turn_ids.discard("")
+        tool_calls = [item for item in interaction_events if item.get("event_type") == "tool_call"]
+        live_zone_tokens: dict[str, int] = {}
+        schema_tokens_by_tool: dict[str, int] = {}
+        cache_bust_suspected = 0
+        for request_event in request_events:
+            for key, value in dict(request_event.get("live_zone_tokens") or {}).items():
+                live_zone_tokens[str(key)] = live_zone_tokens.get(str(key), 0) + int(value or 0)
+            if (request_event.get("cache_diagnostics") or {}).get("cache_bust_suspected"):
+                cache_bust_suspected += 1
+            for profile in request_event.get("tool_schema_profiles") or []:
+                name = str(profile.get("tool_name") or "unknown")
+                schema_tokens_by_tool[name] = schema_tokens_by_tool.get(name, 0) + int(
+                    profile.get("estimated_tokens", 0) or 0
+                )
         retrieval_bytes = sum(int(row["returned_bytes"]) for row in retrieval_rows)
         estimated_reused_tokens = sum(
             int(row["estimated_avoided_tokens"]) for row in reuse_rows
@@ -744,6 +871,17 @@ class ToolOutputRepository:
             "skipped": decisions.get("skipped", 0),
             "fallback": decisions.get("fallback", 0),
             "model_requests": len(request_events),
+            "turns": len(turn_ids),
+            "tool_calls": len(tool_calls),
+            "compression_managed_tool_calls": sum(
+                bool(item.get("compression_managed")) for item in tool_calls
+            ),
+            "live_zone_tokens": live_zone_tokens,
+            "cache_bust_suspected_requests": cache_bust_suspected,
+            "schema_tokens_by_tool": schema_tokens_by_tool,
+            "top_schema_tools": sorted(
+                schema_tokens_by_tool.items(), key=lambda item: item[1], reverse=True
+            )[:10],
             "request_input_tokens_before": request_input_before,
             "request_input_tokens_after": request_input_after,
             "request_saved_tokens": request_saved_tokens,
@@ -817,6 +955,72 @@ class ToolOutputTransformer(Protocol):
     def transform(self, content: str, context: TransformContext) -> TransformResult: ...
 
 
+def _strip_numbered_source_lines(content: str) -> tuple[str, int, int]:
+    """Return a detection-only view without read_file's cat-n line prefixes."""
+    normalized: list[str] = []
+    numbered = 0
+    non_empty = 0
+    for line in content.splitlines():
+        if line.strip():
+            non_empty += 1
+        match = _NUMBERED_SOURCE_LINE.match(line)
+        if match:
+            numbered += 1
+            normalized.append(match.group("indent") + match.group("body"))
+        else:
+            normalized.append(line)
+    return "\n".join(normalized), numbered, non_empty
+
+
+def _code_marker_count(content: str) -> int:
+    return sum(
+        bool(
+            re.match(
+                r"^\s*(?:async\s+def|def|class|function|func|fn|import|from|use)\b",
+                line,
+            )
+        )
+        for line in content.splitlines()[:200]
+    )
+
+
+def _diff_bloat_metadata(content: str) -> dict[str, Any]:
+    total_lines = 0
+    change_lines = 0
+    context_lines = 0
+    in_hunk = False
+    for line in content.splitlines():
+        total_lines += 1
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if line.startswith("diff --git"):
+            in_hunk = False
+            continue
+        if not in_hunk or line.startswith(("+++", "---")):
+            continue
+        if line.startswith(("+", "-")):
+            change_lines += 1
+        elif line.startswith(" "):
+            context_lines += 1
+    denominator = context_lines + change_lines
+    context_ratio = context_lines / denominator if denominator else 0.0
+    normal_context_ratio = 0.6
+    bloat_score = (
+        max(0.0, min(1.0, (context_ratio - normal_context_ratio) / (1 - normal_context_ratio)))
+        if denominator
+        else 0.0
+    )
+    return {
+        "total_lines": total_lines,
+        "change_lines": change_lines,
+        "context_lines": context_lines,
+        "context_ratio": round(context_ratio, 4),
+        "bloat_score": round(bloat_score, 4),
+        "dense_diff": bool(total_lines >= 50 and context_ratio <= normal_context_ratio),
+    }
+
+
 def detect_content_type(content: str) -> Detection:
     lines = content.splitlines()
     if not lines:
@@ -855,15 +1059,7 @@ def detect_content_type(content: str) -> Detection:
         timestamped >= max(3, len(sampled) // 2) and any(_ERROR_LINE.search(line) for line in lines)
     ):
         return Detection(ContentType.LOG, 0.8)
-    code_markers = sum(
-        bool(
-            re.match(
-                r"^\s*(?:async\s+def|def|class|function|func|fn|import|from|use)\b",
-                line,
-            )
-        )
-        for line in lines[:200]
-    )
+    code_markers = _code_marker_count(content)
     if code_markers >= 3:
         return Detection(ContentType.CODE, min(0.95, 0.4 + code_markers / max(1, len(lines[:200]))))
     try:
@@ -1385,6 +1581,18 @@ def load_native_transformers(*, enabled: bool = True) -> list[ToolOutputTransfor
     except (ImportError, OSError):
         return []
 
+    def compress_native_diff(content: str, context: TransformContext) -> dict[str, Any]:
+        try:
+            result = native.compress_diff(content, context=context.query)
+        except TypeError as exc:
+            if "unexpected keyword argument 'context'" not in str(exc):
+                raise
+            result = native.compress_diff(content)
+            result["context_supported"] = False
+        else:
+            result["context_supported"] = True
+        return result
+
     return [
         NativeTransformer(
             name="headroom-search-v1",
@@ -1401,7 +1609,7 @@ def load_native_transformers(*, enabled: bool = True) -> list[ToolOutputTransfor
         NativeTransformer(
             name="headroom-diff-v1",
             content_type=ContentType.DIFF,
-            native_transform=lambda content, context: native.compress_diff(content),
+            native_transform=compress_native_diff,
         ),
         NativeTransformer(
             name="headroom-smart-crusher-v1",
@@ -1449,22 +1657,93 @@ class ToolOutputTransformPipeline:
     def transform(self, content: str, context: TransformContext) -> TransformResult:
         original_bytes = len(content.encode("utf-8"))
         detection_started = time.perf_counter()
-        detection = detect_content_type(content)
+        raw_detection = detect_content_type(content)
+        detection = raw_detection
+        detection_view = content
+        numbered_lines = 0
+        non_empty_lines = 0
+        normalized_code_markers = 0
+        suffix_is_code = context.file_suffix.casefold() in _CODE_SUFFIXES
+        numbered_source_hint = bool(
+            suffix_is_code
+            and numbered_lines
+            and numbered_lines >= max(1, non_empty_lines // 2)
+        )
+        if context.tool_name == "read_file":
+            normalized, numbered_lines, non_empty_lines = _strip_numbered_source_lines(content)
+            normalized_code_markers = _code_marker_count(normalized)
+            numbered_source_hint = bool(
+                suffix_is_code
+                and numbered_lines
+                and numbered_lines >= max(1, non_empty_lines // 2)
+            )
+            if numbered_lines and normalized_code_markers >= 3:
+                detection_view = normalized
+                detection = detect_content_type(normalized)
+            if numbered_source_hint:
+                detection_view = normalized
+                detection = Detection(ContentType.CODE, max(0.8, detection.confidence))
+        detection_metadata = {
+            "content_type": detection.content_type.value,
+            "confidence": detection.confidence,
+            "raw_content_type": raw_detection.content_type.value,
+            "raw_confidence": raw_detection.confidence,
+            "tool_name": context.tool_name,
+            "file_suffix": context.file_suffix,
+            "numbered_lines": numbered_lines,
+            "non_empty_lines": non_empty_lines,
+            "normalized_code_markers": normalized_code_markers,
+            "numbered_source_hint": numbered_source_hint,
+            "classification_conflict": raw_detection.content_type is not detection.content_type,
+        }
+        if detection.content_type is ContentType.DIFF:
+            detection_metadata.update(_diff_bloat_metadata(content))
         stages: list[CompressionStageEvent] = [
             CompressionStageEvent(
                 phase="detect",
-                algorithm="content-detector-v1",
+                algorithm="tool-aware-content-detector-v2",
                 applied=True,
                 reason_code="classified",
                 input_bytes=original_bytes,
-                output_bytes=original_bytes,
+                output_bytes=len(detection_view.encode("utf-8")),
                 duration_ms=(time.perf_counter() - detection_started) * 1000,
-                metadata={
-                    "content_type": detection.content_type.value,
-                    "confidence": detection.confidence,
-                },
+                metadata=detection_metadata,
             )
         ]
+        if (
+            context.tool_name == "read_file"
+            and context.status == "success"
+            and suffix_is_code
+            and detection.content_type is ContentType.CODE
+        ):
+            stages.append(
+                CompressionStageEvent(
+                    phase="eligibility",
+                    algorithm="fresh-read-source-policy-v1",
+                    applied=False,
+                    reason_code="fresh_read_source_protected",
+                    input_bytes=original_bytes,
+                    output_bytes=original_bytes,
+                    metadata={
+                        "file_path": context.file_path,
+                        "file_suffix": context.file_suffix,
+                        "normalized_code_markers": normalized_code_markers,
+                    },
+                )
+            )
+            return TransformResult(
+                content,
+                "fresh-read-source-policy-v1",
+                ContentType.CODE,
+                0,
+                0,
+                {
+                    "fallback": "fresh_read_source_protected",
+                    "detection_confidence": detection.confidence,
+                    **detection_metadata,
+                },
+                tuple(stages),
+            )
         if detection.content_type.value in self.disabled_types:
             stages.append(
                 CompressionStageEvent(
@@ -1550,6 +1829,7 @@ class ToolOutputTransformPipeline:
             result.critical_total,
             result.critical_retained,
             {
+                **detection_metadata,
                 **result.metadata,
                 "execution_path": execution_path,
                 "detection_confidence": detection.confidence,

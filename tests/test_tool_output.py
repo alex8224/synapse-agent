@@ -24,6 +24,7 @@ from synapse.tool_output import (
     TransformEvent,
     clear_metrics_notifier,
     detect_content_type,
+    load_native_transformers,
     load_transformer_plugins,
     set_metrics_notifier,
 )
@@ -31,10 +32,10 @@ from synapse.tool_output_middleware import build_tool_output_transform_middlewar
 from synapse.tools.session_tools import build_tool_result_reader_tool
 
 
-def _request(*, name: str = "execute", query: str = ""):
+def _request(*, name: str = "execute", query: str = "", args: dict | None = None):
     messages = [SimpleNamespace(type="human", content=query)] if query else []
     return SimpleNamespace(
-        tool_call={"id": "call-1", "name": name, "args": {}},
+        tool_call={"id": "call-1", "name": name, "args": args or {}},
         runtime=SimpleNamespace(
             config={"configurable": {"thread_id": "thread-a", "checkpoint_ns": "task"}},
             state={"messages": messages},
@@ -127,6 +128,62 @@ def test_diff_json_code_and_plugin_transforms() -> None:
     )
 
 
+def _numbered_python(lines: int = 90) -> str:
+    source = [
+        "from __future__ import annotations",
+        "import json",
+        "from pathlib import Path",
+        "",
+        "class Service:",
+        "    def run(self):",
+        "        return Path('x')",
+    ]
+    source.extend(f"def function_{index}():\n    return {index}" for index in range(lines // 2))
+    flattened = "\n".join(source).splitlines()
+    return "\n".join(f"{index:6d}\t{line}" for index, line in enumerate(flattened, 1))
+
+
+def test_numbered_read_file_source_is_detected_and_protected(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo, threshold_bytes=100)
+    source = _numbered_python()
+
+    result = middleware.wrap_tool_call(
+        _request(
+            name="read_file",
+            args={"file_path": "/src/example.py", "offset": 0, "limit": 200},
+        ),
+        lambda _: ToolMessage(content=source, tool_call_id="call-source", name="read_file"),
+    )
+
+    assert result.content == source
+    event = repo.events(thread_id="thread-a")[0]
+    assert event["decision"] == "skipped"
+    assert event["reason_code"] == "fresh_read_source_protected"
+    assert event["content_type"] == "code"
+    detect = next(stage for stage in event["stages"] if stage["phase"] == "detect")
+    assert detect["metadata"]["raw_content_type"] in {"log", "text"}
+    assert detect["metadata"]["classification_conflict"] is True
+    assert detect["metadata"]["numbered_source_hint"] is True
+    assert detect["metadata"]["file_suffix"] == ".py"
+
+
+def test_numbered_non_source_read_file_keeps_content_detection() -> None:
+    content = "\n".join(f"{index:6d}\t2026-01-01 INFO passed={index}" for index in range(40))
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        content,
+        TransformContext(
+            tool_name="read_file",
+            status="success",
+            file_path="/tmp/results.log",
+            file_suffix=".log",
+        ),
+    )
+
+    assert result.content_type is not ContentType.CODE
+    assert result.metadata.get("fallback") != "fresh_read_source_protected"
+
+
 def test_capture_error_command_async_exclusion_and_detection(tmp_path: Path) -> None:
     repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
     middleware = build_tool_output_transform_middleware(repo, threshold_bytes=20)
@@ -172,6 +229,10 @@ def test_capture_error_command_async_exclusion_and_detection(tmp_path: Path) -> 
         lambda _: ToolMessage(content=source, tool_call_id="call-1", name="read_tool_result"),
     )
     assert direct.content == source
+    interactions = repo.interaction_events(thread_id="thread-a")
+    direct_event = next(item for item in interactions if item["tool_name"] == "read_tool_result")
+    assert direct_event["compression_managed"] is False
+    assert direct_event["compression_decision"] == ""
     samples = {
         ContentType.SEARCH: "a.py:1:x\nb.py:2:x\nc.py:3:x",
         ContentType.LOG: "2026-01-01 INFO x\n2026-01-01 ERROR y\n2026-01-01 INFO z",
@@ -181,6 +242,66 @@ def test_capture_error_command_async_exclusion_and_detection(tmp_path: Path) -> 
     }
     for expected, content in samples.items():
         assert detect_content_type(content).content_type is expected
+
+
+def test_diff_pipeline_records_bloat_profile() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/app.py b/app.py",
+            "--- a/app.py",
+            "+++ b/app.py",
+            "@@ -1,80 +1,80 @@",
+            *[f" context {index}" for index in range(70)],
+            "-old value",
+            "+new value",
+        ]
+    )
+
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        diff, TransformContext(tool_name="execute", status="success", query="new value")
+    )
+
+    detect = next(stage for stage in result.stages if stage.phase == "detect")
+    assert detect.metadata["content_type"] == "diff"
+    assert detect.metadata["context_lines"] == 70
+    assert detect.metadata["change_lines"] == 2
+    assert detect.metadata["context_ratio"] > 0.9
+    assert detect.metadata["bloat_score"] > 0.8
+    assert detect.metadata["dense_diff"] is False
+
+
+def test_low_effective_savings_diff_falls_back(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    content = "\n".join(
+        [
+            "diff --git a/app.py b/app.py",
+            "--- a/app.py",
+            "+++ b/app.py",
+            "@@ -1,35 +1,35 @@",
+            *[item for index in range(30) for item in (f"-old {index}", f"+new {index}")],
+        ]
+    )
+    middleware = build_tool_output_transform_middleware(
+        repo,
+        threshold_bytes=100,
+        pipeline=ToolOutputTransformPipeline(use_native=False),
+    )
+
+    result = middleware.wrap_tool_call(
+        _request(name="execute"),
+        lambda _: ToolMessage(content=content, tool_call_id="call-dense", name="execute"),
+    )
+
+    assert result.content == content
+    event = repo.events(thread_id="thread-a")[0]
+    assert event["decision"] == "fallback"
+    assert event["reason_code"] in {
+        "insufficient_effective_savings",
+        "envelope_erased_savings",
+        "no_byte_savings",
+    }
+    detect = next(stage for stage in event["stages"] if stage["phase"] == "detect")
+    assert detect["metadata"]["dense_diff"] is True
 
 
 def test_search_transformer_handles_ripgrep_context_and_global_budget() -> None:
@@ -241,6 +362,45 @@ def test_native_transformers_are_used_when_wheel_is_installed() -> None:
     assert result.transformer == "headroom-search-v1"
     assert result.metadata["native"] is True
     assert "AUTH_TIMEOUT" in result.content
+
+
+def test_native_diff_context_supports_legacy_wheel(monkeypatch) -> None:
+    import synapse_tool_compress_core as native
+
+    calls: list[str] = []
+
+    def legacy_diff(content: str) -> dict:
+        calls.append(content)
+        return {
+            "content": content[: len(content) // 2],
+            "transformer": "headroom-diff-v1",
+            "content_type": "diff",
+        }
+
+    monkeypatch.setattr(native, "compress_diff", legacy_diff)
+    diff = "\n".join(
+        [
+            "diff --git a/app.py b/app.py",
+            "--- a/app.py",
+            "+++ b/app.py",
+            "@@ -1,80 +1,80 @@",
+            *[f" context {index}" for index in range(70)],
+            "-old",
+            "+new",
+        ]
+    )
+    transformer = next(
+        item
+        for item in load_native_transformers(enabled=True)
+        if ContentType.DIFF in item.content_types
+    )
+    result = transformer.transform(
+        diff, TransformContext(tool_name="execute", status="success", query="new")
+    )
+
+    assert calls == [diff]
+    assert result.metadata["context_supported"] is False
+    assert result.metadata["native"] is True
 
 
 def test_native_transform_error_falls_back_to_python_transformer() -> None:

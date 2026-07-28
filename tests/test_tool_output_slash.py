@@ -257,9 +257,10 @@ def test_compression_export_json_defaults_to_complete_diagnostics_file(tmp_path:
     assert target.is_file()
     text = target.read_text(encoding="utf-8")
     payload = json.loads(text)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["thread_id"] == "thread-a"
     assert payload["summary"]["model_requests"] == 1
+    assert "interaction_events" in payload
     assert payload["model_request_events"][0]["request_id"] == "request-export"
     assert payload["tool_output_events"][0]["ref"] == record.ref
     assert payload["retrieval_events"][0]["returned_bytes"] == 128

@@ -215,6 +215,7 @@ def _compression_export_csv(payload: dict[str, Any]) -> str:
     )
     for record_type, key in (
         ("model_request", "model_request_events"),
+        ("interaction", "interaction_events"),
         ("tool_output", "tool_output_events"),
         ("retrieval", "retrieval_events"),
         ("model_reuse", "model_reuse_events"),
@@ -292,7 +293,7 @@ def _compression_export_result(
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
     diagnostics = repo.export_diagnostics(thread_id=thread_id)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "thread_id": thread_id,
         **diagnostics,
@@ -320,6 +321,7 @@ def _compression_export_result(
 
     counts = {
         "model requests": len(payload["model_request_events"]),
+        "tool calls": len(payload["interaction_events"]),
         "tool outputs": len(payload["tool_output_events"]),
         "retrievals": len(payload["retrieval_events"]),
         "model reuses": len(payload["model_reuse_events"]),
@@ -392,6 +394,34 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
             "## Compression Profile",
             "",
             f"Thread: `{thread_id}`",
+            "",
+            (
+                f"Turns: {stats.get('turns', 0)} · model calls: "
+                f"{stats.get('model_requests', 0)} · tool calls: "
+                f"{stats.get('tool_calls', 0)} · compression-managed: "
+                f"{stats.get('compression_managed_tool_calls', 0)}"
+            ),
+            (
+                f"Cache bust suspected: {stats.get('cache_bust_suspected_requests', 0)} requests"
+            ),
+            "",
+            "### Live-zone distribution",
+            "",
+            "| Zone | Estimated tokens |",
+            "|---|---:|",
+            *[
+                f"| {_md_escape(str(zone))} | ~{int(tokens or 0)} |"
+                for zone, tokens in sorted((stats.get("live_zone_tokens") or {}).items())
+            ],
+            "",
+            "### Tool schema ranking",
+            "",
+            "| Tool | Cumulative estimated tokens |",
+            "|---|---:|",
+            *[
+                f"| {_md_escape(str(name))} | ~{int(tokens or 0)} |"
+                for name, tokens in stats.get("top_schema_tools") or []
+            ],
             "",
             "### Request content breakdown",
             "",
@@ -507,8 +537,11 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
             breakdown = item.get("content_breakdown") or {}
             opportunities = item.get("opportunity_tokens_by_reason") or {}
             lines.append(
-                f"{request_id} before=~{before} after=~{after} saved=~{saved} "
-                f"protected={protected} breakdown={breakdown} opportunities={opportunities}"
+                f"{request_id} turn={item.get('turn_index', 0)} "
+                f"call={item.get('model_call_index', 0)} before=~{before} after=~{after} "
+                f"saved=~{saved} protected={protected} breakdown={breakdown} "
+                f"opportunities={opportunities} live_zone={item.get('live_zone_tokens') or {}} "
+                f"cache={item.get('cache_diagnostics') or {}}"
             )
             if request_filter:
                 md.extend(

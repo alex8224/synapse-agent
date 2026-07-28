@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from typing import Any
@@ -10,6 +12,7 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
+from synapse.interaction_ledger import begin_model_call
 from synapse.tool_output import ModelRequestCompressionEvent, ToolOutputRepository
 
 
@@ -330,12 +333,276 @@ def _usage(response: Any) -> dict[str, int]:
     return values
 
 
+def _stable_json(value: Any) -> str:
+    try:
+        if hasattr(value, "model_dump"):
+            value = value.model_dump()
+        elif not isinstance(value, dict | list | tuple | str | int | float | bool | type(None)):
+            value = vars(value) if hasattr(value, "__dict__") else str(value)
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _current_user_content(messages: list[Any]) -> Any:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            return getattr(message, "content", "")
+    return ""
+
+
+def _live_zone_plan(request: Any, provider: str, api_style: str) -> list[dict[str, Any]]:
+    messages = list(getattr(request, "messages", None) or [])
+    latest_user = max(
+        (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+        default=-1,
+    )
+    latest_tool = max(
+        (index for index, message in enumerate(messages) if isinstance(message, ToolMessage)),
+        default=-1,
+    )
+    plan: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        tokens = _count([message])
+        zone = "frozen"
+        reason = "historical_message"
+        if isinstance(message, AIMessage) and _reasoning_tokens(message):
+            zone, reason = "protected", "reasoning_protected"
+        elif provider == "anthropic":
+            additional = getattr(message, "additional_kwargs", None) or {}
+            if additional.get("cache_control"):
+                zone, reason = "frozen", "anthropic_cache_boundary"
+            elif index >= latest_user:
+                zone, reason = "live", "anthropic_after_latest_user"
+            else:
+                reason = "anthropic_before_live_zone"
+        elif api_style == "responses":
+            if isinstance(message, HumanMessage) and index == latest_user:
+                zone, reason = "live", "responses_latest_user"
+            elif isinstance(message, ToolMessage) and index == latest_tool and index >= latest_user:
+                zone, reason = "live", "responses_latest_tool_output"
+            else:
+                reason = "responses_historical_output"
+        else:
+            if isinstance(message, HumanMessage) and index == latest_user:
+                zone, reason = "live", "openai_latest_user"
+            elif isinstance(message, ToolMessage) and index == latest_tool and index >= latest_user:
+                zone, reason = "live", "openai_latest_tool_output"
+            else:
+                reason = "openai_historical_message"
+        plan.append(
+            {
+                "message_index": index,
+                "message_type": getattr(message, "type", message.__class__.__name__),
+                "zone": zone,
+                "reason": reason,
+                "estimated_tokens": tokens,
+            }
+        )
+    return plan
+
+
+def _tool_schema_profiles(tools: list[Any]) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for index, tool in enumerate(tools):
+        raw = _stable_json(tool)
+        data = tool.model_dump() if hasattr(tool, "model_dump") else tool
+        data = data if isinstance(data, dict) else {}
+        function = data.get("function") if isinstance(data.get("function"), dict) else data
+        name = str(function.get("name") or getattr(tool, "name", None) or f"tool-{index}")
+        description = str(function.get("description") or getattr(tool, "description", None) or "")
+        parameters = function.get("parameters") or function.get("args_schema") or {}
+        profiles.append(
+            {
+                "index": index,
+                "tool_name": name,
+                "schema_bytes": len(raw.encode("utf-8")),
+                "estimated_tokens": _count([], [tool]),
+                "description_bytes": len(description.encode("utf-8")),
+                "parameters_bytes": len(_stable_json(parameters).encode("utf-8")),
+                "schema_hash": _fingerprint(tool),
+            }
+        )
+    return profiles
+
+
+def _wire_fingerprints(request: Any) -> dict[str, Any]:
+    system = getattr(request, "system_message", None)
+    messages = list(getattr(request, "messages", None) or [])
+    tools = list(getattr(request, "tools", None) or [])
+    return {
+        "system_hash": _fingerprint(system) if system is not None else "",
+        "tools_hash": _fingerprint(tools),
+        "message_hashes": [_fingerprint(message) for message in messages],
+        "message_count": len(messages),
+        "tool_count": len(tools),
+        "request_prefix_hash": _fingerprint([system, tools, messages]),
+    }
+
+
+def _cache_diagnostics(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any],
+    usage: dict[str, int],
+) -> dict[str, Any]:
+    previous = previous or {}
+    previous_hashes = list(previous.get("message_hashes") or [])
+    current_hashes = list(current.get("message_hashes") or [])
+    first_change = next(
+        (
+            index
+            for index, (before, after) in enumerate(
+                zip(previous_hashes, current_hashes, strict=False)
+            )
+            if before != after
+        ),
+        min(len(previous_hashes), len(current_hashes)),
+    )
+    input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+    cache_read = max(0, int(usage.get("cache_read_tokens", 0) or 0))
+    return {
+        "previous_request_available": bool(previous),
+        "system_changed": bool(
+            previous and previous.get("system_hash") != current.get("system_hash")
+        ),
+        "tools_changed": bool(
+            previous and previous.get("tools_hash") != current.get("tools_hash")
+        ),
+        "first_changed_message_index": first_change if previous else None,
+        "cache_hit_ratio": round(cache_read / input_tokens, 4) if input_tokens else 0.0,
+        "cache_bust_suspected": bool(
+            previous and input_tokens and cache_read / input_tokens < 0.5
+        ),
+    }
+
+
+def _read_lifecycle(messages: list[Any], plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tool_calls: dict[str, dict[str, Any]] = {}
+    for index, message in enumerate(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        for call in getattr(message, "tool_calls", None) or []:
+            if not isinstance(call, dict):
+                continue
+            args = call.get("args") if isinstance(call.get("args"), dict) else {}
+            tool_calls[str(call.get("id") or "")] = {
+                "message_index": index,
+                "tool_name": str(call.get("name") or ""),
+                "file_path": str(args.get("file_path") or args.get("path") or ""),
+                "offset": args.get("offset"),
+                "limit": args.get("limit"),
+            }
+    operations: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        call_id = str(getattr(message, "tool_call_id", None) or "")
+        call = tool_calls.get(call_id) or {}
+        name = str(call.get("tool_name") or getattr(message, "name", None) or "")
+        if name not in {"read_file", "edit_file", "write_file"}:
+            continue
+        operations.append({"message_index": index, "tool_call_id": call_id, **call})
+    result: list[dict[str, Any]] = []
+    for operation in operations:
+        if operation.get("tool_name") != "read_file" or not operation.get("file_path"):
+            continue
+        later = [
+            item
+            for item in operations
+            if item["message_index"] > operation["message_index"]
+            and item.get("file_path") == operation.get("file_path")
+        ]
+        state = "fresh"
+        if any(item.get("tool_name") in {"edit_file", "write_file"} for item in later):
+            state = "stale"
+        elif any(item.get("tool_name") == "read_file" for item in later):
+            state = "superseded"
+        zone = next(
+            (
+                item["zone"]
+                for item in plan
+                if item["message_index"] == operation["message_index"]
+            ),
+            "frozen",
+        )
+        result.append(
+            {
+                **operation,
+                "state": state,
+                "zone": zone,
+                "replaceable": state in {"stale", "superseded"} and zone == "live",
+            }
+        )
+    return result
+
+
+def _apply_read_lifecycle(
+    request: Any,
+    lifecycle: list[dict[str, Any]],
+    repository: ToolOutputRepository,
+    thread_id: str,
+) -> tuple[Any, list[dict[str, Any]]]:
+    replaceable = {
+        int(item["message_index"]): item for item in lifecycle if item.get("replaceable")
+    }
+    if not replaceable:
+        return request, lifecycle
+    messages = list(getattr(request, "messages", None) or [])
+    updated = list(messages)
+    for index, item in replaceable.items():
+        if index >= len(messages) or not isinstance(messages[index], ToolMessage):
+            continue
+        message = messages[index]
+        original = str(getattr(message, "content", "") or "")
+        record = repository.put(
+            thread_id=thread_id,
+            checkpoint_ns="read-lifecycle",
+            tool_call_id=str(item.get("tool_call_id") or ""),
+            tool_name="read_file",
+            status="success",
+            content=original,
+        )
+        state = str(item.get("state") or "stale")
+        path = str(item.get("file_path") or "unknown")
+        marker = (
+            f"[read_file {state}: {path}; re-read for current content if needed. "
+            f"Original: {record.ref}]"
+        )
+        if hasattr(message, "model_copy"):
+            updated[index] = message.model_copy(update={"content": marker})
+        else:
+            updated[index] = ToolMessage(
+                content=marker,
+                tool_call_id=str(getattr(message, "tool_call_id", None) or ""),
+                name=getattr(message, "name", None),
+            )
+        item["replacement_ref"] = record.ref
+        item["replacement_bytes_before"] = len(original.encode("utf-8"))
+        item["replacement_bytes_after"] = len(marker.encode("utf-8"))
+    if updated == messages or not hasattr(request, "override"):
+        return request, lifecycle
+    return request.override(messages=updated), lifecycle
+
+
 def build_model_request_compression_middleware(repository: ToolOutputRepository) -> Any:
     """Record final model-visible request size, reconstructed baseline, and usage."""
 
     class _ModelRequestCompressionMiddleware(AgentMiddleware):
         state_schema = AgentState
         tools: list[Any] = []
+
+        def __init__(self) -> None:
+            self._previous_wire: dict[str, dict[str, Any]] = {}
 
         def _prepare(self, request: Any) -> dict[str, Any]:
             started = time.perf_counter()
@@ -348,15 +615,49 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
             active_messages = list(getattr(request, "messages", None) or [])
             summarization_saved = max(0, state_count - _count(active_messages))
             provider, api_style, auth_mode, model = _model_identity(request)
+            thread_id = _thread_id(request)
+            turn_index_hint = sum(isinstance(message, HumanMessage) for message in active_messages)
+            previous_turn, previous_call = repository.latest_request_position(thread_id=thread_id)
+            position = begin_model_call(
+                thread_id,
+                _current_user_content(active_messages),
+                turn_index_hint=turn_index_hint,
+                model_call_index_hint=previous_call if previous_turn == turn_index_hint else 0,
+            )
+            live_zone_plan = _live_zone_plan(request, provider, api_style)
+            wire_fingerprints = _wire_fingerprints(request)
+            schema_profiles = _tool_schema_profiles(tools)
+            read_lifecycle = _read_lifecycle(active_messages, live_zone_plan)
+            request, read_lifecycle = _apply_read_lifecycle(
+                request, read_lifecycle, repository, thread_id
+            )
+            request_messages = _messages(request)
+            tools = list(getattr(request, "tools", None) or [])
+            input_after = _count(request_messages, tools)
+            tool_saved, candidates, transformed = _tool_output_savings(request_messages)
+            active_messages = list(getattr(request, "messages", None) or [])
+            breakdown = _content_breakdown(request)
+            wire_fingerprints = _wire_fingerprints(request)
+            schema_profiles = _tool_schema_profiles(tools)
+            live_zone_tokens: dict[str, int] = {}
+            for item in live_zone_plan:
+                zone = str(item["zone"])
+                live_zone_tokens[zone] = live_zone_tokens.get(zone, 0) + int(
+                    item["estimated_tokens"] or 0
+                )
             protected = _provider_protected_tokens(request, provider, api_style)
             breakdown = _content_breakdown(request)
             from synapse.middleware import current_prompt_cleanup_saved_tokens
 
             prompt_saved = current_prompt_cleanup_saved_tokens()
             return {
+                "prepared_request": request,
                 "started": started,
                 "request_id": uuid.uuid4().hex,
-                "thread_id": _thread_id(request),
+                "thread_id": thread_id,
+                "turn_id": position.turn_id,
+                "turn_index": position.turn_index,
+                "model_call_index": position.model_call_index,
                 "provider": provider,
                 "api_style": api_style,
                 "auth_mode": auth_mode,
@@ -370,6 +671,11 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
                 "protected": protected,
                 "breakdown": breakdown,
                 "opportunities": _opportunities(breakdown),
+                "live_zone_plan": live_zone_plan,
+                "live_zone_tokens": live_zone_tokens,
+                "wire_fingerprints": wire_fingerprints,
+                "schema_profiles": schema_profiles,
+                "read_lifecycle": read_lifecycle,
             }
 
         def _finish(self, data: dict[str, Any], response: Any) -> None:
@@ -381,6 +687,12 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
             prompt_saved = int(data["prompt_saved"] or 0)
             summarization_saved = int(data["summarization_saved"] or 0)
             total_saved = tool_saved + prompt_saved + summarization_saved
+            wire = dict(data["wire_fingerprints"] or {})
+            cache_diagnostics = _cache_diagnostics(
+                self._previous_wire.get(thread_id), wire, usage
+            )
+            cache_diagnostics["read_lifecycle"] = list(data["read_lifecycle"] or [])
+            self._previous_wire[thread_id] = wire
             repository.record_model_request(
                 thread_id=thread_id,
                 event=ModelRequestCompressionEvent(
@@ -405,19 +717,27 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
                     protected_tokens_by_reason=dict(data["protected"] or {}),
                     content_breakdown=dict(data["breakdown"] or {}),
                     opportunity_tokens_by_reason=dict(data["opportunities"] or {}),
+                    turn_id=str(data["turn_id"] or ""),
+                    turn_index=int(data["turn_index"] or 0),
+                    model_call_index=int(data["model_call_index"] or 0),
+                    live_zone_plan=list(data["live_zone_plan"] or []),
+                    live_zone_tokens=dict(data["live_zone_tokens"] or {}),
+                    wire_fingerprints=wire,
+                    cache_diagnostics=cache_diagnostics,
+                    tool_schema_profiles=list(data["schema_profiles"] or []),
                     duration_ms=(time.perf_counter() - float(data["started"])) * 1000,
                 ),
             )
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
             data = self._prepare(request)
-            response = handler(request)
+            response = handler(data["prepared_request"])
             self._finish(data, response)
             return response
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             data = self._prepare(request)
-            response = await handler(request)
+            response = await handler(data["prepared_request"])
             self._finish(data, response)
             return response
 
