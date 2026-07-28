@@ -8,6 +8,7 @@ from synapse.ui.topbar import (
     truncate_to_width,
 )
 from synapse.ui.tui import (
+    format_byte_count,
     format_context_occupancy_label,
     format_usage_label,
 )
@@ -35,6 +36,12 @@ def test_format_context_occupancy_without_window() -> None:
         last_input_tokens=100,
         context_window=0,
     ) == "100"
+
+
+def test_format_byte_count_uses_explicit_byte_units() -> None:
+    assert format_byte_count(242_000) == "236 KiB"
+    assert format_byte_count(1024) == "1 KiB"
+    assert format_byte_count(484) == "484 B"
 
 
 def test_usage_label_compact_in_cache_out() -> None:

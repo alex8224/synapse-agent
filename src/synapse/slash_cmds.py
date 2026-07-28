@@ -99,8 +99,14 @@ HELP_TEXT = """## Slash Commands
 |---|---|
 | `/context` | Context usage stats |
 | `/compact` | Force context compact |
-| `/tool-output [session]` | Tool-output compression metrics |
-| `/tool-output events [session] [limit]` | Recent tool-output transformation events |
+| `/compression [session]` | Compression diagnostics summary |
+| `/compression events [session] [limit]` | Recent compression decisions |
+| `/compression requests [session] [limit]` | Model request before/after ledger |
+| `/compression request <request_id> [session]` | One model request accounting event |
+| `/compression skipped [session] [limit]` | Outputs skipped by policy or threshold |
+| `/compression fallback [session] [limit]` | Compression attempts that reverted |
+| `/compression tool <tool_call_id> [session] [limit]` | Decisions for one tool call |
+| `/tool-output ...` | Alias for `/compression ...` |
 | `/skills` | List skills |
 | `/memory` | List memory files |
 | `/subagents` | List sub-agents |
@@ -163,11 +169,34 @@ def _resolve_session_ref(
 
 
 def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) -> SlashResult:
-    """Render persistent tool-output compression metrics or recent events."""
-    show_events = bool(args and args[0].casefold() == "events")
-    rest = args[1:] if show_events else args
+    """Render persistent compression diagnostics or recent decision events."""
+    mode = args[0].casefold() if args else "stats"
+    show_requests = mode in {"requests", "request"}
+    show_events = mode in {"events", "skipped", "fallback", "tool"}
+    rest = args[1:] if show_events or show_requests else args
+    decision_filter = mode if mode in {"skipped", "fallback"} else ""
+    tool_filter = ""
+    request_filter = ""
+    if mode == "request":
+        if not rest:
+            return SlashResult(
+                handled=True,
+                lines=["usage: /compression request <request_id> [session]"],
+                error=True,
+            )
+        request_filter = rest[0]
+        rest = rest[1:]
+    if mode == "tool":
+        if not rest:
+            return SlashResult(
+                handled=True,
+                lines=["usage: /compression tool <tool_call_id> [session] [limit]"],
+                error=True,
+            )
+        tool_filter = rest[0]
+        rest = rest[1:]
     limit = 10
-    if show_events and rest and rest[-1].isdigit():
+    if (show_events or show_requests) and rest and rest[-1].isdigit():
         limit = max(1, min(50, int(rest[-1])))
         rest = rest[:-1]
     thread_id, error = _resolve_session_ref(settings, current_thread_id, rest)
@@ -177,8 +206,71 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
     from synapse.tool_output import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    if show_requests:
+        requests = repo.model_request_events(thread_id=thread_id, limit=max(limit, 50))
+        if request_filter:
+            requests = [item for item in requests if item.get("request_id") == request_filter]
+        requests = requests[:limit]
+        if not requests:
+            return SlashResult(
+                handled=True,
+                lines=[f"thread_id={thread_id}", "no model request compression events"],
+            )
+        md = [
+            "## Model Request Compression",
+            "",
+            f"Thread: `{thread_id}`",
+            "",
+            (
+                "| Time | Request | Provider / API | Input before | Input after | "
+                "Saved | Cache | Output |"
+            ),
+            "|---|---|---|---:|---:|---:|---:|---:|",
+        ]
+        lines = [f"thread_id={thread_id}"]
+        for item in requests:
+            request_id = str(item.get("request_id") or "-")
+            before = int(item.get("input_tokens_before", 0) or 0)
+            after = int(item.get("input_tokens_after", 0) or 0)
+            saved = int(item.get("total_saved_tokens", 0) or 0)
+            cache = int(item.get("cache_read_tokens", 0) or 0)
+            output = int(item.get("output_tokens", 0) or 0)
+            md.append(
+                "| {time} | `{request}` | {provider}/{api} | ~{before} | ~{after} | "
+                "~{saved} | {cache} | {output} |".format(
+                    time=_md_escape(str(item.get("created_at") or "-")),
+                    request=_md_escape(request_id),
+                    provider=_md_escape(str(item.get("provider") or "unknown")),
+                    api=_md_escape(str(item.get("api_style") or "unknown")),
+                    before=before,
+                    after=after,
+                    saved=saved,
+                    cache=cache,
+                    output=output,
+                )
+            )
+            protected = item.get("protected_tokens_by_reason") or {}
+            lines.append(
+                f"{request_id} before=~{before} after=~{after} saved=~{saved} "
+                f"protected={protected}"
+            )
+        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
     if show_events:
-        events = repo.events(thread_id=thread_id, limit=limit)
+        fetch_limit = min(500, max(limit, 50) if decision_filter or tool_filter else limit)
+        events = repo.events(thread_id=thread_id, limit=fetch_limit)
+        if decision_filter:
+            events = [
+                event
+                for event in events
+                if str(event.get("decision") or "").casefold() == decision_filter
+            ]
+        if tool_filter:
+            events = [
+                event
+                for event in events
+                if str(event.get("tool_call_id") or "") == tool_filter
+            ]
+        events = events[:limit]
         if not events:
             return SlashResult(
                 handled=True,
@@ -189,35 +281,47 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
                 ),
             )
         md = [
-            "## Tool Output Events",
+            "## Compression Decision Events",
             "",
             f"Thread: `{thread_id}`",
             "",
-            "| Time | Type | Transformer | Outcome | Original | Visible | Saved | Read |",
-            "|---|---|---|---|---:|---:|---:|---:|",
+            (
+                "| Time | Tool / ID | Type | Decision | Reason | Pipeline | "
+                "Original | Final | Saved tok |"
+            ),
+            "|---|---|---|---|---|---|---:|---:|---:|",
         ]
         lines = [f"thread_id={thread_id}"]
         for event in events:
-            saved = int(event.get("saved_bytes", 0) or 0)
+            saved = int(event.get("estimated_saved_tokens", 0) or 0)
+            tool = str(event.get("tool_name") or "-")
+            call_id = str(event.get("tool_call_id") or "-")
+            decision = str(
+                event.get("decision")
+                or ("transformed" if event.get("outcome") == "transformed" else "fallback")
+            )
+            reason = str(event.get("reason_code") or "legacy_passthrough")
             row = (
-                "| {time} | {type} | {transformer} | {outcome} | "
-                "{original} | {visible} | {saved} | {read} |"
+                "| {time} | {tool}<br>`{call_id}` | {type} | {decision} | {reason} | "
+                "{transformer} | {original} | {visible} | {saved} |"
             )
             md.append(
                 row.format(
                     time=_md_escape(str(event.get("created_at", "-"))),
+                    tool=_md_escape(tool),
+                    call_id=_md_escape(call_id),
                     type=_md_escape(str(event.get("content_type", "-"))),
+                    decision=_md_escape(decision),
+                    reason=_md_escape(reason),
                     transformer=_md_escape(str(event.get("transformer", "-"))),
-                    outcome=_md_escape(str(event.get("outcome", "-"))),
                     original=_format_bytes(event.get("original_bytes", 0)),
                     visible=_format_bytes(event.get("visible_bytes", 0)),
-                    saved=_format_bytes(saved),
-                    read=_format_bytes(event.get("retrieval_bytes", 0)),
+                    saved=f"~{saved}" if saved else "0",
                 )
             )
             lines.append(
-                f"{event.get('created_at', '-')} {event.get('content_type', '-')} "
-                f"saved={_format_bytes(saved)}"
+                f"{event.get('created_at', '-')} {tool}/{call_id} "
+                f"{decision}:{reason} saved_tokens=~{saved}"
             )
         return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
 
@@ -228,8 +332,33 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
         ("thread_id", thread_id),
         ("outputs considered", str(stats["outputs_considered"])),
         ("transformed", str(stats["transformed"])),
+        ("skipped", str(stats.get("skipped", 0) or 0)),
+        ("fallback", str(stats.get("fallback", 0) or 0)),
+        ("model requests", str(stats.get("model_requests", 0) or 0)),
+        (
+            "request input before/after",
+            f"~{stats.get('request_input_tokens_before', 0)}/"
+            f"~{stats.get('request_input_tokens_after', 0)}",
+        ),
+        ("request saved tokens", f"~{stats.get('request_saved_tokens', 0) or 0}"),
+        ("whole request savings", f"{stats.get('whole_request_savings_ratio', 0.0):.1%}"),
+        ("new input savings", f"{stats.get('new_input_savings_ratio', 0.0):.1%}"),
+        (
+            "provider input/cache/output",
+            f"{stats.get('provider_input_tokens', 0)}/"
+            f"{stats.get('cache_read_tokens', 0)}/"
+            f"{stats.get('request_output_tokens', 0)}",
+        ),
         ("original bytes", _format_bytes(stats["original_bytes"])),
         ("visible bytes", _format_bytes(stats["visible_bytes"])),
+        (
+            "estimated static token saving",
+            str(stats.get("estimated_saved_tokens", 0) or 0),
+        ),
+        (
+            "estimated reused token saving",
+            str(stats.get("estimated_reused_tokens", 0) or 0),
+        ),
         ("saved", f"{_format_bytes(stats['saved_bytes'])} ({stats['savings_ratio']:.1%})"),
         ("retrieval bytes", _format_bytes(stats["retrieval_bytes"])),
         ("effective saved", f"{effective_saved} ({effective_ratio})"),
@@ -243,7 +372,23 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
                 ", ".join(f"{name}={count}" for name, count in sorted(paths.items())),
             )
         )
-    md = ["## Tool Output Compression", "", "| Metric | Value |", "|---|---|"]
+    reasons = stats.get("reasons") or {}
+    tokens_by_reason = stats.get("tokens_by_reason") or {}
+    if reasons:
+        rows.append(
+            (
+                "decision reasons",
+                ", ".join(
+                    f"{name}={count}/~{int(tokens_by_reason.get(name, 0) or 0)}tok"
+                    for name, count in sorted(
+                        reasons.items(),
+                        key=lambda item: int(tokens_by_reason.get(item[0], 0) or 0),
+                        reverse=True,
+                    )
+                ),
+            )
+        )
+    md = ["## Compression Diagnostics", "", "| Metric | Value |", "|---|---|"]
     md.extend(f"| {_md_escape(key)} | {_md_escape(value)} |" for key, value in rows)
     return SlashResult(
         handled=True,
@@ -1558,7 +1703,7 @@ def handle_slash(
         md = "## Compact\n\n" + "\n".join(f"- {x}" for x in lines)
         return SlashResult(handled=True, lines=lines, error=not ok, markdown=md)
 
-    if cmd in {"/tool-output", "/tool-compress"}:
+    if cmd in {"/compression", "/tool-output", "/tool-compress"}:
         return _tool_output_result(settings, thread_id, args)
 
     if cmd == "/context":

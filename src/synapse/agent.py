@@ -25,6 +25,9 @@ from synapse.middleware import (
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
 )
+from synapse.model_request_compression_middleware import (
+    build_model_request_compression_middleware,
+)
 from synapse.models_registry import (
     build_model_from_settings,
     model_cache_key,
@@ -41,6 +44,7 @@ from synapse.tool_output import (
     load_transformer_plugins,
 )
 from synapse.tool_output_middleware import build_tool_output_transform_middleware
+from synapse.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.tools import build_session_tools
 from synapse.vision_middleware import build_describe_image_middleware
 
@@ -332,6 +336,7 @@ def build_coding_agent(
     )
     vision_config = VisionModelConfig.from_registry(registry, settings)
 
+    output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
     middleware: list[Any] = [
         build_agent_md_middleware(project_root),
         build_describe_image_middleware(
@@ -341,25 +346,28 @@ def build_coding_agent(
         build_model_retry_middleware(),
         build_task_namespace_middleware(),
     ]
-    if getattr(settings, "enable_tool_output_transform", True):
-        try:
-            output_pipeline = ToolOutputTransformPipeline(
-                transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
-                disabled_types=set(settings.tool_output_disabled_types),
-                use_native=settings.enable_native_tool_output_compression,
-            )
-        except Exception:  # noqa: BLE001
-            output_pipeline = ToolOutputTransformPipeline(
-                disabled_types=set(settings.tool_output_disabled_types),
-                use_native=settings.enable_native_tool_output_compression,
-            )
-        middleware.append(
-            build_tool_output_transform_middleware(
-                ToolOutputRepository(settings.resolved_tool_output_db_path()),
-                threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 512),
-                pipeline=output_pipeline,
-            )
+    transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
+    try:
+        output_pipeline = ToolOutputTransformPipeline(
+            transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
+            disabled_types=set(settings.tool_output_disabled_types),
+            use_native=settings.enable_native_tool_output_compression,
         )
+    except Exception:  # noqa: BLE001
+        output_pipeline = ToolOutputTransformPipeline(
+            disabled_types=set(settings.tool_output_disabled_types),
+            use_native=settings.enable_native_tool_output_compression,
+        )
+    middleware.append(
+        build_tool_output_transform_middleware(
+            output_repository,
+            threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 512),
+            pipeline=output_pipeline,
+            enabled=transform_enabled,
+        )
+    )
+    if transform_enabled:
+        middleware.append(build_tool_output_usage_middleware(output_repository))
     # Tool middleware compose in declaration order (first = outermost). Keep
     # recovery inside archival so both normal and recovered error ToolMessages
     # are durable before the graph checkpoints them.
@@ -385,6 +393,7 @@ def build_coding_agent(
     # Strip redundant prompt blocks injected by deepagents built-in middleware
     # (TodoList, Filesystem, Skills) that duplicate tool definitions.
     middleware.append(build_strip_redundant_prompt_blocks())
+    middleware.append(build_model_request_compression_middleware(output_repository))
 
     if progress is not None:
         progress("compiling agent graph")

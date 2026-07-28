@@ -147,7 +147,10 @@ def test_capture_error_command_async_exclusion_and_detection(tmp_path: Path) -> 
             content="Error details" * 50, tool_call_id="call-1", name="read_file", status="error"
         ),
     )
-    assert error.content.startswith("Error details")
+    assert "Error details" in error.content or "[tool output transformed]" in error.content
+    error_event = repo.events(thread_id="thread-a", limit=1)[0]
+    assert error_event["decision"] in {"transformed", "fallback"}
+    assert error_event["tool_call_id"] == "call-1"
     source = _search()
     command = middleware.wrap_tool_call(
         _request(),
@@ -386,3 +389,27 @@ def test_default_low_threshold_transforms_profitable_git_summary(tmp_path: Path)
     event = repo.events(thread_id="thread-a")[0]
     assert event["content_type"] == "git-summary"
     assert event["transformer"] == "git-summary-v1"
+    assert event["estimated_saved_tokens"] > 0
+    assert event["decision"] == "transformed"
+    assert event["reason_code"] == "compressed"
+    assert event["tool_call_id"] == "call-git"
+    assert event["visible_bytes"] == len(result.content.encode("utf-8"))
+    assert event["algorithm_output_bytes"] < event["visible_bytes"]
+    assert any(stage["phase"] == "token-guard" for stage in event["stages"])
+
+
+def test_disabled_transform_records_global_disabled_reason(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo, enabled=False)
+    source = _search()
+
+    result = middleware.wrap_tool_call(
+        _request(),
+        lambda _: ToolMessage(content=source, tool_call_id="call-disabled", name="execute"),
+    )
+
+    assert result.content == source
+    event = repo.events(thread_id="thread-a")[0]
+    assert event["decision"] == "skipped"
+    assert event["reason_code"] == "global_disabled"
+    assert event["tool_call_id"] == "call-disabled"

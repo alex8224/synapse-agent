@@ -16,7 +16,7 @@ def install(registry: TopBarRegistry, ctx: TopBarContext) -> None:
     """Register the in/cache/out + occupancy usage component."""
     registry.register_fn(
         ID,
-        lambda: (ctx.usage() or "").strip(),
+        lambda: ctx.usage() or "",
         region=REGION,
         order=ORDER,
         priority=PRIORITY,

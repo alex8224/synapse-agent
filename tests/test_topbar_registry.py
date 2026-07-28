@@ -26,13 +26,28 @@ def test_default_topbar_has_dedicated_tool_output_region() -> None:
         title=lambda: "title",
         branch=lambda: "main",
         usage=lambda: "1K/0/0",
-        tool_output=lambda: Text("OUT 2K/75%", style="#81c995"),
+        tool_output=lambda: Text("OUT −2 KiB/75%", style="#81c995"),
     )
 
     assert registry.get_region("tool_output") is not None
     assert [item.id for item in registry.components("tool_output")] == ["tool_output"]
     line = layout_from_registry(registry, usable_width=100)
-    assert "OUT 2K/75%" in line.plain
+    assert "OUT −2 KiB/75%" in line.plain
+
+
+def test_tool_output_yields_to_usage_when_topbar_is_narrow() -> None:
+    registry = TopBarRegistry()
+    install_default_components(
+        registry,
+        workspace=lambda: "",
+        title=lambda: "分析今日大的改动",
+        branch=lambda: "",
+        usage=lambda: Text("8.9M/8.6M/33K 99K/27%", style="#ffffff"),
+        tool_output=lambda: Text("OUT −18 KiB/17%", style="#81c995"),
+    )
+
+    line = layout_from_registry(registry, usable_width=40)
+    assert "8.9M/8.6M/33K 99K/27%" in line.plain
 
 
 def test_region_parse_and_reject() -> None:

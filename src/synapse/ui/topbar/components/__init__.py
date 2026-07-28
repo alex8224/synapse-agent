@@ -83,10 +83,10 @@ def install_default_regions(
         "tool_output",
         order=25,
         flex=0,
-        min_width=8,
+        min_width=0,
         max_width=18,
         align=TopBarAlign.CENTER,
-        priority=45,
+        priority=20,
         gap_after=DEFAULT_COL_GAP,
     )
     registry.register_region(
@@ -94,7 +94,7 @@ def install_default_regions(
         order=30,
         flex=0,
         align=TopBarAlign.RIGHT,
-        priority=50,
+        priority=100,
         gap_after=0,
         fg=right_fg,
         bg=right_bg,

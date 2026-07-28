@@ -87,6 +87,25 @@ class TransformContext:
 
 
 @dataclass(frozen=True)
+class CompressionStageEvent:
+    """One observable stage in a tool-output compression decision."""
+
+    phase: str
+    algorithm: str
+    applied: bool
+    reason_code: str
+    input_bytes: int = 0
+    output_bytes: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_ms: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class TransformResult:
     content: str
     transformer: str
@@ -94,6 +113,7 @@ class TransformResult:
     critical_total: int
     critical_retained: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    stages: tuple[CompressionStageEvent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +131,47 @@ class ToolOutputRecord:
 
 
 @dataclass(frozen=True)
+class ModelRequestCompressionEvent:
+    """One model call's compression and provider-safety accounting."""
+
+    request_id: str
+    provider: str
+    api_style: str
+    auth_mode: str
+    model: str
+    input_tokens_before: int
+    input_tokens_after: int
+    provider_input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    uncached_input_tokens: int = 0
+    output_tokens: int = 0
+    tool_output_saved_tokens: int = 0
+    prompt_saved_tokens: int = 0
+    summarization_saved_tokens: int = 0
+    total_saved_tokens: int = 0
+    candidate_blocks: int = 0
+    transformed_blocks: int = 0
+    protected_tokens_by_reason: dict[str, int] = field(default_factory=dict)
+    token_count_method: str = "langchain_approximate"
+    duration_ms: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        whole_denominator = self.input_tokens_after + self.total_saved_tokens
+        new_input = self.uncached_input_tokens + self.cache_write_tokens
+        data["whole_request_savings_ratio"] = (
+            round(self.total_saved_tokens / whole_denominator, 4) if whole_denominator else 0.0
+        )
+        data["new_input_savings_ratio"] = (
+            round(self.total_saved_tokens / (new_input + self.total_saved_tokens), 4)
+            if new_input > 0
+            else 0.0
+        )
+        return data
+
+
+@dataclass(frozen=True)
 class TransformEvent:
     content_type: str
     transformer: str
@@ -122,10 +183,32 @@ class TransformEvent:
     critical_retained: int
     ref_created: bool
     execution_path: str = "python_only"
+    estimated_original_tokens: int = 0
+    estimated_visible_tokens: int = 0
+    decision: str = "transformed"
+    reason_code: str = "compressed"
+    reason_detail: str = ""
+    eligible: bool = True
+    source_kind: str = "tool-output"
+    detection_confidence: float = 0.0
+    threshold_bytes: int = 0
+    tool_call_id: str = ""
+    tool_name: str = ""
+    status: str = "success"
+    checkpoint_ns: str = ""
+    message_id: str = ""
+    algorithm_output_bytes: int = 0
+    algorithm_output_tokens: int = 0
+    token_count_method: str = "langchain_approximate"
+    content_sha256: str = ""
+    stages: tuple[CompressionStageEvent, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["saved_bytes"] = max(0, self.original_bytes - self.visible_bytes)
+        data["estimated_saved_tokens"] = max(
+            0, self.estimated_original_tokens - self.estimated_visible_tokens
+        )
         data["savings_ratio"] = (
             round(1 - self.visible_bytes / self.original_bytes, 4) if self.original_bytes else 0.0
         )
@@ -210,6 +293,23 @@ class ToolOutputRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_tool_output_retrieval_events_thread
                     ON tool_output_retrieval_events(thread_id);
+                CREATE TABLE IF NOT EXISTS tool_output_model_reuse_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id TEXT NOT NULL,
+                    estimated_avoided_tokens INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tool_output_model_reuse_thread
+                    ON tool_output_model_reuse_events(thread_id);
+                CREATE TABLE IF NOT EXISTS model_request_compression_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL UNIQUE,
+                    thread_id TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_request_compression_thread
+                    ON model_request_compression_events(thread_id, id);
                 """
             )
 
@@ -333,6 +433,76 @@ class ToolOutputRepository:
             )
         notify_metrics_changed(thread_id)
 
+    def record_model_reuse(self, *, thread_id: str, estimated_avoided_tokens: int) -> None:
+        """Record estimated token savings when transformed outputs re-enter a model call."""
+        avoided = max(0, int(estimated_avoided_tokens or 0))
+        if not thread_id or avoided <= 0:
+            return
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "INSERT INTO tool_output_model_reuse_events("
+                "thread_id, estimated_avoided_tokens, created_at) VALUES (?, ?, ?)",
+                (thread_id, avoided, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+        notify_metrics_changed(thread_id)
+
+    def record_model_request(
+        self, *, thread_id: str, event: ModelRequestCompressionEvent
+    ) -> None:
+        """Persist one completed model-call compression accounting event."""
+        if not thread_id or not event.request_id:
+            return
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO model_request_compression_events("
+                "request_id, thread_id, event_json, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    event.request_id,
+                    thread_id,
+                    json.dumps(event.as_dict(), ensure_ascii=False),
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                ),
+            )
+        notify_metrics_changed(thread_id)
+
+    def model_request_events(
+        self, *, thread_id: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Return recent model request compression accounting events."""
+        where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
+        bounded = max(1, min(500, int(limit)))
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, thread_id, event_json, created_at "
+                f"FROM model_request_compression_events{where} ORDER BY id DESC LIMIT ?",
+                (*params, bounded),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in rows
+        ]
+
+    def estimated_active_saved_tokens(self, *, thread_id: str) -> int:
+        """Sum estimated savings of transformed tool outputs currently in graph state."""
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT event_json FROM tool_output_events "
+                "WHERE thread_id = ? AND ref IS NOT NULL",
+                (thread_id,),
+            ).fetchall()
+        return sum(
+            max(
+                0,
+                int(json.loads(row["event_json"]).get("estimated_saved_tokens", 0) or 0),
+            )
+            for row in rows
+        )
+
     def events(self, *, thread_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent transformation decisions with linked retrieval totals."""
         where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
@@ -376,23 +546,92 @@ class ToolOutputRepository:
             retrieval_rows = conn.execute(
                 f"SELECT returned_bytes FROM tool_output_retrieval_events{where}", params
             ).fetchall()
+            reuse_rows = conn.execute(
+                f"SELECT estimated_avoided_tokens FROM tool_output_model_reuse_events{where}",
+                params,
+            ).fetchall()
+            request_rows = conn.execute(
+                f"SELECT event_json FROM model_request_compression_events{where}", params
+            ).fetchall()
         events = [json.loads(row["event_json"]) for row in rows]
+        request_events = [json.loads(row["event_json"]) for row in request_rows]
         retrieval_bytes = sum(int(row["returned_bytes"]) for row in retrieval_rows)
+        estimated_reused_tokens = sum(
+            int(row["estimated_avoided_tokens"]) for row in reuse_rows
+        )
         original = sum(int(item["original_bytes"]) for item in events)
         visible = sum(int(item["visible_bytes"]) for item in events)
         transformed = sum(item["outcome"] == "transformed" for item in events)
+        estimated_original_tokens = sum(
+            int(item.get("estimated_original_tokens", 0) or 0) for item in events
+        )
+        estimated_visible_tokens = sum(
+            int(item.get("estimated_visible_tokens", 0) or 0) for item in events
+        )
+        estimated_saved_tokens = max(
+            0, estimated_original_tokens - estimated_visible_tokens
+        )
         critical_total = sum(int(item["critical_total"]) for item in events)
         critical_retained = sum(int(item["critical_retained"]) for item in events)
         execution_paths: dict[str, int] = {}
+        decisions: dict[str, int] = {}
+        reasons: dict[str, int] = {}
+        tokens_by_reason: dict[str, int] = {}
+        bytes_by_reason: dict[str, int] = {}
+        request_input_before = sum(
+            int(item.get("input_tokens_before", 0) or 0) for item in request_events
+        )
+        request_input_after = sum(
+            int(item.get("input_tokens_after", 0) or 0) for item in request_events
+        )
+        request_saved_tokens = sum(
+            int(item.get("total_saved_tokens", 0) or 0) for item in request_events
+        )
+        provider_input_tokens = sum(
+            int(item.get("provider_input_tokens", 0) or 0) for item in request_events
+        )
+        cache_read_tokens = sum(
+            int(item.get("cache_read_tokens", 0) or 0) for item in request_events
+        )
+        cache_write_tokens = sum(
+            int(item.get("cache_write_tokens", 0) or 0) for item in request_events
+        )
+        uncached_input_tokens = sum(
+            int(item.get("uncached_input_tokens", 0) or 0) for item in request_events
+        )
+        request_output_tokens = sum(
+            int(item.get("output_tokens", 0) or 0) for item in request_events
+        )
         for item in events:
             path = str(item.get("execution_path", "legacy_unknown"))
             execution_paths[path] = execution_paths.get(path, 0) + 1
+            decision = str(
+                item.get("decision")
+                or ("transformed" if item.get("outcome") == "transformed" else "fallback")
+            )
+            reason = str(
+                item.get("reason_code")
+                or ("compressed" if decision == "transformed" else "legacy_passthrough")
+            )
+            decisions[decision] = decisions.get(decision, 0) + 1
+            reasons[reason] = reasons.get(reason, 0) + 1
+            if decision != "transformed":
+                tokens_by_reason[reason] = tokens_by_reason.get(reason, 0) + int(
+                    item.get("estimated_original_tokens", 0) or 0
+                )
+                bytes_by_reason[reason] = bytes_by_reason.get(reason, 0) + int(
+                    item.get("original_bytes", 0) or 0
+                )
         return {
             "outputs_considered": len(events),
             "transformed": transformed,
             "original_bytes": original,
             "visible_bytes": visible,
             "saved_bytes": max(0, original - visible),
+            "estimated_original_tokens": estimated_original_tokens,
+            "estimated_visible_tokens": estimated_visible_tokens,
+            "estimated_saved_tokens": estimated_saved_tokens,
+            "estimated_reused_tokens": estimated_reused_tokens,
             "retrieval_bytes": retrieval_bytes,
             "effective_saved_bytes": max(0, original - visible - retrieval_bytes),
             "savings_ratio": round(1 - visible / original, 4) if original else 0.0,
@@ -405,6 +644,35 @@ class ToolOutputRepository:
             if critical_total
             else 1.0,
             "execution_paths": execution_paths,
+            "decisions": decisions,
+            "reasons": reasons,
+            "tokens_by_reason": tokens_by_reason,
+            "bytes_by_reason": bytes_by_reason,
+            "skipped": decisions.get("skipped", 0),
+            "fallback": decisions.get("fallback", 0),
+            "model_requests": len(request_events),
+            "request_input_tokens_before": request_input_before,
+            "request_input_tokens_after": request_input_after,
+            "request_saved_tokens": request_saved_tokens,
+            "provider_input_tokens": provider_input_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "uncached_input_tokens": uncached_input_tokens,
+            "request_output_tokens": request_output_tokens,
+            "whole_request_savings_ratio": (
+                round(request_saved_tokens / request_input_before, 4)
+                if request_input_before
+                else 0.0
+            ),
+            "new_input_savings_ratio": (
+                round(
+                    request_saved_tokens
+                    / (uncached_input_tokens + cache_write_tokens + request_saved_tokens),
+                    4,
+                )
+                if uncached_input_tokens + cache_write_tokens > 0
+                else 0.0
+            ),
         }
 
     def search(
@@ -1077,15 +1345,43 @@ class ToolOutputTransformPipeline:
         self.disabled_types = frozenset(str(item) for item in (disabled_types or set()))
 
     def transform(self, content: str, context: TransformContext) -> TransformResult:
+        original_bytes = len(content.encode("utf-8"))
+        detection_started = time.perf_counter()
         detection = detect_content_type(content)
+        stages: list[CompressionStageEvent] = [
+            CompressionStageEvent(
+                phase="detect",
+                algorithm="content-detector-v1",
+                applied=True,
+                reason_code="classified",
+                input_bytes=original_bytes,
+                output_bytes=original_bytes,
+                duration_ms=(time.perf_counter() - detection_started) * 1000,
+                metadata={
+                    "content_type": detection.content_type.value,
+                    "confidence": detection.confidence,
+                },
+            )
+        ]
         if detection.content_type.value in self.disabled_types:
+            stages.append(
+                CompressionStageEvent(
+                    phase="eligibility",
+                    algorithm="disabled-types-policy",
+                    applied=False,
+                    reason_code="disabled_content_type",
+                    input_bytes=original_bytes,
+                    output_bytes=original_bytes,
+                )
+            )
             return TransformResult(
                 content,
                 "disabled",
                 detection.content_type,
                 0,
                 0,
-                {"fallback": "disabled"},
+                {"fallback": "disabled", "detection_confidence": detection.confidence},
+                tuple(stages),
             )
         transformer = next(
             (
@@ -1095,12 +1391,28 @@ class ToolOutputTransformPipeline:
             ),
             GenericTransformer(),
         )
+        transform_started = time.perf_counter()
         result = transformer.transform(content, context)
-        execution_path = "native" if isinstance(transformer, NativeTransformer) else "python_only"
-        native_result_is_unsafe_or_unhelpful = isinstance(transformer, NativeTransformer) and (
+        result_bytes = len(result.content.encode("utf-8"))
+        native = isinstance(transformer, NativeTransformer)
+        native_reason = str(result.metadata.get("fallback") or "compressed")
+        stages.append(
+            CompressionStageEvent(
+                phase="native-transform" if native else "transform",
+                algorithm=str(getattr(transformer, "name", result.transformer)),
+                applied=result.content != content,
+                reason_code=native_reason,
+                input_bytes=original_bytes,
+                output_bytes=result_bytes,
+                duration_ms=(time.perf_counter() - transform_started) * 1000,
+                metadata=dict(result.metadata),
+            )
+        )
+        execution_path = "native" if native else "python_only"
+        native_result_is_unsafe_or_unhelpful = native and (
             result.metadata.get("fallback") == "native_error"
             or result.critical_retained < result.critical_total
-            or len(result.content.encode("utf-8")) >= len(content.encode("utf-8"))
+            or result_bytes >= original_bytes
         )
         if native_result_is_unsafe_or_unhelpful:
             fallback_transformer = next(
@@ -1113,7 +1425,21 @@ class ToolOutputTransformPipeline:
                 None,
             )
             if fallback_transformer is not None:
+                fallback_started = time.perf_counter()
                 result = fallback_transformer.transform(content, context)
+                result_bytes = len(result.content.encode("utf-8"))
+                stages.append(
+                    CompressionStageEvent(
+                        phase="python-fallback",
+                        algorithm=str(getattr(fallback_transformer, "name", result.transformer)),
+                        applied=result.content != content,
+                        reason_code="python_fallback_used",
+                        input_bytes=original_bytes,
+                        output_bytes=result_bytes,
+                        duration_ms=(time.perf_counter() - fallback_started) * 1000,
+                        metadata=dict(result.metadata),
+                    )
+                )
                 execution_path = "python_fallback_after_native"
         result = TransformResult(
             result.content,
@@ -1121,17 +1447,95 @@ class ToolOutputTransformPipeline:
             result.content_type,
             result.critical_total,
             result.critical_retained,
-            {**result.metadata, "execution_path": execution_path},
+            {
+                **result.metadata,
+                "execution_path": execution_path,
+                "detection_confidence": detection.confidence,
+            },
+            tuple(stages),
         )
-        if result.critical_retained < result.critical_total or len(
-            result.content.encode("utf-8")
-        ) >= len(content.encode("utf-8")):
+        if result.critical_retained < result.critical_total:
+            stages.append(
+                CompressionStageEvent(
+                    phase="critical-guard",
+                    algorithm="critical-retention-v1",
+                    applied=False,
+                    reason_code="critical_content_lost",
+                    input_bytes=original_bytes,
+                    output_bytes=result_bytes,
+                    metadata={
+                        "critical_total": result.critical_total,
+                        "critical_retained": result.critical_retained,
+                    },
+                )
+            )
             return TransformResult(
                 content,
                 "passthrough",
                 detection.content_type,
                 result.critical_total,
                 result.critical_total,
-                {"fallback": "unsafe_or_no_savings", "execution_path": execution_path},
+                {
+                    "fallback": "critical_content_lost",
+                    "execution_path": execution_path,
+                    "detection_confidence": detection.confidence,
+                },
+                tuple(stages),
             )
-        return result
+        stages.append(
+            CompressionStageEvent(
+                phase="critical-guard",
+                algorithm="critical-retention-v1",
+                applied=True,
+                reason_code="accepted",
+                input_bytes=original_bytes,
+                output_bytes=result_bytes,
+                metadata={
+                    "critical_total": result.critical_total,
+                    "critical_retained": result.critical_retained,
+                },
+            )
+        )
+        if result_bytes >= original_bytes:
+            stages.append(
+                CompressionStageEvent(
+                    phase="byte-guard",
+                    algorithm="non-increase-v1",
+                    applied=False,
+                    reason_code="no_byte_savings",
+                    input_bytes=original_bytes,
+                    output_bytes=result_bytes,
+                )
+            )
+            return TransformResult(
+                content,
+                "passthrough",
+                detection.content_type,
+                result.critical_total,
+                result.critical_total,
+                {
+                    "fallback": "no_byte_savings",
+                    "execution_path": execution_path,
+                    "detection_confidence": detection.confidence,
+                },
+                tuple(stages),
+            )
+        stages.append(
+            CompressionStageEvent(
+                phase="byte-guard",
+                algorithm="non-increase-v1",
+                applied=True,
+                reason_code="accepted",
+                input_bytes=original_bytes,
+                output_bytes=result_bytes,
+            )
+        )
+        return TransformResult(
+            result.content,
+            result.transformer,
+            result.content_type,
+            result.critical_total,
+            result.critical_retained,
+            result.metadata,
+            tuple(stages),
+        )

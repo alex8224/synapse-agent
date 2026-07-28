@@ -9,7 +9,7 @@ ID = "tool_output"
 REGION = "tool_output"
 ORDER = 10
 PRIORITY = 45
-MIN_WIDTH = 8
+MIN_WIDTH = 0
 
 
 def install(registry: TopBarRegistry, ctx: TopBarContext) -> None:

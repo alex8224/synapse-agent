@@ -214,6 +214,17 @@ def format_token_count(n: int) -> str:
     return f"{(n + 500_000) // 1_000_000}M"
 
 
+def format_byte_count(n: int) -> str:
+    """Compact binary byte count with an explicit unit for non-token metrics."""
+    size = max(0, int(n or 0))
+    for unit, divisor in (("MiB", 1024**2), ("KiB", 1024)):
+        if size >= divisor:
+            value = size / divisor
+            rendered = f"{value:.1f}" if value < 10 else f"{value:.0f}"
+            return f"{rendered.rstrip('0').rstrip('.')} {unit}"
+    return f"{size} B"
+
+
 # Text prefix for git branch (not emoji; terminal-safe branch mark).
 _TOPBAR_BRANCH_MARK = "⎇"  # APL upwards vane / branch mark
 
@@ -3036,8 +3047,12 @@ class CodingAgentApp(App[None]):
         if not int(stats.get("transformed", 0) or 0):
             return ""
         saved = max(0, int(stats.get("effective_saved_bytes", 0) or 0))
+        reused = max(0, int(stats.get("estimated_reused_tokens", 0) or 0))
         ratio = max(0.0, float(stats.get("effective_savings_ratio", 0.0) or 0.0))
-        label = f"OUT {format_token_count(saved)}/{ratio:.0%}"
+        if reused:
+            label = f"OUT ~{format_token_count(reused)} tok"
+        else:
+            label = f"OUT −{format_byte_count(saved)}/{ratio:.0%}"
         # Green means the visible context is still smaller after any re-reads;
         # orange signals that retrieval has consumed all recorded savings.
         return Text(label, style=_C_GREEN if saved else _C_ORANGE)
@@ -4660,6 +4675,14 @@ class CodingAgentApp(App[None]):
 
     # -- dialogs ----------------------------------------------------------
 
+    def _open_compression_diagnostics(self) -> None:
+        from synapse.ui.dialogs import CompressionDiagnosticsDialog
+
+        self._reload_tool_output_stats()
+        self.push_screen(
+            CompressionDiagnosticsDialog(self._tool_output_repo, self.thread_id),
+        )
+
     def _open_model_dialog(self, _args: list[str]) -> None:
         from synapse.ui.dialogs import ModelPickerDialog
 
@@ -5179,6 +5202,9 @@ class CodingAgentApp(App[None]):
         parts = raw.split()
         cmd = parts[0].casefold() if parts else ""
 
+        if cmd in {"/compression", "/tool-output", "/tool-compress"} and len(parts) == 1:
+            self._open_compression_diagnostics()
+            return True
         if cmd == "/model" and len(parts) == 1:
             self._open_model_dialog(parts[1:])
             return True

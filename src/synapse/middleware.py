@@ -10,6 +10,7 @@ Exports:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -23,9 +24,7 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware._retry import calculate_delay, should_retry_exception
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
 
-from synapse.execute_capture import begin_execute_capture, end_execute_capture
 from synapse.pathing import rewrite_tool_args_paths
 
 # ---------------------------------------------------------------------------
@@ -608,6 +607,16 @@ def build_intent_schema_middleware():
     ]
 
 
+_prompt_cleanup_saved_tokens: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "synapse_prompt_cleanup_saved_tokens", default=0
+)
+
+
+def current_prompt_cleanup_saved_tokens() -> int:
+    """Return prompt-cleanup savings for the current model-call context."""
+    return max(0, int(_prompt_cleanup_saved_tokens.get() or 0))
+
+
 # ---------------------------------------------------------------------------
 #  Strip redundant prompt blocks injected by deepagents built-in middleware
 # ---------------------------------------------------------------------------
@@ -628,6 +637,7 @@ def build_strip_redundant_prompt_blocks():
     """Remove middleware-injected prompt blocks that duplicate tool definitions."""
 
     def _apply(request):  # type: ignore[no-untyped-def]
+        _prompt_cleanup_saved_tokens.set(0)
         msg = getattr(request, "system_message", None)
         if msg is None or not hasattr(msg, "content_blocks"):
             return request
@@ -636,11 +646,13 @@ def build_strip_redundant_prompt_blocks():
             return request
 
         filtered = []
+        removed_chars = 0
         changed = False
         for block in blocks:
             text = block.get("text", "") if isinstance(block, dict) else ""
             if any(text.startswith(p) for p in _REDUNDANT_BLOCK_PREFIXES):
                 changed = True
+                removed_chars += len(text)
                 continue
             filtered.append(block)
 
@@ -648,6 +660,7 @@ def build_strip_redundant_prompt_blocks():
             return request
 
         new_msg = msg.__class__(content_blocks=filtered)
+        _prompt_cleanup_saved_tokens.set(max(0, (removed_chars + 3) // 4))
         return request.override(system_message=new_msg)
 
     return _dual_wrap_model_call(name="strip_redundant_prompt", apply=_apply)
