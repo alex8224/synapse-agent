@@ -106,10 +106,25 @@ def build_tool_output_transform_middleware(
             )
         except Exception:  # noqa: BLE001
             return message
+        thread_id, checkpoint_ns = runtime_identity(request)
         if transformed.content == original:
+            repository.record_event(
+                thread_id,
+                TransformEvent(
+                    content_type=transformed.content_type.value,
+                    transformer=transformed.transformer,
+                    outcome="passthrough",
+                    original_bytes=original_bytes,
+                    visible_bytes=original_bytes,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    critical_total=transformed.critical_total,
+                    critical_retained=transformed.critical_retained,
+                    ref_created=False,
+                    execution_path=str(transformed.metadata.get("execution_path", "passthrough")),
+                ),
+            )
             return message
 
-        thread_id, checkpoint_ns = runtime_identity(request)
         try:
             record = repository.put(
                 thread_id=thread_id,
@@ -133,6 +148,7 @@ def build_tool_output_transform_middleware(
             critical_total=transformed.critical_total,
             critical_retained=transformed.critical_retained,
             ref_created=True,
+            execution_path=str(transformed.metadata.get("execution_path", "python_only")),
         )
         repository.record_event(thread_id, event, ref=record.ref)
         metadata = dict(message.artifact) if isinstance(message.artifact, dict) else {}

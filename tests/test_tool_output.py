@@ -274,3 +274,35 @@ def test_native_unhelpful_result_falls_back_to_python_transformer() -> None:
 
     assert result.transformer == "search-v1"
     assert len(result.content) < len(_search())
+
+
+def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo, threshold_bytes=100)
+    transformed = middleware.wrap_tool_call(
+        _request(query="authentication"),
+        lambda _: ToolMessage(content=_search(), tool_call_id="call-1", name="execute"),
+    )
+    ref = transformed.artifact["tool_output_transform"]["ref"]
+    repo.record_retrieval(
+        thread_id="thread-a", ref=ref, mode="query", returned_bytes=42, duration_ms=1.0
+    )
+    passthrough = "\n".join(f"src/file.py:{index}: unique token {index}" for index in range(120))
+    disabled_middleware = build_tool_output_transform_middleware(
+        repo,
+        threshold_bytes=100,
+        pipeline=ToolOutputTransformPipeline(disabled_types={"search"}),
+    )
+    disabled_middleware.wrap_tool_call(
+        _request(),
+        lambda _: ToolMessage(content=passthrough, tool_call_id="call-2", name="execute"),
+    )
+
+    events = repo.events(thread_id="thread-a")
+    assert len(events) == 2
+    assert events[1]["outcome"] == "transformed"
+    assert events[1]["execution_path"] in {"native", "python_only", "python_fallback_after_native"}
+    assert events[1]["retrieval_bytes"] == 42
+    assert events[0]["outcome"] == "passthrough"
+    assert events[0]["ref"] is None
+    assert repo.stats(thread_id="thread-a")["execution_paths"]

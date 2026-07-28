@@ -49,7 +49,29 @@ AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION=false
 
 During local development, install the wheel built under `rust/synapse-tool-compress-core/dist/` with `uv pip install`. After the wheel is published to the configured package index, Synapse can declare it as a normal optional dependency. No user needs Rust, Cargo, maturin, or a compiler; see [native-compression-core](native-compression-core.md).
 
-## Retrieval and metrics
+## Status, events, retrieval, and metrics
+
+Inspect whether transformation and the optional native wheel are active:
+
+```text
+synapse tool-output status
+```
+
+Inspect aggregate savings, retrieval cost, retention, and execution-path counts:
+
+```text
+synapse tool-output stats
+synapse tool-output stats --thread <thread_id>
+```
+
+Inspect recent per-output decisions for analysis. Each event includes content type, transformer, `native` / `python_only` / `python_fallback_after_native` / `passthrough` path, byte counts, retrieval bytes, critical retention, and the reversible reference when one was created:
+
+```text
+synapse tool-output events
+synapse tool-output events --thread <thread_id> --limit 100
+```
+
+Events written before this capability display `path=unknown` and remain valid historical records.
 
 Use `read_tool_result` with either exact paging or local targeted retrieval:
 

@@ -56,6 +56,8 @@ def test_cli_tool_output_help():
     result = runner.invoke(app, ["tool-output", "--help"])
     assert result.exit_code == 0
     assert "stats" in result.stdout
+    assert "status" in result.stdout
+    assert "events" in result.stdout
 
 
 def test_cli_tool_output_eval_fixture():

@@ -92,6 +92,7 @@ class TransformEvent:
     critical_total: int
     critical_retained: int
     ref_created: bool
+    execution_path: str = "python_only"
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -301,6 +302,39 @@ class ToolOutputRepository:
                 ),
             )
 
+    def events(self, *, thread_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent transformation decisions with linked retrieval totals."""
+        where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
+        bounded_limit = max(1, min(500, int(limit)))
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, thread_id, ref, event_json, created_at "
+                f"FROM tool_output_events{where} ORDER BY id DESC LIMIT ?",
+                (*params, bounded_limit),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                event = json.loads(row["event_json"])
+                retrieval = 0
+                if row["ref"]:
+                    retrieval_row = conn.execute(
+                        "SELECT COALESCE(SUM(returned_bytes), 0) AS bytes "
+                        "FROM tool_output_retrieval_events WHERE ref = ?",
+                        (row["ref"],),
+                    ).fetchone()
+                    retrieval = int(retrieval_row["bytes"])
+                result.append(
+                    {
+                        "id": int(row["id"]),
+                        "thread_id": row["thread_id"],
+                        "ref": row["ref"],
+                        "created_at": row["created_at"],
+                        "retrieval_bytes": retrieval,
+                        **event,
+                    }
+                )
+        return result
+
     def stats(self, *, thread_id: str | None = None) -> dict[str, Any]:
         where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
         with self._lock, self._connection() as conn:
@@ -318,6 +352,10 @@ class ToolOutputRepository:
         transformed = sum(item["outcome"] == "transformed" for item in events)
         critical_total = sum(int(item["critical_total"]) for item in events)
         critical_retained = sum(int(item["critical_retained"]) for item in events)
+        execution_paths: dict[str, int] = {}
+        for item in events:
+            path = str(item.get("execution_path", "legacy_unknown"))
+            execution_paths[path] = execution_paths.get(path, 0) + 1
         return {
             "outputs_considered": len(events),
             "transformed": transformed,
@@ -335,6 +373,7 @@ class ToolOutputRepository:
             "critical_retention": round(critical_retained / critical_total, 4)
             if critical_total
             else 1.0,
+            "execution_paths": execution_paths,
         }
 
     def search(
@@ -947,6 +986,7 @@ class ToolOutputTransformPipeline:
             GenericTransformer(),
         )
         result = transformer.transform(content, context)
+        execution_path = "native" if isinstance(transformer, NativeTransformer) else "python_only"
         native_result_is_unsafe_or_unhelpful = isinstance(transformer, NativeTransformer) and (
             result.metadata.get("fallback") == "native_error"
             or result.critical_retained < result.critical_total
@@ -964,6 +1004,15 @@ class ToolOutputTransformPipeline:
             )
             if fallback_transformer is not None:
                 result = fallback_transformer.transform(content, context)
+                execution_path = "python_fallback_after_native"
+        result = TransformResult(
+            result.content,
+            result.transformer,
+            result.content_type,
+            result.critical_total,
+            result.critical_retained,
+            {**result.metadata, "execution_path": execution_path},
+        )
         if result.critical_retained < result.critical_total or len(
             result.content.encode("utf-8")
         ) >= len(content.encode("utf-8")):
@@ -973,6 +1022,6 @@ class ToolOutputTransformPipeline:
                 detection.content_type,
                 result.critical_total,
                 result.critical_total,
-                {"fallback": "unsafe_or_no_savings"},
+                {"fallback": "unsafe_or_no_savings", "execution_path": execution_path},
             )
         return result
