@@ -7,6 +7,27 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.8
+
+### 新功能
+
+- 工具输出变换管道：大型工具结果自动归档到 JSONL journal，替换为边界预览 + `tool-result://` 引用，避免撑爆 LLM 上下文
+- Rust 原生压缩核心 (`synapse-tool-compress-core`)：智能摘要引擎 SmartCrusher，支持 code/diff/log/search 专用压缩器，BM25 相关性排序，adaptive sizer
+- CLI `--diagnose-tool-output` 诊断标志：查看每次工具输出的变换统计
+- F4 多选删除 session + F5 MCP 分组折叠 + 多选 UI 统一
+
+### 修复
+
+- MCP deferred 状态不再错误显示为 "mcp err"
+
+### 工程改进
+
+- `tool_results.py` 重构为 `tool_output.py` + `tool_output_middleware.py`，职责更清晰
+- 新增 `tool_output_eval.py` 评估框架
+- CI 新增 native-compression-wheels workflow 用于构建 Rust wheel
+
+---
+
 ## v0.1.7
 
 ### 新功能
