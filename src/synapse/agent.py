@@ -24,7 +24,6 @@ from synapse.middleware import (
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
-    build_tool_result_offload_middleware,
 )
 from synapse.models_registry import (
     build_model_from_settings,
@@ -36,7 +35,12 @@ from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.steer import SteerQueue, build_steer_middleware
 from synapse.subagents import build_default_subagents
-from synapse.tool_results import ToolResultStore
+from synapse.tool_output import (
+    ToolOutputRepository,
+    ToolOutputTransformPipeline,
+    load_transformer_plugins,
+)
+from synapse.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tools import build_session_tools
 from synapse.vision_middleware import build_describe_image_middleware
 
@@ -227,10 +231,7 @@ def build_coding_agent(
     if getattr(settings, "enable_memory", True):
         memory_paths = settings.resolved_memory_paths(project_root)
         # Exclude AGENTS.md — it is always injected by AgentMdMiddleware.
-        memory_paths = [
-            p for p in memory_paths
-            if Path(p).exists() and Path(p).name != "AGENTS.md"
-        ]
+        memory_paths = [p for p in memory_paths if Path(p).exists() and Path(p).name != "AGENTS.md"]
     skills_paths = settings.resolved_skills_paths(project_root)
 
     with span("subagents"):
@@ -239,10 +240,11 @@ def build_coding_agent(
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
-            tool_results_path=settings.resolved_tool_results_path(),
-            tool_result_offload_threshold_bytes=settings.tool_result_offload_threshold_bytes,
-            tool_result_preview_head_chars=settings.tool_result_preview_head_chars,
-            tool_result_preview_tail_chars=settings.tool_result_preview_tail_chars,
+            tool_output_db_path=settings.resolved_tool_output_db_path(),
+            tool_output_transform_threshold_bytes=settings.tool_output_transform_threshold_bytes,
+            tool_output_disabled_types=settings.tool_output_disabled_types,
+            tool_output_transform_plugins=settings.tool_output_transform_plugins,
+            enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
         )
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
@@ -258,7 +260,7 @@ def build_coding_agent(
         session_tools = build_session_tools(
             sessions_path=settings.resolved_sessions_path(),
             checkpoint_path=settings.checkpoint_path,
-            tool_results_path=settings.resolved_tool_results_path(),
+            tool_output_db_path=settings.resolved_tool_output_db_path(),
         )
         tools.extend(session_tools)
     except Exception:  # noqa: BLE001
@@ -291,8 +293,7 @@ def build_coding_agent(
             build_coding_agent.last_mcp_warnings = list(mcp_result.warnings)  # type: ignore[attr-defined]
             build_coding_agent.last_mcp_servers = list(mcp_result.servers)  # type: ignore[attr-defined]
             build_coding_agent.last_mcp_tool_names = list(  # type: ignore[attr-defined]
-                mcp_result.tool_names
-                or [getattr(t, "name", str(t)) for t in mcp_result.tools]
+                mcp_result.tool_names or [getattr(t, "name", str(t)) for t in mcp_result.tools]
             )
         else:
             build_coding_agent.last_mcp_warnings = []  # type: ignore[attr-defined]
@@ -340,23 +341,35 @@ def build_coding_agent(
         build_model_retry_middleware(),
         build_task_namespace_middleware(),
     ]
-    if getattr(settings, "enable_tool_result_offload", True):
+    if getattr(settings, "enable_tool_output_transform", True):
+        try:
+            output_pipeline = ToolOutputTransformPipeline(
+                transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
+                disabled_types=set(settings.tool_output_disabled_types),
+                use_native=settings.enable_native_tool_output_compression,
+            )
+        except Exception:  # noqa: BLE001
+            output_pipeline = ToolOutputTransformPipeline(
+                disabled_types=set(settings.tool_output_disabled_types),
+                use_native=settings.enable_native_tool_output_compression,
+            )
         middleware.append(
-            build_tool_result_offload_middleware(
-                ToolResultStore(settings.resolved_tool_results_path()),
-                threshold_bytes=getattr(settings, "tool_result_offload_threshold_bytes", 8_192),
-                preview_head_chars=getattr(settings, "tool_result_preview_head_chars", 4_096),
-                preview_tail_chars=getattr(settings, "tool_result_preview_tail_chars", 1_024),
+            build_tool_output_transform_middleware(
+                ToolOutputRepository(settings.resolved_tool_output_db_path()),
+                threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 8_192),
+                pipeline=output_pipeline,
             )
         )
     # Tool middleware compose in declaration order (first = outermost). Keep
     # recovery inside archival so both normal and recovered error ToolMessages
     # are durable before the graph checkpoints them.
     middleware.append(build_tool_error_recovery_middleware())
-    middleware.extend([
-        build_path_normalize_middleware(root),
-        *build_intent_schema_middleware(),
-    ])
+    middleware.extend(
+        [
+            build_path_normalize_middleware(root),
+            *build_intent_schema_middleware(),
+        ]
+    )
     # Keep one queue across graph rebuilds so an active turn and the TUI never
     # route guidance to different middleware instances.
     if steer_queue is None:

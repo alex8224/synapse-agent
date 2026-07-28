@@ -66,7 +66,7 @@
 | 文件读写 | `read_file/write_file/edit_file/glob` | 浏览与修改代码 |
 | 命令执行 | `execute`（需 sandbox 或 LocalShell） | `uv run pytest`、`ruff`、`git` |
 | 子代理 | `task` | 并行调研/修复/写测试 |
-| 上下文管理 | summarization + offload | 长会话不爆 context |
+| 上下文管理 | summarization + 内容感知工具输出转换 | 长会话不爆 context，并保留可逆检索；见 [tool-output-transform](tool-output-transform.md) |
 | 记忆/技能 | `memory=` / `skills=` | 项目约定、编码规范 |
 | 人工审批 | `interrupt_on=` | 危险命令先确认 |
 | 权限 | `permissions=` | 限制可读写路径 |

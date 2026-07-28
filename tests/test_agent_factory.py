@@ -19,7 +19,11 @@ from synapse.prompts import (
 def test_build_system_prompt_includes_workspace(tmp_path: Path):
     text = build_system_prompt(tmp_path)
     assert str(tmp_path) in text
-    assert "senior software engineer" in text or "Virtual filesystem" in text or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
+    assert (
+        "senior software engineer" in text
+        or "Virtual filesystem" in text
+        or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
+    )
     assert "Chinese" in text
     assert "Current workspace" in text
 
@@ -123,7 +127,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert len(model_retries) == 1
         assert model_retries[0].on_failure == "error"
         assert any(
-            type(m).__name__ == "archive_large_tool_results"
+            type(m).__name__ == "transform_tool_outputs"
             for m in (kwargs.get("middleware") or [])
         )
         # Mid-run steer middleware is wired by default.

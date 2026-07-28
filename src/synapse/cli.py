@@ -25,9 +25,11 @@ app = typer.Typer(
 sessions_app = typer.Typer(help="Manage chat session metadata.")
 models_app = typer.Typer(help="List/select configured model profiles.")
 mcp_app = typer.Typer(help="Inspect MCP server configuration and tools.")
+tool_output_app = typer.Typer(help="Inspect reversible tool-output transformation metrics.")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(tool_output_app, name="tool-output")
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +507,7 @@ def sessions_export(
         return
 
     if out is None:
-        safe = "".join(
-            c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session")
-        )
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session"))
         out = settings.export_dir() / f"{safe}.{fmt_n}"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
@@ -549,8 +549,7 @@ def models_list() -> None:
         print_info(f"  {alias:30s} provider={pf.provider:20s} model={pf.model:20s}")
         if pf.thinking:
             print_info(
-                f"    thinking: budget={pf.thinking.get('budget')} "
-                f"type={pf.thinking.get('type')}"
+                f"    thinking: budget={pf.thinking.get('budget')} type={pf.thinking.get('type')}"
             )
         if pf.profile_arg:
             print_info(f"    extra_body: profile={pf.profile_arg}")
@@ -610,6 +609,110 @@ def mcp_test(
         for t in tools:
             desc = getattr(t, "description", "") or ""
             print_info(f"  {t.name:30s} {desc}")
+
+
+@tool_output_app.command("eval")
+def tool_output_eval(
+    fixture: Path = typer.Argument(
+        ..., exists=True, readable=True, help="JSON array of offline eval cases"
+    ),
+) -> None:
+    """Evaluate deterministic retention and compression against fixed fixtures."""
+    from synapse.tool_output_eval import evaluate_cases, load_cases, summarize_results
+
+    summary = summarize_results(evaluate_cases(load_cases(fixture)))
+    console.print(f"cases: {summary['cases']}; passed: {summary['passed']}")
+    console.print(f"savings: {summary['savings_ratio']:.1%}")
+    console.print(f"required retention: {summary['required_retention']:.1%}")
+    for result in summary["results"]:
+        console.print(
+            f"- {result['id']}: {result['type']} via {result['transformer']}; "
+            f"savings={result['savings_ratio']:.1%}; passed={result['passed']}"
+        )
+    if summary["passed"] != summary["cases"]:
+        raise typer.Exit(code=1)
+
+
+@tool_output_app.command("stats")
+def tool_output_stats(
+    thread_id: str | None = typer.Option(None, "--thread", help="Restrict metrics to a thread id"),
+) -> None:
+    """Show local tool-output transformation savings and retention metrics."""
+    from synapse.tool_output import ToolOutputRepository
+
+    settings = load_settings()
+    stats = ToolOutputRepository(settings.resolved_tool_output_db_path()).stats(thread_id=thread_id)
+    console.print("Tool output transformation")
+    console.print(f"outputs considered: {stats['outputs_considered']}")
+    console.print(f"transformed: {stats['transformed']}")
+    console.print(f"original bytes: {stats['original_bytes']}")
+    console.print(f"visible bytes: {stats['visible_bytes']}")
+    console.print(f"saved bytes: {stats['saved_bytes']} ({stats['savings_ratio']:.1%})")
+    console.print(f"retrieval bytes: {stats['retrieval_bytes']}")
+    console.print(
+        f"effective saved bytes: {stats['effective_saved_bytes']} "
+        f"({stats['effective_savings_ratio']:.1%})"
+    )
+    console.print(f"critical retention: {stats['critical_retention']:.1%}")
+    paths = stats["execution_paths"]
+    if paths:
+        console.print(
+            "execution paths: "
+            + ", ".join(f"{name}={count}" for name, count in sorted(paths.items()))
+        )
+
+
+@tool_output_app.command("status")
+def tool_output_status() -> None:
+    """Show whether tool-output transformation and native acceleration are usable."""
+    from synapse.tool_output import load_native_transformers
+
+    settings = load_settings()
+    native_requested = settings.enable_native_tool_output_compression
+    native_transformers = load_native_transformers(enabled=native_requested)
+    console.print("Tool output transformation status")
+    console.print(f"transform enabled: {settings.enable_tool_output_transform}")
+    console.print(f"threshold bytes: {settings.tool_output_transform_threshold_bytes}")
+    console.print(f"database: {settings.resolved_tool_output_db_path()}")
+    console.print(f"native enabled by config: {native_requested}")
+    console.print(f"native wheel loadable: {bool(native_transformers)}")
+    console.print(
+        "active native types: "
+        + (
+            ", ".join(sorted(next(iter(item.content_types)).value for item in native_transformers))
+            if native_transformers
+            else "none"
+        )
+    )
+
+
+@tool_output_app.command("events")
+def tool_output_events(
+    thread_id: str | None = typer.Option(None, "--thread", help="Restrict events to a thread id"),
+    limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max recent events"),
+) -> None:
+    """Show recent transformation decisions and retrieval usage."""
+    from synapse.tool_output import ToolOutputRepository
+
+    settings = load_settings()
+    events = ToolOutputRepository(settings.resolved_tool_output_db_path()).events(
+        thread_id=thread_id, limit=limit
+    )
+    if not events:
+        console.print("No tool-output events.")
+        return
+    console.print("Tool output transformation events")
+    for event in events:
+        saved = int(event["saved_bytes"])
+        console.print(
+            f"{event['created_at']}  thread={event['thread_id']}  "
+            f"type={event['content_type']}  transformer={event['transformer']}\n"
+            f"  outcome={event['outcome']}  path={event.get('execution_path', 'unknown')}  "
+            f"original={event['original_bytes']}  visible={event['visible_bytes']}  "
+            f"saved={saved}  retrieved={event['retrieval_bytes']}  "
+            f"critical={event['critical_retained']}/{event['critical_total']}\n"
+            f"  ref={event['ref'] or '-'}"
+        )
 
 
 # ---------------------------------------------------------------------------

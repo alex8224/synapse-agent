@@ -11,11 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from synapse.middleware import (
-    build_tool_error_recovery_middleware,
-    build_tool_result_offload_middleware,
+from synapse.middleware import build_tool_error_recovery_middleware
+from synapse.tool_output import (
+    ToolOutputRepository,
+    ToolOutputTransformPipeline,
+    load_transformer_plugins,
 )
-from synapse.tool_results import ToolResultStore
+from synapse.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tools import build_tool_result_reader_tool
 
 
@@ -29,9 +31,7 @@ def _intent_middleware() -> list[Any]:
 _TODO_TOOL_NAMES = {"write_todos", "todo_write", "todos"}
 
 
-def _tool_exclusion_middleware(
-    excluded: set[str], *, allow_execute: bool = False
-) -> list[Any]:
+def _tool_exclusion_middleware(excluded: set[str], *, allow_execute: bool = False) -> list[Any]:
     """Hide restricted tools from subagents with one middleware instance."""
     from synapse.middleware import build_tool_exclusion_middleware
 
@@ -59,10 +59,11 @@ def build_default_subagents(
     reviewer_model: str | None = None,
     researcher_model: str | None = None,
     isolate_tools: bool = True,
-    tool_results_path: Path | str | None = None,
-    tool_result_offload_threshold_bytes: int = 8_192,
-    tool_result_preview_head_chars: int = 4_096,
-    tool_result_preview_tail_chars: int = 1_024,
+    tool_output_db_path: Path | str | None = None,
+    tool_output_transform_threshold_bytes: int = 8_192,
+    tool_output_disabled_types: list[str] | None = None,
+    tool_output_transform_plugins: list[str] | None = None,
+    enable_native_tool_output_compression: bool = True,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -90,8 +91,7 @@ def build_default_subagents(
             "- Report failing tests, root cause, and exact commands run.\n"
             "- Do not expand scope beyond verifying the requested behavior.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
-            "- Do not use emoji in any output.\n"
-            + _PARALLEL_HINT
+            "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
     if tester_model:
@@ -116,8 +116,7 @@ def build_default_subagents(
             "- Do not rewrite large modules unless asked.\n"
             "- Prefer read-only inspection; do not modify files unless required.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
-            "- Do not use emoji in any output.\n"
-            + _PARALLEL_HINT
+            "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
     if reviewer_model:
@@ -140,8 +139,7 @@ def build_default_subagents(
             "- Do not run destructive shell commands.\n"
             "- Return concrete file paths and short evidence snippets.\n"
             "- Reply in Chinese when the parent conversation is Chinese.\n"
-            "- Do not use emoji in any output.\n"
-            + _PARALLEL_HINT
+            "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
     if researcher_model:
@@ -152,22 +150,31 @@ def build_default_subagents(
         allow_execute=not isolate_tools,
     )
 
-    # Every subagent gets intent-schema middleware plus one unique tool filter.
-    # Add the same result reader and archival policy as the parent so delegated
-    # tasks neither lose large output nor re-inject it into the parent context.
+    # Subagents use the exact same reversible transformation policy as the
+    # parent, scoped by their checkpoint namespace.
     result_middleware: list[Any] = []
     result_reader: Any | None = None
-    if tool_results_path is not None:
+    if tool_output_db_path is not None:
+        try:
+            output_pipeline = ToolOutputTransformPipeline(
+                transformers=load_transformer_plugins(tool_output_transform_plugins or []),
+                disabled_types=set(tool_output_disabled_types or []),
+                use_native=enable_native_tool_output_compression,
+            )
+        except Exception:  # noqa: BLE001
+            output_pipeline = ToolOutputTransformPipeline(
+                disabled_types=set(tool_output_disabled_types or []),
+                use_native=enable_native_tool_output_compression,
+            )
         result_middleware = [
-            build_tool_result_offload_middleware(
-                ToolResultStore(tool_results_path),
-                threshold_bytes=tool_result_offload_threshold_bytes,
-                preview_head_chars=tool_result_preview_head_chars,
-                preview_tail_chars=tool_result_preview_tail_chars,
+            build_tool_output_transform_middleware(
+                ToolOutputRepository(tool_output_db_path),
+                threshold_bytes=tool_output_transform_threshold_bytes,
+                pipeline=output_pipeline,
             ),
             build_tool_error_recovery_middleware(),
         ]
-        result_reader = build_tool_result_reader_tool(tool_results_path)
+        result_reader = build_tool_result_reader_tool(tool_output_db_path)
     for spec in (researcher, tester, reviewer):
         existing = list(spec.get("middleware") or [])
         spec["middleware"] = result_middleware + _intent_middleware() + existing
