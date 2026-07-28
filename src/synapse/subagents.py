@@ -60,7 +60,7 @@ def build_default_subagents(
     researcher_model: str | None = None,
     isolate_tools: bool = True,
     tool_output_db_path: Path | str | None = None,
-    tool_output_transform_threshold_bytes: int = 8_192,
+    tool_output_transform_threshold_bytes: int = 512,
     tool_output_disabled_types: list[str] | None = None,
     tool_output_transform_plugins: list[str] | None = None,
     enable_native_tool_output_compression: bool = True,

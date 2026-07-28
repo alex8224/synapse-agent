@@ -39,6 +39,7 @@ class ContentType(StrEnum):
     SEARCH = "search"
     LOG = "log"
     DIFF = "diff"
+    GIT_SUMMARY = "git-summary"
     JSON = "json"
     CODE = "code"
     TEXT = "text"
@@ -432,6 +433,19 @@ def detect_content_type(content: str) -> Detection:
         )
     if any(line.startswith(("diff --git", "--- a/", "+++ b/", "@@")) for line in lines[:20]):
         return Detection(ContentType.DIFF, 0.95)
+    git_summary_markers = sum(
+        bool(
+            re.match(
+                r"^(?:Merge made by the .+ strategy\.|(?:create|delete) mode \d+ |"
+                r"rename .+ => .+|\s*\d+ files? changed(?:,|$)|\s*\d+ insertions?\(\+\)|"
+                r"\s*\d+ deletions?\(-\)| .+\s+\|\s+\d+\s+[+\-]+$)",
+                line,
+            )
+        )
+        for line in lines[:200]
+    )
+    if git_summary_markers >= 2:
+        return Detection(ContentType.GIT_SUMMARY, min(0.95, 0.45 + git_summary_markers / 20))
     sampled = lines[:100]
     log_markers = sum(
         bool(_ERROR_LINE.search(line) or _LOG_SUMMARY.search(line)) for line in sampled
@@ -474,6 +488,16 @@ def _critical_lines(content: str, content_type: ContentType) -> list[str]:
             line
             for line in lines
             if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        ]
+    if content_type is ContentType.GIT_SUMMARY:
+        return [
+            line
+            for line in lines
+            if re.match(
+                r"^(?:Merge made by the .+ strategy\.|\s*\d+ files? changed(?:,|$)|"
+                r"\s*\d+ insertions?\(\+\)|\s*\d+ deletions?\(-\))",
+                line,
+            )
         ]
     return []
 
@@ -688,6 +712,61 @@ class DiffTransformer:
             name=self.name,
             content_type=ContentType.DIFF,
             metadata={"omitted_lines": omitted},
+        )
+
+
+class GitSummaryTransformer:
+    """Keep Git operation status and a bounded, representative file-stat view."""
+
+    name = "git-summary-v1"
+    content_types = frozenset({ContentType.GIT_SUMMARY})
+
+    def __init__(
+        self, *, head_lines: int = 8, tail_lines: int = 8, max_file_entries: int = 30
+    ) -> None:
+        self.head_lines = head_lines
+        self.tail_lines = tail_lines
+        self.max_file_entries = max_file_entries
+
+    def transform(self, content: str, context: TransformContext) -> TransformResult:
+        lines = content.splitlines()
+        file_entries = [
+            index
+            for index, line in enumerate(lines)
+            if re.match(
+                r"^(?:\s+.+\s+\|\s+\d+\s+[+\-]+$|(?:create|delete) mode \d+ |rename )", line
+            )
+        ]
+        if len(file_entries) <= self.max_file_entries:
+            return TransformResult(content, self.name, ContentType.GIT_SUMMARY, 0, 0)
+        selected = set(range(min(self.head_lines, len(lines))))
+        selected.update(range(max(0, len(lines) - self.tail_lines), len(lines)))
+        selected.update(
+            index
+            for index, line in enumerate(lines)
+            if re.match(
+                r"^\s*\d+ files? changed|^\s*\d+ (?:insertions?\(\+\)|deletions?\(-\))",
+                line,
+            )
+        )
+        selected.update(file_entries[: self.max_file_entries // 2])
+        selected.update(file_entries[-(self.max_file_entries - self.max_file_entries // 2) :])
+        ordered = sorted(selected)
+        omitted_entries = len(file_entries) - len(set(file_entries) & selected)
+        omitted_lines = len(lines) - len(ordered)
+        body = "\n".join(
+            [
+                "[git summary compressed: "
+                f"{omitted_entries} file entries and {omitted_lines} lines omitted]",
+                *(lines[index] for index in ordered),
+            ]
+        )
+        return _result(
+            content,
+            body,
+            name=self.name,
+            content_type=ContentType.GIT_SUMMARY,
+            metadata={"file_entries": len(file_entries), "omitted_file_entries": omitted_entries},
         )
 
 
@@ -955,6 +1034,7 @@ class ToolOutputTransformPipeline:
             SearchTransformer(),
             LogTransformer(),
             DiffTransformer(),
+            GitSummaryTransformer(),
             JsonTransformer(),
             CodeTransformer(),
             GenericTransformer(),

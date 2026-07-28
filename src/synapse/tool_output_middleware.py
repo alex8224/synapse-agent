@@ -22,7 +22,7 @@ from synapse.tool_output import (
 def build_tool_output_transform_middleware(
     repository: ToolOutputRepository,
     *,
-    threshold_bytes: int = 8_192,
+    threshold_bytes: int = 512,
     pipeline: ToolOutputTransformPipeline | None = None,
 ):
     """Rewrite large outputs once, preserving originals only when needed.

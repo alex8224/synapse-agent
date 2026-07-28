@@ -124,7 +124,7 @@ class Settings(BaseSettings):
         default=True, validation_alias="AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM"
     )
     tool_output_transform_threshold_bytes: int = Field(
-        default=8_192, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES"
+        default=512, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES"
     )
     tool_output_disabled_types: list[str] = Field(
         default_factory=list, validation_alias="AGENT_TOOL_OUTPUT_DISABLED_TYPES"

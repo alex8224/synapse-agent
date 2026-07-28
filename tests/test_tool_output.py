@@ -14,6 +14,7 @@ from langgraph.types import Command
 from synapse.execute_capture import capture_execute_output
 from synapse.tool_output import (
     ContentType,
+    GitSummaryTransformer,
     LogTransformer,
     NativeTransformer,
     SearchTransformer,
@@ -306,3 +307,49 @@ def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) 
     assert events[0]["outcome"] == "passthrough"
     assert events[0]["ref"] is None
     assert repo.stats(thread_id="thread-a")["execution_paths"]
+
+
+def _git_summary() -> str:
+    entries = [
+        f" src/generated_{index}.py | {index + 1:4} " + "+" * ((index % 8) + 1)
+        for index in range(80)
+    ]
+    modes = [f" create mode 100644 src/generated_{index}.py" for index in range(80)]
+    return "\n".join(
+        [
+            "Merge made by the 'ort' strategy.",
+            *entries,
+            " 160 files changed, 5000 insertions(+), 100 deletions(-)",
+            *modes,
+        ]
+    )
+
+
+def test_git_summary_detection_and_transform_preserves_operation_totals() -> None:
+    content = _git_summary()
+    assert detect_content_type(content).content_type is ContentType.GIT_SUMMARY
+
+    result = GitSummaryTransformer().transform(
+        content, TransformContext(tool_name="execute", status="success")
+    )
+
+    assert result.transformer == "git-summary-v1"
+    assert len(result.content.encode()) < len(content.encode())
+    assert "Merge made by the 'ort' strategy." in result.content
+    assert "160 files changed, 5000 insertions(+), 100 deletions(-)" in result.content
+    assert "git summary compressed" in result.content
+
+
+def test_default_low_threshold_transforms_profitable_git_summary(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo)
+    result = middleware.wrap_tool_call(
+        _request(),
+        lambda _: ToolMessage(content=_git_summary(), tool_call_id="call-git", name="execute"),
+    )
+
+    assert "[tool output transformed]" in result.content
+    assert "type: git-summary" in result.content
+    event = repo.events(thread_id="thread-a")[0]
+    assert event["content_type"] == "git-summary"
+    assert event["transformer"] == "git-summary-v1"

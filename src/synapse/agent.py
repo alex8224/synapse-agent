@@ -356,7 +356,7 @@ def build_coding_agent(
         middleware.append(
             build_tool_output_transform_middleware(
                 ToolOutputRepository(settings.resolved_tool_output_db_path()),
-                threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 8_192),
+                threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 512),
                 pipeline=output_pipeline,
             )
         )

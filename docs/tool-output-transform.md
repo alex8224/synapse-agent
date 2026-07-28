@@ -7,18 +7,19 @@ Synapse uses dependency-free, deterministic algorithms adapted from Headroom's p
 - `search`: groups `path:line:content` output and preserves query-relevant and error matches.
 - `log`: preserves errors, traceback context, summaries, and head/tail samples.
 - `diff`: preserves file/hunk metadata, changed lines, and limited change context.
+- `git-summary`: preserves merge/commit status, total file/insert/delete counts, and representative file-stat or mode-change entries.
 - `json`: keeps error/query-relevant items plus a structured omission summary.
 - `code`: keeps imports and signatures with bounded body snippets.
 - `text`: head/tail fallback with error anchors.
 
-All transforms are deterministic. A result is passed through unchanged when it grows, fails, or loses a critical error/diff line. Error-status tool results are never transformed.
+All transforms are deterministic. Synapse uses a low-cost `512` byte prefilter, then type-specific minimum-size rules, and accepts a result only when it is smaller and retains critical facts. A result is passed through unchanged when it grows, fails, or loses a critical error/diff/Git-summary fact. Error-status tool results are never transformed.
 
 ## Configuration
 
 ```json
 {
   "enable_tool_output_transform": true,
-  "tool_output_transform_threshold_bytes": 8192,
+  "tool_output_transform_threshold_bytes": 512,
   "tool_output_disabled_types": ["code"],
   "tool_output_transform_plugins": ["my_package.transforms:my_transformer"],
   "enable_native_tool_output_compression": true
@@ -29,7 +30,7 @@ Environment equivalents:
 
 ```text
 AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM=true
-AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES=8192
+AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES=512
 AGENT_TOOL_OUTPUT_DISABLED_TYPES=["code"]
 AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS=["my_package.transforms:my_transformer"]
 AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION=true

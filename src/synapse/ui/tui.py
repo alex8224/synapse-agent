@@ -4024,13 +4024,13 @@ class CodingAgentApp(App[None]):
 
     def action_copy_last_answer(self) -> None:
         """Copy the most recent assistant answer body to the clipboard."""
-        body = self._last_answer_text()
+        body = self._get_last_answer_body()
         if not body.strip():
             self.append_event("nothing to copy", "dim")
             return
         self._copy_text_to_clipboard(body, label="answer")
 
-    def _last_answer_text(self) -> str:
+    def _get_last_answer_body(self) -> str:
         try:
             timeline = self.query_one("#log", VerticalScroll)
             for child in reversed(list(timeline.children)):
