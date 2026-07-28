@@ -331,6 +331,31 @@ def test_search_transformer_handles_ripgrep_context_and_global_budget() -> None:
     assert result.metadata["omitted_matches"] > 0
 
 
+def test_search_error_matches_are_ranked_not_required_verbatim() -> None:
+    content = "\n".join(
+        [
+            *[
+                f"src/errors.py:{index}: raise ValueError('failure {index}')"
+                for index in range(1, 81)
+            ],
+            *[f"src/worker.py:{index}: ordinary worker match" for index in range(1, 41)],
+        ]
+    )
+
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        content,
+        TransformContext(tool_name="execute", status="success", query="worker error"),
+    )
+
+    assert result.transformer == "search-v1"
+    assert result.content != content
+    assert len(result.content.encode("utf-8")) < len(content.encode("utf-8"))
+    assert result.critical_total == 0
+    assert result.critical_retained == 0
+    assert not any(stage.reason_code == "critical_content_lost" for stage in result.stages)
+    assert "matches omitted" in result.content
+
+
 def test_log_transformer_deduplicates_warnings_and_keeps_stack_context() -> None:
     lines = [f"2026-01-01 WARN retry attempt={index} path=/tmp/{index}" for index in range(20)]
     lines.extend(
@@ -348,6 +373,8 @@ def test_log_transformer_deduplicates_warnings_and_keeps_stack_context() -> None
 
     assert "DATABASE_DEADLOCK" in result.content
     assert "DatabaseError: deadlock" in result.content
+    assert result.critical_total == 3
+    assert result.critical_retained == 3
     assert result.metadata["warnings"] == 20
     assert result.content.count("WARN retry") <= 2
     assert result.metadata["omitted_lines"] > 0

@@ -1073,7 +1073,7 @@ def detect_content_type(content: str) -> Detection:
 
 def _critical_lines(content: str, content_type: ContentType) -> list[str]:
     lines = content.splitlines()
-    if content_type in {ContentType.SEARCH, ContentType.LOG}:
+    if content_type is ContentType.LOG:
         return [
             line
             for line in lines
