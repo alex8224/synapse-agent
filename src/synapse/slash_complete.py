@@ -33,6 +33,8 @@ ROOT_COMMANDS: list[str] = [
     "/export",
     "/compact",
     "/context",
+    "/tool-output",
+    "/tool-compress",
     "/safety",
     "/approve",
     "/reject",
@@ -120,16 +122,12 @@ def build_complete_context(settings: Any | None) -> SlashCompleteContext:
     try:
         store = SessionStore(settings.resolved_sessions_path())
         sessions = store.list(limit=50)
-        ctx.sessions = [
-            SessionChoice(thread_id=s.thread_id, title=s.title or "") for s in sessions
-        ]
+        ctx.sessions = [SessionChoice(thread_id=s.thread_id, title=s.title or "") for s in sessions]
         ctx.thread_ids = [s.thread_id for s in sessions]
         ctx.session_titles = [
             s.title
             for s in sessions
-            if s.title
-            and not s.title.startswith("session ")
-            and s.title != s.thread_id
+            if s.title and not s.title.startswith("session ") and s.title != s.thread_id
         ]
     except Exception:  # noqa: BLE001
         pass
@@ -228,6 +226,25 @@ def complete_slash(
                 out.append(line)
         return _unique_keep_order(out)
 
+    # /tool-output [session] | /tool-output events [session] [limit]
+    if cmd_cf in {"/tool-output", "/tool-compress"}:
+        sessions = _sessions_from_ctx(ctx)
+        if not rest and trailing_space:
+            return [f"{cmd} events"] + _session_complete_lines(cmd, [], sessions, partial="")
+        if len(rest) == 1 and not trailing_space:
+            options = [f"{cmd} events"] + _session_complete_lines(
+                cmd, [], sessions, partial=rest[0]
+            )
+            return [item for item in options if item.casefold().startswith(raw.casefold())]
+        if rest and rest[0].casefold() == "events":
+            if len(rest) == 1 and trailing_space:
+                return _session_complete_lines(cmd, [rest[0]], sessions, partial="")
+            if len(rest) >= 2 and not trailing_space:
+                return _session_complete_lines(cmd, [rest[0]], sessions, partial=" ".join(rest[1:]))
+        if rest and not trailing_space:
+            return _session_complete_lines(cmd, [], sessions, partial=" ".join(rest))
+        return []
+
     # /session <sub>
     if cmd_cf == "/session":
         if not rest and trailing_space:
@@ -240,9 +257,7 @@ def complete_slash(
             if len(rest) == 1 and trailing_space:
                 return _session_complete_lines(cmd, [rest[0]], sessions, partial="")
             if len(rest) >= 2 and not trailing_space:
-                return _session_complete_lines(
-                    cmd, [rest[0]], sessions, partial=" ".join(rest[1:])
-                )
+                return _session_complete_lines(cmd, [rest[0]], sessions, partial=" ".join(rest[1:]))
             return []
         if sub == "export":
             arg = rest[1] if len(rest) >= 2 else ""
@@ -366,11 +381,9 @@ def complete_slash(
             return with_prefix(titles[:10], [])
         partial = " ".join(rest)
         if rest and not trailing_space:
-            return [
-                f"{cmd} {t}"
-                for t in titles
-                if t.casefold().startswith(partial.casefold())
-            ][:10]
+            return [f"{cmd} {t}" for t in titles if t.casefold().startswith(partial.casefold())][
+                :10
+            ]
         return []
 
     return []
@@ -434,10 +447,7 @@ def format_completion_hint(
     for c in shown:
         token = c.rsplit(" ", 1)[-1] if " " in c else c
         if token in id_to_label and (
-            c.startswith("/switch ")
-            or " switch " in c
-            or " delete " in c
-            or " show " in c
+            c.startswith("/switch ") or " switch " in c or " delete " in c or " show " in c
         ):
             tails.append(id_to_label[token])
             continue
@@ -595,9 +605,7 @@ def _glob_at_candidates(
                 parent_part = ""
             base_part = parent_path.name
             ls_dir = (
-                (workspace / parent_path.parent).resolve()
-                if parent_part
-                else workspace.resolve()
+                (workspace / parent_path.parent).resolve() if parent_part else workspace.resolve()
             )
     else:
         parent_part = ""

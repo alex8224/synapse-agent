@@ -21,8 +21,11 @@ from synapse.tool_output import (
     ToolOutputRepository,
     ToolOutputTransformPipeline,
     TransformContext,
+    TransformEvent,
+    clear_metrics_notifier,
     detect_content_type,
     load_transformer_plugins,
+    set_metrics_notifier,
 )
 from synapse.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tools.session_tools import build_tool_result_reader_tool
@@ -307,6 +310,36 @@ def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) 
     assert events[0]["outcome"] == "passthrough"
     assert events[0]["ref"] is None
     assert repo.stats(thread_id="thread-a")["execution_paths"]
+
+
+def test_repository_notifies_on_transform_and_retrieval(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    notified: list[str] = []
+    set_metrics_notifier(notified.append)
+    try:
+        event = TransformEvent(
+            content_type="log",
+            transformer="log-v1",
+            outcome="transformed",
+            original_bytes=2048,
+            visible_bytes=512,
+            duration_ms=1.0,
+            critical_total=1,
+            critical_retained=1,
+            ref_created=True,
+        )
+        repo.record_event("thread-a", event, ref="tool-output://ref")
+        repo.record_retrieval(
+            thread_id="thread-a",
+            ref="tool-output://ref",
+            mode="pagination",
+            returned_bytes=100,
+            duration_ms=1.0,
+        )
+    finally:
+        clear_metrics_notifier()
+
+    assert notified == ["thread-a", "thread-a"]
 
 
 def _git_summary() -> str:

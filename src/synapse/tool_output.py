@@ -34,6 +34,34 @@ _NUMBER_OR_PATH = re.compile(r"\b\d+\b|(?:[A-Za-z]:)?[/\\][\w./\\-]+")
 _LOG_SUMMARY = re.compile(r"\b(passed|failed|skipped|collected|tests? run|exit code)\b", re.I)
 _TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
 
+# Process-local UI hook. Persistence remains in ToolOutputRepository; the hook
+# only lets an active UI refresh its in-memory metrics promptly.
+_metrics_notifier: Any | None = None
+_metrics_notifier_lock = threading.RLock()
+
+
+def set_metrics_notifier(notifier: Any | None) -> None:
+    """Install a best-effort callback invoked after metrics-changing writes."""
+    global _metrics_notifier
+    with _metrics_notifier_lock:
+        _metrics_notifier = notifier
+
+
+def clear_metrics_notifier() -> None:
+    """Remove the active process-local metrics callback."""
+    set_metrics_notifier(None)
+
+
+def notify_metrics_changed(thread_id: str) -> None:
+    """Notify the active UI without allowing observer failures to affect tools."""
+    with _metrics_notifier_lock:
+        notifier = _metrics_notifier
+    if callable(notifier):
+        try:
+            notifier(thread_id)
+        except Exception:  # noqa: BLE001
+            pass
+
 
 class ContentType(StrEnum):
     SEARCH = "search"
@@ -278,6 +306,7 @@ class ToolOutputRepository:
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 ),
             )
+        notify_metrics_changed(thread_id)
 
     def record_retrieval(
         self,
@@ -302,6 +331,7 @@ class ToolOutputRepository:
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 ),
             )
+        notify_metrics_changed(thread_id)
 
     def events(self, *, thread_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent transformation decisions with linked retrieval totals."""

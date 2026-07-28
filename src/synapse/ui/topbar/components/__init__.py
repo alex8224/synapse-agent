@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.topbar.components import branch, title, usage, workspace
+from synapse.ui.topbar.components import branch, title, tool_output, usage, workspace
 from synapse.ui.topbar.core import (
     DEFAULT_COL_GAP,
     TopBarAlign,
@@ -38,6 +38,7 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     workspace.install,
     title.install,
     branch.install,
+    tool_output.install,
     usage.install,
 ]
 
@@ -79,6 +80,16 @@ def install_default_regions(
         bg=center_bg,
     )
     registry.register_region(
+        "tool_output",
+        order=25,
+        flex=0,
+        min_width=8,
+        max_width=18,
+        align=TopBarAlign.CENTER,
+        priority=45,
+        gap_after=DEFAULT_COL_GAP,
+    )
+    registry.register_region(
         TopBarRegion.RIGHT.value,
         order=30,
         flex=0,
@@ -99,6 +110,7 @@ def install_default_components(
     title: Callable[[], str] | None = None,
     branch: Callable | None = None,
     usage: Callable[[], str] | None = None,
+    tool_output: Callable[[], str] | None = None,
     workspace_mark: str = "≡",
     branch_mark: str = "⎇",
     installers: list[ComponentInstaller] | None = None,
@@ -120,6 +132,7 @@ def install_default_components(
             title=title,
             branch=branch,
             usage=usage,
+            tool_output=tool_output or (lambda: ""),
             workspace_mark=workspace_mark,
             branch_mark=branch_mark,
         )

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from synapse.mcp_client import load_mcp_server_configs
 from synapse.sessions import SessionStore
 from synapse.slash_cmds import handle_slash
+from synapse.tool_output import ToolOutputRepository, TransformEvent
 from synapse.transcript import (
     export_transcript_json,
     export_transcript_markdown,
@@ -40,6 +41,9 @@ class _FakeSettings:
 
     def resolved_sessions_path(self) -> Path:
         return self._sessions
+
+    def resolved_tool_output_db_path(self) -> Path:
+        return self._sessions.parent / "tool-outputs.sqlite"
 
 
 def test_mcp_config_parses_stdio_and_remote(tmp_path: Path):

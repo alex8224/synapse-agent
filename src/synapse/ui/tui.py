@@ -42,6 +42,11 @@ from synapse.multimodal import (
 )
 from synapse.session_recap import SessionRecapController
 from synapse.steer import SteerQueue, format_steer_message, get_agent_steer_queue
+from synapse.tool_output import (
+    ToolOutputRepository,
+    clear_metrics_notifier,
+    set_metrics_notifier,
+)
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -2368,6 +2373,10 @@ class CodingAgentApp(App[None]):
         self._git_branch = self._git_chrome.name if self._git_chrome else None
         hist_root = Path(project_root or ws)
         self._input_history = InputHistory.for_project(hist_root)
+        self._tool_output_repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
+        self._tool_output_stats: dict[str, Any] = {}
+        self._tool_output_stats_thread_id: str | None = None
+        self._tool_output_refresh_pending = False
         self._topbar = TopBarRegistry()
         self._install_default_topbar()
         self._bottombar = BottomBarRegistry()
@@ -2424,6 +2433,9 @@ class CodingAgentApp(App[None]):
             )
             yield Static("", id="bottombar")
 
+    def on_unmount(self) -> None:
+        clear_metrics_notifier()
+
     def on_mount(self) -> None:
         # Apply configured theme before first paint of chrome widgets.
         try:
@@ -2434,7 +2446,8 @@ class CodingAgentApp(App[None]):
             )
         except Exception:  # noqa: BLE001
             pass
-        self._refresh_topbar()
+        self._reload_tool_output_stats()
+        set_metrics_notifier(self._on_tool_output_metrics_changed)
         self._refresh_bottombar()
         self.set_interval(0.1, self._tick_status)
         log = self.query_one("#log", VerticalScroll)
@@ -2977,41 +2990,81 @@ class CodingAgentApp(App[None]):
             pass
         return None
 
-    def _usage_right_label(self) -> str:
-        """Right chrome: session in/cache/out, then last-turn occupancy.
+    def _usage_right_label(self) -> str | Text:
+        """Render token totals and occupancy using distinct theme colors.
 
-        Order matters: put totals first so residual clipping never hides out.
-        Example: ``2M/1.9M/12K 300K/60%``.
+        Input, cache, output, and the current context occupancy each keep their
+        own visual role while separators remain muted.
         """
-        parts: list[str] = []
         last_in = int(getattr(self, "_context_tokens", 0) or 0)
-        # Session totals (always show once any counter is non-zero).
-        if self._input_tokens or self._cache_tokens or self._output_tokens:
-            parts.append(
-                format_usage_label(
-                    input_tokens=self._input_tokens,
-                    cache_tokens=self._cache_tokens,
-                    output_tokens=self._output_tokens,
-                )
-            )
+        has_totals = bool(self._input_tokens or self._cache_tokens or self._output_tokens)
+        if has_totals:
+            input_tokens = self._input_tokens
+            cache_tokens = self._cache_tokens
+            output_tokens = self._output_tokens
         elif last_in:
-            # Fallback: at least surface last-turn input as in/0/0.
-            parts.append(
-                format_usage_label(
-                    input_tokens=last_in,
-                    cache_tokens=0,
-                    output_tokens=0,
-                )
-            )
-        occ = format_context_occupancy_label(
+            input_tokens, cache_tokens, output_tokens = last_in, 0, 0
+        else:
+            input_tokens = cache_tokens = output_tokens = 0
+
+        occupancy = format_context_occupancy_label(
             last_input_tokens=last_in,
             context_window=self._context_window_tokens(),
         )
-        if occ:
-            parts.append(occ)
-        # Empty when no usage yet — model lives on the status row, not topbar.
-        return " ".join(parts)
+        if not (has_totals or last_in or occupancy):
+            return ""
 
+        label = Text()
+        if has_totals or last_in:
+            label.append(format_token_count(input_tokens), style=_C_FG)
+            label.append("/", style=_C_MUTED)
+            label.append(format_token_count(cache_tokens), style=_C_GREEN)
+            label.append("/", style=_C_MUTED)
+            label.append(format_token_count(output_tokens), style=_C_ORANGE)
+        if occupancy:
+            if label:
+                label.append(" ", style=_C_MUTED)
+            label.append(occupancy, style=_C_GREEN)
+        return label
+
+
+    def _tool_output_label(self) -> str | Text:
+        """Render effective tool-output savings with a theme emphasis color."""
+        stats = self._tool_output_stats
+        if self._tool_output_stats_thread_id != self.thread_id or not stats:
+            return ""
+        if not int(stats.get("transformed", 0) or 0):
+            return ""
+        saved = max(0, int(stats.get("effective_saved_bytes", 0) or 0))
+        ratio = max(0.0, float(stats.get("effective_savings_ratio", 0.0) or 0.0))
+        label = f"OUT {format_token_count(saved)}/{ratio:.0%}"
+        # Green means the visible context is still smaller after any re-reads;
+        # orange signals that retrieval has consumed all recorded savings.
+        return Text(label, style=_C_GREEN if saved else _C_ORANGE)
+
+    def _reload_tool_output_stats(self) -> None:
+        """Load persistent metrics for the active session outside the render path."""
+        try:
+            stats = self._tool_output_repo.stats(thread_id=self.thread_id)
+        except Exception:  # noqa: BLE001
+            stats = {}
+        self._tool_output_stats = stats
+        self._tool_output_stats_thread_id = self.thread_id
+        self._refresh_topbar()
+
+    def _on_tool_output_metrics_changed(self, thread_id: str) -> None:
+        """Receive a worker-thread metric write and coalesce UI refreshes."""
+        if thread_id != self.thread_id or self._tool_output_refresh_pending:
+            return
+        self._tool_output_refresh_pending = True
+        try:
+            self.call_from_thread(self._refresh_tool_output_stats)
+        except Exception:  # noqa: BLE001
+            self._tool_output_refresh_pending = False
+
+    def _refresh_tool_output_stats(self) -> None:
+        self._tool_output_refresh_pending = False
+        self._reload_tool_output_stats()
 
     def _begin_turn_usage(self) -> None:
         """Mark session totals baseline for live per-call topbar updates."""
@@ -3106,6 +3159,7 @@ class CodingAgentApp(App[None]):
                 or self._session_title_label(max_len=56),
                 branch=self._render_branch_chrome,
                 usage=self._usage_right_label,
+                tool_output=self._tool_output_label,
                 branch_mark=_TOPBAR_BRANCH_MARK,
             ),
         )
@@ -5068,6 +5122,7 @@ class CodingAgentApp(App[None]):
             self.thread_id = thread_id
             self.action_clear_log()
             self._reset_session_token_chrome()
+            self._reload_tool_output_stats()
         if getattr(ok, "clear_log", False):
             self.action_clear_log()
         if agent is not None or getattr(ok, "settings_changed", False):

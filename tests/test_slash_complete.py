@@ -24,6 +24,18 @@ def test_root_command_prefix():
     assert complete_slash("hello") == []
 
 
+def test_tool_output_completion():
+    ctx = SlashCompleteContext(
+        sessions=[
+            SessionChoice("thread-alpha", "Alpha"),
+            SessionChoice("thread-beta", "Beta"),
+        ]
+    )
+    assert "/tool-output" in complete_slash("/tool-o", ctx)
+    assert "/tool-output events" in complete_slash("/tool-output e", ctx)
+    assert "/tool-output thread-alpha" in complete_slash("/tool-output t", ctx)
+
+
 def test_session_and_mcp_subcommands():
     assert "/session list" in complete_slash("/session l")
     assert "/session switch" in complete_slash("/session sw")

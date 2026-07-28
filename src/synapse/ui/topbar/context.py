@@ -12,6 +12,10 @@ LabelFn = Callable[[], str]
 RichLabelFn = Callable[[], str | Text]
 
 
+def _empty_label() -> str:
+    return ""
+
+
 @dataclass(slots=True)
 class TopBarContext:
     """Data sources for built-in (and custom) topbar components.
@@ -23,5 +27,6 @@ class TopBarContext:
     title: LabelFn
     branch: RichLabelFn
     usage: LabelFn
+    tool_output: RichLabelFn = _empty_label
     workspace_mark: str = "≡"
     branch_mark: str = "⎇"

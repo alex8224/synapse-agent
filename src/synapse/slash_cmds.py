@@ -99,11 +99,12 @@ HELP_TEXT = """## Slash Commands
 |---|---|
 | `/context` | Context usage stats |
 | `/compact` | Force context compact |
+| `/tool-output [session]` | Tool-output compression metrics |
+| `/tool-output events [session] [limit]` | Recent tool-output transformation events |
 | `/skills` | List skills |
 | `/memory` | List memory files |
 | `/subagents` | List sub-agents |
 """
-
 
 
 @dataclass
@@ -136,6 +137,119 @@ class SlashResult:
 
 def _parts(text: str) -> list[str]:
     return text.strip().split()
+
+
+def _format_bytes(value: int | float) -> str:
+    """Format byte counts compactly for slash command tables."""
+    amount = max(0, int(value or 0))
+    for unit, size in (("G", 1024**3), ("M", 1024**2), ("K", 1024)):
+        if amount >= size:
+            rendered = amount / size
+            return f"{rendered:.1f}{unit}" if rendered < 10 else f"{rendered:.0f}{unit}"
+    return f"{amount}B"
+
+
+def _resolve_session_ref(
+    settings: Any, current_thread_id: str, args: list[str]
+) -> tuple[str | None, str | None]:
+    """Resolve an optional thread id/title argument to a unique session id."""
+    if not args:
+        return current_thread_id, None
+    query = " ".join(args).strip()
+    info = _store(settings).resolve_session_ref(query)
+    if info is None:
+        return None, f"session not found or ambiguous: {query}"
+    return info.thread_id, None
+
+
+def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) -> SlashResult:
+    """Render persistent tool-output compression metrics or recent events."""
+    show_events = bool(args and args[0].casefold() == "events")
+    rest = args[1:] if show_events else args
+    limit = 10
+    if show_events and rest and rest[-1].isdigit():
+        limit = max(1, min(50, int(rest[-1])))
+        rest = rest[:-1]
+    thread_id, error = _resolve_session_ref(settings, current_thread_id, rest)
+    if error or thread_id is None:
+        return SlashResult(handled=True, lines=[error or "session not found"], error=True)
+
+    from synapse.tool_output import ToolOutputRepository
+
+    repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    if show_events:
+        events = repo.events(thread_id=thread_id, limit=limit)
+        if not events:
+            return SlashResult(
+                handled=True,
+                lines=[f"thread_id={thread_id}", "no tool-output events"],
+                markdown=(
+                    f"## Tool Output Events\n\nThread: `{thread_id}`\n\n"
+                    "No tool-output events."
+                ),
+            )
+        md = [
+            "## Tool Output Events",
+            "",
+            f"Thread: `{thread_id}`",
+            "",
+            "| Time | Type | Transformer | Outcome | Original | Visible | Saved | Read |",
+            "|---|---|---|---|---:|---:|---:|---:|",
+        ]
+        lines = [f"thread_id={thread_id}"]
+        for event in events:
+            saved = int(event.get("saved_bytes", 0) or 0)
+            row = (
+                "| {time} | {type} | {transformer} | {outcome} | "
+                "{original} | {visible} | {saved} | {read} |"
+            )
+            md.append(
+                row.format(
+                    time=_md_escape(str(event.get("created_at", "-"))),
+                    type=_md_escape(str(event.get("content_type", "-"))),
+                    transformer=_md_escape(str(event.get("transformer", "-"))),
+                    outcome=_md_escape(str(event.get("outcome", "-"))),
+                    original=_format_bytes(event.get("original_bytes", 0)),
+                    visible=_format_bytes(event.get("visible_bytes", 0)),
+                    saved=_format_bytes(saved),
+                    read=_format_bytes(event.get("retrieval_bytes", 0)),
+                )
+            )
+            lines.append(
+                f"{event.get('created_at', '-')} {event.get('content_type', '-')} "
+                f"saved={_format_bytes(saved)}"
+            )
+        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
+
+    stats = repo.stats(thread_id=thread_id)
+    effective_saved = _format_bytes(stats["effective_saved_bytes"])
+    effective_ratio = f"{stats['effective_savings_ratio']:.1%}"
+    rows = [
+        ("thread_id", thread_id),
+        ("outputs considered", str(stats["outputs_considered"])),
+        ("transformed", str(stats["transformed"])),
+        ("original bytes", _format_bytes(stats["original_bytes"])),
+        ("visible bytes", _format_bytes(stats["visible_bytes"])),
+        ("saved", f"{_format_bytes(stats['saved_bytes'])} ({stats['savings_ratio']:.1%})"),
+        ("retrieval bytes", _format_bytes(stats["retrieval_bytes"])),
+        ("effective saved", f"{effective_saved} ({effective_ratio})"),
+        ("critical retention", f"{stats['critical_retention']:.1%}"),
+    ]
+    paths = stats.get("execution_paths") or {}
+    if paths:
+        rows.append(
+            (
+                "execution paths",
+                ", ".join(f"{name}={count}" for name, count in sorted(paths.items())),
+            )
+        )
+    md = ["## Tool Output Compression", "", "| Metric | Value |", "|---|---|"]
+    md.extend(f"| {_md_escape(key)} | {_md_escape(value)} |" for key, value in rows)
+    return SlashResult(
+        handled=True,
+        lines=[f"{key}: {value}" for key, value in rows],
+        markdown="\n".join(md),
+    )
 
 
 def _store(settings: Any) -> SessionStore:
@@ -304,11 +418,9 @@ def _export_lines(
         # Keep metadata section readable when transcript empty.
         if not messages:
             meta = store.export_markdown(thread_id) or ""
-            text = meta + '\n## Transcript\n\n(no checkpoint messages found)\n'
+            text = meta + "\n## Transcript\n\n(no checkpoint messages found)\n"
 
-    target = out_path if out_path is not None else _default_export_path(
-        settings, thread_id, fmt_n
-    )
+    target = out_path if out_path is not None else _default_export_path(settings, thread_id, fmt_n)
     try:
         target = Path(target).expanduser()
         if not target.is_absolute():
@@ -541,19 +653,13 @@ def _handle_session(
         )
 
     if sub == "new":
-        return _handle_session(
-            "/new", [], settings=settings, agent=agent, thread_id=thread_id
-        )
+        return _handle_session("/new", [], settings=settings, agent=agent, thread_id=thread_id)
 
     if sub == "switch":
-        return _handle_session(
-            "/switch", rest, settings=settings, agent=agent, thread_id=thread_id
-        )
+        return _handle_session("/switch", rest, settings=settings, agent=agent, thread_id=thread_id)
 
     if sub == "rename":
-        return _handle_session(
-            "/rename", rest, settings=settings, agent=agent, thread_id=thread_id
-        )
+        return _handle_session("/rename", rest, settings=settings, agent=agent, thread_id=thread_id)
 
     if sub == "delete":
         if not rest:
@@ -578,9 +684,7 @@ def _handle_session(
                 handled=True,
                 lines=[f"deleted session metadata: {tid}  ({label})"],
                 markdown=(
-                    "## Deleted\n\n"
-                    f"- **thread_id**: `{tid}`\n"
-                    f"- **title**: {_md_escape(label)}"
+                    f"## Deleted\n\n- **thread_id**: `{tid}`\n- **title**: {_md_escape(label)}"
                 ),
             )
         return SlashResult(handled=True, lines=[f"session not found: {query}"], error=True)
@@ -601,9 +705,7 @@ def _handle_session(
         )
 
     if sub == "export":
-        return _handle_session(
-            "/export", rest, settings=settings, agent=agent, thread_id=thread_id
-        )
+        return _handle_session("/export", rest, settings=settings, agent=agent, thread_id=thread_id)
 
     return SlashResult(
         handled=True,
@@ -636,9 +738,7 @@ def _mcp_list_lines(settings: Any) -> list[str]:
             dest = f"cmd={s.command!r} args={s.args!r}"
         else:
             dest = f"url={s.url!r}"
-        lines.append(
-            f"- {s.name}: transport={s.transport} enabled={s.enabled} {dest}"
-        )
+        lines.append(f"- {s.name}: transport={s.transport} enabled={s.enabled} {dest}")
     loaded = getattr(build_coding_agent, "last_mcp_servers", []) or []
     warnings = getattr(build_coding_agent, "last_mcp_warnings", []) or []
     tool_names = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
@@ -699,7 +799,7 @@ def _md_tool_list(names: list[str], warnings: list[str] | None = None) -> str:
     else:
         for n in sorted(names):
             lines.append(f"- `{_md_escape(n)}`")
-    for w in (warnings or []):
+    for w in warnings or []:
         lines.append(f"\nwarn: {w}")
     return "\n".join(lines)
 
@@ -759,10 +859,7 @@ def _rebuild_agent(
 
 
 def _mcp_attach_pending(settings: Any) -> bool:
-    return bool(
-        getattr(settings, "enable_mcp", True)
-        and get_active_mcp_pool() is None
-    )
+    return bool(getattr(settings, "enable_mcp", True) and get_active_mcp_pool() is None)
 
 
 def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
@@ -1001,8 +1098,7 @@ def _handle_mcp(
         warnings_list = getattr(build_coding_agent, "last_mcp_warnings", []) or []
         tools = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
         notice = (
-            f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'}"
-            f" · tools={len(tools)}"
+            f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'} · tools={len(tools)}"
         )
         lines = [
             f"mcp server '{target}' {'enabled' if changed.enabled else 'disabled'}; agent rebuilt",
@@ -1102,8 +1198,11 @@ def _handle_mcp(
         for w in warnings:
             md_lines.append(f"- warn: {w}")
         return SlashResult(
-            handled=True, lines=lines, notice=notice,
-            markdown="\n".join(md_lines), agent=new_agent,
+            handled=True,
+            lines=lines,
+            notice=notice,
+            markdown="\n".join(md_lines),
+            agent=new_agent,
         )
 
     return SlashResult(
@@ -1130,11 +1229,7 @@ def _handle_model(
 
     reg = registry_from_settings(settings)
     cfg_path = getattr(settings, "models_config_path", None)
-    active = (
-        getattr(agent, "_coding_model_profile", None)
-        or settings.active_model
-        or reg.default
-    )
+    active = getattr(agent, "_coding_model_profile", None) or settings.active_model or reg.default
     allowed = reg.allowed_thinking_levels(active)
     allowed_help = "|".join(allowed) if allowed else "off|low|medium|high|max"
 
@@ -1174,9 +1269,7 @@ def _handle_model(
                 error=True,
             )
         try:
-            label = apply_thinking_to_settings(
-                settings, args[1], allowed=allowed
-            )
+            label = apply_thinking_to_settings(settings, args[1], allowed=allowed)
         except ValueError as exc:
             return SlashResult(handled=True, lines=[str(exc)], error=True)
         model_name = settings.active_model or reg.default
@@ -1272,14 +1365,11 @@ def _handle_model(
     mcp_attach_pending = _mcp_attach_pending(settings)
     return SlashResult(
         handled=True,
-        lines=[
-            f"model switched to {profile.name}  ({format_model_status(settings)})"
-        ],
+        lines=[f"model switched to {profile.name}  ({format_model_status(settings)})"],
         agent=new_agent,
         settings_changed=True,
         mcp_attach_pending=mcp_attach_pending,
     )
-
 
 
 def _handle_theme(
@@ -1302,6 +1392,7 @@ def _handle_theme(
         active = getattr(settings, "theme", None) or get_theme().name
         plain = format_theme_list_lines(active=active)
         from synapse.ui.theme import list_themes, theme_kind
+
         md = (
             "## Themes\n\n"
             f"**current**: `{active}`\n\n"
@@ -1311,6 +1402,7 @@ def _handle_theme(
             mark = "*" if t.name == active else " "
             tone = theme_kind(t)
             from synapse.ui.theme import BUILTIN_THEMES, _custom
+
             if t.name in _custom and t.name not in BUILTIN_THEMES:
                 kind = f"custom/{tone}"
             elif t.name in _custom:
@@ -1321,10 +1413,7 @@ def _handle_theme(
                 f"| {mark} | `{_md_escape(t.name)}` "
                 f"| {_md_escape(t.label)} | {_md_escape(kind)} |\n"
             )
-        md += (
-            "\nusage: `/theme <name>`\n\n"
-            "config: `settings.json` theme + optional `themes.json`"
-        )
+        md += "\nusage: `/theme <name>`\n\nconfig: `settings.json` theme + optional `themes.json`"
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     name = args[0].strip()
@@ -1402,7 +1491,9 @@ def handle_slash(
         return SlashResult(handled=True, clear_log=True, lines=["log cleared"])
     if raw in {"/help", "/?"}:
         return SlashResult(
-            handled=True, lines=HELP_TEXT.splitlines(), markdown=HELP_TEXT,
+            handled=True,
+            lines=HELP_TEXT.splitlines(),
+            markdown=HELP_TEXT,
         )
 
     parts = _parts(raw)
@@ -1417,9 +1508,7 @@ def handle_slash(
         "/rename",
         "/export",
     }:
-        result = _handle_session(
-            cmd, args, settings=settings, agent=agent, thread_id=thread_id
-        )
+        result = _handle_session(cmd, args, settings=settings, agent=agent, thread_id=thread_id)
         # When switching sessions, restore that session's model binding.
         if (
             result.handled
@@ -1468,6 +1557,9 @@ def handle_slash(
         ok, lines = force_compact_via_agent(agent, thread_id=thread_id)
         md = "## Compact\n\n" + "\n".join(f"- {x}" for x in lines)
         return SlashResult(handled=True, lines=lines, error=not ok, markdown=md)
+
+    if cmd in {"/tool-output", "/tool-compress"}:
+        return _tool_output_result(settings, thread_id, args)
 
     if cmd == "/context":
         from synapse.context_compact import context_status_lines

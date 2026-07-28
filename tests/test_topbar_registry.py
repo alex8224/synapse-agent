@@ -18,6 +18,23 @@ from synapse.ui.topbar import (
 )
 
 
+def test_default_topbar_has_dedicated_tool_output_region() -> None:
+    registry = TopBarRegistry()
+    install_default_components(
+        registry,
+        workspace=lambda: "ws",
+        title=lambda: "title",
+        branch=lambda: "main",
+        usage=lambda: "1K/0/0",
+        tool_output=lambda: Text("OUT 2K/75%", style="#81c995"),
+    )
+
+    assert registry.get_region("tool_output") is not None
+    assert [item.id for item in registry.components("tool_output")] == ["tool_output"]
+    line = layout_from_registry(registry, usable_width=100)
+    assert "OUT 2K/75%" in line.plain
+
+
 def test_region_parse_and_reject() -> None:
     assert TopBarRegion.parse("left") is TopBarRegion.LEFT
     assert TopBarRegion.parse(TopBarRegion.RIGHT) is TopBarRegion.RIGHT
