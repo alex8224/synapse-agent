@@ -52,6 +52,19 @@ def test_cli_models_help():
     assert "model" in result.stdout.lower()
 
 
+def test_cli_tool_output_help():
+    result = runner.invoke(app, ["tool-output", "--help"])
+    assert result.exit_code == 0
+    assert "stats" in result.stdout
+
+
+def test_cli_tool_output_eval_fixture():
+    fixture = __import__("pathlib").Path(__file__).parent / "fixtures" / "tool_output_eval.json"
+    result = runner.invoke(app, ["tool-output", "eval", str(fixture)])
+    assert result.exit_code == 0
+    assert "passed: 3" in result.stdout
+
+
 def test_cli_mcp_help():
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0

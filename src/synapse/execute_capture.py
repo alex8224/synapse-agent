@@ -3,7 +3,7 @@
 ``FilesystemMiddleware`` only converts ``ExecuteResponse.output`` into a
 ``ToolMessage``. The response contract cannot carry artifacts, so the backend
 records the full pre-truncation output in this context-local side channel while
-the result-offload middleware invokes the execute tool.
+the tool-output transformation middleware invokes the execute tool.
 """
 
 from __future__ import annotations

@@ -105,9 +105,7 @@ class Settings(BaseSettings):
     shell_executable: str | None = Field(default=None, validation_alias="SHELL_EXECUTABLE")
     # Decode shell stdout/stderr with this codec (avoids GBK UnicodeDecodeError on Windows).
     shell_encoding: str = Field(default="utf-8", validation_alias="SHELL_ENCODING")
-    shell_encoding_errors: str = Field(
-        default="replace", validation_alias="SHELL_ENCODING_ERRORS"
-    )
+    shell_encoding_errors: str = Field(default="replace", validation_alias="SHELL_ENCODING_ERRORS")
 
     # Approval: default OFF, auto-pass (user requirement)
     require_approval: bool = Field(default=False, validation_alias="AGENT_REQUIRE_APPROVAL")
@@ -118,22 +116,26 @@ class Settings(BaseSettings):
     enable_command_blacklist: bool = Field(
         default=True, validation_alias="ENABLE_COMMAND_BLACKLIST"
     )
-    enable_compact_tool: bool = Field(
-        default=True, validation_alias="AGENT_ENABLE_COMPACT_TOOL"
+    enable_compact_tool: bool = Field(default=True, validation_alias="AGENT_ENABLE_COMPACT_TOOL")
+    # Rewrite large tool results through a content-aware, reversible pipeline.
+    # Originals are stored in a content-addressed SQLite database only after a
+    # successful rewrite; small results bypass both transformation and storage.
+    enable_tool_output_transform: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM"
     )
-    # Persist every tool result in a session-scoped JSONL journal. Results above
-    # the threshold are replaced in model context by a bounded preview + reference.
-    enable_tool_result_offload: bool = Field(
-        default=True, validation_alias="AGENT_ENABLE_TOOL_RESULT_OFFLOAD"
+    tool_output_transform_threshold_bytes: int = Field(
+        default=8_192, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES"
     )
-    tool_result_offload_threshold_bytes: int = Field(
-        default=8_192, validation_alias="AGENT_TOOL_RESULT_OFFLOAD_THRESHOLD_BYTES"
+    tool_output_disabled_types: list[str] = Field(
+        default_factory=list, validation_alias="AGENT_TOOL_OUTPUT_DISABLED_TYPES"
     )
-    tool_result_preview_head_chars: int = Field(
-        default=4_096, validation_alias="AGENT_TOOL_RESULT_PREVIEW_HEAD_CHARS"
+    tool_output_transform_plugins: list[str] = Field(
+        default_factory=list, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS"
     )
-    tool_result_preview_tail_chars: int = Field(
-        default=1_024, validation_alias="AGENT_TOOL_RESULT_PREVIEW_TAIL_CHARS"
+    # Prefer the optional prebuilt native compression wheel when installed.
+    # Python transformers remain the automatic fallback on unsupported platforms.
+    enable_native_tool_output_compression: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION"
     )
 
     # Session / checkpoint
@@ -147,9 +149,7 @@ class Settings(BaseSettings):
     sessions_path: Path | None = Field(default=None, validation_alias="SESSIONS_PATH")
 
     # Project memory / skills (paths relative to project root or absolute)
-    enable_memory: bool = Field(
-        default=False, validation_alias="AGENT_ENABLE_MEMORY"
-    )
+    enable_memory: bool = Field(default=False, validation_alias="AGENT_ENABLE_MEMORY")
     memory_paths: list[str] = Field(
         default_factory=lambda: ["MEMORY.md", ".coding-agent/MEMORY.md"]
     )
@@ -214,9 +214,7 @@ class Settings(BaseSettings):
         default=True, validation_alias="AGENT_TOOL_DETAILS_EXPANDED"
     )
     # TUI session recap: after idle following a completed turn, show one-line summary.
-    session_recap_enabled: bool = Field(
-        default=True, validation_alias="AGENT_SESSION_RECAP"
-    )
+    session_recap_enabled: bool = Field(default=True, validation_alias="AGENT_SESSION_RECAP")
     session_recap_idle_seconds: float = Field(
         default=180.0, validation_alias="AGENT_SESSION_RECAP_IDLE_SECONDS"
     )
@@ -283,7 +281,13 @@ class Settings(BaseSettings):
         # Keep relative paths relative so load_settings can resolve against workspace.
         return Path(str(value)).expanduser()
 
-    @field_validator("excluded_tools", "deny_fs_paths", mode="before")
+    @field_validator(
+        "excluded_tools",
+        "deny_fs_paths",
+        "tool_output_disabled_types",
+        "tool_output_transform_plugins",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if value is None:
@@ -309,16 +313,16 @@ class Settings(BaseSettings):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         if self.sessions_path is not None:
             self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.resolved_tool_results_path().mkdir(parents=True, exist_ok=True)
+        self.resolved_tool_output_db_path().parent.mkdir(parents=True, exist_ok=True)
 
     def resolved_sessions_path(self) -> Path:
         if self.sessions_path is not None:
             return Path(self.sessions_path).expanduser().resolve()
         return self.checkpoint_path.parent / "sessions.sqlite"
 
-    def resolved_tool_results_path(self) -> Path:
-        """Directory containing append-only tool-result journals by thread id."""
-        return self.resolved_sessions_path().parent / "tool-results"
+    def resolved_tool_output_db_path(self) -> Path:
+        """SQLite database for reversible transformed tool outputs."""
+        return self.resolved_sessions_path().parent / "tool-outputs.sqlite"
 
     def resolved_memory_paths(self, project_root: Path | None = None) -> list[str]:
         root = project_root or Path.cwd()
@@ -424,9 +428,7 @@ def load_settings(**overrides: Any) -> Settings:
         if "workspace" in overrides and overrides["workspace"] is not None:
             settings.workspace = Path(overrides["workspace"]).expanduser().resolve()
         if "checkpoint_path" in overrides and overrides["checkpoint_path"] is not None:
-            settings.checkpoint_path = (
-                Path(overrides["checkpoint_path"]).expanduser().resolve()
-            )
+            settings.checkpoint_path = Path(overrides["checkpoint_path"]).expanduser().resolve()
 
     # Default state files live under project .coding-agent when possible.
     proj = project_config_dir(settings.workspace)
