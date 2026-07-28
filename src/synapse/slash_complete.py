@@ -33,6 +33,7 @@ ROOT_COMMANDS: list[str] = [
     "/export",
     "/compact",
     "/context",
+    "/compression",
     "/tool-output",
     "/tool-compress",
     "/safety",
@@ -75,6 +76,20 @@ MCP_SUBCOMMANDS: list[str] = [
 
 EXPORT_FORMATS: list[str] = ["md", "json"]
 CODEX_SUBCOMMANDS: list[str] = ["import"]
+COMPRESSION_EXPORT_FORMATS: list[str] = ["json", "csv"]
+COMPRESSION_SUBCOMMANDS: list[str] = [
+    "profile",
+    "export",
+    "events",
+    "requests",
+    "request",
+    "skipped",
+    "fallback",
+    "tool",
+]
+COMPRESSION_SESSION_SUBCOMMANDS = frozenset(
+    {"profile", "events", "requests", "skipped", "fallback"}
+)
 
 
 @dataclass
@@ -226,17 +241,59 @@ def complete_slash(
                 out.append(line)
         return _unique_keep_order(out)
 
-    # /tool-output [session] | /tool-output events [session] [limit]
-    if cmd_cf in {"/tool-output", "/tool-compress"}:
+    # /compression [session] | /compression <diagnostic> [args]
+    if cmd_cf in {"/compression", "/tool-output", "/tool-compress"}:
         sessions = _sessions_from_ctx(ctx)
         if not rest and trailing_space:
-            return [f"{cmd} events"] + _session_complete_lines(cmd, [], sessions, partial="")
+            return with_prefix(COMPRESSION_SUBCOMMANDS, []) + _session_complete_lines(
+                cmd, [], sessions, partial=""
+            )
         if len(rest) == 1 and not trailing_space:
-            options = [f"{cmd} events"] + _session_complete_lines(
-                cmd, [], sessions, partial=rest[0]
+            options = with_prefix(
+                _filter_prefix(COMPRESSION_SUBCOMMANDS, rest[0]), []
+            ) + _session_complete_lines(
+                cmd,
+                [],
+                sessions,
+                partial=rest[0],
             )
             return [item for item in options if item.casefold().startswith(raw.casefold())]
-        if rest and rest[0].casefold() == "events":
+        sub = rest[0].casefold() if rest else ""
+        if sub == "export":
+            export_args = rest[1:]
+            used = [rest[0]]
+            if not export_args and trailing_space:
+                return with_prefix(
+                    COMPRESSION_EXPORT_FORMATS, used
+                ) + _session_complete_lines(cmd, used, sessions, partial="")
+            if not export_args:
+                return []
+
+            first = export_args[0]
+            first_cf = first.casefold()
+            session_ids = {session.thread_id.casefold() for session in sessions}
+            if first_cf in {value.casefold() for value in COMPRESSION_EXPORT_FORMATS}:
+                return []
+            if first_cf in session_ids:
+                if len(export_args) == 1 and trailing_space:
+                    return with_prefix(COMPRESSION_EXPORT_FORMATS, [*used, first])
+                if len(export_args) == 2 and not trailing_space:
+                    return with_prefix(
+                        _filter_prefix(COMPRESSION_EXPORT_FORMATS, export_args[1]),
+                        [*used, first],
+                    )
+                return []
+            if len(export_args) == 1 and not trailing_space:
+                options = with_prefix(
+                    _filter_prefix(COMPRESSION_EXPORT_FORMATS, first), used
+                ) + _session_complete_lines(cmd, used, sessions, partial=first)
+                return [item for item in options if item.casefold().startswith(raw.casefold())]
+            if not trailing_space:
+                return _session_complete_lines(
+                    cmd, used, sessions, partial=" ".join(export_args)
+                )
+            return []
+        if sub in COMPRESSION_SESSION_SUBCOMMANDS:
             if len(rest) == 1 and trailing_space:
                 return _session_complete_lines(cmd, [rest[0]], sessions, partial="")
             if len(rest) >= 2 and not trailing_space:

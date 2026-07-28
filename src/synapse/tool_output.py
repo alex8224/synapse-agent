@@ -153,6 +153,9 @@ class ModelRequestCompressionEvent:
     candidate_blocks: int = 0
     transformed_blocks: int = 0
     protected_tokens_by_reason: dict[str, int] = field(default_factory=dict)
+    content_breakdown: dict[str, int] = field(default_factory=dict)
+    opportunity_tokens_by_reason: dict[str, int] = field(default_factory=dict)
+    model_call_index: int = 0
     token_count_method: str = "langchain_approximate"
     duration_ms: float = 0.0
 
@@ -536,6 +539,78 @@ class ToolOutputRepository:
                 )
         return result
 
+    def export_diagnostics(self, *, thread_id: str) -> dict[str, Any]:
+        """Return complete compression diagnostics for one thread without output blobs."""
+        with self._lock, self._connection() as conn:
+            tool_rows = conn.execute(
+                "SELECT id, thread_id, ref, event_json, created_at "
+                "FROM tool_output_events WHERE thread_id = ? ORDER BY id ASC",
+                (thread_id,),
+            ).fetchall()
+            request_rows = conn.execute(
+                "SELECT id, thread_id, event_json, created_at "
+                "FROM model_request_compression_events WHERE thread_id = ? ORDER BY id ASC",
+                (thread_id,),
+            ).fetchall()
+            retrieval_rows = conn.execute(
+                "SELECT id, thread_id, ref, mode, returned_bytes, duration_ms, created_at "
+                "FROM tool_output_retrieval_events WHERE thread_id = ? ORDER BY id ASC",
+                (thread_id,),
+            ).fetchall()
+            reuse_rows = conn.execute(
+                "SELECT id, thread_id, estimated_avoided_tokens, created_at "
+                "FROM tool_output_model_reuse_events WHERE thread_id = ? ORDER BY id ASC",
+                (thread_id,),
+            ).fetchall()
+
+        tool_events = [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "ref": row["ref"],
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in tool_rows
+        ]
+        request_events = [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "created_at": row["created_at"],
+                **json.loads(row["event_json"]),
+            }
+            for row in request_rows
+        ]
+        retrieval_events = [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "ref": row["ref"],
+                "mode": row["mode"],
+                "returned_bytes": int(row["returned_bytes"]),
+                "duration_ms": float(row["duration_ms"]),
+                "created_at": row["created_at"],
+            }
+            for row in retrieval_rows
+        ]
+        model_reuse_events = [
+            {
+                "id": int(row["id"]),
+                "thread_id": row["thread_id"],
+                "estimated_avoided_tokens": int(row["estimated_avoided_tokens"]),
+                "created_at": row["created_at"],
+            }
+            for row in reuse_rows
+        ]
+        return {
+            "summary": self.stats(thread_id=thread_id),
+            "model_request_events": request_events,
+            "tool_output_events": tool_events,
+            "retrieval_events": retrieval_events,
+            "model_reuse_events": model_reuse_events,
+        }
+
     def stats(self, *, thread_id: str | None = None) -> dict[str, Any]:
         where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
         with self._lock, self._connection() as conn:
@@ -602,6 +677,24 @@ class ToolOutputRepository:
         request_output_tokens = sum(
             int(item.get("output_tokens", 0) or 0) for item in request_events
         )
+        content_breakdown: dict[str, int] = {}
+        opportunities: dict[str, int] = {}
+        protected_breakdown: dict[str, int] = {}
+        for request_event in request_events:
+            for key, value in dict(request_event.get("content_breakdown") or {}).items():
+                content_breakdown[str(key)] = content_breakdown.get(str(key), 0) + int(
+                    value or 0
+                )
+            for key, value in dict(
+                request_event.get("opportunity_tokens_by_reason") or {}
+            ).items():
+                opportunities[str(key)] = opportunities.get(str(key), 0) + int(value or 0)
+            for key, value in dict(
+                request_event.get("protected_tokens_by_reason") or {}
+            ).items():
+                protected_breakdown[str(key)] = protected_breakdown.get(str(key), 0) + int(
+                    value or 0
+                )
         for item in events:
             path = str(item.get("execution_path", "legacy_unknown"))
             execution_paths[path] = execution_paths.get(path, 0) + 1
@@ -673,6 +766,15 @@ class ToolOutputRepository:
                 if uncached_input_tokens + cache_write_tokens > 0
                 else 0.0
             ),
+            "content_breakdown": content_breakdown,
+            "opportunity_tokens_by_reason": opportunities,
+            "protected_tokens_by_reason": protected_breakdown,
+            "top_opportunities": sorted(
+                opportunities.items(), key=lambda item: item[1], reverse=True
+            )[:10],
+            "top_protected_sources": sorted(
+                protected_breakdown.items(), key=lambda item: item[1], reverse=True
+            )[:10],
         }
 
     def search(

@@ -24,15 +24,29 @@ def test_root_command_prefix():
     assert complete_slash("hello") == []
 
 
-def test_tool_output_completion():
+def test_compression_diagnostics_completion():
     ctx = SlashCompleteContext(
         sessions=[
             SessionChoice("thread-alpha", "Alpha"),
             SessionChoice("thread-beta", "Beta"),
         ]
     )
+    assert "/compression" in complete_slash("/comp", ctx)
+    assert "/compression profile" in complete_slash("/compression p", ctx)
+    assert "/compression profile thread-alpha" in complete_slash(
+        "/compression profile t", ctx
+    )
+    assert "/compression export" in complete_slash("/compression ex", ctx)
+    assert "/compression export json" in complete_slash("/compression export j", ctx)
+    assert "/compression export thread-alpha" in complete_slash(
+        "/compression export t", ctx
+    )
+    assert "/compression export thread-alpha csv" in complete_slash(
+        "/compression export thread-alpha c", ctx
+    )
     assert "/tool-output" in complete_slash("/tool-o", ctx)
     assert "/tool-output events" in complete_slash("/tool-output e", ctx)
+    assert "/tool-output profile" in complete_slash("/tool-output p", ctx)
     assert "/tool-output thread-alpha" in complete_slash("/tool-output t", ctx)
 
 
@@ -102,6 +116,8 @@ def test_make_textual_suggester_returns_suggestion():
     suggester = make_textual_suggester(lambda: SlashCompleteContext())
     suggestion = asyncio.run(suggester.get_suggestion("/he"))
     assert suggestion == "/help"
+    suggestion = asyncio.run(suggester.get_suggestion("/compression p"))
+    assert suggestion == "/compression profile"
 
 
 # ---------------------------------------------------------------------------

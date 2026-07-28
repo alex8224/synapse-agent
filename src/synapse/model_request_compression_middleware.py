@@ -7,15 +7,29 @@ import uuid
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from synapse.tool_output import ModelRequestCompressionEvent, ToolOutputRepository
 
 
+def _runtime_config(request: Any) -> dict[str, Any]:
+    """Return the active Runnable config for a model middleware request."""
+    runtime = getattr(request, "runtime", None)
+    config = getattr(runtime, "config", None)
+    try:
+        from langgraph.config import get_config
+
+        active = get_config()
+        if active:
+            config = active
+    except (ImportError, RuntimeError):
+        pass
+    return dict(config) if isinstance(config, dict) else {}
+
+
 def _thread_id(request: Any) -> str:
-    config = getattr(getattr(request, "runtime", None), "config", None) or {}
-    configurable = config.get("configurable") if isinstance(config, dict) else {}
+    configurable = _runtime_config(request).get("configurable") or {}
     return str((configurable or {}).get("thread_id") or "")
 
 
@@ -35,6 +49,142 @@ def _count(messages: list[Any], tools: list[Any] | None = None) -> int:
         return max(0, int(count_tokens_approximately(messages, tools=tools or [])))
     except Exception:  # noqa: BLE001
         return max(0, sum((len(str(getattr(msg, "content", msg))) + 3) // 4 for msg in messages))
+
+
+def _message_content_tokens(message: Any) -> int:
+    """Approximate one message's content tokens without role/schema overhead."""
+    content = getattr(message, "content", "")
+    try:
+        if isinstance(content, str):
+            return max(0, (len(content) + 3) // 4)
+        return max(0, (len(str(content)) + 3) // 4)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _reasoning_tokens(message: Any) -> int:
+    total = 0
+    additional = getattr(message, "additional_kwargs", None) or {}
+    metadata = getattr(message, "response_metadata", None) or {}
+    for source in (additional, metadata):
+        if not isinstance(source, dict):
+            continue
+        for key in ("reasoning_content", "encrypted_content", "thinking"):
+            value = source.get(key)
+            if value:
+                total += max(1, (len(str(value)) + 3) // 4)
+    return total
+
+
+def _tool_call_argument_tokens(message: Any) -> int:
+    calls = getattr(message, "tool_calls", None) or []
+    total = 0
+    for call in calls:
+        args = call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
+        if args is not None:
+            total += max(0, (len(str(args)) + 3) // 4)
+    return total
+
+
+def _tool_schema_tokens(tools: list[Any]) -> int:
+    if not tools:
+        return 0
+    baseline = _count([], tools)
+    return max(0, baseline - _count([]))
+
+
+def _content_breakdown(request: Any) -> dict[str, int]:
+    """Classify the final model request into actionable token-source buckets."""
+    messages = list(getattr(request, "messages", None) or [])
+    system = getattr(request, "system_message", None)
+    tools = list(getattr(request, "tools", None) or [])
+    breakdown = {
+        "system": _count([system]) if system is not None else 0,
+        "tool_schemas": _tool_schema_tokens(tools),
+        "historical_user": 0,
+        "current_user": 0,
+        "assistant_content": 0,
+        "reasoning": 0,
+        "tool_call_arguments": 0,
+        "tool_output_visible": 0,
+        "tool_output_original": 0,
+        "unknown": 0,
+    }
+    human_indexes = [index for index, msg in enumerate(messages) if isinstance(msg, HumanMessage)]
+    latest_human = human_indexes[-1] if human_indexes else -1
+    for index, message in enumerate(messages):
+        content_tokens = _message_content_tokens(message)
+        if isinstance(message, ToolMessage):
+            breakdown["tool_output_visible"] += _count([message])
+            artifact = getattr(message, "artifact", None) or {}
+            transform = (
+                artifact.get("tool_output_transform")
+                if isinstance(artifact, dict)
+                else None
+            )
+            visible_tokens = _count([message])
+            if isinstance(transform, dict):
+                explicit_original = int(transform.get("estimated_original_tokens", 0) or 0)
+                saved_tokens = int(transform.get("estimated_saved_tokens", 0) or 0)
+                breakdown["tool_output_original"] += max(
+                    explicit_original, visible_tokens + saved_tokens
+                )
+            else:
+                breakdown["tool_output_original"] += visible_tokens
+            continue
+        if isinstance(message, HumanMessage):
+            key = "current_user" if index == latest_human else "historical_user"
+            breakdown[key] += content_tokens
+            continue
+        if isinstance(message, AIMessage):
+            reasoning = _reasoning_tokens(message)
+            args = _tool_call_argument_tokens(message)
+            breakdown["reasoning"] += reasoning
+            breakdown["tool_call_arguments"] += args
+            breakdown["assistant_content"] += content_tokens
+            continue
+        breakdown["unknown"] += content_tokens
+    classified = sum(
+        breakdown[key]
+        for key in (
+            "system",
+            "tool_schemas",
+            "historical_user",
+            "current_user",
+            "assistant_content",
+            "reasoning",
+            "tool_call_arguments",
+            "tool_output_visible",
+            "unknown",
+        )
+    )
+    total = _count(([system] if system is not None else []) + messages, tools)
+    breakdown["unknown"] += max(0, total - classified)
+    return breakdown
+
+
+def _opportunities(breakdown: dict[str, int]) -> dict[str, int]:
+    """Rank unoptimized token sources without prescribing an implementation."""
+    opportunities: dict[str, int] = {}
+    mappings = {
+        "tool_schemas": "tool_schema_fixed_overhead",
+        "historical_user": "historical_user_context",
+        "current_user": "current_user_not_in_pipeline",
+        "assistant_content": "assistant_history_not_in_pipeline",
+        "reasoning": "reasoning_not_in_pipeline",
+        "tool_call_arguments": "tool_call_arguments_not_in_pipeline",
+    }
+    for source, reason in mappings.items():
+        tokens = max(0, int(breakdown.get(source, 0) or 0))
+        if tokens:
+            opportunities[reason] = tokens
+    original = max(0, int(breakdown.get("tool_output_original", 0) or 0))
+    visible = max(0, int(breakdown.get("tool_output_visible", 0) or 0))
+    if visible and original <= visible:
+        opportunities["uncompressed_tool_outputs"] = visible
+    if breakdown.get("unknown", 0):
+        opportunities["unknown_request_overhead"] = int(breakdown["unknown"])
+    return opportunities
 
 
 def _tool_output_savings(messages: list[Any]) -> tuple[int, int, int]:
@@ -198,6 +348,8 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
             active_messages = list(getattr(request, "messages", None) or [])
             summarization_saved = max(0, state_count - _count(active_messages))
             provider, api_style, auth_mode, model = _model_identity(request)
+            protected = _provider_protected_tokens(request, provider, api_style)
+            breakdown = _content_breakdown(request)
             from synapse.middleware import current_prompt_cleanup_saved_tokens
 
             prompt_saved = current_prompt_cleanup_saved_tokens()
@@ -215,7 +367,9 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
                 "summarization_saved": summarization_saved,
                 "candidate_blocks": candidates,
                 "transformed_blocks": transformed,
-                "protected": _provider_protected_tokens(request, provider, api_style),
+                "protected": protected,
+                "breakdown": breakdown,
+                "opportunities": _opportunities(breakdown),
             }
 
         def _finish(self, data: dict[str, Any], response: Any) -> None:
@@ -249,6 +403,8 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
                     candidate_blocks=int(data["candidate_blocks"] or 0),
                     transformed_blocks=int(data["transformed_blocks"] or 0),
                     protected_tokens_by_reason=dict(data["protected"] or {}),
+                    content_breakdown=dict(data["breakdown"] or {}),
+                    opportunity_tokens_by_reason=dict(data["opportunities"] or {}),
                     duration_ms=(time.perf_counter() - float(data["started"])) * 1000,
                 ),
             )

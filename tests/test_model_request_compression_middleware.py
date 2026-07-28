@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.runnables.config import var_child_runnable_config
 
 from synapse.middleware import build_strip_redundant_prompt_blocks
 from synapse.model_request_compression_middleware import (
@@ -84,6 +85,81 @@ def test_request_ledger_records_before_after_usage_and_tool_savings(tmp_path) ->
     assert event["cache_read_tokens"] == 400
     assert event["uncached_input_tokens"] == 100
     assert event["output_tokens"] == 20
+    breakdown = event["content_breakdown"]
+    assert breakdown["system"] > 0
+    assert breakdown["current_user"] > 0
+    assert breakdown["tool_output_visible"] > 0
+    assert breakdown["tool_output_original"] > breakdown["tool_output_visible"]
+    opportunities = event["opportunity_tokens_by_reason"]
+    assert opportunities["current_user_not_in_pipeline"] > 0
+
+
+def test_request_ledger_uses_active_runnable_config_when_runtime_has_no_config(
+    tmp_path,
+) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    request = _Request([HumanMessage(content="inspect")])
+    request.runtime = SimpleNamespace()
+    response = SimpleNamespace(result=[AIMessage(content="done")])
+    middleware = build_model_request_compression_middleware(repo)
+    token = var_child_runnable_config.set(
+        {"configurable": {"thread_id": "thread-from-runnable"}}
+    )
+    try:
+        middleware.wrap_model_call(request, lambda _request: response)
+    finally:
+        var_child_runnable_config.reset(token)
+
+    events = repo.model_request_events(thread_id="thread-from-runnable")
+    assert len(events) == 1
+    assert events[0]["content_breakdown"]["current_user"] > 0
+
+
+def test_request_content_breakdown_classifies_history_reasoning_args_and_schemas(
+    tmp_path,
+) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    assistant = AIMessage(
+        content="assistant answer",
+        additional_kwargs={"reasoning_content": "reason" * 100},
+        tool_calls=[{"id": "call-1", "name": "write_file", "args": {"content": "x" * 800}}],
+    )
+    request = _Request(
+        [
+            HumanMessage(content="historical request"),
+            assistant,
+            HumanMessage(content="current request" * 50),
+        ],
+        system_message=SystemMessage(content="system instructions" * 20),
+    )
+    request.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "write content" * 30,
+                "parameters": {"type": "object", "properties": {"content": {"type": "string"}}},
+            },
+        }
+    ]
+    response = SimpleNamespace(result=[AIMessage(content="done")])
+
+    middleware = build_model_request_compression_middleware(repo)
+    middleware.wrap_model_call(request, lambda _request: response)
+
+    event = repo.model_request_events(thread_id="thread-a")[0]
+    breakdown = event["content_breakdown"]
+    assert breakdown["system"] > 0
+    assert breakdown["tool_schemas"] > 0
+    assert breakdown["historical_user"] > 0
+    assert breakdown["current_user"] > breakdown["historical_user"]
+    assert breakdown["assistant_content"] > 0
+    assert breakdown["reasoning"] > 0
+    assert breakdown["tool_call_arguments"] > 0
+    opportunities = event["opportunity_tokens_by_reason"]
+    assert opportunities["tool_schema_fixed_overhead"] > 0
+    assert opportunities["reasoning_not_in_pipeline"] > 0
+    assert opportunities["tool_call_arguments_not_in_pipeline"] > 0
 
 
 def test_openai_and_codex_provider_safety_classification(tmp_path) -> None:

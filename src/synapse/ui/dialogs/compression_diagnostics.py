@@ -59,6 +59,39 @@ class CompressionDiagnosticsDialog(DialogBase):
 
     def _build_items(self) -> list[OptionItem]:
         items: list[OptionItem] = []
+        breakdown = self._stats.get("content_breakdown") or {}
+        for source, tokens in sorted(
+            breakdown.items(), key=lambda item: int(item[1] or 0), reverse=True
+        ):
+            items.append(
+                OptionItem(
+                    key=f"source:{source}",
+                    label=f"request source · {source}",
+                    detail="final model request content",
+                    meta=_fmt_tokens(tokens),
+                    show_bullet=False,
+                )
+            )
+        for reason, tokens in self._stats.get("top_opportunities") or []:
+            items.append(
+                OptionItem(
+                    key=f"opportunity:{reason}",
+                    label=f"opportunity · {reason}",
+                    detail="candidate for the next profiling-driven optimization",
+                    meta=_fmt_tokens(tokens),
+                    show_bullet=False,
+                )
+            )
+        for reason, tokens in self._stats.get("top_protected_sources") or []:
+            items.append(
+                OptionItem(
+                    key=f"protected:{reason}",
+                    label=f"protected · {reason}",
+                    detail="provider safety boundary; not ranked as an optimization target",
+                    meta=_fmt_tokens(tokens),
+                    show_bullet=False,
+                )
+            )
         reasons = self._stats.get("reasons") or {}
         tokens_by_reason = self._stats.get("tokens_by_reason") or {}
         for reason, count in sorted(
@@ -139,7 +172,9 @@ class CompressionDiagnosticsDialog(DialogBase):
             f"reused {_fmt_tokens(stats.get('estimated_reused_tokens', 0))}\n"
             f"  {stats.get('model_requests', 0)} model requests · "
             f"whole {stats.get('whole_request_savings_ratio', 0.0):.1%} · "
-            f"new input {stats.get('new_input_savings_ratio', 0.0):.1%}"
+            f"new input {stats.get('new_input_savings_ratio', 0.0):.1%}\n"
+            f"  {len(stats.get('content_breakdown') or {})} profiled sources · "
+            f"{len(stats.get('top_opportunities') or [])} ranked opportunities"
         )
         yield SectionHeader("Reasons and recent decisions")
 

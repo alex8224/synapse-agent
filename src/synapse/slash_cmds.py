@@ -6,7 +6,10 @@ Returns structured results so UIs only need to render/apply side effects.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -100,6 +103,8 @@ HELP_TEXT = """## Slash Commands
 | `/context` | Context usage stats |
 | `/compact` | Force context compact |
 | `/compression [session]` | Compression diagnostics summary |
+| `/compression profile [session]` | Request content breakdown and opportunity ranking |
+| `/compression export [session] [json|csv] [path]` | Export complete compression diagnostics |
 | `/compression events [session] [limit]` | Recent compression decisions |
 | `/compression requests [session] [limit]` | Model request before/after ledger |
 | `/compression request <request_id> [session]` | One model request accounting event |
@@ -168,12 +173,185 @@ def _resolve_session_ref(
     return info.thread_id, None
 
 
+_COMPRESSION_EXPORT_FORMAT_ALIASES = {
+    "json": "json",
+    "j": "json",
+    "csv": "csv",
+    "c": "csv",
+}
+
+
+def _default_compression_export_path(settings: Any, thread_id: str, fmt: str) -> Path:
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session"))
+    safe = (safe or "session")[:80]
+    parent = Path(settings.checkpoint_path).expanduser().resolve().parent
+    return parent / "exports" / f"{safe}.compression.{fmt}"
+
+
+def _compression_export_csv(payload: dict[str, Any]) -> str:
+    """Flatten heterogeneous diagnostics into one portable CSV table."""
+    rows: list[dict[str, Any]] = [
+        {
+            "record_type": "metadata",
+            "thread_id": payload["thread_id"],
+            "metric": "schema_version",
+            "value": payload["schema_version"],
+        },
+        {
+            "record_type": "metadata",
+            "thread_id": payload["thread_id"],
+            "metric": "exported_at",
+            "value": payload["exported_at"],
+        },
+    ]
+    rows.extend(
+        {
+            "record_type": "summary",
+            "thread_id": payload["thread_id"],
+            "metric": key,
+            "value": value,
+        }
+        for key, value in sorted(dict(payload.get("summary") or {}).items())
+    )
+    for record_type, key in (
+        ("model_request", "model_request_events"),
+        ("tool_output", "tool_output_events"),
+        ("retrieval", "retrieval_events"),
+        ("model_reuse", "model_reuse_events"),
+    ):
+        rows.extend(
+            {"record_type": record_type, **dict(item)} for item in payload.get(key, [])
+        )
+
+    preferred = [
+        "record_type",
+        "thread_id",
+        "id",
+        "created_at",
+        "metric",
+        "value",
+        "request_id",
+        "provider",
+        "api_style",
+        "auth_mode",
+        "model",
+        "tool_call_id",
+        "tool_name",
+        "decision",
+        "reason_code",
+    ]
+    all_fields = {key for row in rows for key in row}
+    fieldnames = [key for key in preferred if key in all_fields]
+    fieldnames.extend(sorted(all_fields - set(fieldnames)))
+
+    def cell(value: Any) -> Any:
+        if isinstance(value, dict | list | tuple):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return "" if value is None else value
+
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows({key: cell(value) for key, value in row.items()} for row in rows)
+    return output.getvalue()
+
+
+def _compression_export_result(
+    settings: Any, current_thread_id: str, args: list[str]
+) -> SlashResult:
+    """Export complete compression diagnostics for one session to JSON or CSV."""
+    fmt = "json"
+    session_args: list[str] = []
+    path_args: list[str] = []
+    format_index = next(
+        (
+            index
+            for index, value in enumerate(args)
+            if value.casefold() in _COMPRESSION_EXPORT_FORMAT_ALIASES
+        ),
+        None,
+    )
+    if format_index is not None:
+        fmt = _COMPRESSION_EXPORT_FORMAT_ALIASES[args[format_index].casefold()]
+        session_args = args[:format_index]
+        path_args = args[format_index + 1 :]
+    elif args:
+        candidate = Path(" ".join(args)).expanduser()
+        if candidate.suffix.casefold() in {".json", ".csv"}:
+            fmt = candidate.suffix.casefold().lstrip(".")
+            path_args = args
+        else:
+            session_args = args
+
+    thread_id, error = _resolve_session_ref(settings, current_thread_id, session_args)
+    if error or thread_id is None:
+        return SlashResult(handled=True, lines=[error or "session not found"], error=True)
+
+    from synapse.tool_output import ToolOutputRepository
+
+    repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    diagnostics = repo.export_diagnostics(thread_id=thread_id)
+    payload = {
+        "schema_version": 1,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "thread_id": thread_id,
+        **diagnostics,
+    }
+    text = (
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        if fmt == "json"
+        else _compression_export_csv(payload)
+    )
+    target = (
+        Path(" ".join(path_args)).expanduser()
+        if path_args
+        else _default_compression_export_path(settings, thread_id, fmt)
+    )
+    try:
+        target = (Path.cwd() / target).resolve() if not target.is_absolute() else target.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return SlashResult(
+            handled=True,
+            lines=[f"compression export failed: {exc}"],
+            error=True,
+        )
+
+    counts = {
+        "model requests": len(payload["model_request_events"]),
+        "tool outputs": len(payload["tool_output_events"]),
+        "retrievals": len(payload["retrieval_events"]),
+        "model reuses": len(payload["model_reuse_events"]),
+    }
+    confirm = f"exported compression {fmt} -> {target}"
+    return SlashResult(
+        handled=True,
+        lines=[
+            confirm,
+            f"thread_id={thread_id}",
+            ", ".join(f"{key}={value}" for key, value in counts.items()),
+        ],
+        notice=confirm,
+        markdown=(
+            "## Compression Export\n\n"
+            f"- **thread**: `{thread_id}`\n"
+            f"- **format**: {fmt}\n"
+            f"- **path**: `{target}`\n"
+            + "".join(f"- **{key}**: {value}\n" for key, value in counts.items())
+        ),
+    )
+
+
 def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) -> SlashResult:
     """Render persistent compression diagnostics or recent decision events."""
     mode = args[0].casefold() if args else "stats"
+    if mode == "export":
+        return _compression_export_result(settings, current_thread_id, args[1:])
+    show_profile = mode in {"profile", "report"}
     show_requests = mode in {"requests", "request"}
     show_events = mode in {"events", "skipped", "fallback", "tool"}
-    rest = args[1:] if show_events or show_requests else args
+    rest = args[1:] if show_events or show_requests or show_profile else args
     decision_filter = mode if mode in {"skipped", "fallback"} else ""
     tool_filter = ""
     request_filter = ""
@@ -206,6 +384,82 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
     from synapse.tool_output import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    if show_profile:
+        stats = repo.stats(thread_id=thread_id)
+        breakdown = stats.get("content_breakdown") or {}
+        opportunities = stats.get("top_opportunities") or []
+        md = [
+            "## Compression Profile",
+            "",
+            f"Thread: `{thread_id}`",
+            "",
+            "### Request content breakdown",
+            "",
+            "| Source | Estimated tokens | Share |",
+            "|---|---:|---:|",
+        ]
+        # ``tool_output_original`` reconstructs the pre-compression baseline;
+        # it is not part of the final model-visible request. Excluding it keeps
+        # model-visible shares additive instead of counting tool output twice.
+        reference_sources = {"tool_output_original"}
+        total = sum(
+            max(0, int(value or 0))
+            for source, value in breakdown.items()
+            if source not in reference_sources
+        )
+        lines = [f"thread_id={thread_id}", f"profile_total_tokens=~{total}"]
+        for source, tokens in sorted(
+            breakdown.items(), key=lambda item: int(item[1] or 0), reverse=True
+        ):
+            amount = max(0, int(tokens or 0))
+            if source in reference_sources:
+                md.append(f"| {_md_escape(str(source))} | ~{amount} | — |")
+                lines.append(f"{source}=~{amount} (reference; excluded from total)")
+                continue
+            share = amount / total if total else 0.0
+            md.append(f"| {_md_escape(str(source))} | ~{amount} | {share:.1%} |")
+            lines.append(f"{source}=~{amount} ({share:.1%})")
+        if any(source in breakdown for source in reference_sources):
+            md.extend(
+                [
+                    "",
+                    (
+                        "`tool_output_original` is the reconstructed pre-compression "
+                        "baseline and is excluded from model-visible totals and shares."
+                    ),
+                ]
+            )
+        md.extend(
+            [
+                "",
+                "### Ranked optimization opportunities",
+                "",
+                "| Rank | Reason | Estimated tokens |",
+                "|---:|---|---:|",
+            ]
+        )
+        if opportunities:
+            for rank, item in enumerate(opportunities, 1):
+                reason, tokens = item
+                md.append(f"| {rank} | {_md_escape(str(reason))} | ~{int(tokens or 0)} |")
+        else:
+            md.append("| - | No request profile events yet | 0 |")
+        protected = stats.get("top_protected_sources") or []
+        md.extend(
+            [
+                "",
+                "### Provider-protected context",
+                "",
+                "| Reason | Estimated tokens |",
+                "|---|---:|",
+            ]
+        )
+        if protected:
+            for reason, tokens in protected:
+                md.append(f"| {_md_escape(str(reason))} | ~{int(tokens or 0)} |")
+        else:
+            md.append("| - | 0 |")
+        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
     if show_requests:
         requests = repo.model_request_events(thread_id=thread_id, limit=max(limit, 50))
         if request_filter:
@@ -250,10 +504,43 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
                 )
             )
             protected = item.get("protected_tokens_by_reason") or {}
+            breakdown = item.get("content_breakdown") or {}
+            opportunities = item.get("opportunity_tokens_by_reason") or {}
             lines.append(
                 f"{request_id} before=~{before} after=~{after} saved=~{saved} "
-                f"protected={protected}"
+                f"protected={protected} breakdown={breakdown} opportunities={opportunities}"
             )
+            if request_filter:
+                md.extend(
+                    [
+                        "",
+                        "### Content breakdown",
+                        "",
+                        "| Source | Estimated tokens |",
+                        "|---|---:|",
+                        *[
+                            f"| {_md_escape(str(key))} | ~{int(value or 0)} |"
+                            for key, value in sorted(
+                                breakdown.items(),
+                                key=lambda pair: int(pair[1] or 0),
+                                reverse=True,
+                            )
+                        ],
+                        "",
+                        "### Optimization opportunities",
+                        "",
+                        "| Reason | Estimated tokens |",
+                        "|---|---:|",
+                        *[
+                            f"| {_md_escape(str(key))} | ~{int(value or 0)} |"
+                            for key, value in sorted(
+                                opportunities.items(),
+                                key=lambda pair: int(pair[1] or 0),
+                                reverse=True,
+                            )
+                        ],
+                    ]
+                )
         return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
     if show_events:
         fetch_limit = min(500, max(limit, 50) if decision_filter or tool_filter else limit)
