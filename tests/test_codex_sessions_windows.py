@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.codex_sessions import _same_path
+from synapse.integrations.codex_sessions import _same_path
 
 
 def test_scanner_accepts_windows_extended_workspace_path(tmp_path: Path) -> None:

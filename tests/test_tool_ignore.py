@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from synapse.tool_ignore import ToolIgnoreMatcher
+
+from synapse.runtime.tool_ignore import ToolIgnoreMatcher
 
 
 def test_from_patterns_basic():

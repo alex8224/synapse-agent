@@ -6,13 +6,13 @@ from pathlib import Path
 
 from langchain.agents.middleware.types import AgentMiddleware
 
-from synapse.middleware import (
+from synapse.runtime.middleware import (
     build_intent_schema_middleware,
     build_path_normalize_middleware,
     build_task_namespace_middleware,
     build_tool_exclusion_middleware,
 )
-from synapse.steer import SteerQueue, build_steer_middleware
+from synapse.runtime.steer import SteerQueue, build_steer_middleware
 
 
 def _assert_dual_model(m: AgentMiddleware) -> None:

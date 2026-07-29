@@ -7,9 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from synapse.config import load_settings
-from synapse.fs_permissions import build_filesystem_permissions
-from synapse.harness import apply_harness_exclusions
-from synapse.mcp_client import load_mcp_server_configs
+from synapse.integrations.mcp_client import load_mcp_server_configs
 from synapse.models_registry import (
     apply_thinking_to_settings,
     build_model_from_settings,
@@ -18,6 +16,9 @@ from synapse.models_registry import (
     registry_from_settings,
     settings_thinking_label,
 )
+from synapse.runtime.fs_permissions import build_filesystem_permissions
+from synapse.runtime.harness import apply_harness_exclusions
+from synapse.runtime.subagents import build_default_subagents
 from synapse.sessions import (
     ModelBinding,
     SessionStore,
@@ -26,16 +27,15 @@ from synapse.sessions import (
     format_session_table,
     resolve_startup_binding,
 )
-from synapse.subagents import build_default_subagents
 
 
 def test_registry_legacy_single_model(tmp_path: Path, monkeypatch):
     # Isolate from ~/.synapse/models.json layered discovery.
     monkeypatch.setattr(
-        "synapse.config_paths.user_config_dir",
+        "synapse.settings.config_paths.user_config_dir",
         lambda: tmp_path / "nouser" / ".synapse",
     )
-    monkeypatch.setattr("synapse.config_paths.executable_config_dirs", lambda: [])
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
     settings = load_settings(
         workspace=tmp_path,
         model="openai:demo",
@@ -117,7 +117,7 @@ def test_models_config_thinking_and_params(tmp_path: Path, monkeypatch):
     assert reg.get("quiet").enable_thinking is False
     assert reg.get("low").reasoning_effort == "low"
 
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         reg.build_chat_model("main", fallback_api_key="k")
         kwargs = init_mock.call_args.kwargs
@@ -172,16 +172,16 @@ def test_models_config_can_enable_responses_websocket(tmp_path: Path, monkeypatc
     fake_client = MagicMock(name="async-http-client")
     fake_runtime = MagicMock(name="async-runtime")
     with (
-        patch("synapse.models_registry.init_chat_model") as init_mock,
+        patch("synapse.models.registry.init_chat_model") as init_mock,
         patch(
-            "synapse.llm_openai_websocket.ResponsesWebSocketChatOpenAI",
+            "synapse.integrations.llm_openai_websocket.ResponsesWebSocketChatOpenAI",
             return_value=fake_model,
         ) as ws_model,
         patch(
-            "synapse.http_clients.build_openai_async_http_client",
+            "synapse.integrations.http_clients.build_openai_async_http_client",
             return_value=fake_client,
         ),
-        patch("synapse.async_runtime.get_async_runtime", return_value=fake_runtime),
+        patch("synapse.runtime.async_runtime.get_async_runtime", return_value=fake_runtime),
     ):
         built = reg.build_chat_model("ws")
         init_mock.return_value = MagicMock(name="http-chat-model")
@@ -238,7 +238,7 @@ def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch)
     # Session override must win over profile default when building via settings.
     settings.enable_thinking = True
     settings.reasoning_effort = "low"
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs
@@ -301,7 +301,7 @@ def test_profile_api_key_not_overridden_by_openai_fallback(tmp_path: Path, monke
     assert settings.anthropic_api_key == "sk-local-test-key"
 
     reg = registry_from_settings(settings)
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="grok")
         kwargs = init_mock.call_args.kwargs
@@ -316,7 +316,7 @@ def test_profile_api_key_not_overridden_by_openai_fallback(tmp_path: Path, monke
     assert settings.openai_api_key == "sk-openai-profile"
     apply_profile_to_settings(settings, reg.get("grok"), seed_thinking=True)
     assert settings.anthropic_api_key == "sk-local-test-key"
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="grok")
         kwargs = init_mock.call_args.kwargs
@@ -330,10 +330,10 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("STREAM_CHUNK_TIMEOUT", raising=False)
     monkeypatch.setattr(
-        "synapse.config_paths.user_config_dir",
+        "synapse.settings.config_paths.user_config_dir",
         lambda: tmp_path / "nouser" / ".synapse",
     )
-    monkeypatch.setattr("synapse.config_paths.executable_config_dirs", lambda: [])
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
     cfg = {
         "default": "main",
         "models": {
@@ -355,7 +355,7 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
     )
     assert settings.stream_chunk_timeout is None
 
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs
@@ -368,7 +368,7 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
         assert kwargs["stream_chunk_timeout"] == 90
 
     settings = settings.model_copy(update={"stream_chunk_timeout": 600.0})
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs

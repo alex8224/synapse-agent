@@ -47,7 +47,7 @@ class TestOptionItem:
 class TestModelPickerInit:
     def test_no_registry_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.models_registry.registry_from_settings",
+            "synapse.ui.dialogs.model_picker.registry_from_settings",
             MagicMock(side_effect=RuntimeError("no reg")),
         )
         from synapse.config import Settings
@@ -62,7 +62,7 @@ class TestModelPickerInit:
 class TestSessionListInit:
     def test_empty_store_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.sessions.SessionStore",
+            "synapse.sessions.store.SessionStore",
             MagicMock(side_effect=RuntimeError("no store")),
         )
         from synapse.config import Settings
@@ -77,7 +77,7 @@ class TestSessionListInit:
 class TestMcpPanelInit:
     def test_empty_servers(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.mcp_client.load_mcp_server_configs",
+            "synapse.integrations.mcp_client.load_mcp_server_configs",
             MagicMock(return_value=[]),
         )
         from synapse.config import Settings
@@ -363,7 +363,7 @@ class TestModelPickerMount:
                 return MagicMock(model="provider:model-a")
 
         monkeypatch.setattr(
-            "synapse.models_registry.registry_from_settings",
+            "synapse.ui.dialogs.model_picker.registry_from_settings",
             lambda _settings: FakeRegistry(),
         )
         monkeypatch.setattr(DialogBase, "on_mount", lambda _self: None)
@@ -644,15 +644,15 @@ class TestSlashRouting:
     @pytest.mark.parametrize("cmd", DIALOG_CMDS)
     def test_route_to_dialog(self, cmd, monkeypatch):
         app = _make_app(monkeypatch)
-        import synapse.slash_cmds
+        import synapse.commands.slash_cmds
 
-        orig = synapse.slash_cmds.handle_slash
+        orig = synapse.commands.slash_cmds.handle_slash
         mock_hs = MagicMock(return_value=MagicMock(handled=False))
-        synapse.slash_cmds.handle_slash = mock_hs
+        synapse.commands.slash_cmds.handle_slash = mock_hs
         try:
             result = app._handle_slash(cmd)
         finally:
-            synapse.slash_cmds.handle_slash = orig
+            synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
         assert app.push_screen.call_count >= 1, f"'{cmd}' should push a screen"
@@ -661,9 +661,9 @@ class TestSlashRouting:
     @pytest.mark.parametrize("cmd", NOT_DIALOG_CMDS)
     def test_route_to_handle_slash(self, cmd, monkeypatch):
         app = _make_app(monkeypatch)
-        import synapse.slash_cmds
+        import synapse.commands.slash_cmds
 
-        orig = synapse.slash_cmds.handle_slash
+        orig = synapse.commands.slash_cmds.handle_slash
         mock_result = MagicMock()
         mock_result.handled = True
         mock_result.exit_requested = False
@@ -677,11 +677,11 @@ class TestSlashRouting:
         mock_result.lines = []
         mock_result.resume_action = None
         mock_hs = MagicMock(return_value=mock_result)
-        synapse.slash_cmds.handle_slash = mock_hs
+        synapse.commands.slash_cmds.handle_slash = mock_hs
         try:
             result = app._handle_slash(cmd)
         finally:
-            synapse.slash_cmds.handle_slash = orig
+            synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
         mock_hs.assert_called_once()
@@ -690,16 +690,16 @@ class TestSlashRouting:
     def test_model_with_args_routes_to_background_worker(self, monkeypatch):
         """`/model <alias>` rebuilds off the UI thread via _switch_model_bg."""
         app = _make_app(monkeypatch)
-        import synapse.slash_cmds
+        import synapse.commands.slash_cmds
 
-        orig = synapse.slash_cmds.handle_slash
+        orig = synapse.commands.slash_cmds.handle_slash
         mock_hs = MagicMock()
-        synapse.slash_cmds.handle_slash = mock_hs
+        synapse.commands.slash_cmds.handle_slash = mock_hs
         app._switch_model_bg = MagicMock()
         try:
             result = app._handle_slash("/model claude")
         finally:
-            synapse.slash_cmds.handle_slash = orig
+            synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
         app._switch_model_bg.assert_called_once_with("/model claude", "model claude")
@@ -708,15 +708,15 @@ class TestSlashRouting:
 
     def test_switch_no_args_opens_dialog(self, monkeypatch):
         app = _make_app(monkeypatch)
-        import synapse.slash_cmds
+        import synapse.commands.slash_cmds
 
-        orig = synapse.slash_cmds.handle_slash
+        orig = synapse.commands.slash_cmds.handle_slash
         mock_hs = MagicMock()
-        synapse.slash_cmds.handle_slash = mock_hs
+        synapse.commands.slash_cmds.handle_slash = mock_hs
         try:
             result = app._handle_slash("/switch")
         finally:
-            synapse.slash_cmds.handle_slash = orig
+            synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
         assert app.push_screen.call_count == 1
@@ -724,9 +724,9 @@ class TestSlashRouting:
 
     def test_switch_with_id_passes_through(self, monkeypatch):
         app = _make_app(monkeypatch)
-        import synapse.slash_cmds
+        import synapse.commands.slash_cmds
 
-        orig = synapse.slash_cmds.handle_slash
+        orig = synapse.commands.slash_cmds.handle_slash
         mock_result = MagicMock(
             handled=True, exit_requested=False,
             agent=None, thread_id=None, settings_changed=False,
@@ -734,11 +734,11 @@ class TestSlashRouting:
             theme_name=None, error=False, lines=[], resume_action=None,
         )
         mock_hs = MagicMock(return_value=mock_result)
-        synapse.slash_cmds.handle_slash = mock_hs
+        synapse.commands.slash_cmds.handle_slash = mock_hs
         try:
             result = app._handle_slash("/switch abc123")
         finally:
-            synapse.slash_cmds.handle_slash = orig
+            synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
         app.push_screen.assert_not_called()

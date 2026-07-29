@@ -7,8 +7,8 @@ from pathlib import Path
 
 import typer
 
-from synapse.config import bootstrap_project_env, load_settings
-from synapse.sessions import SessionStore, format_session_table
+from synapse.sessions.store import SessionStore, format_session_table
+from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
     print_error,
@@ -40,7 +40,7 @@ app.add_typer(tool_output_app, name="tool-output")
 def _bootstrap_env() -> Path | None:
     """Load project `.env` with override=True so it beats stale system keys."""
     try:
-        from synapse.prompts import ensure_user_system_prompt
+        from synapse.content.prompts import ensure_user_system_prompt
 
         ensure_user_system_prompt()
     except Exception:  # noqa: BLE001
@@ -204,8 +204,8 @@ def _import_codex_session(
     codex_home: Path | None = None,
 ):
     """Import one safe Codex visible-text snapshot into a Synapse thread."""
-    from synapse.agent import build_coding_agent
-    from synapse.codex_import import import_codex_session
+    from synapse.app.agent import build_coding_agent
+    from synapse.integrations.codex_import import import_codex_session
 
     settings = load_settings(workspace=workspace) if workspace is not None else load_settings()
     agent = build_coding_agent(settings, project_root=settings.workspace, load_mcp=False)
@@ -254,7 +254,7 @@ def sessions_codex_list(
     limit: int = typer.Option(50, "--limit", "-n", min=1, max=200, help="Max sessions"),
 ) -> None:
     """List read-only Codex session metadata, optionally for one workspace."""
-    from synapse.codex_sessions import CodexSessionScanner
+    from synapse.integrations.codex_sessions import CodexSessionScanner
 
     result = CodexSessionScanner(codex_home).scan(workspace, limit=limit)
     scope = str(workspace.resolve()) if workspace is not None else "all workspaces"
@@ -281,7 +281,7 @@ def sessions_codex_inspect(
     ),
 ) -> None:
     """Show read-only metadata for one Codex session."""
-    from synapse.codex_sessions import CodexSessionScanner
+    from synapse.integrations.codex_sessions import CodexSessionScanner
 
     scanner = CodexSessionScanner(codex_home)
     session = scanner.inspect(native_id, workspace=workspace)
@@ -337,8 +337,8 @@ def sessions_codex_preview(
     offset: int = typer.Option(0, "--offset", min=0, help="Visible message offset"),
 ) -> None:
     """Preview safe, completed user and assistant text from one Codex session."""
-    from synapse.codex_history import CodexHistoryProjector
-    from synapse.codex_sessions import CodexSessionScanner
+    from synapse.integrations.codex_history import CodexHistoryProjector
+    from synapse.integrations.codex_sessions import CodexSessionScanner
 
     session = CodexSessionScanner(codex_home).inspect(native_id, workspace=workspace)
     if session is None:
@@ -457,7 +457,7 @@ def sessions_export(
     """Export session transcript to a file (default). Use --stdout to pipe."""
     import json as _json
 
-    from synapse.transcript import (
+    from synapse.sessions.transcript import (
         export_transcript_json,
         export_transcript_markdown,
         load_messages_from_sqlite_file,
@@ -534,7 +534,7 @@ def sessions_search(
 @models_app.command("list")
 def models_list() -> None:
     """List configured downstream model profiles."""
-    from synapse.models_registry import registry_from_settings
+    from synapse.models.registry import registry_from_settings
 
     settings = load_settings()
     reg = registry_from_settings(settings)
@@ -565,7 +565,7 @@ def models_list() -> None:
 @mcp_app.command("list")
 def mcp_list() -> None:
     """List configured MCP servers."""
-    from synapse.mcp_client import load_mcp_server_configs
+    from synapse.integrations.mcp_client import load_mcp_server_configs
 
     settings = load_settings()
     servers = load_mcp_server_configs(settings)
@@ -584,7 +584,7 @@ def mcp_test(
     """Connect to an MCP server and print available tools."""
     import asyncio
 
-    from synapse.mcp_client import connect_mcp, load_mcp_server_configs
+    from synapse.integrations.mcp_client import connect_mcp, load_mcp_server_configs
 
     settings = load_settings()
     configs = load_mcp_server_configs(settings)
@@ -618,7 +618,7 @@ def tool_output_eval(
     ),
 ) -> None:
     """Evaluate deterministic retention and compression against fixed fixtures."""
-    from synapse.tool_output_eval import evaluate_cases, load_cases, summarize_results
+    from synapse.runtime.tool_output_eval import evaluate_cases, load_cases, summarize_results
 
     summary = summarize_results(evaluate_cases(load_cases(fixture)))
     console.print(f"cases: {summary['cases']}; passed: {summary['passed']}")
@@ -638,7 +638,7 @@ def tool_output_stats(
     thread_id: str | None = typer.Option(None, "--thread", help="Restrict metrics to a thread id"),
 ) -> None:
     """Show local tool-output transformation savings and retention metrics."""
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.repository import ToolOutputRepository
 
     settings = load_settings()
     stats = ToolOutputRepository(settings.resolved_tool_output_db_path()).stats(thread_id=thread_id)
@@ -665,7 +665,7 @@ def tool_output_stats(
 @tool_output_app.command("status")
 def tool_output_status() -> None:
     """Show whether tool-output transformation and native acceleration are usable."""
-    from synapse.tool_output import load_native_transformers
+    from synapse.tool_output.transformers import load_native_transformers
 
     settings = load_settings()
     native_requested = settings.enable_native_tool_output_compression
@@ -692,7 +692,7 @@ def tool_output_events(
     limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max recent events"),
 ) -> None:
     """Show recent transformation decisions and retrieval usage."""
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.repository import ToolOutputRepository
 
     settings = load_settings()
     events = ToolOutputRepository(settings.resolved_tool_output_db_path()).events(
@@ -737,7 +737,7 @@ def main() -> None:
     """Console script entrypoint."""
     os.environ.setdefault("PYTHONUTF8", "1")
     try:
-        from synapse.startup_trace import ensure_started, mark
+        from synapse.observability.startup_trace import ensure_started, mark
 
         ensure_started()
         mark("cli:main")

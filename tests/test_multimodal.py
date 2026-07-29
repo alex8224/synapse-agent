@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from synapse.multimodal import (
+from synapse.content.multimodal import (
     Attachment,
     AttachmentError,
     ImageBank,

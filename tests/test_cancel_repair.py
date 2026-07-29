@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from synapse.cancel_repair import repair_thread_after_cancel
+from synapse.sessions.cancel_repair import repair_thread_after_cancel
 
 
 class _S(TypedDict):

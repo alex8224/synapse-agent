@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from langchain_core.tools import StructuredTool
 
-from synapse.middleware import (
+from synapse.runtime.middleware import (
     _compact_base_tool,
     _compact_dict_tool,
     _is_tool_dict,

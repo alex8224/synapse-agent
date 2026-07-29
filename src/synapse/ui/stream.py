@@ -14,525 +14,106 @@ Rendering is pluggable via ``StreamSink``:
 
 from __future__ import annotations
 
-import asyncio
-import queue
-import re
 import threading
 import time
-from collections.abc import Iterator
-from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any
 
-from rich import box
-from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
-from rich.markdown import CodeBlock as _CodeBlock
-from rich.markdown import Markdown as _Markdown
-from rich.markdown import MarkdownElement
-from rich.markdown import TableElement as _TableElement
-from rich.panel import Panel
 from rich.spinner import Spinner
-from rich.table import Table
 from rich.text import Text
 
-from synapse.context_compact import (
+from synapse.runtime.context_compact import (
     is_context_compact_text,
     is_lc_summarization_message,
     is_stream_meta_summarization,
 )
-from synapse.pathing import summarize_tool_result
-from synapse.steer import is_steer_message
+from synapse.runtime.pathing import summarize_tool_result
+from synapse.runtime.steer import is_steer_message
+
+# soft_wrap keeps long lines readable; force_terminal helps Windows color.
+# highlight=False avoids over-styling plain identifiers in non-markdown UI.
+from synapse.ui.rendering import (
+    _FullBorderMarkdown,
+    _FullTableElement,
+    _MermaidCodeBlock,
+    console,
+    print_banner,
+    print_error,
+    print_final,
+    print_info,
+    print_markdown,
+    print_user,
+    render_markdown,
+    render_math_in_text,
+    render_mermaid_diagram,
+)
 from synapse.ui.sink import StreamSink, sink_supports_tool_items
+from synapse.ui.stream_events import (
+    StreamResult,
+    _chunk_text,
+    _extract_reasoning,
+    _extract_usage,
+    _format_tool_args,
+    _is_ai_message,
+    _is_tool_message,
+    _looks_like_middleware_update,
+    _normalize_content,
+    _reasoning_token_count,
+    _tool_call_args,
+    _tool_call_id,
+    _tool_call_name,
+    extract_last_ai_text,
+    human_nested_tools_detail,
+    human_tool_label,
+)
+from synapse.ui.stream_events import (
+    aggregate_usage_from_messages as _aggregate_usage_from_messages,
+)
+from synapse.ui.stream_runtime import (
+    _is_sync_only_checkpointer_error,
+    _iter_stream_events,
+    checkpointer_supports_async,
+)
 from synapse.ui.timeline import (
     build_tool_item,
     content_to_text,
     is_error_status,
     is_todo_tool,
-    item_label,
     match_tool_result,
     truncate_preview,
 )
 
-# soft_wrap keeps long lines readable; force_terminal helps Windows color.
-# highlight=False avoids over-styling plain identifiers in non-markdown UI.
-console = Console(highlight=False, soft_wrap=True, emoji=False)
+aggregate_usage_from_messages = _aggregate_usage_from_messages
+
+__all__ = [
+    "_FullBorderMarkdown",
+    "_FullTableElement",
+    "_MermaidCodeBlock",
+    "_iter_stream_events",
+    "_is_sync_only_checkpointer_error",
+    "_extract_reasoning",
+    "_extract_usage",
+    "_is_ai_message",
+    "_is_tool_message",
+    "_normalize_content",
+    "_reasoning_token_count",
+    "_tool_call_name",
+    "aggregate_usage_from_messages",
+    "checkpointer_supports_async",
+    "extract_last_ai_text",
+    "print_banner",
+    "print_error",
+    "print_final",
+    "print_info",
+    "print_markdown",
+    "print_user",
+    "render_markdown",
+    "render_math_in_text",
+    "render_mermaid_diagram",
+    "stream_agent",
+]
 
 
-def _theme():
-    try:
-        from synapse.ui.theme import get_theme
-
-        return get_theme()
-    except Exception:  # noqa: BLE001
-        return None
-
-
-# ---------------------------------------------------------------------------
-# LaTeX math → Unicode art (powered by TeXicode)
-# ---------------------------------------------------------------------------
-
-_LATEX_MATH_RE = re.compile(
-    r"\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\)|\\begin\{.*?\}.*?\\end\{.*?\}",
-    re.DOTALL,
-)
-
-
-_TEXICODE_ERROR_PREFIX = "texicode:"
-
-
-def _replace_latex(match: re.Match) -> str:
-    """Render one LaTeX block, preserving source when TeXicode cannot parse it."""
-    tex_block = match.group(0)
-    if tex_block.startswith("$$"):
-        clean = tex_block[2:-2]
-        ctx = "md_block"
-    elif tex_block.startswith("\\["):
-        clean = tex_block[2:-2]
-        ctx = "md_block"
-    elif tex_block.startswith("\\("):
-        clean = tex_block[2:-2]
-        ctx = "md_inline"
-    elif tex_block.startswith("\\begin"):
-        clean = tex_block
-        ctx = "md_block"
-    else:
-        clean = tex_block[1:-1]
-        ctx = "md_inline"
-    try:
-        from texicode.pipeline import render_tex
-
-        # TeXicode returns lexer/parser/renderer failures as ordinary strings
-        # instead of raising, so validate the rendered value below.
-        rendered = render_tex(clean, False, False, ctx, {"fonts": "normal"})
-    except Exception:  # noqa: BLE001
-        return tex_block
-
-    if not isinstance(rendered, str) or not rendered.strip():
-        return tex_block
-    if _TEXICODE_ERROR_PREFIX in rendered.casefold():
-        return tex_block
-    return rendered
-
-
-def render_math_in_text(text: str) -> str:
-    """Replace $$...$$ / $...$ / \\[...\\] / \\(...\\) with Unicode math art."""
-    return _LATEX_MATH_RE.sub(_replace_latex, text)
-
-
-# ---------------------------------------------------------------------------
-# Rich Markdown rendering
-# ---------------------------------------------------------------------------
-
-_MERMAID_LANGS = frozenset({"mermaid", "mmd"})
-
-# Hard caps so dense graphs cannot pin the Textual event loop.
-# termaid pathfinding is CPU-bound; Textual layout/measure re-enters Rich
-# render many times for one answer seal.
-_MERMAID_MAX_SOURCE_CHARS = 6_000
-_MERMAID_MAX_EDGES = 48
-_MERMAID_MAX_NODES = 28
-_MERMAID_RENDER_TIMEOUT_S = 0.35
-_MERMAID_EDGE_RE = re.compile(
-    r"(?:-->|---|-\.-|==>|==|~~>|~~|-.->|-->>|<-+>|<-+|-+\.|o--+|x--+)"
-)
-_MERMAID_NODE_RE = re.compile(r"\b([A-Za-z][\w-]*)\b")
-_MERMAID_SKIP_TOKENS = frozenset(
-    {
-        "graph",
-        "flowchart",
-        "subgraph",
-        "end",
-        "classdef",
-        "class",
-        "style",
-        "linkstyle",
-        "click",
-        "direction",
-        "tb",
-        "td",
-        "bt",
-        "rl",
-        "lr",
-        "statediagram",
-        "statediagram-v2",
-        "sequencediagram",
-        "participant",
-        "actor",
-        "note",
-        "loop",
-        "alt",
-        "else",
-        "opt",
-        "par",
-        "and",
-        "rect",
-        "activate",
-        "deactivate",
-        "autonumber",
-    }
-)
-# source -> rendered Text, or None meaning "known bad / too heavy / timed out"
-_mermaid_render_cache: dict[str, Text | None] = {}
-_mermaid_executor = None
-_mermaid_executor_lock = threading.Lock()
-
-
-def _get_mermaid_executor():
-    """Single-worker pool so a timed-out render cannot pile up CPU workers."""
-    global _mermaid_executor
-    with _mermaid_executor_lock:
-        if _mermaid_executor is None:
-            import concurrent.futures
-
-            _mermaid_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="synapse-mermaid",
-            )
-        return _mermaid_executor
-
-
-def _replace_mermaid_executor() -> None:
-    """Drop a timed-out worker without waiting for termaid to finish."""
-    global _mermaid_executor
-    with _mermaid_executor_lock:
-        old = _mermaid_executor
-        _mermaid_executor = None
-    if old is not None:
-        try:
-            old.shutdown(wait=False, cancel_futures=True)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _mermaid_complexity(source: str) -> tuple[int, int]:
-    """Rough (edge_count, node_count) estimate for cheap preflight limits."""
-    edges = len(_MERMAID_EDGE_RE.findall(source))
-    nodes: set[str] = set()
-    for token in _MERMAID_NODE_RE.findall(source):
-        low = token.lower()
-        if low in _MERMAID_SKIP_TOKENS:
-            continue
-        nodes.add(token)
-    return edges, len(nodes)
-
-
-def _render_mermaid_text(source: str) -> Text:
-    from termaid import render_rich
-
-    rendered = render_rich(source)
-    if isinstance(rendered, Text):
-        return rendered
-    return Text(str(rendered))
-
-
-def render_mermaid_diagram(source: str) -> Text | None:
-    """Render mermaid to Rich Text with cache, complexity caps, and a hard timeout.
-
-    Returns ``None`` when the diagram should fall back to the source fence.
-    """
-    text = (source or "").strip()
-    if not text:
-        return None
-    if text in _mermaid_render_cache:
-        return _mermaid_render_cache[text]
-
-    if len(text) > _MERMAID_MAX_SOURCE_CHARS:
-        _mermaid_render_cache[text] = None
-        return None
-
-    edges, nodes = _mermaid_complexity(text)
-    if edges > _MERMAID_MAX_EDGES or nodes > _MERMAID_MAX_NODES:
-        _mermaid_render_cache[text] = None
-        return None
-
-    # Mark in-flight as failed first so concurrent re-entries do not stampede.
-    _mermaid_render_cache[text] = None
-    try:
-        future = _get_mermaid_executor().submit(_render_mermaid_text, text)
-        rendered = future.result(timeout=_MERMAID_RENDER_TIMEOUT_S)
-    except TimeoutError:
-        # Abandon the busy worker so the next diagram is not queued behind it.
-        _replace_mermaid_executor()
-        return None
-    except Exception:  # noqa: BLE001 — parse / layout failures all fall back
-        return None
-
-    _mermaid_render_cache[text] = rendered
-    return rendered
-
-
-class _MermaidCodeBlock(_CodeBlock):
-    """Code fence that draws mermaid via termaid ``render_rich`` (Rich Text).
-
-    Non-mermaid fences keep Rich's default Syntax highlighting.
-    On termaid failure / timeout / oversize input, falls back to the source fence.
-    """
-
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
-        lexer = (self.lexer_name or "").strip().lower()
-        if lexer in _MERMAID_LANGS:
-            source = str(self.text).strip()
-            if source:
-                rendered = render_mermaid_diagram(source)
-                if rendered is not None:
-                    yield rendered
-                    return
-        yield from super().__rich_console__(console, options)
-
-
-class _FullTableElement(_TableElement):
-    """Rich table element with full rounded borders instead of just a header line."""
-
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
-        table = Table(
-            box=box.ROUNDED,
-            pad_edge=False,
-            style="markdown.table.border",
-            show_edge=True,
-            show_lines=True,  # draw grid lines between body rows/cells
-            collapse_padding=True,
-        )
-
-        if self.header is not None and self.header.row is not None:
-            for column in self.header.row.cells:
-                heading = column.content.copy()
-                heading.stylize("markdown.table.header")
-                table.add_column(heading)
-
-        if self.body is not None:
-            for row in self.body.rows:
-                row_content = [element.content for element in row.cells]
-                table.add_row(*row_content)
-
-        yield table
-
-
-class _FullBorderMarkdown(_Markdown):
-    """Rich Markdown with full table borders and mermaid diagram fences."""
-
-    elements: ClassVar[dict[str, type[MarkdownElement]]] = {
-        **_Markdown.elements,
-        "table_open": _FullTableElement,
-        "fence": _MermaidCodeBlock,
-        "code_block": _MermaidCodeBlock,
-    }
-
-
-def render_markdown(text: str) -> _Markdown:
-    """Build a Rich Markdown renderable for assistant answers."""
-    theme = _theme()
-    code_theme = getattr(theme, "code_theme", None) or "monokai"
-    # LaTeX math preprocessor; mermaid is drawn inside Markdown fence elements.
-    text = render_math_in_text(text)
-    return _FullBorderMarkdown(
-        text or "(empty response)",
-        code_theme=code_theme,
-        hyperlinks=True,
-    )
-
-
-def print_markdown(text: str) -> None:
-    """Print markdown body without a panel."""
-    console.print(render_markdown(text))
-
-
-def print_banner(workspace: str, model: str, require_approval: bool) -> None:
-    approval = "ON" if require_approval else "OFF (auto-pass)"
-    theme = _theme()
-    border = getattr(theme, "rich_info_border", None) or "blue"
-    console.print(
-        Panel.fit(
-            f"[bold]Coding Agent[/bold]\n"
-            f"workspace: [cyan]{workspace}[/cyan]\n"
-            f"model: [green]{model}[/green]\n"
-            f"approval: [yellow]{approval}[/yellow]\n"
-            f"backend: LocalShell · parallel tools · token/reasoning stream",
-            border_style=border,
-        )
-    )
-
-
-def print_user(text: str) -> None:
-    theme = _theme()
-    style = getattr(theme, "rich_user", None) or "bold cyan"
-    console.print(Text(f"You: {text}", style=style))
-
-
-def print_error(message: str) -> None:
-    theme = _theme()
-    style = getattr(theme, "rich_error", None) or "bold red"
-    # Keep the ERROR: prefix visible even if theme uses hex colors.
-    if " " in style and not style.startswith("bold "):
-        console.print(f"[{style}]ERROR:[/{style}] {message}")
-    else:
-        console.print(f"[{style}]ERROR:[/{style}] {message}")
-
-
-def print_info(message: str) -> None:
-    console.print(f"[dim]{message}[/dim]")
-
-
-def print_final(text: str) -> None:
-    """Print the final assistant answer with markdown rendering."""
-    theme = _theme()
-    border = getattr(theme, "rich_ok_border", None) or "green"
-    console.print()
-    console.print(
-        Panel(
-            render_markdown(text),
-            title="Assistant",
-            border_style=border,
-            padding=(0, 1),
-        )
-    )
-
-
-def _looks_like_middleware_update(data: Any) -> bool:
-    """True when an updates payload is only middleware jump metadata.
-
-    LangGraph emits maps like ``{"SkillsMiddleware.before_agent": None, ...}``
-    when hooks return no state patch. These must never become the answer body.
-    """
-    if not isinstance(data, dict) or not data:
-        return False
-    if "messages" in data:
-        return False
-    keys = [str(k) for k in data]
-    hook_markers = (".before_agent", ".after_agent", ".before_model", ".after_model")
-    hookish = sum(1 for k in keys if any(m in k for m in hook_markers))
-    if hookish >= max(1, len(keys) // 2):
-        return True
-    # All values empty/None and no known agent state channels.
-    state_keys = {"messages", "files", "todos", "structured_response", "jump_to"}
-    if any(k in state_keys for k in data):
-        return False
-    return all(v is None or v == {} or v == [] for v in data.values())
-
-
-def extract_last_ai_text(result: dict[str, Any] | Any) -> str:
-    """Best-effort extraction of the final assistant message text.
-
-    Only reads a real ``messages`` channel. Never stringifies middleware jump
-    maps or other non-state updates (that used to leak into the TUI as the
-    assistant answer).
-    """
-    if not isinstance(result, dict) or not result:
-        return ""
-    if _looks_like_middleware_update(result):
-        return ""
-    if "messages" not in result:
-        return ""
-    messages = result.get("messages") or []
-    if not messages:
-        return ""
-    for msg in reversed(messages):
-        if not _is_ai_message(msg) or is_steer_message(msg):
-            continue
-        text = _normalize_content(getattr(msg, "content", "")).strip()
-        if text and not is_steer_message(text=text):
-            return text
-    return ""
-
-
-def _normalize_content(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                btype = str(block.get("type") or "")
-                if btype in {"reasoning", "thinking"}:
-                    continue  # handled separately
-                if btype == "text" or "text" in block:
-                    parts.append(str(block.get("text", "")))
-            else:
-                text = getattr(block, "text", None)
-                if text:
-                    parts.append(str(text))
-        return "".join(parts)
-    return str(content)
-
-
-def _extract_reasoning(msg: Any) -> str:
-    """Extract model reasoning / thinking text from common provider fields."""
-    parts: list[str] = []
-
-    ak = getattr(msg, "additional_kwargs", None) or {}
-    if isinstance(ak, dict):
-        for key in ("reasoning_content", "reasoning", "thinking", "thought"):
-            val = ak.get(key)
-            if val:
-                parts.append(str(val))
-
-    rm = getattr(msg, "response_metadata", None) or {}
-    if isinstance(rm, dict):
-        for key in ("reasoning_content", "reasoning", "thinking"):
-            val = rm.get(key)
-            if val:
-                parts.append(str(val))
-
-    content = getattr(msg, "content", None)
-    if isinstance(content, list):
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = str(block.get("type") or "")
-            if btype in {"reasoning", "thinking"}:
-                parts.append(str(block.get("text") or block.get("reasoning") or ""))
-
-    for key in ("reasoning_content", "reasoning"):
-        val = getattr(msg, key, None)
-        if val:
-            parts.append(str(val))
-
-    seen: set[str] = set()
-    out: list[str] = []
-    for p in parts:
-        if p and p not in seen:
-            seen.add(p)
-            out.append(p)
-    return "".join(out)
-
-
-def _shorten(text: str, limit: int = 160) -> str:
-    text = text.replace("\n", " ").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
-
-
-def _format_tool_args(args: Any) -> str:
-    return _shorten(repr(args), 240)
-
-
-@dataclass
-class StreamResult:
-    state: dict[str, Any] = field(default_factory=dict)
-    final_text: str = ""
-    tool_calls: int = 0
-    elapsed_s: float = 0.0
-    streamed_answer: bool = False
-    reasoning_text: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_tokens: int = 0  # cache hit / cache_read tokens
-    total_tokens: int = 0
-    # Last model-call usage in this turn (not summed). Topbar occupancy uses these.
-    last_input_tokens: int = 0
-    last_output_tokens: int = 0
-    last_cache_tokens: int = 0
-    cancelled: bool = False  # user abort (ESC / cancel_event)
-    interrupted: bool = False  # graph paused for HITL approval
-    compact_events: int = 0  # context-compaction summaries hidden from UI
 
 
 class _ActivityLine:
@@ -956,517 +537,8 @@ class RichStreamSink:
         del turn_input, turn_output, turn_cache, last_input, last_output, last_cache
 
 
-def _chunk_text(msg_chunk: Any) -> str:
-    content = getattr(msg_chunk, "content", None)
-    if content is None and isinstance(msg_chunk, dict):
-        content = msg_chunk.get("content")
-    return _normalize_content(content)
 
 
-def _is_tool_message(msg: Any) -> bool:
-    """Detect tool result messages.
-
-    LangChain ToolMessage.type is the short string ``\"tool\"`` (not ``toolmessage``).
-    """
-    type_name = (getattr(msg, "type", None) or "").lower()
-    if type_name == "tool":
-        return True
-    cls_name = msg.__class__.__name__.lower()
-    return cls_name == "toolmessage" or (
-        "tool" in cls_name and "message" in cls_name
-    )
-
-
-def _is_ai_message(msg: Any) -> bool:
-    if isinstance(msg, dict):
-        role = str(msg.get("role") or msg.get("type") or "").lower()
-        return role in {"ai", "assistant", "aimessage", "aimessagechunk"}
-    type_name = (getattr(msg, "type", None) or "").lower()
-    if type_name in {"ai", "assistant", "aimessage", "aimessagechunk"}:
-        return True
-    cls_name = msg.__class__.__name__.lower().lstrip("_")
-    return cls_name in {"ai", "aimessage", "aimessagechunk"}
-
-
-def _reasoning_token_count(msg: Any) -> int | None:
-    usage = getattr(msg, "usage_metadata", None) or {}
-    if not isinstance(usage, dict):
-        details = getattr(usage, "output_token_details", None)
-        if details is not None:
-            val = getattr(details, "reasoning", None)
-            return int(val) if val is not None else None
-        return None
-    details = usage.get("output_token_details") or {}
-    if isinstance(details, dict) and details.get("reasoning") is not None:
-        try:
-            return int(details["reasoning"])
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _cache_tokens_from_details(details: Any) -> int:
-    """Best-effort cache-hit tokens from provider detail objects/dicts."""
-    if details is None:
-        return 0
-    keys = (
-        "cache_read",
-        "cache_read_tokens",
-        "cache_hit",
-        "cache_hit_tokens",
-        "cached",
-        "cached_tokens",
-    )
-    if isinstance(details, dict):
-        for key in keys:
-            if details.get(key) is not None:
-                return _as_int(details.get(key))
-        return 0
-    for key in keys:
-        val = getattr(details, key, None)
-        if val is not None:
-            return _as_int(val)
-    return 0
-
-
-def _extract_cache_tokens(msg: Any, usage: Any) -> int:
-    """Extract cache-hit tokens from usage_metadata / response_metadata."""
-    if usage is not None:
-        if isinstance(usage, dict):
-            cache = _cache_tokens_from_details(usage.get("input_token_details"))
-            if cache:
-                return cache
-            cache = _cache_tokens_from_details(usage.get("input_tokens_details"))
-            if cache:
-                return cache
-            for key in ("cache_read_tokens", "cached_tokens", "cache_tokens"):
-                if usage.get(key) is not None:
-                    return _as_int(usage.get(key))
-        else:
-            cache = _cache_tokens_from_details(
-                getattr(usage, "input_token_details", None)
-            )
-            if cache:
-                return cache
-            for key in ("cache_read_tokens", "cached_tokens", "cache_tokens"):
-                val = getattr(usage, key, None)
-                if val is not None:
-                    return _as_int(val)
-
-    meta = getattr(msg, "response_metadata", None) or {}
-    if not isinstance(meta, dict):
-        return 0
-    token_usage = meta.get("token_usage") or meta.get("usage") or {}
-    if not isinstance(token_usage, dict):
-        return 0
-    details = token_usage.get("prompt_tokens_details") or token_usage.get(
-        "input_tokens_details"
-    )
-    cache = _cache_tokens_from_details(details)
-    if cache:
-        return cache
-    for key in ("cache_read_tokens", "cached_tokens", "cache_tokens"):
-        if token_usage.get(key) is not None:
-            return _as_int(token_usage.get(key))
-    return 0
-
-
-def _extract_usage(msg: Any) -> dict[str, int]:
-    """Extract token usage from AIMessage usage_metadata (OpenAI-compatible format)."""
-    empty: dict[str, int] = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "cache_tokens": 0,
-    }
-
-    usage = getattr(msg, "usage_metadata", None)
-    if usage is None:
-        cache = _extract_cache_tokens(msg, None)
-        if cache:
-            empty["cache_tokens"] = cache
-        return empty
-
-    if not isinstance(usage, dict):
-        return {
-            "input_tokens": _as_int(getattr(usage, "input_tokens", 0)),
-            "output_tokens": _as_int(getattr(usage, "output_tokens", 0)),
-            "total_tokens": _as_int(getattr(usage, "total_tokens", 0)),
-            "cache_tokens": _extract_cache_tokens(msg, usage),
-        }
-
-    return {
-        "input_tokens": _as_int(usage.get("input_tokens", 0)),
-        "output_tokens": _as_int(usage.get("output_tokens", 0)),
-        "total_tokens": _as_int(usage.get("total_tokens", 0)),
-        "cache_tokens": _extract_cache_tokens(msg, usage),
-    }
-
-
-
-def aggregate_usage_from_messages(messages: list[Any] | None) -> dict[str, int]:
-    """Sum usage_metadata across AI messages; track last call values.
-
-    Used when restoring a thread so the topbar can show historical totals
-    without waiting for a new live turn.
-    """
-    total_in = 0
-    total_out = 0
-    total_cache = 0
-    last_in = 0
-    last_out = 0
-    last_cache = 0
-    seen: set[str] = set()
-    for msg in messages or []:
-        if not _is_ai_message(msg):
-            continue
-        msg_id = getattr(msg, "id", None)
-        key = f"usage:{msg_id if msg_id else id(msg)}"
-        if key in seen:
-            continue
-        u = _extract_usage(msg)
-        if not (
-            u.get("input_tokens")
-            or u.get("output_tokens")
-            or u.get("cache_tokens")
-        ):
-            continue
-        seen.add(key)
-        total_in += int(u.get("input_tokens") or 0)
-        total_out += int(u.get("output_tokens") or 0)
-        total_cache += int(u.get("cache_tokens") or 0)
-        last_in = int(u.get("input_tokens") or 0)
-        last_out = int(u.get("output_tokens") or 0)
-        last_cache = int(u.get("cache_tokens") or 0)
-    return {
-        "input_tokens": total_in,
-        "output_tokens": total_out,
-        "cache_tokens": total_cache,
-        "last_input_tokens": last_in,
-        "last_output_tokens": last_out,
-        "last_cache_tokens": last_cache,
-    }
-
-
-
-def _tool_call_name(call: Any) -> str:
-    if isinstance(call, dict):
-        return str(call.get("name") or "?")
-    return str(getattr(call, "name", "?"))
-
-
-def _tool_call_args(call: Any) -> Any:
-    if isinstance(call, dict):
-        return call.get("args")
-    return getattr(call, "args", {})
-
-
-def _tool_call_id(call: Any) -> str:
-    if isinstance(call, dict):
-        return str(call.get("id") or call.get("tool_call_id") or "")
-    return str(getattr(call, "id", None) or getattr(call, "tool_call_id", None) or "")
-
-
-def human_tool_label(call: Any) -> str:
-    """Prefer model intent (via item_label) over raw tool name/args."""
-    name = _tool_call_name(call)
-    args = _tool_call_args(call)
-    label = item_label(name, args)
-    return " ".join(str(label or name).split()).strip() or name
-
-
-def human_nested_tools_detail(calls: list[Any], *, limit: int = 5) -> str:
-    """Status text for concurrent nested tool calls."""
-    labels: list[str] = []
-    for call in calls[: max(1, limit)]:
-        labels.append(human_tool_label(call))
-    more = len(calls) - len(labels)
-    text = " · ".join(labels)
-    if more > 0:
-        text = f"{text} · +{more}"
-    return text
-
-
-def checkpointer_supports_async(checkpointer: Any) -> bool:
-    """Whether a LangGraph checkpointer is safe for agent.astream.
-
-    Sync ``SqliteSaver`` raises RuntimeError under async graph methods.
-    """
-    if checkpointer is None:
-        return True
-    cls = type(checkpointer)
-    name = cls.__name__
-    module = cls.__module__ or ""
-    if name == "SqliteSaver" and ".aio" not in module:
-        return False
-    if name.startswith("Async") and "Saver" in name:
-        return True
-    # MemorySaver and most modern savers expose aget_tuple.
-    if callable(getattr(checkpointer, "aget_tuple", None)):
-        return True
-    if callable(getattr(checkpointer, "aget", None)):
-        return True
-    return True
-
-
-def _bound_async_loop(agent: Any) -> asyncio.AbstractEventLoop | None:
-    """Event loop bound to AsyncSqliteSaver / agent async runtime, if any."""
-    runtime = getattr(agent, "_coding_async_runtime", None)
-    if runtime is not None:
-        loop = getattr(runtime, "loop", None)
-        if loop is not None:
-            try:
-                if loop.is_running():
-                    return loop
-            except Exception:  # noqa: BLE001
-                pass
-    cp = getattr(agent, "_coding_checkpointer", None)
-    loop = getattr(cp, "loop", None) if cp is not None else None
-    if loop is not None:
-        try:
-            if loop.is_running():
-                return loop
-        except Exception:  # noqa: BLE001
-            pass
-    return None
-
-
-def _is_sync_only_checkpointer_error(exc: BaseException) -> bool:
-    """True for SqliteSaver/async mismatch errors that should fall back to sync stream."""
-    msg = str(exc).lower()
-    if "does not support async" in msg:
-        return True
-    if "asyncsqlitesaver" in msg and "aiosqlite" in msg:
-        return True
-    if "sqlitesaver" in msg and "async" in msg:
-        return True
-    return False
-
-
-def _normalize_stream_item(item: Any) -> tuple[str, Any, tuple[str, ...]]:
-    ns: tuple[str, ...] = ()
-
-    if isinstance(item, dict) and "type" in item and "data" in item:
-        mode = str(item.get("type") or "updates")
-        data = item.get("data")
-        raw_ns = item.get("ns") or item.get("namespace") or ()
-        if raw_ns:
-            ns = tuple(str(x) for x in raw_ns)
-        return mode, data, ns
-
-    if isinstance(item, tuple):
-        if len(item) == 3:
-            maybe_ns, mode, data = item
-            if isinstance(maybe_ns, (tuple, list)):
-                return str(mode), data, tuple(str(x) for x in maybe_ns)
-            return str(maybe_ns), mode, ()
-        if len(item) == 2:
-            a, b = item
-            if isinstance(a, str) and a in {
-                "messages",
-                "updates",
-                "values",
-                "custom",
-                "events",
-                "debug",
-            }:
-                return a, b, ()
-            if isinstance(a, (tuple, list)):
-                return "updates", b, tuple(str(x) for x in a)
-            return str(a), b, ()
-
-    return "updates", item, ()
-
-
-def _iter_stream_events(
-    agent,
-    payload: Any,
-    config: dict[str, Any],
-    *,
-    token_stream: bool,
-    prefer_async: bool,
-    subgraphs: bool,
-    cancel_event: threading.Event | None = None,
-) -> Iterator[tuple[str, Any, tuple[str, ...]]]:
-    modes: list[str] = ["updates"]
-    if token_stream:
-        modes = ["messages", "updates"]
-
-    def _put_norm(q: queue.Queue[Any], item: Any) -> None:
-        q.put(_normalize_stream_item(item))
-
-    def _cancelled() -> bool:
-        return cancel_event is not None and cancel_event.is_set()
-
-    if prefer_async and hasattr(agent, "astream"):
-        q: queue.Queue[Any] = queue.Queue()
-        error_box: list[BaseException] = []
-        done_box: list[bool] = []
-
-        async def _astream_once(**kwargs: Any):
-            async for item in agent.astream(payload, config=config, **kwargs):
-                if _cancelled():
-                    break
-                _put_norm(q, item)
-
-        async def _produce() -> None:
-            kwargs: dict[str, Any] = {
-                "stream_mode": modes,
-                "subgraphs": subgraphs,
-            }
-            try:
-                await _astream_once(version="v2", **kwargs)
-            except TypeError:
-                try:
-                    await _astream_once(**kwargs)
-                except TypeError:
-                    await _astream_once(stream_mode=modes)
-            except asyncio.CancelledError:
-                return
-            except BaseException as exc:  # noqa: BLE001
-                error_box.append(exc)
-            finally:
-                q.put(None)
-
-        async def _main() -> None:
-            prod = asyncio.create_task(_produce())
-            if cancel_event is None:
-                await prod
-                return
-            # Poll cancel so ESC can interrupt long model/tool waits.
-            while not prod.done():
-                if cancel_event.is_set():
-                    prod.cancel()
-                    try:
-                        await prod
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass
-                    # Ensure consumer unblocks even if finally was skipped.
-                    try:
-                        q.put_nowait(None)
-                    except Exception:  # noqa: BLE001
-                        q.put(None)
-                    return
-                await asyncio.sleep(0.05)
-            await prod
-
-        bound_loop = _bound_async_loop(agent)
-        worker_thread: threading.Thread | None = None
-        bound_future: Any | None = None
-
-        if bound_loop is not None and bound_loop.is_running():
-            # AsyncSqliteSaver path: schedule on the checkpointer's loop.
-            try:
-                bound_future = asyncio.run_coroutine_threadsafe(_main(), bound_loop)
-            except BaseException as exc:  # noqa: BLE001
-                error_box.append(exc)
-                q.put(None)
-        else:
-            # MemorySaver / no bound loop: dedicated worker + asyncio.run.
-            def _runner() -> None:
-                try:
-                    asyncio.run(_main())
-                except BaseException as exc:  # noqa: BLE001
-                    error_box.append(exc)
-                    try:
-                        q.put_nowait(None)
-                    except Exception:  # noqa: BLE001
-                        q.put(None)
-                finally:
-                    done_box.append(True)
-
-            worker_thread = threading.Thread(
-                target=_runner, name="agent-astream", daemon=True
-            )
-            worker_thread.start()
-
-        while True:
-            if _cancelled():
-                # Unblock promptly; producer task is being cancelled in parallel.
-                try:
-                    item = q.get(timeout=0.15)
-                except queue.Empty:
-                    yield "__cancelled__", None, ()
-                    break
-                if item is None:
-                    yield "__cancelled__", None, ()
-                    break
-                yield item
-                continue
-            try:
-                item = q.get(timeout=0.2)
-            except queue.Empty:
-                # If bound future finished without sentinel, stop.
-                if bound_future is not None and bound_future.done() and q.empty():
-                    break
-                yield "__heartbeat__", None, ()
-                continue
-            if item is None:
-                if _cancelled():
-                    yield "__cancelled__", None, ()
-                break
-            yield item
-
-        if worker_thread is not None:
-            worker_thread.join(timeout=1.5)
-        if bound_future is not None:
-            try:
-                bound_future.result(timeout=1.5)
-            except Exception as exc:  # noqa: BLE001
-                if not error_box and not _cancelled():
-                    error_box.append(exc)
-        if error_box:
-            err = error_box[0]
-            # Cancellation-induced errors are expected; ignore soft failures.
-            if _cancelled() or isinstance(err, asyncio.CancelledError):
-                return
-            # Fall through to sync stream when:
-            # - TypeError: astream kwargs (version/subgraphs) not supported
-            # - sync-only checkpointer used under astream (SqliteSaver)
-            # Other runtime/API failures must still surface.
-            if isinstance(err, TypeError) or _is_sync_only_checkpointer_error(err):
-                if bool(getattr(agent, "_coding_async_only", False)):
-                    raise err
-            else:
-                raise err
-        else:
-            return
-
-    def _sync_iter(**kwargs: Any):
-        return agent.stream(payload, config=config, **kwargs)
-
-    sync_errors: list[BaseException] = []
-    for attempt in (
-        {"stream_mode": modes, "subgraphs": subgraphs, "version": "v2"},
-        {"stream_mode": modes, "subgraphs": subgraphs},
-        {"stream_mode": modes, "version": "v2"},
-        {"stream_mode": modes},
-        {"stream_mode": "updates"},
-    ):
-        try:
-            for item in _sync_iter(**attempt):
-                if _cancelled():
-                    yield "__cancelled__", None, ()
-                    return
-                yield _normalize_stream_item(item)
-            return
-        except TypeError as exc:
-            sync_errors.append(exc)
-            continue
-        except asyncio.CancelledError:
-            if _cancelled():
-                yield "__cancelled__", None, ()
-                return
-            raise
-    if sync_errors:
-        raise sync_errors[-1]
 
 
 def stream_agent(
@@ -1581,7 +653,7 @@ def stream_agent(
     compact_events = 0
 
     # -- install retry notifier so the middleware can post status-bar updates --
-    from synapse.middleware import clear_retry_notifier, set_retry_notifier
+    from synapse.runtime.middleware import clear_retry_notifier, set_retry_notifier
 
     def _retry_notify(attempt: int, delay: float, reason: str) -> None:
         """Post a single-line retry notice through the sink."""
@@ -2068,7 +1140,7 @@ def stream_agent(
     interrupted = False
     if not cancelled:
         try:
-            from synapse.hitl import (
+            from synapse.runtime.hitl import (
                 extract_pending_interrupt,
                 format_interrupt_lines,
                 has_pending_interrupt,
@@ -2104,7 +1176,7 @@ def stream_agent(
     if cancelled:
         # Preserve multi-turn continuity: seal open tool_calls / pending next.
         try:
-            from synapse.cancel_repair import repair_thread_after_cancel
+            from synapse.sessions.cancel_repair import repair_thread_after_cancel
 
             repair_thread_after_cancel(agent, run_config)
         except Exception:  # noqa: BLE001

@@ -31,22 +31,19 @@ from textual.events import Click, Enter, Key, Leave
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from synapse.agent import build_coding_agent
-from synapse.input_history import InputHistory
-from synapse.multimodal import (
+from synapse.app.agent import build_coding_agent
+from synapse.content.input_history import InputHistory
+from synapse.content.multimodal import (
     ImageBank,
     compose_user_content,
     find_placeholders,
     provider_from_settings,
     read_clipboard,
 )
-from synapse.session_recap import SessionRecapController
-from synapse.steer import SteerQueue, format_steer_message, get_agent_steer_queue
-from synapse.tool_output import (
-    ToolOutputRepository,
-    clear_metrics_notifier,
-    set_metrics_notifier,
-)
+from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
+from synapse.sessions.session_recap import SessionRecapController
+from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
+from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -91,6 +88,12 @@ from synapse.ui.topbar.git_chrome import (
     probe_git_branch_chrome,
     render_branch_chrome,
 )
+from synapse.ui.turn_rail import (
+    format_turn_rail_bucket_label,
+    format_turn_rail_preview,
+    turn_rail_tick_slots,
+)
+from synapse.ui.user_turn import format_user_turn_meta, wrap_user_turn_text
 from synapse.ui.welcome import WelcomeView
 
 _WS_RE = re.compile(r"\s+")
@@ -297,14 +300,14 @@ def format_mcp_status_label(
 
 
 def short_model_name(model: str) -> str:
-    from synapse.models_registry import short_model_id
+    from synapse.models.registry import short_model_id
 
     return short_model_id(model)
 
 
 def model_status_label(settings: object) -> str:
     """Idle status / subtitle: ``deepseek-v4-pro · high``."""
-    from synapse.models_registry import format_model_status
+    from synapse.models.registry import format_model_status
 
     return format_model_status(settings)
 
@@ -470,142 +473,9 @@ _RAIL_BAR_DENSE = "━━━"
 _RAIL_BAR_HEAVY = "▓▓▓"
 
 
-def format_turn_rail_preview(
-    text: str,
-    *,
-    max_len: int = _RAIL_PREVIEW_MAX,
-) -> str:
-    """Single-line user-turn preview for the right rail (ellipsis when long)."""
-    one = _WS_RE.sub(" ", (text or "").strip())
-    if not one:
-        return "(empty)"
-    limit = max(8, int(max_len or _RAIL_PREVIEW_MAX))
-    if len(one) > limit:
-        return one[: limit - 1].rstrip() + "…"
-    return one
-
-
-def turn_rail_tick_slots(n: int, height: int) -> list[list[int]]:
-    """Map ``n`` turns onto ``height`` minimap rows.
-
-    When ``n <= height`` the turns are packed tightly and centered vertically
-    so the mouse need not travel far.  When ``n > height`` the rows are filled
-    proportionally with bucket merging (same as before).
-    """
-    h = max(1, int(height or 1))
-    n = max(0, int(n or 0))
-    slots: list[list[int]] = [[] for _ in range(h)]
-    if n <= 0:
-        return slots
-    if n <= h:
-        # Compact, centered placement.
-        start = (h - n) // 2
-        for i in range(n):
-            slots[start + i].append(i)
-        return slots
-    # n > h — proportional bucket merging.
-    for i in range(n):
-        y = i * h // n
-        y = min(h - 1, max(0, y))
-        slots[y].append(i)
-    return slots
-
-
-def format_turn_rail_bucket_label(
-    indices: list[int],
-    previews: list[str],
-    *,
-    max_len: int = _RAIL_PREVIEW_MAX,
-) -> str:
-    """Hover label for a minimap slot (single turn or merged bucket)."""
-    if not indices:
-        return ""
-    if len(indices) == 1:
-        return previews[0] if previews else f"#{indices[0] + 1}"
-    first = indices[0] + 1
-    last = indices[-1] + 1
-    head = previews[0] if previews else ""
-    prefix = f"#{first}-{last} "
-    room = max(6, int(max_len or _RAIL_PREVIEW_MAX) - len(prefix))
-    if len(head) > room:
-        head = head[: max(0, room - 1)].rstrip() + "…"
-    return f"{prefix}{head}" if head else f"#{first}-{last}"
 
 
 
-def wrap_user_turn_text(
-    text: str,
-    *,
-    width: int,
-    max_lines: int | None = _USER_PREVIEW_MAX_LINES,
-) -> tuple[list[str], bool]:
-    """Word-wrap user prompt for the transcript bar.
-
-    Returns ``(lines, truncated)``. When ``max_lines`` is None, never truncates.
-    Prefers breaks at spaces; falls back to display-width chunks (CJK-safe).
-    """
-    width = max(8, int(width or 8))
-    raw = _WS_RE.sub(" ", (text or "").strip())
-    if not raw:
-        return [""], False
-
-    lines: list[str] = []
-    i = 0
-    n = len(raw)
-    while i < n:
-        acc = ""
-        last_space_acc_len = -1
-        j = i
-        while j < n:
-            ch = raw[j]
-            trial = acc + ch
-            if display_width(trial) > width:
-                break
-            acc = trial
-            if ch == " ":
-                last_space_acc_len = len(acc)
-            j += 1
-        if not acc:
-            # Single character wider than width (rare); force one cell.
-            acc = raw[i]
-            j = i + 1
-        elif j < n and last_space_acc_len > 0:
-            # Break at last space inside this line.
-            acc = acc[:last_space_acc_len].rstrip()
-            j = i + last_space_acc_len
-            # skip the space
-            if j < n and raw[j] == " ":
-                j += 1
-        lines.append(acc)
-        i = j
-
-    if max_lines is None or len(lines) <= max_lines:
-        return lines, False
-    kept = list(lines[: max(1, int(max_lines))])
-    last = kept[-1]
-    kept[-1] = truncate_to_width(last, max(4, width))
-    if not kept[-1].endswith("…"):
-        kept[-1] = truncate_to_width(kept[-1], max(4, width - 1)).rstrip("…") + "…"
-    return kept, True
-
-
-def format_user_turn_meta(
-    *,
-    stamp: str,
-    turn_index: int | None = None,
-    image_count: int = 0,
-    expanded: bool = False,
-    truncated: bool = False,
-) -> str:
-    """Right-side meta: optional #n, img count, time; expand hint is separate."""
-    bits: list[str] = []
-    if turn_index is not None and int(turn_index) > 0:
-        bits.append(f"#{int(turn_index)}")
-    if image_count and int(image_count) > 0:
-        bits.append(f"img×{int(image_count)}")
-    if stamp:
-        bits.append(stamp)
-    return " · ".join(bits)
 
 
 def _annotate_strip_offsets(strip: object, y: int) -> object:
@@ -2397,12 +2267,12 @@ class CodingAgentApp(App[None]):
         self._reload_session_title()
 
     def _slash_complete_ctx(self):
-        from synapse.slash_complete import build_complete_context
+        from synapse.commands.slash_complete import build_complete_context
 
         return build_complete_context(self.settings)
 
     def compose(self) -> ComposeResult:
-        from synapse.slash_complete import make_textual_suggester
+        from synapse.commands.slash_complete import make_textual_suggester
 
         yield TopBar(
             registry_provider=lambda: self._topbar,
@@ -2476,8 +2346,8 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="startup")
     def _bg_build_agent(self) -> None:
         """Build agent off the UI thread; attach MCP in a second phase."""
-        from synapse.agent import attach_mcp_to_agent, build_coding_agent
-        from synapse.startup_trace import duration
+        from synapse.app.agent import attach_mcp_to_agent, build_coding_agent
+        from synapse.observability.startup_trace import duration
 
         startup_started = time.perf_counter()
 
@@ -2580,7 +2450,7 @@ class CodingAgentApp(App[None]):
         self.set_activity("idle", "ready", True)
 
     def _set_complete_hint(self, value: str) -> None:
-        from synapse.slash_complete import (
+        from synapse.commands.slash_complete import (
             complete_at_line,
             complete_slash,
         )
@@ -2665,7 +2535,7 @@ class CodingAgentApp(App[None]):
 
     def action_complete_slash(self) -> None:
         """Accept / cycle slash completions (Tab)."""
-        from synapse.slash_complete import (
+        from synapse.commands.slash_complete import (
             complete_at_line,
             complete_slash,
         )
@@ -2775,7 +2645,7 @@ class CodingAgentApp(App[None]):
 
     def action_show_completions(self) -> None:
         """List available slash completions (Ctrl+Space)."""
-        from synapse.slash_complete import complete_slash
+        from synapse.commands.slash_complete import complete_slash
 
         prompt = self.query_one("#prompt", Input)
         value = prompt.value or ""
@@ -2851,7 +2721,7 @@ class CodingAgentApp(App[None]):
     def _current_completion_cands(self) -> list[str]:
         """Return candidates for the active completion session
         (always based on _complete_base_value)."""
-        from synapse.slash_complete import complete_at_line, complete_slash
+        from synapse.commands.slash_complete import complete_at_line, complete_slash
 
         if self.project_root and "@" in (self._complete_base_value or ""):
             return complete_at_line(self._complete_base_value, self.project_root)
@@ -2936,7 +2806,7 @@ class CodingAgentApp(App[None]):
         """Load human title for the active thread into chrome state."""
         title = ""
         try:
-            from synapse.sessions import SessionStore
+            from synapse.sessions.store import SessionStore
 
             info = SessionStore(self.settings.resolved_sessions_path()).get(
                 self.thread_id
@@ -2989,7 +2859,7 @@ class CodingAgentApp(App[None]):
                 pass
 
         try:
-            from synapse.models_registry import registry_from_settings
+            from synapse.models.registry import registry_from_settings
 
             reg2 = registry_from_settings(self.settings)
             if reg2 is not None:
@@ -4228,7 +4098,7 @@ class CodingAgentApp(App[None]):
             return
         # Context-compaction summaries are for the model only.
         try:
-            from synapse.context_compact import is_context_compact_text
+            from synapse.runtime.context_compact import is_context_compact_text
 
             if is_context_compact_text(body):
                 self.append_event("context compacted (hidden)", "dim")
@@ -4542,7 +4412,7 @@ class CodingAgentApp(App[None]):
         """
         if self.agent is None:
             return
-        from synapse.transcript import fold_messages_for_ui, load_thread_messages
+        from synapse.sessions.transcript import fold_messages_for_ui, load_thread_messages
 
         try:
             messages = load_thread_messages(
@@ -4709,8 +4579,8 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="model-switch")
     def _switch_model_bg(self, command: str, activity: str) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.observability.startup_trace import duration
 
         switch_started = time.perf_counter()
         self.call_from_thread(self._clear_status_notice)
@@ -4749,8 +4619,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="model-switch-mcp")
     def _attach_mcp_after_switch_bg(self, base_agent: Any) -> None:
-        from synapse.agent import attach_mcp_to_agent
-        from synapse.startup_trace import duration
+        from synapse.app.agent import attach_mcp_to_agent
+        from synapse.observability.startup_trace import duration
 
         mcp_started = time.perf_counter()
         self.call_from_thread(self.flash_status, "reconnecting MCP…", "dim", ttl=1.5)
@@ -4844,7 +4714,7 @@ class CodingAgentApp(App[None]):
             self.call_from_thread(self._turn_done)
             return
         try:
-            from synapse.codex_import import import_codex_session
+            from synapse.integrations.codex_import import import_codex_session
 
             result = import_codex_session(
                 native_id=native_id,
@@ -4897,7 +4767,7 @@ class CodingAgentApp(App[None]):
 
     def _apply_session_multi_delete(self, thread_ids: list[str]) -> None:
         """Batch delete sessions, one by one."""
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         deleted = 0
         failed = 0
@@ -4932,7 +4802,7 @@ class CodingAgentApp(App[None]):
         self._apply_ok_result(deleted > 0)
 
     def _apply_session_switch(self, thread_id: str) -> None:
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         try:
             ok = handle_slash(
@@ -4948,7 +4818,7 @@ class CodingAgentApp(App[None]):
         self._apply_ok_result(ok)
 
     def _apply_session_delete(self, thread_id: str) -> None:
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         try:
             ok = handle_slash(
@@ -4997,9 +4867,9 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="mcp-save")
     def _apply_mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
-        from synapse.mcp_client import load_mcp_server_configs
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.integrations.mcp_client import load_mcp_server_configs
+        from synapse.observability.startup_trace import duration
         from synapse.ui.dialogs.mcp_panel import _save_include_tools_to_config
 
         save_started = time.perf_counter()
@@ -5079,8 +4949,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="mcp-reload")
     def _apply_mcp_reload_bg(self) -> None:
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.observability.startup_trace import duration
 
         reload_started = time.perf_counter()
         try:
@@ -5119,7 +4989,7 @@ class CodingAgentApp(App[None]):
             return
         action, profile = result
         if action == "safety":
-            from synapse.slash_cmds import handle_slash
+            from synapse.commands.slash_cmds import handle_slash
 
             try:
                 ok = handle_slash(
@@ -5183,7 +5053,7 @@ class CodingAgentApp(App[None]):
 
     def _handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         if self.agent is None:
             low = text.strip().split()[0].casefold() if text.strip() else ""
@@ -5363,7 +5233,7 @@ class CodingAgentApp(App[None]):
             self.append_event("still running previous turn…", "yellow")
             return
         try:
-            from synapse.sessions import SessionStore
+            from synapse.sessions.store import SessionStore
 
             SessionStore(self.settings.resolved_sessions_path()).touch(
                 self.thread_id,
@@ -5522,7 +5392,7 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True)
     def run_resume(self, action: str, message: str | None = None) -> None:
         """Resume graph after /approve or /reject."""
-        from synapse.hitl import (
+        from synapse.runtime.hitl import (
             build_decisions,
             build_resume_payload,
             extract_pending_interrupt,
@@ -5738,10 +5608,16 @@ def run_tui(
     cli_model: str | None = None,
 ) -> None:
     """Launch the Textual app; agent build is deferred off the UI thread by default."""
+    try:
+        from synapse.ui.theme import bootstrap_theme
+
+        bootstrap_theme(getattr(settings, "theme", None), workspace=settings.workspace)
+    except Exception:  # noqa: BLE001
+        pass
     root = project_root or Path.cwd()
     tid = thread_id or "pending"
     try:
-        from synapse.sessions import (
+        from synapse.sessions.store import (
             SessionStore,
             apply_binding_to_settings,
             binding_from_settings,
@@ -5763,7 +5639,7 @@ def run_tui(
         bind = binding_from_settings(settings)
         store.set_last_model_binding(bind)
     except Exception:  # noqa: BLE001
-        from synapse.sessions import allocate_thread_id
+        from synapse.sessions.store import allocate_thread_id
 
         tid = thread_id or allocate_thread_id()
 
@@ -5777,7 +5653,7 @@ def run_tui(
             and bool(getattr(settings, "mcp_eager", False)),
         )
         if settings.enable_mcp and not getattr(agent, "_coding_mcp_attached", True):
-            from synapse.agent import attach_mcp_to_agent
+            from synapse.app.agent import attach_mcp_to_agent
 
             agent = attach_mcp_to_agent(settings, agent, project_root=root)
 

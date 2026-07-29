@@ -7,11 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from synapse.mcp_client import load_mcp_server_configs
+from synapse.commands.slash_cmds import handle_slash
+from synapse.integrations.mcp_client import load_mcp_server_configs
 from synapse.sessions import SessionStore
-from synapse.slash_cmds import handle_slash
-from synapse.tool_output import ToolOutputRepository, TransformEvent
-from synapse.transcript import (
+from synapse.sessions.transcript import (
     export_transcript_json,
     export_transcript_markdown,
     load_messages_from_checkpointer,
@@ -327,7 +326,7 @@ def test_transcript_helpers():
 
 def test_mcp_pool_reuses_session_for_calls():
     """Pool should call the same live session without reopening per tool call."""
-    from synapse.mcp_client import McpServerConfig, McpSessionPool
+    from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
 
     class FakeSession:
         def __init__(self):
@@ -355,7 +354,7 @@ def test_mcp_pool_reuses_session_for_calls():
     fake = FakeSession()
 
     async def fake_open(server):
-        from synapse.mcp_client import _LiveServer
+        from synapse.integrations.mcp_client import _LiveServer
 
         live = _LiveServer(
             config=server,
@@ -394,7 +393,7 @@ def test_mcp_pool_reuses_session_for_calls():
 
 
 def test_mcp_open_http_and_stdio_branches_selected():
-    from synapse.mcp_client import McpServerConfig, McpSessionPool
+    from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
 
     pool = McpSessionPool()
     calls: list[str] = []
@@ -440,7 +439,7 @@ def test_mcp_open_http_and_stdio_branches_selected():
 
 def _capture_build(monkeypatch):
     """Patch slash_cmds.build_coding_agent to capture kwargs."""
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     calls: list[dict] = []
 
@@ -454,7 +453,7 @@ def _capture_build(monkeypatch):
 
 def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     """Attached agent + live pool -> reuse tools, no reconnect."""
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     settings = _FakeSettings(tmp_path)
     tool = SimpleNamespace(name="ping")
@@ -485,7 +484,7 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
 
 def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):
     """Deferred-at-startup agent keeps MCP deferred on rebuild (fast path)."""
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     settings = _FakeSettings(tmp_path)
     monkeypatch.setattr(slash_cmds, "get_active_mcp_pool", lambda: None)
@@ -508,7 +507,7 @@ def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):
 
 def test_rebuild_agent_defers_mcp_reconnect_when_pool_is_missing(tmp_path, monkeypatch):
     """An attached old graph must not make model switching wait for MCP network I/O."""
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     settings = _FakeSettings(tmp_path)
     monkeypatch.setattr(slash_cmds, "get_active_mcp_pool", lambda: None)
@@ -543,7 +542,7 @@ def test_rebuild_agent_defers_mcp_reconnect_when_pool_is_missing(tmp_path, monke
 
 def test_mcp_reload_forces_reconnect(tmp_path, monkeypatch):
     """/mcp reload must bypass pool reuse and force load_mcp=True."""
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     settings = _FakeSettings(tmp_path)
     pool = SimpleNamespace(tools=[SimpleNamespace(name="t")], tool_names=["t"])
@@ -572,8 +571,8 @@ def test_mcp_reload_forces_reconnect(tmp_path, monkeypatch):
 
 def test_apply_thinking_inplace_copies_attrs(monkeypatch):
     """In-place thinking update copies attrs from a fresh same-type model."""
-    import synapse.models_registry as reg_mod
-    from synapse.slash_cmds import _apply_thinking_inplace
+    import synapse.models.registry as reg_mod
+    from synapse.commands.slash_cmds import _apply_thinking_inplace
 
     class FakeModel:
         def __init__(self, effort, body):
@@ -599,8 +598,8 @@ def test_apply_thinking_inplace_copies_attrs(monkeypatch):
 
 def test_apply_thinking_inplace_fallbacks(monkeypatch):
     """No live model or type mismatch -> False (caller rebuilds)."""
-    import synapse.models_registry as reg_mod
-    from synapse.slash_cmds import _apply_thinking_inplace
+    import synapse.models.registry as reg_mod
+    from synapse.commands.slash_cmds import _apply_thinking_inplace
 
     # No live model.
     assert _apply_thinking_inplace(object(), SimpleNamespace(), "demo") is False
@@ -627,7 +626,7 @@ def test_rebuild_agent_reuses_pool_when_attached_flag_false(tmp_path, monkeypatc
     yet (or was replaced by a /model switch that deferred). The pool
     should still be reused instead of reconnecting every time.
     """
-    from synapse import slash_cmds
+    from synapse.commands import slash_cmds
 
     settings = _FakeSettings(tmp_path)
     tool = SimpleNamespace(name="t")

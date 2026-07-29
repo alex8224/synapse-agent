@@ -6,7 +6,7 @@ import asyncio
 
 from langchain_core.tools import tool
 
-from synapse.middleware import (
+from synapse.runtime.middleware import (
     TOOL_INTENT_KEY,
     add_intent_to_tool,
     build_intent_schema_middleware,

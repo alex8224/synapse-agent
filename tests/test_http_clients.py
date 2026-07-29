@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import httpx
 
-from synapse import http_clients as hc
-from synapse.http_clients import (
+import synapse.integrations.http_clients as hc
+from synapse.integrations.http_clients import (
     HTTP_KEEPALIVE_EXPIRY_SECONDS,
     client_keepalive_expiry,
     enable_anthropic_long_keepalive_defaults,
@@ -46,10 +46,10 @@ def test_provider_specific_patches_do_not_cross_import(monkeypatch):
 
 
 def test_openai_async_client_uses_sdk_default_timeout(monkeypatch):
-    from synapse.async_runtime import AsyncRuntime
+    from synapse.runtime.async_runtime import AsyncRuntime
 
     runtime = AsyncRuntime(name="http-client-timeout-test")
-    monkeypatch.setattr("synapse.async_runtime._RUNTIME", runtime)
+    monkeypatch.setattr("synapse.runtime.async_runtime._RUNTIME", runtime)
     client = hc.build_openai_async_http_client()
     try:
         assert client.timeout.connect == 5.0

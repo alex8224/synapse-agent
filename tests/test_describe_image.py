@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import HumanMessage
 
-from synapse.describe_image import (
+from synapse.integrations.describe_image import (
     VisionModelClient,
     VisionModelConfig,
     VisionModelError,
@@ -171,7 +171,7 @@ def test_vision_client_posts_to_selected_model():
 
 
 def test_middleware_skips_configured_vision_for_native_model():
-    from synapse.vision_middleware import build_describe_image_middleware
+    from synapse.integrations.vision_middleware import build_describe_image_middleware
 
     middleware = build_describe_image_middleware(
         image_input=True,
@@ -191,7 +191,7 @@ def test_middleware_skips_configured_vision_for_native_model():
 
 
 def test_sync_middleware_rewrite_works_inside_running_event_loop():
-    from synapse.vision_middleware import build_describe_image_middleware
+    from synapse.integrations.vision_middleware import build_describe_image_middleware
 
     middleware = build_describe_image_middleware(image_input=False, config=None)
     message = HumanMessage(

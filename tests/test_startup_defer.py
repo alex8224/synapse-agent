@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapse.agent import resolve_load_mcp
+from synapse.app.agent import resolve_load_mcp
 from synapse.config import Settings
 
 

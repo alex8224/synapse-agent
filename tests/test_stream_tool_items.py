@@ -99,7 +99,7 @@ class _SteerUpdateAgent:
         del payload, config, kwargs
         from langchain_core.messages import HumanMessage
 
-        from synapse.steer import format_steer_message
+        from synapse.runtime.steer import format_steer_message
 
         content = format_steer_message(["测试"])
         yield (

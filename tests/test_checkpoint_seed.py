@@ -13,16 +13,16 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 
-import synapse.checkpoint_seed as checkpoint_seed
-from synapse.agent import _build_async_sqlite_checkpointer
-from synapse.async_runtime import reset_async_runtime_for_tests
-from synapse.checkpoint_seed import CheckpointSeeder, CheckpointSeedError
-from synapse.codex_history import (
+import synapse.integrations.checkpoint_seed as checkpoint_seed
+from synapse.app.agent import _build_async_sqlite_checkpointer
+from synapse.integrations.checkpoint_seed import CheckpointSeeder, CheckpointSeedError
+from synapse.integrations.codex_history import (
     PARSER_VERSION,
     PROJECTION_KIND,
     CodexTextSnapshot,
     CodexVisibleMessage,
 )
+from synapse.runtime.async_runtime import reset_async_runtime_for_tests
 
 
 def _build_agent(saver: Any):

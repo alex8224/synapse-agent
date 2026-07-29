@@ -8,9 +8,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables.config import var_child_runnable_config
 
-from synapse.interaction_ledger import clear_interaction_positions
-from synapse.middleware import build_strip_redundant_prompt_blocks
-from synapse.model_request_compression_middleware import (
+from synapse.runtime.interaction_ledger import clear_interaction_positions
+from synapse.runtime.middleware import build_strip_redundant_prompt_blocks
+from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
 )
 from synapse.tool_output import ToolOutputRepository

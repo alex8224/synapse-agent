@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.slash_complete import (
+from synapse.commands.slash_complete import (
     SessionChoice,
     SlashCompleteContext,
     _glob_at_candidates,
@@ -111,7 +111,7 @@ def test_cycle_and_hint():
 def test_make_textual_suggester_returns_suggestion():
     import asyncio
 
-    from synapse.slash_complete import make_textual_suggester
+    from synapse.commands.slash_complete import make_textual_suggester
 
     suggester = make_textual_suggester(lambda: SlashCompleteContext())
     suggestion = asyncio.run(suggester.get_suggestion("/he"))

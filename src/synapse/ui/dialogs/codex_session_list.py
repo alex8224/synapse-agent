@@ -23,8 +23,8 @@ class CodexSessionListDialog(DialogBase):
         self._sessions: tuple[Any, ...] = ()
         self._warnings: tuple[str, ...] = ()
         try:
-            from synapse.codex_history import CodexHistoryProjector
-            from synapse.codex_sessions import CodexSessionScanner
+            from synapse.integrations.codex_history import CodexHistoryProjector
+            from synapse.integrations.codex_sessions import CodexSessionScanner
 
             workspace = Path(getattr(settings, "workspace", Path.cwd()))
             result = CodexSessionScanner(codex_home).scan(

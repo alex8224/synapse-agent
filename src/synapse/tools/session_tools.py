@@ -13,7 +13,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from synapse.tool_output import ToolOutputRepository
+from synapse.tool_output.repository import ToolOutputRepository
 
 
 def build_tool_result_reader_tool(tool_output_db_path: Path | str) -> Any:
@@ -113,7 +113,7 @@ def build_session_tools(
     Returns:
         [list_sessions, read_session]
     """
-    from synapse.sessions import SessionStore, format_session_table
+    from synapse.sessions.store import SessionStore, format_session_table
 
     store = SessionStore(sessions_path)
     ckpt = Path(checkpoint_path)
@@ -160,7 +160,7 @@ def build_session_tools(
             max_turns: 返回最近 N 轮。0 表示返回全部轮次。
             include_summary: 是否在开头附带会话元信息。
         """
-        from synapse.transcript import (
+        from synapse.sessions.transcript import (
             format_turns_as_text,
             load_messages_from_sqlite_file,
             split_messages_by_turns,

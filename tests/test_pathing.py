@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.pathing import (
+from synapse.runtime.pathing import (
     rewrite_tool_args_paths,
     summarize_tool_result,
     to_virtual_path,

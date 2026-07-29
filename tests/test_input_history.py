@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.input_history import InputHistory
+from synapse.content.input_history import InputHistory
 
 
 def test_input_history_add_up_down(tmp_path: Path):

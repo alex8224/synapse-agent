@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from synapse.backends import (
+from synapse.config import Settings, load_settings
+from synapse.runtime.backends import (
     DEFAULT_SHELL_EXECUTABLE,
     CodingLocalShellBackend,
     build_backend,
     resolve_shell_invocation,
 )
-from synapse.config import Settings, load_settings
-from synapse.execute_capture import begin_execute_capture, end_execute_capture
+from synapse.runtime.execute_capture import begin_execute_capture, end_execute_capture
 
 
 def test_default_shell_platform_aware():
@@ -57,7 +57,7 @@ def test_resolve_system_uses_shell_true():
 
 
 def test_resolve_bash_uses_argument_list():
-    with patch("synapse.backends.shutil.which", return_value="/usr/bin/bash"):
+    with patch("synapse.runtime.backends.shutil.which", return_value="/usr/bin/bash"):
         args, shell, executable = resolve_shell_invocation("ls -la", "bash")
     assert shell is False
     assert executable is None
@@ -109,10 +109,10 @@ def test_execute_pwsh_invocation_kwargs(tmp_path: Path):
     mock_proc.returncode = 0
     with (
         patch(
-            "synapse.backends.resolve_shell_invocation",
+            "synapse.runtime.backends.resolve_shell_invocation",
             return_value=(pwsh_args, False, None),
         ),
-        patch("synapse.backends.subprocess.Popen", return_value=mock_proc) as mock_popen,
+        patch("synapse.runtime.backends.subprocess.Popen", return_value=mock_proc) as mock_popen,
     ):
         resp = backend.execute("echo hi")
         assert resp.exit_code == 0
@@ -141,10 +141,10 @@ def test_execute_captures_full_output_before_response_truncation(tmp_path: Path)
     try:
         with (
             patch(
-                "synapse.backends.resolve_shell_invocation",
+                "synapse.runtime.backends.resolve_shell_invocation",
                 return_value=(["pwsh", "-Command", "echo hi"], False, None),
             ),
-            patch("synapse.backends.subprocess.Popen", return_value=mock_proc),
+            patch("synapse.runtime.backends.subprocess.Popen", return_value=mock_proc),
         ):
             response = backend.execute("echo hi")
     finally:
@@ -178,7 +178,7 @@ def test_ripgrep_search_uses_utf8_encoding(tmp_path: Path):
 
     with (
         patch("deepagents.backends.filesystem._resolve_ripgrep_path", return_value="rg"),
-        patch("synapse.backends.subprocess.run", return_value=completed) as mock_run,
+        patch("synapse.runtime.backends.subprocess.run", return_value=completed) as mock_run,
     ):
         results = backend._ripgrep_search("hello_token", tmp_path, None)
         kwargs = mock_run.call_args.kwargs
@@ -203,7 +203,7 @@ def test_ripgrep_search_handles_none_stdout(tmp_path: Path):
 
     with (
         patch("deepagents.backends.filesystem._resolve_ripgrep_path", return_value="rg"),
-        patch("synapse.backends.subprocess.run", return_value=completed),
+        patch("synapse.runtime.backends.subprocess.run", return_value=completed),
     ):
         results = backend._ripgrep_search("x", tmp_path, None)
     assert results == {}
