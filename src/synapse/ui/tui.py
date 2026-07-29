@@ -14,7 +14,6 @@ Layout (Grok/Cursor chrome):
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 from datetime import datetime
@@ -45,6 +44,7 @@ from synapse.sessions.session_recap import SessionRecapController
 from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
+from synapse.ui.answer_divider import AnswerDivider
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -59,8 +59,38 @@ from synapse.ui.bottombar import (
 from synapse.ui.bottombar import (
     layout_from_registry as layout_bottombar_from_registry,
 )
+from synapse.ui.clipboard import copy_to_clipboard
+from synapse.ui.formatters import (
+    format_answer_divider as _format_answer_divider,
+)
+from synapse.ui.formatters import (
+    format_byte_count,
+    format_context_occupancy_label,
+    format_mcp_status_label,
+    format_token_count,
+    model_status_label,
+    short_workspace_label,
+    soften_turn_footer,
+    stream_tail_preview,
+)
+from synapse.ui.formatters import (
+    format_usage_label as _format_usage_label,
+)
+from synapse.ui.formatters import (
+    short_model_name as _short_model_name,
+)
+from synapse.ui.selectable_static import (
+    SelectableStatic,
+)
+from synapse.ui.selectable_static import (
+    _annotate_strip_offsets as _annotate_strip_offsets_impl,
+)
+from synapse.ui.selectable_static import (
+    _stylize_strip_char_span as _stylize_strip_char_span_impl,
+)
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
+from synapse.ui.textual_stream_sink import TextualStreamSink
 from synapse.ui.timeline import (
     TODO_MARK_ACTIVE,
     TODO_MARK_DONE,
@@ -97,57 +127,14 @@ from synapse.ui.turn_rail import (
 from synapse.ui.user_turn import format_user_turn_meta, wrap_user_turn_text
 from synapse.ui.welcome import WelcomeView
 
-_WS_RE = re.compile(r"\s+")
+_copy_to_clipboard = copy_to_clipboard
+format_answer_divider = _format_answer_divider
+format_usage_label = _format_usage_label
+short_model_name = _short_model_name
+_annotate_strip_offsets = _annotate_strip_offsets_impl
+_stylize_strip_char_span = _stylize_strip_char_span_impl
+
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
-
-def _copy_to_clipboard(text: str) -> bool:
-    """Copy *text* to the system clipboard. Returns True on success."""
-    if not text:
-        return False
-    # Prefer pyperclip (cross-platform, lightweight).
-    try:
-        import pyperclip  # type: ignore[import-untyped]
-
-        pyperclip.copy(text)
-        return True
-    except ImportError:
-        pass
-    # Fallback: platform-specific subprocess.
-    import shutil
-    import subprocess
-    import sys
-
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                 f"Set-Clipboard -Value {_ps_escape(text)}"],
-                check=False, timeout=5,
-            )
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-    elif sys.platform == "darwin":
-        try:
-            subprocess.run(["pbcopy"], input=text, text=True, check=False, timeout=5)
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-    else:
-        for cmd in ("xclip -selection clipboard", "wl-copy"):
-            if shutil.which(cmd.split()[0]):
-                try:
-                    subprocess.run(cmd.split(), input=text, text=True, check=False, timeout=5)
-                    return True
-                except Exception:  # noqa: BLE001
-                    pass
-    return False
-
-
-def _ps_escape(text: str) -> str:
-    """Minimal PowerShell single-quote escaping."""
-    return "'" + text.replace("'", "''") + "'"
 
 
 # Palette slots — kept as module globals so render paths stay cheap.
@@ -210,171 +197,15 @@ _USER_PREVIEW_MIN_COLS = 20
 
 # Live stream must stay cheap: full-body Text/Markdown re-layout freezes the
 # Textual event loop (status can still tick, transcript becomes unusable).
-_STREAM_TAIL_LINES = 28
-_STREAM_TAIL_CHARS = 3500
 _MARKDOWN_MAX_CHARS = 24_000
-_STREAM_INTERVAL_SMALL = 0.12
-_STREAM_INTERVAL_MED = 0.25
-_STREAM_INTERVAL_LARGE = 0.40
 
 
 def _stamp() -> str:
     return datetime.now().strftime("%I:%M %p").lstrip("0")
 
 
-_FINISHED_RE = re.compile(r"^finished in ([\d.]+)s\b", re.I)
-
-
-def format_answer_divider(
-    width: int,
-    *,
-    diamond: str = "◇",
-    rule_ratio: float = 0.80,
-) -> list[str]:
-    """Centered thin rule with a diamond between tools and final answer.
-
-    Returns blank / rule / blank. The rule is shorter than the panel and
-    space-padded so the diamond sits in the horizontal center.
-    """
-    usable = max(28, min(int(width or 56), 200))
-    gem = diamond or "◇"
-    ratio = min(0.95, max(0.3, float(rule_ratio or 0.80)))
-    rule_len = max(21, int(usable * ratio))
-    if (rule_len - len(gem)) % 2:
-        rule_len += 1
-    side = max(4, (rule_len - len(gem)) // 2)
-    rule = ("─" * side) + gem + ("─" * side)
-    pad = max(0, (usable - len(rule)) // 2)
-    line = (" " * pad) + rule
-    trail = max(0, usable - len(line))
-    if trail:
-        line = line + (" " * trail)
-    return ["", line, ""]
-
-
-def format_token_count(n: int) -> str:
-    """Compact token count for chrome (14K, 1.2M)."""
-    n = max(0, int(n or 0))
-    if n < 1000:
-        return str(n)
-    if n < 10_000:
-        s = f"{n / 1000:.1f}K"
-        return s.replace(".0K", "K")
-    if n < 1_000_000:
-        return f"{(n + 500) // 1000}K"
-    if n < 10_000_000:
-        s = f"{n / 1_000_000:.1f}M"
-        return s.replace(".0M", "M")
-    return f"{(n + 500_000) // 1_000_000}M"
-
-
-def format_byte_count(n: int) -> str:
-    """Compact binary byte count with an explicit unit for non-token metrics."""
-    size = max(0, int(n or 0))
-    for unit, divisor in (("MiB", 1024**2), ("KiB", 1024)):
-        if size >= divisor:
-            value = size / divisor
-            rendered = f"{value:.1f}" if value < 10 else f"{value:.0f}"
-            return f"{rendered.rstrip('0').rstrip('.')} {unit}"
-    return f"{size} B"
-
-
 # Text prefix for git branch (not emoji; terminal-safe branch mark).
 _TOPBAR_BRANCH_MARK = "⎇"  # APL upwards vane / branch mark
-
-
-def format_usage_label(
-    *,
-    input_tokens: int = 0,
-    cache_tokens: int = 0,
-    output_tokens: int = 0,
-) -> str:
-    """Token chrome as compact ``in/cache/out`` counts: ``12K/3K/1.2K``."""
-    return (
-        f"{format_token_count(input_tokens)}/"
-        f"{format_token_count(cache_tokens)}/"
-        f"{format_token_count(output_tokens)}"
-    )
-
-
-def format_context_occupancy_label(
-    *,
-    last_input_tokens: int = 0,
-    context_window: int | None = None,
-) -> str:
-    """Last model-call context fill: ``270K/54%`` (tokens + ratio), or ``270K`` without window.
-
-    Uses the final model invocation's returned input size for the turn — not the
-    sum of every call in the loop.
-    """
-    used = max(0, int(last_input_tokens or 0))
-    if used <= 0:
-        return ""
-    used_s = format_token_count(used)
-    window: int | None
-    try:
-        window = int(context_window) if context_window is not None else None
-    except (TypeError, ValueError):
-        window = None
-    if window is not None and window > 0:
-        pct = int(round(100.0 * used / window))
-        # Cap display so chrome stays short when usage metadata overshoots.
-        if pct > 999:
-            pct = 999
-        return f"{used_s}/{pct}%"
-    return used_s
-
-
-def format_mcp_status_label(
-    *,
-    enabled: bool,
-    servers: list[str] | None = None,
-    tools: list[str] | None = None,
-    warnings: list[str] | None = None,
-    deferred: bool = False,
-) -> str:
-    """MCP chrome: ``mcp on`` / ``mcp off`` / ``mcp err`` (no server/tool counts)."""
-    if not enabled:
-        return "mcp off"
-    servers = list(servers or [])
-    tools = list(tools or [])
-    warnings = list(warnings or [])
-    n_s = len(servers)
-    n_t = len(tools)
-    if warnings and n_s == 0:
-        if deferred:
-            return "mcp off"
-        return "mcp err"
-    if n_s == 0 and n_t == 0:
-        return "mcp off"
-    return "mcp on"
-
-
-def short_model_name(model: str) -> str:
-    from synapse.models.registry import short_model_id
-
-    return short_model_id(model)
-
-
-def model_status_label(settings: object) -> str:
-    """Idle status / subtitle: ``deepseek-v4-pro · high``."""
-    from synapse.models.registry import format_model_status
-
-    return format_model_status(settings)
-
-
-def short_workspace_label(path: Path | str, *, max_len: int = 42) -> str:
-    """Prefer last two path segments; ellipsize long absolute paths."""
-    pth = Path(path)
-    parts = [x for x in pth.parts if x not in {"/", "\\"}]
-    if len(parts) >= 2:
-        label = f"{parts[-2]}/{parts[-1]}"
-    else:
-        label = pth.name or str(pth)
-    if len(label) <= max_len:
-        return label
-    return "…" + label[-(max_len - 1):]
-
 
 
 def todo_kind_style(kind: str) -> str:
@@ -472,50 +303,10 @@ class TodoChecklist(Static):
         self.update(Group(*lines))
 
 
-def soften_turn_footer(message: str) -> str:
-    """CLI dump → Grok-style soft footer for the transcript."""
-    text = (message or "").strip()
-    m = _FINISHED_RE.match(text)
-    if m:
-        return f"Worked for {m.group(1)}s."
-    return text
-
-
 def _git_branch(cwd: Path) -> str | None:
     """Backward-compatible branch name probe."""
     info = probe_git_branch_chrome(cwd)
     return info.name if info is not None else None
-
-
-def stream_tail_preview(
-    body: str,
-    *,
-    max_lines: int = _STREAM_TAIL_LINES,
-    max_chars: int = _STREAM_TAIL_CHARS,
-) -> str:
-    """Return only the newest tail of a growing answer for live preview.
-
-    Rendering the full cumulative body on every token is O(n) layout work and
-    freezes the main pane long before the final Markdown commit.
-    """
-    if not body:
-        return ""
-    text = body
-    truncated = False
-    lines = text.splitlines()
-    if len(lines) > max_lines:
-        text = "\n".join(lines[-max_lines:])
-        truncated = True
-    if len(text) > max_chars:
-        text = text[-max_chars:]
-        # Drop a likely partial first line after hard char cut.
-        nl = text.find("\n")
-        if 0 <= nl < 120:
-            text = text[nl + 1 :]
-        truncated = True
-    if truncated:
-        return "…\n" + text.lstrip("\n")
-    return text
 
 
 _RAIL_PREVIEW_MAX = 28
@@ -527,229 +318,6 @@ _RAIL_BAR_HEAVY = "▓▓▓"
 
 
 
-
-
-def _annotate_strip_offsets(strip: object, y: int) -> object:
-    """Stamp Textual selection ``meta['offset']`` onto each segment of a strip.
-
-    Textual's compositor only resolves ``content_offset`` when segment styles
-    carry ``meta['offset'] = (char_x, line_y)``. ``RichVisual`` never writes
-    that meta, so drag-select never starts on Static/Rich content. Without it
-    ``content_widget`` stays ``None`` and no selection is recorded.
-    """
-    from rich.segment import Segment
-    from rich.style import Style as RichStyle
-    from textual.strip import Strip
-
-    if not isinstance(strip, Strip):
-        return strip
-    segments = list(strip)
-    if not segments:
-        return strip
-    out: list[Segment] = []
-    char_x = 0
-    for seg in segments:
-        text = seg.text or ""
-        base = seg.style if seg.style is not None else RichStyle.null()
-        # Preserve existing style; only inject/replace offset for this char run.
-        meta = dict(base.meta) if base.meta else {}
-        meta["offset"] = (char_x, int(y))
-        styled = base + RichStyle(meta=meta)
-        out.append(Segment(text, styled, seg.control))
-        char_x += len(text)
-    return Strip(out, strip.cell_length)
-
-
-def _readable_selection_style(base: object, theme_style: object | None = None) -> object:
-    """Build a selection style that keeps glyphs readable.
-
-    Textual's default ``screen--selection`` often resolves to the same fg/bg
-    (or transparent fg), which paints a solid bar and hides the text.
-    Always force light text on a blue selection background, and keep offset meta.
-    """
-    from rich.style import Style as RichStyle
-
-    meta: dict = {}
-    try:
-        if base is not None and getattr(base, "meta", None):
-            meta = dict(base.meta)
-    except Exception:  # noqa: BLE001
-        meta = {}
-
-    bg = "#264F78"
-    fg = "#e8eaed"
-    try:
-        if theme_style is not None and getattr(theme_style, "bgcolor", None) is not None:
-            # Prefer theme bg when it differs from theme fg (actually visible).
-            t_bg = theme_style.bgcolor
-            t_fg = getattr(theme_style, "color", None)
-            if t_bg is not None and (t_fg is None or t_bg != t_fg):
-                bg = t_bg
-    except Exception:  # noqa: BLE001
-        pass
-
-    return RichStyle(color=fg, bgcolor=bg, meta=meta)
-
-
-def _stylize_strip_char_span(strip: object, start: int, end: int, style: object) -> object:
-    """Apply a selection paint to a character-offset span (text stays visible)."""
-    from rich.segment import Segment
-    from rich.style import Style as RichStyle
-    from textual.strip import Strip
-
-    if not isinstance(strip, Strip):
-        return strip
-    segments = list(strip)
-    if not segments:
-        return strip
-    # Character length of the rendered line.
-    total_chars = sum(len(seg.text or "") for seg in segments)
-    if total_chars <= 0:
-        return strip
-    s = max(0, min(int(start), total_chars))
-    e = total_chars if end < 0 else max(s, min(int(end), total_chars))
-    if s >= e:
-        return strip
-
-    out: list[Segment] = []
-    cursor = 0
-    for seg in segments:
-        text = seg.text or ""
-        n = len(text)
-        if n == 0:
-            out.append(seg)
-            continue
-        seg_start = cursor
-        seg_end = cursor + n
-        cursor = seg_end
-        # No overlap with [s, e)
-        if seg_end <= s or seg_start >= e:
-            out.append(seg)
-            continue
-        local_s = max(0, s - seg_start)
-        local_e = min(n, e - seg_start)
-        base = seg.style if seg.style is not None else RichStyle.null()
-        if local_s > 0:
-            out.append(Segment(text[:local_s], base, seg.control))
-        mid_text = text[local_s:local_e]
-        if mid_text:
-            # Do not use ``base + theme_style``: theme fg often equals bg.
-            simple_style = style if isinstance(style, RichStyle) else None
-            painted = _readable_selection_style(base, simple_style)
-            out.append(Segment(mid_text, painted, seg.control))
-        if local_e < n:
-            out.append(Segment(text[local_e:], base, seg.control))
-    return Strip(out, strip.cell_length)
-
-
-def _strip_plain_text(strip: object) -> str:
-    from textual.strip import Strip
-
-    if isinstance(strip, Strip):
-        return str(strip.text)
-    return ""
-
-
-class SelectableStatic(Static):
-    """Static with working mouse text selection for Rich/Group content.
-
-    Textual's default path wraps Rich renderables in ``RichVisual``, which:
-
-    1. never stamps ``meta['offset']`` (so drag-select never starts)
-    2. ignores ``RenderOptions.selection`` (so no highlight even if it did)
-
-    This base class fixes both on ``render_line``, and extracts copy text from
-    the rendered lines so offsets match what the compositor reported.
-    """
-
-    ALLOW_SELECT = True
-
-    def selectable_text(self) -> str:
-        """Logical plain text (preferred for full-block copy / last-answer)."""
-        try:
-            visual = self._render()
-        except Exception:  # noqa: BLE001
-            return ""
-        try:
-            from rich.text import Text as RichText
-
-            if isinstance(visual, RichText):
-                return str(visual.plain)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            return str(visual)
-        except Exception:  # noqa: BLE001
-            return ""
-
-    def rendered_plain_text(self) -> str:
-        """Plain text as currently painted (line-aligned with selection offsets)."""
-        try:
-            height = int(getattr(self.size, "height", 0) or 0)
-        except Exception:  # noqa: BLE001
-            height = 0
-        if height <= 0:
-            return self.selectable_text()
-        lines: list[str] = []
-        for y in range(height):
-            try:
-                # Base render without our selection paint / offset pass recursion:
-                # super().render_line already returns the Rich visual strip.
-                line = super().render_line(y)
-            except Exception:  # noqa: BLE001
-                lines.append("")
-                continue
-            lines.append(_strip_plain_text(line))
-        return "\n".join(lines).rstrip("\n")
-
-    def get_selection(self, selection: object) -> tuple[str, str] | None:
-        # SELECT_ALL → prefer logical body (cleaner markdown source).
-        start = getattr(selection, "start", "missing")
-        end = getattr(selection, "end", "missing")
-        if start is None and end is None:
-            text = self.selectable_text()
-        else:
-            text = self.rendered_plain_text()
-        if not text:
-            return None
-        extract = getattr(selection, "extract", None)
-        if not callable(extract):
-            return None
-        try:
-            extracted = extract(text)
-        except Exception:  # noqa: BLE001
-            return None
-        if extracted is None:
-            return None
-        return str(extracted), "\n"
-
-    def render_line(self, y: int) -> object:
-        from textual.strip import Strip
-
-        line = super().render_line(y)
-        if not isinstance(line, Strip):
-            return line
-        # Always stamp offsets so the compositor can resolve content_offset.
-        line = _annotate_strip_offsets(line, y)
-        if not isinstance(line, Strip):
-            return line
-        selection = self.text_selection
-        if selection is None:
-            return line
-        get_span = getattr(selection, "get_span", None)
-        if not callable(get_span):
-            return line
-        span = get_span(y)
-        if span is None:
-            return line
-        start, end = span
-        theme_style = None
-        try:
-            theme_style = self.screen.get_component_rich_style("screen--selection")
-        except Exception:  # noqa: BLE001
-            theme_style = None
-        # Paint via _readable_selection_style so fg never equals bg.
-        return _stylize_strip_char_span(line, start, end, theme_style)
 
 
 class UserTurnBlock(SelectableStatic):
@@ -1240,43 +808,6 @@ class AnswerBlock(SelectableStatic):
         self.update(Group(renderable, Text("")))
 
 
-class AnswerDivider(Static):
-    """Centered diamond rule between tool batches and the final answer."""
-
-    DEFAULT_CSS = """
-    AnswerDivider {
-        width: 1fr;
-        height: auto;
-        padding: 1 0;
-        text-align: center;
-    }
-    """
-
-    def __init__(self, width: int = 56) -> None:
-        super().__init__()
-        self._width = max(28, int(width or 56))
-        self._render_block()
-
-    def on_mount(self) -> None:
-        # Re-measure after layout so the diamond is truly panel-centered.
-        self.call_after_refresh(self._recenter)
-
-    def on_resize(self) -> None:
-        self._recenter()
-
-    def _recenter(self) -> None:
-        w = int(getattr(self.size, "width", 0) or 0)
-        if w <= 0:
-            w = int(getattr(self.container_size, "width", 0) or 0)
-        if w >= 20 and abs(w - self._width) >= 2:
-            self._width = w
-            self._render_block()
-
-    def _render_block(self) -> None:
-        rows = format_answer_divider(self._width)
-        self.update(Group(*(Text(row, style=_C_MUTED) for row in rows)))
-
-
 class ToolGroupBlock(SelectableStatic):
     """A timeline tool group with in-place collapse and preview updates."""
 
@@ -1470,508 +1001,6 @@ class ToolGroupBlock(SelectableStatic):
             return
         event.stop()
         self.toggle()
-
-
-class TextualStreamSink:
-    """StreamSink → Cursor-like transcript via CodingAgentApp.
-
-    Supports enhanced tool-item API (preferred) and legacy bulk API.
-    """
-
-    def __init__(self, app: CodingAgentApp) -> None:
-        self._app = app
-        self.streamed_answer = False
-        self.streamed_reasoning = False
-        self.answer_buf: list[str] = []
-        self.reasoning_buf: list[str] = []
-        self._open_answer: list[str] = []
-        self._open_answer_chars = 0
-        self._open_reasoning: list[str] = []
-        self._open_reasoning_chars = 0
-        self._reasoning_open = False
-        self._reasoning_started = 0.0
-        self._complete_ids: set[str] = set()
-        self._complete_texts: set[str] = set()
-        self._last_stream_push = 0.0
-        # Base interval; adaptive growth is applied in _stream_interval().
-        self._min_stream_interval = _STREAM_INTERVAL_SMALL
-        self._last_activity_push = 0.0
-        self._min_activity_interval = 0.12
-        # Subagent status flashes many nested tool events; queue + delay.
-        self._sub_activity_interval = 0.25
-        self._pending_activity: tuple[str, str, bool] | None = None
-        self._last_sub_detail = ""
-        # Enhanced tool group state.
-        self._group_items: list[ToolItem] = []
-        self._group_open = False
-        self._group_header_written = False
-        self._expanded_item_id: str | None = None
-        # Legacy fallback counters.
-        self._legacy_pending = 0
-        self._legacy_names: list[str] = []
-        self._legacy_failed = 0
-
-    def _call(self, method: str, *args: Any, **kwargs: Any) -> None:
-        fn = getattr(self._app, method)
-        try:
-            self._app.call_from_thread(fn, *args, **kwargs)
-        except RuntimeError:
-            fn(*args, **kwargs)
-
-
-    def note_usage(
-        self,
-        *,
-        turn_input: int = 0,
-        turn_output: int = 0,
-        turn_cache: int = 0,
-        last_input: int = 0,
-        last_output: int = 0,
-        last_cache: int = 0,
-    ) -> None:
-        """Push per-model-call usage to the app topbar (live)."""
-        self._call(
-            "apply_turn_usage",
-            turn_input=int(turn_input or 0),
-            turn_output=int(turn_output or 0),
-            turn_cache=int(turn_cache or 0),
-            last_input=int(last_input or 0),
-            last_output=int(last_output or 0),
-            last_cache=int(last_cache or 0),
-        )
-
-
-    @staticmethod
-    def _norm(text: str) -> str:
-        return _WS_RE.sub(" ", (text or "").strip())
-
-    def _stream_interval(self) -> float:
-        """Slow down UI pushes as live text grows to protect the event loop."""
-        base = self._min_stream_interval
-        n = max(self._open_answer_chars, self._open_reasoning_chars)
-        if n >= 12_000:
-            return max(base, _STREAM_INTERVAL_LARGE)
-        if n >= 3_000:
-            return max(base, _STREAM_INTERVAL_MED)
-        return base
-
-    def _push_stream(
-        self,
-        kind: str,
-        body: str,
-        *,
-        force: bool = False,
-        elapsed_s: float = 0.0,
-    ) -> None:
-        now = time.monotonic()
-        if not force and (now - self._last_stream_push) < self._stream_interval():
-            return
-        self._last_stream_push = now
-        # Tail-only preview keeps layout cheap; commit seals the full body.
-        self._call(
-            "set_stream",
-            kind,
-            stream_tail_preview(body),
-            elapsed_s=float(elapsed_s or 0.0),
-        )
-
-    def _push_activity(
-        self,
-        phase: str,
-        detail: str = "",
-        *,
-        reset_timer: bool = False,
-        force: bool = False,
-        min_interval: float | None = None,
-    ) -> None:
-        """Rate-limit status messages so token streams cannot flood Textual."""
-        now = time.monotonic()
-        gap = self._min_activity_interval if min_interval is None else float(min_interval)
-        if not force and (now - self._last_activity_push) < gap:
-            return
-        self._last_activity_push = now
-        self._call("set_activity", phase, detail, reset_timer)
-
-    def _flush_pending_activity(self, *, force: bool = False) -> None:
-        pending = self._pending_activity
-        if pending is None:
-            return
-        phase, detail, reset_timer = pending
-        now = time.monotonic()
-        if not force and (now - self._last_activity_push) < self._sub_activity_interval:
-            return
-        if not force and phase == "subagent" and detail == self._last_sub_detail:
-            self._pending_activity = None
-            return
-        self._pending_activity = None
-        if phase == "subagent":
-            self._last_sub_detail = detail
-        self._last_activity_push = now
-        self._call("set_activity", phase, detail, reset_timer)
-
-    def _queue_subagent_activity(
-        self,
-        detail: str,
-        *,
-        reset_timer: bool = False,
-        force: bool = False,
-    ) -> None:
-        """Coalesce + delay subagent status so nested tools stay readable."""
-        text = " ".join((detail or "").split()).strip()
-        if not text or text.startswith("ns="):
-            text = self._last_sub_detail or "子代理运行中"
-        noise = {
-            "streaming nested tokens",
-            "waiting for model",
-        }
-        # Heartbeat noise keeps sticky intent if we already have one.
-        if text in noise and self._last_sub_detail:
-            text = self._last_sub_detail
-        elif text in noise:
-            text = "子代理运行中"
-        self._pending_activity = ("subagent", text, reset_timer)
-        now = time.monotonic()
-        due = (now - self._last_activity_push) >= self._sub_activity_interval
-        if force or due or not self._last_sub_detail:
-            self._flush_pending_activity(force=True)
-
-    # -- activity --------------------------------------------------------
-
-    def activity_start(self, phase: str = "thinking", detail: str = "waiting for model") -> None:
-        self._pending_activity = None
-        if phase == "subagent":
-            self._last_sub_detail = " ".join((detail or "").split()).strip()
-        # Count "waiting for model" into the next Thought for Xs duration.
-        if (
-            (phase or "") in {"thinking", "model", "reasoning"}
-            and not self._reasoning_open
-        ):
-            self._reasoning_started = time.monotonic()
-        self._call("set_activity", phase, detail, True)
-        self._last_activity_push = time.monotonic()
-
-    def activity_update(
-        self,
-        phase: str,
-        detail: str = "",
-        *,
-        reset_timer: bool = False,
-        force: bool = False,
-    ) -> None:
-        if phase == "subagent":
-            self._queue_subagent_activity(detail, reset_timer=reset_timer, force=force)
-            return
-        if force:
-            self._flush_pending_activity(force=True)
-        else:
-            self._pending_activity = None
-        # First wait-for-model update also arms the thought clock.
-        if (
-            reset_timer
-            and (phase or "") in {"thinking", "model", "reasoning"}
-            and not self._reasoning_open
-            and not self._reasoning_started
-        ):
-            self._reasoning_started = time.monotonic()
-        self._push_activity(phase, detail, reset_timer=reset_timer, force=force)
-
-    def activity_stop(self) -> None:
-        self._pending_activity = None
-        self._last_sub_detail = ""
-        self._call("clear_stream")
-        self._call("set_activity", "idle", "ready", True)
-        self._last_activity_push = time.monotonic()
-
-    # -- reasoning -------------------------------------------------------
-
-    def write_reasoning(self, text: str) -> None:
-        if not text:
-            return
-        # New thought after a completed tool batch must not append into tools.
-        # Never seal a still-running group (e.g. parent task/subagent).
-        if self._group_open and self._group_header_written:
-            if not any(it.status == "running" for it in self._group_items):
-                self._finalize_open_group()
-        if not self._reasoning_open:
-            # Prefer clock armed at activity_start (waiting for model).
-            if not self._reasoning_started:
-                self._reasoning_started = time.monotonic()
-            self._reasoning_open = True
-            self._open_reasoning.clear()
-            self._open_reasoning_chars = 0
-        self.streamed_reasoning = True
-        self._open_reasoning.append(text)
-        self._open_reasoning_chars += len(text)
-        self.reasoning_buf.append(text)
-        elapsed = max(0.0, time.monotonic() - self._reasoning_started)
-        # Live preview mounts in #log via set_stream (rate-limit + tail).
-        now = time.monotonic()
-        if (now - self._last_stream_push) >= self._stream_interval():
-            body = "".join(self._open_reasoning)
-            self._push_stream("reasoning", body, force=True, elapsed_s=elapsed)
-        self._push_activity("thinking", f"{elapsed:.1f}s")
-
-    def close_reasoning(self) -> None:
-        if not self._reasoning_open:
-            return
-        body = "".join(self._open_reasoning).strip()
-        self._open_reasoning.clear()
-        self._open_reasoning_chars = 0
-        self._reasoning_open = False
-        elapsed = (
-            max(0.0, time.monotonic() - self._reasoning_started)
-            if self._reasoning_started
-            else 0.0
-        )
-        self._reasoning_started = 0.0
-        # Seal the in-log ThoughtBlock; avoid clear before commit.
-        if body:
-            self._call("commit_thought", elapsed, body)
-        else:
-            self._call("clear_stream")
-
-    # -- answer ----------------------------------------------------------
-
-    def write_answer_token(self, text: str, *, msg_id: str | None = None) -> None:
-        if not text:
-            return
-        if msg_id and msg_id in self._complete_ids:
-            return
-        # Agent loop: thought → (optional answer) → tools → …  Seal thought first.
-        self.close_reasoning()
-        if self._group_open and self._group_header_written:
-            if not any(it.status == "running" for it in self._group_items):
-                self._finalize_open_group()
-        self.streamed_answer = True
-        self._open_answer.append(text)
-        self._open_answer_chars += len(text)
-        # Join only when the rate limiter actually allows a UI push.  Building
-        # the full string on every token is O(n^2) CPU before layout even runs.
-        now = time.monotonic()
-        if (now - self._last_stream_push) >= self._stream_interval():
-            body = "".join(self._open_answer)
-            self._push_stream("answer", body, force=True)
-        self._push_activity("writing", f"{self._open_answer_chars}c")
-
-    def write_answer_complete(self, text: str, *, msg_id: str | None = None) -> None:
-        body = (text or "").strip()
-        if not body:
-            return
-        key = self._norm(body)
-        if msg_id and msg_id in self._complete_ids:
-            return
-        if key in self._complete_texts:
-            return
-        # Intermediate assistant messages also sit between thought/tools rounds.
-        self.close_reasoning()
-        if self._group_open and self._group_header_written:
-            if not any(it.status == "running" for it in self._group_items):
-                self._finalize_open_group()
-        if msg_id:
-            self._complete_ids.add(msg_id)
-        self._complete_texts.add(key)
-        self.streamed_answer = True
-        self._open_answer.clear()
-        self._open_answer_chars = 0
-        self.answer_buf.append(body)
-        # Seal the in-log AnswerBlock mounted by set_stream.
-        self._call("commit_answer", body)
-
-    def finalize_line(self) -> None:
-        self.close_reasoning()
-        if self._open_answer:
-            body = "".join(self._open_answer).strip()
-            self._open_answer.clear()
-            self._open_answer_chars = 0
-            if body:
-                key = self._norm(body)
-                if key not in self._complete_texts:
-                    self._complete_texts.add(key)
-                    self.answer_buf.append(body)
-                    self.streamed_answer = True
-                    self._call("commit_answer", body)
-            else:
-                self._call("clear_stream")
-
-    # -- tools: enhanced item API ----------------------------------------
-
-    def _finalize_open_group(self, *, force: bool = False) -> None:
-        """Seal the current visual tool group and release sink state."""
-        if not self._group_open:
-            return
-        if not force and any(it.status == "running" for it in self._group_items):
-            return
-        if self._group_items:
-            header = summarize_items(self._group_items, running=False)
-            failed = sum(1 for it in self._group_items if it.error)
-            if failed:
-                header = f"{header}  ({failed} failed)"
-            self._call("update_tool_group_header", header)
-        if self._group_header_written:
-            self._call("close_tool_group")
-        self._group_items.clear()
-        self._group_open = False
-        self._group_header_written = False
-        self._expanded_item_id = None
-
-    def tool_calls_started(self, calls: list[Any], *, parallel: bool) -> None:
-        """Open a tool group shell; item API fills details right after."""
-        del parallel
-        self._call("clear_stream")
-        # One stream batch == one visual group.  If a previous batch was not
-        # closed cleanly, seal it before starting the next header.
-        if self._group_open and self._group_items:
-            self._finalize_open_group()
-        self._group_items.clear()
-        self._group_open = True
-        self._group_header_written = False
-        self._expanded_item_id = None
-        self._legacy_pending = len(calls)
-        self._legacy_failed = 0
-        from synapse.ui.stream import _tool_call_name
-        from synapse.ui.timeline import summarize_categories
-
-        self._legacy_names = [_tool_call_name(c) for c in calls]
-        summary = summarize_categories(self._legacy_names, running=True)
-        self._call("set_activity", "tools", summary, False)
-
-    def tool_item_started(self, item: ToolItem) -> None:
-        if not self._group_open:
-            self._group_open = True
-            self._group_header_written = False
-            self._group_items.clear()
-            self._expanded_item_id = None
-        # Replace same-id early item if args/label improved.
-        replaced = False
-        for i, existing in enumerate(self._group_items):
-            if existing.id == item.id:
-                self._group_items[i] = item
-                replaced = True
-                break
-        if not replaced:
-            self._group_items.append(item)
-        if not self._group_header_written:
-            header = summarize_items(self._group_items, running=True)
-            # Expand while running so new rows are visible immediately.
-            self._call("write_tool_group_header", header, collapsed=False)
-            self._group_header_written = True
-        else:
-            # Refresh header counts as items arrive.
-            header = summarize_items(self._group_items, running=True)
-            self._call("update_tool_group_header", header)
-        self._call("write_tool_item", item)
-        self._call("set_activity", "tools", item.label, False)
-
-    def tool_item_updated(self, item: ToolItem) -> None:
-        """Refresh label/path after streaming args complete."""
-        for i, existing in enumerate(self._group_items):
-            if existing.id == item.id:
-                self._group_items[i] = item
-                break
-        header = summarize_items(self._group_items, running=True)
-        self._call("update_tool_group_header", header)
-        self._call("write_tool_item", item)
-        self._call("set_activity", "tools", item.label, False)
-
-    def tool_item_finished(
-        self,
-        item_id: str,
-        *,
-        status: str,
-        preview: str | None = None,
-        error: bool = False,
-    ) -> None:
-        _side_effect = False
-        for it in self._group_items:
-            if it.id != item_id:
-                continue
-            it.status = "error" if error else "ok"
-            it.error = error
-            # Never wipe a rich todo checklist with a bland tool-result string.
-            if preview is not None:
-                if is_todo_tool(it.name) and it.preview:
-                    # Prefer existing structured checklist if the new preview is weaker.
-                    old_rows = parse_todo_preview_lines(it.preview)
-                    new_rows = parse_todo_preview_lines(preview)
-                    if old_rows and len(new_rows) < len(old_rows):
-                        preview = it.preview
-                    else:
-                        it.preview = preview
-                else:
-                    it.preview = preview
-            # Edit/write/execute tools mutate the workspace; refresh git chrome.
-            if it.category in {"edit", "run"} and not error:
-                _side_effect = True
-            break
-        # Flip running glyph immediately; keep non-todo payload off transcript.
-        self._call(
-            "update_tool_item",
-            item_id,
-            status=("error" if error else "ok"),
-            error=error,
-            preview=preview,
-        )
-
-        still = sum(1 for it in self._group_items if it.status == "running")
-        header = summarize_items(self._group_items, running=still > 0)
-        self._call("update_tool_group_header", header)
-        if still == 0:
-            self._call("set_activity", "tools", header, False)
-
-        if _side_effect:
-            self._call("_refresh_git_chrome")
-
-    def tool_group_closed(self, group_id: str) -> None:
-        """Close one stream tool batch as its own visual group."""
-        del group_id
-        self._finalize_open_group(force=True)
-
-    def turn_finished(self) -> None:
-        """Seal any leftover open group at end of one turn."""
-        self._finalize_open_group(force=True)
-
-    def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:
-        """Legacy bulk API — used when item events are not emitted."""
-        # Nested subagent traffic never paints its own parent timeline groups.
-        if sub:
-            # Prefer short human status; avoid dumping raw result previews.
-            detail = (name or "tool").strip()
-            st = (status or "").strip()
-            if st.lower().startswith("error"):
-                detail = f"{detail} 失败"
-            self._queue_subagent_activity(detail, force=True)
-            return
-        # If we already have items, legacy results are no-ops (item API handles).
-        if self._group_items:
-            return
-        # No open legacy batch → do not invent empty "0 tools" groups.
-        if not self._legacy_names and self._legacy_pending <= 0:
-            return
-        self._legacy_pending = max(0, self._legacy_pending - 1)
-        if status.lower().startswith("error"):
-            self._legacy_failed += 1
-            self._call("append_event", f"✗ {name}  {status}", "red")
-        if self._legacy_pending > 0:
-            from synapse.ui.timeline import summarize_categories
-
-            live = summarize_categories(self._legacy_names, running=True)
-            self._call("set_activity", "tools", live, False)
-            return
-        from synapse.ui.timeline import summarize_categories
-
-        if not self._legacy_names:
-            self._legacy_failed = 0
-            return
-        summary = summarize_categories(self._legacy_names, running=False)
-        if self._legacy_failed:
-            summary = f"{summary}  ({self._legacy_failed} failed)"
-        self._call("write_tool_group_header", summary, collapsed=True)
-        self._call("close_tool_group")
-        self._legacy_names.clear()
-        self._legacy_failed = 0
-
-    def info(self, message: str) -> None:
-        self._call("append_meta", message)
 
 
 class CodingAgentApp(App[None]):
@@ -4219,7 +3248,7 @@ class CodingAgentApp(App[None]):
             width = int(getattr(self.size, "width", 0) or 0)
         # Subtract log padding (0 1) so the rule centers in the content box.
         usable = max(28, (width or 56) - 2)
-        self._mount_block(AnswerDivider(usable))
+        self._mount_block(AnswerDivider(usable, muted_color=lambda: _C_MUTED))
 
     # -- tool group rendering (live panel) --------------------------------
 
