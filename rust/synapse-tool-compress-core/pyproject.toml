@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "synapse-tool-compress-core"
-version = "0.1.0"
+version = "0.1.2"
 description = "Deterministic native compression algorithms for Synapse tool output"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

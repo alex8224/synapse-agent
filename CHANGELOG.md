@@ -7,6 +7,19 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.2
+
+### 修复
+
+- 修复 `synapse-tool-compress-core` manylinux2014 wheel 中 tree-sitter 的 `le16toh` / `be16toh` 未解析符号，确保原生扩展可导入。
+
+### 工程改进
+
+- 原生 wheel 构建固定 manylinux2014 兼容目标，并增加安装导入冒烟测试。
+- 同步 Rust crate 与 Python wheel 的发布版本为 `0.1.2`。
+
+---
+
 ## v0.1.11
 
 ### 新功能
