@@ -143,7 +143,7 @@ class Settings(BaseSettings):
         default="sqlite", validation_alias="CHECKPOINT_BACKEND"
     )
     checkpoint_path: Path = Field(
-        default=Path(".coding-agent/checkpoints.sqlite"),
+        default=Path(".synapse/checkpoints.sqlite"),
         validation_alias="CHECKPOINT_PATH",
     )
     sessions_path: Path | None = Field(default=None, validation_alias="SESSIONS_PATH")
@@ -151,7 +151,7 @@ class Settings(BaseSettings):
     # Project memory / skills (paths relative to project root or absolute)
     enable_memory: bool = Field(default=False, validation_alias="AGENT_ENABLE_MEMORY")
     memory_paths: list[str] = Field(
-        default_factory=lambda: ["MEMORY.md", ".coding-agent/MEMORY.md"]
+        default_factory=lambda: ["MEMORY.md", ".synapse/MEMORY.md"]
     )
     skills_paths: list[str] = Field(default_factory=lambda: ["skills"])
 
@@ -430,11 +430,11 @@ def load_settings(**overrides: Any) -> Settings:
         if "checkpoint_path" in overrides and overrides["checkpoint_path"] is not None:
             settings.checkpoint_path = Path(overrides["checkpoint_path"]).expanduser().resolve()
 
-    # Default state files live under project .coding-agent when possible.
+    # Default state files live under project .synapse when possible.
     proj = project_config_dir(settings.workspace)
     path_updates: dict[str, Any] = {}
     try:
-        default_ckpt = (Path.cwd() / ".coding-agent" / "checkpoints.sqlite").resolve()
+        default_ckpt = (Path.cwd() / ".synapse" / "checkpoints.sqlite").resolve()
     except Exception:  # noqa: BLE001
         default_ckpt = None
     if default_ckpt is not None and settings.checkpoint_path == default_ckpt:

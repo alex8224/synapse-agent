@@ -18,6 +18,7 @@ from synapse.fs_permissions import build_filesystem_permissions
 from synapse.harness import apply_harness_exclusions
 from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs, load_mcp_tools
 from synapse.middleware import (
+    build_compact_tool_descriptions,
     build_intent_schema_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
@@ -393,6 +394,9 @@ def build_coding_agent(
     # Strip redundant prompt blocks injected by deepagents built-in middleware
     # (TodoList, Filesystem, Skills) that duplicate tool definitions.
     middleware.append(build_strip_redundant_prompt_blocks())
+    # Replace verbose upstream tool descriptions with concise alternatives
+    # to reduce tool-schema token overhead (~4K -> ~200 chars per tool).
+    middleware.append(build_compact_tool_descriptions())
     middleware.append(build_model_request_compression_middleware(output_repository))
 
     if progress is not None:

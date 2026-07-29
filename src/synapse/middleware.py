@@ -664,3 +664,139 @@ def build_strip_redundant_prompt_blocks():
         return request.override(system_message=new_msg)
 
     return _dual_wrap_model_call(name="strip_redundant_prompt", apply=_apply)
+
+
+# ---------------------------------------------------------------------------
+#  Compact tool descriptions — replace verbose upstream descriptions with
+#  concise alternatives to reduce prompt-cache-polluting tool-schema tokens.
+# ---------------------------------------------------------------------------
+
+# Per-tool short descriptions.  The upstream LangChain / deepagents defaults
+# embed full-blown usage guides inside tool descriptions (3-13 KB each),
+# pushing tool-schema tokens to ~134K per request.  Replacing them with
+# one-sentence summaries keeps the essential signal while saving ~30K+ tokens
+# of schema overhead (most of which is cached, but shorter schemas still
+# reduce bandwidth and cache-eviction pressure).
+_COMPACT_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "write_todos": (
+        "Create and manage a structured task list for your current work session. "
+        "Each todo has content and status: pending, in_progress, or completed. "
+        "Only use for complex multi-step tasks (3+ steps); skip for trivial tasks."
+    ),
+    "execute": (
+        "Execute a shell command in a sandbox environment. "
+        "Returns combined stdout/stderr with exit code. "
+        "Use timeout=SECONDS for long commands. "
+        "Join multiple commands with && or ; (not newlines). "
+        "Use glob/grep/read_file instead of find/grep/cat."
+    ),
+    "read_file": (
+        "Read a file from the filesystem and return content with cat -n line numbers. "
+        "Use pagination (offset/limit) for large files: read_file(path, offset=0, limit=100). "
+        "Always read a file before editing it. "
+        "Supports images, audio, video, and PDF via multimodal reads."
+    ),
+}
+
+
+def build_compact_tool_descriptions(
+    overrides: dict[str, str] | None = None,
+) -> AgentMiddleware:
+    """Build middleware that replaces verbose upstream tool descriptions.
+
+    Args:
+        overrides: Additional per-tool short descriptions merged on top of
+            the built-in ``_COMPACT_TOOL_DESCRIPTIONS`` map.
+    """
+    descriptions = dict(_COMPACT_TOOL_DESCRIPTIONS)
+    if overrides:
+        descriptions.update(overrides)
+
+    if not descriptions:
+        return _dual_wrap_model_call(name="compact_tool_desc_noop", apply=lambda r: r)
+
+    _compact_tool_desc_saved_tokens = contextvars.ContextVar[int](
+        "compact_tool_desc_saved_tokens", default=0
+    )
+
+    def _apply(request):  # type: ignore[no-untyped-def]
+        tools = getattr(request, "tools", None)
+        if not tools:
+            return request
+
+        saved_chars = 0
+        changed = False
+        new_tools: list[Any] = []
+
+        for tool in tools:
+            if _is_tool_dict(tool):
+                name, updated, chars = _compact_dict_tool(tool, descriptions)
+            elif hasattr(tool, "name") and hasattr(tool, "description"):
+                name, updated, chars = _compact_base_tool(tool, descriptions)
+            else:
+                new_tools.append(tool)
+                continue
+
+            if updated:
+                changed = True
+                saved_chars += chars
+                new_tools.append(updated)
+            else:
+                new_tools.append(tool)
+
+        if not changed:
+            return request
+
+        _compact_tool_desc_saved_tokens.set(
+            max(0, (saved_chars + 3) // 4)
+        )
+        return request.override(tools=new_tools)
+
+    return _dual_wrap_model_call(
+        name="compact_tool_descriptions", apply=_apply
+    )
+
+
+def _is_tool_dict(obj: Any) -> bool:
+    return isinstance(obj, dict) and (
+        "function" in obj or "name" in obj
+    )
+
+
+def _compact_dict_tool(
+    tool: dict[str, Any],
+    descriptions: dict[str, str],
+) -> tuple[str, Any, int]:
+    """Replace description for OpenAI-function-format tools."""
+    # OpenAI format: {"type": "function", "function": {"name": "...", "description": "..."}}
+    fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    name = str(fn.get("name", ""))
+    short = descriptions.get(name)
+    if short is None:
+        return name, None, 0
+    old_desc = str(fn.get("description", ""))
+    if old_desc == short:
+        return name, None, 0
+    saved = max(0, len(old_desc.encode("utf-8")) - len(short.encode("utf-8")))
+    if isinstance(tool.get("function"), dict):
+        new_fn = dict(fn, description=short)
+        return name, {**tool, "function": new_fn}, saved
+    else:
+        return name, {**tool, "description": short}, saved
+
+
+def _compact_base_tool(
+    tool: Any,
+    descriptions: dict[str, str],
+) -> tuple[str, Any, int]:
+    """Replace description for LangChain BaseTool objects."""
+    name = getattr(tool, "name", "")
+    short = descriptions.get(name)
+    if short is None:
+        return name, None, 0
+    old_desc = getattr(tool, "description", "")
+    if old_desc == short:
+        return name, None, 0
+    saved = max(0, len(old_desc.encode("utf-8")) - len(short.encode("utf-8")))
+    new_tool = tool.model_copy(update={"description": short})
+    return name, new_tool, saved
