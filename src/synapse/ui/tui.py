@@ -42,6 +42,7 @@ from synapse.content.multimodal import (
 )
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.sessions.session_recap import SessionRecapController
+from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.bottombar import (
@@ -2192,7 +2193,7 @@ class CodingAgentApp(App[None]):
         Binding("f6", "dialog_safety", "Safety", show=False),
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
-        Binding("f9", "dialog_sessions_delete", "Delete Sessions", show=False),
+        Binding("f9", "dialog_subagents", "Subagents", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2228,6 +2229,9 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_theme_designer(self) -> None:
         self._open_theme_designer()
+
+    def action_dialog_subagents(self) -> None:
+        self._open_subagent_monitor()
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -2282,6 +2286,7 @@ class CodingAgentApp(App[None]):
         self._active_turn_agent: Any | None = None
         self._active_turn_thread_id: str | None = None
         self._active_steer_queue: SteerQueue | None = None
+        self._subagent_monitor = SubagentMonitor()
         self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
@@ -3198,9 +3203,9 @@ class CodingAgentApp(App[None]):
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
-                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions · F9 delete"
+                    "Tab complete · / · Alt+C copy · F2 model · F4 sessions · F9 agents"
                 ),
-                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy",
+                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy · F9 agents",
                 model=lambda: model_status_label(self.settings),
                 mcp=self._mcp_label,
             ),
@@ -4957,6 +4962,11 @@ class CodingAgentApp(App[None]):
             self._on_mcp_dialog_done,
         )
 
+    def _open_subagent_monitor(self) -> None:
+        from synapse.ui.dialogs import SubagentMonitorDialog
+
+        self.push_screen(SubagentMonitorDialog(self._subagent_monitor))
+
     def _on_mcp_dialog_done(self, result: object) -> None:
         if result is None:
             return
@@ -5259,6 +5269,9 @@ class CodingAgentApp(App[None]):
         if cmd == "/mcp" and len(parts) == 1:
             self._open_mcp_dialog()
             return True
+        if cmd in {"/subagents", "/agents"} and len(parts) == 1:
+            self._open_subagent_monitor()
+            return True
         if cmd == "/safety" and len(parts) == 1:
             self._open_safety_dialog()
             return True
@@ -5429,6 +5442,7 @@ class CodingAgentApp(App[None]):
         self._live_tool_items = []
         self._live_tool_summary = ""
         self._live_tool_block = None
+        self._subagent_monitor.reset()
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
@@ -5458,7 +5472,10 @@ class CodingAgentApp(App[None]):
         self._begin_turn_usage()
         sink = TextualStreamSink(self)
         config = {
-            "configurable": {"thread_id": turn_thread_id},
+            "configurable": {
+                "thread_id": turn_thread_id,
+                MONITOR_CONFIG_KEY: self._subagent_monitor.monitor_id,
+            },
             "max_concurrency": self.settings.max_concurrency,
         }
         provider = provider_from_settings(self.settings)
@@ -5567,7 +5584,10 @@ class CodingAgentApp(App[None]):
         # Allow Esc to abort resume stream as well.
         self._cancel_event = threading.Event()
         config = {
-            "configurable": {"thread_id": turn_thread_id},
+            "configurable": {
+                "thread_id": turn_thread_id,
+                MONITOR_CONFIG_KEY: self._subagent_monitor.monitor_id,
+            },
             "max_concurrency": self.settings.max_concurrency,
         }
         try:
