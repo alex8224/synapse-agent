@@ -7,6 +7,14 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.14
+
+### 工程改进
+
+- PyPI 项目页增加主页、源代码仓库、问题追踪和变更日志链接。
+
+---
+
 ## v0.1.13
 
 ### 新功能
