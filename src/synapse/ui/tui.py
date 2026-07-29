@@ -2120,6 +2120,7 @@ class CodingAgentApp(App[None]):
         Binding("f6", "dialog_safety", "Safety", show=False),
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
+        Binding("f9", "dialog_sessions_delete", "Delete Sessions", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2139,6 +2140,9 @@ class CodingAgentApp(App[None]):
         self._open_theme_dialog()
 
     def action_dialog_sessions(self) -> None:
+        self._open_session_dialog(["switch"])
+
+    def action_dialog_sessions_delete(self) -> None:
         self._open_session_dialog(["session", "multi_delete"])
 
     def action_dialog_mcp(self) -> None:
@@ -3118,7 +3122,7 @@ class CodingAgentApp(App[None]):
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
-                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions"
+                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions · F9 delete"
                 ),
                 busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy",
                 model=lambda: model_status_label(self.settings),
