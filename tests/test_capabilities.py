@@ -583,3 +583,27 @@ def test_default_subagents_optional_models(tmp_path: Path):
     assert len(subs) >= 1
     names = {s.get("name") for s in subs}
     assert "tester" in names
+
+
+def test_codex_oauth_middleware_only_applies_to_inherited_subagent_models() -> None:
+    subs = build_default_subagents(
+        enabled=True,
+        tester_model="openai:explicit",
+        inherited_openai_oauth=True,
+    )
+    assert subs is not None
+    by_name = {str(spec["name"]): spec for spec in subs}
+
+    def has_oauth_compat(spec: dict[str, object]) -> bool:
+        return any(
+            middleware.__class__.__name__ == "_OpenAIOAuthCompatMiddleware"
+            for middleware in spec.get("middleware", [])  # type: ignore[union-attr]
+        )
+
+    assert has_oauth_compat(by_name["researcher"])
+    assert has_oauth_compat(by_name["reviewer"])
+    assert not has_oauth_compat(by_name["tester"])
+
+    ordinary = build_default_subagents(enabled=True, inherited_openai_oauth=False)
+    assert ordinary is not None
+    assert not any(has_oauth_compat(spec) for spec in ordinary)

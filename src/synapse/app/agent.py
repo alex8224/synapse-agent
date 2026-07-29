@@ -252,6 +252,7 @@ def build_coding_agent(
             tool_output_disabled_types=settings.tool_output_disabled_types,
             tool_output_transform_plugins=settings.tool_output_transform_plugins,
             enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
+            inherited_openai_oauth=getattr(model, "_synapse_openai_oauth", False) is True,
         )
     # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
     _dag_mw: Any = None
@@ -446,6 +447,14 @@ def build_coding_agent(
     # to reduce tool-schema token overhead (~4K -> ~200 chars per tool).
     middleware.append(build_compact_tool_descriptions())
     middleware.append(build_model_request_compression_middleware(output_repository))
+    # Must be innermost so no later middleware can reintroduce unsupported Codex
+    # roles or DeepSeek-specific request fields after this final adaptation.
+    if getattr(model, "_synapse_openai_oauth", False) is True:
+        from synapse.integrations.openai_oauth_middleware import (
+            build_openai_oauth_compat_middleware,
+        )
+
+        middleware.append(build_openai_oauth_compat_middleware())
 
     if progress is not None:
         progress("compiling agent graph")

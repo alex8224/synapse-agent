@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from deepagents.middleware.summarization import compute_summarization_defaults
 
 from synapse.models_registry import (
@@ -45,6 +46,124 @@ def test_profiles_from_mapping_reads_context_window() -> None:
     assert "temperature" in prof.extra
 
 
+def test_global_and_profile_headers_merge_with_profile_override() -> None:
+    reg = _profiles_from_mapping(
+        {
+            "default": "main",
+            "headers": {"User-Agent": "global/1", "X-Global": "one"},
+            "models": {
+                "main": {
+                    "model": "openai:test",
+                    "headers": {"user-agent": "model/1", "X-Model": "two"},
+                }
+            },
+        }
+    )
+    model = SimpleNamespace(profile=None)
+    with (
+        patch(
+            "synapse.integrations.http_clients.build_openai_async_http_client",
+            return_value=object(),
+        ),
+        patch("synapse.models.registry.init_chat_model", return_value=model) as init,
+    ):
+        reg.build_chat_model("main", fallback_api_key="key")
+
+    _, kwargs = init.call_args
+    assert kwargs["default_headers"] == {
+        "user-agent": "model/1",
+        "X-Global": "one",
+        "X-Model": "two",
+    }
+
+
+def test_profiles_from_mapping_reads_openai_oauth_auth() -> None:
+    reg = _profiles_from_mapping(
+        {"default": "codex", "models": {"codex": {"model": "openai:gpt-5", "auth": "OpenAI_OAuth"}}}
+    )
+    assert reg.get("codex").auth == "openai_oauth"
+
+
+def test_oauth_profile_uses_codex_backend_and_account_header() -> None:
+    reg = ModelRegistry(
+        profiles={
+            "codex": ModelProfile(
+                name="codex",
+                model="openai:gpt-5",
+                auth="openai_oauth",
+                extra={"extra_body": {"thinking": {"type": "enabled"}, "keep": "extra"}},
+                extra_body={"thinking": {"type": "disabled"}, "keep_profile": True},
+            )
+        },
+        default="codex",
+    )
+    model = SimpleNamespace(profile=None)
+    provider = SimpleNamespace(access_token=lambda: "oauth-access", account_id=lambda: "acct-123")
+
+    with (
+        patch("synapse.integrations.openai_oauth.OpenAIOAuthTokenProvider", return_value=provider),
+        patch(
+            "synapse.integrations.http_clients.build_openai_async_http_client",
+            return_value=object(),
+        ),
+        patch("synapse.models.registry.init_chat_model", return_value=model) as init,
+    ):
+        reg.build_chat_model("codex")
+
+    _, kwargs = init.call_args
+    assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert kwargs["default_headers"]["ChatGPT-Account-Id"] == "acct-123"
+    assert kwargs["default_headers"]["originator"] == "synapse"
+    assert kwargs["use_responses_api"] is True
+    assert kwargs["store"] is False
+    assert kwargs["extra_body"] == {"keep": "extra", "keep_profile": True}
+    assert kwargs["reasoning_effort"] == "high"
+    assert model._synapse_openai_oauth is True
+
+
+def test_oauth_profile_requires_chatgpt_account_id() -> None:
+    reg = ModelRegistry(
+        profiles={
+            "codex": ModelProfile(name="codex", model="openai:gpt-5", auth="openai_oauth")
+        },
+        default="codex",
+    )
+    provider = SimpleNamespace(access_token=lambda: "oauth-access", account_id=lambda: None)
+
+    with patch("synapse.integrations.openai_oauth.OpenAIOAuthTokenProvider", return_value=provider):
+        with pytest.raises(ValueError, match="ChatGPT-Account-Id"):
+            reg.build_chat_model("codex")
+
+
+def test_oauth_profile_ignores_configured_base_url() -> None:
+    reg = ModelRegistry(
+        profiles={
+            "codex": ModelProfile(
+                name="codex",
+                model="openai:gpt-5",
+                auth="openai_oauth",
+                base_url="https://untrusted.example/v1",
+            )
+        },
+        default="codex",
+    )
+    model = SimpleNamespace(profile=None)
+    provider = SimpleNamespace(access_token=lambda: "oauth-access", account_id=lambda: "acct-123")
+
+    with (
+        patch("synapse.integrations.openai_oauth.OpenAIOAuthTokenProvider", return_value=provider),
+        patch(
+            "synapse.integrations.http_clients.build_openai_async_http_client",
+            return_value=object(),
+        ),
+        patch("synapse.models.registry.init_chat_model", return_value=model) as init,
+    ):
+        reg.build_chat_model("codex", fallback_base_url="https://also-untrusted.example/v1")
+
+    _, kwargs = init.call_args
+    assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
 def test_merge_prefers_override_context_window() -> None:
     base = ModelProfile(name="p", model="openai:a", context_window=1000)
     over = ModelProfile(name="p", model="openai:b", context_window=2000)
@@ -83,6 +202,7 @@ def test_build_chat_model_stamps_profile_for_summarization() -> None:
 
     assert out is fake
     assert out.profile == {"max_input_tokens": 128000}
+    assert out._synapse_openai_oauth is False
     defaults = compute_summarization_defaults(out)
     assert defaults["trigger"] == ("fraction", 0.85)
     assert defaults["keep"] == ("fraction", 0.10)

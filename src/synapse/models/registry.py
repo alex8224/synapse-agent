@@ -83,6 +83,8 @@ class ModelRegistry:
 
     profiles: dict[str, ModelProfile]
     default: str
+    # Shared OpenAI-compatible request headers. Profile headers take precedence.
+    headers: dict[str, str] = field(default_factory=dict)
     # Allowed thinking levels for the session (/model thinking ...).
     thinking_levels: list[str] = field(default_factory=default_thinking_levels)
     # Optional global default when a profile omits thinking config.
@@ -157,9 +159,36 @@ class ModelRegistry:
         profile = self.get(name)
         kwargs: dict[str, Any] = dict(profile.extra or {})
         model_name = profile.model
+        configured_headers = _merge_headers(self.headers, profile.headers)
 
         api_key = profile.resolved_api_key() or fallback_api_key
         base_url = profile.base_url or fallback_base_url
+        oauth_provider = None
+        oauth_headers: dict[str, str] = {}
+        if profile.auth == "openai_oauth":
+            if not model_name.startswith("openai:"):
+                raise ValueError("auth=openai_oauth requires an openai: model profile")
+            from synapse.integrations.openai_oauth import (
+                OPENAI_CODEX_BASE_URL,
+                OpenAIOAuthTokenProvider,
+            )
+
+            oauth_provider = OpenAIOAuthTokenProvider()
+            # Resolve once so a missing/expired login is reported during model startup,
+            # and preserve the account id required by the ChatGPT Codex backend.
+            api_key = oauth_provider.access_token()
+            # OAuth grants are only valid for the first-party Codex backend.
+            # Never inherit profile/global base_url: doing so could leak the bearer
+            # token to a project-configured third-party endpoint.
+            base_url = OPENAI_CODEX_BASE_URL
+            account_id = oauth_provider.account_id()
+            if not account_id:
+                raise ValueError(
+                    "OpenAI Codex OAuth credentials are missing ChatGPT-Account-Id; "
+                    "run: synapse auth openai login"
+                )
+            oauth_headers["ChatGPT-Account-Id"] = account_id
+            oauth_headers["originator"] = "synapse"
 
         if enable_thinking is None:
             resolved_enable = (
@@ -194,9 +223,20 @@ class ModelRegistry:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:
                 kwargs["api_key"] = api_key
-            kwargs.setdefault("use_responses_api", bool(websocket))
-            if websocket:
+            # Later sources override earlier sources by HTTP header name.
+            # OAuth headers are protocol credentials and cannot be overridden by
+            # configuration; custom fingerprint headers remain otherwise unrestricted.
+            headers = _merge_headers(
+                dict(kwargs.get("default_headers") or {}), configured_headers, oauth_headers
+            )
+            if headers:
+                kwargs["default_headers"] = headers
+            kwargs.setdefault("use_responses_api", bool(websocket) or oauth_provider is not None)
+            if websocket or oauth_provider is not None:
                 kwargs["use_responses_api"] = True
+            if oauth_provider is not None:
+                # The first-party Codex backend rejects persisted Responses.
+                kwargs["store"] = False
             kwargs.setdefault("streaming", True)
             # Override langchain-openai default 120s silence killer unless profile set it.
             if "stream_chunk_timeout" not in kwargs:
@@ -209,12 +249,25 @@ class ModelRegistry:
             kwargs["model_kwargs"] = model_kwargs
 
             # Thinking / reasoning level + optional user extra_body merge
-            think_kwargs = deepseek_thinking_kwargs(
-                enabled=bool(resolved_enable),
-                reasoning_effort=str(resolved_effort or "high"),
+            # Codex OAuth uses OpenAI Responses semantics. Never send the
+            # DeepSeek-compatible `extra_body.thinking` extension to that backend.
+            think_kwargs = (
+                {"reasoning_effort": resolved_effort}
+                if oauth_provider is not None and resolved_enable
+                else {}
+                if oauth_provider is not None
+                else deepseek_thinking_kwargs(
+                    enabled=bool(resolved_enable),
+                    reasoning_effort=str(resolved_effort or "high"),
+                )
             )
             extra_body = dict(think_kwargs.get("extra_body") or {})
             user_body = dict(profile.extra_body or {})
+            if oauth_provider is not None:
+                # Defense in depth: users may have supplied this extension through
+                # profile.extra/default extra_body as well as profile.extra_body.
+                extra_body.pop("thinking", None)
+                user_body.pop("thinking", None)
             if user_body:
                 # Deep merge one level for thinking key if both present
                 if "thinking" in extra_body and isinstance(user_body.get("thinking"), dict):
@@ -230,6 +283,8 @@ class ModelRegistry:
             # Always set extra_body so disable path works
             existing_body = dict(kwargs.get("extra_body") or {})
             existing_body.update(extra_body)
+            if oauth_provider is not None:
+                existing_body.pop("thinking", None)
             kwargs["extra_body"] = existing_body
             # Build an async-only OpenAI path. An async API-key callable tells
             # ChatOpenAI not to construct its otherwise eager sync OpenAI client.
@@ -243,6 +298,10 @@ class ModelRegistry:
             )
 
             async def _async_api_key() -> str:
+                if oauth_provider is not None:
+                    import asyncio
+
+                    return await asyncio.to_thread(oauth_provider.access_token)
                 return str(api_key or "")
 
             kwargs["api_key"] = _async_api_key
@@ -300,6 +359,7 @@ class ModelRegistry:
             chat_model._coding_http_async_client = async_client
             chat_model._coding_async_only = True
             chat_model._coding_websocket = bool(websocket)
+            chat_model._synapse_openai_oauth = oauth_provider is not None
             if websocket:
                 from synapse.runtime.async_runtime import get_async_runtime
 
@@ -307,10 +367,45 @@ class ModelRegistry:
         return apply_context_window_to_model(chat_model, profile.context_window)
 
 
+def _merge_headers(*sources: dict[str, str]) -> dict[str, str]:
+    """Merge headers case-insensitively while keeping the latest spelling/value."""
+    merged: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for source in sources:
+        for name, value in source.items():
+            normalized = name.casefold()
+            if previous := names.get(normalized):
+                merged.pop(previous, None)
+            names[normalized] = name
+            merged[name] = value
+    return merged
+
+
+def _parse_headers(value: Any, *, field_name: str) -> dict[str, str]:
+    """Validate JSON request headers and expand environment placeholders in values."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object of string headers")
+    headers: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        name = str(raw_name).strip()
+        if not name or any(char in name for char in "\r\n:"):
+            raise ValueError(f"{field_name} contains an invalid header name")
+        if not isinstance(raw_value, str):
+            raise ValueError(f"{field_name}.{name} must be a string")
+        resolved = str(expand_env_string(raw_value)).strip()
+        if "\r" in resolved or "\n" in resolved:
+            raise ValueError(f"{field_name}.{name} contains an invalid header value")
+        headers[name] = resolved
+    return headers
+
+
 def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
     raw_models = data.get("models") or {}
     if not isinstance(raw_models, dict) or not raw_models:
         raise ValueError("models config must contain a non-empty 'models' object")
+    global_headers = _parse_headers(data.get("headers"), field_name="headers")
 
     top_levels = parse_thinking_levels(data.get("thinking_levels"))
     thinking_levels = top_levels or default_thinking_levels()
@@ -355,6 +450,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         base_url = cfg.get("base_url")
         if base_url is not None:
             base_url = str(expand_env_string(base_url)).strip() or None
+        headers = _parse_headers(cfg.get("headers"), field_name=f"model profile {name!r} headers")
 
         model_kwargs = cfg.get("model_kwargs") or {}
         if not isinstance(model_kwargs, dict):
@@ -394,7 +490,9 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
             model=model,
             api_key=cfg.get("api_key"),
             api_key_env=cfg.get("api_key_env"),
+            auth=str(cfg.get("auth") or "").strip().casefold() or None,
             base_url=base_url,
+            headers=headers,
             context_window=context_window,
             enable_thinking=enable_thinking,
             reasoning_effort=reasoning_effort,
@@ -412,6 +510,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
     return ModelRegistry(
         profiles=profiles,
         default=default,
+        headers=global_headers,
         vision_model=dict(vision_model) if vision_model else None,
         thinking_levels=thinking_levels,
         default_thinking=default_thinking,
@@ -451,7 +550,9 @@ def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelPro
             if override.api_key_env not in (None, "")
             else base.api_key_env
         ),
+        auth=override.auth if override.auth not in (None, "") else base.auth,
         base_url=override.base_url if override.base_url not in (None, "") else base.base_url,
+        headers=_merge_headers(base.headers, override.headers),
         context_window=(
             override.context_window
             if override.context_window is not None
@@ -523,6 +624,7 @@ def merge_model_registries(
     return ModelRegistry(
         profiles=profiles,
         default=default,
+        headers=_merge_headers(base.headers, override.headers),
         vision_model=(
             {**base.vision_model, **override.vision_model}
             if base.vision_model and override.vision_model
@@ -675,6 +777,7 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
     payload = {
         "selected": selected,
         "model": profile.model,
+        "auth": profile.auth,
         "base_url": profile.base_url or getattr(settings, "openai_base_url", None),
         "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
         "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
@@ -687,6 +790,7 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         ),
         "stream_chunk_timeout": getattr(settings, "stream_chunk_timeout", None),
         "context_window": profile.context_window,
+        "headers": {**reg.headers, **profile.headers},
         "extra": profile.extra,
         "model_kwargs": profile.model_kwargs,
         "extra_body": profile.extra_body,

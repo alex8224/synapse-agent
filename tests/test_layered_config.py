@@ -101,6 +101,36 @@ def test_models_merge_user_then_project(tmp_path, monkeypatch):
     assert applied.openai_base_url == "http://proj"
 
 
+def test_layered_global_headers_merge_by_header_name(tmp_path, monkeypatch):
+    home = tmp_path / "home" / ".synapse"
+    project = tmp_path / "project"
+    (home / "models.json").parent.mkdir(parents=True)
+    project.mkdir()
+    (home / "models.json").write_text(
+        '{"headers":{"User-Agent":"user/1","X-User":"yes"},'
+        '"models":{"main":{"model":"openai:test"}}}',
+        encoding="utf-8",
+    )
+    target = project / ".synapse"
+    target.mkdir()
+    (target / "models.json").write_text(
+        '{"headers":{"user-agent":"project/1","X-Project":"yes"},'
+        '"models":{"main":{"model":"openai:test"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("synapse.settings.config_paths.user_config_dir", lambda: home.resolve())
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+    monkeypatch.chdir(project)
+
+    registry = load_merged_models_registry(Settings(_env_file=None, workspace=project.resolve()))
+    assert registry is not None
+    assert registry.headers == {
+        "user-agent": "project/1",
+        "X-User": "yes",
+        "X-Project": "yes",
+    }
+
+
 def test_settings_json_layer(tmp_path, monkeypatch):
     home = tmp_path / "home" / ".synapse"
     home.mkdir(parents=True)

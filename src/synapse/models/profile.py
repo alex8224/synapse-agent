@@ -20,7 +20,11 @@ class ModelProfile:
     model: str
     api_key: str | None = None
     api_key_env: str | None = None
+    # "openai_oauth" uses the user-level Codex OAuth credential store.
+    auth: str | None = None
     base_url: str | None = None
+    # Per-model request headers. Same-name values override registry-level headers.
+    headers: dict[str, str] = field(default_factory=dict)
     # Model input context size (tokens). Used by compact/summarization thresholds.
     context_window: int | None = None
     enable_thinking: bool | None = None

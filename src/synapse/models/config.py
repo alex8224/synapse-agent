@@ -14,7 +14,7 @@ THINKING_LEVELS = ("minimal", "low", "medium", "high", "max")
 DEFAULT_THINKING_LEVELS: tuple[str, ...] = ("off", *THINKING_LEVELS)
 
 _PROFILE_META_KEYS = {
-    "model", "api_key", "api_key_env", "base_url", "websocket",
+    "model", "api_key", "api_key_env", "auth", "base_url", "headers", "websocket",
     "context_window", "contextwindow", "max_input_tokens", "enable_thinking",
     "thinking", "thinking_level", "reasoning_effort", "thinking_levels",
     "parallel_tool_calls", "image_input", "capabilities", "extra",
