@@ -334,7 +334,7 @@ def build_task_namespace_middleware():
 TOOL_INTENT_KEY = "intent"
 TOOL_INTENT_DESCRIPTION = (
     "Required. One short sentence describing WHY this tool is being called "
-    "(user-facing intent for the timeline UI). "
+    "(user-facing intent for the timeline UI). Prefer Chinese. "
     "Example: 'inspect pytest config' / 'locate login failure'. "
     "Do not dump raw args or only restate the tool name."
 )
@@ -747,14 +747,20 @@ def build_compact_tool_descriptions(
         if not changed:
             return request
 
-        _compact_tool_desc_saved_tokens.set(max(0, (saved_chars + 3) // 4))
+        _compact_tool_desc_saved_tokens.set(
+            max(0, (saved_chars + 3) // 4)
+        )
         return request.override(tools=new_tools)
 
-    return _dual_wrap_model_call(name="compact_tool_descriptions", apply=_apply)
+    return _dual_wrap_model_call(
+        name="compact_tool_descriptions", apply=_apply
+    )
 
 
 def _is_tool_dict(obj: Any) -> bool:
-    return isinstance(obj, dict) and ("function" in obj or "name" in obj)
+    return isinstance(obj, dict) and (
+        "function" in obj or "name" in obj
+    )
 
 
 def _compact_dict_tool(
@@ -794,90 +800,3 @@ def _compact_base_tool(
     saved = max(0, len(old_desc.encode("utf-8")) - len(short.encode("utf-8")))
     new_tool = tool.model_copy(update={"description": short})
     return name, new_tool, saved
-
-
-# ---------------------------------------------------------------------------
-# Memory injection middleware – injects long-term memories into the system prompt
-# ---------------------------------------------------------------------------
-
-
-def build_memory_injection_middleware(memory_context: str) -> Any:
-    """Prepend relevant long-term memories before the first user message.
-
-    Args:
-        memory_context: Pre-formatted text from ``LongTermMemory.recall()``.
-            Empty string → no-op (the middleware is a transparent pass-through).
-
-    Usage::
-
-        ltm = LongTermMemory(...)
-        entries = await ltm.recall(task, top_k=3)
-        ctx = "\\n".join(f"- {e.text}" for e in entries)
-        middleware.append(build_memory_injection_middleware(ctx))
-    """
-    if not memory_context.strip():
-        # No-op: return a transparent middleware
-        return _dual_wrap_model_call(name="noop_memory", apply=lambda r: r)
-
-    prefix = (
-        "## 相关历史记忆\n"
-        f"{memory_context.strip()}\n"
-        "---\n"
-    )
-
-    def _apply(request):  # type: ignore[no-untyped-def]
-        messages = list(getattr(request, "messages", None) or [])
-        if not messages:
-            return request
-        # Find the first user message (skip system messages) and inject before it
-        from langchain_core.messages import HumanMessage
-
-        injected = HumanMessage(content=prefix, role="user")
-        for idx, msg in enumerate(messages):
-            if isinstance(msg, HumanMessage) or getattr(msg, "role", None) == "user":
-                messages.insert(idx, injected)
-                break
-        else:
-            messages.append(injected)
-        return request.override(messages=messages)
-
-    return _dual_wrap_model_call(name="inject_memory", apply=_apply)
-
-
-# ---------------------------------------------------------------------------
-# Plan tracking middleware – keeps the agent focused on the current step
-# ---------------------------------------------------------------------------
-
-
-def build_plan_tracking_middleware(
-    current_step: str,
-    step_index: int,
-    total_steps: int,
-) -> Any:
-    """Inject a step-context hint before each model call.
-
-    When the planner has decomposed a task into multiple steps, this
-    middleware reminds the agent which step it's on so it doesn't jump
-    ahead or fall behind.
-
-    Args:
-        current_step: The sub-task description for this step.
-        step_index: 1-based index.
-        total_steps: Total number of planned steps.
-    """
-    if total_steps <= 1:
-        return _dual_wrap_model_call(name="noop_plan", apply=lambda r: r)
-
-    hint = (
-        f"[当前任务步骤 {step_index}/{total_steps}] {current_step}\n"
-        "请只完成当前步骤，不要提前做后续步骤，也不要重复已完成的步骤。"
-    )
-
-    def _apply(request):  # type: ignore[no-untyped-def]
-        from langchain_core.messages import HumanMessage
-
-        messages = list(getattr(request, "messages", None) or [])
-        messages.append(HumanMessage(content=hint, role="user"))
-        return request.override(messages=messages)
-
-    return _dual_wrap_model_call(name="track_plan_step", apply=_apply)

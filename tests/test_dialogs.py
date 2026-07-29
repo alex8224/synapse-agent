@@ -650,6 +650,8 @@ class TestDialogShortcuts:
             ("action_dialog_theme", "_open_theme_dialog", ()),
             ("action_dialog_theme_designer", "_open_theme_designer", ()),
             ("action_dialog_sessions", "_open_session_dialog", (["switch"],)),
+            ("action_dialog_sessions_delete", "_open_session_dialog",
+             (["session", "multi_delete"],)),
             (
                 "action_dialog_sessions_delete",
                 "_open_session_dialog",

@@ -42,6 +42,7 @@ from synapse.content.multimodal import (
 )
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.sessions.session_recap import SessionRecapController
+from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.bottombar import (
@@ -98,6 +99,56 @@ from synapse.ui.welcome import WelcomeView
 
 _WS_RE = re.compile(r"\s+")
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy *text* to the system clipboard. Returns True on success."""
+    if not text:
+        return False
+    # Prefer pyperclip (cross-platform, lightweight).
+    try:
+        import pyperclip  # type: ignore[import-untyped]
+
+        pyperclip.copy(text)
+        return True
+    except ImportError:
+        pass
+    # Fallback: platform-specific subprocess.
+    import shutil
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"Set-Clipboard -Value {_ps_escape(text)}"],
+                check=False, timeout=5,
+            )
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    elif sys.platform == "darwin":
+        try:
+            subprocess.run(["pbcopy"], input=text, text=True, check=False, timeout=5)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        for cmd in ("xclip -selection clipboard", "wl-copy"):
+            if shutil.which(cmd.split()[0]):
+                try:
+                    subprocess.run(cmd.split(), input=text, text=True, check=False, timeout=5)
+                    return True
+                except Exception:  # noqa: BLE001
+                    pass
+    return False
+
+
+def _ps_escape(text: str) -> str:
+    """Minimal PowerShell single-quote escaping."""
+    return "'" + text.replace("'", "''") + "'"
+
 
 # Palette slots — kept as module globals so render paths stay cheap.
 # Values track ``synapse.ui.theme.get_theme()`` via ``_sync_theme_colors``.
@@ -1126,7 +1177,10 @@ class ThoughtBlock(SelectableStatic):
 
 
 class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live plain-text tail, then Markdown seal."""
+    """Assistant answer row; live plain-text tail, then Markdown seal.
+
+    Click to copy the answer text to the clipboard.
+    """
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -1153,6 +1207,22 @@ class AnswerBlock(SelectableStatic):
 
     def selectable_text(self) -> str:
         return self.body or ""
+
+    def on_click(self) -> None:
+        """Copy answer text to clipboard on mouse click."""
+        text = (self.body or "").strip()
+        if not text:
+            return
+        if _copy_to_clipboard(text):
+            self.app.bell()
+            try:
+                self.notify(
+                    f"已复制 {len(text)} 字符到剪贴板",
+                    timeout=2.0,
+                    severity="information",
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _render_block(self) -> None:
         body = self.body or ""
@@ -2107,6 +2177,9 @@ class CodingAgentApp(App[None]):
             show=False,
             priority=True,
         ),
+        Binding("ctrl+shift+c", "copy_last_answer", "Copy", show=False),
+        Binding("ctrl+shift+s", "open_selectable_view", "Select text", show=True, priority=True),
+        Binding("f7", "open_selectable_view", "Select text", show=False),
         Binding("alt+v", "clipboard_paste", "Paste image", show=False, priority=True),
         # priority: capture ESC even while the prompt Input has focus
         Binding("escape", "cancel_run", "Cancel", show=False, priority=True),
@@ -2120,7 +2193,7 @@ class CodingAgentApp(App[None]):
         Binding("f6", "dialog_safety", "Safety", show=False),
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
-        Binding("f9", "dialog_sessions_delete", "Delete Sessions", show=False),
+        Binding("f9", "dialog_subagents", "Subagents", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -2156,6 +2229,9 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_theme_designer(self) -> None:
         self._open_theme_designer()
+
+    def action_dialog_subagents(self) -> None:
+        self._open_subagent_monitor()
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -2210,6 +2286,7 @@ class CodingAgentApp(App[None]):
         self._active_turn_agent: Any | None = None
         self._active_turn_thread_id: str | None = None
         self._active_steer_queue: SteerQueue | None = None
+        self._subagent_monitor = SubagentMonitor()
         self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
@@ -3126,10 +3203,9 @@ class CodingAgentApp(App[None]):
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
-                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions"
-                    " · F9 delete"
+                    "Tab complete · / · Alt+C copy · F2 model · F4 sessions · F9 agents"
                 ),
-                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy",
+                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy · F9 agents",
                 model=lambda: model_status_label(self.settings),
                 mcp=self._mcp_label,
             ),
@@ -4316,6 +4392,30 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             pass
         self._show_welcome()
+
+    def action_open_selectable_view(self) -> None:
+        """Open a full-conversation plain-text view for mouse selection & copy."""
+        from synapse.ui.selectable_text import (
+            SelectableTextModal,
+            build_transcript_from_log,
+        )
+
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            transcript = build_transcript_from_log(log)
+        except Exception:  # noqa: BLE001
+            transcript = "(empty)"
+
+        if not transcript.strip():
+            self.append_event("nothing to show", "dim")
+            return
+
+        self.push_screen(
+            SelectableTextModal(transcript, char_count=len(transcript))
+        )
+
+    # -- clipboard helpers ---------------------------------------------------
+
         self.set_activity("idle", "ready", True)
 
     def _reset_session_token_chrome(self) -> None:
@@ -4853,6 +4953,11 @@ class CodingAgentApp(App[None]):
             self._on_mcp_dialog_done,
         )
 
+    def _open_subagent_monitor(self) -> None:
+        from synapse.ui.dialogs import SubagentMonitorDialog
+
+        self.push_screen(SubagentMonitorDialog(self._subagent_monitor))
+
     def _on_mcp_dialog_done(self, result: object) -> None:
         if result is None:
             return
@@ -5155,8 +5260,14 @@ class CodingAgentApp(App[None]):
         if cmd == "/mcp" and len(parts) == 1:
             self._open_mcp_dialog()
             return True
+        if cmd in {"/subagents", "/agents"} and len(parts) == 1:
+            self._open_subagent_monitor()
+            return True
         if cmd == "/safety" and len(parts) == 1:
             self._open_safety_dialog()
+            return True
+        if cmd == "/select":
+            self.action_open_selectable_view()
             return True
 
         prev_thread = self.thread_id
@@ -5322,6 +5433,7 @@ class CodingAgentApp(App[None]):
         self._live_tool_items = []
         self._live_tool_summary = ""
         self._live_tool_block = None
+        self._subagent_monitor.reset()
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
@@ -5351,7 +5463,10 @@ class CodingAgentApp(App[None]):
         self._begin_turn_usage()
         sink = TextualStreamSink(self)
         config = {
-            "configurable": {"thread_id": turn_thread_id},
+            "configurable": {
+                "thread_id": turn_thread_id,
+                MONITOR_CONFIG_KEY: self._subagent_monitor.monitor_id,
+            },
             "max_concurrency": self.settings.max_concurrency,
         }
         provider = provider_from_settings(self.settings)
@@ -5460,7 +5575,10 @@ class CodingAgentApp(App[None]):
         # Allow Esc to abort resume stream as well.
         self._cancel_event = threading.Event()
         config = {
-            "configurable": {"thread_id": turn_thread_id},
+            "configurable": {
+                "thread_id": turn_thread_id,
+                MONITOR_CONFIG_KEY: self._subagent_monitor.monitor_id,
+            },
             "max_concurrency": self.settings.max_concurrency,
         }
         try:
