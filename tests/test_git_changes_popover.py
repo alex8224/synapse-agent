@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
 from synapse.ui.topbar.core import TopBarRegistry
-from synapse.ui.topbar.git_changes_popover import TopBar
 from synapse.ui.topbar.git_chrome import GitChangedFile
+from synapse.ui.topbar.tool_output_popover import ToolOutputPopover
+from synapse.ui.topbar.widget import TopBar
 
 
 class _FakeTimer:
@@ -69,6 +70,29 @@ def _make_topbar(files: list[GitChangedFile]) -> TopBar:
     bar._load_files = lambda force=False: files  # type: ignore[method-assign]
     bar._branch_span = lambda: (10, 12)  # type: ignore[method-assign]
     return bar
+
+
+def test_tool_output_popover_shows_input_size_and_net_saving() -> None:
+    popover = ToolOutputPopover(
+        {
+            "original_bytes": 567_192,
+            "visible_bytes": 108_080,
+            "retrieval_bytes": 3_107,
+            "effective_saved_bytes": 456_005,
+            "effective_savings_ratio": 0.804,
+            "outputs_considered": 45,
+            "transformed": 7,
+            "skipped": 34,
+        }
+    )
+
+    lines = popover._lines()
+
+    assert "tool output compression · this session" not in lines
+    assert "tool input      553.9 KiB" in lines
+    assert "model-visible   105.5 KiB" in lines
+    assert "re-read cost    3.0 KiB" in lines
+    assert "net saved       445.3 KiB (80%)" in lines
 
 
 def test_show_popover_is_idempotent_when_already_open() -> None:

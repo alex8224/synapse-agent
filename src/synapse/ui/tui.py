@@ -82,12 +82,12 @@ from synapse.ui.topbar import (
     layout_from_registry,
     truncate_to_width,
 )
-from synapse.ui.topbar.git_changes_popover import TopBar
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
     probe_git_branch_chrome,
     render_branch_chrome,
 )
+from synapse.ui.topbar.widget import TopBar
 from synapse.ui.turn_rail import (
     format_turn_rail_bucket_label,
     format_turn_rail_preview,
@@ -2286,6 +2286,7 @@ class CodingAgentApp(App[None]):
             dirty_provider=lambda: bool(
                 self._git_chrome is not None and self._git_chrome.dirty
             ),
+            tool_output_stats_provider=self._tool_output_hover_stats,
             usable_width_provider=self._topbar_usable_width,
             colors={
                 "clean": _C_GREEN,
@@ -2914,22 +2915,25 @@ class CodingAgentApp(App[None]):
 
 
     def _tool_output_label(self) -> str | Text:
-        """Render effective tool-output savings with a theme emphasis color."""
+        """Render the stable net tool-output saving for the active session."""
         stats = self._tool_output_stats
         if self._tool_output_stats_thread_id != self.thread_id or not stats:
             return ""
         if not int(stats.get("transformed", 0) or 0):
             return ""
         saved = max(0, int(stats.get("effective_saved_bytes", 0) or 0))
-        reused = max(0, int(stats.get("estimated_reused_tokens", 0) or 0))
-        ratio = max(0.0, float(stats.get("effective_savings_ratio", 0.0) or 0.0))
-        if reused:
-            label = f"OUT ~{format_token_count(reused)} tok"
-        else:
-            label = f"OUT −{format_byte_count(saved)}/{ratio:.0%}"
-        # Green means the visible context is still smaller after any re-reads;
-        # orange signals that retrieval has consumed all recorded savings.
-        return Text(label, style=_C_GREEN if saved else _C_ORANGE)
+        # Keep the chrome to a stable absolute metric. The ratio is cumulative and
+        # changes whenever any later tool output is recorded, so it belongs in hover.
+        return Text(
+            f"saved {format_byte_count(saved)}",
+            style=_C_GREEN if saved else _C_ORANGE,
+        )
+
+    def _tool_output_hover_stats(self) -> dict[str, Any]:
+        """Return a snapshot for the tool-output topbar hover popover."""
+        if self._tool_output_stats_thread_id != self.thread_id:
+            return {}
+        return dict(self._tool_output_stats or {})
 
     def _reload_tool_output_stats(self) -> None:
         """Load persistent metrics for the active session outside the render path."""
