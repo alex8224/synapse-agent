@@ -3126,7 +3126,8 @@ class CodingAgentApp(App[None]):
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self._bottombar_mode_label,
                 idle_hints=lambda: (
-                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions · F9 delete"
+                    "Tab complete · / · Alt+C copy · C-S-y answer · F2 model · F4 sessions"
+                    " · F9 delete"
                 ),
                 busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy",
                 model=lambda: model_status_label(self.settings),
