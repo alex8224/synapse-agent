@@ -6,15 +6,14 @@ Returns structured results so UIs only need to render/apply side effects.
 
 from __future__ import annotations
 
-import csv
-import io
 import json
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from synapse.app.agent import build_coding_agent
+from synapse.commands.compression import handle_compression
+from synapse.commands.helpers import markdown_escape, parts
+from synapse.commands.result import SlashResult
 from synapse.integrations.mcp_client import (
     get_active_mcp_pool,
     load_mcp_server_configs,
@@ -118,605 +117,6 @@ HELP_TEXT = """## Slash Commands
 """
 
 
-@dataclass
-class SlashResult:
-    """Outcome of a slash command."""
-
-    handled: bool = False
-    lines: list[str] = field(default_factory=list)
-    error: bool = False
-    # Short one-line confirmation for the bottom status bar (never transcript).
-    notice: str | None = None
-    exit_requested: bool = False
-    clear_log: bool = False
-    reload_transcript: bool = False
-    thread_id: str | None = None
-    agent: Any | None = None
-    settings_changed: bool = False
-    # TUI should attach MCP after applying the rebuilt agent, without blocking
-    # the slash command/model switch worker.
-    # Rich Markdown text rendered directly into the transcript (#log).  When set,
-    # the TUI renders it as a Markdown block instead of plain lines.
-    markdown: str | None = None
-    mcp_attach_pending: bool = False
-    # UI theme switch (TUI should re-apply CSS / palette).
-    theme_name: str | None = None
-    # HITL: UI should resume the paused graph with this decision.
-    resume_action: str | None = None  # "approve" | "reject"
-    resume_message: str | None = None
-
-
-def _parts(text: str) -> list[str]:
-    return text.strip().split()
-
-
-def _format_bytes(value: int | float) -> str:
-    """Format byte counts compactly for slash command tables."""
-    amount = max(0, int(value or 0))
-    for unit, size in (("G", 1024**3), ("M", 1024**2), ("K", 1024)):
-        if amount >= size:
-            rendered = amount / size
-            return f"{rendered:.1f}{unit}" if rendered < 10 else f"{rendered:.0f}{unit}"
-    return f"{amount}B"
-
-
-def _resolve_session_ref(
-    settings: Any, current_thread_id: str, args: list[str]
-) -> tuple[str | None, str | None]:
-    """Resolve an optional thread id/title argument to a unique session id."""
-    if not args:
-        return current_thread_id, None
-    query = " ".join(args).strip()
-    info = _store(settings).resolve_session_ref(query)
-    if info is None:
-        return None, f"session not found or ambiguous: {query}"
-    return info.thread_id, None
-
-
-_COMPRESSION_EXPORT_FORMAT_ALIASES = {
-    "json": "json",
-    "j": "json",
-    "csv": "csv",
-    "c": "csv",
-}
-
-
-def _default_compression_export_path(settings: Any, thread_id: str, fmt: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (thread_id or "session"))
-    safe = (safe or "session")[:80]
-    parent = Path(settings.checkpoint_path).expanduser().resolve().parent
-    return parent / "exports" / f"{safe}.compression.{fmt}"
-
-
-def _compression_export_csv(payload: dict[str, Any]) -> str:
-    """Flatten heterogeneous diagnostics into one portable CSV table."""
-    rows: list[dict[str, Any]] = [
-        {
-            "record_type": "metadata",
-            "thread_id": payload["thread_id"],
-            "metric": "schema_version",
-            "value": payload["schema_version"],
-        },
-        {
-            "record_type": "metadata",
-            "thread_id": payload["thread_id"],
-            "metric": "exported_at",
-            "value": payload["exported_at"],
-        },
-    ]
-    rows.extend(
-        {
-            "record_type": "summary",
-            "thread_id": payload["thread_id"],
-            "metric": key,
-            "value": value,
-        }
-        for key, value in sorted(dict(payload.get("summary") or {}).items())
-    )
-    for record_type, key in (
-        ("model_request", "model_request_events"),
-        ("interaction", "interaction_events"),
-        ("tool_output", "tool_output_events"),
-        ("retrieval", "retrieval_events"),
-        ("model_reuse", "model_reuse_events"),
-    ):
-        rows.extend(
-            {"record_type": record_type, **dict(item)} for item in payload.get(key, [])
-        )
-
-    preferred = [
-        "record_type",
-        "thread_id",
-        "id",
-        "created_at",
-        "metric",
-        "value",
-        "request_id",
-        "provider",
-        "api_style",
-        "auth_mode",
-        "model",
-        "tool_call_id",
-        "tool_name",
-        "decision",
-        "reason_code",
-    ]
-    all_fields = {key for row in rows for key in row}
-    fieldnames = [key for key in preferred if key in all_fields]
-    fieldnames.extend(sorted(all_fields - set(fieldnames)))
-
-    def cell(value: Any) -> Any:
-        if isinstance(value, dict | list | tuple):
-            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-        return "" if value is None else value
-
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
-    writer.writeheader()
-    writer.writerows({key: cell(value) for key, value in row.items()} for row in rows)
-    return output.getvalue()
-
-
-def _compression_export_result(
-    settings: Any, current_thread_id: str, args: list[str]
-) -> SlashResult:
-    """Export complete compression diagnostics for one session to JSON or CSV."""
-    fmt = "json"
-    session_args: list[str] = []
-    path_args: list[str] = []
-    format_index = next(
-        (
-            index
-            for index, value in enumerate(args)
-            if value.casefold() in _COMPRESSION_EXPORT_FORMAT_ALIASES
-        ),
-        None,
-    )
-    if format_index is not None:
-        fmt = _COMPRESSION_EXPORT_FORMAT_ALIASES[args[format_index].casefold()]
-        session_args = args[:format_index]
-        path_args = args[format_index + 1 :]
-    elif args:
-        candidate = Path(" ".join(args)).expanduser()
-        if candidate.suffix.casefold() in {".json", ".csv"}:
-            fmt = candidate.suffix.casefold().lstrip(".")
-            path_args = args
-        else:
-            session_args = args
-
-    thread_id, error = _resolve_session_ref(settings, current_thread_id, session_args)
-    if error or thread_id is None:
-        return SlashResult(handled=True, lines=[error or "session not found"], error=True)
-
-    from synapse.tool_output.repository import ToolOutputRepository
-
-    repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
-    diagnostics = repo.export_diagnostics(thread_id=thread_id)
-    payload = {
-        "schema_version": 2,
-        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "thread_id": thread_id,
-        **diagnostics,
-    }
-    text = (
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-        if fmt == "json"
-        else _compression_export_csv(payload)
-    )
-    target = (
-        Path(" ".join(path_args)).expanduser()
-        if path_args
-        else _default_compression_export_path(settings, thread_id, fmt)
-    )
-    try:
-        target = (Path.cwd() / target).resolve() if not target.is_absolute() else target.resolve()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-    except OSError as exc:
-        return SlashResult(
-            handled=True,
-            lines=[f"compression export failed: {exc}"],
-            error=True,
-        )
-
-    counts = {
-        "model requests": len(payload["model_request_events"]),
-        "tool calls": len(payload["interaction_events"]),
-        "tool outputs": len(payload["tool_output_events"]),
-        "retrievals": len(payload["retrieval_events"]),
-        "model reuses": len(payload["model_reuse_events"]),
-    }
-    confirm = f"exported compression {fmt} -> {target}"
-    return SlashResult(
-        handled=True,
-        lines=[
-            confirm,
-            f"thread_id={thread_id}",
-            ", ".join(f"{key}={value}" for key, value in counts.items()),
-        ],
-        notice=confirm,
-        markdown=(
-            "## Compression Export\n\n"
-            f"- **thread**: `{thread_id}`\n"
-            f"- **format**: {fmt}\n"
-            f"- **path**: `{target}`\n"
-            + "".join(f"- **{key}**: {value}\n" for key, value in counts.items())
-        ),
-    )
-
-
-def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) -> SlashResult:
-    """Render persistent compression diagnostics or recent decision events."""
-    mode = args[0].casefold() if args else "stats"
-    if mode == "export":
-        return _compression_export_result(settings, current_thread_id, args[1:])
-    show_profile = mode in {"profile", "report"}
-    show_requests = mode in {"requests", "request"}
-    show_events = mode in {"events", "skipped", "fallback", "tool"}
-    rest = args[1:] if show_events or show_requests or show_profile else args
-    decision_filter = mode if mode in {"skipped", "fallback"} else ""
-    tool_filter = ""
-    request_filter = ""
-    if mode == "request":
-        if not rest:
-            return SlashResult(
-                handled=True,
-                lines=["usage: /compression request <request_id> [session]"],
-                error=True,
-            )
-        request_filter = rest[0]
-        rest = rest[1:]
-    if mode == "tool":
-        if not rest:
-            return SlashResult(
-                handled=True,
-                lines=["usage: /compression tool <tool_call_id> [session] [limit]"],
-                error=True,
-            )
-        tool_filter = rest[0]
-        rest = rest[1:]
-    limit = 10
-    if (show_events or show_requests) and rest and rest[-1].isdigit():
-        limit = max(1, min(50, int(rest[-1])))
-        rest = rest[:-1]
-    thread_id, error = _resolve_session_ref(settings, current_thread_id, rest)
-    if error or thread_id is None:
-        return SlashResult(handled=True, lines=[error or "session not found"], error=True)
-
-    from synapse.tool_output.repository import ToolOutputRepository
-
-    repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
-    if show_profile:
-        stats = repo.stats(thread_id=thread_id)
-        breakdown = stats.get("content_breakdown") or {}
-        opportunities = stats.get("top_opportunities") or []
-        md = [
-            "## Compression Profile",
-            "",
-            f"Thread: `{thread_id}`",
-            "",
-            (
-                f"Turns: {stats.get('turns', 0)} · model calls: "
-                f"{stats.get('model_requests', 0)} · tool calls: "
-                f"{stats.get('tool_calls', 0)} · compression-managed: "
-                f"{stats.get('compression_managed_tool_calls', 0)}"
-            ),
-            (
-                f"Cache bust suspected: {stats.get('cache_bust_suspected_requests', 0)} requests"
-            ),
-            "",
-            "### Live-zone distribution",
-            "",
-            "| Zone | Estimated tokens |",
-            "|---|---:|",
-            *[
-                f"| {_md_escape(str(zone))} | ~{int(tokens or 0)} |"
-                for zone, tokens in sorted((stats.get("live_zone_tokens") or {}).items())
-            ],
-            "",
-            "### Tool schema ranking",
-            "",
-            "| Tool | Cumulative estimated tokens |",
-            "|---|---:|",
-            *[
-                f"| {_md_escape(str(name))} | ~{int(tokens or 0)} |"
-                for name, tokens in stats.get("top_schema_tools") or []
-            ],
-            "",
-            "### Request content breakdown",
-            "",
-            "| Source | Estimated tokens | Share |",
-            "|---|---:|---:|",
-        ]
-        # ``tool_output_original`` reconstructs the pre-compression baseline;
-        # it is not part of the final model-visible request. Excluding it keeps
-        # model-visible shares additive instead of counting tool output twice.
-        reference_sources = {"tool_output_original"}
-        total = sum(
-            max(0, int(value or 0))
-            for source, value in breakdown.items()
-            if source not in reference_sources
-        )
-        lines = [f"thread_id={thread_id}", f"profile_total_tokens=~{total}"]
-        for source, tokens in sorted(
-            breakdown.items(), key=lambda item: int(item[1] or 0), reverse=True
-        ):
-            amount = max(0, int(tokens or 0))
-            if source in reference_sources:
-                md.append(f"| {_md_escape(str(source))} | ~{amount} | — |")
-                lines.append(f"{source}=~{amount} (reference; excluded from total)")
-                continue
-            share = amount / total if total else 0.0
-            md.append(f"| {_md_escape(str(source))} | ~{amount} | {share:.1%} |")
-            lines.append(f"{source}=~{amount} ({share:.1%})")
-        if any(source in breakdown for source in reference_sources):
-            md.extend(
-                [
-                    "",
-                    (
-                        "`tool_output_original` is the reconstructed pre-compression "
-                        "baseline and is excluded from model-visible totals and shares."
-                    ),
-                ]
-            )
-        md.extend(
-            [
-                "",
-                "### Ranked optimization opportunities",
-                "",
-                "| Rank | Reason | Estimated tokens |",
-                "|---:|---|---:|",
-            ]
-        )
-        if opportunities:
-            for rank, item in enumerate(opportunities, 1):
-                reason, tokens = item
-                md.append(f"| {rank} | {_md_escape(str(reason))} | ~{int(tokens or 0)} |")
-        else:
-            md.append("| - | No request profile events yet | 0 |")
-        protected = stats.get("top_protected_sources") or []
-        md.extend(
-            [
-                "",
-                "### Provider-protected context",
-                "",
-                "| Reason | Estimated tokens |",
-                "|---|---:|",
-            ]
-        )
-        if protected:
-            for reason, tokens in protected:
-                md.append(f"| {_md_escape(str(reason))} | ~{int(tokens or 0)} |")
-        else:
-            md.append("| - | 0 |")
-        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
-    if show_requests:
-        requests = repo.model_request_events(thread_id=thread_id, limit=max(limit, 50))
-        if request_filter:
-            requests = [item for item in requests if item.get("request_id") == request_filter]
-        requests = requests[:limit]
-        if not requests:
-            return SlashResult(
-                handled=True,
-                lines=[f"thread_id={thread_id}", "no model request compression events"],
-            )
-        md = [
-            "## Model Request Compression",
-            "",
-            f"Thread: `{thread_id}`",
-            "",
-            (
-                "| Time | Request | Provider / API | Input before | Input after | "
-                "Saved | Cache | Output |"
-            ),
-            "|---|---|---|---:|---:|---:|---:|---:|",
-        ]
-        lines = [f"thread_id={thread_id}"]
-        for item in requests:
-            request_id = str(item.get("request_id") or "-")
-            before = int(item.get("input_tokens_before", 0) or 0)
-            after = int(item.get("input_tokens_after", 0) or 0)
-            saved = int(item.get("total_saved_tokens", 0) or 0)
-            cache = int(item.get("cache_read_tokens", 0) or 0)
-            output = int(item.get("output_tokens", 0) or 0)
-            md.append(
-                "| {time} | `{request}` | {provider}/{api} | ~{before} | ~{after} | "
-                "~{saved} | {cache} | {output} |".format(
-                    time=_md_escape(str(item.get("created_at") or "-")),
-                    request=_md_escape(request_id),
-                    provider=_md_escape(str(item.get("provider") or "unknown")),
-                    api=_md_escape(str(item.get("api_style") or "unknown")),
-                    before=before,
-                    after=after,
-                    saved=saved,
-                    cache=cache,
-                    output=output,
-                )
-            )
-            protected = item.get("protected_tokens_by_reason") or {}
-            breakdown = item.get("content_breakdown") or {}
-            opportunities = item.get("opportunity_tokens_by_reason") or {}
-            lines.append(
-                f"{request_id} turn={item.get('turn_index', 0)} "
-                f"call={item.get('model_call_index', 0)} before=~{before} after=~{after} "
-                f"saved=~{saved} protected={protected} breakdown={breakdown} "
-                f"opportunities={opportunities} live_zone={item.get('live_zone_tokens') or {}} "
-                f"cache={item.get('cache_diagnostics') or {}}"
-            )
-            if request_filter:
-                md.extend(
-                    [
-                        "",
-                        "### Content breakdown",
-                        "",
-                        "| Source | Estimated tokens |",
-                        "|---|---:|",
-                        *[
-                            f"| {_md_escape(str(key))} | ~{int(value or 0)} |"
-                            for key, value in sorted(
-                                breakdown.items(),
-                                key=lambda pair: int(pair[1] or 0),
-                                reverse=True,
-                            )
-                        ],
-                        "",
-                        "### Optimization opportunities",
-                        "",
-                        "| Reason | Estimated tokens |",
-                        "|---|---:|",
-                        *[
-                            f"| {_md_escape(str(key))} | ~{int(value or 0)} |"
-                            for key, value in sorted(
-                                opportunities.items(),
-                                key=lambda pair: int(pair[1] or 0),
-                                reverse=True,
-                            )
-                        ],
-                    ]
-                )
-        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
-    if show_events:
-        fetch_limit = min(500, max(limit, 50) if decision_filter or tool_filter else limit)
-        events = repo.events(thread_id=thread_id, limit=fetch_limit)
-        if decision_filter:
-            events = [
-                event
-                for event in events
-                if str(event.get("decision") or "").casefold() == decision_filter
-            ]
-        if tool_filter:
-            events = [
-                event
-                for event in events
-                if str(event.get("tool_call_id") or "") == tool_filter
-            ]
-        events = events[:limit]
-        if not events:
-            return SlashResult(
-                handled=True,
-                lines=[f"thread_id={thread_id}", "no tool-output events"],
-                markdown=(
-                    f"## Tool Output Events\n\nThread: `{thread_id}`\n\n"
-                    "No tool-output events."
-                ),
-            )
-        md = [
-            "## Compression Decision Events",
-            "",
-            f"Thread: `{thread_id}`",
-            "",
-            (
-                "| Time | Tool / ID | Type | Decision | Reason | Pipeline | "
-                "Original | Final | Saved tok |"
-            ),
-            "|---|---|---|---|---|---|---:|---:|---:|",
-        ]
-        lines = [f"thread_id={thread_id}"]
-        for event in events:
-            saved = int(event.get("estimated_saved_tokens", 0) or 0)
-            tool = str(event.get("tool_name") or "-")
-            call_id = str(event.get("tool_call_id") or "-")
-            decision = str(
-                event.get("decision")
-                or ("transformed" if event.get("outcome") == "transformed" else "fallback")
-            )
-            reason = str(event.get("reason_code") or "legacy_passthrough")
-            row = (
-                "| {time} | {tool}<br>`{call_id}` | {type} | {decision} | {reason} | "
-                "{transformer} | {original} | {visible} | {saved} |"
-            )
-            md.append(
-                row.format(
-                    time=_md_escape(str(event.get("created_at", "-"))),
-                    tool=_md_escape(tool),
-                    call_id=_md_escape(call_id),
-                    type=_md_escape(str(event.get("content_type", "-"))),
-                    decision=_md_escape(decision),
-                    reason=_md_escape(reason),
-                    transformer=_md_escape(str(event.get("transformer", "-"))),
-                    original=_format_bytes(event.get("original_bytes", 0)),
-                    visible=_format_bytes(event.get("visible_bytes", 0)),
-                    saved=f"~{saved}" if saved else "0",
-                )
-            )
-            lines.append(
-                f"{event.get('created_at', '-')} {tool}/{call_id} "
-                f"{decision}:{reason} saved_tokens=~{saved}"
-            )
-        return SlashResult(handled=True, lines=lines, markdown="\n".join(md))
-
-    stats = repo.stats(thread_id=thread_id)
-    effective_saved = _format_bytes(stats["effective_saved_bytes"])
-    effective_ratio = f"{stats['effective_savings_ratio']:.1%}"
-    rows = [
-        ("thread_id", thread_id),
-        ("outputs considered", str(stats["outputs_considered"])),
-        ("transformed", str(stats["transformed"])),
-        ("skipped", str(stats.get("skipped", 0) or 0)),
-        ("fallback", str(stats.get("fallback", 0) or 0)),
-        ("model requests", str(stats.get("model_requests", 0) or 0)),
-        (
-            "request input before/after",
-            f"~{stats.get('request_input_tokens_before', 0)}/"
-            f"~{stats.get('request_input_tokens_after', 0)}",
-        ),
-        ("request saved tokens", f"~{stats.get('request_saved_tokens', 0) or 0}"),
-        ("whole request savings", f"{stats.get('whole_request_savings_ratio', 0.0):.1%}"),
-        ("new input savings", f"{stats.get('new_input_savings_ratio', 0.0):.1%}"),
-        (
-            "provider input/cache/output",
-            f"{stats.get('provider_input_tokens', 0)}/"
-            f"{stats.get('cache_read_tokens', 0)}/"
-            f"{stats.get('request_output_tokens', 0)}",
-        ),
-        ("original bytes", _format_bytes(stats["original_bytes"])),
-        ("visible bytes", _format_bytes(stats["visible_bytes"])),
-        (
-            "estimated static token saving",
-            str(stats.get("estimated_saved_tokens", 0) or 0),
-        ),
-        (
-            "estimated reused token saving",
-            str(stats.get("estimated_reused_tokens", 0) or 0),
-        ),
-        ("saved", f"{_format_bytes(stats['saved_bytes'])} ({stats['savings_ratio']:.1%})"),
-        ("retrieval bytes", _format_bytes(stats["retrieval_bytes"])),
-        ("effective saved", f"{effective_saved} ({effective_ratio})"),
-        ("critical retention", f"{stats['critical_retention']:.1%}"),
-    ]
-    paths = stats.get("execution_paths") or {}
-    if paths:
-        rows.append(
-            (
-                "execution paths",
-                ", ".join(f"{name}={count}" for name, count in sorted(paths.items())),
-            )
-        )
-    reasons = stats.get("reasons") or {}
-    tokens_by_reason = stats.get("tokens_by_reason") or {}
-    if reasons:
-        rows.append(
-            (
-                "decision reasons",
-                ", ".join(
-                    f"{name}={count}/~{int(tokens_by_reason.get(name, 0) or 0)}tok"
-                    for name, count in sorted(
-                        reasons.items(),
-                        key=lambda item: int(tokens_by_reason.get(item[0], 0) or 0),
-                        reverse=True,
-                    )
-                ),
-            )
-        )
-    md = ["## Compression Diagnostics", "", "| Metric | Value |", "|---|---|"]
-    md.extend(f"| {_md_escape(key)} | {_md_escape(value)} |" for key, value in rows)
-    return SlashResult(
-        handled=True,
-        lines=[f"{key}: {value}" for key, value in rows],
-        markdown="\n".join(md),
-    )
-
-
 def _store(settings: Any) -> SessionStore:
     return SessionStore(settings.resolved_sessions_path())
 
@@ -745,11 +145,6 @@ def _session_show(store: SessionStore, thread_id: str, settings: Any) -> list[st
     ]
 
 
-def _md_escape(text: str) -> str:
-    """Escape pipe and backtick for Markdown table cells."""
-    return str(text).replace("|", "\\|").replace("`", "\\`")
-
-
 def _md_session_show(store: SessionStore, thread_id: str, settings: Any) -> str:
     """Format current session info as a Markdown table."""
     info = store.get(thread_id) or store.ensure(
@@ -771,7 +166,7 @@ def _md_session_show(store: SessionStore, thread_id: str, settings: Any) -> str:
     ]
     lines = ["## Current Session", "", "| Property | Value |", "|---|---|"]
     for k, v in rows:
-        lines.append(f"| {_md_escape(k)} | {_md_escape(v)} |")
+        lines.append(f"| {markdown_escape(k)} | {markdown_escape(v)} |")
     return "\n".join(lines)
 
 
@@ -788,8 +183,8 @@ def _md_session_table(items: list[Any]) -> str:
         model = (s.binding().display() or "-")[:20]
         updated = s.updated_at or "-"
         lines.append(
-            f"| `{_md_escape(tid)}` | {_md_escape(title)} "
-            f"| {_md_escape(model)} | {_md_escape(updated)} |"
+            f"| `{markdown_escape(tid)}` | {markdown_escape(title)} "
+            f"| {markdown_escape(model)} | {markdown_escape(updated)} |"
         )
     return "\n".join(lines)
 
@@ -988,7 +383,7 @@ def _handle_session(
                     handled=True,
                     lines=[
                         f"session not found: {query}",
-                        "tip: /sessions — list titles; match must be unique",
+                        "tip: /sessions 鈥?list titles; match must be unique",
                     ],
                     error=True,
                 )
@@ -1008,7 +403,7 @@ def _handle_session(
             markdown=(
                 "## Switched\n\n"
                 f"- **thread_id**: `{info.thread_id}`\n"
-                f"- **title**: {_md_escape(info.title)}"
+                f"- **title**: {markdown_escape(info.title)}"
             ),
             thread_id=info.thread_id,
             settings_changed=True,
@@ -1026,7 +421,7 @@ def _handle_session(
         return SlashResult(
             handled=True,
             lines=[f"renamed to: {new_title}"],
-            markdown=f"## Renamed\n\n- **title**: {_md_escape(new_title)}",
+            markdown=f"## Renamed\n\n- **title**: {markdown_escape(new_title)}",
         )
 
     if cmd == "/export":
@@ -1090,12 +485,12 @@ def _handle_session(
         lines = [f"pruned {len(deleted)} empty session(s)"]
         lines.extend(f"  - {tid}" for tid in deleted[:20])
         if len(deleted) > 20:
-            lines.append(f"  … and {len(deleted) - 20} more")
+            lines.append(f"  鈥?and {len(deleted) - 20} more")
         md = f"## Pruned\n\n**{len(deleted)}** empty session(s) removed.\n"
         if deleted:
             md += "\n" + "\n".join(f"- `{tid}`" for tid in deleted[:20])
             if len(deleted) > 20:
-                md += f"\n- *… and {len(deleted) - 20} more*"
+                md += f"\n- *鈥?and {len(deleted) - 20} more*"
         return SlashResult(handled=True, lines=lines, markdown=md)
 
     if sub == "show":
@@ -1149,7 +544,7 @@ def _handle_session(
                 handled=True,
                 lines=[f"deleted session metadata: {tid}  ({label})"],
                 markdown=(
-                    f"## Deleted\n\n- **thread_id**: `{tid}`\n- **title**: {_md_escape(label)}"
+                    f"## Deleted\n\n- **thread_id**: `{tid}`\n- **title**: {markdown_escape(label)}"
                 ),
             )
         return SlashResult(handled=True, lines=[f"session not found: {query}"], error=True)
@@ -1242,8 +637,8 @@ def _md_mcp_list(settings: Any) -> str:
         else:
             dest = s.url or "-"
         lines.append(
-            f"| {_md_escape(s.name)} | {_md_escape(s.transport)} "
-            f"| {'yes' if s.enabled else 'no'} | {_md_escape(dest)} |"
+            f"| {markdown_escape(s.name)} | {markdown_escape(s.transport)} "
+            f"| {'yes' if s.enabled else 'no'} | {markdown_escape(dest)} |"
         )
     loaded = getattr(build_coding_agent, "last_mcp_servers", []) or []
     tool_names = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
@@ -1263,7 +658,7 @@ def _md_tool_list(names: list[str], warnings: list[str] | None = None) -> str:
         lines.append("*(no tools discovered)*")
     else:
         for n in sorted(names):
-            lines.append(f"- `{_md_escape(n)}`")
+            lines.append(f"- `{markdown_escape(n)}`")
     for w in warnings or []:
         lines.append(f"\nwarn: {w}")
     return "\n".join(lines)
@@ -1294,9 +689,9 @@ def _rebuild_agent(
     else:
         # Prefer the live pool when it already has tools, regardless of the
         # old agent's attached flag. This covers:
-        #  - normal attached agent (flag True + pool alive) → reuse
-        #  - startup race: pool connected but agent not yet swapped → reuse
-        #  - after /mcp reload that created a new pool → reuse
+        #  - normal attached agent (flag True + pool alive) 鈫?reuse
+        #  - startup race: pool connected but agent not yet swapped 鈫?reuse
+        #  - after /mcp reload that created a new pool 鈫?reuse
         pool = get_active_mcp_pool()
         pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else []
         if pool is not None:
@@ -1489,14 +884,17 @@ def _handle_mcp(
         md_lines.append("| Transport | Servers |")
         md_lines.append("|---|---|")
         for transport, names in sorted(by_transport.items()):
-            md_lines.append(f"| {_md_escape(transport)} | {_md_escape(', '.join(names))} |")
+            md_lines.append(
+                f"| {markdown_escape(transport)} | "
+                f"{markdown_escape(', '.join(names))} |"
+            )
         if result.tools:
             md_lines.append("")
             md_lines.append(f"### Tools ({len(result.tools)})")
             for tool in result.tools[:30]:
-                md_lines.append(f"- `{_md_escape(getattr(tool, 'name', str(tool)))}`")
+                md_lines.append(f"- `{markdown_escape(getattr(tool, 'name', str(tool)))}`")
             if len(result.tools) > 30:
-                md_lines.append(f"- *… and {len(result.tools) - 30} more*")
+                md_lines.append(f"- *鈥?and {len(result.tools) - 30} more*")
         for w in result.warnings:
             md_lines.append(f"\nwarn: {w}")
         return SlashResult(handled=True, lines=lines, markdown="\n".join(md_lines))
@@ -1563,7 +961,7 @@ def _handle_mcp(
         warnings_list = getattr(build_coding_agent, "last_mcp_warnings", []) or []
         tools = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
         notice = (
-            f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'} · tools={len(tools)}"
+            f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'} 路 tools={len(tools)}"
         )
         lines = [
             f"mcp server '{target}' {'enabled' if changed.enabled else 'disabled'}; agent rebuilt",
@@ -1596,7 +994,7 @@ def _handle_mcp(
         return SlashResult(
             handled=True,
             lines=["mcp enabled (run /mcp reload to rebuild agent)"],
-            notice="mcp enabled · reload pending",
+            notice="mcp enabled 路 reload pending",
             settings_changed=True,
         )
 
@@ -1619,7 +1017,7 @@ def _handle_mcp(
         return SlashResult(
             handled=True,
             lines=["mcp disabled; agent rebuilt without MCP tools"],
-            notice="mcp disabled · tools=0",
+            notice="mcp disabled 路 tools=0",
             agent=new_agent,
             settings_changed=True,
         )
@@ -1643,9 +1041,9 @@ def _handle_mcp(
         warnings = getattr(build_coding_agent, "last_mcp_warnings", []) or []
         tools = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
         enabled_flag = bool(getattr(settings, "enable_mcp", True))
-        notice = f"mcp reloaded · servers={len(loaded)} tools={len(tools)}"
+        notice = f"mcp reloaded 路 servers={len(loaded)} tools={len(tools)}"
         if not enabled_flag:
-            notice = "mcp reloaded · disabled"
+            notice = "mcp reloaded 路 disabled"
         lines = [
             f"agent rebuilt; mcp enabled={getattr(settings, 'enable_mcp', True)}",
             f"loaded servers: {', '.join(loaded) or '(none)'}",
@@ -1875,8 +1273,8 @@ def _handle_theme(
             else:
                 kind = f"built-in/{tone}"
             md += (
-                f"| {mark} | `{_md_escape(t.name)}` "
-                f"| {_md_escape(t.label)} | {_md_escape(kind)} |\n"
+                f"| {mark} | `{markdown_escape(t.name)}` "
+                f"| {markdown_escape(t.label)} | {markdown_escape(kind)} |\n"
             )
         md += "\nusage: `/theme <name>`\n\nconfig: `settings.json` theme + optional `themes.json`"
         return SlashResult(handled=True, lines=plain, markdown=md)
@@ -1919,8 +1317,8 @@ def _handle_theme(
         ],
         markdown=(
             "## Theme\n\n"
-            f"- **name**: `{_md_escape(theme.name)}`\n"
-            f"- **label**: {_md_escape(theme.label)}\n\n"
+            f"- **name**: `{markdown_escape(theme.name)}`\n"
+            f"- **label**: {markdown_escape(theme.label)}\n\n"
             "*saved to `~/.coding-agent/settings.json`*"
         ),
         settings_changed=True,
@@ -1961,9 +1359,9 @@ def handle_slash(
             markdown=HELP_TEXT,
         )
 
-    parts = _parts(raw)
-    cmd = parts[0].lower()
-    args = parts[1:]
+    command_parts = parts(raw)
+    cmd = command_parts[0].lower()
+    args = command_parts[1:]
 
     if cmd in {
         "/sessions",
@@ -2024,7 +1422,7 @@ def handle_slash(
         return SlashResult(handled=True, lines=lines, error=not ok, markdown=md)
 
     if cmd in {"/compression", "/tool-output", "/tool-compress"}:
-        return _tool_output_result(settings, thread_id, args)
+        return handle_compression(settings, thread_id, args)
 
     if cmd == "/context":
         from synapse.runtime.context_compact import context_status_lines
@@ -2042,7 +1440,7 @@ def handle_slash(
                 rows.append(("", line.strip()))
         md = "## Context\n\n| Key | Value |\n|---|---|\n"
         for k, v in rows:
-            md += f"| {_md_escape(k)} | {_md_escape(v)} |\n"
+            md += f"| {markdown_escape(k)} | {markdown_escape(v)} |\n"
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/safety":
@@ -2058,9 +1456,9 @@ def handle_slash(
             for line in plain:
                 if ": " in line:
                     k, v = line.split(": ", 1)
-                    md += f"| {_md_escape(k.strip())} | {_md_escape(v.strip())} |\n"
+                    md += f"| {markdown_escape(k.strip())} | {markdown_escape(v.strip())} |\n"
                 elif line.startswith("profiles:") or line.startswith("switch:"):
-                    md += f"\n*{_md_escape(line)}*\n"
+                    md += f"\n*{markdown_escape(line)}*\n"
             return SlashResult(handled=True, lines=plain, markdown=md)
         profile = get_safety_profile(args[0])
         notes = apply_safety_to_settings(settings, profile)
@@ -2121,7 +1519,10 @@ def handle_slash(
                 desc = s.description or "-"
                 if len(desc) > 80:
                     desc = desc[:79] + "..."
-                md += f"| {_md_escape(s.name)} | {_md_escape(desc)} | `{_md_escape(s.path)}` |\n"
+                md += (
+                    f"| {markdown_escape(s.name)} | {markdown_escape(desc)} "
+                    f"| `{markdown_escape(s.path)}` |\n"
+                )
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/memory":
@@ -2140,7 +1541,7 @@ def handle_slash(
             md = f"## Memory Files ({len(entries)})\n\n| Path | Size | Status |\n|---|---|---|\n"
             for path, exists, size in entries:
                 status = "ok" if exists else "missing"
-                md += f"| `{_md_escape(path)}` | {size} | {status} |\n"
+                md += f"| `{markdown_escape(path)}` | {size} | {status} |\n"
             md += "\n*Existing files are injected via `create_deep_agent(memory=...)`*"
         return SlashResult(handled=True, lines=plain, markdown=md)
 
@@ -2168,9 +1569,9 @@ def handle_slash(
                 isolation = "tool-exclude" if mw else ("tools+" if tools else "default")
                 tool_list = ", ".join(str(n) for n in tool_names) if tool_names else "-"
                 md += (
-                    f"| {_md_escape(name)} | {_md_escape(model)} "
-                    f"| {_md_escape(isolation)} "
-                    f"| {_md_escape(tool_list)} |\n"
+                    f"| {markdown_escape(name)} | {markdown_escape(model)} "
+                    f"| {markdown_escape(isolation)} "
+                    f"| {markdown_escape(tool_list)} |\n"
                 )
         return SlashResult(handled=True, lines=plain, markdown=md)
 
