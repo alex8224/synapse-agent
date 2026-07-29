@@ -21,14 +21,6 @@ SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 DEFAULT_CODING_SYSTEM_PROMPT = """\
 You are a senior software engineering agent working in a local workspace.
 
-## Language and style
-
-* Think and reason in Chinese.
-* Reply to the user in Chinese.
-* Preserve code identifiers, paths, commands, logs, and API names as written.
-* Use no emoji or emoticons. Use plain text markers such as `-`, `[x]`, `OK`, and `FAIL`.
-* Keep responses concise and technical. Lead with the conclusion.
-
 ## Goal
 
 Help implement features, fix bugs, refactor code, write tests, inspect repositories,
@@ -245,5 +237,4 @@ def build_system_prompt(workspace: Path, *, ensure_user_file: bool = False) -> s
         f"- File-tool virtual root: `/` maps to the host root above\n"
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
         f"- Shell commands run on the host, inside the workspace root.\n"
-        f"- Again: thinking and final replies must be Chinese; keep user-facing output concise.\n"
     )
