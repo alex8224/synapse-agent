@@ -13,12 +13,13 @@ from synapse.app.agent import build_coding_agent
 from synapse.commands.compression import handle_compression
 from synapse.commands.helpers import markdown_escape, parts
 from synapse.commands.mcp import handle_mcp
+from synapse.commands.model import handle_model
 from synapse.commands.result import SlashResult
 from synapse.commands.sessions import handle_session
+from synapse.commands.theme import handle_theme
 from synapse.integrations.mcp_client import (
     get_active_mcp_pool,
 )
-from synapse.models.registry import registry_from_settings
 from synapse.sessions.store import (
     SessionStore,
     apply_binding_to_settings,
@@ -257,257 +258,6 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
             pass
 
 
-def _handle_model(
-    args: list[str],
-    *,
-    settings: Any,
-    agent: Any,
-    project_root: Path,
-    thread_id: str | None = None,
-) -> SlashResult:
-    from synapse.models.registry import (
-        apply_thinking_to_settings,
-        format_model_status,
-        is_thinking_token,
-        settings_thinking_label,
-    )
-
-    reg = registry_from_settings(settings)
-    cfg_path = getattr(settings, "models_config_path", None)
-    active = getattr(agent, "_coding_model_profile", None) or settings.active_model or reg.default
-    allowed = reg.allowed_thinking_levels(active)
-    allowed_help = "|".join(allowed) if allowed else "off|low|medium|high|max"
-
-    if not args:
-        lines = [
-            f"active={active}",
-            f"display={format_model_status(settings)}",
-            f"thinking={settings_thinking_label(settings)}",
-            f"thinking_levels={', '.join(allowed)}",
-        ]
-        if cfg_path:
-            lines.append(f"config={cfg_path}")
-        for name in reg.list_names():
-            p = reg.get(name)
-            mark = "*" if name == (settings.active_model or reg.default) else " "
-            base = f" base={p.base_url}" if p.base_url else ""
-            levels = reg.allowed_thinking_levels(name)
-            lines.append(
-                f"{mark} {name} -> {p.model} default_thinking={p.thinking_label()}"
-                f" levels=[{', '.join(levels)}]{base}"
-            )
-        lines.append("usage: /model <alias|provider:model> [thinking]")
-        lines.append(f"       /model thinking <{allowed_help}>")
-        lines.append("       /model <alias> thinking <level>")
-        lines.append(
-            "note: thinking_levels are independent of model identity; "
-            "session thinking overrides profile default"
-        )
-        return SlashResult(handled=True, lines=lines)
-
-    # /model thinking <level>
-    if args[0].strip().casefold() in {"thinking", "effort", "reasoning"}:
-        if len(args) < 2:
-            return SlashResult(
-                handled=True,
-                lines=[f"usage: /model thinking <{allowed_help}>"],
-                error=True,
-            )
-        try:
-            label = apply_thinking_to_settings(settings, args[1], allowed=allowed)
-        except ValueError as exc:
-            return SlashResult(handled=True, lines=[str(exc)], error=True)
-        model_name = settings.active_model or reg.default
-        new_agent = None
-        note = ""
-        if _apply_thinking_inplace(settings, agent, model_name):
-            note = " (live, no rebuild)"
-        else:
-            try:
-                new_agent = _rebuild_agent(
-                    settings,
-                    project_root=project_root,
-                    model_name=model_name,
-                    agent=agent,
-                    defer_mcp_reconnect=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                return SlashResult(
-                    handled=True,
-                    lines=[f"thinking update failed: {exc}"],
-                    error=True,
-                )
-        _persist_model_binding(settings, thread_id)
-        return SlashResult(
-            handled=True,
-            lines=[f"thinking set to {label}{note}  ({format_model_status(settings)})"],
-            agent=new_agent,
-            settings_changed=True,
-            mcp_attach_pending=bool(new_agent is not None and _mcp_attach_pending(settings)),
-        )
-
-    target = args[0].strip()
-    try:
-        profile = reg.get(target)
-    except KeyError as exc:
-        return SlashResult(handled=True, lines=[str(exc)], error=True)
-
-    from synapse.models.registry import apply_profile_to_settings
-
-    apply_profile_to_settings(settings, profile, seed_thinking=True)
-
-    # /model <alias> high
-    # /model <alias> thinking high
-    think_raw: str | None = None
-    if len(args) >= 3 and args[1].strip().casefold() in {
-        "thinking",
-        "effort",
-        "reasoning",
-    }:
-        think_raw = args[2]
-    elif len(args) >= 2 and is_thinking_token(args[1]):
-        think_raw = args[1]
-    elif len(args) >= 2 and args[1].strip().casefold() not in {
-        "thinking",
-        "effort",
-        "reasoning",
-    }:
-        # Second arg present but not a known thinking token -> error for clarity
-        return SlashResult(
-            handled=True,
-            lines=[
-                f"unknown thinking level: {args[1]}",
-                f"usage: /model <alias> [{allowed_help}]",
-            ],
-            error=True,
-        )
-
-    if think_raw is not None:
-        try:
-            apply_thinking_to_settings(
-                settings,
-                think_raw,
-                allowed=reg.allowed_thinking_levels(profile.name),
-            )
-        except ValueError as exc:
-            return SlashResult(handled=True, lines=[str(exc)], error=True)
-
-    try:
-        new_agent = _rebuild_agent(
-            settings,
-            project_root=project_root,
-            model_name=profile.name,
-            agent=agent,
-            defer_mcp_reconnect=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return SlashResult(
-            handled=True,
-            lines=[f"model switch failed: {exc}"],
-            error=True,
-        )
-    _persist_model_binding(settings, thread_id)
-    mcp_attach_pending = _mcp_attach_pending(settings)
-    return SlashResult(
-        handled=True,
-        lines=[f"model switched to {profile.name}  ({format_model_status(settings)})"],
-        agent=new_agent,
-        settings_changed=True,
-        mcp_attach_pending=mcp_attach_pending,
-    )
-
-
-def _handle_theme(
-    args: list[str],
-    *,
-    settings: Any,
-    project_root: Path,
-) -> SlashResult:
-    """List or switch UI themes; persist selection to user settings.json."""
-    from synapse.ui.theme import (
-        format_theme_list_lines,
-        get_theme,
-        list_theme_names,
-        reload_theme_catalog,
-        set_theme,
-    )
-
-    reload_theme_catalog(project_root)
-    if not args or args[0].casefold() in {"list", "ls", "show"}:
-        active = getattr(settings, "theme", None) or get_theme().name
-        plain = format_theme_list_lines(active=active)
-        from synapse.ui.theme import list_themes, theme_kind
-
-        md = (
-            "## Themes\n\n"
-            f"**current**: `{active}`\n\n"
-            "|   | Name | Label | Kind |\n|---|---|---|---|\n"
-        )
-        for t in list_themes():
-            mark = "*" if t.name == active else " "
-            tone = theme_kind(t)
-            from synapse.ui.theme import BUILTIN_THEMES, _custom
-
-            if t.name in _custom and t.name not in BUILTIN_THEMES:
-                kind = f"custom/{tone}"
-            elif t.name in _custom:
-                kind = f"override/{tone}"
-            else:
-                kind = f"built-in/{tone}"
-            md += (
-                f"| {mark} | `{markdown_escape(t.name)}` "
-                f"| {markdown_escape(t.label)} | {markdown_escape(kind)} |\n"
-            )
-        md += "\nusage: `/theme <name>`\n\nconfig: `settings.json` theme + optional `themes.json`"
-        return SlashResult(handled=True, lines=plain, markdown=md)
-
-    name = args[0].strip()
-    # Optional: /theme set <name> | /theme use <name>
-    if name.casefold() in {"set", "use", "switch"} and len(args) >= 2:
-        name = args[1].strip()
-    try:
-        theme = set_theme(
-            name,
-            workspace=project_root,
-            persist=True,
-            scope="user",
-            reload=False,
-        )
-    except KeyError as exc:
-        names = ", ".join(list_theme_names())
-        return SlashResult(
-            handled=True,
-            lines=[str(exc), f"available: {names}"],
-            error=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return SlashResult(
-            handled=True,
-            lines=[f"theme switch failed: {exc}"],
-            error=True,
-        )
-
-    try:
-        settings.theme = theme.name
-    except Exception:  # noqa: BLE001
-        pass
-    return SlashResult(
-        handled=True,
-        lines=[
-            f"theme switched to {theme.name} ({theme.label})",
-            "saved to ~/.coding-agent/settings.json",
-        ],
-        markdown=(
-            "## Theme\n\n"
-            f"- **name**: `{markdown_escape(theme.name)}`\n"
-            f"- **label**: {markdown_escape(theme.label)}\n\n"
-            "*saved to `~/.coding-agent/settings.json`*"
-        ),
-        settings_changed=True,
-        theme_name=theme.name,
-    )
-
-
 def handle_slash(
     text: str,
     *,
@@ -586,16 +336,20 @@ def handle_slash(
         )
 
     if cmd == "/model":
-        return _handle_model(
+        return handle_model(
             args,
             settings=settings,
             agent=agent,
             project_root=root,
             thread_id=thread_id,
+            apply_thinking_inplace=_apply_thinking_inplace,
+            rebuild_agent=_rebuild_agent,
+            persist_model_binding=_persist_model_binding,
+            mcp_attach_pending=_mcp_attach_pending,
         )
 
     if cmd == "/theme":
-        return _handle_theme(args, settings=settings, project_root=root)
+        return handle_theme(args, settings=settings, project_root=root)
 
     if cmd == "/compact":
         from synapse.runtime.context_compact import force_compact_via_agent
