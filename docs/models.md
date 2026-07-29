@@ -102,6 +102,24 @@ synapse models list
 export VISION_MODEL='{"model": "qwen-vl-max", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "VISION_API_KEY"}'
 ```
 
+## WebSocket 传输
+
+OpenAI Responses API 可在模型 profile 中设置 `"websocket": true`。发生连接关闭、超时或上游流在 `response.completed` 前断开时，Synapse 会按 profile 的 `max_retries` 重建连接并重放当前请求。重试耗尽且尚未输出任何 chunk 时，本轮自动回退到 HTTP/SSE；已经输出内容后不会自动重放，以免重复文本或工具调用。
+
+```json
+{
+  "models": {
+    "gpt-4.1-ws": {
+      "provider": "openai",
+      "model": "gpt-4.1",
+      "api_key_env": "OPENAI_API_KEY",
+      "websocket": true,
+      "max_retries": 2
+    }
+  }
+}
+```
+
 ## 自定义 OpenAI 兼容网关
 
 Synapse 支持任何 OpenAI 兼容的 API：

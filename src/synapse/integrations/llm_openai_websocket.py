@@ -20,6 +20,41 @@ _TERMINAL_EVENT_TYPES = {
     "response.incomplete",
 }
 
+_TRANSIENT_WEBSOCKET_ERROR_MARKERS = (
+    "connection closed",
+    "connection reset",
+    "disconnected before completion",
+    "stream closed before response.completed",
+    "temporarily unavailable",
+    "timeout",
+    "timed out",
+    "upstream request timeout",
+)
+
+
+class _ResponsesWebSocketServerError(RuntimeError):
+    """Structured error event returned by a Responses WebSocket server."""
+
+    def __init__(self, message: str, *, code: str | None = None, param: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.param = param
+
+
+def _is_retryable_websocket_error(exc: Exception) -> bool:
+    if isinstance(exc, _ResponsesWebSocketServerError):
+        if exc.param:
+            return False
+        if exc.code and exc.code not in {"server_error", "vector_store_timeout"}:
+            return False
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    name = type(exc).__name__.casefold()
+    if "connectionclosed" in name or "websocketconnection" in name:
+        return True
+    message = str(exc).casefold()
+    return any(marker in message for marker in _TRANSIENT_WEBSOCKET_ERROR_MARKERS)
+
 
 def prepare_responses_websocket_event(payload: dict[str, Any]) -> dict[str, Any]:
     """Convert a LangChain Responses HTTP payload into ``response.create``."""
@@ -48,8 +83,11 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
     _responses_ws_manager: Any = PrivateAttr(default=None)
     _responses_ws_connection: Any = PrivateAttr(default=None)
     _responses_ws_lock: asyncio.Lock | None = PrivateAttr(default=None)
+    _responses_ws_closed: bool = PrivateAttr(default=False)
 
     async def _ensure_responses_websocket(self) -> Any:
+        if self._responses_ws_closed:
+            raise RuntimeError("Responses WebSocket model is closed")
         connection = self._responses_ws_connection
         if connection is not None:
             return connection
@@ -85,7 +123,8 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
                 pass
 
     async def aclose(self) -> None:
-        """Close the persistent Responses WebSocket, if it was opened."""
+        """Close the persistent Responses WebSocket and prevent reconnects."""
+        self._responses_ws_closed = True
         await self._reset_responses_websocket()
 
     async def _recv_event(self, connection: Any) -> Any:
@@ -131,57 +170,101 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
         kwargs["stream"] = True
         payload = self._get_request_payload(messages, stop=stop, **kwargs)
         event = prepare_responses_websocket_event(payload)
+        max_retries = max(0, int(self.max_retries or 0))
 
         if self._responses_ws_lock is None:
             self._responses_ws_lock = asyncio.Lock()
 
+        use_http_fallback = False
         async with self._responses_ws_lock:
-            connection = await self._ensure_responses_websocket()
-            try:
-                await connection.send(event)
-                current_index = -1
-                current_output_index = -1
-                current_sub_index = -1
-                has_reasoning = False
-                original_schema_obj = kwargs.get("response_format")
+            for attempt in range(max_retries + 1):
+                yielded_chunk = False
+                try:
+                    connection = await self._ensure_responses_websocket()
+                    await connection.send(event)
+                    current_index = -1
+                    current_output_index = -1
+                    current_sub_index = -1
+                    has_reasoning = False
+                    original_schema_obj = kwargs.get("response_format")
 
-                while True:
-                    response_event = await self._recv_event(connection)
-                    event_type = str(getattr(response_event, "type", ""))
-                    if event_type == "error":
-                        error = getattr(response_event, "error", None)
-                        message = getattr(error, "message", None) or str(error or response_event)
-                        raise RuntimeError(f"Responses WebSocket error: {message}")
-
-                    (
-                        current_index,
-                        current_output_index,
-                        current_sub_index,
-                        generation_chunk,
-                    ) = _convert_responses_chunk_to_generation_chunk(
-                        response_event,
-                        current_index,
-                        current_output_index,
-                        current_sub_index,
-                        schema=original_schema_obj,
-                        metadata={},
-                        has_reasoning=has_reasoning,
-                        output_version=self.output_version,
-                    )
-                    if generation_chunk is not None:
-                        if run_manager is not None:
-                            await run_manager.on_llm_new_token(
-                                generation_chunk.text,
-                                chunk=generation_chunk,
+                    while True:
+                        response_event = await self._recv_event(connection)
+                        event_type = str(getattr(response_event, "type", ""))
+                        if event_type == "error":
+                            error = getattr(response_event, "error", None)
+                            message = (
+                                getattr(response_event, "message", None)
+                                or getattr(error, "message", None)
+                                or str(error or response_event)
                             )
-                        if "reasoning" in generation_chunk.message.additional_kwargs:
-                            has_reasoning = True
-                        yield generation_chunk
+                            code = getattr(response_event, "code", None) or getattr(
+                                error, "code", None
+                            )
+                            param = getattr(response_event, "param", None) or getattr(
+                                error, "param", None
+                            )
+                            raise _ResponsesWebSocketServerError(
+                                f"Responses WebSocket error: {message}",
+                                code=str(code) if code else None,
+                                param=str(param) if param else None,
+                            )
 
-                    if event_type in _TERMINAL_EVENT_TYPES:
-                        break
-            except BaseException:
-                # Cancellation or a protocol error may leave unread events on the
-                # socket. Reopen it before the next model turn.
-                await self._reset_responses_websocket()
-                raise
+                        (
+                            current_index,
+                            current_output_index,
+                            current_sub_index,
+                            generation_chunk,
+                        ) = _convert_responses_chunk_to_generation_chunk(
+                            response_event,
+                            current_index,
+                            current_output_index,
+                            current_sub_index,
+                            schema=original_schema_obj,
+                            metadata={},
+                            has_reasoning=has_reasoning,
+                            output_version=self.output_version,
+                        )
+                        if generation_chunk is not None:
+                            yielded_chunk = True
+                            if run_manager is not None:
+                                await run_manager.on_llm_new_token(
+                                    generation_chunk.text,
+                                    chunk=generation_chunk,
+                                )
+                            if "reasoning" in generation_chunk.message.additional_kwargs:
+                                has_reasoning = True
+                            yield generation_chunk
+
+                        if event_type in _TERMINAL_EVENT_TYPES:
+                            return
+                except asyncio.CancelledError:
+                    await self._reset_responses_websocket()
+                    raise
+                except Exception as exc:
+                    # A failed response may leave unread events on the persistent
+                    # socket. Rebuild it before retrying or returning control.
+                    await self._reset_responses_websocket()
+                    if self._responses_ws_closed:
+                        raise
+                    if yielded_chunk or not _is_retryable_websocket_error(exc):
+                        raise
+                    if attempt < max_retries:
+                        await asyncio.sleep(min(0.5 * (2**attempt), 8.0))
+                        continue
+                    use_http_fallback = True
+                    break
+                except BaseException:
+                    # GeneratorExit from a consumer that stops early also leaves
+                    # unread response events, so this socket must not be reused.
+                    await self._reset_responses_websocket()
+                    raise
+
+        if use_http_fallback:
+            async for chunk in super()._astream(
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
+            ):
+                yield chunk

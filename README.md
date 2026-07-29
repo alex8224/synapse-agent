@@ -145,7 +145,7 @@ cp .env.example .env
 | `MODEL` | 是 | 模型标识，如 `openai:gpt-4.1`、`openai:deepseek-chat` |
 | `OPENAI_API_KEY` | 是* | OpenAI 兼容 API 密钥 |
 | `OPENAI_BASE_URL` | 否 | 自定义 API 端点（中转/本地服务需填） |
-| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE） |
+| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE）。瞬时断流按模型 `max_retries` 重连，耗尽后在尚未输出内容时回退 HTTP/SSE |
 | `ANTHROPIC_API_KEY` | 否 | Anthropic 原生 API 密钥 |
 | `WORKSPACE` | 否 | 工作区路径，默认 `.` |
 | `SHELL_EXECUTABLE` | 否 | Shell 类型，默认 `pwsh`（可选 `cmd`/`bash`） |

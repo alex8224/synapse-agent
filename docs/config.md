@@ -31,7 +31,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `MODEL` | `openai:gpt-4.1` | 默认模型（legacy 单模型模式） |
 | `OPENAI_API_KEY` | — | OpenAI API Key |
 | `OPENAI_BASE_URL` | — | OpenAI API 自定义网关 |
-| `OPENAI_WEBSOCKET` | `false` | 启用 WebSocket 连接 |
+| `OPENAI_WEBSOCKET` | `false` | 启用 WebSocket 连接；瞬时断流按模型 `max_retries` 重连，耗尽后在尚未输出内容时回退 HTTP/SSE |
 | `ANTHROPIC_API_KEY` | — | Anthropic API Key |
 | `AGENT_MODELS_CONFIG` | — | `models.json` 路径（覆盖默认） |
 | `MODELS_JSON` | — | 内联 JSON（替代文件） |
