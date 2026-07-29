@@ -232,6 +232,23 @@ def build_coding_agent(
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
         )
+    # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
+    _dag_mw: Any = None
+    _use_dag_subagents = bool(
+        getattr(settings, "parallel_subagents", False)
+        and subagents
+    )
+    if _use_dag_subagents:
+        from synapse.parallel_subagents import DAGSubAgentMiddleware
+
+        # backend must be shared so DAG-compiled subagents get filesystem tools.
+        # Without it, researcher/tester compile as empty shells (no read_file/glob).
+        _dag_mw = DAGSubAgentMiddleware(
+            subagents=subagents,
+            default_model=model,
+            backend=backend,
+            max_parallel=getattr(settings, "max_parallel_subagents", 6),
+        )
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
         readonly=settings.readonly,
@@ -365,6 +382,8 @@ def build_coding_agent(
                 middleware.append(build_compact_tool_middleware(model, backend))
         except Exception:  # noqa: BLE001
             pass
+    if _dag_mw is not None:
+        middleware.append(_dag_mw)
 
     if progress is not None:
         progress("compiling agent graph")
@@ -377,7 +396,7 @@ def build_coding_agent(
             middleware=middleware,
             memory=memory_paths or None,
             skills=skills_paths or None,
-            subagents=subagents,
+            subagents=None if _use_dag_subagents else subagents,
             permissions=permissions,
             interrupt_on=interrupt_on,
             checkpointer=saver,
