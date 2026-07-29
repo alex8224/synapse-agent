@@ -7,6 +7,18 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.13
+
+### 新功能
+
+- 支持通过 PyPI Trusted Publisher 自动发布 `synapse-cli-agent` 分发包。
+
+### 工程改进
+
+- 安装文档增加无需克隆仓库的 PyPI 安装方式；`uv` 可自动管理所需 Python 版本。
+
+---
+
 ## v0.1.2
 
 ### 修复

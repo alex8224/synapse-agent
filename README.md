@@ -29,19 +29,21 @@
 
 ### 前置要求
 
-- Python >= 3.12
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)（包管理器）
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)（会自动安装和管理所需的 Python >= 3.12）
 
-### 方法一：安装为系统 CLI 工具（推荐）
+### 方法一：从 PyPI 安装为系统 CLI 工具（推荐）
 
-项目已声明 console script，可一次安装到用户 PATH，之后无需 `uv run`。
+无需克隆仓库或预装 Python：
 
 ```powershell
-# 可编辑安装（开发推荐；改代码立刻生效）
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+uv tool install synapse-cli-agent
+```
 
-# 或手动
-uv tool install --editable --force .
+开发者如需从本地源码可编辑安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Force
+# 或：uv tool install --editable --force .
 ```
 
 安装后任意目录直接使用：
@@ -72,7 +74,7 @@ uv run synapse chat -w .
 ### 卸载
 
 ```powershell
-uv tool uninstall synapse
+uv tool uninstall synapse-cli-agent
 # 或
 powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Uninstall
 ```

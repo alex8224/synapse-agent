@@ -22,8 +22,8 @@ function Require-Uv {
 Require-Uv
 
 if ($Uninstall) {
-    Write-Host "uv tool uninstall synapse"
-    uv tool uninstall synapse
+    Write-Host "uv tool uninstall synapse-cli-agent"
+    uv tool uninstall synapse-cli-agent
     exit $LASTEXITCODE
 }
 

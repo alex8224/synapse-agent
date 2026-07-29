@@ -1802,8 +1802,8 @@ wheels = [
 ]
 
 [[package]]
-name = "synapse"
-version = "0.1.11"
+name = "synapse-cli-agent"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
