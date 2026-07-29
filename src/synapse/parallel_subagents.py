@@ -384,6 +384,15 @@ def _enrich_description(task: dict, upstream_results: dict[str, str]) -> str:
     )
 
 
+def _task_monitor_call_id(task: dict[str, Any]) -> str:
+    """Return the stable monitor key for one DAG task."""
+    return str(task.get("tool_call_id") or task.get("task_id") or "")
+
+
+def _tool_call_cache_key(tool_call: dict[str, Any], task_id: str) -> str:
+    return str(tool_call.get("id") or task_id or "")
+
+
 def _format_dag_results(
     results: dict[str, str],
     task_wave: dict[str, int],
@@ -642,7 +651,6 @@ class DAGSubAgentMiddleware(AgentMiddleware):
 
         # —— 缓存结果，供 awrap_tool_call 使用 ——
         for tc in task_calls:
-            tc_id = tc.get("id", "")
             args: dict = tc.get("args", {})
             task_id = args.get("task_id", "unknown")
             subagent_type = args.get("subagent_type", "unknown")
@@ -657,7 +665,7 @@ class DAGSubAgentMiddleware(AgentMiddleware):
                 f"[DAG 波次 {w}: {subagent_type} | {task_id}{dep_hint}]\n\n"
                 f"{result_text}"
             )
-            self._dag_cache[tc_id] = tool_content
+            self._dag_cache[_tool_call_cache_key(tc, str(task_id))] = tool_content
 
         # ★ 返回原始 AIMessage（tool_calls 完整保留）
         #   → ToolNode 会在下一步处理，awrap_tool_call 返回缓存结果
@@ -679,8 +687,11 @@ class DAGSubAgentMiddleware(AgentMiddleware):
         if tc_name != "task":
             return await handler(request)
 
-        tc_id = getattr(request, "tool_call", {}).get("id", "")
-        cached = self._dag_cache.pop(tc_id, None)
+        tool_call = getattr(request, "tool_call", {})
+        tc_id = str(tool_call.get("id") or "")
+        args = tool_call.get("args") or {}
+        task_id = str(args.get("task_id") or "") if isinstance(args, dict) else ""
+        cached = self._dag_cache.pop(_tool_call_cache_key(tool_call, task_id), None)
 
         if cached is not None:
             return ToolMessage(
@@ -745,7 +756,6 @@ class DAGSubAgentMiddleware(AgentMiddleware):
             task_type_map[tid] = args.get("subagent_type", "unknown")
 
         for tc in task_calls:
-            tc_id = tc.get("id", "")
             args: dict = tc.get("args", {})
             task_id = args.get("task_id", "unknown")
             subagent_type = args.get("subagent_type", "unknown")
@@ -759,7 +769,7 @@ class DAGSubAgentMiddleware(AgentMiddleware):
                 f"[DAG 波次 {w}: {subagent_type} | {task_id}{dep_hint}]\n\n"
                 f"{result_text}"
             )
-            self._dag_cache[tc_id] = tool_content
+            self._dag_cache[_tool_call_cache_key(tc, str(task_id))] = tool_content
 
         return response
 
@@ -775,8 +785,11 @@ class DAGSubAgentMiddleware(AgentMiddleware):
         if tc_name != "task":
             return handler(request)
 
-        tc_id = getattr(request, "tool_call", {}).get("id", "")
-        cached = self._dag_cache.pop(tc_id, None)
+        tool_call = getattr(request, "tool_call", {})
+        tc_id = str(tool_call.get("id") or "")
+        args = tool_call.get("args") or {}
+        task_id = str(args.get("task_id") or "") if isinstance(args, dict) else ""
+        cached = self._dag_cache.pop(_tool_call_cache_key(tool_call, task_id), None)
 
         if cached is not None:
             return ToolMessage(
@@ -876,6 +889,13 @@ class DAGSubAgentMiddleware(AgentMiddleware):
 
         remaining: list[dict] = list(tasks)
         wave_num = 0
+        monitor = None
+        try:
+            from synapse.subagent_monitor import monitor_from_config
+
+            monitor = monitor_from_config(self._parent_run_config)
+        except Exception:  # noqa: BLE001
+            monitor = None
 
         while remaining:
             ready, remaining = _topological_waves(remaining, set(results.keys()))
@@ -899,6 +919,15 @@ class DAGSubAgentMiddleware(AgentMiddleware):
 
             for t in batch:
                 task_wave[t["task_id"]] = wave_num
+                if monitor is not None:
+                    monitor.start_task(
+                        call_id=_task_monitor_call_id(t),
+                        task_id=str(t.get("task_id") or ""),
+                        subagent_type=str(t.get("subagent_type") or ""),
+                        description=str(t.get("description") or ""),
+                        wave=wave_num,
+                        depends_on=list(t.get("depends_on") or []),
+                    )
 
             logger.debug(
                 "DAG 波次 %d: 并行执行 %d 个子Agent: %s",
@@ -935,13 +964,24 @@ class DAGSubAgentMiddleware(AgentMiddleware):
         subagent_type: str = task.get("subagent_type", "")
         task_id: str = task.get("task_id", "unknown")
         tool_call_id: str = str(task.get("tool_call_id") or "")
+        monitor_call_id = _task_monitor_call_id(task)
+        monitor = None
+        try:
+            from synapse.subagent_monitor import monitor_from_config
+
+            monitor = monitor_from_config(self._parent_run_config)
+        except Exception:  # noqa: BLE001
+            monitor = None
 
         runnable = self._subagent_runnables.get(subagent_type)
         if runnable is None:
-            return (
+            output = (
                 f"错误: 子 Agent '{subagent_type}' 不存在。"
                 f"可用: {', '.join(sorted(self._subagent_runnables.keys()))}"
             )
+            if monitor is not None and monitor_call_id:
+                monitor.finish_task(monitor_call_id, output, error=True)
+            return output
 
         # 注入上游依赖的输出
         description = _enrich_description(task, upstream_results)
@@ -951,6 +991,20 @@ class DAGSubAgentMiddleware(AgentMiddleware):
             task_id=task_id,
             tool_call_id=tool_call_id,
         )
+        use_stream_events = (
+            monitor is not None
+            and bool(monitor_call_id)
+            and callable(getattr(runnable, "astream_events", None))
+        )
+        try:
+            from synapse.subagent_monitor import SubagentMonitorCallback
+
+            if monitor is not None and monitor_call_id and not use_stream_events:
+                callbacks = list(subagent_config.get("callbacks") or [])
+                callbacks.append(SubagentMonitorCallback(monitor, monitor_call_id))
+                subagent_config["callbacks"] = callbacks
+        except Exception:  # noqa: BLE001
+            pass
 
         try:
             # Align with deepagents SubAgentMiddleware.atask:
@@ -962,22 +1016,90 @@ class DAGSubAgentMiddleware(AgentMiddleware):
 
             if _subagent_tracing_context is not None:
                 with _subagent_tracing_context():
-                    result = await runnable.ainvoke(
+                    result = await self._invoke_subagent_runnable(
+                        runnable,
                         {"messages": [HumanMessage(content=description)]},
                         subagent_config,
+                        monitor=monitor,
+                        monitor_call_id=monitor_call_id,
+                        use_stream_events=use_stream_events,
                     )
             else:
-                result = await runnable.ainvoke(
+                result = await self._invoke_subagent_runnable(
+                    runnable,
                     {"messages": [HumanMessage(content=description)]},
                     subagent_config,
+                    monitor=monitor,
+                    monitor_call_id=monitor_call_id,
+                    use_stream_events=use_stream_events,
                 )
-            return _extract_final_response(result.get("messages", []))
+            messages = result.get("messages", [])
+            output = _extract_final_response(messages)
+            if monitor is not None and monitor_call_id:
+                try:
+                    from synapse.subagent_monitor import events_from_messages
+
+                    monitor.extend_events(
+                        monitor_call_id,
+                        events_from_messages(list(messages or [])),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                monitor.finish_task(monitor_call_id, output)
+            return output
         except Exception as exc:
             logger.warning(
                 "子 Agent '%s' (task_id=%s) 执行失败: %s",
                 subagent_type, task_id, exc,
             )
-            return f"错误: 子 Agent '{subagent_type}' 执行失败: {exc}"
+            output = f"错误: 子 Agent '{subagent_type}' 执行失败: {exc}"
+            if monitor is not None and monitor_call_id:
+                monitor.finish_task(monitor_call_id, output, error=True)
+            return output
+
+    async def _invoke_subagent_runnable(
+        self,
+        runnable: Runnable,
+        payload: dict[str, Any],
+        config: dict[str, Any],
+        *,
+        monitor: Any | None,
+        monitor_call_id: str,
+        use_stream_events: bool,
+    ) -> dict[str, Any]:
+        if use_stream_events and monitor is not None and monitor_call_id:
+            try:
+                event_stream = runnable.astream_events(
+                    payload,
+                    config,
+                    version="v2",
+                )
+            except TypeError:
+                return await runnable.ainvoke(payload, config)
+
+            from synapse.subagent_monitor import SubagentStreamEventRecorder
+
+            recorder = SubagentStreamEventRecorder(monitor, monitor_call_id)
+            async for event in event_stream:
+                if isinstance(event, dict):
+                    recorder.record(event)
+            if isinstance(recorder.final_output, dict):
+                return dict(recorder.final_output)
+            if isinstance(recorder.final_output, list):
+                return {"messages": list(recorder.final_output)}
+            final_messages = []
+            if recorder.final_output is not None:
+                try:
+                    from synapse.subagent_monitor import _messages_from_output
+
+                    final_messages = _messages_from_output(recorder.final_output)
+                except Exception:  # noqa: BLE001
+                    final_messages = []
+            if final_messages:
+                return {"messages": final_messages}
+            return {"messages": []}
+
+        return await runnable.ainvoke(payload, config)
 
 
 # ═══════════════════════════════════════════════════════════
