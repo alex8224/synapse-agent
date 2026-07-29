@@ -13,7 +13,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from synapse.tool_output.pipeline import ToolOutputRepository
+from synapse.tool_output.repository import ToolOutputRepository
 
 
 def build_tool_result_reader_tool(tool_output_db_path: Path | str) -> Any:

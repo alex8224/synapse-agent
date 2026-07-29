@@ -43,7 +43,7 @@ from synapse.content.multimodal import (
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.sessions.session_recap import SessionRecapController
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
-from synapse.tool_output.pipeline import ToolOutputRepository
+from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,

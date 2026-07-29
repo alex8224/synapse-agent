@@ -13,14 +13,9 @@ from langgraph.types import Command
 
 from synapse.runtime.execute_capture import begin_execute_capture, end_execute_capture
 from synapse.runtime.interaction_ledger import current_position
-from synapse.tool_output.pipeline import (
-    CompressionStageEvent,
-    ToolOutputRepository,
-    ToolOutputTransformPipeline,
-    TransformContext,
-    TransformEvent,
-    content_to_text,
-)
+from synapse.tool_output.models import CompressionStageEvent, TransformContext, TransformEvent
+from synapse.tool_output.pipeline import ToolOutputTransformPipeline
+from synapse.tool_output.repository import ToolOutputRepository, content_to_text
 
 
 def _estimate_tokens(content: str) -> int:

@@ -6,7 +6,7 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 
-from synapse.tool_output.pipeline import ToolOutputRepository
+from synapse.tool_output.repository import ToolOutputRepository
 
 
 def _thread_id(request: Any) -> str:

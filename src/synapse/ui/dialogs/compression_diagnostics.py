@@ -7,7 +7,7 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from synapse.tool_output.pipeline import ToolOutputRepository
+from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.dialogs.base import DialogBase, OptionItem, SectionHeader
 
 

@@ -288,7 +288,7 @@ def _compression_export_result(
     if error or thread_id is None:
         return SlashResult(handled=True, lines=[error or "session not found"], error=True)
 
-    from synapse.tool_output.pipeline import ToolOutputRepository
+    from synapse.tool_output.repository import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
     diagnostics = repo.export_diagnostics(thread_id=thread_id)
@@ -383,7 +383,7 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
     if error or thread_id is None:
         return SlashResult(handled=True, lines=[error or "session not found"], error=True)
 
-    from synapse.tool_output.pipeline import ToolOutputRepository
+    from synapse.tool_output.repository import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
     if show_profile:

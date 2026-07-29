@@ -46,11 +46,9 @@ from synapse.runtime.subagents import build_default_subagents
 from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.settings import Settings
-from synapse.tool_output.pipeline import (
-    ToolOutputRepository,
-    ToolOutputTransformPipeline,
-    load_transformer_plugins,
-)
+from synapse.tool_output.pipeline import ToolOutputTransformPipeline
+from synapse.tool_output.repository import ToolOutputRepository
+from synapse.tool_output.transformers import load_transformer_plugins
 from synapse.tools import build_session_tools
 
 
