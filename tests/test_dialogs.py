@@ -87,6 +87,33 @@ class TestMcpPanelInit:
         dlg = McpPanelDialog(settings, project_root=Path.cwd())
         assert dlg._servers == []
 
+    def test_toggle_server_shortcut_is_bound(self, monkeypatch):
+        monkeypatch.setattr(
+            "synapse.integrations.mcp_client.load_mcp_server_configs",
+            MagicMock(return_value=[]),
+        )
+        from synapse.config import Settings
+        from synapse.ui.dialogs.mcp_panel import McpPanelDialog
+
+        dialog = McpPanelDialog(Settings(_env_file=None, theme="cursor-dark"))
+        assert any(
+            binding.key == "d" and binding.action == "toggle_server"
+            for binding in dialog.BINDINGS
+        )
+
+
+class TestMcpPanelCallbacks:
+    def test_temporary_toggle_dispatches_server_toggle(self):
+        from synapse.ui.tui import CodingAgentApp
+
+        app = MagicMock()
+        app._apply_mcp_server_toggle = MagicMock()
+        CodingAgentApp._on_mcp_dialog_done(
+            app, ("mcp-toggle-server", "example-server")
+        )
+
+        app._apply_mcp_server_toggle.assert_called_once_with("example-server")
+
 
 class TestThemePickerInit:
     def test_initializes_with_list(self):

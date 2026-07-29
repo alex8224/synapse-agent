@@ -164,10 +164,11 @@ class McpPanelDialog(DialogBase):
         Binding("space", "toggle_check", "Toggle", show=False, priority=True),
         Binding("s", "save", "Save", show=False, priority=True),
         Binding("r", "reload", "Reload", show=False, priority=True),
+        Binding("d", "toggle_server", "Toggle server", show=False, priority=True),
     ]
     _title_icon = ""
     _title_keys = (
-        "\u2191\u2193 move \u00b7 space/\u21b5 fold/toggle \u00b7"
+        "\u2191\u2193 move \u00b7 space/\u21b5 fold/toggle \u00b7 d toggle server \u00b7"
         " ctrl+a all \u00b7 s save \u00b7 r reload \u00b7 esc close"
     )
 
@@ -295,6 +296,17 @@ class McpPanelDialog(DialogBase):
 
     def action_reload(self) -> None:
         self.dismiss(("mcp-reload",))
+
+    def action_toggle_server(self) -> None:
+        """Temporarily toggle the selected MCP server and reload."""
+        body = self.query_one("#dialog-body")
+        key = body.selected_key
+        if key is None or not key.startswith("__srv__"):
+            return
+        server_name = key.split("__", 3)[2]
+        if not any(srv.name == server_name for srv in self._servers):
+            return
+        self.dismiss(("mcp-toggle-server", server_name))
 
     def action_save(self) -> None:
         """Collect tool selections and dismiss — save + reload runs off the UI thread."""

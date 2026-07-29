@@ -4861,6 +4861,47 @@ class CodingAgentApp(App[None]):
         elif action == "mcp-save":
             to_save = result[1] if len(result) > 1 else {}
             self._apply_mcp_save(to_save)
+        elif action == "mcp-toggle-server":
+            server_name = result[1] if len(result) > 1 else ""
+            if server_name:
+                self._apply_mcp_server_toggle(server_name)
+
+    def _apply_mcp_server_toggle(self, server_name: str) -> None:
+        """Temporarily toggle one MCP server through the existing slash handler."""
+        if getattr(self, "_mcp_reloading", False):
+            return
+        self._mcp_reloading = True
+        self.set_activity("switching", f"toggling MCP server {server_name}\u2026", True)
+        self._apply_mcp_server_toggle_bg(server_name)
+
+    @work(thread=True, exclusive=True, group="mcp-reload")
+    def _apply_mcp_server_toggle_bg(self, server_name: str) -> None:
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.observability.startup_trace import duration
+
+        reload_started = time.perf_counter()
+        try:
+            ok = handle_slash(
+                f"/mcp toggle {server_name}",
+                settings=self.settings,
+                agent=self.agent,
+                thread_id=self.thread_id,
+                project_root=self.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            duration("mcp.toggle", reload_started, success=False)
+            self.call_from_thread(
+                self.append_event, f"MCP server toggle failed: {exc}", "yellow"
+            )
+            self.call_from_thread(self.set_activity, "idle", "", True)
+            self._mcp_reloading = False
+            return
+        duration(
+            "mcp.toggle", reload_started, success=not bool(getattr(ok, "error", False))
+        )
+        self.call_from_thread(self._apply_ok_result, ok)
+        self.call_from_thread(self.set_activity, "idle", "", True)
+        self._mcp_reloading = False
 
     def _apply_mcp_save(self, to_save: dict[str, list[str] | None]) -> None:
         """Write include_tools to config, then reload — all on a worker thread."""

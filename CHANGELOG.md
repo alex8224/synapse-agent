@@ -7,6 +7,23 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.11
+
+### 新功能
+
+- F5 MCP Tools 面板支持按 `d` 临时切换当前选中 MCP server 的启用状态，并自动重建 agent；该状态不写入 `mcp.json`
+- 工具输出路径压缩增加更清晰的统计与诊断展示，优化压缩处理路径
+
+### 修复
+
+- 修复会话切换与删除快捷键的职责冲突
+
+### 工程改进
+
+- 扩充 `AGENTS.md` 的仓库结构、架构约束、测试和发布协作规范
+
+---
+
 ## v0.1.10
 
 ### 工程改进
