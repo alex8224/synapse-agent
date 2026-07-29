@@ -25,7 +25,7 @@ def _render_plain(text: str, *, width: int = 80) -> str:
 
 
 def test_render_markdown_draws_mermaid_flowchart():
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
 
     stream_mod._mermaid_render_cache.clear()
     fence = chr(96)*3
@@ -36,7 +36,7 @@ def test_render_markdown_draws_mermaid_flowchart():
 
 
 def test_render_markdown_mmd_alias_case_insensitive():
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
 
     stream_mod._mermaid_render_cache.clear()
     fence = chr(96)*3
@@ -61,7 +61,7 @@ def test_empty_mermaid_fence_does_not_raise():
 
 
 def test_render_rich_failure_falls_back_to_source():
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
 
     stream_mod._mermaid_render_cache.clear()
     fence = chr(96)*3
@@ -76,7 +76,7 @@ def test_render_rich_failure_falls_back_to_source():
 
 
 def test_mermaid_code_block_yields_rich_text():
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
 
     stream_mod._mermaid_render_cache.clear()
     block = _MermaidCodeBlock("mermaid", "monokai")
@@ -98,7 +98,7 @@ def test_python_code_block_not_mermaid():
 
 def test_dense_mermaid_falls_back_without_blocking():
     """Dense graphs must not pin the UI thread; fall back to source fence."""
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
 
     stream_mod._mermaid_render_cache.clear()
     fence = chr(96) * 3
@@ -113,7 +113,7 @@ def test_dense_mermaid_falls_back_without_blocking():
 
 
 def test_render_mermaid_diagram_caches_success():
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
     from synapse.ui.stream import render_mermaid_diagram
 
     stream_mod._mermaid_render_cache.clear()
@@ -126,7 +126,7 @@ def test_render_mermaid_diagram_caches_success():
 
 
 def test_render_mermaid_diagram_caches_failure(monkeypatch):
-    import synapse.ui.stream as stream_mod
+    import synapse.ui.rendering as stream_mod
     from synapse.ui.stream import render_mermaid_diagram
 
     stream_mod._mermaid_render_cache.clear()
