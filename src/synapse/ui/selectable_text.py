@@ -13,10 +13,8 @@ import sys
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Static, TextArea
-
+from textual.widgets import Footer, Header, Static, TextArea
 
 # ---------------------------------------------------------------------------
 # Clipboard helper (inlined to avoid circular import with synapse.ui.tui)

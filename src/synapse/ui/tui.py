@@ -4393,15 +4393,6 @@ class CodingAgentApp(App[None]):
             pass
         self._show_welcome()
 
-    def action_copy_last_answer(self) -> None:
-        """Copy the most recent answer to the system clipboard."""
-        text = (self._last_answer_text or "").strip()
-        if not text:
-            self.append_event("nothing to copy", "dim")
-            return
-        _copy_to_clipboard(text)
-        self.append_event(f"copied {len(text)} chars", "dim")
-
     def action_open_selectable_view(self) -> None:
         """Open a full-conversation plain-text view for mouse selection & copy."""
         from synapse.ui.selectable_text import (

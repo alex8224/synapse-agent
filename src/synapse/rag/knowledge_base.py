@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -178,7 +178,7 @@ class ProjectKnowledgeBase:
             chunks = _chunk(text, max_chars=self._max_chars)
             embeddings = self._embedder.embed(chunks)
 
-            for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings)):
+            for idx, (chunk_text, vec) in enumerate(zip(chunks, embeddings, strict=True)):
                 await self._upsert_chunk(
                     source=rel,
                     text=chunk_text,
@@ -302,7 +302,10 @@ class ProjectKnowledgeBase:
                 if path.name.endswith(_EXCLUDE_FILE_SUFFIXES):
                     continue
                 # Skip files inside hidden dirs (but not the root .synapse)
-                if any(p.startswith(".") and p not in (".synapse",) for p in path.relative_to(self._root).parts):
+                if any(
+                    p.startswith(".") and p not in (".synapse",)
+                    for p in path.relative_to(self._root).parts
+                ):
                     continue
                 result.append(path)
         # Deduplicate (a file might match multiple suffixes)

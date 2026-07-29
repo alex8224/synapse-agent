@@ -31,11 +31,8 @@ from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.middleware import (
     build_compact_tool_descriptions,
     build_intent_schema_middleware,
-    build_intent_schema_middleware,
-    build_memory_injection_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
-    build_plan_tracking_middleware,
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,

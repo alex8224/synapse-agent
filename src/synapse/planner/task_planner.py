@@ -17,7 +17,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
@@ -45,7 +44,8 @@ Task: "检查 test_login 失败原因并修复"
 → ["运行 test_login 查看失败详情", "根据失败原因修复源码", "重新运行 test_login 确认通过"]
 
 Task: "重构 auth.py 把 JWT 换成 session，更新 tests/test_auth.py，更新 README"
-→ ["阅读 auth.py 理解当前 JWT 实现", "重构 auth.py 将 JWT 替换为 session", "更新 tests/test_auth.py 适配新实现", "更新 README 文档"]
+→ ["阅读 auth.py 理解当前 JWT 实现", "重构 auth.py 将 JWT 替换为 session",
+   "更新 tests/test_auth.py 适配新实现", "更新 README 文档"]
 """
 
 

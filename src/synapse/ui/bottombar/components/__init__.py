@@ -113,7 +113,10 @@ def install_default_components(
             thread=thread or _empty,
             mode=mode or _empty,
             idle_hints=idle_hints
-            or (lambda: "Tab complete · / commands · Esc cancel · F2 model · F4 sessions · F9 delete"),
+            or (
+                lambda: "Tab complete · / commands · Esc cancel · F2 model · "
+                "F4 sessions · F9 delete"
+            ),
             busy_hints=busy_hints
             or (lambda: "Esc cancel · Enter queue guidance"),
             model=model or _empty,

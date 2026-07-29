@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import atexit
 import os
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -723,7 +723,6 @@ def mcp_test(
     server: str = typer.Argument(..., help="MCP server name"),
 ) -> None:
     """Connect to an MCP server and print available tools."""
-    import asyncio
 
     from synapse.integrations.mcp_client import connect_mcp, load_mcp_server_configs
 

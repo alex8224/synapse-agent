@@ -17,7 +17,7 @@ Design:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ class AutoRecorder:
     async def _llm_extract(self, task: str, answer: str) -> list[str]:
         import json as _json
 
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from langchain_core.messages import HumanMessage
 
         answer_summary = answer[:2000]  # don't send the full answer to LLM
         prompt = EXTRACT_PROMPT.format(task=task, answer_summary=answer_summary)
