@@ -78,7 +78,7 @@ def test_build_chat_model_stamps_profile_for_summarization() -> None:
     )
     fake = SimpleNamespace(profile=None)
 
-    with patch("synapse.models_registry.init_chat_model", return_value=fake):
+    with patch("synapse.models.registry.init_chat_model", return_value=fake):
         out = reg.build_chat_model("main", fallback_api_key="k")
 
     assert out is fake

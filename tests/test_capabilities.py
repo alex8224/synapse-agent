@@ -117,7 +117,7 @@ def test_models_config_thinking_and_params(tmp_path: Path, monkeypatch):
     assert reg.get("quiet").enable_thinking is False
     assert reg.get("low").reasoning_effort == "low"
 
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         reg.build_chat_model("main", fallback_api_key="k")
         kwargs = init_mock.call_args.kwargs
@@ -172,7 +172,7 @@ def test_models_config_can_enable_responses_websocket(tmp_path: Path, monkeypatc
     fake_client = MagicMock(name="async-http-client")
     fake_runtime = MagicMock(name="async-runtime")
     with (
-        patch("synapse.models_registry.init_chat_model") as init_mock,
+        patch("synapse.models.registry.init_chat_model") as init_mock,
         patch(
             "synapse.llm_openai_websocket.ResponsesWebSocketChatOpenAI",
             return_value=fake_model,
@@ -238,7 +238,7 @@ def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch)
     # Session override must win over profile default when building via settings.
     settings.enable_thinking = True
     settings.reasoning_effort = "low"
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs
@@ -301,7 +301,7 @@ def test_profile_api_key_not_overridden_by_openai_fallback(tmp_path: Path, monke
     assert settings.anthropic_api_key == "sk-local-test-key"
 
     reg = registry_from_settings(settings)
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="grok")
         kwargs = init_mock.call_args.kwargs
@@ -316,7 +316,7 @@ def test_profile_api_key_not_overridden_by_openai_fallback(tmp_path: Path, monke
     assert settings.openai_api_key == "sk-openai-profile"
     apply_profile_to_settings(settings, reg.get("grok"), seed_thinking=True)
     assert settings.anthropic_api_key == "sk-local-test-key"
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="grok")
         kwargs = init_mock.call_args.kwargs
@@ -355,7 +355,7 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
     )
     assert settings.stream_chunk_timeout is None
 
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs
@@ -368,7 +368,7 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
         assert kwargs["stream_chunk_timeout"] == 90
 
     settings = settings.model_copy(update={"stream_chunk_timeout": 600.0})
-    with patch("synapse.models_registry.init_chat_model") as init_mock:
+    with patch("synapse.models.registry.init_chat_model") as init_mock:
         init_mock.return_value = MagicMock(name="chat")
         build_model_from_settings(settings, model_name="main")
         kwargs = init_mock.call_args.kwargs

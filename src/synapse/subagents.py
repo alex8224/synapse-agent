@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from synapse.middleware import build_tool_error_recovery_middleware
-from synapse.tool_output import (
+from synapse.tool_output.pipeline import (
     ToolOutputRepository,
     ToolOutputTransformPipeline,
     load_transformer_plugins,

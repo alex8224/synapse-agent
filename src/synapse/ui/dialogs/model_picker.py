@@ -6,6 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 
+from synapse.models.registry import registry_from_settings, settings_thinking_label
 from synapse.ui.dialogs.base import (
     DialogBase,
     OptionItem,
@@ -28,11 +29,6 @@ class ModelPickerDialog(DialogBase):
         super().__init__()
         self._settings = settings
         try:
-            from synapse.models_registry import (
-                registry_from_settings,
-                settings_thinking_label,
-            )
-
             reg = registry_from_settings(settings)
             current_model = getattr(settings, "active_model", None) or getattr(
                 reg, "default", None

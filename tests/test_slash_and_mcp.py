@@ -10,7 +10,6 @@ from unittest.mock import patch
 from synapse.mcp_client import load_mcp_server_configs
 from synapse.sessions import SessionStore
 from synapse.slash_cmds import handle_slash
-from synapse.tool_output import ToolOutputRepository, TransformEvent
 from synapse.transcript import (
     export_transcript_json,
     export_transcript_markdown,
@@ -572,7 +571,7 @@ def test_mcp_reload_forces_reconnect(tmp_path, monkeypatch):
 
 def test_apply_thinking_inplace_copies_attrs(monkeypatch):
     """In-place thinking update copies attrs from a fresh same-type model."""
-    import synapse.models_registry as reg_mod
+    import synapse.models.registry as reg_mod
     from synapse.slash_cmds import _apply_thinking_inplace
 
     class FakeModel:
@@ -599,7 +598,7 @@ def test_apply_thinking_inplace_copies_attrs(monkeypatch):
 
 def test_apply_thinking_inplace_fallbacks(monkeypatch):
     """No live model or type mismatch -> False (caller rebuilds)."""
-    import synapse.models_registry as reg_mod
+    import synapse.models.registry as reg_mod
     from synapse.slash_cmds import _apply_thinking_inplace
 
     # No live model.

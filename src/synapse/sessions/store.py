@@ -595,7 +595,7 @@ def pick_startup_thread_id(
 
 def binding_from_settings(settings: Any) -> ModelBinding:
     """Capture current settings as a session model binding."""
-    from synapse.models_registry import settings_thinking_label
+    from synapse.models.registry import settings_thinking_label
 
     active = _opt_str(getattr(settings, "active_model", None))
     model = _opt_str(getattr(settings, "model", None))
@@ -614,7 +614,7 @@ def apply_binding_to_settings(settings: Any, binding: ModelBinding) -> bool:
     if not binding.has_data():
         return False
 
-    from synapse.models_registry import (
+    from synapse.models.registry import (
         apply_profile_to_settings,
         apply_thinking_to_settings,
         registry_from_settings,

@@ -36,7 +36,7 @@ class SessionListDialog(DialogBase):
         elif mode == "delete":
             self._title_keys = "\u2191\u2193 enter delete \u00b7 esc"
         try:
-            from synapse.sessions import SessionStore
+            from synapse.sessions.store import SessionStore
 
             store = SessionStore(settings.resolved_sessions_path())
             self._sessions = store.list_nonempty(limit=50)

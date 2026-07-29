@@ -42,11 +42,8 @@ from synapse.multimodal import (
 )
 from synapse.session_recap import SessionRecapController
 from synapse.steer import SteerQueue, format_steer_message, get_agent_steer_queue
-from synapse.tool_output import (
-    ToolOutputRepository,
-    clear_metrics_notifier,
-    set_metrics_notifier,
-)
+from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
+from synapse.tool_output.pipeline import ToolOutputRepository
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -297,14 +294,14 @@ def format_mcp_status_label(
 
 
 def short_model_name(model: str) -> str:
-    from synapse.models_registry import short_model_id
+    from synapse.models.registry import short_model_id
 
     return short_model_id(model)
 
 
 def model_status_label(settings: object) -> str:
     """Idle status / subtitle: ``deepseek-v4-pro · high``."""
-    from synapse.models_registry import format_model_status
+    from synapse.models.registry import format_model_status
 
     return format_model_status(settings)
 
@@ -2936,7 +2933,7 @@ class CodingAgentApp(App[None]):
         """Load human title for the active thread into chrome state."""
         title = ""
         try:
-            from synapse.sessions import SessionStore
+            from synapse.sessions.store import SessionStore
 
             info = SessionStore(self.settings.resolved_sessions_path()).get(
                 self.thread_id
@@ -2989,7 +2986,7 @@ class CodingAgentApp(App[None]):
                 pass
 
         try:
-            from synapse.models_registry import registry_from_settings
+            from synapse.models.registry import registry_from_settings
 
             reg2 = registry_from_settings(self.settings)
             if reg2 is not None:
@@ -5363,7 +5360,7 @@ class CodingAgentApp(App[None]):
             self.append_event("still running previous turn…", "yellow")
             return
         try:
-            from synapse.sessions import SessionStore
+            from synapse.sessions.store import SessionStore
 
             SessionStore(self.settings.resolved_sessions_path()).touch(
                 self.thread_id,
@@ -5738,10 +5735,16 @@ def run_tui(
     cli_model: str | None = None,
 ) -> None:
     """Launch the Textual app; agent build is deferred off the UI thread by default."""
+    try:
+        from synapse.ui.theme import bootstrap_theme
+
+        bootstrap_theme(getattr(settings, "theme", None), workspace=settings.workspace)
+    except Exception:  # noqa: BLE001
+        pass
     root = project_root or Path.cwd()
     tid = thread_id or "pending"
     try:
-        from synapse.sessions import (
+        from synapse.sessions.store import (
             SessionStore,
             apply_binding_to_settings,
             binding_from_settings,
@@ -5763,7 +5766,7 @@ def run_tui(
         bind = binding_from_settings(settings)
         store.set_last_model_binding(bind)
     except Exception:  # noqa: BLE001
-        from synapse.sessions import allocate_thread_id
+        from synapse.sessions.store import allocate_thread_id
 
         tid = thread_id or allocate_thread_id()
 

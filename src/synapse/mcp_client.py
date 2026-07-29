@@ -547,10 +547,11 @@ class McpSessionPool:
             total_available = len(listed.tools)
             if include_set is not None or exclude_set is not None:
                 if server_tool_count == 0:
+                    include_names = sorted(include_set) if include_set else None
+                    exclude_names = sorted(exclude_set) if exclude_set else None
                     warnings.append(
                         f"mcp server {server.name}: {total_available} tools discovered "
-                        f"but all filtered out (include={sorted(include_set) if include_set else None}, "
-                        f"exclude={sorted(exclude_set) if exclude_set else None})"
+                        f"but all filtered out (include={include_names}, exclude={exclude_names})"
                     )
                 elif server_tool_count < total_available:
                     logger.info(

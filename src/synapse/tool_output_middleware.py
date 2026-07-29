@@ -13,7 +13,7 @@ from langgraph.types import Command
 
 from synapse.execute_capture import begin_execute_capture, end_execute_capture
 from synapse.interaction_ledger import current_position
-from synapse.tool_output import (
+from synapse.tool_output.pipeline import (
     CompressionStageEvent,
     ToolOutputRepository,
     ToolOutputTransformPipeline,

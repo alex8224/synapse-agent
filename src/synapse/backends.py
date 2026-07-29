@@ -24,8 +24,8 @@ from typing import Any
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
-from synapse.config import Settings
 from synapse.execute_capture import capture_execute_output
+from synapse.settings import Settings
 from synapse.tool_ignore import ToolIgnoreMatcher, relative_to_root
 
 # Default shell for this project: pwsh on Windows, bash elsewhere.

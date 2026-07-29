@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from synapse.mcp_client import load_mcp_server_configs
-from synapse.models_registry import registry_from_settings
-from synapse.sessions import SessionStore
+from synapse.models.registry import registry_from_settings
+from synapse.sessions.store import SessionStore
 
 ROOT_COMMANDS: list[str] = [
     "/help",

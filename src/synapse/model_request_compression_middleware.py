@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from synapse.interaction_ledger import begin_model_call
-from synapse.tool_output import ModelRequestCompressionEvent, ToolOutputRepository
+from synapse.tool_output.pipeline import ModelRequestCompressionEvent, ToolOutputRepository
 
 
 def _runtime_config(request: Any) -> dict[str, Any]:

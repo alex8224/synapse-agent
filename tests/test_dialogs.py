@@ -47,7 +47,7 @@ class TestOptionItem:
 class TestModelPickerInit:
     def test_no_registry_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.models_registry.registry_from_settings",
+            "synapse.ui.dialogs.model_picker.registry_from_settings",
             MagicMock(side_effect=RuntimeError("no reg")),
         )
         from synapse.config import Settings
@@ -62,7 +62,7 @@ class TestModelPickerInit:
 class TestSessionListInit:
     def test_empty_store_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.sessions.SessionStore",
+            "synapse.sessions.store.SessionStore",
             MagicMock(side_effect=RuntimeError("no store")),
         )
         from synapse.config import Settings
@@ -363,7 +363,7 @@ class TestModelPickerMount:
                 return MagicMock(model="provider:model-a")
 
         monkeypatch.setattr(
-            "synapse.models_registry.registry_from_settings",
+            "synapse.ui.dialogs.model_picker.registry_from_settings",
             lambda _settings: FakeRegistry(),
         )
         monkeypatch.setattr(DialogBase, "on_mount", lambda _self: None)

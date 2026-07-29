@@ -20,8 +20,8 @@ from synapse.mcp_client import (
     load_mcp_server_configs,
     load_mcp_tools,
 )
-from synapse.models_registry import registry_from_settings
-from synapse.sessions import (
+from synapse.models.registry import registry_from_settings
+from synapse.sessions.store import (
     SessionStore,
     allocate_thread_id,
     apply_binding_to_settings,
@@ -288,7 +288,7 @@ def _compression_export_result(
     if error or thread_id is None:
         return SlashResult(handled=True, lines=[error or "session not found"], error=True)
 
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.pipeline import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
     diagnostics = repo.export_diagnostics(thread_id=thread_id)
@@ -383,7 +383,7 @@ def _tool_output_result(settings: Any, current_thread_id: str, args: list[str]) 
     if error or thread_id is None:
         return SlashResult(handled=True, lines=[error or "session not found"], error=True)
 
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.pipeline import ToolOutputRepository
 
     repo = ToolOutputRepository(settings.resolved_tool_output_db_path())
     if show_profile:
@@ -1334,7 +1334,7 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
     copies thinking-related attributes onto the live instance. Returns False
     when in-place update is not possible so callers can fall back to rebuild.
     """
-    from synapse.models_registry import build_model_from_settings
+    from synapse.models.registry import build_model_from_settings
 
     live = getattr(agent, "_coding_model", None)
     if live is None:
@@ -1357,7 +1357,7 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
                 return False
         if copied:
             try:
-                from synapse.models_registry import model_cache_key
+                from synapse.models.registry import model_cache_key
 
                 cache = getattr(agent, "_coding_model_cache", None)
                 if isinstance(cache, dict):
@@ -1685,7 +1685,7 @@ def _handle_model(
     project_root: Path,
     thread_id: str | None = None,
 ) -> SlashResult:
-    from synapse.models_registry import (
+    from synapse.models.registry import (
         apply_thinking_to_settings,
         format_model_status,
         is_thinking_token,
@@ -1772,7 +1772,7 @@ def _handle_model(
     except KeyError as exc:
         return SlashResult(handled=True, lines=[str(exc)], error=True)
 
-    from synapse.models_registry import apply_profile_to_settings
+    from synapse.models.registry import apply_profile_to_settings
 
     apply_profile_to_settings(settings, profile, seed_thinking=True)
 

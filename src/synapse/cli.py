@@ -7,8 +7,8 @@ from pathlib import Path
 
 import typer
 
-from synapse.config import bootstrap_project_env, load_settings
-from synapse.sessions import SessionStore, format_session_table
+from synapse.sessions.store import SessionStore, format_session_table
+from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
     print_error,
@@ -534,7 +534,7 @@ def sessions_search(
 @models_app.command("list")
 def models_list() -> None:
     """List configured downstream model profiles."""
-    from synapse.models_registry import registry_from_settings
+    from synapse.models.registry import registry_from_settings
 
     settings = load_settings()
     reg = registry_from_settings(settings)
@@ -638,7 +638,7 @@ def tool_output_stats(
     thread_id: str | None = typer.Option(None, "--thread", help="Restrict metrics to a thread id"),
 ) -> None:
     """Show local tool-output transformation savings and retention metrics."""
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.pipeline import ToolOutputRepository
 
     settings = load_settings()
     stats = ToolOutputRepository(settings.resolved_tool_output_db_path()).stats(thread_id=thread_id)
@@ -665,7 +665,7 @@ def tool_output_stats(
 @tool_output_app.command("status")
 def tool_output_status() -> None:
     """Show whether tool-output transformation and native acceleration are usable."""
-    from synapse.tool_output import load_native_transformers
+    from synapse.tool_output.pipeline import load_native_transformers
 
     settings = load_settings()
     native_requested = settings.enable_native_tool_output_compression
@@ -692,7 +692,7 @@ def tool_output_events(
     limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max recent events"),
 ) -> None:
     """Show recent transformation decisions and retrieval usage."""
-    from synapse.tool_output import ToolOutputRepository
+    from synapse.tool_output.pipeline import ToolOutputRepository
 
     settings = load_settings()
     events = ToolOutputRepository(settings.resolved_tool_output_db_path()).events(

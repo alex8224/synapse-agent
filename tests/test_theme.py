@@ -105,6 +105,8 @@ def test_persist_and_load_settings_theme(tmp_path: Path, monkeypatch):
     workspace.mkdir()
     settings = load_settings(workspace=workspace)
     assert settings.theme == "nord"
+    # Settings loading is UI-agnostic; frontends activate themes explicitly.
+    bootstrap_theme(settings.theme, workspace=settings.workspace)
     assert get_theme().name == "nord"
 
 

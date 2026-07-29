@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from synapse.tool_output import ToolOutputTransformPipeline, TransformContext
+from synapse.tool_output.pipeline import ToolOutputTransformPipeline, TransformContext
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,6 @@ from typing import Any
 
 from synapse.agent_md import build_agent_md_middleware
 from synapse.backends import build_backend
-from synapse.config import Settings
 from synapse.context_compact import build_compact_tool_middleware
 from synapse.describe_image import VisionModelConfig
 from synapse.fs_permissions import build_filesystem_permissions
@@ -29,7 +28,7 @@ from synapse.middleware import (
 from synapse.model_request_compression_middleware import (
     build_model_request_compression_middleware,
 )
-from synapse.models_registry import (
+from synapse.models.registry import (
     build_model_from_settings,
     model_cache_key,
     model_supports_image_input,
@@ -37,9 +36,10 @@ from synapse.models_registry import (
 )
 from synapse.prompts import build_system_prompt
 from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
+from synapse.settings import Settings
 from synapse.steer import SteerQueue, build_steer_middleware
 from synapse.subagents import build_default_subagents
-from synapse.tool_output import (
+from synapse.tool_output.pipeline import (
     ToolOutputRepository,
     ToolOutputTransformPipeline,
     load_transformer_plugins,

@@ -93,7 +93,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
     fake_model = MagicMock(name="model")
     with (
         patch(
-            "synapse.models_registry.init_chat_model",
+            "synapse.models.registry.init_chat_model",
             return_value=fake_model,
         ) as mock_model,
         patch(
@@ -158,7 +158,7 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
 
     with (
         patch(
-            "synapse.models_registry.init_chat_model",
+            "synapse.models.registry.init_chat_model",
             side_effect=[MagicMock(name="model-1"), MagicMock(name="model-2")],
         ) as init,
         patch("deepagents.create_deep_agent", side_effect=[MagicMock(), MagicMock(), MagicMock()]),
@@ -193,7 +193,7 @@ def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
     queue = SteerQueue()
 
     with (
-        patch("synapse.models_registry.init_chat_model", return_value=MagicMock(name="model")),
+        patch("synapse.models.registry.init_chat_model", return_value=MagicMock(name="model")),
         patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")),
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from synapse.checkpoint_seed import CheckpointSeeder, CheckpointSeedError
 from synapse.codex_history import PARSER_VERSION, PROJECTION_KIND
-from synapse.sessions import SessionInfo, SessionStore, title_from_user_message
+from synapse.sessions.store import SessionInfo, SessionStore, title_from_user_message
 
 if TYPE_CHECKING:
     from synapse.codex_history import CodexTextSnapshot
