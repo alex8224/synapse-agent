@@ -15,6 +15,7 @@ _ERROR_LINE = re.compile(
 )
 _LOG_SUMMARY = re.compile(r"\b(passed|failed|skipped|collected|tests? run|exit code)\b", re.I)
 _NUMBERED_SOURCE_LINE = re.compile(r"^(?P<indent>\s*)\d+(?:\.\d+)?\t(?P<body>.*)$")
+_PATH_ROW = re.compile(r"^(?:(?:[A-Za-z]:)?[/\\]|\.{0,2}[/\\])?(?:[^/\\\s:]+[/\\])+[^/\\\s:]+$")
 _CODE_SUFFIXES = frozenset(
     {
         ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
@@ -103,6 +104,9 @@ def detect_content_type(content: str) -> Detection:
         return Detection(
             ContentType.SEARCH, min(1.0, search_count / max(1, len(lines[:100])) + 0.3)
         )
+    path_rows = sum(bool(_PATH_ROW.match(line)) for line in lines)
+    if len(lines) >= 3 and path_rows == len(lines):
+        return Detection(ContentType.PATHS, 1.0)
     if any(line.startswith(("diff --git", "--- a/", "+++ b/", "@@")) for line in lines[:20]):
         return Detection(ContentType.DIFF, 0.95)
     git_summary_markers = sum(

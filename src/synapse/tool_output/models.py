@@ -8,6 +8,7 @@ from typing import Any
 
 class ContentType(StrEnum):
     SEARCH = "search"
+    PATHS = "paths"
     LOG = "log"
     DIFF = "diff"
     GIT_SUMMARY = "git-summary"
@@ -30,6 +31,7 @@ class TransformContext:
     tool_args: dict[str, Any] = field(default_factory=dict)
     file_path: str = ""
     file_suffix: str = ""
+    fresh_read_source: bool = True
 
 
 @dataclass(frozen=True)

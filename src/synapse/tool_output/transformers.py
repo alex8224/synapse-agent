@@ -133,6 +133,74 @@ class SearchTransformer:
         )
 
 
+class PathListTransformer:
+    """Losslessly fold repeated parent directories in plain file-path listings.
+
+    This follows Headroom's reversible ``path_heading`` approach. It only accepts
+    every-line path listings and verifies that expansion exactly restores input.
+    """
+
+    name = "path-list-v1"
+    content_types = frozenset({ContentType.PATHS})
+    _path_row = re.compile(
+        r"^(?P<directory>(?:(?:[A-Za-z]:)?[/\\]|\.{0,2}[/\\])?"
+        r"(?:[^/\\\s:]+[/\\])+)(?P<base>[^/\\\s:]+)$"
+    )
+
+    @classmethod
+    def _expand(cls, lines: list[str]) -> list[str] | None:
+        restored: list[str] = []
+        directory: str | None = None
+        for line in lines:
+            if line.endswith("/") or line.endswith("\\"):
+                directory = line
+            elif directory is not None and "/" not in line and "\\" not in line:
+                restored.append(directory + line)
+            else:
+                return None
+        return restored
+
+    def transform(self, content: str, context: TransformContext) -> TransformResult:
+        lines = content.splitlines()
+        trailing_newline = (
+            "\r\n" if content.endswith("\r\n") else "\n" if content.endswith("\n") else ""
+        )
+        if len(lines) < 3:
+            return TransformResult(content, self.name, ContentType.PATHS, 0, 0)
+        grouped: list[str] = []
+        current_directory: str | None = None
+        for line in lines:
+            match = self._path_row.match(line)
+            if match is None:
+                return TransformResult(content, self.name, ContentType.PATHS, 0, 0)
+            directory = match.group("directory")
+            if directory != current_directory:
+                grouped.append(directory)
+                current_directory = directory
+            grouped.append(match.group("base"))
+        if self._expand(grouped) != lines:
+            return TransformResult(content, self.name, ContentType.PATHS, 0, 0)
+        directory_count = sum(line.endswith(("/", "\\")) for line in grouped)
+        line_ending = "\r\n" if "\r\n" in content else "\n"
+        body = line_ending.join(
+            [
+                f"[paths compressed: {len(lines)} paths / {directory_count} dirs]",
+                *grouped,
+            ]
+        ) + trailing_newline
+        return _result(
+            content,
+            body,
+            name=self.name,
+            content_type=ContentType.PATHS,
+            metadata={
+                "paths": len(lines),
+                "directories": sum(line.endswith(("/", "\\")) for line in grouped),
+                "reversible": True,
+            },
+        )
+
+
 class LogTransformer:
     """Headroom-inspired log parsing, warning dedupe, ranking, and context."""
 
@@ -384,7 +452,11 @@ class CodeTransformer:
     name = "code-v1"
     content_types = frozenset({ContentType.CODE})
     _signature = re.compile(
-        r"^(?P<indent>\s*)(?:async\s+def|def|class|function|func|fn|export\s+(?:async\s+)?function)\s+[^:{(]+"
+        r"^(?P<prefix>\s*\d+(?:\.\d+)?\t)?(?P<indent>\s*)"
+        r"(?:async\s+def|def|class|function|func|fn|export\s+(?:async\s+)?function)\s+[^:{(]+"
+    )
+    _import = re.compile(
+        r"^\s*(?:\d+(?:\.\d+)?\t)?\s*(?:import|from|use|package|#include)\b"
     )
 
     def __init__(self, *, body_lines: int = 3) -> None:
@@ -397,7 +469,7 @@ class CodeTransformer:
             return TransformResult(content, self.name, ContentType.CODE, 0, 0)
         keep: set[int] = set()
         for index, line in enumerate(lines):
-            if line.startswith(("import ", "from ", "use ", "package ", "#include")):
+            if self._import.match(line):
                 keep.add(index)
         for position, start in enumerate(signatures):
             end = signatures[position + 1] if position + 1 < len(signatures) else len(lines)

@@ -168,6 +168,115 @@ def test_numbered_read_file_source_is_detected_and_protected(tmp_path: Path) -> 
     assert detect["metadata"]["file_suffix"] == ".py"
 
 
+def test_path_listing_is_losslessly_folded() -> None:
+    content = "\n".join(
+        [
+            *[f"src/synapse/tool_output/module_{index}.py" for index in range(20)],
+        ]
+    )
+
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        content, TransformContext(tool_name="glob", status="success")
+    )
+
+    assert result.content_type is ContentType.PATHS
+    assert result.transformer == "path-list-v1"
+    assert "src/synapse/tool_output/" in result.content
+    assert "module_0.py" in result.content
+    assert len(result.content.encode("utf-8")) < len(content.encode("utf-8"))
+    assert result.metadata["reversible"] is True
+
+
+def test_path_listing_preserves_trailing_crlf() -> None:
+    content = "\r\n".join(f"C:\\repo\\src\\module_{index}.py" for index in range(20)) + "\r\n"
+
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        content, TransformContext(tool_name="glob", status="success")
+    )
+
+    assert result.content_type is ContentType.PATHS
+    assert result.content.endswith("\r\n")
+    assert "C:\\repo\\src\\" in result.content
+
+
+def test_mixed_path_listing_is_not_classified_as_paths() -> None:
+    content = "src/a.py\nsrc/b.py\nwarning: incomplete result\nsrc/c.py"
+
+    result = ToolOutputTransformPipeline(use_native=False).transform(
+        content, TransformContext(tool_name="glob", status="success")
+    )
+
+    assert result.content_type is ContentType.TEXT
+    assert result.content == content
+
+
+def test_repeated_numbered_source_read_is_compressed_after_first(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo, threshold_bytes=100)
+    source = "\n".join(
+        f"{line_no:6d}\t{line}"
+        for line_no, line in enumerate(
+            [
+                "from __future__ import annotations",
+                *[
+                    item
+                    for index in range(80)
+                    for item in (
+                        f"def function_{index}():",
+                        *[f"    value_{body} = {body}" for body in range(12)],
+                        f"    return value_{index % 12}",
+                    )
+                ],
+            ],
+            1,
+        )
+    )
+    request = _request(
+        name="read_file",
+        args={"file_path": "/src/example.py", "offset": 0, "limit": 300},
+    )
+
+    first = middleware.wrap_tool_call(
+        request,
+        lambda _: ToolMessage(content=source, tool_call_id="call-first", name="read_file"),
+    )
+    second = middleware.wrap_tool_call(
+        request,
+        lambda _: ToolMessage(content=source, tool_call_id="call-second", name="read_file"),
+    )
+
+    assert first.content == source
+    assert "[tool output transformed]" in second.content
+    events = repo.events(thread_id="thread-a")
+    assert {event["reason_code"] for event in events} >= {
+        "fresh_read_source_protected",
+        "compressed",
+    }
+
+
+def test_distinct_numbered_source_range_remains_protected(tmp_path: Path) -> None:
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_tool_output_transform_middleware(repo, threshold_bytes=100)
+    source = _numbered_python(lines=120)
+
+    for call_id, offset in (("call-first", 0), ("call-next-range", 200)):
+        result = middleware.wrap_tool_call(
+            _request(
+                name="read_file",
+                args={"file_path": "/src/example.py", "offset": offset, "limit": 100},
+            ),
+            lambda _, call_id=call_id: ToolMessage(
+                content=source, tool_call_id=call_id, name="read_file"
+            ),
+        )
+        assert result.content == source
+
+    assert all(
+        event["reason_code"] == "fresh_read_source_protected"
+        for event in repo.events(thread_id="thread-a")
+    )
+
+
 def test_numbered_non_source_read_file_keeps_content_detection() -> None:
     content = "\n".join(f"{index:6d}\t2026-01-01 INFO passed={index}" for index in range(40))
     result = ToolOutputTransformPipeline(use_native=False).transform(

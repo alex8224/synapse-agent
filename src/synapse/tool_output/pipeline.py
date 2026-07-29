@@ -25,6 +25,7 @@ from synapse.tool_output.transformers import (
     JsonTransformer,
     LogTransformer,
     NativeTransformer,
+    PathListTransformer,
     SearchTransformer,
     ToolOutputTransformer,
     load_native_transformers,
@@ -43,6 +44,7 @@ class ToolOutputTransformPipeline:
     ) -> None:
         builtins: list[ToolOutputTransformer] = [
             SearchTransformer(),
+            PathListTransformer(),
             LogTransformer(),
             DiffTransformer(),
             GitSummaryTransformer(),
@@ -118,6 +120,7 @@ class ToolOutputTransformPipeline:
             and context.status == "success"
             and suffix_is_code
             and detection.content_type is ContentType.CODE
+            and context.fresh_read_source
         ):
             stages.append(
                 CompressionStageEvent(
@@ -131,6 +134,7 @@ class ToolOutputTransformPipeline:
                         "file_path": context.file_path,
                         "file_suffix": context.file_suffix,
                         "normalized_code_markers": normalized_code_markers,
+                        "fresh_read_source": context.fresh_read_source,
                     },
                 )
             )

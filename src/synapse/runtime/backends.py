@@ -292,7 +292,7 @@ class CodingLocalShellBackend(LocalShellBackend):
         glob: str | None = None,
     ) -> Any:
         result = super().grep(pattern, path=path, glob=glob)
-        if not self._tool_ignore.rule_count or not getattr(result, "matches", None):
+        if not self._tool_ignore.has_rules or not getattr(result, "matches", None):
             return result
         root = Path(self.cwd).resolve()
         kept = [
@@ -307,7 +307,7 @@ class CodingLocalShellBackend(LocalShellBackend):
 
     def glob(self, pattern: str, path: str | None = None) -> Any:
         result = super().glob(pattern, path=path)
-        if not self._tool_ignore.rule_count or not getattr(result, "matches", None):
+        if not self._tool_ignore.has_rules or not getattr(result, "matches", None):
             return result
         root = Path(self.cwd).resolve()
         kept = [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,8 @@ def build_tool_output_transform_middleware(
     threshold = max(0, int(threshold_bytes))
     pipeline = pipeline or ToolOutputTransformPipeline()
     excluded = frozenset({"read_tool_result", "compact_conversation"})
+    protected_source_reads: set[tuple[str, str, str, int, int]] = set()
+    protected_source_reads_lock = threading.Lock()
 
     def runtime_identity(request: Any) -> tuple[str, str]:
         config = dict(getattr(request.runtime, "config", None) or {})
@@ -251,6 +254,19 @@ def build_tool_output_transform_middleware(
         args = call_args(request)
         file_path = str(args.get("file_path") or args.get("path") or "")
         file_suffix = Path(file_path).suffix.casefold() if file_path else ""
+        source_read_key: tuple[str, str, str, int, int] | None = None
+        if name == "read_file" and file_path and thread_id != "unknown-thread":
+            try:
+                offset = max(0, int(args.get("offset", 0) or 0))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                limit = max(0, int(args.get("limit", 0) or 0))
+            except (TypeError, ValueError):
+                limit = 0
+            source_read_key = (thread_id, checkpoint_ns, file_path, offset, limit)
+        with protected_source_reads_lock:
+            fresh_read_source = source_read_key not in protected_source_reads
         try:
             transformed = pipeline.transform(
                 original,
@@ -261,8 +277,15 @@ def build_tool_output_transform_middleware(
                     tool_args=args,
                     file_path=file_path,
                     file_suffix=file_suffix,
+                    fresh_read_source=fresh_read_source,
                 ),
             )
+            if (
+                source_read_key is not None
+                and transformed.metadata.get("fallback") == "fresh_read_source_protected"
+            ):
+                with protected_source_reads_lock:
+                    protected_source_reads.add(source_read_key)
         except Exception as exc:  # noqa: BLE001
             record_decision(
                 decision="fallback",

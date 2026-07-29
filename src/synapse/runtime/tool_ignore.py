@@ -103,15 +103,28 @@ class _Rule:
     raw: str
 
 
+_BUILTIN_DENY_PATTERNS = (".git/",)
+_BUILTIN_DENY_RULES = tuple(
+    _Rule(regex=_gitignore_pattern_to_regex(pattern), negate=False, raw=pattern)
+    for pattern in _BUILTIN_DENY_PATTERNS
+)
+
+
 class ToolIgnoreMatcher:
-    """Match workspace-relative paths against gitignore + extra deny rules."""
+    """Match workspace-relative paths against built-in, gitignore, and deny rules."""
 
     def __init__(self, rules: list[_Rule]) -> None:
         self._rules = list(rules)
 
     @property
     def rule_count(self) -> int:
+        """Number of configured gitignore or extra-deny rules."""
         return len(self._rules)
+
+    @property
+    def has_rules(self) -> bool:
+        """Whether built-in or configured filters can exclude a path."""
+        return bool(_BUILTIN_DENY_RULES or self._rules)
 
     @classmethod
     def from_workspace(
@@ -178,10 +191,12 @@ class ToolIgnoreMatcher:
 
     def is_ignored(self, path: str | Path, *, is_dir: bool = False) -> bool:
         del is_dir  # tree match is encoded in regex via (?:/.*)?
-        if not self._rules:
-            return False
         rel = self.normalize(path)
         if not rel:
+            return False
+        if any(rule.regex.match(rel) for rule in _BUILTIN_DENY_RULES):
+            return True
+        if not self._rules:
             return False
         ignored = False
         matched = False
