@@ -652,6 +652,11 @@ class TestDialogShortcuts:
             ("action_dialog_sessions", "_open_session_dialog", (["switch"],)),
             ("action_dialog_sessions_delete", "_open_session_dialog",
              (["session", "multi_delete"],)),
+            (
+                "action_dialog_sessions_delete",
+                "_open_session_dialog",
+                (["session", "multi_delete"],),
+            ),
             ("action_dialog_mcp", "_open_mcp_dialog", ()),
             ("action_dialog_safety", "_open_safety_dialog", ()),
             ("action_dialog_codex_import", "_open_codex_import_dialog", ()),

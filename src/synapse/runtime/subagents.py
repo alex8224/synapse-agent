@@ -88,7 +88,6 @@ def build_default_subagents(
             "- Follow the project's AGENTS.md for test steps and conventions.\n"
             "- Report failing tests, root cause, and exact commands run.\n"
             "- Do not expand scope beyond verifying the requested behavior.\n"
-            "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
@@ -113,7 +112,6 @@ def build_default_subagents(
             "- Be concise: findings first, then residual risks.\n"
             "- Do not rewrite large modules unless asked.\n"
             "- Prefer read-only inspection; do not modify files unless required.\n"
-            "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
@@ -136,7 +134,6 @@ def build_default_subagents(
             "- Do not modify files.\n"
             "- Do not run destructive shell commands.\n"
             "- Return concrete file paths and short evidence snippets.\n"
-            "- Reply in Chinese when the parent conversation is Chinese.\n"
             "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
     }
