@@ -7,6 +7,31 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.9
+
+### 新功能
+
+- 紧凑工具描述中间件：替换上游冗长的工具 schema 描述（~4K chars → ~200 chars），减少 token 开销
+- Cache-aware 压缩控制面：实时追踪 provider 缓存命中/写入，区分缓存输入与新输入
+- 压缩诊断面板：profile-driven 内容分解与优化机会排序（TUI `Ctrl+D`）
+- 请求账本（interaction ledger）：turn 级与 model-call 级关联追踪
+- Topbar 实时压缩指示器：显示活跃 zone 与压缩状态
+- `/tool-output` slash 命令：查看工具输出变换统计
+- GitSummaryTransformer：识别 `git status`/`git diff --stat` 输出并智能摘要
+
+### 修复
+
+- 避免 search 内容检测误判为 critical-line 回退
+- 修复 Alt+C 复制崩溃
+
+### 工程改进
+
+- 默认路径从 `.coding-agent` 迁移至 `.synapse`（checkpoint / sessions / memory）
+- 工具输出压缩阈值降至 512 bytes
+- CI native compression wheel 发布到 GitHub Release（替代 PyPI）
+
+---
+
 ## v0.1.8
 
 ### 新功能
