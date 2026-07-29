@@ -7,6 +7,19 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.10
+
+### 工程改进
+
+- 重组应用、命令、运行时、内容与会话等核心领域模块，收紧模块职责与依赖边界
+- 拆分工具输出管道为模型、仓储、检测和变换层，保留既有公共 API
+- 将 slash 命令按压缩、会话、MCP、模型和主题职责拆分，保留统一分发入口
+- 拆分流处理为渲染、事件归一化与运行时迭代层，兼容现有 CLI 和 TUI 调用路径
+- 提取 TUI turn rail 和用户 turn 格式化逻辑，降低主应用模块复杂度
+- 拆分模型配置解析、Profile 与 settings/能力辅助逻辑，保持 provider 工厂和 mock 契约稳定
+
+---
+
 ## v0.1.9
 
 ### 新功能
