@@ -18,12 +18,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from synapse.checkpoint_seed import CheckpointSeeder, CheckpointSeedError
-from synapse.codex_history import PARSER_VERSION, PROJECTION_KIND
+from synapse.integrations.checkpoint_seed import CheckpointSeeder, CheckpointSeedError
+from synapse.integrations.codex_history import PARSER_VERSION, PROJECTION_KIND
 from synapse.sessions.store import SessionInfo, SessionStore, title_from_user_message
 
 if TYPE_CHECKING:
-    from synapse.codex_history import CodexTextSnapshot
+    from synapse.integrations.codex_history import CodexTextSnapshot
 
 _LEASE_SECONDS = 120
 
@@ -165,8 +165,8 @@ def import_codex_session(
     codex_home: Path | None = None,
 ) -> CodexImportResult:
     """Discover, project, and import one Codex session through one agent graph."""
-    from synapse.codex_history import CodexHistoryProjector
-    from synapse.codex_sessions import CodexSessionScanner
+    from synapse.integrations.codex_history import CodexHistoryProjector
+    from synapse.integrations.codex_sessions import CodexSessionScanner
 
     target_workspace = workspace or Path(getattr(settings, "workspace", Path.cwd()))
     session = CodexSessionScanner(codex_home).inspect(

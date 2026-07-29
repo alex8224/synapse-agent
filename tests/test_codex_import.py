@@ -9,15 +9,15 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 
-import synapse.codex_import as codex_import
-from synapse.checkpoint_seed import CheckpointSeeder
-from synapse.codex_history import (
+import synapse.integrations.codex_import as codex_import
+from synapse.integrations.checkpoint_seed import CheckpointSeeder
+from synapse.integrations.codex_history import (
     PARSER_VERSION,
     PROJECTION_KIND,
     CodexTextSnapshot,
     CodexVisibleMessage,
 )
-from synapse.codex_import import (
+from synapse.integrations.codex_import import (
     CodexImportError,
     CodexImportLedger,
     CodexImportService,

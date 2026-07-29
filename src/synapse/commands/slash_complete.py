@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synapse.mcp_client import load_mcp_server_configs
+from synapse.integrations.mcp_client import load_mcp_server_configs
 from synapse.models.registry import registry_from_settings
 from synapse.sessions.store import SessionStore
 

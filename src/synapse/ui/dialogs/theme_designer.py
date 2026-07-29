@@ -19,7 +19,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Select, Static
 
-from synapse.config_paths import user_config_dir
+from synapse.settings.config_paths import user_config_dir
 from synapse.ui.theme import (
     THEMES_FILENAME,
     _theme_from_dict,

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import Field
 
-from synapse.steer import (
+from synapse.runtime.steer import (
     STEER_PREFIX,
     SteerQueue,
     build_steer_middleware,

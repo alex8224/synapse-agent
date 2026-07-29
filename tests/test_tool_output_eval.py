@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from synapse.tool_output_eval import evaluate_cases, load_cases, summarize_results
+from synapse.runtime.tool_output_eval import evaluate_cases, load_cases, summarize_results
 
 
 def test_fixture_eval_preserves_required_facts_and_saves_space() -> None:

@@ -88,13 +88,13 @@ def _resolve_mcp_config_path(settings: Any, project_root: Path | None = None) ->
             return p
         return p
 
-    from synapse.config_paths import mcp_config_paths
+    from synapse.settings.config_paths import mcp_config_paths
 
     existing = mcp_config_paths(project_root)
     if existing:
         return existing[-1]
 
-    from synapse.config_paths import project_config_dir
+    from synapse.settings.config_paths import project_config_dir
 
     return project_config_dir(project_root) / "mcp.json"
 
@@ -184,7 +184,7 @@ class McpPanelDialog(DialogBase):
         self._on_save = on_save
 
         try:
-            from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs
+            from synapse.integrations.mcp_client import get_active_mcp_pool, load_mcp_server_configs
 
             self._servers = load_mcp_server_configs(
                 path=getattr(settings, "mcp_config_path", None),

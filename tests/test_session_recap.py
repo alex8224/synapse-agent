@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapse.session_recap import (
+from synapse.sessions.session_recap import (
     SessionRecapController,
     build_recap_line,
     snapshot_from_turn,

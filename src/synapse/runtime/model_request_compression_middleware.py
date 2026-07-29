@@ -12,7 +12,7 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
-from synapse.interaction_ledger import begin_model_call
+from synapse.runtime.interaction_ledger import begin_model_call
 from synapse.tool_output.pipeline import ModelRequestCompressionEvent, ToolOutputRepository
 
 
@@ -647,7 +647,7 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
                 )
             protected = _provider_protected_tokens(request, provider, api_style)
             breakdown = _content_breakdown(request)
-            from synapse.middleware import current_prompt_cleanup_saved_tokens
+            from synapse.runtime.middleware import current_prompt_cleanup_saved_tokens
 
             prompt_saved = current_prompt_cleanup_saved_tokens()
             return {

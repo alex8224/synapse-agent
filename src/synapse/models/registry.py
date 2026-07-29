@@ -39,7 +39,7 @@ from typing import Any
 
 from langchain.chat_models import init_chat_model
 
-from synapse.llm_openai_compat import (
+from synapse.integrations.llm_openai_compat import (
     deepseek_thinking_kwargs,
     enable_openai_compat_reasoning_patch,
 )
@@ -421,7 +421,7 @@ class ModelRegistry:
         raise langchain-openai's StreamChunkTimeoutError. Profile ``params`` /
         top-level ``stream_chunk_timeout`` still win when present.
         """
-        from synapse.startup_trace import span
+        from synapse.observability.startup_trace import span
 
         profile = self.get(name)
         kwargs: dict[str, Any] = dict(profile.extra or {})
@@ -502,7 +502,7 @@ class ModelRegistry:
             kwargs["extra_body"] = existing_body
             # Build an async-only OpenAI path. An async API-key callable tells
             # ChatOpenAI not to construct its otherwise eager sync OpenAI client.
-            from synapse.http_clients import build_openai_async_http_client
+            from synapse.integrations.http_clients import build_openai_async_http_client
 
             if progress is not None:
                 progress("creating async model client")
@@ -540,7 +540,7 @@ class ModelRegistry:
                 mk = dict(kwargs.get("model_kwargs") or {})
                 mk.update(body)
                 kwargs["model_kwargs"] = mk
-            from synapse.http_clients import enable_anthropic_long_keepalive_defaults
+            from synapse.integrations.http_clients import enable_anthropic_long_keepalive_defaults
 
             enable_anthropic_long_keepalive_defaults()
 
@@ -549,7 +549,9 @@ class ModelRegistry:
         try:
             with span("model:init_chat_model"):
                 if model_name.startswith("openai:") and websocket:
-                    from synapse.llm_openai_websocket import ResponsesWebSocketChatOpenAI
+                    from synapse.integrations.llm_openai_websocket import (
+                        ResponsesWebSocketChatOpenAI,
+                    )
 
                     chat_model = ResponsesWebSocketChatOpenAI(
                         model=short_model_id(model_name),
@@ -559,7 +561,7 @@ class ModelRegistry:
                     chat_model = init_chat_model(model_name, **kwargs)
         except Exception:
             if model_name.startswith("openai:"):
-                from synapse.async_runtime import get_async_runtime
+                from synapse.runtime.async_runtime import get_async_runtime
 
                 get_async_runtime().close_connection(async_client)
             raise
@@ -568,7 +570,7 @@ class ModelRegistry:
             chat_model._coding_async_only = True
             chat_model._coding_websocket = bool(websocket)
             if websocket:
-                from synapse.async_runtime import get_async_runtime
+                from synapse.runtime.async_runtime import get_async_runtime
 
                 get_async_runtime().track_connection(chat_model)
         return apply_context_window_to_model(chat_model, profile.context_window)
@@ -811,7 +813,7 @@ def resolve_models_config_paths(settings: Any) -> list[Path]:
 
     If ``settings.models_config_path`` is set, only that explicit file is used.
     """
-    from synapse.config_paths import models_config_paths
+    from synapse.settings.config_paths import models_config_paths
 
     explicit = getattr(settings, "models_config_path", None)
     workspace = getattr(settings, "workspace", None) or Path.cwd()

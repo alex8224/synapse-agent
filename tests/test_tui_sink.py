@@ -23,7 +23,7 @@ def test_steer_queue_listener_rebinds_when_agent_changes():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     old_queue = SteerQueue()
@@ -61,7 +61,7 @@ def test_steer_queue_listener_rebinds_when_agent_changes():
 def test_turn_context_snapshot_survives_agent_and_thread_replacement():
     from types import SimpleNamespace
 
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     original_queue = SteerQueue()
@@ -83,7 +83,7 @@ def test_turn_context_snapshot_survives_agent_and_thread_replacement():
 def test_busy_steer_queue_keeps_targeting_active_graph_after_agent_rebuild():
     from types import SimpleNamespace
 
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     active_queue = SteerQueue()
@@ -101,7 +101,7 @@ def test_busy_steer_queue_keeps_targeting_active_graph_after_agent_rebuild():
 def test_steer_followup_is_deferred_until_after_refresh():
     from unittest.mock import MagicMock
 
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     queue = SteerQueue()
@@ -162,7 +162,7 @@ def test_steer_panel_hides_immediately_when_guidance_is_consumed():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     queue = SteerQueue()

@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from synapse.commands.slash_cmds import handle_slash
 from synapse.sessions import SessionStore
-from synapse.slash_cmds import handle_slash
 from synapse.tool_output import (
     ModelRequestCompressionEvent,
     ToolOutputRepository,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from synapse.codex_history import (
+from synapse.integrations.codex_history import (
     PARSER_VERSION,
     PROJECTION_KIND,
     CodexHistoryProjector,
@@ -151,7 +151,7 @@ def test_projects_compressed_rollout(tmp_path: Path) -> None:
 
 
 def test_rejects_rollout_exceeding_decompressed_size_limit(tmp_path: Path, monkeypatch) -> None:
-    import synapse.codex_history as codex_history
+    import synapse.integrations.codex_history as codex_history
 
     rollout = tmp_path / "large.jsonl"
     rollout.write_text("x" * 64, encoding="utf-8")

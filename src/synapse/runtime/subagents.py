@@ -11,19 +11,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from synapse.middleware import build_tool_error_recovery_middleware
+from synapse.runtime.middleware import build_tool_error_recovery_middleware
+from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tool_output.pipeline import (
     ToolOutputRepository,
     ToolOutputTransformPipeline,
     load_transformer_plugins,
 )
-from synapse.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tools import build_tool_result_reader_tool
 
 
 def _intent_middleware() -> list[Any]:
     """Inject ``intent`` field into every tool arg schema (main-agent parity)."""
-    from synapse.middleware import build_intent_schema_middleware
+    from synapse.runtime.middleware import build_intent_schema_middleware
 
     return list(build_intent_schema_middleware())
 
@@ -33,7 +33,7 @@ _TODO_TOOL_NAMES = {"write_todos", "todo_write", "todos"}
 
 def _tool_exclusion_middleware(excluded: set[str], *, allow_execute: bool = False) -> list[Any]:
     """Hide restricted tools from subagents with one middleware instance."""
-    from synapse.middleware import build_tool_exclusion_middleware
+    from synapse.runtime.middleware import build_tool_exclusion_middleware
 
     blocked = set(excluded) | _TODO_TOOL_NAMES
     if not allow_execute:

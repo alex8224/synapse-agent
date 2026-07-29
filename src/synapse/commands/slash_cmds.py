@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synapse.agent import build_coding_agent
-from synapse.mcp_client import (
+from synapse.app.agent import build_coding_agent
+from synapse.integrations.mcp_client import (
     get_active_mcp_pool,
     load_mcp_server_configs,
     load_mcp_tools,
@@ -28,7 +28,7 @@ from synapse.sessions.store import (
     binding_from_settings,
     format_session_table,
 )
-from synapse.transcript import (
+from synapse.sessions.transcript import (
     export_transcript_json,
     export_transcript_markdown,
     load_thread_messages,
@@ -1370,7 +1370,7 @@ def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
         return copied
     finally:
         try:
-            from synapse.http_clients import close_model_async_http_client
+            from synapse.integrations.http_clients import close_model_async_http_client
 
             close_model_async_http_client(fresh)
         except Exception:  # noqa: BLE001
@@ -2017,7 +2017,7 @@ def handle_slash(
         return _handle_theme(args, settings=settings, project_root=root)
 
     if cmd == "/compact":
-        from synapse.context_compact import force_compact_via_agent
+        from synapse.runtime.context_compact import force_compact_via_agent
 
         ok, lines = force_compact_via_agent(agent, thread_id=thread_id)
         md = "## Compact\n\n" + "\n".join(f"- {x}" for x in lines)
@@ -2027,7 +2027,7 @@ def handle_slash(
         return _tool_output_result(settings, thread_id, args)
 
     if cmd == "/context":
-        from synapse.context_compact import context_status_lines
+        from synapse.runtime.context_compact import context_status_lines
 
         plain = context_status_lines(agent, thread_id)
         rows = []
@@ -2046,7 +2046,7 @@ def handle_slash(
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/safety":
-        from synapse.safety import (
+        from synapse.runtime.safety import (
             apply_safety_to_settings,
             format_safety_status,
             get_safety_profile,
@@ -2104,7 +2104,7 @@ def handle_slash(
         )
 
     if cmd == "/skills":
-        from synapse.skills_catalog import (
+        from synapse.content.skills_catalog import (
             discover_skills,
             format_skills_lines,
             skills_paths_from_settings,
@@ -2125,7 +2125,7 @@ def handle_slash(
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd == "/memory":
-        from synapse.skills_catalog import (
+        from synapse.content.skills_catalog import (
             format_memory_lines,
             list_memory_files,
             memory_paths_from_settings,
@@ -2145,7 +2145,7 @@ def handle_slash(
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd in {"/subagents", "/subagent"}:
-        from synapse.subagents import build_default_subagents, format_subagents_lines
+        from synapse.runtime.subagents import build_default_subagents, format_subagents_lines
 
         specs = getattr(agent, "_coding_subagents", None)
         if specs is None:

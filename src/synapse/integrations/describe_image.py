@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from synapse.multimodal import ALLOWED_MIME
+from synapse.content.multimodal import ALLOWED_MIME
 
 _DEFAULT_PROMPT = (
     "Describe this image accurately for a text-only coding assistant. "

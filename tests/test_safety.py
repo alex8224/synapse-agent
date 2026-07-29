@@ -1,6 +1,6 @@
 """Safety helper unit tests."""
 
-from synapse.safety import check_command
+from synapse.runtime.safety import check_command
 
 
 def test_blacklist_blocks_force_push():

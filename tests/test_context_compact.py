@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from synapse.context_compact import (
+from synapse.runtime.context_compact import (
     force_compact_via_agent,
     is_context_compact_text,
     is_lc_summarization_message,
     is_stream_meta_summarization,
 )
-from synapse.transcript import fold_messages_for_ui
+from synapse.sessions.transcript import fold_messages_for_ui
 
 
 def test_detect_session_intent_summary_block():

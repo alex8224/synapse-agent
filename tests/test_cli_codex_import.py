@@ -12,8 +12,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 
 from synapse.cli import _import_codex_session
-from synapse.codex_sessions import CodexSessionScanner
 from synapse.config import load_settings
+from synapse.integrations.codex_sessions import CodexSessionScanner
 from synapse.sessions import SessionStore
 
 ID_ONE = "11111111-1111-1111-1111-111111111111"
@@ -66,7 +66,7 @@ def test_import_codex_session_helper_imports_and_reuses_thread(tmp_path: Path) -
 
     with (
         patch("synapse.cli.load_settings", return_value=settings),
-        patch("synapse.agent.build_coding_agent", return_value=agent),
+        patch("synapse.app.agent.build_coding_agent", return_value=agent),
     ):
         first = _import_codex_session(ID_ONE, workspace=workspace, codex_home=home)
         second = _import_codex_session(ID_ONE, workspace=workspace, codex_home=home)

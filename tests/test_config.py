@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from synapse.config import Settings, bootstrap_project_env, load_settings
-from synapse.safety import build_interrupt_on, check_command
+from synapse.runtime.safety import build_interrupt_on, check_command
 
 
 def test_default_approval_is_off(monkeypatch):
@@ -70,7 +70,7 @@ def test_stream_chunk_timeout_default_disabled_and_env(monkeypatch):
 
 def test_models_config_discovered_beside_exe(tmp_path, monkeypatch):
     """Portable layout: models.json under exe-adjacent .synapse/."""
-    from synapse.config_paths import models_config_paths
+    from synapse.settings.config_paths import models_config_paths
 
     monkeypatch.chdir(tmp_path)
     exe_root = tmp_path / "dist"
@@ -84,7 +84,7 @@ def test_models_config_discovered_beside_exe(tmp_path, monkeypatch):
     workspace = tmp_path / "work"
     workspace.mkdir()
 
-    import synapse.config_paths as cfgp
+    import synapse.settings.config_paths as cfgp
 
     monkeypatch.setattr(cfgp, "user_config_dir", lambda: tmp_path / "nouser" / ".synapse")
     monkeypatch.setattr(cfgp, "executable_config_dirs", lambda: [exe_root.resolve()])

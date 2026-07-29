@@ -160,7 +160,7 @@ def build_session_tools(
             max_turns: 返回最近 N 轮。0 表示返回全部轮次。
             include_summary: 是否在开头附带会话元信息。
         """
-        from synapse.transcript import (
+        from synapse.sessions.transcript import (
             format_turns_as_text,
             load_messages_from_sqlite_file,
             split_messages_by_turns,

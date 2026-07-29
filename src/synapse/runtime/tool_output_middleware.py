@@ -11,8 +11,8 @@ from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from synapse.execute_capture import begin_execute_capture, end_execute_capture
-from synapse.interaction_ledger import current_position
+from synapse.runtime.execute_capture import begin_execute_capture, end_execute_capture
+from synapse.runtime.interaction_ledger import current_position
 from synapse.tool_output.pipeline import (
     CompressionStageEvent,
     ToolOutputRepository,

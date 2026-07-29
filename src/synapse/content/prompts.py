@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.config_paths import project_config_dir, user_config_dir
+from synapse.settings.config_paths import project_config_dir, user_config_dir
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 

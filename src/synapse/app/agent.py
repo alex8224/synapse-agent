@@ -9,14 +9,26 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from synapse.agent_md import build_agent_md_middleware
-from synapse.backends import build_backend
-from synapse.context_compact import build_compact_tool_middleware
-from synapse.describe_image import VisionModelConfig
-from synapse.fs_permissions import build_filesystem_permissions
-from synapse.harness import apply_harness_exclusions
-from synapse.mcp_client import get_active_mcp_pool, load_mcp_server_configs, load_mcp_tools
-from synapse.middleware import (
+from synapse.app.agent_md import build_agent_md_middleware
+from synapse.content.prompts import build_system_prompt
+from synapse.integrations.describe_image import VisionModelConfig
+from synapse.integrations.mcp_client import (
+    get_active_mcp_pool,
+    load_mcp_server_configs,
+    load_mcp_tools,
+)
+from synapse.integrations.vision_middleware import build_describe_image_middleware
+from synapse.models.registry import (
+    build_model_from_settings,
+    model_cache_key,
+    model_supports_image_input,
+    registry_from_settings,
+)
+from synapse.runtime.backends import build_backend
+from synapse.runtime.context_compact import build_compact_tool_middleware
+from synapse.runtime.fs_permissions import build_filesystem_permissions
+from synapse.runtime.harness import apply_harness_exclusions
+from synapse.runtime.middleware import (
     build_compact_tool_descriptions,
     build_intent_schema_middleware,
     build_model_retry_middleware,
@@ -25,29 +37,21 @@ from synapse.middleware import (
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
 )
-from synapse.model_request_compression_middleware import (
+from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
 )
-from synapse.models.registry import (
-    build_model_from_settings,
-    model_cache_key,
-    model_supports_image_input,
-    registry_from_settings,
-)
-from synapse.prompts import build_system_prompt
-from synapse.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
+from synapse.runtime.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
+from synapse.runtime.steer import SteerQueue, build_steer_middleware
+from synapse.runtime.subagents import build_default_subagents
+from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
+from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.settings import Settings
-from synapse.steer import SteerQueue, build_steer_middleware
-from synapse.subagents import build_default_subagents
 from synapse.tool_output.pipeline import (
     ToolOutputRepository,
     ToolOutputTransformPipeline,
     load_transformer_plugins,
 )
-from synapse.tool_output_middleware import build_tool_output_transform_middleware
-from synapse.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.tools import build_session_tools
-from synapse.vision_middleware import build_describe_image_middleware
 
 
 def _build_checkpointer(settings: Settings):
@@ -57,7 +61,7 @@ def _build_checkpointer(settings: Settings):
         return MemorySaver()
 
     # Prefer AsyncSqliteSaver so TUI astream + multi-turn checkpoints share one
-    # process-lifetime event loop (see synapse.async_runtime).
+    # process-lifetime event loop (see synapse.runtime.async_runtime).
     settings.ensure_dirs()
     path = str(settings.checkpoint_path)
     try:
@@ -75,7 +79,7 @@ def _build_async_sqlite_checkpointer(path: str):
     import aiosqlite
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    from synapse.async_runtime import get_async_runtime
+    from synapse.runtime.async_runtime import get_async_runtime
 
     runtime = get_async_runtime()
 
@@ -165,8 +169,8 @@ def build_coding_agent(
     """
     from deepagents import create_deep_agent
 
-    from synapse.startup_trace import dump as dump_startup_trace
-    from synapse.startup_trace import duration, mark, reset, span
+    from synapse.observability.startup_trace import dump as dump_startup_trace
+    from synapse.observability.startup_trace import duration, mark, reset, span
 
     build_started = time.perf_counter()
     reset()
@@ -203,7 +207,7 @@ def build_coding_agent(
             if len(model_cache) >= 8:
                 evicted = model_cache.pop(next(iter(model_cache)))
                 try:
-                    from synapse.http_clients import close_model_async_http_client
+                    from synapse.integrations.http_clients import close_model_async_http_client
 
                     close_model_async_http_client(evicted)
                 except Exception:  # noqa: BLE001
@@ -431,7 +435,7 @@ def build_coding_agent(
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
     # All model I/O is async-only and bound to the process runtime loop.
     try:
-        from synapse.async_runtime import get_async_runtime
+        from synapse.runtime.async_runtime import get_async_runtime
 
         agent._coding_async_runtime = get_async_runtime()  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001

@@ -21,12 +21,12 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
 
-from synapse.codex_history import PARSER_VERSION, PROJECTION_KIND
+from synapse.integrations.codex_history import PARSER_VERSION, PROJECTION_KIND
 
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
 
-    from synapse.codex_history import CodexTextSnapshot
+    from synapse.integrations.codex_history import CodexTextSnapshot
 
 SUPPORTED_LANGGRAPH_VERSION = "1.2.9"
 SUPPORTED_DEEPAGENTS_VERSION = "0.6.12"

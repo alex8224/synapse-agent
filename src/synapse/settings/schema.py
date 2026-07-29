@@ -13,7 +13,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from synapse.config_paths import (
+from synapse.settings.config_paths import (
     config_search_roots,
     executable_config_dirs,
     load_layered_settings_file,

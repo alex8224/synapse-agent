@@ -48,7 +48,7 @@ class InputHistory:
 
     @classmethod
     def for_project(cls, project_root: Path | None = None, **kwargs) -> InputHistory:
-        from synapse.config_paths import SYNAPSE_DIRNAME
+        from synapse.settings.config_paths import SYNAPSE_DIRNAME
 
         root = Path(project_root or Path.cwd()).expanduser().resolve()
         return cls(root / SYNAPSE_DIRNAME / "history", **kwargs)

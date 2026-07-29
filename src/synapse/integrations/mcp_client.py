@@ -112,7 +112,7 @@ def load_mcp_server_configs(
     if path is not None:
         file_paths.append(Path(path).expanduser())
     if not file_paths:
-        from synapse.config_paths import mcp_config_paths
+        from synapse.settings.config_paths import mcp_config_paths
 
         file_paths = list(mcp_config_paths(workspace))
 

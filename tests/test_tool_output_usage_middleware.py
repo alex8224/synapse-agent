@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 from langchain_core.messages import ToolMessage
 
+from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.tool_output import ToolOutputRepository, TransformEvent
-from synapse.tool_output_usage_middleware import build_tool_output_usage_middleware
 
 
 def test_model_reuse_records_transformed_tool_token_saving(tmp_path) -> None:

@@ -11,7 +11,8 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from synapse.execute_capture import capture_execute_output
+from synapse.runtime.execute_capture import capture_execute_output
+from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tool_output import (
     ContentType,
     GitSummaryTransformer,
@@ -28,7 +29,6 @@ from synapse.tool_output import (
     load_transformer_plugins,
     set_metrics_notifier,
 )
-from synapse.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.tools.session_tools import build_tool_result_reader_tool
 
 

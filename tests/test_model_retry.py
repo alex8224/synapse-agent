@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from synapse.middleware import (
+from synapse.runtime.middleware import (
     NotifyingModelRetryMiddleware,
     build_model_retry_middleware,
     clear_retry_notifier,
@@ -87,7 +87,7 @@ def test_model_retry_middleware_retries_then_succeeds(monkeypatch) -> None:  # n
 
 def test_model_retry_middleware_retries_5xx_auth_unavailable(monkeypatch) -> None:  # noqa: ANN001
     """503 + auth_unavailable markers should now be retried."""
-    monkeypatch.setattr("synapse.middleware.time.sleep", lambda _: None)
+    monkeypatch.setattr("synapse.runtime.middleware.time.sleep", lambda _: None)
     middleware = build_model_retry_middleware()
     attempts = 0
     err = _ProviderError(
@@ -127,7 +127,7 @@ def test_model_retry_middleware_does_not_retry_4xx() -> None:
 
 def test_model_retry_middleware_notifier_called(monkeypatch) -> None:  # noqa: ANN001
     """The module-level retry notifier receives retry events."""
-    monkeypatch.setattr("synapse.middleware.time.sleep", lambda _: None)
+    monkeypatch.setattr("synapse.runtime.middleware.time.sleep", lambda _: None)
     middleware = build_model_retry_middleware()
 
     calls: list[tuple[int, float, str]] = []

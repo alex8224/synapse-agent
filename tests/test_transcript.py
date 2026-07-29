@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from synapse.transcript import (
+from synapse.sessions.transcript import (
     fold_messages_for_ui,
     load_thread_messages,
     message_to_export_dict,
@@ -81,7 +81,7 @@ def test_fold_skips_system():
 def test_fold_skips_model_only_steer_human_message():
     from langchain_core.messages import HumanMessage
 
-    from synapse.steer import format_steer_message
+    from synapse.runtime.steer import format_steer_message
 
     messages = [
         _Human("visible question"),

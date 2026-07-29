@@ -5,9 +5,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from synapse.agent import _build_async_sqlite_checkpointer, _build_checkpointer
-from synapse.async_runtime import AsyncRuntime, get_async_runtime, reset_async_runtime_for_tests
+from synapse.app.agent import _build_async_sqlite_checkpointer, _build_checkpointer
 from synapse.config import load_settings
+from synapse.runtime.async_runtime import (
+    AsyncRuntime,
+    get_async_runtime,
+    reset_async_runtime_for_tests,
+)
 from synapse.ui.stream import checkpointer_supports_async
 
 

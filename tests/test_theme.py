@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from synapse.commands.slash_cmds import handle_slash
+from synapse.commands.slash_complete import SlashCompleteContext, complete_slash
 from synapse.config import Settings, load_settings
-from synapse.slash_cmds import handle_slash
-from synapse.slash_complete import SlashCompleteContext, complete_slash
 from synapse.ui import theme as theme_mod
 from synapse.ui.theme import (
     BUILTIN_THEMES,
@@ -91,7 +91,7 @@ def test_persist_and_load_settings_theme(tmp_path: Path, monkeypatch):
     user.mkdir(parents=True)
     monkeypatch.setattr(theme_mod, "user_config_dir", lambda: user)
     # Also patch config user dir used by load_settings layers
-    import synapse.config_paths as cfgp
+    import synapse.settings.config_paths as cfgp
 
     monkeypatch.setattr(cfgp, "user_config_dir", lambda: user)
     monkeypatch.setattr(cfgp, "executable_config_dirs", lambda: [])
@@ -127,7 +127,7 @@ def test_slash_theme_list_and_switch(tmp_path: Path, monkeypatch):
     user = tmp_path / "home" / ".synapse"
     user.mkdir(parents=True)
     monkeypatch.setattr(theme_mod, "user_config_dir", lambda: user)
-    import synapse.config_paths as cfgp
+    import synapse.settings.config_paths as cfgp
 
     monkeypatch.setattr(cfgp, "user_config_dir", lambda: user)
 
@@ -360,7 +360,7 @@ def test_slash_theme_ansi_alias(tmp_path: Path, monkeypatch):
     user = tmp_path / "home" / ".synapse"
     user.mkdir(parents=True)
     monkeypatch.setattr(theme_mod, "user_config_dir", lambda: user)
-    import synapse.config_paths as cfgp
+    import synapse.settings.config_paths as cfgp
 
     monkeypatch.setattr(cfgp, "user_config_dir", lambda: user)
 

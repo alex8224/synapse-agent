@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synapse.context_compact import (
+from synapse.runtime.context_compact import (
     is_context_compact_text,
     is_lc_summarization_message,
 )
@@ -422,7 +422,7 @@ def _message_images(msg: Any) -> list[tuple[bytes, str]]:
     if content is None and isinstance(msg, dict):
         content = msg.get("content")
     try:
-        from synapse.multimodal import extract_image_payloads
+        from synapse.content.multimodal import extract_image_payloads
     except Exception:  # noqa: BLE001
         return []
     try:
@@ -472,7 +472,7 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
                 continue
             # Mid-run steer is model-only chrome; never paint in the transcript.
             try:
-                from synapse.steer import is_steer_message
+                from synapse.runtime.steer import is_steer_message
 
                 if is_steer_message(msg):
                     continue
@@ -482,7 +482,7 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             if is_context_compact_text(text):
                 continue
             try:
-                from synapse.steer import is_steer_message as _is_steer
+                from synapse.runtime.steer import is_steer_message as _is_steer
 
                 if _is_steer(text=text):
                     continue

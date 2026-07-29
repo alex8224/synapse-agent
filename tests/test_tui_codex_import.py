@@ -41,7 +41,7 @@ def test_codex_picker_degrades_to_empty_list_when_scanner_fails(monkeypatch) -> 
     from synapse.config import Settings
 
     monkeypatch.setattr(
-        "synapse.codex_sessions.CodexSessionScanner",
+        "synapse.integrations.codex_sessions.CodexSessionScanner",
         MagicMock(side_effect=RuntimeError("no Codex home")),
     )
 
@@ -73,7 +73,7 @@ def test_codex_picker_includes_rollout_only_session_and_hides_empty_thread(tmp_p
         encoding="utf-8",
     )
 
-    from synapse.codex_sessions import CodexSessionScanner
+    from synapse.integrations.codex_sessions import CodexSessionScanner
 
     scan = CodexSessionScanner(home).scan(workspace, include_rollout_fallback=True)
     assert {session.native_id for session in scan.sessions} == {visible_id, empty_id}, scan.warnings

@@ -148,7 +148,7 @@ class AsyncRuntime:
         self._loop = None
         self._thread = None
         try:
-            from synapse.startup_trace import duration
+            from synapse.observability.startup_trace import duration
 
             duration("runtime.close", started, connections=connection_count)
         except Exception:  # noqa: BLE001

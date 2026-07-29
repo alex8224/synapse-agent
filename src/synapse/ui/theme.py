@@ -46,7 +46,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
-from synapse.config_paths import (
+from synapse.settings.config_paths import (
     SETTINGS_FILENAME,
     existing_files,
     layered_config_dirs,

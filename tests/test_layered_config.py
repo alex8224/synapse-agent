@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 from synapse.config import Settings, load_settings
-from synapse.config_paths import (
-    layered_config_dirs,
-    load_layered_settings_file,
-    project_config_dir,
-)
 from synapse.models_registry import (
     ModelProfile,
     load_merged_models_registry,
     merge_model_profiles,
 )
+from synapse.settings.config_paths import (
+    layered_config_dirs,
+    load_layered_settings_file,
+    project_config_dir,
+)
 
 
 def test_layered_dirs_order(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "synapse.config_paths.user_config_dir",
+        "synapse.settings.config_paths.user_config_dir",
         lambda: tmp_path / "home" / ".synapse",
     )
     monkeypatch.setattr(
-        "synapse.config_paths.executable_config_dirs",
+        "synapse.settings.config_paths.executable_config_dirs",
         lambda: [],
     )
     workspace = tmp_path / "proj"
@@ -74,11 +74,11 @@ def test_models_merge_user_then_project(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "synapse.config_paths.user_config_dir",
+        "synapse.settings.config_paths.user_config_dir",
         lambda: home.resolve(),
     )
     monkeypatch.setattr(
-        "synapse.config_paths.executable_config_dirs",
+        "synapse.settings.config_paths.executable_config_dirs",
         lambda: [],
     )
     monkeypatch.chdir(proj)
@@ -116,11 +116,11 @@ def test_settings_json_layer(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "synapse.config_paths.user_config_dir",
+        "synapse.settings.config_paths.user_config_dir",
         lambda: home.resolve(),
     )
     monkeypatch.setattr(
-        "synapse.config_paths.executable_config_dirs",
+        "synapse.settings.config_paths.executable_config_dirs",
         lambda: [],
     )
     cfg = load_layered_settings_file(proj)

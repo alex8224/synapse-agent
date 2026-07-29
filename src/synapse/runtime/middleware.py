@@ -25,7 +25,7 @@ from langchain.agents.middleware._retry import calculate_delay, should_retry_exc
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 
-from synapse.pathing import rewrite_tool_args_paths
+from synapse.runtime.pathing import rewrite_tool_args_paths
 
 # ---------------------------------------------------------------------------
 #  Transient error markers (text-based, no status code)

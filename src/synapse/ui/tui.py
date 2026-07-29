@@ -31,17 +31,17 @@ from textual.events import Click, Enter, Key, Leave
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from synapse.agent import build_coding_agent
-from synapse.input_history import InputHistory
-from synapse.multimodal import (
+from synapse.app.agent import build_coding_agent
+from synapse.content.input_history import InputHistory
+from synapse.content.multimodal import (
     ImageBank,
     compose_user_content,
     find_placeholders,
     provider_from_settings,
     read_clipboard,
 )
-from synapse.session_recap import SessionRecapController
-from synapse.steer import SteerQueue, format_steer_message, get_agent_steer_queue
+from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
+from synapse.sessions.session_recap import SessionRecapController
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.pipeline import ToolOutputRepository
 from synapse.ui.bottombar import (
@@ -2394,12 +2394,12 @@ class CodingAgentApp(App[None]):
         self._reload_session_title()
 
     def _slash_complete_ctx(self):
-        from synapse.slash_complete import build_complete_context
+        from synapse.commands.slash_complete import build_complete_context
 
         return build_complete_context(self.settings)
 
     def compose(self) -> ComposeResult:
-        from synapse.slash_complete import make_textual_suggester
+        from synapse.commands.slash_complete import make_textual_suggester
 
         yield TopBar(
             registry_provider=lambda: self._topbar,
@@ -2473,8 +2473,8 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="startup")
     def _bg_build_agent(self) -> None:
         """Build agent off the UI thread; attach MCP in a second phase."""
-        from synapse.agent import attach_mcp_to_agent, build_coding_agent
-        from synapse.startup_trace import duration
+        from synapse.app.agent import attach_mcp_to_agent, build_coding_agent
+        from synapse.observability.startup_trace import duration
 
         startup_started = time.perf_counter()
 
@@ -2577,7 +2577,7 @@ class CodingAgentApp(App[None]):
         self.set_activity("idle", "ready", True)
 
     def _set_complete_hint(self, value: str) -> None:
-        from synapse.slash_complete import (
+        from synapse.commands.slash_complete import (
             complete_at_line,
             complete_slash,
         )
@@ -2662,7 +2662,7 @@ class CodingAgentApp(App[None]):
 
     def action_complete_slash(self) -> None:
         """Accept / cycle slash completions (Tab)."""
-        from synapse.slash_complete import (
+        from synapse.commands.slash_complete import (
             complete_at_line,
             complete_slash,
         )
@@ -2772,7 +2772,7 @@ class CodingAgentApp(App[None]):
 
     def action_show_completions(self) -> None:
         """List available slash completions (Ctrl+Space)."""
-        from synapse.slash_complete import complete_slash
+        from synapse.commands.slash_complete import complete_slash
 
         prompt = self.query_one("#prompt", Input)
         value = prompt.value or ""
@@ -2848,7 +2848,7 @@ class CodingAgentApp(App[None]):
     def _current_completion_cands(self) -> list[str]:
         """Return candidates for the active completion session
         (always based on _complete_base_value)."""
-        from synapse.slash_complete import complete_at_line, complete_slash
+        from synapse.commands.slash_complete import complete_at_line, complete_slash
 
         if self.project_root and "@" in (self._complete_base_value or ""):
             return complete_at_line(self._complete_base_value, self.project_root)
@@ -4225,7 +4225,7 @@ class CodingAgentApp(App[None]):
             return
         # Context-compaction summaries are for the model only.
         try:
-            from synapse.context_compact import is_context_compact_text
+            from synapse.runtime.context_compact import is_context_compact_text
 
             if is_context_compact_text(body):
                 self.append_event("context compacted (hidden)", "dim")
@@ -4539,7 +4539,7 @@ class CodingAgentApp(App[None]):
         """
         if self.agent is None:
             return
-        from synapse.transcript import fold_messages_for_ui, load_thread_messages
+        from synapse.sessions.transcript import fold_messages_for_ui, load_thread_messages
 
         try:
             messages = load_thread_messages(
@@ -4706,8 +4706,8 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="model-switch")
     def _switch_model_bg(self, command: str, activity: str) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.observability.startup_trace import duration
 
         switch_started = time.perf_counter()
         self.call_from_thread(self._clear_status_notice)
@@ -4746,8 +4746,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="model-switch-mcp")
     def _attach_mcp_after_switch_bg(self, base_agent: Any) -> None:
-        from synapse.agent import attach_mcp_to_agent
-        from synapse.startup_trace import duration
+        from synapse.app.agent import attach_mcp_to_agent
+        from synapse.observability.startup_trace import duration
 
         mcp_started = time.perf_counter()
         self.call_from_thread(self.flash_status, "reconnecting MCP…", "dim", ttl=1.5)
@@ -4841,7 +4841,7 @@ class CodingAgentApp(App[None]):
             self.call_from_thread(self._turn_done)
             return
         try:
-            from synapse.codex_import import import_codex_session
+            from synapse.integrations.codex_import import import_codex_session
 
             result = import_codex_session(
                 native_id=native_id,
@@ -4894,7 +4894,7 @@ class CodingAgentApp(App[None]):
 
     def _apply_session_multi_delete(self, thread_ids: list[str]) -> None:
         """Batch delete sessions, one by one."""
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         deleted = 0
         failed = 0
@@ -4929,7 +4929,7 @@ class CodingAgentApp(App[None]):
         self._apply_ok_result(deleted > 0)
 
     def _apply_session_switch(self, thread_id: str) -> None:
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         try:
             ok = handle_slash(
@@ -4945,7 +4945,7 @@ class CodingAgentApp(App[None]):
         self._apply_ok_result(ok)
 
     def _apply_session_delete(self, thread_id: str) -> None:
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         try:
             ok = handle_slash(
@@ -4994,9 +4994,9 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="mcp-save")
     def _apply_mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
-        from synapse.mcp_client import load_mcp_server_configs
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.integrations.mcp_client import load_mcp_server_configs
+        from synapse.observability.startup_trace import duration
         from synapse.ui.dialogs.mcp_panel import _save_include_tools_to_config
 
         save_started = time.perf_counter()
@@ -5076,8 +5076,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="mcp-reload")
     def _apply_mcp_reload_bg(self) -> None:
-        from synapse.slash_cmds import handle_slash
-        from synapse.startup_trace import duration
+        from synapse.commands.slash_cmds import handle_slash
+        from synapse.observability.startup_trace import duration
 
         reload_started = time.perf_counter()
         try:
@@ -5116,7 +5116,7 @@ class CodingAgentApp(App[None]):
             return
         action, profile = result
         if action == "safety":
-            from synapse.slash_cmds import handle_slash
+            from synapse.commands.slash_cmds import handle_slash
 
             try:
                 ok = handle_slash(
@@ -5180,7 +5180,7 @@ class CodingAgentApp(App[None]):
 
     def _handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
-        from synapse.slash_cmds import handle_slash
+        from synapse.commands.slash_cmds import handle_slash
 
         if self.agent is None:
             low = text.strip().split()[0].casefold() if text.strip() else ""
@@ -5519,7 +5519,7 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True)
     def run_resume(self, action: str, message: str | None = None) -> None:
         """Resume graph after /approve or /reject."""
-        from synapse.hitl import (
+        from synapse.runtime.hitl import (
             build_decisions,
             build_resume_payload,
             extract_pending_interrupt,
@@ -5780,7 +5780,7 @@ def run_tui(
             and bool(getattr(settings, "mcp_eager", False)),
         )
         if settings.enable_mcp and not getattr(agent, "_coding_mcp_attached", True):
-            from synapse.agent import attach_mcp_to_agent
+            from synapse.app.agent import attach_mcp_to_agent
 
             agent = attach_mcp_to_agent(settings, agent, project_root=root)
 

@@ -8,7 +8,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
-from synapse.describe_image import (
+from synapse.integrations.describe_image import (
     VisionModelClient,
     VisionModelConfig,
     rewrite_messages,

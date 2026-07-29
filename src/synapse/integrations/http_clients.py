@@ -117,7 +117,7 @@ def build_openai_async_http_client(
 ) -> httpx.AsyncClient:
     """Create one model-local AsyncClient on the process async runtime."""
     enable_openai_long_keepalive_defaults()
-    from synapse.async_runtime import get_async_runtime
+    from synapse.runtime.async_runtime import get_async_runtime
 
     runtime = get_async_runtime()
 
@@ -141,7 +141,7 @@ def build_openai_async_http_client(
 def close_model_async_http_client(model: Any) -> None:
     if bool(getattr(model, "_coding_websocket", False)):
         try:
-            from synapse.async_runtime import get_async_runtime
+            from synapse.runtime.async_runtime import get_async_runtime
 
             get_async_runtime().close_connection(model)
         except Exception:  # noqa: BLE001
@@ -150,7 +150,7 @@ def close_model_async_http_client(model: Any) -> None:
     if client is None:
         return
     try:
-        from synapse.async_runtime import get_async_runtime
+        from synapse.runtime.async_runtime import get_async_runtime
 
         get_async_runtime().close_connection(client)
     except Exception:  # noqa: BLE001

@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
 
-from synapse.llm_openai_websocket import (
+from synapse.integrations.llm_openai_websocket import (
     ResponsesWebSocketChatOpenAI,
     prepare_responses_websocket_event,
 )
@@ -115,7 +115,7 @@ def test_websocket_stream_reuses_connection():
 
     async def run():
         with patch(
-            "synapse.llm_openai_websocket._convert_responses_chunk_to_generation_chunk",
+            "synapse.integrations.llm_openai_websocket._convert_responses_chunk_to_generation_chunk",
             side_effect=convert,
         ):
             first = [chunk.text async for chunk in model._astream([HumanMessage("a")])]

@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 
 from langchain.agents.middleware import ModelRetryMiddleware
 
-from synapse.backends import build_backend
 from synapse.config import load_settings
-from synapse.prompts import (
+from synapse.content.prompts import (
     DEFAULT_CODING_SYSTEM_PROMPT,
     build_system_prompt,
     load_coding_system_prompt,
 )
+from synapse.runtime.backends import build_backend
 
 
 def test_build_system_prompt_includes_workspace(tmp_path: Path):
@@ -31,7 +31,7 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
 def test_load_coding_system_prompt_prefers_project_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from synapse import prompts as prompts_mod
+    from synapse.content import prompts as prompts_mod
 
     user_dir = tmp_path / "user-home"
     user_dir.mkdir()
@@ -48,7 +48,7 @@ def test_load_coding_system_prompt_prefers_project_file(
 def test_load_coding_system_prompt_falls_back_to_builtin(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from synapse import prompts as prompts_mod
+    from synapse.content import prompts as prompts_mod
 
     user_dir = tmp_path / "user-home-empty"
     user_dir.mkdir()
@@ -61,7 +61,7 @@ def test_load_coding_system_prompt_falls_back_to_builtin(
 def test_ensure_user_system_prompt_seeds_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from synapse import prompts as prompts_mod
+    from synapse.content import prompts as prompts_mod
 
     user_dir = tmp_path / "user-seed"
     monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: user_dir)
@@ -103,7 +103,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),
     ):
-        from synapse.agent import build_coding_agent
+        from synapse.app.agent import build_coding_agent
 
         progress: list[str] = []
         agent = build_coding_agent(
@@ -165,7 +165,7 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),
     ):
-        from synapse.agent import build_coding_agent
+        from synapse.app.agent import build_coding_agent
 
         first = build_coding_agent(settings, project_root=tmp_path, model_cache=cache)
         second = build_coding_agent(settings, project_root=tmp_path, model_cache=cache)
@@ -181,7 +181,7 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
 
 
 def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
-    from synapse.steer import SteerQueue
+    from synapse.runtime.steer import SteerQueue
 
     settings = load_settings(
         workspace=tmp_path,
@@ -198,7 +198,7 @@ def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),
     ):
-        from synapse.agent import build_coding_agent
+        from synapse.app.agent import build_coding_agent
 
         agent = build_coding_agent(
             settings,
@@ -212,8 +212,8 @@ def test_build_coding_agent_reuses_provided_steer_queue(tmp_path: Path):
 def test_attach_mcp_to_agent_preserves_steer_queue(tmp_path: Path):
     from types import SimpleNamespace
 
-    from synapse.agent import attach_mcp_to_agent
-    from synapse.steer import SteerQueue
+    from synapse.app.agent import attach_mcp_to_agent
+    from synapse.runtime.steer import SteerQueue
 
     queue = SteerQueue()
     current = SimpleNamespace(
@@ -225,8 +225,8 @@ def test_attach_mcp_to_agent_preserves_steer_queue(tmp_path: Path):
     settings = SimpleNamespace(enable_mcp=True)
 
     with (
-        patch("synapse.agent.get_active_mcp_pool", return_value=None),
-        patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build,
+        patch("synapse.app.agent.get_active_mcp_pool", return_value=None),
+        patch("synapse.app.agent.build_coding_agent", return_value="rebuilt") as build,
     ):
         rebuilt = attach_mcp_to_agent(settings, current, project_root=tmp_path)
 
@@ -239,7 +239,7 @@ def test_attach_mcp_to_agent_preserves_steer_queue(tmp_path: Path):
 def test_attach_mcp_to_agent_reuses_live_pool_tools(tmp_path: Path):
     from types import SimpleNamespace
 
-    from synapse.agent import attach_mcp_to_agent
+    from synapse.app.agent import attach_mcp_to_agent
 
     tool = object()
     pool = SimpleNamespace(tools=[tool])
@@ -251,8 +251,8 @@ def test_attach_mcp_to_agent_reuses_live_pool_tools(tmp_path: Path):
     settings = SimpleNamespace(enable_mcp=True)
 
     with (
-        patch("synapse.agent.get_active_mcp_pool", return_value=pool),
-        patch("synapse.agent.build_coding_agent", return_value="rebuilt") as build,
+        patch("synapse.app.agent.get_active_mcp_pool", return_value=pool),
+        patch("synapse.app.agent.build_coding_agent", return_value="rebuilt") as build,
     ):
         attach_mcp_to_agent(settings, current, project_root=tmp_path)
 

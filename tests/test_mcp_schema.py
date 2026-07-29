@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from synapse.mcp_client import _make_tool, json_schema_to_pydantic_model
-from synapse.middleware import TOOL_INTENT_KEY, add_intent_to_tool
+from synapse.integrations.mcp_client import _make_tool, json_schema_to_pydantic_model
+from synapse.runtime.middleware import TOOL_INTENT_KEY, add_intent_to_tool
 
 
 class _Server:

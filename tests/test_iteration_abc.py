@@ -4,22 +4,22 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from synapse.context_compact import (
+from synapse.content.skills_catalog import discover_skills, format_skills_lines
+from synapse.runtime.context_compact import (
     extract_summarization_event,
     format_summarization_event,
 )
-from synapse.hitl import (
+from synapse.runtime.hitl import (
     PendingAction,
     PendingInterrupt,
     build_decisions,
     format_interrupt_lines,
 )
-from synapse.safety import (
+from synapse.runtime.safety import (
     build_interrupt_on,
     get_safety_profile,
 )
-from synapse.skills_catalog import discover_skills, format_skills_lines
-from synapse.subagents import build_default_subagents, format_subagents_lines
+from synapse.runtime.subagents import build_default_subagents, format_subagents_lines
 
 
 def test_format_summarization_event():
@@ -55,7 +55,7 @@ def test_hitl_build_decisions_approve_reject():
 
 
 def test_hitl_extract_pending_from_state_interrupts():
-    from synapse.hitl import extract_pending_interrupt, has_pending_interrupt
+    from synapse.runtime.hitl import extract_pending_interrupt, has_pending_interrupt
 
     value = {
         "action_requests": [
@@ -78,7 +78,7 @@ def test_hitl_extract_pending_from_state_interrupts():
 
 
 def test_slash_approve_reject_resume_fields():
-    from synapse.slash_cmds import handle_slash
+    from synapse.commands.slash_cmds import handle_slash
 
     settings = SimpleNamespace()
     ok = handle_slash("/approve", settings=settings, agent=None, thread_id="t1")

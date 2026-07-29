@@ -35,13 +35,13 @@ from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
-from synapse.context_compact import (
+from synapse.runtime.context_compact import (
     is_context_compact_text,
     is_lc_summarization_message,
     is_stream_meta_summarization,
 )
-from synapse.pathing import summarize_tool_result
-from synapse.steer import is_steer_message
+from synapse.runtime.pathing import summarize_tool_result
+from synapse.runtime.steer import is_steer_message
 from synapse.ui.sink import StreamSink, sink_supports_tool_items
 from synapse.ui.timeline import (
     build_tool_item,
@@ -1581,7 +1581,7 @@ def stream_agent(
     compact_events = 0
 
     # -- install retry notifier so the middleware can post status-bar updates --
-    from synapse.middleware import clear_retry_notifier, set_retry_notifier
+    from synapse.runtime.middleware import clear_retry_notifier, set_retry_notifier
 
     def _retry_notify(attempt: int, delay: float, reason: str) -> None:
         """Post a single-line retry notice through the sink."""
@@ -2068,7 +2068,7 @@ def stream_agent(
     interrupted = False
     if not cancelled:
         try:
-            from synapse.hitl import (
+            from synapse.runtime.hitl import (
                 extract_pending_interrupt,
                 format_interrupt_lines,
                 has_pending_interrupt,
@@ -2104,7 +2104,7 @@ def stream_agent(
     if cancelled:
         # Preserve multi-turn continuity: seal open tool_calls / pending next.
         try:
-            from synapse.cancel_repair import repair_thread_after_cancel
+            from synapse.sessions.cancel_repair import repair_thread_after_cancel
 
             repair_thread_after_cancel(agent, run_config)
         except Exception:  # noqa: BLE001

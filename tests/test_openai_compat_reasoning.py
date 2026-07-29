@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
-from synapse.llm_openai_compat import enable_openai_compat_reasoning_patch
+from synapse.integrations.llm_openai_compat import enable_openai_compat_reasoning_patch
 
 
 def test_reasoning_content_delta_is_preserved():

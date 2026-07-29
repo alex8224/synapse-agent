@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from synapse.codex_sessions import CodexSessionScanner
+from synapse.integrations.codex_sessions import CodexSessionScanner
 
 ID_ONE = "11111111-1111-1111-1111-111111111111"
 ID_TWO = "22222222-2222-2222-2222-222222222222"
