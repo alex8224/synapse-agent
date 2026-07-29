@@ -7,6 +7,13 @@
 - 当前学习方向：Agent 应用开发
 - 主语言背景：Java → 正在学习 Python/LangChain Agent 生态
 
+## 用户信息
+- 姓名：肖前程
+- 年龄：35 岁
+- 职业：Java 程序员
+- 当前学习方向：Agent 应用开发
+- 主语言背景：Java → 正在学习 Python/LangChain Agent 生态
+
 ## 约定
 - Python 依赖使用 `uv` 管理。
 - 优先小步、可测试的改动。
