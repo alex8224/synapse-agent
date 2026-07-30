@@ -1881,13 +1881,13 @@ dev = [
 
 [[package]]
 name = "synapse-search-core"
-version = "0.1.0"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/44/2f2b54245f4882f5f6d2f50588f891f12c8a4186896a53083138f5dc6590/synapse_search_core-0.1.0-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:8a72326c411cea52bca511569f76ea70ab3752067c57ca7438b605410d3ddb1c", size = 1238606 },
-    { url = "https://files.pythonhosted.org/packages/ae/86/aedfdf838940bc676ecad557804e1e9f4aad09891a1ae6f35b4d023090b3/synapse_search_core-0.1.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ce26ef014ea9e8a747ba52319fa72b6602390c19b5faffa5567de5e29023c446", size = 1393862 },
-    { url = "https://files.pythonhosted.org/packages/69/6e/0d457d33bfc4a0f9a2e5ffe084e7f5347069aa97afe8dbb9ef2128f54c11/synapse_search_core-0.1.0-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:17e8c1af74b5b4969dc7df820d7752b5ceef7e0d87d8ec7c4323ee5e7193bfe3", size = 1396794 },
-    { url = "https://files.pythonhosted.org/packages/36/d1/0715c30e291fd48c73ade4ccd7df78aa7f6c9a823a5d011a21b31b0ec0c5/synapse_search_core-0.1.0-cp312-abi3-win_amd64.whl", hash = "sha256:ad95c095d6e35b4d0148777a033c3febb2a32c6078fe4873f749861f6f85792f", size = 1144574 },
+    { url = "https://files.pythonhosted.org/packages/10/e5/e01966c05efd0acae1ffa5f98fbaf49c620dcb777be612f14246ee81e15b/synapse_search_core-0.1.1-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:0e8c0a427cd755dab3fa7ec654f79bd32cc57ce02529927332512b10194ed656", size = 1242050 },
+    { url = "https://files.pythonhosted.org/packages/a9/92/108a537eec0ee1c7947f079203d02afb93fa98c1bbb2e62280489637d47d/synapse_search_core-0.1.1-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ffc8aea5a3f8cac252b439fb80e53e9afe682730b61511d0a97e86c9e98011b6", size = 1395917 },
+    { url = "https://files.pythonhosted.org/packages/ae/be/e50f2ad6f3d27350a1853069a914f911ed5113e5d6e70cf395ca3f45b642/synapse_search_core-0.1.1-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:efc9d0bca3085d91484ba83542a46bcb0e373dea1ee22c09dc4eba4aa90896d2", size = 1399604 },
+    { url = "https://files.pythonhosted.org/packages/51/40/2dd316e55a4c4f69eb576b9bc2b9ead532a6244ea7ea6e6308e6a2286e4c/synapse_search_core-0.1.1-cp312-abi3-win_amd64.whl", hash = "sha256:62aac06a858e61b8ce9826801571922d86977c9fcc64a2410fc393c60a8feff3", size = 1147101 },
 ]
 
 [[package]]
