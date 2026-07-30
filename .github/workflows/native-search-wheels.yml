@@ -1,0 +1,82 @@
+name: Native Search Wheels
+
+on:
+  push:
+    tags:
+      - "synapse-search-core-v*"
+  pull_request:
+    paths:
+      - "rust/synapse-search-core/**"
+      - ".github/workflows/native-search-wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # macOS wheels target Apple Silicon only; Intel macOS is unsupported.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          working-directory: rust/synapse-search-core
+          target: ${{ matrix.target }}
+          args: --release --locked --compatibility pypi --out dist
+          manylinux: 2014
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: rust/synapse-search-core/dist/*.whl
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/synapse-search-core-v')
+    needs: wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl
+          name: synapse-search-core ${{ github.ref_name }}
+
+  publish-pypi:
+    if: startsWith(github.ref, 'refs/tags/synapse-search-core-v')
+    needs: wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/synapse-search-core
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

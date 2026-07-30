@@ -157,56 +157,50 @@ def test_execute_captures_full_output_before_response_truncation(tmp_path: Path)
     assert capture.displayed_output == response.output
 
 
-def test_ripgrep_search_uses_utf8_encoding(tmp_path: Path):
-    backend = CodingLocalShellBackend(
-        root_dir=tmp_path,
-        virtual_mode=True,
-        inherit_env=False,
-        env={},
-        shell_encoding="utf-8",
-        shell_encoding_errors="replace",
-    )
-    (tmp_path / "a.py").write_text("hello_token = 1\n", encoding="utf-8")
-
-    completed = MagicMock()
-    completed.returncode = 0
-    completed.stdout = (
-        '{"type":"match","data":{"path":{"text":"a.py"},'
-        '"line_number":1,"lines":{"text":"hello_token = 1\\n"}}}\n'
-    )
-    completed.stderr = ""
-
-    with (
-        patch("deepagents.backends.filesystem._resolve_ripgrep_path", return_value="rg"),
-        patch("synapse.runtime.backends.subprocess.run", return_value=completed) as mock_run,
-    ):
-        results = backend._ripgrep_search("hello_token", tmp_path, None)
-        kwargs = mock_run.call_args.kwargs
-        assert kwargs["encoding"] == "utf-8"
-        assert kwargs["errors"] == "replace"
-        assert kwargs["text"] is True
-    assert results is not None
-    assert any("hello_token" in line for items in results.values() for _, line in items)
-
-
-def test_ripgrep_search_handles_none_stdout(tmp_path: Path):
+def test_native_grep_supports_regex_glob_and_virtual_paths(tmp_path: Path):
     backend = CodingLocalShellBackend(
         root_dir=tmp_path,
         virtual_mode=True,
         inherit_env=False,
         env={},
     )
-    completed = MagicMock()
-    completed.returncode = 0
-    completed.stdout = None
-    completed.stderr = None
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("TODO: improve\nvalue = 42\n", encoding="utf-8")
+    (src / "app.txt").write_text("TODO: ignored by include glob\n", encoding="utf-8")
 
-    with (
-        patch("deepagents.backends.filesystem._resolve_ripgrep_path", return_value="rg"),
-        patch("synapse.runtime.backends.subprocess.run", return_value=completed),
-    ):
-        results = backend._ripgrep_search("x", tmp_path, None)
-    assert results == {}
+    result = backend.grep(r"TODO|value\s*=\s*\d+", path="/src", glob="**/*.py")
+
+    assert result.error is None
+    assert result.matches == [
+        {"path": "/src/app.py", "line": 1, "text": "TODO: improve"},
+        {"path": "/src/app.py", "line": 2, "text": "value = 42"},
+    ]
+
+
+def test_native_glob_respects_gitignore_and_deny_paths(tmp_path: Path):
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "visible.py").write_text("pass\n", encoding="utf-8")
+    ignored = tmp_path / "ignored"
+    ignored.mkdir()
+    (ignored / "hidden.py").write_text("pass\n", encoding="utf-8")
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "hidden.py").write_text("pass\n", encoding="utf-8")
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+        deny_paths=["private/"],
+    )
+
+    result = backend.glob("**/*.py")
+
+    assert result.error is None
+    assert [item["path"] for item in result.matches] == ["/src/visible.py"]
 
 
 def test_execute_survives_non_utf8_bytes_via_replace(tmp_path: Path):
