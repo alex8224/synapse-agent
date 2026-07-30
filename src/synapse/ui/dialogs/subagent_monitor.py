@@ -42,6 +42,8 @@ def _depends_label(depends_on: list[str]) -> str:
 class SubagentRunRow(Static):
     """One row in the left run list."""
 
+    ALLOW_SELECT = False
+
     def __init__(self, run: SubagentRun, *, selected: bool = False) -> None:
         self.run = run
         self._selected = selected
@@ -231,6 +233,15 @@ class SubagentMonitorDialog(ModalScreen[None]):
 
     def _render_list(self) -> None:
         list_view = self.query_one("#sa-list", VerticalScroll)
+        if self._rows and len(self._rows) == len(self._runs) and all(
+            row.run.call_id == run.call_id
+            for row, run in zip(self._rows, self._runs, strict=True)
+        ):
+            for idx, (row, run) in enumerate(zip(self._rows, self._runs, strict=True)):
+                row.update_run(run)
+                row.set_selected(idx == self._selected_idx)
+            return
+
         list_view.remove_children()
         self._rows = []
         if not self._runs:

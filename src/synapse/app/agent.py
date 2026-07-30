@@ -241,9 +241,12 @@ def build_coding_agent(
         memory_paths = [p for p in memory_paths if Path(p).exists() and Path(p).name != "AGENTS.md"]
     skills_paths = settings.resolved_skills_paths(project_root)
 
+    subagents_enabled = bool(
+        settings.enable_subagents or settings.parallel_subagents
+    )
     with span("subagents"):
         subagents = build_default_subagents(
-            enabled=settings.enable_subagents,
+            enabled=subagents_enabled,
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
@@ -256,7 +259,7 @@ def build_coding_agent(
     # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
     _dag_mw: Any = None
     _use_dag_subagents = bool(
-        getattr(settings, "parallel_subagents", False)
+        settings.parallel_subagents
         and subagents
     )
     if _use_dag_subagents:
@@ -270,6 +273,9 @@ def build_coding_agent(
             backend=backend,
             max_parallel=getattr(settings, "max_parallel_subagents", 6),
         )
+        if not getattr(_dag_mw, "_subagent_runnables", None):
+            _dag_mw = None
+            _use_dag_subagents = False
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
         readonly=settings.readonly,

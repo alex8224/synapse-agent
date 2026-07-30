@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     skills_paths: list[str] = Field(default_factory=lambda: ["skills"])
 
     # Framework wiring (deepagents native)
-    enable_subagents: bool = Field(default=False, validation_alias="AGENT_ENABLE_SUBAGENTS")
+    enable_subagents: bool = Field(default=True, validation_alias="AGENT_ENABLE_SUBAGENTS")
     subagent_tester_model: str | None = Field(
         default=None, validation_alias="AGENT_SUBAGENT_TESTER_MODEL"
     )

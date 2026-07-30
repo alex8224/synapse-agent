@@ -41,6 +41,7 @@ from synapse.content.multimodal import (
     read_clipboard,
 )
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
+from synapse.runtime.subagent_routing import decide_subagent_routing
 from synapse.sessions.session_recap import SessionRecapController
 from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
@@ -2442,6 +2443,7 @@ class CodingAgentApp(App[None]):
                 project_root=self.project_root,
                 load_mcp=False,
                 progress=report_progress,
+                force_parallel_subagents=False,
             )
             self.agent = agent
             self._agent_ready.set()
@@ -3820,6 +3822,73 @@ class CodingAgentApp(App[None]):
         self._active_turn_agent = turn_agent
         self._active_turn_thread_id = self.thread_id
         self._active_steer_queue = get_agent_steer_queue(turn_agent)
+
+    def _subagent_routing_enabled(self) -> bool:
+        return bool(
+            getattr(self.settings, "enable_subagents", True)
+            or getattr(self.settings, "parallel_subagents", False)
+        )
+
+    def _ensure_turn_subagent_mode(self, text: str, turn_agent: Any) -> Any:
+        if not self._subagent_routing_enabled():
+            return turn_agent
+
+        current_parallel = bool(
+            getattr(turn_agent, "_coding_parallel_subagents", False)
+        )
+        decision = decide_subagent_routing(
+            text,
+            current_parallel=current_parallel,
+        )
+        if decision.use_parallel == current_parallel:
+            return turn_agent
+
+        from synapse.app.agent import rebuild_coding_agent
+
+        mode = "parallel" if decision.use_parallel else "disabled"
+        self.call_from_thread(
+            self.set_activity,
+            "starting",
+            f"switching subagents: {mode}",
+            False,
+        )
+        try:
+            next_agent = rebuild_coding_agent(
+                self.settings,
+                turn_agent,
+                project_root=self.project_root,
+                defer_mcp_reconnect=True,
+                force_parallel_subagents=decision.use_parallel,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.append_event,
+                f"subagent mode switch failed: {exc}",
+                "yellow",
+            )
+            return turn_agent
+
+        self.agent = next_agent
+        self._active_turn_agent = next_agent
+        self._active_steer_queue = get_agent_steer_queue(next_agent)
+        actual_parallel = bool(
+            getattr(next_agent, "_coding_parallel_subagents", False)
+        )
+        if actual_parallel == decision.use_parallel:
+            self.call_from_thread(
+                self.flash_status,
+                f"subagents: {mode} ({decision.reason})",
+                "dim",
+                ttl=1.5,
+            )
+        elif decision.use_parallel:
+            self.call_from_thread(
+                self.append_event,
+                "parallel subagents unavailable; subagents disabled",
+                "yellow",
+            )
+        self.call_from_thread(self._bind_steer_queue)
+        return next_agent
 
     def _clear_turn_context(self) -> None:
         self._active_turn_agent = None
@@ -5459,6 +5528,7 @@ class CodingAgentApp(App[None]):
             )
             self.call_from_thread(self._turn_done)
             return
+        turn_agent = self._ensure_turn_subagent_mode(text, turn_agent)
 
         self._begin_turn_usage()
         sink = TextualStreamSink(self)
@@ -5819,6 +5889,7 @@ def run_tui(
             project_root=root,
             load_mcp=bool(settings.enable_mcp)
             and bool(getattr(settings, "mcp_eager", False)),
+            force_parallel_subagents=False,
         )
         if settings.enable_mcp and not getattr(agent, "_coding_mcp_attached", True):
             from synapse.app.agent import attach_mcp_to_agent

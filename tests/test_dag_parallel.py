@@ -609,7 +609,7 @@ async def test_dag_deadlock():
 
 def test_compile_real_subagents():
     """用真实 SubAgent 规范编译（需要 model + tools，deepagents >= 0.5 要求）"""
-    from synapse.subagents import build_default_subagents
+    from synapse.runtime.subagents import build_default_subagents
 
     specs = build_default_subagents(enabled=True, isolate_tools=True)
     assert specs is not None and len(specs) >= 2
@@ -653,7 +653,8 @@ def test_compile_subagents_with_backend_exposes_filesystem_tools(tmp_path: Path)
     from deepagents.backends.filesystem import FilesystemBackend
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage
-    from synapse.subagents import build_default_subagents
+
+    from synapse.runtime.subagents import build_default_subagents
 
     specs = build_default_subagents(enabled=True, isolate_tools=True)
     assert specs is not None

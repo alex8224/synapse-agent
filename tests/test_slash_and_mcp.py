@@ -87,6 +87,51 @@ def test_mcp_config_parses_stdio_and_remote(tmp_path: Path):
     assert servers[2].enabled is False
 
 
+def test_slash_subagents_reports_disabled_mode(tmp_path: Path):
+    settings = _FakeSettings(tmp_path)
+    agent = SimpleNamespace(_coding_subagents=None, _coding_subagent_mode="disabled")
+
+    result = handle_slash(
+        "/subagents",
+        settings=settings,
+        agent=agent,
+        thread_id="t1",
+        project_root=tmp_path,
+    )
+
+    assert result.handled
+    assert result.lines[0] == "subagent mode: disabled"
+    assert result.lines[1] == "subagents: disabled"
+    assert result.markdown == "## Sub-agents\n\n*disabled*"
+
+
+def test_slash_subagents_reports_parallel_specs(tmp_path: Path):
+    settings = _FakeSettings(tmp_path)
+    agent = SimpleNamespace(
+        _coding_subagent_mode="parallel",
+        _coding_subagents=[
+            {
+                "name": "researcher",
+                "description": "inspect code",
+                "middleware": [],
+                "tools": [],
+            }
+        ],
+    )
+
+    result = handle_slash(
+        "/subagents",
+        settings=settings,
+        agent=agent,
+        thread_id="t1",
+        project_root=tmp_path,
+    )
+
+    assert result.handled
+    assert result.lines[0] == "subagent mode: parallel"
+    assert "Mode: `parallel`" in str(result.markdown)
+
+
 def test_slash_session_management(tmp_path: Path):
     settings = _FakeSettings(tmp_path)
     agent = SimpleNamespace(_coding_model_profile="openai:demo", _coding_checkpointer=None)
