@@ -458,6 +458,13 @@ def build_coding_agent(
 
         middleware.append(build_openai_oauth_compat_middleware())
 
+    # Debug capture middleware — innermost, records final provider-ready
+    # request/response pairs for the Debug Inspector (F11 / /debug).
+    from synapse.observability.llm_debug import get_debug_store
+    from synapse.runtime.debug_capture_middleware import build_debug_capture_middleware
+
+    middleware.append(build_debug_capture_middleware(get_debug_store()))
+
     if progress is not None:
         progress("compiling agent graph")
     with span("create_deep_agent"):

@@ -476,6 +476,7 @@ class CodingAgentApp(App[None]):
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
         Binding("f9", "dialog_subagents", "Subagents", show=False),
         Binding("f10", "dialog_sessions_delete", "Delete sessions", show=False),
+        Binding("f11", "dialog_debug_inspector", "Debug Inspector", show=True),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -514,6 +515,26 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_subagents(self) -> None:
         self._open_subagent_monitor()
+
+    def action_dialog_debug_inspector(self) -> None:
+        from synapse.observability.debug_server import DebugHttpServer
+        from synapse.observability.llm_debug import get_debug_store
+
+        store = get_debug_store()
+        server = DebugHttpServer(store)
+        try:
+            server.start()
+            server.open_browser()
+            store.enabled = True
+            self.append_event(
+                f"Debug inspector: {server.url}  (Ctrl+E toggle capture)",
+                "green",
+            )
+        except OSError as exc:
+            self.append_event(
+                f"Debug server failed: {exc}",
+                "yellow",
+            )
 
     def get_css_variables(self) -> dict[str, str]:
         """Merge Textual defaults with the active theme's ``$theme-*`` palette."""
@@ -3753,6 +3774,13 @@ class CodingAgentApp(App[None]):
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
+        # Notify debug store of a new turn
+        try:
+            from synapse.observability.llm_debug import get_debug_store
+
+            get_debug_store().begin_turn()
+        except Exception:  # noqa: BLE001
+            pass
         self.run_turn(text, turn_images or None)
 
     @work(thread=True, exclusive=True)
