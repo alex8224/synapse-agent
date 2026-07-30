@@ -71,13 +71,15 @@ from synapse.ui.formatters import (
     model_status_label,
     short_workspace_label,
     soften_turn_footer,
-    stream_tail_preview,
 )
 from synapse.ui.formatters import (
     format_usage_label as _format_usage_label,
 )
 from synapse.ui.formatters import (
     short_model_name as _short_model_name,
+)
+from synapse.ui.formatters import (
+    stream_tail_preview as _stream_tail_preview,
 )
 from synapse.ui.selectable_static import (
     SelectableStatic,
@@ -119,6 +121,7 @@ from synapse.ui.topbar.git_chrome import (
     render_branch_chrome,
 )
 from synapse.ui.topbar.widget import TopBar
+from synapse.ui.transcript_blocks import AnswerBlock, ThoughtBlock
 from synapse.ui.turn_rail import (
     format_turn_rail_bucket_label,
     format_turn_rail_preview,
@@ -131,6 +134,7 @@ _copy_to_clipboard = copy_to_clipboard
 format_answer_divider = _format_answer_divider
 format_usage_label = _format_usage_label
 short_model_name = _short_model_name
+stream_tail_preview = _stream_tail_preview
 _annotate_strip_offsets = _annotate_strip_offsets_impl
 _stylize_strip_char_span = _stylize_strip_char_span_impl
 
@@ -629,183 +633,6 @@ class TurnRail(Vertical):
             targets = [turns[i][1] for i in indices if 0 <= i < len(turns)]
             self.mount(TurnRailItem(indices, previews, targets))
 
-
-class ThoughtBlock(SelectableStatic):
-    """Thought row in the transcript; supports live streaming then seal."""
-
-    def __init__(self, elapsed_s: float, body: str, *, live: bool = False) -> None:
-        self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
-        self.body = body or ""
-        self.live = bool(live)
-        # Expanded while streaming so the growing body is readable.
-        self.collapsed = not self.live
-        # Wall-clock anchor so the header seconds keep moving without new tokens.
-        self._started_at: float | None = None
-        if self.live:
-            self._started_at = time.monotonic() - self.elapsed_s
-        super().__init__()
-        self._render_block()
-
-    def _sync_elapsed(self, elapsed_s: float | None = None) -> float:
-        """Prefer wall clock from ``_started_at``; fall back to reported seconds."""
-        reported = max(0.0, float(elapsed_s or 0.0))
-        started = getattr(self, "_started_at", None)
-        if started is None:
-            if reported > 0:
-                started = time.monotonic() - reported
-            elif self.live:
-                started = time.monotonic()
-            self._started_at = started
-        if started is not None:
-            wall = max(0.0, time.monotonic() - started)
-            self.elapsed_s = max(reported, wall)
-        else:
-            self.elapsed_s = reported
-        return self.elapsed_s
-
-    def update_live(self, elapsed_s: float, body: str) -> None:
-        """Refresh in place while tokens are still arriving."""
-        self.live = True
-        self.collapsed = False
-        self._sync_elapsed(elapsed_s)
-        self.body = body or ""
-        self._render_block()
-
-    def tick_live(self) -> None:
-        """Advance the live header clock between token batches."""
-        if not self.live or self._started_at is None:
-            return
-        new_elapsed = max(0.0, time.monotonic() - self._started_at)
-        # Avoid re-layout for sub-tenth changes (status tick is 0.1s).
-        if abs(new_elapsed - self.elapsed_s) < 0.05:
-            return
-        self.elapsed_s = new_elapsed
-        self._render_block()
-
-    def seal(self, elapsed_s: float, body: str) -> None:
-        """Finalize this row as a historical ThoughtBlock (no remount)."""
-        self.live = False
-        self._sync_elapsed(elapsed_s)
-        self._started_at = None
-        self.body = body or ""
-        self.collapsed = True
-        self._render_block()
-
-    def _render_block(self) -> None:
-        if self.live:
-            lines: list[Text | Any] = [
-                Text(
-                    f"  {_MARK_THOUGHT}  Thinking… {self.elapsed_s:.1f}s",
-                    style=f"italic {_C_DIM}",
-                )
-            ]
-            preview = stream_tail_preview(self.body)
-            if preview.strip():
-                lines.append(Text(preview, style=_C_DIM))
-            lines.append(Text(""))
-            self.update(Group(*lines))
-            return
-        lines = [
-            Text(f"  {_MARK_THOUGHT}  Thought for {self.elapsed_s:.1f}s", style=_C_DIM)
-        ]
-        if self.body:
-            if self.collapsed:
-                preview = " ".join(self.body.split())
-                if len(preview) > 160:
-                    preview = preview[:159].rstrip() + "..."
-                lines.append(Text(f"  {preview}", style=_C_DIM))
-            else:
-                lines.append(render_markdown(self.body))
-        lines.append(Text(""))
-        self.update(Group(*lines))
-
-    def toggle(self) -> None:
-        if not self.body or self.live:
-            return
-        self.collapsed = not self.collapsed
-        self._render_block()
-
-    def selectable_text(self) -> str:
-        header = f"Thought for {self.elapsed_s:.1f}s"
-        body = (self.body or "").strip()
-        if not body:
-            return header
-        if self.collapsed and not self.live:
-            preview = " ".join(body.split())
-            if len(preview) > 160:
-                preview = preview[:159].rstrip() + "..."
-            return f"{header}\n{preview}"
-        return f"{header}\n{body}"
-
-    def on_click(self, event: Click) -> None:
-        if getattr(event, "chain", 1) != 1:
-            return
-        event.stop()
-        self.toggle()
-
-
-class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live plain-text tail, then Markdown seal.
-
-    Click to copy the answer text to the clipboard.
-    """
-
-    DEFAULT_CSS = """
-    AnswerBlock {
-        width: 1fr;
-        height: auto;
-    }
-    """
-
-    def __init__(self, body: str = "", *, live: bool = False) -> None:
-        self.body = body or ""
-        self.live = bool(live)
-        super().__init__()
-        self._render_block()
-
-    def update_live(self, body: str) -> None:
-        self.live = True
-        self.body = body or ""
-        self._render_block()
-
-    def seal(self, body: str) -> None:
-        self.live = False
-        self.body = body or ""
-        self._render_block()
-
-    def selectable_text(self) -> str:
-        return self.body or ""
-
-    def on_click(self) -> None:
-        """Copy answer text to clipboard on mouse click."""
-        text = (self.body or "").strip()
-        if not text:
-            return
-        if _copy_to_clipboard(text):
-            self.app.bell()
-            try:
-                self.notify(
-                    f"已复制 {len(text)} 字符到剪贴板",
-                    timeout=2.0,
-                    severity="information",
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-    def _render_block(self) -> None:
-        body = self.body or ""
-        if self.live:
-            preview = stream_tail_preview(body)
-            self.update(Text(preview, style=_C_FG) if preview else Text(""))
-            return
-        if not body.strip():
-            self.update(Text(""))
-            return
-        if len(body) > _MARKDOWN_MAX_CHARS:
-            renderable: Any = Text(body, style=_C_FG)
-        else:
-            renderable = render_markdown(body)
-        self.update(Group(renderable, Text("")))
 
 
 class ToolGroupBlock(SelectableStatic):
@@ -2926,7 +2753,13 @@ class CodingAgentApp(App[None]):
         if kind == "reasoning":
             block = self._live_stream_block
             if not isinstance(block, ThoughtBlock) or self._live_stream_kind != "reasoning":
-                block = ThoughtBlock(float(elapsed_s or 0.0), text, live=True)
+                block = ThoughtBlock(
+                    float(elapsed_s or 0.0),
+                    text,
+                    live=True,
+                    dim_color=lambda: _C_DIM,
+                    thought_mark=_MARK_THOUGHT,
+                )
                 self._live_stream_block = block
                 self._live_stream_kind = "reasoning"
                 self._thought_blocks.append(block)
@@ -2941,7 +2774,12 @@ class CodingAgentApp(App[None]):
             if self._pending_answer_divider:
                 self._mount_answer_divider()
                 self._pending_answer_divider = False
-            block = AnswerBlock(text, live=True)
+            block = AnswerBlock(
+                text,
+                live=True,
+                fg_color=lambda: _C_FG,
+                markdown_max_chars=_MARKDOWN_MAX_CHARS,
+            )
             self._live_stream_block = block
             self._live_stream_kind = "answer"
             self._mount_block(block)
@@ -3175,7 +3013,12 @@ class CodingAgentApp(App[None]):
             self._live_stream_kind = None
             self._follow_timeline_if_needed()
         else:
-            block = ThoughtBlock(elapsed_s, body)
+            block = ThoughtBlock(
+                elapsed_s,
+                body,
+                dim_color=lambda: _C_DIM,
+                thought_mark=_MARK_THOUGHT,
+            )
             self._thought_blocks.append(block)
             self._mount_block(block)
         self._in_tool_rail = False
@@ -3234,7 +3077,15 @@ class CodingAgentApp(App[None]):
             self._mount_answer_divider()
             self._pending_answer_divider = False
         # No live row (e.g. restore / non-stream path): mount sealed answer once.
-        self._mount_block(AnswerBlock(body, live=False))
+        self._mount_block(
+            AnswerBlock(
+                body,
+                live=False,
+                fg_color=lambda: _C_FG,
+                markdown_max_chars=_MARKDOWN_MAX_CHARS,
+                copy_handler=lambda text: _copy_to_clipboard(text),
+            )
+        )
 
     def _mount_answer_divider(self) -> None:
         """Insert centered ◇ rule with vertical spacing before the answer."""
