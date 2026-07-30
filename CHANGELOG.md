@@ -7,6 +7,16 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.15
+
+### 工程改进
+
+- 拆分 TUI transcript、工具组、待办清单、用户消息和 turn rail widget，缩小 `tui.py` 的职责范围。
+- 保留 `synapse.ui.tui` 的既有组件、格式化函数和 timeline 符号兼容导出。
+- 保持动态主题、流式展示、文本选择、复制与 turn rail 交互行为，并覆盖相关 TUI 回归测试。
+
+---
+
 ## v0.1.14
 
 ### 工程改进
