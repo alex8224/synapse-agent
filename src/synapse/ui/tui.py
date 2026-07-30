@@ -20,13 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from rich.console import Group
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Click, Enter, Key, Leave
+from textual.events import Click, Key
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -81,9 +80,7 @@ from synapse.ui.formatters import (
 from synapse.ui.formatters import (
     stream_tail_preview as _stream_tail_preview,
 )
-from synapse.ui.selectable_static import (
-    SelectableStatic,
-)
+from synapse.ui.selectable_static import SelectableStatic as _SelectableStatic
 from synapse.ui.selectable_static import (
     _annotate_strip_offsets as _annotate_strip_offsets_impl,
 )
@@ -93,16 +90,20 @@ from synapse.ui.selectable_static import (
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
 from synapse.ui.textual_stream_sink import TextualStreamSink
-from synapse.ui.timeline import (
-    TODO_MARK_ACTIVE,
-    TODO_MARK_DONE,
-    TODO_MARK_PENDING,
-    TodoRow,
-    ToolItem,
-    is_todo_tool,
-    parse_todo_preview_lines,
-    summarize_items,
+from synapse.ui.timeline import TODO_MARK_ACTIVE as _TODO_MARK_ACTIVE
+from synapse.ui.timeline import TODO_MARK_DONE as _TODO_MARK_DONE
+from synapse.ui.timeline import TODO_MARK_PENDING as _TODO_MARK_PENDING
+from synapse.ui.timeline import TodoRow as _TodoRow
+from synapse.ui.timeline import ToolItem, summarize_items
+from synapse.ui.timeline import is_todo_tool as _is_todo_tool
+from synapse.ui.timeline import parse_todo_preview_lines as _parse_todo_preview_lines
+from synapse.ui.tool_blocks import TodoChecklist as _TodoChecklist
+from synapse.ui.tool_blocks import ToolGroupBlock
+from synapse.ui.tool_blocks import (
+    render_todo_checklist_from_preview as _render_todo_checklist_from_preview,
 )
+from synapse.ui.tool_blocks import render_todo_row_texts as _render_todo_row_texts
+from synapse.ui.tool_blocks import todo_kind_style as _todo_kind_style
 from synapse.ui.topbar import (
     TopBarAlign,
     TopBarComponent,
@@ -110,10 +111,12 @@ from synapse.ui.topbar import (
     TopBarRegion,
     TopBarRegionSpec,
     TopBarRegistry,
-    display_width,
     install_default_components,
     layout_from_registry,
     truncate_to_width,
+)
+from synapse.ui.topbar import (
+    display_width as _display_width,
 )
 from synapse.ui.topbar.git_chrome import (
     GitBranchChrome,
@@ -122,12 +125,15 @@ from synapse.ui.topbar.git_chrome import (
 )
 from synapse.ui.topbar.widget import TopBar
 from synapse.ui.transcript_blocks import AnswerBlock, ThoughtBlock
-from synapse.ui.turn_rail import (
-    format_turn_rail_bucket_label,
-    format_turn_rail_preview,
-    turn_rail_tick_slots,
-)
-from synapse.ui.user_turn import format_user_turn_meta, wrap_user_turn_text
+from synapse.ui.turn_rail import format_turn_rail_bucket_label as _format_turn_rail_bucket_label
+from synapse.ui.turn_rail import format_turn_rail_preview
+from synapse.ui.turn_rail import turn_rail_tick_slots as _turn_rail_tick_slots
+from synapse.ui.turn_rail_widgets import TurnRail
+from synapse.ui.turn_rail_widgets import TurnRailGap as _TurnRailGap
+from synapse.ui.turn_rail_widgets import TurnRailItem as _TurnRailItem
+from synapse.ui.user_turn import format_user_turn_meta as _format_user_turn_meta
+from synapse.ui.user_turn import wrap_user_turn_text as _wrap_user_turn_text
+from synapse.ui.user_turn_block import UserTurnBlock
 from synapse.ui.welcome import WelcomeView
 
 _copy_to_clipboard = copy_to_clipboard
@@ -135,6 +141,24 @@ format_answer_divider = _format_answer_divider
 format_usage_label = _format_usage_label
 short_model_name = _short_model_name
 stream_tail_preview = _stream_tail_preview
+TodoChecklist = _TodoChecklist
+render_todo_checklist_from_preview = _render_todo_checklist_from_preview
+render_todo_row_texts = _render_todo_row_texts
+todo_kind_style = _todo_kind_style
+SelectableStatic = _SelectableStatic
+TurnRailGap = _TurnRailGap
+TurnRailItem = _TurnRailItem
+format_turn_rail_bucket_label = _format_turn_rail_bucket_label
+turn_rail_tick_slots = _turn_rail_tick_slots
+format_user_turn_meta = _format_user_turn_meta
+wrap_user_turn_text = _wrap_user_turn_text
+TodoRow = _TodoRow
+TODO_MARK_ACTIVE = _TODO_MARK_ACTIVE
+TODO_MARK_DONE = _TODO_MARK_DONE
+TODO_MARK_PENDING = _TODO_MARK_PENDING
+is_todo_tool = _is_todo_tool
+parse_todo_preview_lines = _parse_todo_preview_lines
+display_width = _display_width
 _annotate_strip_offsets = _annotate_strip_offsets_impl
 _stylize_strip_char_span = _stylize_strip_char_span_impl
 
@@ -212,100 +236,6 @@ def _stamp() -> str:
 _TOPBAR_BRANCH_MARK = "⎇"  # APL upwards vane / branch mark
 
 
-def todo_kind_style(kind: str) -> str:
-    """Color for a checklist row kind."""
-    if kind == "done":
-        return _C_GREEN
-    if kind == "active":
-        return _C_ORANGE
-    return _C_DIM
-
-
-def render_todo_row_texts(
-    rows: list[TodoRow],
-    *,
-    indent: str = "       ",
-    max_rows: int = 20,
-) -> list[Text]:
-    """Render structured todo rows as styled Rich Text lines."""
-    out: list[Text] = []
-    for row in rows[:max_rows]:
-        style = todo_kind_style(row.kind)
-        line = Text(f"{indent}{row.mark} ", style=style)
-        content_style = _C_MUTED if row.kind == "done" else style
-        line.append(row.content, style=content_style)
-        out.append(line)
-    if len(rows) > max_rows:
-        out.append(Text(f"{indent}… +{len(rows) - max_rows} more", style=_C_MUTED))
-    return out
-
-
-def render_todo_checklist_from_preview(
-    preview: str | None,
-    *,
-    indent: str = "       ",
-    max_rows: int = 20,
-) -> list[Text]:
-    """Render a stored checklist preview (new marks + legacy ``[x]``)."""
-    rows = parse_todo_preview_lines(preview)
-    if not rows:
-        return []
-    return render_todo_row_texts(rows, indent=indent, max_rows=max_rows)
-
-
-class TodoChecklist(Static):
-    """Dedicated checklist widget for ``write_todos`` plans.
-
-    Tool groups reuse the same render helpers so marks stay consistent.
-    Mount this widget when a standalone / sticky plan block is needed.
-    """
-
-    def __init__(
-        self,
-        title: str = "Todos",
-        *,
-        preview: str | None = None,
-        rows: list[TodoRow] | None = None,
-    ) -> None:
-        super().__init__()
-        self.title = title or "Todos"
-        self.preview = preview
-        self.rows = list(rows or [])
-        self._render_block()
-
-    def set_data(
-        self,
-        *,
-        title: str | None = None,
-        preview: str | None = None,
-        rows: list[TodoRow] | None = None,
-    ) -> None:
-        if title is not None:
-            self.title = title
-        if preview is not None:
-            self.preview = preview
-        if rows is not None:
-            self.rows = list(rows)
-        self._render_block()
-
-    def _render_block(self) -> None:
-        lines: list[Text] = [
-            Text(f"  {self.title}", style=f"{_C_DIM} on {_C_BAR}"),
-        ]
-        rows = self.rows or parse_todo_preview_lines(self.preview)
-        body = render_todo_row_texts(rows, indent="    ", max_rows=32)
-        if body:
-            lines.extend(body)
-        else:
-            lines.append(Text("    (empty plan)", style=_C_MUTED))
-        legend = Text("    ", style=_C_MUTED)
-        legend.append(f"{TODO_MARK_DONE} done  ", style=_C_GREEN)
-        legend.append(f"{TODO_MARK_ACTIVE} doing  ", style=_C_ORANGE)
-        legend.append(f"{TODO_MARK_PENDING} todo", style=_C_DIM)
-        lines.append(legend)
-        lines.append(Text(""))
-        self.update(Group(*lines))
-
 
 def _git_branch(cwd: Path) -> str | None:
     """Backward-compatible branch name probe."""
@@ -323,511 +253,6 @@ _RAIL_BAR_HEAVY = "▓▓▓"
 
 
 
-
-class UserTurnBlock(SelectableStatic):
-    """User prompt bar; scroll anchor for the turn rail.
-
-    Visual hierarchy:
-    - dim mark + bold body (up to 3 preview lines, width-aware)
-    - muted meta right-aligned on first line (time / #n / images)
-    - click toggles full text when truncated
-    - no left accent stripe (kept clean)
-    """
-
-    DEFAULT_CSS = """
-    UserTurnBlock {
-        width: 1fr;
-        height: auto;
-        margin: 0 0 1 0;
-        padding: 0;
-    }
-    UserTurnBlock.-expanded {
-        /* no-op hook for future styling */
-    }
-    """
-
-    def __init__(
-        self,
-        text: str,
-        *,
-        stamp: str | None = None,
-        turn_index: int | None = None,
-        image_count: int = 0,
-    ) -> None:
-        super().__init__()
-        self.full_text = text or ""
-        self.stamp = stamp or _stamp()
-        self.turn_index = turn_index
-        self.image_count = int(image_count or 0)
-        self.collapsed = True  # preview mode when long
-        self._truncated = False
-        self._render_block()
-
-    def _rail_overlap_cols(self) -> int:
-        """Columns covered by the right turn-rail overlay (above log content).
-
-        #log only pads 6 cols, but #turn-rail is ~34 wide — meta painted at the
-        true right edge sits under the rail and looks "missing". Reserve that
-        overlap so time lands in the visible red-box zone left of the rail.
-        """
-        rail_w = 34
-        try:
-            rail = self.app.query_one("#turn-rail")
-            rw = int(getattr(rail.size, "width", 0) or 0)
-            if rw > 0:
-                rail_w = rw
-            else:
-                rail_w = int(getattr(TurnRail, "RAIL_WIDTH", 34) or 34)
-        except Exception:  # noqa: BLE001
-            rail_w = int(getattr(TurnRail, "RAIL_WIDTH", 34) or 34)
-        # Keep in sync with #log padding-right (turn-rail column budget).
-        log_pad_right = 34
-        return max(0, rail_w - log_pad_right)
-
-    def _content_width(self) -> int:
-        w = int(getattr(self.size, "width", 0) or 0)
-        if w <= 0:
-            try:
-                w = int(getattr(self.app.size, "width", 0) or 0) - 4
-            except Exception:  # noqa: BLE001
-                w = 72
-        usable = w - self._rail_overlap_cols()
-        return max(_USER_PREVIEW_MIN_COLS, usable)
-
-    def _render_block(self) -> None:
-        width = self._content_width()
-        # Always keep a clock; #n / images optional extras.
-        stamp = (self.stamp or _stamp() or "").strip() or _stamp()
-        meta = format_user_turn_meta(
-            stamp=stamp,
-            turn_index=self.turn_index,
-            image_count=self.image_count,
-        ) or stamp
-        mark = f" {_MARK_USER}  "
-        mark_w = display_width(mark)
-        meta_w = display_width(meta)
-        gap = 2
-        body_w = max(12, width - mark_w - meta_w - gap)
-
-        if self.collapsed:
-            lines, truncated = wrap_user_turn_text(
-                self.full_text, width=body_w, max_lines=_USER_PREVIEW_MAX_LINES
-            )
-            full_lines, _ = wrap_user_turn_text(
-                self.full_text, width=body_w, max_lines=None
-            )
-            self._truncated = truncated or len(full_lines) > _USER_PREVIEW_MAX_LINES
-        else:
-            lines, _ = wrap_user_turn_text(
-                self.full_text, width=body_w, max_lines=None
-            )
-            full_lines = lines
-            self._truncated = len(full_lines) > _USER_PREVIEW_MAX_LINES
-
-        bg = f"on {_C_BAR}"
-        rows: list[Text] = []
-        for i, ln in enumerate(lines):
-            row = Text()
-            if i == 0:
-                row.append(mark, style=f"{_C_DIM} {bg}")
-                ln0 = truncate_to_width(ln, body_w)
-                row.append(ln0, style=f"bold {_C_FG} {bg}")
-                used = mark_w + display_width(ln0)
-                # Exact fill so meta sits in the red-box (visible right edge).
-                pad = max(gap, width - used - meta_w)
-                row.append(" " * pad, style=bg)
-                row.append(meta, style=f"{_C_MUTED} {bg}")
-            else:
-                row.append(" " * mark_w, style=bg)
-                row.append(ln, style=f"bold {_C_FG} {bg}")
-                pad = max(0, width - mark_w - display_width(ln))
-                if pad:
-                    row.append(" " * pad, style=bg)
-            rows.append(row)
-
-        if self._truncated:
-            hint = Text()
-            hint.append(" " * mark_w, style=bg)
-            label = "click to expand" if self.collapsed else "click to collapse"
-            hint.append(label, style=f"{_C_MUTED} {bg}")
-            pad = max(0, width - mark_w - display_width(label))
-            if pad:
-                hint.append(" " * pad, style=bg)
-            rows.append(hint)
-
-        self.update(Group(Text(""), *rows, Text("")))
-
-    def on_resize(self, event: object) -> None:  # noqa: ANN001
-        del event
-        self._render_block()
-
-    def selectable_text(self) -> str:
-        return self.full_text or ""
-
-    def on_click(self, event: Click) -> None:
-        # Only toggle expand on a click (not a drag-select).
-        if getattr(event, "chain", 1) != 1:
-            return
-        if self.screen is not None and getattr(self.screen, "get_selected_text", None):
-            try:
-                if self.screen.get_selected_text():
-                    return
-            except Exception:  # noqa: BLE001
-                pass
-        event.stop()
-        full_w = max(12, self._content_width() - display_width(f" {_MARK_USER}  ") - 14)
-        full_lines, _ = wrap_user_turn_text(
-            self.full_text, width=full_w, max_lines=None
-        )
-        if len(full_lines) <= _USER_PREVIEW_MAX_LINES:
-            return
-        self.collapsed = not self.collapsed
-        if self.collapsed:
-            self.remove_class("-expanded")
-        else:
-            self.add_class("-expanded")
-        self._render_block()
-
-
-
-class TurnRailGap(Static):
-    """Empty minimap row (spacing between proportional ticks)."""
-
-    DEFAULT_CSS = """
-    TurnRailGap {
-        height: 1;
-        width: 1fr;
-        padding: 0;
-        margin: 0;
-    }
-    """
-
-    def __init__(self) -> None:
-        super().__init__("")
-
-
-class TurnRailItem(Static):
-    """One minimap slot: single turn or a bucket of several turns.
-
-    Width is fixed by the parent rail; bar and preview are both right-aligned.
-    """
-
-    def __init__(
-        self,
-        indices: list[int],
-        previews: list[str],
-        targets: list[UserTurnBlock],
-    ) -> None:
-        super().__init__()
-        self.indices = [int(i) for i in indices]
-        self.previews = list(previews)
-        self.targets = list(targets)
-        self._cycle = 0
-        if len(self.indices) > 1:
-            self.add_class("-dense")
-        self._show_bar()
-
-    def _bar_glyph(self) -> str:
-        n = len(self.indices)
-        if n <= 1:
-            return _RAIL_BAR
-        if n <= 3:
-            return _RAIL_BAR_DENSE
-        return _RAIL_BAR_HEAVY
-
-    def _show_bar(self) -> None:
-        self.remove_class("-hover")
-        style = _C_DIM if len(self.indices) > 1 else _C_MUTED
-        self.update(Text(self._bar_glyph(), style=style, justify="right"))
-
-    def _show_preview(self) -> None:
-        self.add_class("-hover")
-        label = format_turn_rail_bucket_label(self.indices, self.previews)
-        self.update(Text(label, style=f"{_C_FG} on {_C_BAR}", justify="right"))
-
-    def on_enter(self, event: Enter) -> None:
-        event.stop()
-        self._show_preview()
-
-    def on_leave(self, event: Leave) -> None:
-        event.stop()
-        self._show_bar()
-
-    def on_click(self, event: Click) -> None:
-        event.stop()
-        if not self.targets:
-            return
-        # Cycle through bucket members on repeated clicks.
-        idx = self._cycle % len(self.targets)
-        self._cycle = (self._cycle + 1) % len(self.targets)
-        target = self.targets[idx]
-        app = self.app
-        jump = getattr(app, "jump_to_user_turn", None)
-        if callable(jump):
-            jump(target)
-
-
-class TurnRail(Vertical):
-    """Right-side minimap: all user turns mapped into a fixed viewport height."""
-
-    # Fixed column budget so hover previews never reflow the rail position.
-    RAIL_WIDTH = 34
-
-    DEFAULT_CSS = f"""
-    TurnRail {{
-        dock: right;
-        layer: overlay;
-        width: {34};
-        min-width: {34};
-        max-width: {34};
-        height: 1fr;
-        max-height: 1fr;
-        align: right top;
-        padding: 1 1;
-        margin: 0 0;
-        background: transparent;
-        overflow-x: hidden;
-        overflow-y: hidden;
-        scrollbar-size: 0 0;
-    }}
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._turns: list[tuple[str, UserTurnBlock]] = []
-
-    def clear_turns(self) -> None:
-        self._turns = []
-        self.remove_children()
-
-    def set_turns(self, turns: list[tuple[str, UserTurnBlock]]) -> None:
-        self._turns = list(turns or [])
-        self.relayout()
-
-    def on_resize(self, event: object) -> None:  # noqa: ANN001
-        del event
-        self.relayout()
-
-    def _content_height(self) -> int:
-        """Rows available for ticks (widget height minus vertical padding)."""
-        h = int(getattr(self.size, "height", 0) or 0)
-        # padding: 1 1 → two rows reserved
-        inner = h - 2
-        if inner >= 1:
-            return inner
-        # Before first layout, estimate from turn count (cap for sanity).
-        n = len(self._turns)
-        return max(1, min(n if n else 1, 32))
-
-    def relayout(self) -> None:
-        """Rebuild proportional tick rows for the current height."""
-        turns = self._turns
-        height = self._content_height()
-        slots = turn_rail_tick_slots(len(turns), height)
-        self.remove_children()
-        for indices in slots:
-            if not indices:
-                self.mount(TurnRailGap())
-                continue
-            previews = [turns[i][0] for i in indices if 0 <= i < len(turns)]
-            targets = [turns[i][1] for i in indices if 0 <= i < len(turns)]
-            self.mount(TurnRailItem(indices, previews, targets))
-
-
-
-class ToolGroupBlock(SelectableStatic):
-    """A timeline tool group with in-place collapse and preview updates."""
-
-    # Expanded lists past this size become noise; keep the rest behind a count.
-    _MAX_EXPANDED_ROWS = 12
-    # Light nesting: summary then one-space-deeper details.
-    _HEADER_INDENT = "  "
-    _ITEM_INDENT = "   "
-    _SUB_ITEM_INDENT = "      "  # deeper indent for nested subagent tools
-    _MORE_INDENT = "   "
-    _TODO_INDENT = "    "
-
-    def __init__(self, summary: str = "tools") -> None:
-        self.summary = summary or "tools"
-        self.items: list[ToolItem] = []
-        # Expand while tools are running so users see rows as they start.
-        # Collapse after the batch finishes (close_tool_group).
-        self.collapsed = False
-        super().__init__()
-        self._render_block()
-
-    def _sync_summary_from_items(self, *, running: bool | None = None) -> None:
-        """Keep the group header honest as items accumulate."""
-        if not self.items:
-            return
-        if running is None:
-            running = any(it.status == "running" for it in self.items)
-        self.summary = summarize_items(self.items, running=running)
-
-    def _render_block(self) -> None:
-        mark = "▸" if self.collapsed else "▾"
-        hi = self._HEADER_INDENT
-        lines: list[Text] = [
-            Text(f"{hi}{mark}  {self.summary}", style=f"{_C_FG} on {_C_BAR}")
-        ]
-        if not self.collapsed:
-            visible = self.items
-            overflow = 0
-            if len(self.items) > self._MAX_EXPANDED_ROWS:
-                visible = self.items[: self._MAX_EXPANDED_ROWS]
-                overflow = len(self.items) - self._MAX_EXPANDED_ROWS
-            for item in visible:
-                if item.error:
-                    style = "red"
-                    bullet = "✗"
-                elif item.status == "running":
-                    style = _C_ORANGE
-                    bullet = "○"
-                else:
-                    style = _C_GREEN
-                    bullet = "✓"
-                label = item.label or item.name
-                item_indent = self._SUB_ITEM_INDENT if item.sub else self._ITEM_INDENT
-                item_style = style
-                if " " in label and item.category in {"read", "edit", "list"}:
-                    head, tail = label.split(" ", 1)
-                    row = Text(f"{item_indent}{bullet}  {head} ", style=item_style)
-                    row.append(tail, style=_C_ORANGE)
-                    lines.append(row)
-                else:
-                    lines.append(Text(f"{item_indent}{bullet}  {label}", style=item_style))
-                # write_todos: always show checklist under the tool row.
-                if is_todo_tool(item.name) or str(item.label or "").startswith("Todos "):
-                    checklist = render_todo_checklist_from_preview(
-                        item.preview, indent=self._TODO_INDENT
-                    )
-                    if checklist:
-                        lines.extend(checklist)
-            if overflow:
-                lines.append(
-                    Text(f"{self._MORE_INDENT}… and {overflow} more", style=_C_MUTED)
-                )
-        lines.append(Text(""))
-        self.update(Group(*lines))
-
-    def set_summary(self, summary: str) -> None:
-        # Once items exist, the header is derived from them.  External
-        # partial titles (e.g. only the latest batch: "Read 4 files") must
-        # not overwrite the aggregate summary.
-        if self.items:
-            self._sync_summary_from_items()
-        else:
-            self.summary = summary or "tools"
-        self._render_block()
-
-    def add_item(self, item: ToolItem) -> None:
-        for existing in self.items:
-            if existing.id == item.id:
-                # In-place refresh (label/args completed after early start).
-                existing.name = item.name
-                existing.category = item.category
-                existing.label = item.label
-                existing.path = item.path
-                existing.status = item.status
-                existing.preview = item.preview
-                existing.error = item.error
-                existing.sub = item.sub
-                existing.parent_id = item.parent_id
-                existing.call_id = item.call_id
-                self._sync_summary_from_items()
-                self._render_block()
-                return
-        if item.sub and not item.parent_id:
-            # Stream attribution failed. Do not append it after the last task,
-            # which would misrepresent ownership in the timeline.
-            return
-        if item.parent_id:
-            insert_at = next(
-                (
-                    i + 1
-                    for i, existing in reversed(list(enumerate(self.items)))
-                    if existing.id == item.parent_id
-                    or existing.parent_id == item.parent_id
-                ),
-                len(self.items),
-            )
-            self.items.insert(insert_at, item)
-        else:
-            self.items.append(item)
-        # Never leave a stale header like "Read 4 files" after more tools land.
-        self._sync_summary_from_items()
-        self._render_block()
-
-    def update_item(
-        self,
-        item_id: str,
-        *,
-        label: str | None = None,
-        path: str | None = None,
-        name: str | None = None,
-        category: str | None = None,
-        status: str | None = None,
-        preview: str | None = None,
-        error: bool | None = None,
-    ) -> None:
-        for it in self.items:
-            if it.id != item_id:
-                continue
-            if label is not None:
-                it.label = label
-            if path is not None:
-                it.path = path
-            if name is not None:
-                it.name = name
-            if category is not None:
-                it.category = category
-            if status is not None:
-                it.status = status
-            if preview is not None:
-                it.preview = preview
-            if error is not None:
-                it.error = error
-            self._sync_summary_from_items()
-            self._render_block()
-            return
-
-    def update_preview(self, item_id: str, preview: str, *, error: bool = False) -> None:
-        # Keep payload off the main transcript; status color is enough.
-        # Still mark the row finished so "…" flips to "◆" immediately.
-        self.update_item(item_id, preview=preview, error=error)
-
-    def set_collapsed(self, collapsed: bool) -> None:
-        self.collapsed = bool(collapsed)
-        self._render_block()
-
-    def toggle(self) -> None:
-        self.collapsed = not self.collapsed
-        self._render_block()
-
-    def selectable_text(self) -> str:
-        mark = "▸" if self.collapsed else "▾"
-        lines = [f"{mark}  {self.summary}"]
-        if not self.collapsed:
-            for item in self.items:
-                label = item.label or item.name
-                status = "err" if item.error else item.status
-                lines.append(f"  {label} [{status}]")
-        return "\n".join(lines)
-
-    def on_enter(self, event: Enter) -> None:
-        # Faint left border while the pointer is over this group.
-        event.stop()
-        self.add_class("-hover")
-
-    def on_leave(self, event: Leave) -> None:
-        event.stop()
-        self.remove_class("-hover")
-
-    def on_click(self, event: Click) -> None:
-        if getattr(event, "chain", 1) != 1:
-            return
-        event.stop()
-        self.toggle()
 
 
 class CodingAgentApp(App[None]):
