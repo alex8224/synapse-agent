@@ -20,7 +20,18 @@ class FindFilesInput(BaseModel):
         default=200,
         ge=1,
         le=1000,
-        description="Maximum number of matching paths to return.",
+        description="Maximum number of matching paths to return from the search backend.",
+    )
+    head_limit: int = Field(
+        default=0,
+        ge=0,
+        le=1000,
+        description="Maximum entries to return to the model (0 = use max_results).",
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Skip first N entries before applying head_limit (pagination).",
     )
 
 
@@ -46,7 +57,28 @@ class SearchFilesInput(BaseModel):
         default=200,
         ge=1,
         le=1000,
-        description="Maximum number of matching lines to return.",
+        description="Maximum number of matching lines to return from the search backend.",
+    )
+    head_limit: int = Field(
+        default=0,
+        ge=0,
+        le=1000,
+        description="Maximum entries to return to the model (0 = use max_results).",
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Skip first N entries before applying head_limit (pagination).",
+    )
+    context_lines: int = Field(
+        default=0,
+        ge=0,
+        le=10,
+        description="Number of context lines to include before and after each match.",
+    )
+    case_insensitive: bool = Field(
+        default=False,
+        description="Enable case-insensitive search.",
     )
 
 
@@ -55,7 +87,12 @@ def build_filesystem_search_tools(backend: Any) -> list[Any]:
 
     @tool("find_files", args_schema=FindFilesInput)
     def find_files(
-        *, pattern: str, path: str | None = None, max_results: int = 200
+        *,
+        pattern: str,
+        path: str | None = None,
+        max_results: int = 200,
+        head_limit: int = 0,
+        offset: int = 0,
     ) -> str:
         """Find workspace files and directories by glob pattern."""
         result = backend.glob(pattern=pattern, path=path, max_results=max_results + 1)
@@ -63,15 +100,16 @@ def build_filesystem_search_tools(backend: Any) -> list[Any]:
         if error:
             return str(error)
         all_matches = list(getattr(result, "matches", []) or [])
-        matches = all_matches[:max_results]
-        if not matches:
+        display_limit = head_limit if head_limit > 0 else max_results
+        paginated = all_matches[offset : offset + display_limit]
+        if not paginated:
             return "No paths matched."
         lines = []
-        for item in matches:
+        for item in paginated:
             item_path = item.get("path", "") if isinstance(item, dict) else str(item)
             is_dir = item.get("is_dir", False) if isinstance(item, dict) else False
             lines.append(f"{item_path}{'/' if is_dir else ''}")
-        suffix = "\n[Results truncated]" if len(all_matches) > len(matches) else ""
+        suffix = "\n[Results truncated]" if len(all_matches) > offset + len(paginated) else ""
         return "\n".join(lines) + suffix
 
     @tool("search_files", args_schema=SearchFilesInput)
@@ -82,29 +120,36 @@ def build_filesystem_search_tools(backend: Any) -> list[Any]:
         glob: str | None = None,
         output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
         max_results: int = 200,
+        head_limit: int = 0,
+        offset: int = 0,
+        context_lines: int = 0,
+        case_insensitive: bool = False,
     ) -> str:
         """Search workspace files with a regular expression."""
         result = backend.grep(
             pattern=pattern,
             path=path,
             glob=glob,
-            max_results=max_results + 1,
+            max_results=max_results + 1 + offset,
+            context_lines=context_lines,
+            case_insensitive=case_insensitive,
         )
         error = getattr(result, "error", None)
         if error:
             return str(error)
         all_matches = list(getattr(result, "matches", []) or [])
-        matches = all_matches[:max_results]
-        if not matches:
+        display_limit = head_limit if head_limit > 0 else max_results
+        paginated = all_matches[offset : offset + display_limit]
+        if not paginated:
             return "No matches found."
-        suffix = "\n[Results truncated]" if len(all_matches) > len(matches) else ""
+        suffix = "\n[Results truncated]" if len(all_matches) > offset + len(paginated) else ""
         if output_mode == "content":
             content = "\n".join(
-                f"{item['path']}:{item['line']}: {item['text']}" for item in matches
+                f"{item['path']}:{item['line']}: {item['text']}" for item in paginated
             )
             return content + suffix
         grouped: dict[str, int] = {}
-        for item in matches:
+        for item in paginated:
             grouped[item["path"]] = grouped.get(item["path"], 0) + 1
         if output_mode == "count":
             content = "\n".join(

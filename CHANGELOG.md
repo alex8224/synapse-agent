@@ -7,6 +7,23 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.17
+
+### 新功能
+
+- `find_files` / `search_files` 工具新增 `context_lines`、`case_insensitive`、`head_limit`、`offset` 参数。
+- `search_files` 支持忽略大小写（`case_insensitive`，由 `synapse-search-core` 原生引擎实现）。
+- 支持分页查询（`head_limit` + `offset`），Agent 可按需翻页而非一次性获取全部结果。
+
+### 工程改进
+
+- 工具的 Pydantic schema 不再定义 `intent` 字段，改由 `build_intent_schema_middleware` 中间件统一管理。
+- 新增 Synapse 自有文件搜索工具 `find_files` / `search_files`，排除 deepagents 内置 `ls`/`glob`/`grep` 工具。
+- 系统提示词中的 `glob`/`grep` 工具名修正为 `find_files` / `search_files`。
+- `synapse-search-core` 升级至 0.1.1（新增 `case_insensitive` 参数）。
+
+---
+
 ## v0.1.16
 
 ### 新功能

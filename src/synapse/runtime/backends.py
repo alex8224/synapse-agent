@@ -206,6 +206,8 @@ class CodingLocalShellBackend(LocalShellBackend):
         path: str | None = None,
         glob: str | None = None,
         max_results: int = 1000,
+        context_lines: int = 0,
+        case_insensitive: bool = False,
     ) -> Any:
         """Search with the required native Rust engine using regular expressions."""
         import synapse_search_core
@@ -216,7 +218,8 @@ class CodingLocalShellBackend(LocalShellBackend):
             return GrepResult(matches=[])
         try:
             payload = synapse_search_core.grep(
-                str(base_path), pattern, include_glob=glob, max_results=max_results
+                str(base_path), pattern, include_glob=glob, max_results=max_results,
+                context_lines=context_lines, case_insensitive=case_insensitive,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             return GrepResult(error=f"Error searching path '{path or '.'}': {exc}", matches=[])

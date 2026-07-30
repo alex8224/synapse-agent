@@ -30,11 +30,15 @@ class _SearchBackend:
         path: str | None = None,
         glob: str | None = None,
         max_results: int = 1000,
+        context_lines: int = 0,
+        case_insensitive: bool = False,
     ):
         assert pattern == r"def\s+name"
         assert path == "/src"
         assert glob == "**/*.py"
         assert max_results == 201
+        assert context_lines == 0
+        assert case_insensitive is False
         return SimpleNamespace(
             matches=[
                 {"path": "/src/app.py", "line": 10, "text": "def name():"},

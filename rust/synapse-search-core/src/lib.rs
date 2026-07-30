@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use grep_regex::RegexMatcher;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::WalkBuilder;
 use pyo3::exceptions::PyValueError;
@@ -121,7 +121,7 @@ fn search_file(
     Ok(sink.result)
 }
 
-#[pyfunction(signature = (base_path, pattern, include_glob=None, max_results=1000, context_lines=0))]
+#[pyfunction(signature = (base_path, pattern, include_glob=None, max_results=1000, context_lines=0, case_insensitive=false))]
 fn grep(
     py: Python<'_>,
     base_path: &str,
@@ -129,6 +129,7 @@ fn grep(
     include_glob: Option<&str>,
     max_results: usize,
     context_lines: usize,
+    case_insensitive: bool,
 ) -> PyResult<Py<PyDict>> {
     if pattern.is_empty() {
         return Err(PyValueError::new_err("pattern must not be empty"));
@@ -143,7 +144,9 @@ fn grep(
             base_path.display()
         )));
     }
-    let matcher = RegexMatcher::new(pattern)
+    let matcher = RegexMatcherBuilder::new()
+        .case_insensitive(case_insensitive)
+        .build(pattern)
         .map_err(|error| PyValueError::new_err(format!("invalid regex pattern: {error}")))?;
     let include = include_glob
         .map(compile_glob)
