@@ -475,6 +475,7 @@ class CodingAgentApp(App[None]):
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
         Binding("f9", "dialog_subagents", "Subagents", show=False),
+        Binding("f10", "dialog_sessions_delete", "Delete sessions", show=False),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
