@@ -130,6 +130,10 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             type(m).__name__ == "transform_tool_outputs"
             for m in (kwargs.get("middleware") or [])
         )
+        assert not any(
+            type(m).__name__ == "SummarizationToolMiddleware"
+            for m in (kwargs.get("middleware") or [])
+        )
         # Mid-run steer middleware is wired by default.
         assert any(
             getattr(m, "name", None) == "inject_steer_queue"

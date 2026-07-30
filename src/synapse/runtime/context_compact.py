@@ -1,20 +1,13 @@
-"""Context compaction helpers (deepagents SummarizationToolMiddleware).
+"""Context compaction helpers for deepagents automatic summarization.
 
-create_deep_agent already installs automatic SummarizationMiddleware.
-This module adds the manual ``compact_conversation`` tool layer and product
-helpers for /compact + observability.
+``create_deep_agent`` installs ``SummarizationMiddleware`` for threshold-based
+compaction. This module exposes the ``/compact`` trigger and observability
+helpers without registering a model-callable compaction tool.
 """
 
 from __future__ import annotations
 
 from typing import Any
-
-
-def build_compact_tool_middleware(model: Any, backend: Any) -> Any:
-    """Return SummarizationToolMiddleware (manual compact_conversation tool)."""
-    from deepagents.middleware.summarization import create_summarization_tool_middleware
-
-    return create_summarization_tool_middleware(model, backend)
 
 
 def extract_summarization_event(state: Any) -> dict[str, Any] | None:
@@ -66,11 +59,7 @@ def force_compact_via_agent(
     thread_id: str,
     config: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
-    """Ask the agent to call ``compact_conversation`` now.
-
-    Returns (ok, status_lines). The tool may refuse when under its eligibility
-    gate (~50% of auto-summarization trigger).
-    """
+    """Force the built-in ``SummarizationMiddleware`` for ``/compact`` only."""
     if agent is None or not thread_id:
         return False, ["compact failed: missing agent/thread_id"]
 
@@ -79,14 +68,20 @@ def force_compact_via_agent(
     cfg["thread_id"] = thread_id
     run_config["configurable"] = cfg
 
-    prompt = (
-        "System instruction for this turn only: call the `compact_conversation` "
-        "tool immediately to compact the conversation context. Do not call other "
-        "tools. After the tool returns, reply with one short status line only "
-        "(success, refused/not eligible, or error)."
-    )
-    payload = {"messages": [{"role": "user", "content": prompt}]}
+    middleware = _find_summarization_middleware(agent)
+    if middleware is None:
+        return False, ["compact failed: automatic summarization middleware unavailable"]
+
+    original_should_summarize = getattr(middleware, "_should_summarize", None)
+    if not callable(original_should_summarize):
+        return False, ["compact failed: automatic summarization middleware cannot be forced"]
+
+    # The built-in middleware compacts just before a model call. Override its
+    # threshold for this one slash-command invocation, then restore it even if
+    # the invoke fails. No model-callable compact tool is registered.
+    middleware._should_summarize = lambda _messages, _total_tokens: True
     try:
+        payload = {"messages": [{"role": "user", "content": "Compact the current context."}]}
         ainvoke = getattr(agent, "ainvoke", None)
         runtime = getattr(agent, "_coding_async_runtime", None)
         if callable(ainvoke) and runtime is not None:
@@ -95,47 +90,22 @@ def force_compact_via_agent(
             result = agent.invoke(payload, run_config)
     except Exception as exc:  # noqa: BLE001
         return False, [f"compact failed: {exc}"]
+    finally:
+        middleware._should_summarize = original_should_summarize
 
-    lines: list[str] = []
-    event = extract_summarization_event(result)
-    note = format_summarization_event(event)
-    if note:
-        lines.append(note)
+    note = format_summarization_event(extract_summarization_event(result))
+    return True, [note or "context compacted"]
 
-    # Pull last AI / tool text for user feedback.
-    messages = []
-    if isinstance(result, dict):
-        messages = list(result.get("messages") or [])
-    text_bits: list[str] = []
-    for msg in reversed(messages[-8:]):
-        role = getattr(msg, "type", None) or getattr(msg, "role", None) or ""
-        name = getattr(msg, "name", None) or ""
-        content = getattr(msg, "content", None)
-        if content is None:
-            continue
-        body = content if isinstance(content, str) else str(content)
-        body = body.strip()
-        if not body:
-            continue
-        if str(role).lower() in {"tool", "toolmessage"} or name == "compact_conversation":
-            text_bits.append(body[:300])
-            break
-        if str(role).lower() in {"ai", "assistant"}:
-            text_bits.append(body[:300])
-            break
-    if text_bits:
-        lines.append(text_bits[0])
-    if not lines:
-        lines.append("compact requested (no status detail)")
-    ok = any(
-        "compact" in (ln or "").casefold()
-        or "summar" in (ln or "").casefold()
-        or "nothing to compact" in (ln or "").casefold()
-        or "not eligible" in (ln or "").casefold()
-        or "success" in (ln or "").casefold()
-        for ln in lines
-    )
-    return True if lines else ok, lines
+
+def _find_summarization_middleware(agent: Any) -> Any | None:
+    """Return deepagents' built-in automatic summarization middleware."""
+    nodes = getattr(agent, "nodes", None)
+    node = nodes.get("model") if isinstance(nodes, dict) else None
+    middleware = getattr(node, "bound", None)
+    for candidate in getattr(middleware, "middleware", ()):
+        if getattr(candidate, "name", None) == "SummarizationMiddleware":
+            return candidate
+    return None
 
 
 def context_status_lines(agent: Any, thread_id: str) -> list[str]:

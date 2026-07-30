@@ -116,7 +116,6 @@ class Settings(BaseSettings):
     enable_command_blacklist: bool = Field(
         default=True, validation_alias="ENABLE_COMMAND_BLACKLIST"
     )
-    enable_compact_tool: bool = Field(default=True, validation_alias="AGENT_ENABLE_COMPACT_TOOL")
     # Rewrite large tool results through a content-aware, reversible pipeline.
     # Originals are stored in a content-addressed SQLite database only after a
     # successful rewrite; small results bypass both transformation and storage.

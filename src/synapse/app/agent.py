@@ -25,7 +25,6 @@ from synapse.models.registry import (
     registry_from_settings,
 )
 from synapse.runtime.backends import build_backend
-from synapse.runtime.context_compact import build_compact_tool_middleware
 from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.middleware import (
@@ -161,7 +160,7 @@ def build_coding_agent(
     - interrupt_on disabled (no approval, auto-pass)
     - sqlite/memory checkpointer for multi-turn chat
     - MCP connect deferred unless ``load_mcp=True`` or ``settings.mcp_eager``
-    - compact_conversation tool (auto summarization is built into deepagents)
+    - automatic context summarization is built into deepagents
 
     Pass ``model=`` / ``checkpointer=`` to rebuild cheaply (e.g. attach MCP).
     """
@@ -431,12 +430,6 @@ def build_coding_agent(
     if steer_queue is None:
         steer_queue = SteerQueue()
     middleware.append(build_steer_middleware(steer_queue))
-    if getattr(settings, "enable_compact_tool", True):
-        try:
-            with span("middleware:compact"):
-                middleware.append(build_compact_tool_middleware(model, backend))
-        except Exception:  # noqa: BLE001
-            pass
     if _dag_mw is not None:
         middleware.append(_dag_mw)
 
