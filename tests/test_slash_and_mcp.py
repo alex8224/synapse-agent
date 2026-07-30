@@ -392,6 +392,60 @@ def test_mcp_pool_reuses_session_for_calls():
     assert pool.tool_names == []
 
 
+def test_mcp_stdio_uses_devnull_when_stderr_descriptor_is_invalid(monkeypatch):
+    import sys
+
+    import mcp
+    import mcp.client.stdio
+
+    from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
+
+    class InvalidStderr:
+        closed = False
+
+        def fileno(self):
+            raise OSError(9, "Bad file descriptor")
+
+    class TransportContext:
+        async def __aenter__(self):
+            return object(), object()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def initialize(self):
+            return None
+
+    captured = {}
+
+    def fake_stdio_client(params, errlog):
+        captured["errlog"] = errlog
+        return TransportContext()
+
+    monkeypatch.setattr(sys, "stderr", InvalidStderr())
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(mcp, "ClientSession", lambda read, write: Session())
+    pool = McpSessionPool()
+    try:
+        live = pool._loop.run(
+            pool._open_stdio(McpServerConfig(name="demo", command="demo-server"))
+        )
+        assert captured["errlog"] is live.errlog
+        assert live.errlog is not None
+        assert live.errlog.closed is False
+        pool._servers["demo"] = live
+    finally:
+        pool.close()
+    assert captured["errlog"].closed is True
+
+
 def test_mcp_open_http_and_stdio_branches_selected():
     from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
 

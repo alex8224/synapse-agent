@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from synapse.ui.tui import (
     format_turn_rail_bucket_label,
     turn_rail_tick_slots,
 )
+from synapse.ui.turn_rail_widgets import TurnRail
+
+
+def test_relayout_before_mount_is_deferred():
+    rail = TurnRail(id="turn-rail")
+
+    with (
+        patch.object(rail, "mount") as mount,
+        patch.object(rail, "remove_children") as remove_children,
+    ):
+        rail.set_turns([])
+        rail.on_resize(object())
+        rail.clear_turns()
+
+    mount.assert_not_called()
+    remove_children.assert_not_called()
 
 
 def test_tick_slots_empty():
