@@ -40,7 +40,14 @@ def _depends_label(depends_on: list[str]) -> str:
 
 
 class SubagentRunRow(Static):
-    """One row in the left run list."""
+    """One row in the left run list.
+
+    Rows are click targets, not selectable output. Leaving Textual selection
+    enabled lets a mouse-down start a selection on a top-level row whose
+    parent is not mounted yet while the list is being refreshed.
+    """
+
+    ALLOW_SELECT = False
 
     def __init__(self, run: SubagentRun, *, selected: bool = False) -> None:
         self.run = run
