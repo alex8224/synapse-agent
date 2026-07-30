@@ -7,6 +7,21 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.16
+
+### 新功能
+
+- 新增必需的 `synapse-search-core` 原生搜索核心，使用 Rust ripgrep crates 提供正则 `grep` 和 `glob`。
+- `grep`/`glob` 改为使用内置原生引擎，不再依赖宿主机 `rg` 或 DeepAgents Python 搜索回退。
+- 原生搜索 wheel 发布到 PyPI，支持 Windows x86_64、Linux x86_64/aarch64 和 macOS Apple Silicon arm64。
+
+### 工程改进
+
+- 保留 Python 后端的工作区路径授权、虚拟路径映射和 `deny_paths` 过滤。
+- 增加原生搜索 wheel 构建与 PyPI Trusted Publishing 工作流，以及对应的后端回归测试和分发文档。
+
+---
+
 ## v0.1.15
 
 ### 工程改进
