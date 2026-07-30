@@ -251,7 +251,7 @@ OpenAI Responses API 同时支持 HTTP/SSE 与普通 LLM WebSocket。profile 中
 }
 ```
 
-`vision_model.model`、`base_url`、`api_key_env` 均可更换；`api_key` 也支持，但建议使用环境变量。`think` 是识图模型独立的思考开关，开启后发送 `thinking: {"type": "enabled"}`；它不影响主模型。默认只处理本地/内存图片；将 `allow_remote_urls` 设为 `true` 才会把消息中的 HTTP(S) 图片 URL 转发给识图服务。该服务只用于把图片转换成文字，配置后图片内容会发送到指定服务。多模态主模型会跳过该 middleware，不调用识图服务。
+`vision_model.model`、`base_url`、`api_key_env` 均可更换；`api_key` 也支持，但建议使用环境变量。`think` 是识图模型独立的思考开关，开启后发送 `thinking: {"type": "enabled"}`；它不影响主模型。默认只处理本地/内存图片；将 `allow_remote_urls` 设为 `true` 才会把消息中的 HTTP(S) 图片 URL 转发给识图服务。该服务只用于把图片转换成文字，配置后图片内容会发送到指定服务。主模型 profile 显式配置 `image_input=false` 时，Synapse 还会自动注入 `describe_image` 工具，让 Agent 主动读取并识别工作区内的图片；未配置 `vision_model` 时工具会明确返回不可用。多模态主模型会跳过 middleware，且不会注入该工具。
 
 ### MCP 服务器配置
 

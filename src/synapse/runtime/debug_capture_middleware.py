@@ -32,25 +32,49 @@ def build_debug_capture_middleware(store: DebugCaptureStore) -> AgentMiddleware:
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
             if not store.enabled:
                 return handler(request)
-            started = time.perf_counter()
+            started_at = time.time()
+            started_perf = time.perf_counter()
             try:
                 response = handler(request)
             except Exception as exc:
-                store.record(request, None, started_at=started, error=str(exc))
+                store.record(
+                    request,
+                    None,
+                    started_at=started_at,
+                    started_perf=started_perf,
+                    error=str(exc),
+                )
                 raise
-            store.record(request, response, started_at=started)
+            store.record(
+                request,
+                response,
+                started_at=started_at,
+                started_perf=started_perf,
+            )
             return response
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             if not store.enabled:
                 return await handler(request)
-            started = time.perf_counter()
+            started_at = time.time()
+            started_perf = time.perf_counter()
             try:
                 response = await handler(request)
             except Exception as exc:
-                store.record(request, None, started_at=started, error=str(exc))
+                store.record(
+                    request,
+                    None,
+                    started_at=started_at,
+                    started_perf=started_perf,
+                    error=str(exc),
+                )
                 raise
-            store.record(request, response, started_at=started)
+            store.record(
+                request,
+                response,
+                started_at=started_at,
+                started_perf=started_perf,
+            )
             return response
 
     return _DebugCaptureMiddleware()

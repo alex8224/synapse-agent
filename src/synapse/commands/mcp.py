@@ -1,4 +1,5 @@
 """MCP slash-command handler and presentation helpers."""
+
 from __future__ import annotations
 
 import json
@@ -101,6 +102,7 @@ def _md_tool_list(names: list[str], warnings: list[str] | None = None) -> str:
     for w in warnings or []:
         lines.append(f"\nwarn: {w}")
     return "\n".join(lines)
+
 
 def handle_mcp(
     args: list[str],
@@ -216,8 +218,7 @@ def handle_mcp(
         md_lines.append("|---|---|")
         for transport, names in sorted(by_transport.items()):
             md_lines.append(
-                f"| {markdown_escape(transport)} | "
-                f"{markdown_escape(', '.join(names))} |"
+                f"| {markdown_escape(transport)} | {markdown_escape(', '.join(names))} |"
             )
         if result.tools:
             md_lines.append("")
@@ -291,9 +292,7 @@ def handle_mcp(
         loaded = getattr(build_coding_agent, "last_mcp_servers", []) or []
         warnings_list = getattr(build_coding_agent, "last_mcp_warnings", []) or []
         tools = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
-        notice = (
-            f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'} 路 tools={len(tools)}"
-        )
+        notice = f"mcp '{target}' {'enabled' if changed.enabled else 'disabled'} tools={len(tools)}"
         lines = [
             f"mcp server '{target}' {'enabled' if changed.enabled else 'disabled'}; agent rebuilt",
             f"loaded servers: {', '.join(loaded) or '(none)'}",
@@ -325,7 +324,7 @@ def handle_mcp(
         return SlashResult(
             handled=True,
             lines=["mcp enabled (run /mcp reload to rebuild agent)"],
-            notice="mcp enabled 路 reload pending",
+            notice="mcp enabled reload pending",
             settings_changed=True,
         )
 
@@ -348,7 +347,7 @@ def handle_mcp(
         return SlashResult(
             handled=True,
             lines=["mcp disabled; agent rebuilt without MCP tools"],
-            notice="mcp disabled 路 tools=0",
+            notice="mcp disabled tools=0",
             agent=new_agent,
             settings_changed=True,
         )
@@ -372,9 +371,9 @@ def handle_mcp(
         warnings = getattr(build_coding_agent, "last_mcp_warnings", []) or []
         tools = getattr(build_coding_agent, "last_mcp_tool_names", []) or []
         enabled_flag = bool(getattr(settings, "enable_mcp", True))
-        notice = f"mcp reloaded 路 servers={len(loaded)} tools={len(tools)}"
+        notice = f"mcp reloaded servers={len(loaded)} tools={len(tools)}"
         if not enabled_flag:
-            notice = "mcp reloaded 路 disabled"
+            notice = "mcp reloaded disabled"
         lines = [
             f"agent rebuilt; mcp enabled={getattr(settings, 'enable_mcp', True)}",
             f"loaded servers: {', '.join(loaded) or '(none)'}",

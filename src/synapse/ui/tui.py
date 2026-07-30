@@ -517,21 +517,27 @@ class CodingAgentApp(App[None]):
         self._open_subagent_monitor()
 
     def action_dialog_debug_inspector(self) -> None:
-        from synapse.observability.debug_server import DebugHttpServer
+        """Start the inspector without blocking Textual's event loop."""
+        self._start_debug_inspector()
+
+    @work(thread=True, exclusive=True, group="debug-inspector")
+    def _start_debug_inspector(self) -> None:
+        from synapse.observability.debug_server import get_debug_server
         from synapse.observability.llm_debug import get_debug_store
 
         store = get_debug_store()
-        server = DebugHttpServer(store)
+        server = get_debug_server()
         try:
             server.start()
-            server.open_browser()
             store.enabled = True
-            self.append_event(
-                f"Debug inspector: {server.url}  (Ctrl+E toggle capture)",
+            self.call_from_thread(
+                self.append_event,
+                f"Debug inspector: {server.url}  (open this address in a browser)",
                 "green",
             )
         except OSError as exc:
-            self.append_event(
+            self.call_from_thread(
+                self.append_event,
                 f"Debug server failed: {exc}",
                 "yellow",
             )

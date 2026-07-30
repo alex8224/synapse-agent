@@ -77,6 +77,12 @@ def _serialize_message(msg: Any) -> dict[str, Any]:
     if tool_call_id:
         record["tool_call_id"] = str(tool_call_id)
 
+    # Detect tool-call errors on ToolMessage (LangChain sets status="error")
+    if role == "tool":
+        status = getattr(msg, "status", None)
+        if status == "error":
+            record["is_error"] = True
+
     name = getattr(msg, "name", None)
     if name:
         record["name"] = str(name)
@@ -220,6 +226,7 @@ class DebugCaptureStore:
         response: Any,
         *,
         started_at: float,
+        started_perf: float | None = None,
         error: str | None = None,
     ) -> DebugCaptureRecord:
         """Serialize and store one request/response pair.
@@ -252,7 +259,7 @@ class DebugCaptureStore:
                 provider=provider,
                 model_name=model_name,
                 started_at=started_at,
-                duration_ms=(time.perf_counter() - started_at) * 1000,
+                duration_ms=(time.perf_counter() - (started_perf or started_at)) * 1000,
                 error=error,
             )
             self._records.append(record)

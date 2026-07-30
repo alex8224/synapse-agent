@@ -49,7 +49,11 @@ from synapse.settings import Settings
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
-from synapse.tools import build_filesystem_search_tools, build_session_tools
+from synapse.tools import (
+    build_describe_image_tools,
+    build_filesystem_search_tools,
+    build_session_tools,
+)
 
 
 def _build_checkpointer(settings: Settings):
@@ -390,6 +394,13 @@ def build_coding_agent(
         getattr(selected_profile, "base_url", None) or getattr(settings, "openai_base_url", None),
     )
     vision_config = VisionModelConfig.from_registry(registry, settings)
+    tools.extend(
+        build_describe_image_tools(
+            image_input=getattr(selected_profile, "image_input", None),
+            backend=backend,
+            config=vision_config,
+        )
+    )
 
     output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
     middleware: list[Any] = [
