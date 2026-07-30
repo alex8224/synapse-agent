@@ -31,18 +31,15 @@ def test_subagent_row_shows_dependency_task_ids():
     assert "dep:core-arch, aux-systems" in SubagentRunRow(run)._build_text().plain
 
 
-def test_subagent_run_row_disables_text_selection():
+def test_subagent_row_disables_text_selection():
     run = SubagentRun(
         call_id="call-c",
-        task_id="tool-output",
-        subagent_type="researcher",
+        task_id="test",
+        subagent_type="tester",
         description="demo",
     )
 
-    row = SubagentRunRow(run)
-
-    assert SubagentRunRow.ALLOW_SELECT is False
-    assert row.allow_select is False
+    assert not SubagentRunRow(run).allow_select
 
 
 def test_subagent_monitor_dialog_click_rows_during_refresh():

@@ -570,10 +570,17 @@ def test_fs_permissions_and_harness(tmp_path: Path):
     assert perms is not None
     excluded = apply_harness_exclusions("openai:demo")
     assert "ls" in excluded
+    assert "glob" in excluded
     assert "grep" in excluded
     excluded = apply_harness_exclusions("openai:demo", readonly=True)
     assert "write_file" in excluded
     assert "execute" in excluded
+
+    from deepagents.profiles.harness.harness_profiles import _get_harness_profile
+
+    profile = _get_harness_profile("openai:demo")
+    assert profile is not None
+    assert profile.excluded_tools == frozenset()
 
 
 def test_default_subagents_optional_models(tmp_path: Path):
@@ -583,3 +590,27 @@ def test_default_subagents_optional_models(tmp_path: Path):
     assert len(subs) >= 1
     names = {s.get("name") for s in subs}
     assert "tester" in names
+
+
+def test_codex_oauth_middleware_only_applies_to_inherited_subagent_models() -> None:
+    subs = build_default_subagents(
+        enabled=True,
+        tester_model="openai:explicit",
+        inherited_openai_oauth=True,
+    )
+    assert subs is not None
+    by_name = {str(spec["name"]): spec for spec in subs}
+
+    def has_oauth_compat(spec: dict[str, object]) -> bool:
+        return any(
+            middleware.__class__.__name__ == "_OpenAIOAuthCompatMiddleware"
+            for middleware in spec.get("middleware", [])  # type: ignore[union-attr]
+        )
+
+    assert has_oauth_compat(by_name["researcher"])
+    assert has_oauth_compat(by_name["reviewer"])
+    assert not has_oauth_compat(by_name["tester"])
+
+    ordinary = build_default_subagents(enabled=True, inherited_openai_oauth=False)
+    assert ordinary is not None
+    assert not any(has_oauth_compat(spec) for spec in ordinary)

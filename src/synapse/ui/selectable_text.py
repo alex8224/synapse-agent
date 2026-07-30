@@ -7,66 +7,15 @@ can select text with the mouse and copy with ``Ctrl+C``.
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import sys
 from typing import Any
 
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Static, TextArea
 
-# ---------------------------------------------------------------------------
-# Clipboard helper (inlined to avoid circular import with synapse.ui.tui)
-# ---------------------------------------------------------------------------
+from synapse.ui.clipboard import copy_to_clipboard
 
-
-def _copy_to_clipboard(text: str) -> bool:
-    """Copy *text* to the system clipboard. Returns True on success."""
-    if not text:
-        return False
-    try:
-        import pyperclip  # type: ignore[import-untyped]
-
-        pyperclip.copy(text)
-        return True
-    except ImportError:
-        pass
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    f"Set-Clipboard -Value '{text.replace(chr(39), chr(39)+chr(39))}'",
-                ],
-                check=False,
-                timeout=5,
-            )
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-    elif sys.platform == "darwin":
-        try:
-            subprocess.run(
-                ["pbcopy"], input=text, text=True, check=False, timeout=5
-            )
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-    else:
-        for cmd in ("xclip -selection clipboard", "wl-copy"):
-            if shutil.which(cmd.split()[0]):
-                try:
-                    subprocess.run(
-                        cmd.split(), input=text, text=True, check=False, timeout=5
-                    )
-                    return True
-                except Exception:  # noqa: BLE001
-                    pass
-    return False
+_copy_to_clipboard = copy_to_clipboard
 
 
 class SelectableTextModal(ModalScreen[None]):

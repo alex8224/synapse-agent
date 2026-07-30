@@ -14,7 +14,6 @@ from synapse.content.prompts import (
     load_coding_system_prompt,
 )
 from synapse.runtime.backends import build_backend
-from synapse.settings import Settings
 
 
 def test_build_system_prompt_includes_workspace(tmp_path: Path):
@@ -25,7 +24,7 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
         or "Virtual filesystem" in text
         or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
     )
-    assert "Chinese" in text
+    assert "用中文思考和推理" in text
     assert "Current workspace" in text
 
 
@@ -81,38 +80,6 @@ def test_build_backend_local_shell(tmp_path: Path):
     assert backend.__class__.__name__ == "CodingLocalShellBackend"
 
 
-def test_settings_default_enable_subagents(monkeypatch):
-    monkeypatch.delenv("AGENT_ENABLE_SUBAGENTS", raising=False)
-
-    settings = Settings(_env_file=None)
-
-    assert settings.enable_subagents is True
-
-
-def test_build_coding_agent_default_disables_subagents(tmp_path: Path):
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        parallel_subagents=False,
-    )
-
-    with (
-        patch("synapse.models.registry.init_chat_model", return_value=MagicMock(name="model")),
-        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        agent = build_coding_agent(settings, project_root=tmp_path)
-
-    assert mock_cda.call_args.kwargs["subagents"] is None
-    assert agent._coding_subagent_mode == "disabled"
-
-
 def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
     settings = load_settings(
         workspace=tmp_path,
@@ -121,7 +88,6 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         checkpoint_backend="memory",
         enable_mcp=False,
         enable_subagents=True,
-        parallel_subagents=False,
     )
 
     fake_model = MagicMock(name="model")
@@ -152,7 +118,41 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert kwargs["model"] is fake_model
         assert kwargs["backend"] is not None
         assert kwargs["checkpointer"] is not None
-        assert kwargs["subagents"] is None
+        search_tools = {
+            tool.name: tool
+            for tool in kwargs["tools"]
+            if tool.name in {"find_files", "search_files"}
+        }
+        assert set(search_tools) == {"find_files", "search_files"}
+        assert search_tools["search_files"].tool_call_schema.model_json_schema()["properties"][
+            "pattern"
+        ]["description"].startswith("Regular expression")
+        exclusion = next(
+            middleware
+            for middleware in (kwargs.get("middleware") or [])
+            if type(middleware).__name__ == "exclude_tools"
+        )
+
+        class _Request:
+            def __init__(self, tools):  # noqa: ANN001
+                self.tools = tools
+
+            def override(self, **changes):  # noqa: ANN003
+                return _Request(changes.get("tools", self.tools))
+
+        ls_tool = MagicMock(name="ls_tool")
+        ls_tool.name = "ls"
+        glob_tool = MagicMock(name="glob_tool")
+        glob_tool.name = "glob"
+        grep_tool = MagicMock(name="grep_tool")
+        grep_tool.name = "grep"
+        find_files_tool = MagicMock(name="find_files_tool")
+        find_files_tool.name = "find_files"
+        search_files_tool = MagicMock(name="search_files_tool")
+        search_files_tool.name = "search_files"
+        request = _Request([ls_tool, glob_tool, grep_tool, find_files_tool, search_files_tool])
+        filtered = exclusion.wrap_model_call(request, lambda current: current)
+        assert [tool.name for tool in filtered.tools] == ["find_files", "search_files"]
         model_retries = [
             middleware
             for middleware in (kwargs.get("middleware") or [])
@@ -162,6 +162,10 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert model_retries[0].on_failure == "error"
         assert any(
             type(m).__name__ == "transform_tool_outputs"
+            for m in (kwargs.get("middleware") or [])
+        )
+        assert not any(
+            type(m).__name__ == "SummarizationToolMiddleware"
             for m in (kwargs.get("middleware") or [])
         )
         # Mid-run steer middleware is wired by default.
@@ -178,194 +182,6 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             "creating async model client",
             "compiling agent graph",
         ]
-
-
-def test_build_coding_agent_wires_dag_subagent_middleware(tmp_path: Path):
-    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
-
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        enable_subagents=True,
-        parallel_subagents=True,
-    )
-    fake_model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="ok") for _ in range(20)])
-    )
-    with (
-        patch(
-            "synapse.models.registry.init_chat_model",
-            return_value=fake_model,
-        ),
-        patch(
-            "deepagents.create_deep_agent",
-            return_value=MagicMock(name="agent"),
-        ) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        build_coding_agent(settings, project_root=tmp_path)
-
-    kwargs = mock_cda.call_args.kwargs
-    dag_middleware = [
-        middleware
-        for middleware in (kwargs.get("middleware") or [])
-        if type(middleware).__name__ == "DAGSubAgentMiddleware"
-    ]
-    assert kwargs["subagents"] is None
-    assert len(dag_middleware) == 1
-    assert "researcher" in dag_middleware[0]._subagent_runnables
-
-
-def test_build_coding_agent_can_force_subagents_disabled(tmp_path: Path):
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        enable_subagents=True,
-        parallel_subagents=True,
-    )
-
-    with (
-        patch("synapse.models.registry.init_chat_model", return_value=MagicMock(name="model")),
-        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        agent = build_coding_agent(
-            settings,
-            project_root=tmp_path,
-            force_parallel_subagents=False,
-        )
-
-    kwargs = mock_cda.call_args.kwargs
-    dag_middleware = [
-        middleware
-        for middleware in (kwargs.get("middleware") or [])
-        if type(middleware).__name__ == "DAGSubAgentMiddleware"
-    ]
-    assert kwargs["subagents"] is None
-    assert dag_middleware == []
-    assert agent._coding_subagent_mode == "disabled"
-
-
-def test_build_coding_agent_can_force_parallel_subagent_mode(tmp_path: Path):
-    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
-
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        enable_subagents=True,
-        parallel_subagents=False,
-    )
-    fake_model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="ok") for _ in range(20)])
-    )
-    with (
-        patch("synapse.models.registry.init_chat_model", return_value=fake_model),
-        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        agent = build_coding_agent(
-            settings,
-            project_root=tmp_path,
-            force_parallel_subagents=True,
-        )
-
-    kwargs = mock_cda.call_args.kwargs
-    dag_middleware = [
-        middleware
-        for middleware in (kwargs.get("middleware") or [])
-        if type(middleware).__name__ == "DAGSubAgentMiddleware"
-    ]
-    assert kwargs["subagents"] is None
-    assert len(dag_middleware) == 1
-    assert agent._coding_subagent_mode == "parallel"
-
-
-def test_build_coding_agent_disables_subagents_when_dag_compile_empty(tmp_path: Path):
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        enable_subagents=True,
-        parallel_subagents=True,
-    )
-
-    with (
-        patch("synapse.models.registry.init_chat_model", return_value=MagicMock(name="model")),
-        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        agent = build_coding_agent(settings, project_root=tmp_path)
-
-    kwargs = mock_cda.call_args.kwargs
-    dag_middleware = [
-        middleware
-        for middleware in (kwargs.get("middleware") or [])
-        if type(middleware).__name__ == "DAGSubAgentMiddleware"
-    ]
-    assert kwargs["subagents"] is None
-    assert dag_middleware == []
-    assert agent._coding_subagent_mode == "disabled"
-
-
-def test_parallel_subagents_implies_subagents_enabled(tmp_path: Path):
-    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-    from langchain_core.messages import AIMessage
-
-    settings = load_settings(
-        workspace=tmp_path,
-        model="openai:gpt-4.1",
-        require_approval=False,
-        checkpoint_backend="memory",
-        enable_mcp=False,
-        enable_subagents=False,
-        parallel_subagents=True,
-    )
-    fake_model = GenericFakeChatModel(
-        messages=iter([AIMessage(content="ok") for _ in range(20)])
-    )
-    with (
-        patch("synapse.models.registry.init_chat_model", return_value=fake_model),
-        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")) as mock_cda,
-        patch("deepagents.register_harness_profile", MagicMock()),
-        patch("deepagents.HarnessProfile", MagicMock()),
-    ):
-        from synapse.app.agent import build_coding_agent
-
-        build_coding_agent(settings, project_root=tmp_path)
-
-    kwargs = mock_cda.call_args.kwargs
-    dag_middleware = [
-        middleware
-        for middleware in (kwargs.get("middleware") or [])
-        if type(middleware).__name__ == "DAGSubAgentMiddleware"
-    ]
-    assert kwargs["subagents"] is None
-    assert len(dag_middleware) == 1
 
 
 def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Path):

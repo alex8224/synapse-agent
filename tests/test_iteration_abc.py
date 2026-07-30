@@ -35,6 +35,29 @@ def test_extract_summarization_event_from_state_obj():
     assert extract_summarization_event(state)["cutoff"] == 3
 
 
+def test_force_compact_uses_automatic_middleware():
+    from synapse.runtime.context_compact import force_compact_via_agent
+
+    middleware = SimpleNamespace(
+        name="SummarizationMiddleware",
+        _should_summarize=lambda _messages, _tokens: False,
+    )
+    model_node = SimpleNamespace(bound=SimpleNamespace(middleware=[middleware]))
+    observed: list[bool] = []
+
+    def invoke(_payload, _config):
+        observed.append(middleware._should_summarize([], 0))
+        return {"_summarization_event": {"cutoff": 3}}
+
+    agent = SimpleNamespace(nodes={"model": model_node}, invoke=invoke)
+    ok, lines = force_compact_via_agent(agent, thread_id="test-thread")
+
+    assert ok
+    assert observed == [True]
+    assert middleware._should_summarize([], 0) is False
+    assert any("compacted" in line for line in lines)
+
+
 def test_hitl_build_decisions_approve_reject():
     pending = PendingInterrupt(
         actions=[

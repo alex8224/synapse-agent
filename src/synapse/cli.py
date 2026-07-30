@@ -28,10 +28,14 @@ sessions_app = typer.Typer(help="Manage chat session metadata.")
 models_app = typer.Typer(help="List/select configured model profiles.")
 mcp_app = typer.Typer(help="Inspect MCP server configuration and tools.")
 tool_output_app = typer.Typer(help="Inspect reversible tool-output transformation metrics.")
+auth_app = typer.Typer(help="Manage provider authentication.")
+auth_openai_app = typer.Typer(help="Manage OpenAI Codex OAuth authentication.")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(tool_output_app, name="tool-output")
+auth_app.add_typer(auth_openai_app, name="openai")
+app.add_typer(auth_app, name="auth")
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +91,80 @@ def _print_auth_error(settings, exc: Exception) -> None:
             f"Using key {settings.mask_openai_key()} "
             f"base_url={settings.openai_base_url!r} model={settings.model!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Authentication commands
+# ---------------------------------------------------------------------------
+
+
+@auth_openai_app.command("login")
+def auth_openai_login(
+    import_codex: bool = typer.Option(
+        False, "--import-codex", help="Import an existing ~/.codex/auth.json OAuth grant"
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Do not open the browser automatically"
+    ),
+    timeout: float = typer.Option(
+        300.0, "--timeout", min=30.0, max=900.0, help="Login timeout in seconds"
+    ),
+) -> None:
+    """Sign in with a ChatGPT account for a Codex OAuth model profile."""
+    from synapse.integrations.openai_oauth import (
+        OpenAIOAuthStore,
+        import_codex_credentials,
+        login_via_browser,
+    )
+
+    try:
+        tokens = (
+            import_codex_credentials()
+            if import_codex
+            else login_via_browser(timeout_seconds=timeout, open_browser=not no_browser)
+        )
+        store = OpenAIOAuthStore()
+        store.save(tokens)
+    except Exception as exc:  # noqa: BLE001
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    account = tokens.account_id or "available"
+    print_info(f"OpenAI Codex OAuth login saved: account={account}")
+    print_info('Configure a model profile with: "auth": "openai_oauth"')
+
+
+@auth_openai_app.command("status")
+def auth_openai_status() -> None:
+    """Show OAuth login state without exposing credential values."""
+    from datetime import datetime
+
+    from synapse.integrations.openai_oauth import OpenAIOAuthStore
+
+    try:
+        tokens = OpenAIOAuthStore().load()
+    except Exception as exc:  # noqa: BLE001
+        print_error(str(exc))
+        raise typer.Exit(code=1) from exc
+    if tokens is None:
+        print_info("OpenAI Codex OAuth: not logged in")
+        return
+    expiry = datetime.fromtimestamp(tokens.expires_at).astimezone().isoformat(timespec="seconds")
+    state = "refresh required" if tokens.is_expiring else "active"
+    print_info(
+        f"OpenAI Codex OAuth: {state}; account={tokens.account_id or 'unknown'}; expires={expiry}"
+    )
+
+
+@auth_openai_app.command("logout")
+def auth_openai_logout() -> None:
+    """Remove Synapse's locally stored OpenAI OAuth grant."""
+    from synapse.integrations.openai_oauth import OpenAIOAuthStore
+
+    removed = OpenAIOAuthStore().delete()
+    message = (
+        "OpenAI Codex OAuth credentials removed" if removed else "OpenAI Codex OAuth: not logged in"
+    )
+    print_info(message)
 
 
 # ---------------------------------------------------------------------------

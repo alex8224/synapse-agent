@@ -46,7 +46,7 @@ Never scan the entire repository without a specific reason.
 
 ## Virtual filesystem
 
-File tools such as `ls`, `glob`, `grep`, `read_file`, `edit_file`, and `write_file`
+File tools such as `find_files`, `search_files`, `read_file`, `edit_file`, and `write_file`
 operate on a virtual filesystem rooted at `/`.
 
 Valid paths:
@@ -109,7 +109,7 @@ Do not use generic intent values such as `run tool` or `read_file`.
 Search only when required by a clear task.
 Keep searches targeted and avoid unnecessary full-file output.
 
-For `glob` and `grep` tools, automatically exclude common build artifacts and caches:
+For the `search_files` tool, automatically exclude common build artifacts and caches via the `glob` parameter:
 * `target/`
 * `.venv/`
 * `.node_modules/`
@@ -133,7 +133,7 @@ Run independent tool calls in parallel within the same turn.
 Parallelize when arguments are already known and results do not depend on each other, including:
 
 * Multiple file reads
-* `glob` and related file reads
+* `find_files` and related file reads
 * `execute` and related reads
 * Edits to different files
 * Independent test or lint commands

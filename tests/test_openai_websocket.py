@@ -46,14 +46,15 @@ class _FakeManager:
 
 class _FakeResponses:
     def __init__(self, manager):
-        self.manager = manager
+        self.managers = list(manager) if isinstance(manager, list) else [manager]
         self.connect_count = 0
         self.connect_options = []
 
     def connect(self, **kwargs):
+        manager = self.managers[min(self.connect_count, len(self.managers) - 1)]
         self.connect_count += 1
         self.connect_options.append(kwargs)
-        return self.manager
+        return manager
 
 
 class _FakeAsyncOpenAI:
@@ -176,3 +177,260 @@ def test_websocket_error_closes_dirty_connection():
 
     assert connection.closed is True
     assert model._responses_ws_connection is None
+
+
+def test_websocket_transient_error_reconnects_then_succeeds():
+    first = _FakeConnection(
+        [[SimpleNamespace(
+            type="error",
+            error=SimpleNamespace(
+                message="stream disconnected before completion: "
+                "stream closed before response.completed"
+            ),
+        )]]
+    )
+    second = _FakeConnection(
+        [[
+            SimpleNamespace(type="response.output_text.delta", delta="recovered"),
+            SimpleNamespace(type="response.completed"),
+        ]]
+    )
+    responses = _FakeResponses([_FakeManager(first), _FakeManager(second)])
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=1,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    def convert(event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        chunk = None
+        if event.type == "response.output_text.delta":
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=event.delta))
+        return current_index, current_output_index, current_sub_index, chunk
+
+    async def no_sleep(_delay):
+        return None
+
+    async def run():
+        with (
+            patch(
+                "synapse.integrations.llm_openai_websocket."
+                "_convert_responses_chunk_to_generation_chunk",
+                side_effect=convert,
+            ),
+            patch(
+                "synapse.integrations.llm_openai_websocket.asyncio.sleep",
+                side_effect=no_sleep,
+            ),
+        ):
+            return [chunk.text async for chunk in model._astream([HumanMessage("a")])]
+
+    assert asyncio.run(run()) == ["recovered"]
+    assert responses.connect_count == 2
+    assert first.closed is True
+
+
+def test_websocket_retries_exhausted_falls_back_to_http_sse():
+    message = (
+        "stream disconnected before completion: stream closed before response.completed"
+    )
+    connections = [
+        _FakeConnection(
+            [[SimpleNamespace(type="error", error=SimpleNamespace(message=message))]]
+        ),
+        _FakeConnection(
+            [[SimpleNamespace(type="error", error=SimpleNamespace(message=message))]]
+        ),
+    ]
+    responses = _FakeResponses([_FakeManager(connection) for connection in connections])
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=1,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    async def fallback(_self, *args, **kwargs):
+        yield ChatGenerationChunk(message=AIMessageChunk(content="from-sse"))
+
+    async def no_sleep(_delay):
+        return None
+
+    async def run():
+        with (
+            patch("langchain_openai.ChatOpenAI._astream", new=fallback),
+            patch(
+                "synapse.integrations.llm_openai_websocket.asyncio.sleep",
+                side_effect=no_sleep,
+            ),
+        ):
+            return [chunk.text async for chunk in model._astream([HumanMessage("a")])]
+
+    assert asyncio.run(run()) == ["from-sse"]
+    assert responses.connect_count == 2
+    assert all(connection.closed for connection in connections)
+
+
+def test_websocket_does_not_replay_after_yielding_chunk():
+    connection = _FakeConnection(
+        [[
+            SimpleNamespace(type="response.output_text.delta", delta="partial"),
+            SimpleNamespace(
+                type="error",
+                error=SimpleNamespace(message="stream disconnected before completion"),
+            ),
+        ]]
+    )
+    responses = _FakeResponses(_FakeManager(connection))
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=2,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    def convert(event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        chunk = None
+        if event.type == "response.output_text.delta":
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=event.delta))
+        return current_index, current_output_index, current_sub_index, chunk
+
+    async def run():
+        chunks = []
+        with patch(
+            "synapse.integrations.llm_openai_websocket."
+            "_convert_responses_chunk_to_generation_chunk",
+            side_effect=convert,
+        ):
+            async for chunk in model._astream([HumanMessage("a")]):
+                chunks.append(chunk.text)
+        return chunks
+
+    with pytest.raises(RuntimeError, match="disconnected before completion"):
+        asyncio.run(run())
+
+    assert responses.connect_count == 1
+    assert connection.closed is True
+
+
+def test_websocket_sdk_error_shape_retries():
+    first = _FakeConnection(
+        [[SimpleNamespace(
+            type="error",
+            code="server_error",
+            message="stream disconnected before completion",
+            param=None,
+        )]]
+    )
+    second = _FakeConnection([[SimpleNamespace(type="response.completed")]])
+    responses = _FakeResponses([_FakeManager(first), _FakeManager(second)])
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=1,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    async def no_sleep(_delay):
+        return None
+
+    def convert(_event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        return current_index, current_output_index, current_sub_index, None
+
+    async def run():
+        with (
+            patch(
+                "synapse.integrations.llm_openai_websocket."
+                "_convert_responses_chunk_to_generation_chunk",
+                side_effect=convert,
+            ),
+            patch(
+                "synapse.integrations.llm_openai_websocket.asyncio.sleep",
+                side_effect=no_sleep,
+            ),
+        ):
+            return [chunk async for chunk in model._astream([HumanMessage("a")])]
+
+    assert asyncio.run(run()) == []
+    assert responses.connect_count == 2
+
+
+def test_websocket_parameter_error_is_not_retried():
+    connection = _FakeConnection(
+        [[SimpleNamespace(
+            type="error",
+            code="invalid_request_error",
+            message="timeout must be positive",
+            param="timeout",
+        )]]
+    )
+    responses = _FakeResponses(_FakeManager(connection))
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=2,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    async def run():
+        return [chunk async for chunk in model._astream([HumanMessage("a")])]
+
+    with pytest.raises(RuntimeError, match="timeout must be positive"):
+        asyncio.run(run())
+
+    assert responses.connect_count == 1
+
+
+def test_websocket_consumer_close_resets_connection():
+    connection = _FakeConnection(
+        [[SimpleNamespace(type="response.output_text.delta", delta="partial")]]
+    )
+    responses = _FakeResponses(_FakeManager(connection))
+    model = ResponsesWebSocketChatOpenAI(model="gpt-test", api_key="test-key")
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    def convert(event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        chunk = ChatGenerationChunk(message=AIMessageChunk(content=event.delta))
+        return current_index, current_output_index, current_sub_index, chunk
+
+    async def run():
+        stream = model._astream([HumanMessage("a")])
+        with patch(
+            "synapse.integrations.llm_openai_websocket."
+            "_convert_responses_chunk_to_generation_chunk",
+            side_effect=convert,
+        ):
+            assert (await anext(stream)).text == "partial"
+            await stream.aclose()
+
+    asyncio.run(run())
+
+    assert connection.closed is True
+    assert model._responses_ws_connection is None
+
+
+def test_websocket_model_close_prevents_reconnect():
+    connection = _FakeConnection([])
+    responses = _FakeResponses(_FakeManager(connection))
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=2,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    async def run():
+        await model._ensure_responses_websocket()
+        await model.aclose()
+        with pytest.raises(RuntimeError, match="model is closed"):
+            await model._ensure_responses_websocket()
+
+    asyncio.run(run())
+
+    assert responses.connect_count == 1
+    assert connection.closed is True

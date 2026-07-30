@@ -47,19 +47,29 @@ def test_detect_wrapper_and_meta():
 
 
 def test_force_compact_uses_agent_async_runtime():
+    """Async runtime path triggers SummarizationMiddleware and restores state."""
+    from types import SimpleNamespace
+
     calls: list[str] = []
+
+    middleware = SimpleNamespace(
+        name="SummarizationMiddleware",
+        _should_summarize=lambda _messages, _tokens: False,
+    )
+    model_node = SimpleNamespace(bound=SimpleNamespace(middleware=[middleware]))
 
     class Runtime:
         def run(self, awaitable):
             calls.append("run")
             awaitable.close()
-            return {"messages": []}
+            return {"_summarization_event": {"cutoff": 5}}
 
     class Agent:
         _coding_async_runtime = Runtime()
+        nodes = {"model": model_node}
 
         async def ainvoke(self, payload, config):
-            return {"messages": []}
+            return {"_summarization_event": {"cutoff": 5}}
 
         def invoke(self, payload, config):
             raise AssertionError("sync invoke must not be used")
@@ -67,8 +77,10 @@ def test_force_compact_uses_agent_async_runtime():
     ok, lines = force_compact_via_agent(Agent(), thread_id="t1")
 
     assert ok is True
-    assert lines == ["compact requested (no status detail)"]
     assert calls == ["run"]
+    # _should_summarize must be restored after the call, regardless of success.
+    assert middleware._should_summarize([], 0) is False
+    assert any("compacted" in line for line in lines)
 
 
 def test_fold_hides_compact_messages():

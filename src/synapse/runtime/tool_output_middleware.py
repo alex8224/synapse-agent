@@ -54,7 +54,7 @@ def build_tool_output_transform_middleware(
     """
     threshold = max(0, int(threshold_bytes))
     pipeline = pipeline or ToolOutputTransformPipeline()
-    excluded = frozenset({"read_tool_result", "compact_conversation"})
+    excluded = frozenset({"read_tool_result"})
     protected_source_reads: set[tuple[str, str, str, int, int]] = set()
     protected_source_reads_lock = threading.Lock()
 

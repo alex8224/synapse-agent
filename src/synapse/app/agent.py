@@ -25,7 +25,6 @@ from synapse.models.registry import (
     registry_from_settings,
 )
 from synapse.runtime.backends import build_backend
-from synapse.runtime.context_compact import build_compact_tool_middleware
 from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.middleware import (
@@ -36,6 +35,7 @@ from synapse.runtime.middleware import (
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
+    build_tool_exclusion_middleware,
 )
 from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
@@ -49,7 +49,7 @@ from synapse.settings import Settings
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
-from synapse.tools import build_session_tools
+from synapse.tools import build_filesystem_search_tools, build_session_tools
 
 
 def _build_checkpointer(settings: Settings):
@@ -162,7 +162,7 @@ def build_coding_agent(
     - interrupt_on disabled (no approval, auto-pass)
     - sqlite/memory checkpointer for multi-turn chat
     - MCP connect deferred unless ``load_mcp=True`` or ``settings.mcp_eager``
-    - compact_conversation tool (auto summarization is built into deepagents)
+    - automatic context summarization is built into deepagents
 
     Pass ``model=`` / ``checkpointer=`` to rebuild cheaply (e.g. attach MCP).
     """
@@ -230,6 +230,12 @@ def build_coding_agent(
         readonly=settings.readonly,
         excluded_tools=settings.excluded_tools,
     )
+    # Keep deepagents' built-in ``ls``, ``glob``, and ``grep`` out of model
+    # requests. Synapse registers the non-conflicting ``find_files`` and
+    # ``search_files`` tools explicitly below.
+    model_request_excluded_tools = set(settings.excluded_tools) | {"ls", "glob", "grep"}
+    if settings.readonly:
+        model_request_excluded_tools.update({"execute", "write_file", "edit_file"})
 
     interrupt_on = build_interrupt_on(require_approval=settings.require_approval)
     with span("checkpointer"):
@@ -259,6 +265,7 @@ def build_coding_agent(
             tool_output_disabled_types=settings.tool_output_disabled_types,
             tool_output_transform_plugins=settings.tool_output_transform_plugins,
             enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
+            inherited_openai_oauth=getattr(model, "_synapse_openai_oauth", False) is True,
         )
     # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
     _dag_mw: Any = None
@@ -290,6 +297,7 @@ def build_coding_agent(
     tools: list[Any] = []
     if extra_tools:
         tools.extend(extra_tools)
+    tools.extend(build_filesystem_search_tools(backend))
     # 跨会话查阅工具
     try:
         session_tools = build_session_tools(
@@ -403,6 +411,7 @@ def build_coding_agent(
         ),
         build_model_retry_middleware(),
         build_task_namespace_middleware(),
+        build_tool_exclusion_middleware(model_request_excluded_tools),
     ]
     transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
     try:
@@ -441,12 +450,6 @@ def build_coding_agent(
     if steer_queue is None:
         steer_queue = SteerQueue()
     middleware.append(build_steer_middleware(steer_queue))
-    if getattr(settings, "enable_compact_tool", True):
-        try:
-            with span("middleware:compact"):
-                middleware.append(build_compact_tool_middleware(model, backend))
-        except Exception:  # noqa: BLE001
-            pass
     if _dag_mw is not None:
         middleware.append(_dag_mw)
 
@@ -457,6 +460,14 @@ def build_coding_agent(
     # to reduce tool-schema token overhead (~4K -> ~200 chars per tool).
     middleware.append(build_compact_tool_descriptions())
     middleware.append(build_model_request_compression_middleware(output_repository))
+    # Must be innermost so no later middleware can reintroduce unsupported Codex
+    # roles or DeepSeek-specific request fields after this final adaptation.
+    if getattr(model, "_synapse_openai_oauth", False) is True:
+        from synapse.integrations.openai_oauth_middleware import (
+            build_openai_oauth_compat_middleware,
+        )
+
+        middleware.append(build_openai_oauth_compat_middleware())
 
     if progress is not None:
         progress("compiling agent graph")

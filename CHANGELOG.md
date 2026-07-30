@@ -7,6 +7,48 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.17
+
+### 新功能
+
+- `find_files` / `search_files` 工具新增 `context_lines`、`case_insensitive`、`head_limit`、`offset` 参数。
+- `search_files` 支持忽略大小写（`case_insensitive`，由 `synapse-search-core` 原生引擎实现）。
+- 支持分页查询（`head_limit` + `offset`），Agent 可按需翻页而非一次性获取全部结果。
+
+### 工程改进
+
+- 工具的 Pydantic schema 不再定义 `intent` 字段，改由 `build_intent_schema_middleware` 中间件统一管理。
+- 新增 Synapse 自有文件搜索工具 `find_files` / `search_files`，排除 deepagents 内置 `ls`/`glob`/`grep` 工具。
+- 系统提示词中的 `glob`/`grep` 工具名修正为 `find_files` / `search_files`。
+- `synapse-search-core` 升级至 0.1.1（新增 `case_insensitive` 参数）。
+
+---
+
+## v0.1.16
+
+### 新功能
+
+- 新增必需的 `synapse-search-core` 原生搜索核心，使用 Rust ripgrep crates 提供正则 `grep` 和 `glob`。
+- `grep`/`glob` 改为使用内置原生引擎，不再依赖宿主机 `rg` 或 DeepAgents Python 搜索回退。
+- 原生搜索 wheel 发布到 PyPI，支持 Windows x86_64、Linux x86_64/aarch64 和 macOS Apple Silicon arm64。
+
+### 工程改进
+
+- 保留 Python 后端的工作区路径授权、虚拟路径映射和 `deny_paths` 过滤。
+- 增加原生搜索 wheel 构建与 PyPI Trusted Publishing 工作流，以及对应的后端回归测试和分发文档。
+
+---
+
+## v0.1.15
+
+### 工程改进
+
+- 拆分 TUI transcript、工具组、待办清单、用户消息和 turn rail widget，缩小 `tui.py` 的职责范围。
+- 保留 `synapse.ui.tui` 的既有组件、格式化函数和 timeline 符号兼容导出。
+- 保持动态主题、流式展示、文本选择、复制与 turn rail 交互行为，并覆盖相关 TUI 回归测试。
+
+---
+
 ## v0.1.14
 
 ### 工程改进

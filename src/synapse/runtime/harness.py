@@ -1,10 +1,10 @@
-"""HarnessProfile registration helpers (excluded_tools etc.)."""
+"""Resolve model-facing tool exclusions for the coding harness."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-_DEFAULT_EXCLUDES = frozenset({"ls", "grep"})
+_DEFAULT_EXCLUDES = frozenset({"ls", "glob", "grep"})
 _DEFAULT_READONLY_EXCLUDES = frozenset(
     {
         "execute",
@@ -20,22 +20,23 @@ def apply_harness_exclusions(
     readonly: bool = False,
     excluded_tools: Iterable[str] | None = None,
 ) -> frozenset[str]:
-    """Register harness excluded_tools for the active model/provider.
+    """Return the tools that should be hidden from model requests.
 
-    ``ls`` and ``grep`` are excluded by default because ``execute`` can run the
-    project's native directory and search commands. Read-only mode additionally
-    excludes ``execute``, ``write_file``, and ``edit_file``.
+    ``ls`` is excluded by default because ``execute`` can run the project's
+    native directory commands. Read-only mode additionally excludes ``execute``,
+    ``write_file``, and ``edit_file``.
 
-    deepagents only removes built-in tools via HarnessProfile.excluded_tools
-    (tools= is additive). Registration is additive/merge under the same key.
+    ``model_spec`` is used only to disable deepagents' built-in general-purpose
+    subagent. Tool exclusions are applied by Synapse request middleware instead
+    of deepagents' process-global harness registry because that registry unions
+    exclusions and cannot re-enable a tool such as ``grep`` later in the same
+    process.
     """
     names = set(_DEFAULT_EXCLUDES)
     names.update(excluded_tools or [])
     if readonly:
         names |= set(_DEFAULT_READONLY_EXCLUDES)
     excluded = frozenset(n.strip() for n in names if n and n.strip())
-    if not excluded:
-        return frozenset()
 
     from deepagents import (
         GeneralPurposeSubagentProfile,
@@ -43,12 +44,12 @@ def apply_harness_exclusions(
         register_harness_profile,
     )
 
+    # Tool exclusions are request-local middleware in ``build_coding_agent``.
+    # Do not register them here: deepagents merges profile exclusions globally,
+    # so a readonly agent would otherwise make later writable agents readonly too.
     profile = HarnessProfile(
-        excluded_tools=excluded,
         general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
     )
-    # Model-level and provider-level keys so both string specs and prebuilt
-    # BaseChatModel resolution paths can match.
     register_harness_profile(model_spec, profile)
     if ":" in model_spec:
         provider = model_spec.split(":", 1)[0]

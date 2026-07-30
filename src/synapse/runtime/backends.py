@@ -166,159 +166,106 @@ class CodingLocalShellBackend(LocalShellBackend):
             self._tool_ignore_dedicated = False
         self._tool_ignore: ToolIgnoreMatcher = matcher
 
-    def _ripgrep_search(
-        self,
-        pattern: str,
-        base_full: Path,
-        include_glob: str | None,
-    ) -> dict[str, list[tuple[int, str]]] | None:
-        """UTF-8-safe ripgrep search (avoids Windows GBK decode crashes).
+    # --- native filesystem tool overrides ---
 
-        Upstream ``FilesystemBackend._ripgrep_search`` uses ``text=True`` without
-        ``encoding``, which on Chinese Windows can raise / leave ``stdout=None``
-        and then crash on ``stdout.splitlines()``.
+    def _resolve_native_search_path(self, path: str | None) -> Path | None:
+        """Resolve an agent path before passing it to the native filesystem engine.
+
+        The Rust extension only receives a verified host path. Results are converted
+        back to virtual paths below, so it cannot bypass the backend path contract.
         """
-        import json
-
-        import deepagents.backends.filesystem as fs
-
-        rg_path = fs._resolve_ripgrep_path()
-        if rg_path is None:
-            return None
-
-        cmd = [rg_path, "--json", "-F"]
-        if include_glob:
-            cmd.extend(["--glob", include_glob])
-
-        rg_cwd: str | None = None
-        if base_full.is_dir():
-            cmd.extend(["--", pattern, "."])
-            rg_cwd = str(base_full)
-        else:
-            cmd.extend(["--", pattern, str(base_full)])
-
         try:
-            proc = subprocess.run(  # noqa: S603
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding=self._shell_encoding,
-                errors=self._shell_encoding_errors,
-                timeout=fs.DEFAULT_GREP_TIMEOUT,
-                check=False,
-                cwd=rg_cwd,
-            )
-        except subprocess.TimeoutExpired:
-            fs.logger.warning(
-                "ripgrep timed out after %ds; using Python grep fallback",
-                fs.DEFAULT_GREP_TIMEOUT,
-            )
+            resolved = self._resolve_path(path or ".")
+        except (ValueError, OSError, RuntimeError):
             return None
-        except (FileNotFoundError, PermissionError, NotADirectoryError, OSError) as e:
-            fs.logger.warning(
-                "ripgrep subprocess failed (%s: %s); using Python grep fallback",
-                type(e).__name__,
-                e,
-            )
-            try:
-                fs._resolve_ripgrep_path.cache_clear()
-            except Exception:  # noqa: BLE001
-                pass
-            return None
-        except UnicodeDecodeError as e:
-            # Should be unreachable with errors=replace; keep fallback safety.
-            fs.logger.warning(
-                "ripgrep decode failed (%s); using Python grep fallback", e
-            )
-            return None
-
-        if proc.returncode not in (0, 1):
-            stderr = (proc.stderr or "").strip()[:500]
-            fs.logger.warning(
-                "ripgrep exited %d (stderr=%r); using Python grep fallback",
-                proc.returncode,
-                stderr,
-            )
-            return None
-
-        stdout = proc.stdout or ""
-        results: dict[str, list[tuple[int, str]]] = {}
         try:
-            base_resolved = base_full.resolve()
+            return resolved if resolved.exists() else None
         except OSError:
-            base_resolved = base_full
+            return None
 
-        for line in stdout.splitlines():
+    def _native_result_path(self, base_path: Path, relative_path: str) -> str | None:
+        candidate = base_path / relative_path
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(base_path.resolve())
+            resolved.relative_to(Path(self.cwd).resolve())
+        except (ValueError, OSError):
+            return None
+        if self._tool_ignore.is_ignored(relative_to_root(resolved, Path(self.cwd).resolve())):
+            return None
+        if self.virtual_mode:
             try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            data_type = data.get("type")
-            if data_type == "error":
-                continue
-            if data_type != "match":
-                continue
-            pdata = data.get("data", {}) or {}
-            ftext = (pdata.get("path") or {}).get("text")
-            if not ftext:
-                continue
-            raw = Path(ftext)
-            p = raw if raw.is_absolute() else (base_full / raw)
-            try:
-                p.resolve().relative_to(base_resolved)
-            except (ValueError, OSError):
-                continue
-            if self.virtual_mode:
-                try:
-                    virt = self._to_virtual_path(p)
-                except (ValueError, OSError, RuntimeError):
-                    continue
-            else:
-                virt = str(p)
-            ln = pdata.get("line_number")
-            lt = (pdata.get("lines") or {}).get("text", "").rstrip("\n")
-            if ln is None:
-                continue
-            results.setdefault(virt, []).append((int(ln), lt))
-
-        return results
-
-    # --- filesystem tool overrides: respect gitignore / deny paths ---
+                return self._to_virtual_path(resolved)
+            except (ValueError, OSError, RuntimeError):
+                return None
+        return str(resolved)
 
     def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        max_results: int = 1000,
+        context_lines: int = 0,
+        case_insensitive: bool = False,
     ) -> Any:
-        result = super().grep(pattern, path=path, glob=glob)
-        if not self._tool_ignore.has_rules or not getattr(result, "matches", None):
-            return result
-        root = Path(self.cwd).resolve()
-        kept = [
-            m
-            for m in result.matches
-            if not self._tool_ignore.is_ignored(
-                relative_to_root(m["path"], root)
-            )
-        ]
-        result.matches = kept
-        return result
+        """Search with the required native Rust engine using regular expressions."""
+        import synapse_search_core
+        from deepagents.backends.filesystem import GrepResult
 
-    def glob(self, pattern: str, path: str | None = None) -> Any:
-        result = super().glob(pattern, path=path)
-        if not self._tool_ignore.has_rules or not getattr(result, "matches", None):
-            return result
-        root = Path(self.cwd).resolve()
-        kept = [
-            f
-            for f in result.matches
-            if not self._tool_ignore.is_ignored(
-                relative_to_root(f["path"], root)
+        base_path = self._resolve_native_search_path(path)
+        if base_path is None:
+            return GrepResult(matches=[])
+        try:
+            payload = synapse_search_core.grep(
+                str(base_path), pattern, include_glob=glob, max_results=max_results,
+                context_lines=context_lines, case_insensitive=case_insensitive,
             )
-        ]
-        result.matches = kept
-        return result
+        except (OSError, RuntimeError, ValueError) as exc:
+            return GrepResult(error=f"Error searching path '{path or '.'}': {exc}", matches=[])
+        matches = []
+        for item in payload["matches"]:
+            result_path = self._native_result_path(base_path, item["path"])
+            if result_path is not None:
+                matches.append({"path": result_path, "line": item["line"], "text": item["text"]})
+        return GrepResult(matches=matches)
+
+    def glob(
+        self,
+        pattern: str,
+        path: str | None = None,
+        max_results: int = 1000,
+    ) -> Any:
+        """Find files with the required native Rust engine."""
+        from datetime import datetime
+
+        import synapse_search_core
+        from deepagents.backends.filesystem import GlobResult
+
+        base_path = self._resolve_native_search_path(path)
+        if base_path is None or not base_path.is_dir():
+            return GlobResult(matches=[])
+        try:
+            payload = synapse_search_core.glob(str(base_path), pattern.lstrip("/"))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return GlobResult(
+                error=f"Error globbing path '{path or '<default>'}': {exc}", matches=[]
+            )
+        matches = []
+        for item in payload["matches"]:
+            if len(matches) >= max_results:
+                break
+            result_path = self._native_result_path(base_path, item["path"])
+            if result_path is None:
+                continue
+            result = {"path": result_path, "is_dir": item["is_dir"]}
+            if "size" in item:
+                result["size"] = item["size"]
+            if "modified_at_unix" in item:
+                result["modified_at"] = datetime.fromtimestamp(item["modified_at_unix"]).isoformat()
+            matches.append(result)
+        matches.sort(key=lambda item: item["path"])
+        return GlobResult(matches=matches)
 
     def execute(
         self,

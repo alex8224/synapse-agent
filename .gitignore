@@ -4,6 +4,8 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.pyd
+*.pdb
 build/
 dist/
 wheels/

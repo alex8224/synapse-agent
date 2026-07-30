@@ -102,6 +102,76 @@ synapse models list
 export VISION_MODEL='{"model": "qwen-vl-max", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "VISION_API_KEY"}'
 ```
 
+## WebSocket 传输
+
+OpenAI Responses API 可在模型 profile 中设置 `"websocket": true`。发生连接关闭、超时或上游流在 `response.completed` 前断开时，Synapse 会按 profile 的 `max_retries` 重建连接并重放当前请求。重试耗尽且尚未输出任何 chunk 时，本轮自动回退到 HTTP/SSE；已经输出内容后不会自动重放，以免重复文本或工具调用。
+
+```json
+{
+  "models": {
+    "gpt-4.1-ws": {
+      "provider": "openai",
+      "model": "gpt-4.1",
+      "api_key_env": "OPENAI_API_KEY",
+      "websocket": true,
+      "max_retries": 2
+    }
+  }
+}
+```
+
+## 自定义请求头
+
+`models.json` 顶层 `headers` 会应用到全部 OpenAI 兼容模型，模型内 `headers` 按名称覆盖全局值。
+HTTP 头名称大小写不敏感；分层配置优先级为项目模型 > 用户模型 > 项目全局 > 用户全局。
+
+```json
+{
+  "headers": {"User-Agent": "synapse-global/1.0", "X-Client": "desktop"},
+  "models": {
+    "primary": {
+      "model": "openai:gpt-4.1",
+      "headers": {"User-Agent": "synapse-primary/1.0"}
+    }
+  }
+}
+```
+
+请求头值支持 `${ENV_NAME}` 或 `$ENV_NAME` 环境变量展开。不要在项目级配置中存放私密 token。
+
+## OpenAI Codex OAuth
+
+使用 ChatGPT Plus/Pro 的 Codex 配额时，先完成用户级登录：
+
+```bash
+synapse auth openai login
+# 或复用已经登录的 Codex CLI
+synapse auth openai login --import-codex
+```
+
+在 `~/.synapse/models.json` 或 `<workspace>/.synapse/models.json` 中定义 profile：
+
+```json
+{
+  "default": "codex",
+  "models": {
+    "codex": {
+      "model": "openai:gpt-5",
+      "auth": "openai_oauth"
+    }
+  }
+}
+```
+
+`auth: "openai_oauth"` 自动使用 `https://chatgpt.com/backend-api/codex`、OAuth access token
+和 `ChatGPT-Account-Id` 请求头。access token 过期时会通过 refresh token 自动更新；凭据位于
+`~/.synapse/openai_oauth.json`，不能提交到项目仓库。此认证模式仅适用于 OpenAI Codex backend，
+不适用于第三方 OpenAI 兼容网关。浏览器授权回调固定为
+`http://localhost:1455/auth/callback`；如端口被占用，关闭占用进程后重试。
+Synapse 会自动将 Agent 的 OpenAI `system` 消息转换为 Codex backend 接受的 `developer` 消息，
+并移除 DeepSeek 兼容的 `extra_body.thinking` 字段，只发送 Codex 支持的 reasoning 参数；
+Responses 请求会强制设置 `store: false`。
+
 ## 自定义 OpenAI 兼容网关
 
 Synapse 支持任何 OpenAI 兼容的 API：

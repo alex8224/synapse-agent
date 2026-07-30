@@ -145,7 +145,7 @@ cp .env.example .env
 | `MODEL` | 是 | 模型标识，如 `openai:gpt-4.1`、`openai:deepseek-chat` |
 | `OPENAI_API_KEY` | 是* | OpenAI 兼容 API 密钥 |
 | `OPENAI_BASE_URL` | 否 | 自定义 API 端点（中转/本地服务需填） |
-| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE） |
+| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE）。瞬时断流按模型 `max_retries` 重连，耗尽后在尚未输出内容时回退 HTTP/SSE |
 | `ANTHROPIC_API_KEY` | 否 | Anthropic 原生 API 密钥 |
 | `WORKSPACE` | 否 | 工作区路径，默认 `.` |
 | `SHELL_EXECUTABLE` | 否 | Shell 类型，默认 `pwsh`（可选 `cmd`/`bash`） |
@@ -154,6 +154,42 @@ cp .env.example .env
 | `PARALLEL_TOOL_CALLS` | 否 | 并发工具调用，默认 `true` |
 
 完整变量列表见 `.env.example`。
+
+### OpenAI Codex OAuth（ChatGPT Plus/Pro）
+
+除普通 API Key 外，Synapse 可使用 Codex 的 ChatGPT OAuth 登录。凭据仅保存到用户目录
+`~/.synapse/openai_oauth.json`，不会写入项目配置或显示在终端中。
+
+```bash
+# 浏览器登录；也可加 --no-browser 手动打开终端打印的链接
+synapse auth openai login
+
+# 若本机已通过 Codex CLI 登录，安全导入其现有登录态
+synapse auth openai login --import-codex
+
+synapse auth openai status
+synapse auth openai logout
+```
+
+然后在 `~/.synapse/models.json` 或 `<workspace>/.synapse/models.json` 配置模型：
+
+```json
+{
+  "default": "codex",
+  "models": {
+    "codex": {
+      "model": "openai:gpt-5",
+      "auth": "openai_oauth"
+    }
+  }
+}
+```
+
+OAuth profile 强制使用 Codex backend，不能通过 `base_url` 覆盖。该登录方式不能用于第三方
+OpenAI 兼容网关，也不需要设置 `OPENAI_API_KEY`。浏览器授权回调固定使用
+`http://localhost:1455/auth/callback`；若端口被占用，请关闭占用进程后重试。Synapse 会自动将
+Agent 的 OpenAI `system` 消息转换为 Codex backend 接受的 `developer` 消息，并移除 DeepSeek
+兼容的 `extra_body.thinking` 字段，只发送 Codex 支持的 reasoning 参数，并强制设置 `store: false`。
 
 ### 方式二：models.json（多模型 profiles，推荐）
 
@@ -294,12 +330,41 @@ OpenAI Responses API 同时支持 HTTP/SSE 与普通 LLM WebSocket。profile 中
 |---|---|
 | `api_key` | **推荐**：密钥直接写在 models.json |
 | `api_key_env` | 旧方式：从环境变量读密钥 |
+| `auth` | 认证方式；设为 `openai_oauth` 时使用 `synapse auth openai login` 保存的 Codex OAuth 登录态 |
+| `headers` | 模型级 HTTP 请求头对象；同名头覆盖顶层 `headers`，适用于自定义 `User-Agent` 等请求指纹 |
 | `thinking` / `thinking_level` / `reasoning_effort` | 思考级别：`off\|minimal\|low\|medium\|high\|max` |
 | `enable_thinking` | 兼容旧字段 bool |
 | `temperature` / `max_tokens` / `timeout` 等 | 直接传给 ChatModel |
 | `stream_chunk_timeout` | 流式相邻 chunk 静默超时（秒）；默认关闭，避免长思考被 langchain-openai 120s 掐断 |
 | `model_kwargs` | 请求体 kwargs |
 | `extra_body` | 厂商扩展体（与 thinking 合并） |
+
+### 自定义请求头与请求指纹
+
+参考 `cmd-agent` 的配置方式，`models.json` 顶层 `headers` 会应用到全部 OpenAI 兼容模型；
+模型内 `headers` 按 HTTP 头名称（不区分大小写）覆盖全局值。分层配置的优先级为：
+项目模型 > 用户模型 > 项目全局 > 用户全局。可用于设置 `User-Agent`、客户端标识等请求指纹。
+
+```json
+{
+  "headers": {
+    "User-Agent": "synapse-global/1.0",
+    "X-Client-Channel": "desktop"
+  },
+  "models": {
+    "codex": {
+      "model": "openai:gpt-5",
+      "auth": "openai_oauth",
+      "headers": {
+        "User-Agent": "synapse-codex/1.0"
+      }
+    }
+  }
+}
+```
+
+OAuth 模式中 `ChatGPT-Account-Id`、`originator` 等协议认证头由运行时强制设置，不能被配置覆盖。
+请求头值支持 `${ENV_NAME}` / `$ENV_NAME` 环境变量展开；不要将私密 token 写入项目级配置。
 
 `.env` 仍可读，仅作迁移/CI 兼容，**不推荐**作为常规分发方式。
 

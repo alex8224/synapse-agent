@@ -52,6 +52,14 @@ def test_cli_models_help():
     assert "model" in result.stdout.lower()
 
 
+def test_cli_openai_auth_help():
+    result = runner.invoke(app, ["auth", "openai", "--help"])
+    assert result.exit_code == 0
+    assert "login" in result.stdout
+    assert "status" in result.stdout
+    assert "logout" in result.stdout
+
+
 def test_cli_tool_output_help():
     result = runner.invoke(app, ["tool-output", "--help"])
     assert result.exit_code == 0
