@@ -66,13 +66,18 @@ def test_from_workspace(tmp_path: Path):
     assert not m.is_ignored("build")
 
 
-def test_builtin_git_metadata_is_always_ignored() -> None:
+def test_builtin_generated_directories_are_always_ignored() -> None:
     m = ToolIgnoreMatcher([])
     assert m.has_rules
     assert m.is_ignored(".git", is_dir=True)
     assert m.is_ignored(".git/objects/ab/123")
     assert m.is_ignored("nested/.git/config")
     assert m.is_ignored("C:\\repo\\.git\\HEAD")
+    assert m.is_ignored("target/debug/app")
+    assert m.is_ignored("src/__pycache__/module.pyc")
+    assert m.is_ignored(".venv/Lib/site-packages/pkg.py")
+    assert m.is_ignored("node_modules/pkg/index.js")
+    assert m.is_ignored(".node_modules/pkg/index.js")
     assert not m.is_ignored(".gitignore")
 
 
@@ -84,7 +89,7 @@ def test_builtin_git_metadata_cannot_be_reincluded() -> None:
 def test_empty_configured_rules_only_keep_builtin_filters():
     m = ToolIgnoreMatcher([])
     assert m.rule_count == 0
-    assert not m.is_ignored(".venv", is_dir=True)
+    assert m.is_ignored(".venv", is_dir=True)
     assert not m.is_ignored("anything")
 
 

@@ -35,6 +35,7 @@ from synapse.runtime.middleware import (
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
+    build_tool_exclusion_middleware,
 )
 from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
@@ -48,7 +49,7 @@ from synapse.settings import Settings
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
-from synapse.tools import build_session_tools
+from synapse.tools import build_filesystem_search_tools, build_session_tools
 
 
 def _build_checkpointer(settings: Settings):
@@ -228,6 +229,12 @@ def build_coding_agent(
         readonly=settings.readonly,
         excluded_tools=settings.excluded_tools,
     )
+    # Keep deepagents' built-in ``ls``, ``glob``, and ``grep`` out of model
+    # requests. Synapse registers the non-conflicting ``find_files`` and
+    # ``search_files`` tools explicitly below.
+    model_request_excluded_tools = set(settings.excluded_tools) | {"ls", "glob", "grep"}
+    if settings.readonly:
+        model_request_excluded_tools.update({"execute", "write_file", "edit_file"})
 
     interrupt_on = build_interrupt_on(require_approval=settings.require_approval)
     with span("checkpointer"):
@@ -279,6 +286,7 @@ def build_coding_agent(
     tools: list[Any] = []
     if extra_tools:
         tools.extend(extra_tools)
+    tools.extend(build_filesystem_search_tools(backend))
     # 跨会话查阅工具
     try:
         session_tools = build_session_tools(
@@ -392,6 +400,7 @@ def build_coding_agent(
         ),
         build_model_retry_middleware(),
         build_task_namespace_middleware(),
+        build_tool_exclusion_middleware(model_request_excluded_tools),
     ]
     transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
     try:

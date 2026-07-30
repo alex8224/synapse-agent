@@ -104,9 +104,20 @@ class _Rule:
 
 
 _BUILTIN_DENY_PATTERNS = (".git/",)
+_DEFAULT_IGNORE_PATTERNS = (
+    "target/",
+    ".venv/",
+    ".node_modules/",
+    "node_modules/",
+    "__pycache__/",
+)
 _BUILTIN_DENY_RULES = tuple(
     _Rule(regex=_gitignore_pattern_to_regex(pattern), negate=False, raw=pattern)
     for pattern in _BUILTIN_DENY_PATTERNS
+)
+_DEFAULT_IGNORE_RULES = tuple(
+    _Rule(regex=_gitignore_pattern_to_regex(pattern), negate=False, raw=pattern)
+    for pattern in _DEFAULT_IGNORE_PATTERNS
 )
 
 
@@ -196,15 +207,11 @@ class ToolIgnoreMatcher:
             return False
         if any(rule.regex.match(rel) for rule in _BUILTIN_DENY_RULES):
             return True
-        if not self._rules:
-            return False
-        ignored = False
-        matched = False
+        ignored = any(rule.regex.match(rel) for rule in _DEFAULT_IGNORE_RULES)
         for rule in self._rules:
             if rule.regex.match(rel):
-                matched = True
                 ignored = not rule.negate
-        return ignored if matched else False
+        return ignored
 
 
 def relative_to_root(path: str | Path, root: Path) -> str:

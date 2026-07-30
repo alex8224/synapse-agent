@@ -24,7 +24,7 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
         or "Virtual filesystem" in text
         or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
     )
-    assert "Chinese" in text
+    assert "用中文思考和推理" in text
     assert "Current workspace" in text
 
 
@@ -118,7 +118,41 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert kwargs["model"] is fake_model
         assert kwargs["backend"] is not None
         assert kwargs["checkpointer"] is not None
-        assert kwargs["subagents"] is not None
+        search_tools = {
+            tool.name: tool
+            for tool in kwargs["tools"]
+            if tool.name in {"find_files", "search_files"}
+        }
+        assert set(search_tools) == {"find_files", "search_files"}
+        assert search_tools["search_files"].tool_call_schema.model_json_schema()["properties"][
+            "pattern"
+        ]["description"].startswith("Regular expression")
+        exclusion = next(
+            middleware
+            for middleware in (kwargs.get("middleware") or [])
+            if type(middleware).__name__ == "exclude_tools"
+        )
+
+        class _Request:
+            def __init__(self, tools):  # noqa: ANN001
+                self.tools = tools
+
+            def override(self, **changes):  # noqa: ANN003
+                return _Request(changes.get("tools", self.tools))
+
+        ls_tool = MagicMock(name="ls_tool")
+        ls_tool.name = "ls"
+        glob_tool = MagicMock(name="glob_tool")
+        glob_tool.name = "glob"
+        grep_tool = MagicMock(name="grep_tool")
+        grep_tool.name = "grep"
+        find_files_tool = MagicMock(name="find_files_tool")
+        find_files_tool.name = "find_files"
+        search_files_tool = MagicMock(name="search_files_tool")
+        search_files_tool.name = "search_files"
+        request = _Request([ls_tool, glob_tool, grep_tool, find_files_tool, search_files_tool])
+        filtered = exclusion.wrap_model_call(request, lambda current: current)
+        assert [tool.name for tool in filtered.tools] == ["find_files", "search_files"]
         model_retries = [
             middleware
             for middleware in (kwargs.get("middleware") or [])

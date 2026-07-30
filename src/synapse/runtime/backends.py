@@ -205,6 +205,7 @@ class CodingLocalShellBackend(LocalShellBackend):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        max_results: int = 1000,
     ) -> Any:
         """Search with the required native Rust engine using regular expressions."""
         import synapse_search_core
@@ -215,7 +216,7 @@ class CodingLocalShellBackend(LocalShellBackend):
             return GrepResult(matches=[])
         try:
             payload = synapse_search_core.grep(
-                str(base_path), pattern, include_glob=glob, max_results=1000
+                str(base_path), pattern, include_glob=glob, max_results=max_results
             )
         except (OSError, RuntimeError, ValueError) as exc:
             return GrepResult(error=f"Error searching path '{path or '.'}': {exc}", matches=[])
@@ -226,7 +227,12 @@ class CodingLocalShellBackend(LocalShellBackend):
                 matches.append({"path": result_path, "line": item["line"], "text": item["text"]})
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str | None = None) -> Any:
+    def glob(
+        self,
+        pattern: str,
+        path: str | None = None,
+        max_results: int = 1000,
+    ) -> Any:
         """Find files with the required native Rust engine."""
         from datetime import datetime
 
@@ -244,6 +250,8 @@ class CodingLocalShellBackend(LocalShellBackend):
             )
         matches = []
         for item in payload["matches"]:
+            if len(matches) >= max_results:
+                break
             result_path = self._native_result_path(base_path, item["path"])
             if result_path is None:
                 continue

@@ -570,10 +570,17 @@ def test_fs_permissions_and_harness(tmp_path: Path):
     assert perms is not None
     excluded = apply_harness_exclusions("openai:demo")
     assert "ls" in excluded
+    assert "glob" in excluded
     assert "grep" in excluded
     excluded = apply_harness_exclusions("openai:demo", readonly=True)
     assert "write_file" in excluded
     assert "execute" in excluded
+
+    from deepagents.profiles.harness.harness_profiles import _get_harness_profile
+
+    profile = _get_harness_profile("openai:demo")
+    assert profile is not None
+    assert profile.excluded_tools == frozenset()
 
 
 def test_default_subagents_optional_models(tmp_path: Path):
