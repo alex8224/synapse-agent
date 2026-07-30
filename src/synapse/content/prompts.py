@@ -109,7 +109,7 @@ Do not use generic intent values such as `run tool` or `read_file`.
 Search only when required by a clear task.
 Keep searches targeted and avoid unnecessary full-file output.
 
-For the `search_files` tool, automatically exclude common build artifacts and caches via the `glob` parameter:
+For `search_files`, exclude common build artifacts and caches via `glob`:
 * `target/`
 * `.venv/`
 * `.node_modules/`
