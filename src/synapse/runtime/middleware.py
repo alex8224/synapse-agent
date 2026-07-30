@@ -696,6 +696,17 @@ _COMPACT_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Always read a file before editing it. "
         "Supports images, audio, video, and PDF via multimodal reads."
     ),
+    "grep": (
+        "Search workspace files with a regular expression and return matching paths, line "
+        "numbers, and text. Examples: pattern='TODO|FIXME', pattern='(?i)error', or "
+        "pattern='def\\s+name' with glob='**/*.py'. Escape regex metacharacters when "
+        "searching for literal text."
+    ),
+    "glob": (
+        "Find workspace files and directories matching a glob pattern. Supports *, **, and ?. "
+        "Examples: '**/*.py' for Python files, 'src/**/*.ts' for TypeScript under src, and "
+        "'README?.md' for one-character filename variants."
+    ),
 }
 
 

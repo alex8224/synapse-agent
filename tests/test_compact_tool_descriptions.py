@@ -144,27 +144,44 @@ def test_middleware_replaces_write_todos() -> None:
     assert "in_progress" in new_tool.description.lower()
 
 
-def test_middleware_mixed_tools() -> None:
+def test_middleware_compacts_native_grep_description() -> None:
     mw = build_compact_tool_descriptions()
-    todo = _make_tool("write_todos", "LONG " * 300)
-    other = _make_tool("grep", "Search files for a pattern")
-    req = _make_request([todo, other])
+    tool = _make_tool("grep", "Searches for literal text, not regex." * 100)
+    req = _make_request([tool])
     result = mw.wrap_model_call(req, lambda r: r)
 
-    assert result.tools[0] is not todo      # replaced
-    assert result.tools[1] is other         # unchanged (grep not in compact map)
+    new_tool = result.tools[0]
+    assert new_tool is not tool
+    assert "regular expression" in new_tool.description
+    assert "TODO|FIXME" in new_tool.description
+    assert "glob='**/*.py'" in new_tool.description
+
+
+def test_middleware_compacts_native_glob_description() -> None:
+    mw = build_compact_tool_descriptions()
+    tool = _make_tool("glob", "Find files using glob patterns." * 100)
+    req = _make_request([tool])
+    result = mw.wrap_model_call(req, lambda r: r)
+
+    new_tool = result.tools[0]
+    assert new_tool is not tool
+    assert "**/*.py" in new_tool.description
+    assert "src/**/*.ts" in new_tool.description
 
 
 def test_middleware_dict_tools() -> None:
     mw = build_compact_tool_descriptions()
     req = _make_request([
         {"name": "write_todos", "description": "X" * 2000, "parameters": {}},
-        {"name": "grep", "description": "Search files for pattern"},
+        {"name": "grep", "description": "Searches for literal text, not regex."},
+        {"name": "glob", "description": "Find files using glob patterns."},
     ])
     result = mw.wrap_model_call(req, lambda r: r)
 
     assert len(result.tools[0]["description"]) < 500
-    assert result.tools[1]["description"] == "Search files for pattern"  # unchanged
+    assert "TODO|FIXME" in result.tools[1]["description"]
+    assert "glob='**/*.py'" in result.tools[1]["description"]
+    assert "src/**/*.ts" in result.tools[2]["description"]
 
 
 def test_middleware_custom_overrides() -> None:
