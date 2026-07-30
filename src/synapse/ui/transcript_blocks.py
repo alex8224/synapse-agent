@@ -10,13 +10,11 @@ from rich.console import Group
 from rich.text import Text
 from textual.events import Click
 
-from synapse.ui.clipboard import copy_to_clipboard
 from synapse.ui.formatters import stream_tail_preview
 from synapse.ui.selectable_static import SelectableStatic
 from synapse.ui.stream import render_markdown
 
 type _Color = str | Callable[[], str]
-type _CopyHandler = Callable[[str], bool]
 
 _DEFAULT_DIM = "#9aa0a6"
 _DEFAULT_FG = "#e8eaed"
@@ -38,15 +36,6 @@ def _resolve_color(color: _Color | None, fallback: str, theme_attribute: str) ->
         return str(getattr(get_theme(), theme_attribute, fallback))
     except Exception:  # noqa: BLE001
         return fallback
-
-
-def _default_copy_handler(text: str) -> bool:
-    try:
-        from synapse.ui.tui import _copy_to_clipboard
-
-        return _copy_to_clipboard(text)
-    except Exception:  # noqa: BLE001
-        return copy_to_clipboard(text)
 
 
 class ThoughtBlock(SelectableStatic):
@@ -186,13 +175,11 @@ class AnswerBlock(SelectableStatic):
         live: bool = False,
         fg_color: _Color | None = None,
         markdown_max_chars: int = _DEFAULT_MARKDOWN_MAX_CHARS,
-        copy_handler: _CopyHandler = _default_copy_handler,
     ) -> None:
         self.body = body or ""
         self.live = bool(live)
         self._fg_color = fg_color
         self._markdown_max_chars = max(1, int(markdown_max_chars))
-        self._copy_handler = copy_handler
         super().__init__()
         self._render_block()
 
@@ -208,21 +195,6 @@ class AnswerBlock(SelectableStatic):
 
     def selectable_text(self) -> str:
         return self.body or ""
-
-    def on_click(self) -> None:
-        """Copy answer text to clipboard on mouse click."""
-        text = (self.body or "").strip()
-        if not text or not self._copy_handler(text):
-            return
-        self.app.bell()
-        try:
-            self.notify(
-                f"已复制 {len(text)} 字符到剪贴板",
-                timeout=2.0,
-                severity="information",
-            )
-        except Exception:  # noqa: BLE001
-            pass
 
     def _render_block(self) -> None:
         body = self.body or ""

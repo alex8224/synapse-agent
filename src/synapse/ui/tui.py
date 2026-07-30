@@ -458,7 +458,7 @@ class CodingAgentApp(App[None]):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+shift+c", "copy_last_answer", "Copy", show=False),
+        Binding("ctrl+shift+c", "copy_selection", "Copy", show=False),
         Binding("ctrl+shift+s", "open_selectable_view", "Select text", show=True, priority=True),
         Binding("f7", "open_selectable_view", "Select text", show=False),
         Binding("alt+v", "clipboard_paste", "Paste image", show=False, priority=True),
@@ -2508,7 +2508,6 @@ class CodingAgentApp(App[None]):
                 live=False,
                 fg_color=lambda: _C_FG,
                 markdown_max_chars=_MARKDOWN_MAX_CHARS,
-                copy_handler=lambda text: _copy_to_clipboard(text),
             )
         )
 
@@ -2718,10 +2717,6 @@ class CodingAgentApp(App[None]):
         self.push_screen(
             SelectableTextModal(transcript, char_count=len(transcript))
         )
-
-    # -- clipboard helpers ---------------------------------------------------
-
-        self.set_activity("idle", "ready", True)
 
     def _reset_session_token_chrome(self) -> None:
         self._input_tokens = 0
