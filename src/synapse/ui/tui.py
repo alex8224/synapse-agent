@@ -62,6 +62,7 @@ from synapse.ui.bottombar import (
 )
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
+from synapse.ui.stream_events import _tool_call_args, _tool_call_id, _tool_call_name
 from synapse.ui.timeline import (
     TODO_MARK_ACTIVE,
     TODO_MARK_DONE,
@@ -1178,10 +1179,7 @@ class ThoughtBlock(SelectableStatic):
 
 
 class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live plain-text tail, then Markdown seal.
-
-    Click to copy the answer text to the clipboard.
-    """
+    """Assistant answer row; live plain-text tail, then Markdown seal."""
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -1208,22 +1206,6 @@ class AnswerBlock(SelectableStatic):
 
     def selectable_text(self) -> str:
         return self.body or ""
-
-    def on_click(self) -> None:
-        """Copy answer text to clipboard on mouse click."""
-        text = (self.body or "").strip()
-        if not text:
-            return
-        if _copy_to_clipboard(text):
-            self.app.bell()
-            try:
-                self.notify(
-                    f"已复制 {len(text)} 字符到剪贴板",
-                    timeout=2.0,
-                    severity="information",
-                )
-            except Exception:  # noqa: BLE001
-                pass
 
     def _render_block(self) -> None:
         body = self.body or ""
@@ -1507,6 +1489,7 @@ class TextualStreamSink:
         self._group_open = False
         self._group_header_written = False
         self._expanded_item_id: str | None = None
+        self._suppress_current_tool_group = False
         # Legacy fallback counters.
         self._legacy_pending = 0
         self._legacy_names: list[str] = []
@@ -1819,6 +1802,21 @@ class TextualStreamSink:
         """Open a tool group shell; item API fills details right after."""
         del parallel
         self._call("clear_stream")
+        self._suppress_current_tool_group = False
+        suppress = getattr(self._app, "should_suppress_dag_task_tool_group", None)
+        if callable(suppress):
+            try:
+                self._suppress_current_tool_group = bool(suppress(calls))
+            except Exception:  # noqa: BLE001
+                self._suppress_current_tool_group = False
+        if self._suppress_current_tool_group:
+            self._group_items.clear()
+            self._group_open = False
+            self._group_header_written = False
+            self._expanded_item_id = None
+            self._legacy_pending = len(calls)
+            self._call("sync_subagent_monitor_block", force=True)
+            return
         # One stream batch == one visual group.  If a previous batch was not
         # closed cleanly, seal it before starting the next header.
         if self._group_open and self._group_items:
@@ -1837,6 +1835,8 @@ class TextualStreamSink:
         self._call("set_activity", "tools", summary, False)
 
     def tool_item_started(self, item: ToolItem) -> None:
+        if self._suppress_current_tool_group:
+            return
         if not self._group_open:
             self._group_open = True
             self._group_header_written = False
@@ -1865,6 +1865,8 @@ class TextualStreamSink:
 
     def tool_item_updated(self, item: ToolItem) -> None:
         """Refresh label/path after streaming args complete."""
+        if self._suppress_current_tool_group:
+            return
         for i, existing in enumerate(self._group_items):
             if existing.id == item.id:
                 self._group_items[i] = item
@@ -1882,6 +1884,8 @@ class TextualStreamSink:
         preview: str | None = None,
         error: bool = False,
     ) -> None:
+        if self._suppress_current_tool_group:
+            return
         _side_effect = False
         for it in self._group_items:
             if it.id != item_id:
@@ -1925,10 +1929,14 @@ class TextualStreamSink:
     def tool_group_closed(self, group_id: str) -> None:
         """Close one stream tool batch as its own visual group."""
         del group_id
+        if self._suppress_current_tool_group:
+            self._suppress_current_tool_group = False
+            return
         self._finalize_open_group(force=True)
 
     def turn_finished(self) -> None:
         """Seal any leftover open group at end of one turn."""
+        self._suppress_current_tool_group = False
         self._finalize_open_group(force=True)
 
     def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:
@@ -2288,6 +2296,10 @@ class CodingAgentApp(App[None]):
         self._active_turn_thread_id: str | None = None
         self._active_steer_queue: SteerQueue | None = None
         self._subagent_monitor = SubagentMonitor()
+        self._subagent_monitor_revision = -1
+        self._subagent_monitor_live = False
+        self._subagent_monitor_closed = False
+        self._subagent_monitor_has_painted = False
         self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
@@ -3951,6 +3963,7 @@ class CodingAgentApp(App[None]):
         live = self._live_stream_block
         if isinstance(live, ThoughtBlock) and live.live:
             live.tick_live()
+        self.sync_subagent_monitor_block()
 
     # -- stream ----------------------------------------------------------
 
@@ -4292,6 +4305,85 @@ class CodingAgentApp(App[None]):
 
     # -- tool group rendering (live panel) --------------------------------
 
+    def should_suppress_dag_task_tool_group(self, calls: list[Any]) -> bool:
+        """Return True when DAG monitor already represents this task batch."""
+        if not calls or any(_tool_call_name(call) != "task" for call in calls):
+            return False
+        _, runs = self._subagent_monitor.snapshot()
+        if not runs:
+            return False
+
+        run_keys = {
+            key
+            for run in runs
+            for key in (str(run.call_id or ""), str(run.task_id or ""))
+            if key
+        }
+        call_keys: set[str] = set()
+        for call in calls:
+            call_id = _tool_call_id(call)
+            args = _tool_call_args(call)
+            task_id = args.get("task_id") if isinstance(args, dict) else None
+            key = str(call_id or task_id or "").strip()
+            if key:
+                call_keys.add(key)
+        return bool(call_keys) and call_keys.issubset(run_keys)
+
+    def _tool_item_from_subagent_run(self, run: Any) -> ToolItem:
+        label = " ".join(str(getattr(run, "description", "") or "").split()).strip()
+        if not label:
+            label = str(
+                getattr(run, "task_id", "")
+                or getattr(run, "call_id", "")
+                or getattr(run, "subagent_type", "")
+                or "subagent"
+            )
+        if len(label) > 96:
+            label = label[:95].rstrip() + "…"
+
+        raw_status = str(getattr(run, "status", "running") or "running").lower()
+        item_status = "running" if raw_status in {"pending", "running"} else raw_status
+        if item_status not in {"running", "ok", "error"}:
+            item_status = "running"
+        call_id = str(getattr(run, "call_id", "") or getattr(run, "task_id", "") or "")
+        return ToolItem(
+            id=f"subagent:{call_id}",
+            name="task",
+            category="task",
+            label=label,
+            status=item_status,
+            error=item_status == "error",
+            call_id=call_id,
+        )
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
+        """Paint DAG monitor runs into the main timeline while they are running."""
+        revision, runs = self._subagent_monitor.snapshot()
+        if self._subagent_monitor_closed:
+            return
+        if not force and revision == self._subagent_monitor_revision:
+            return
+        self._subagent_monitor_revision = revision
+        if not runs:
+            return
+        if self._live_tool_block is not None and not self._subagent_monitor_live:
+            return
+
+        items = [self._tool_item_from_subagent_run(run) for run in runs]
+        active = any(item.status == "running" for item in items)
+        header = summarize_items(items, running=active)
+        if self._live_tool_block is None:
+            self.write_tool_group_header(header, collapsed=False)
+            self._subagent_monitor_live = True
+        for item in items:
+            self.write_tool_item(item)
+        self.update_tool_group_header(header)
+        self._subagent_monitor_has_painted = True
+        if not active:
+            self.close_tool_group()
+            self._subagent_monitor_live = False
+            self._subagent_monitor_closed = True
+
     def _render_live_tools(self) -> None:
         if self._live_tool_block is not None:
             self._live_tool_block.set_summary(self._live_tool_summary or "tools")
@@ -4451,6 +4543,10 @@ class CodingAgentApp(App[None]):
         self._thought_blocks.clear()
         self._tool_blocks.clear()
         self._live_tool_block = None
+        self._subagent_monitor_revision = -1
+        self._subagent_monitor_live = False
+        self._subagent_monitor_closed = False
+        self._subagent_monitor_has_painted = False
         self._live_stream_block = None
         self._live_stream_kind = None
         self._user_turns.clear()
@@ -5503,6 +5599,10 @@ class CodingAgentApp(App[None]):
         self._live_tool_summary = ""
         self._live_tool_block = None
         self._subagent_monitor.reset()
+        self._subagent_monitor_revision = -1
+        self._subagent_monitor_live = False
+        self._subagent_monitor_closed = False
+        self._subagent_monitor_has_painted = False
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()

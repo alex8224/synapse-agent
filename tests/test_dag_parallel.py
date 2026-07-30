@@ -266,6 +266,23 @@ class _StreamingSubAgent:
         }
 
 
+class _PlanningSnapshotSubAgent:
+    """记录第一个子 Agent 真正执行时 monitor 中可见的任务。"""
+
+    def __init__(self, monitor):
+        self._monitor = monitor
+        self.first_seen_task_ids: list[str] | None = None
+        from langchain_core.messages import AIMessage
+
+        self._AIMessage = AIMessage
+
+    async def ainvoke(self, state, config=None):
+        if self.first_seen_task_ids is None:
+            _, runs = self._monitor.snapshot()
+            self.first_seen_task_ids = [run.task_id for run in runs]
+        return {"messages": [self._AIMessage(content="ok")]}
+
+
 def _make_mw(subagent_runnables: dict) -> DAGSubAgentMiddleware:
     """快速构造一个 DAGSubAgentMiddleware 用于测试。"""
     from langchain_core.tools import StructuredTool
@@ -488,10 +505,10 @@ def test_subagent_monitor_callback_keeps_model_tool_intent():
     _, runs = monitor.snapshot()
     tool_events = [event for event in runs[0].events if event.kind == "tool"]
 
-    assert [event.status for event in tool_events] == ["running", "ok"]
-    assert all("读取配置文件" in event.title for event in tool_events)
+    assert len(tool_events) == 1
+    assert tool_events[0].status == "ok"
+    assert "读取配置文件" in tool_events[0].title
     assert tool_events[0].body == ""
-    assert "配置文件内容" in tool_events[1].body
 
 
 @pytest.mark.anyio
@@ -518,24 +535,16 @@ async def test_dag_monitor_records_tool_intent_from_returned_messages():
 
     await mw._execute_dag_inner(task_calls)
     _, runs = monitor.snapshot()
+    tool_events = [event for event in runs[0].events if event.kind == "tool"]
 
     assert any(
         event.kind == "model" and "读取配置文件" in event.body
         for event in runs[0].events
     )
-    assert any(
-        event.kind == "tool"
-        and event.status == "running"
-        and "读取配置文件" in event.title
-        and event.body == ""
-        for event in runs[0].events
-    )
-    assert any(
-        event.kind == "tool"
-        and event.status == "ok"
-        and "配置文件内容" in event.body
-        for event in runs[0].events
-    )
+    assert len(tool_events) == 1
+    assert tool_events[0].status == "ok"
+    assert "读取配置文件" in tool_events[0].title
+    assert tool_events[0].body == ""
 
 
 @pytest.mark.anyio
@@ -565,10 +574,49 @@ async def test_dag_monitor_streams_tool_intent_before_tool_finishes():
     tool_events = [event for event in runs[0].events if event.kind == "tool"]
 
     assert results["agent-loop"] == "最终分析结果"
-    assert [event.status for event in tool_events] == ["running", "ok"]
-    assert all("读取配置文件" in event.title for event in tool_events)
+    assert len(tool_events) == 1
+    assert tool_events[0].status == "ok"
+    assert "读取配置文件" in tool_events[0].title
     assert tool_events[0].body == ""
-    assert "配置文件内容" in tool_events[1].body
+
+
+@pytest.mark.anyio
+async def test_dag_monitor_publishes_all_planned_tasks_before_execution():
+    """第一个子 Agent 开始执行前，主 TUI/F9 monitor 应已能看到完整 DAG 任务列表。"""
+    from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
+
+    monitor = SubagentMonitor()
+    probe = _PlanningSnapshotSubAgent(monitor)
+    mw = _make_mw({"researcher": probe})
+    mw._parent_run_config = {
+        "configurable": {MONITOR_CONFIG_KEY: monitor.monitor_id}
+    }
+
+    task_calls = [
+        {
+            "name": "task",
+            "id": "tc1",
+            "args": {
+                "subagent_type": "researcher",
+                "description": "分析 A",
+                "task_id": "A",
+            },
+        },
+        {
+            "name": "task",
+            "id": "tc2",
+            "args": {
+                "subagent_type": "researcher",
+                "description": "分析 B",
+                "task_id": "B",
+                "depends_on": ["A"],
+            },
+        },
+    ]
+
+    await mw._execute_dag_inner(task_calls)
+
+    assert probe.first_seen_task_ids == ["A", "B"]
 
 
 @pytest.mark.anyio

@@ -5,6 +5,7 @@ from __future__ import annotations
 from synapse.ui.timeline import ToolItem, build_tool_item, summarize_categories
 from synapse.ui.tui import (
     AnswerBlock,
+    CodingAgentApp,
     TextualStreamSink,
     ThoughtBlock,
     ToolGroupBlock,
@@ -261,6 +262,15 @@ class _FakeApp:
         self.calls.append(("append_event", (message, style), {}))
 
 
+class _SuppressingTaskGroupApp(_FakeApp):
+    def should_suppress_dag_task_tool_group(self, calls):  # noqa: ANN001
+        self.calls.append(("should_suppress_dag_task_tool_group", (calls,), {}))
+        return True
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
+        self.calls.append(("sync_subagent_monitor_block", (), {"force": force}))
+
+
 def test_summarize_categories_cursor_style():
     s = summarize_categories(
         ["ls", "read_file", "read_file", "grep", "read_file"],
@@ -439,6 +449,50 @@ def test_textual_sink_tool_items_detail():
     previews = [c for c in app.calls if c[0] == "write_tool_preview"]
     assert not previews
     assert any(c[0] == "close_tool_group" for c in app.calls)
+
+
+def test_textual_sink_suppresses_monitor_backed_parent_task_group():
+    app = _SuppressingTaskGroupApp()
+    sink = TextualStreamSink(app)  # type: ignore[arg-type]
+    call = {
+        "name": "task",
+        "id": "tc1",
+        "args": {"description": "分析架构", "task_id": "A"},
+    }
+    item = build_tool_item(call, item_id="g1-0", index=0)
+
+    sink.tool_calls_started([call], parallel=False)
+    sink.tool_item_started(item)
+    sink.tool_item_finished(item.id, status="ok")
+    sink.tool_group_closed("g1")
+
+    assert any(c[0] == "sync_subagent_monitor_block" for c in app.calls)
+    assert not any(c[0] == "write_tool_group_header" for c in app.calls)
+    assert not any(c[0] == "write_tool_item" for c in app.calls)
+    assert not any(c[0] == "update_tool_item" for c in app.calls)
+    assert not any(c[0] == "close_tool_group" for c in app.calls)
+
+
+def test_tui_suppresses_task_group_when_monitor_has_matching_runs():
+    from synapse.subagent_monitor import SubagentMonitor
+
+    app = object.__new__(CodingAgentApp)
+    app._subagent_monitor = SubagentMonitor()
+    app._subagent_monitor.start_task(
+        call_id="tc1",
+        task_id="A",
+        subagent_type="researcher",
+        description="分析架构",
+        status="pending",
+    )
+
+    assert app.should_suppress_dag_task_tool_group([
+        {
+            "name": "task",
+            "id": "tc1",
+            "args": {"description": "分析架构", "task_id": "A"},
+        }
+    ])
 
 
 def test_textual_sink_opens_new_group_per_tool_batch():

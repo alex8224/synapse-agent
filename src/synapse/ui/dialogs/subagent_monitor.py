@@ -24,6 +24,8 @@ def _status_label(status: str) -> tuple[str, str]:
         return "ok", "green"
     if value == "error":
         return "error", "red"
+    if value == "pending":
+        return "pending", "dim"
     return "running", "yellow"
 
 
@@ -302,11 +304,7 @@ class SubagentMonitorDialog(ModalScreen[None]):
                 mark, style = "o", "yellow"
             else:
                 mark, style = "v", "green"
-            rows: list[Any] = [Text(f"  {mark}  {title}", style=style)]
-            if body:
-                rows.append(Text(_short(body, limit=1000), style="dim"))
-            rows.append(Text(""))
-            return rows
+            return [Text(f"  {mark}  {title}", style=style), Text("")]
         label = "Thought" if kind == "thought" else title
         rows = [Text(f"  ◆  {label}", style="dim")]
         if body:

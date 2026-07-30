@@ -487,6 +487,47 @@ def _topological_waves(
     return ready, remaining
 
 
+def _plan_dag_batches(
+    tasks: list[dict],
+    max_parallel: int,
+) -> tuple[list[list[dict]], dict[str, int], dict[str, list[str]], int]:
+    """Plan all DAG waves before executing any subagent."""
+    limit = max(1, int(max_parallel or 1))
+    pending: list[dict] = list(tasks)
+    completed: set[str] = set()
+    batches: list[list[dict]] = []
+    task_wave: dict[str, int] = {}
+    task_deps: dict[str, list[str]] = {
+        str(task.get("task_id") or ""): list(task.get("depends_on") or [])
+        for task in tasks
+    }
+
+    while pending:
+        ready, waiting = _topological_waves(pending, completed)
+        if not ready:
+            deadlocked = [
+                (t.get("task_id", "?"), t.get("depends_on", []))
+                for t in waiting
+            ]
+            msg = (
+                "DAG 死锁：以下任务依赖了不存在的或循环引用的 task_id。"
+                f"死锁任务: {deadlocked}, 已完成: {sorted(completed)}"
+            )
+            raise ValueError(msg)
+
+        batch = ready[:limit]
+        overflow = ready[limit:]
+        wave_num = len(batches) + 1
+        for task in batch:
+            task_id = str(task.get("task_id") or "")
+            task_wave[task_id] = wave_num
+            completed.add(task_id)
+        batches.append(batch)
+        pending = overflow + waiting
+
+    return batches, task_wave, task_deps, len(batches)
+
+
 # ═══════════════════════════════════════════════════════════
 # DAGSubAgentMiddleware —— 核心中间件
 # ═══════════════════════════════════════════════════════════
@@ -882,13 +923,6 @@ class DAGSubAgentMiddleware(AgentMiddleware):
             })
 
         results: dict[str, str] = {}
-        task_wave: dict[str, int] = {}
-        task_deps: dict[str, list[str]] = {}
-        for t in tasks:
-            task_deps[t["task_id"]] = list(t["depends_on"])
-
-        remaining: list[dict] = list(tasks)
-        wave_num = 0
         monitor = None
         try:
             from synapse.subagent_monitor import monitor_from_config
@@ -897,28 +931,25 @@ class DAGSubAgentMiddleware(AgentMiddleware):
         except Exception:  # noqa: BLE001
             monitor = None
 
-        while remaining:
-            ready, remaining = _topological_waves(remaining, set(results.keys()))
+        batches, task_wave, task_deps, total_waves = _plan_dag_batches(
+            tasks,
+            self._max_parallel,
+        )
 
-            if not ready:
-                if remaining:
-                    # 死锁：有任务在等待永远不会完成的依赖
-                    deadlocked = [
-                        (t.get("task_id", "?"), t.get("depends_on", []))
-                        for t in remaining
-                    ]
-                    msg = (
-                        "DAG 死锁：以下任务依赖了不存在的或循环引用的 task_id。"
-                        f"死锁任务: {deadlocked}, 已完成: {sorted(results.keys())}"
-                    )
-                    raise ValueError(msg)
-                break
+        if monitor is not None:
+            for t in tasks:
+                monitor.start_task(
+                    call_id=_task_monitor_call_id(t),
+                    task_id=str(t.get("task_id") or ""),
+                    subagent_type=str(t.get("subagent_type") or ""),
+                    description=str(t.get("description") or ""),
+                    wave=task_wave.get(str(t.get("task_id") or "")),
+                    depends_on=list(t.get("depends_on") or []),
+                    status="pending",
+                )
 
-            wave_num += 1
-            batch = ready[: self._max_parallel]
-
+        for wave_num, batch in enumerate(batches, start=1):
             for t in batch:
-                task_wave[t["task_id"]] = wave_num
                 if monitor is not None:
                     monitor.start_task(
                         call_id=_task_monitor_call_id(t),
@@ -945,7 +976,7 @@ class DAGSubAgentMiddleware(AgentMiddleware):
             for task, output in zip(batch, wave_outputs, strict=True):
                 results[task["task_id"]] = output
 
-        return results, task_wave, task_deps, wave_num
+        return results, task_wave, task_deps, total_waves
 
     async def _run_one_subagent(
         self,

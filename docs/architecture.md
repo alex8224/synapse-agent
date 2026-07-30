@@ -94,18 +94,28 @@
 │  build_coding_agent()  ← agent.py (一站式装配工厂)                  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                                                               │  │
-│  │  中间件栈 (按顺序注入)                                         │  │
+│  │  中间件栈 (按声明顺序 = 洋葱外层→内层, 共15个)                 │  │
 │  │  ┌─────────────────────────────────────────────────────────┐ │  │
-│  │  │ 1. DescribeImageMiddleware    图片→文字 (视觉模型)       │ │  │
-│  │  │ 2. ModelRetryMiddleware       重试 (429/5xx, 指数退避)  │ │  │
-│  │  │ 3. ToolErrorRecovery          工具异常→ToolMessage       │ │  │
+│  │  │ 1. AgentMdMiddleware           注入 AGENTS.md 到提示     │ │  │
+│  │  │ 2. DescribeImageMiddleware    图片→文字 (视觉模型)       │ │  │
+│  │  │ 3. ModelRetryMiddleware       重试 (429/5xx, 指数退避)  │ │  │
 │  │  │ 4. TaskNamespace              子图隔离 (checkpoint_ns)   │ │  │
-│  │  │ 5. PathNormalize              主机路径→虚拟/路径         │ │  │
-│  │  │ 6. IntentSchema              工具注入 intent 必填字段   │ │  │
-│  │  │ 7. SteerMiddleware            中程用户引导注入           │ │  │
-│  │  │ 8. CompactTool                compact_conversation 工具  │ │  │
-│  │  │ 9. DAGSubAgentMiddleware      DAG 并行子Agent 调度      │ │  │
+│  │  │ 5. ToolOutputTransform        大工具输出→压缩+SQLite     │ │  │
+│  │  │ 6. ToolOutputUsage            统计 token 节省量          │ │  │
+│  │  │ 7. ToolErrorRecovery          工具异常→ToolMessage       │ │  │
+│  │  │ 8. PathNormalize              主机路径→虚拟/路径         │ │  │
+│  │  │ 9. IntentSchema (x2)         工具注入/剥离 intent 字段  │ │  │
+│  │  │ 10. SteerMiddleware           中程用户引导注入           │ │  │
+│  │  │ 11. CompactTool              compact_conversation 工具   │ │  │
+│  │  │ 12. DAGSubAgentMiddleware    DAG 并行子Agent 调度       │ │  │
+│  │  │ 13. StripRedundantPrompt      移除冗余 prompt blocks     │ │  │
+│  │  │ 14. CompactToolDescriptions   压缩冗长工具描述           │ │  │
+│  │  │ 15. ModelRequestCompression   诊断:token计数,stale替换   │ │  │
 │  │  └─────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  │  deepagents 内置中间件 (框架自动添加):                         │  │
+│  │  SummarizationMiddleware, FilesystemMiddleware,               │  │
+│  │  TodoListMiddleware, SkillsMiddleware, MemoryMiddleware       │  │
 │  │                                                               │  │
 │  │  create_deep_agent()                                          │  │
 │  │  ├─ model:        BaseChatModel (来自 models_registry)       │  │
@@ -113,7 +123,7 @@
 │  │  ├─ tools:        [session_tools] + [MCP tools]               │  │
 │  │  ├─ subagents:    None (由 DAGSubAgentMiddleware 接管)        │  │
 │  │  ├─ checkpointer: AsyncSqliteSaver / MemorySaver              │  │
-│  │  ├─ interrupt_on: {execute,write_file,edit_file} (HITL)       │  │
+│  │  ├─ interrupt_on: None (dev-autopass 默认无HITL)               │  │
 │  │  └─ permissions:  FilesystemPermission (非shell模式)          │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
@@ -137,17 +147,19 @@
 │  ┌────────────────────  工具系统  ──────────────────────────────┐  │
 │  │  tools/session_tools.py  (工厂+闭包依赖注入)                  │  │
 │  │  ├─ list_sessions(query, limit)    搜索本地会话               │  │
-│  │  └─ read_session(thread_id, ...)   读取对话历史               │  │
+│  │  ├─ read_session(thread_id, ...)   读取对话历史               │  │
+│  │  └─ read_tool_result(ref, ...)     读取压缩工具输出原文       │  │
+│  │                                                               │  │
+│  │  tool_output/ (工具输出变换管道)                               │  │
+│  │  ├─ pipeline.py:     9种Transformer + 原生Rust回退            │  │
+│  │  ├─ repository.py:   SQLite 内容寻址 (tool-output://引用)    │  │
+│  │  ├─ detection.py:    启发式内容类型分类 (8种类型)             │  │
+│  │  └─ metrics.py:      进程级观察者通知 (UI刷新回调)            │  │
 │  │                                                               │  │
 │  │  MCP 工具  (mcp_client.py)                                    │  │
-│  │  ├─ stdio / SSE / HTTP 三种传输                               │  │
-│  │  ├─ McpSessionPool 进程级连接池                               │  │
+│  │  ├─ stdio / SSE / streamable_http 三种传输                    │  │
+│  │  ├─ McpSessionPool 进程级连接池 (后台事件循环线程)            │  │
 │  │  └─ 工具以 StructuredTool 注入 Agent                          │  │
-│  │                                                               │  │
-│  │  规划器  (planner/task_planner.py)                            │  │
-│  │  TaskPlanner.plan(task) → TaskPlan(steps, is_complex)         │  │
-│  │  ├─ 快速启发式: <6词 → 单步                                   │  │
-│  │  └─ LLM分解: 复杂任务 → 子步骤列表                            │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────┬───────────────────────────────────┘
                                   │
@@ -683,3 +695,371 @@ SubagentMonitorDialog (0.35s 轮询 snapshot，revision 去重)
 ```
 
 `SubagentMonitorCallback(BaseCallbackHandler)` 注入到子 Agent 的 callbacks 中：`on_llm_end` 捕获 tool_calls → `on_tool_start/end/error` 实时产生 events。通过全局 `_REGISTRY` + `monitor_from_config(config)` 查找 Monitor 实例。
+
+---
+
+## 补充架构流程细节
+
+### Middleware 链完整装配顺序
+
+`build_coding_agent()` 中以固定顺序组装 14 个中间件，顺序决定执行优先级：
+
+```
+ 1. build_agent_md_middleware()              # AGENTS.md 注入到系统 prompt
+ 2. build_describe_image_middleware()        # 非视觉模型的图片 → 文本描述
+ 3. build_model_retry_middleware()           # 模型调用重试 (999次, 指数退避 1s→8s)
+ 4. build_task_namespace_middleware()        # 子任务 checkpoint 命名空间隔离
+ 5. build_tool_output_transform_middleware() # ★ 工具输出压缩 (核心)
+ 6. build_tool_output_usage_middleware()     # Token 节省统计 (压缩后记账)
+ 7. build_tool_error_recovery_middleware()   # 工具异常 → ToolMessage(status="error")
+ 8. build_path_normalize_middleware()        # Windows 物理路径 → 虚拟 / 路径
+ 9. build_intent_schema_middleware()         # 注入/剥离 intent 字段 (双面中间件)
+10. build_steer_middleware()                 # 中运行用户引导 (SteerQueue)
+11. build_compact_tool_middleware()          # compact_conversation 工具 (SummarizationTool)
+12. [DAG 子 Agent 中间件]                    # 可选: ParallelSubagentMiddleware
+13. build_strip_redundant_prompt_blocks()    # 移除 deepagents 冗余 prompt (~720 tokens)
+14. build_compact_tool_descriptions()        # 精简工具描述 (~30K tokens)
+15. build_model_request_compression_middleware() # 请求级压缩诊断 + token 分桶
+```
+
+**执行语义**:
+- model-call 中间件 (wrap_model_call) 按注册顺序执行：1→2→...→15
+- tool-call 中间件 (wrap_tool_call) 也按注册顺序执行
+- `build_intent_schema_middleware` 是双面的：model 侧注入 intent required 字段，tool 侧剥离 intent
+- `build_tool_error_recovery_middleware` 放在 transform 之后，确保压缩后的 ToolMessage 也享受错误恢复
+
+### Tool Output Transform 管道 — 4 阶段详解
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                 ToolOutputTransformPipeline                       │
+│                                                                  │
+│  入口: str (工具原始输出) + tool_name + settings                   │
+│                                                                  │
+│  ┌─ 阶段1: DETECT ── 内容类型分类 (纯规则引擎, 无 ML) ──────────┐ │
+│  │                                                              │ │
+│  │  ContentType 枚举: CODE / DIFF / LIST / TABLE / LOG /        │ │
+│  │  JSON / TEXT / UNKNOWN                                        │ │
+│  │                                                              │ │
+│  │  检测策略:                                                    │ │
+│  │  - read_file 输出: 先去行号前缀, 统计代码标记密度             │ │
+│  │  - 正则优先级链: diff header → JSON 结构 → 表格分隔线        │ │
+│  │    → 日志时间戳 → 列表前缀 (•/-/*) → 代码块标记 → 纯文本     │ │
+│  │  - 短输出 (< 阈值) → Passthrough                             │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+│                           │                                      │
+│                           ▼                                      │
+│  ┌─ 阶段2: TRANSFORM ── 8 内置变换器 + 5 可选原生 ─────────────┐ │
+│  │                                                              │ │
+│  │  内置 Python 变换器 (确定性, 无状态, 纯函数):                 │ │
+│  │  ├─ CodeBlockTransformer   代码 → 骨架 (保留签名+import+注释) │ │
+│  │  ├─ DiffTransformer        diff → 统计摘要 (文件数/行变化)    │ │
+│  │  ├─ ListTransformer        长列表 → top-N 条目 + 模式摘要    │ │
+│  │  ├─ TableTransformer       表格 → 列名 + 行数 + 统计信息     │ │
+│  │  ├─ LogTransformer         日志 → 错误/警告模式提取          │ │
+│  │  ├─ JsonTransformer        JSON → 关键路径提取               │ │
+│  │  ├─ TextTransformer        通用文本 → 首尾采样 + 长度提示    │ │
+│  │  └─ PassthroughTransformer 短文本 / 无法识别 → 原样返回       │ │
+│  │                                                              │ │
+│  │  可选原生变换器 (Rust/PyO3, synapse-tool-compress-core):      │ │
+│  │  ├─ NativeCodeBlockTransformer   (更快, ~10x)                │ │
+│  │  ├─ NativeDiffTransformer                                     │ │
+│  │  ├─ NativeListTransformer                                     │ │
+│  │  ├─ NativeTableTransformer                                    │ │
+│  │  └─ NativeLogTransformer                                      │ │
+│  │  原生不可用时自动回退到 Python 实现 (ImportError fallback)     │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+│                           │                                      │
+│                           ▼                                      │
+│  ┌─ 阶段3: GUARD ── 4 层安全守卫 ──────────────────────────────┐ │
+│  │                                                              │ │
+│  │  守卫1: fresh_read_source                                    │ │
+│  │    - read_file 对同一 source 的首次读取 → PASSTHROUGH        │ │
+│  │    - 确保模型总能看到完整版本至少一次                          │ │
+│  │                                                              │ │
+│  │  守卫2: disabled_types                                       │ │
+│  │    - 用户可配置跳过特定 ContentType (如禁用 JSON 压缩)        │ │
+│  │                                                              │ │
+│  │  守卫3: critical-retention                                   │ │
+│  │    - 保留关键信息: 错误消息/IP地址/文件路径等                  │ │
+│  │                                                              │ │
+│  │  守卫4: Token 守卫 (最终 envelope 包装后检查)                 │ │
+│  │    - 压缩后 token 不减反增 → 回退到原始输出                   │ │
+│  │    - diff 类型有更高的有效节省门槛 (diff 摘要容易膨胀)        │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+│                           │                                      │
+│                           ▼                                      │
+│  ┌─ 阶段4: STORE ── 持久化 + 诊断 ─────────────────────────────┐ │
+│  │                                                              │ │
+│  │  ToolOutputRepository (SQLite, WAL 模式, 线程隔离):          │ │
+│  │  ├─ 内容寻址: SHA-256 → Base64 引用 (tool-output://...)     │ │
+│  │  ├─ zlib 压缩存储 (减少磁盘占用)                              │ │
+│  │  ├─ TransformEvent 完整记录:                                  │ │
+│  │  │   (tool_name, content_type, original_bytes,               │ │
+│  │  │    transformed_bytes, estimated_saved_tokens, ...)         │ │
+│  │  └─ stats() / export_diagnostics() 多维度聚合诊断             │ │
+│  │                                                              │ │
+│  │  引用回读: read_tool_result(tool-output://ref, query/offset)  │ │
+│  │    模型可通过此工具按需读取压缩输出的原文                      │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**消费者列表**: Pipeline 被以下组件使用:
+
+| 消费者 | 文件 | 用途 |
+|--------|------|------|
+| 主 Agent | `app/agent.py:409-428` | 创建 pipeline + 注入中间件 |
+| 子 Agent | `runtime/subagents.py` | 子 Agent 同样受益于压缩 |
+| 离线评估 | `runtime/tool_output_eval.py` | JSON 测试用例批量评测变换器 |
+| 压缩诊断 UI | `commands/compression.py` | 从 repository 导出诊断 |
+| 用量统计 | `runtime/tool_output_usage_middleware.py` | 记录每次模型调用的 token 节省 |
+| 请求级压缩 | `runtime/model_request_compression_middleware.py` | Token 分桶 + 缓存诊断 |
+
+### 模型请求压缩诊断 — 10 桶 Token 分桶
+
+`model_request_compression_middleware.py` 将每次模型请求的 token 分配到 10 个桶：
+
+```
+_content_breakdown(request):
+├─ system                系统 prompt token
+├─ tool_schemas          工具定义 token
+├─ historical_user       历史用户消息
+├─ current_user          当前用户消息
+├─ assistant_content     AI 回答文本
+├─ reasoning             thinking/reasoning 内容
+├─ tool_call_arguments   工具调用参数 (JSON)
+├─ tool_output_visible   工具输出压缩后 (模型看到的)
+├─ tool_output_original  工具输出原始大小 (计入 saved)
+└─ unknown               无法分类的 token
+```
+
+还提供:
+- `_opportunities()` — 识别可进一步压缩的来源
+- `_live_zone_plan()` — 为 Anthropic/OpenAI/Codex 画分 frozen/live/protected 区
+- `_provider_protected_tokens()` — 计算 cache_control / reasoning 受保护 token
+- `_cache_diagnostics()` — 缓存命中率诊断，检测 cache bust
+
+### Transcript 加载链 — 3 级回退
+
+```
+load_thread_messages(agent, settings, thread_id)
+│
+├─ 级别1: agent.get_state(config)
+│   → 从 LangGraph 运行时 state 获取 messages
+│   → 最快路径，agent 已加载时使用
+│   失败 ↓
+│
+├─ 级别2: load_messages_from_checkpointer(checkpointer, thread_id)
+│   → checkpointer.get_tuple(config)
+│   → 沿 parent_config 链向上追溯 (最多 50 层)
+│   → 找到第一个包含 messages 的 checkpoint
+│   失败 ↓
+│
+├─ 级别3: load_messages_from_sqlite_file(checkpoint_path, thread_id)
+│   → SqliteSaver(conn) 直接读 SQLite checkpoint 文件
+│   失败 ↓
+│
+└─ 级别4 (最终回退): conversation_history/{thread_id}.md
+    → 解析 Markdown 格式的对话历史
+    → parse_conversation_history_md()
+
+加载后格式化:
+fold_messages_for_ui(messages) → list[UiTranscriptEvent]
+├─ HumanMessage    → kind="user"
+├─ AIMessage       → kind="answer" (text) + kind="thought" (reasoning)
+├─ ToolMessage     → 按 tool_call_id 关联到对应 AIMessage
+└─ SystemMessage   → 跳过 (不渲染)
+```
+
+### Cancel Repair — ESC 中断后 checkpoint 修复
+
+```
+用户按 ESC 中断 astream
+│
+▼
+repair_thread_after_cancel(agent, config) → list[str] (日志)
+│
+├─ [1] agent.get_state(config) → 获取当前 checkpoint 快照
+│
+├─ [2] _pending_tool_seals(messages)
+│     遍历最后一条 AIMessage 的 tool_calls
+│     → 查找未被 ToolMessage 回答的 tool_call_id
+│     → 为每个未完成的 tool_call 生成:
+│        ToolMessage(
+│          content="[cancelled by user]",
+│          tool_call_id=cid,
+│          name=call_name,
+│          status="error"
+│        )
+│
+├─ [3] 将 seals 注入 checkpoint
+│     → _pick_tools_node(nodes, next_nodes)  找到 tools 节点名
+│     → agent.update_state(config, {messages: seals},
+│                           as_node=tools_node)
+│     → 重新 get_state 获取更新后的 messages/next_nodes
+│
+├─ [4] _needs_cancel_note(messages) → bool
+│     判断是否需要插入取消提示:
+│     - 最后一条是 AI 且无 tool_calls → 已有内容，不重复
+│     - 最后一条是 Human/Tool/AI含tool_calls → 需要标记
+│
+└─ [5] 插入 AIMessage("[本轮已由用户终止，上下文已保留]")
+      → _pick_model_node(nodes, next_nodes)  找到 model 节点名
+      → agent.update_state(config, {messages: [note]},
+                            as_node=model_node)
+
+返回值示例:
+  ["sealed 2 open tool call(s) as_node=tools",
+   "cancel note as_node=model",
+   "messages=5",
+   "checkpoint ready for next turn"]
+```
+
+### SessionRecapController — 空闲自动摘要
+
+```
+SessionRecapController (纯数据+逻辑, 无定时器)
+│
+├─ 配置:
+│   enabled: bool = True
+│   idle_seconds: float = 180.0    ← 空闲 3 分钟
+│   min_turns: int = 3              ← 至少 3 轮
+│
+├─ 每轮完成后:
+│   note_turn_done(now, user_text, tool_summary, answer_text, turn_count)
+│   → 存储 last_snapshot (user/tools/answer 摘要)
+│   → 更新 last_turn_done_at 时间戳
+│
+├─ TUI 空闲定时器触发:
+│   try_fire(now, busy?, draft?) → str | None
+│   │
+│   ├─ 检查 enabled
+│   ├─ 检查 turn_count >= min_turns (默认 3)
+│   ├─ 检查 now - last_turn_done_at >= idle_seconds (默认 180s)
+│   ├─ 检查 needs_fresh_turn (展示后需新一轮才能再次触发)
+│   ├─ 检查 !busy && !draft_nonempty
+│   │
+│   └─ 通过 → build_recap_line(snapshot) → 单行文本:
+│       格式: "recap: 任务 {user}；工具 {tools}；进展 {text}"
+│       > MAX_LINE_CHARS (120) 则截断
+│
+└─ 状态:
+    reset() → 清空所有状态 (切换 session 时调用)
+    needs_fresh_turn → 展示后置 True，新一轮 note_turn_done 时重置
+```
+
+### 启动流程 — step by step
+
+```
+ 1. CLI 入口解析
+    cli.py: main() → Typer → _bootstrap_env()
+    ├─ 加载 .env (如有)
+    └─ 加载 system_prompt.md (如有)
+
+ 2. 配置加载
+    settings = load_settings(cli_args)
+    ├─ 解析 CLI 参数 (--model, --workspace, --safety, ...)
+    ├─ 分层加载:
+    │   ~/.synapse/models.json     ← 用户 profile 定义
+    │   ~/.synapse/mcp.json        ← 用户 MCP 定义
+    │   ~/.synapse/settings.json   ← 用户偏好
+    │   <exe>/.synapse/            ← 便携包层 (可选)
+    │   <workspace>/.synapse/      ← 项目层
+    ├─ 合并: 后层覆盖前层
+    └─ 展开环境变量 ${VAR}
+
+ 3. Session 初始化
+    store = SessionStore(settings.resolved_sessions_path())
+    thread_id = pick_startup_thread_id(store, cli_thread_id, resume_last)
+    binding = resolve_startup_binding(store, thread_id, cli_model)
+    apply_binding_to_settings(settings, binding)
+
+ 4. Agent 构建
+    agent = build_coding_agent(settings, project_root, ...)
+    (详见上文 build_coding_agent 17 步装配)
+
+ 5. 进入事件循环
+    ├─ CLI 模式: stream_agent(agent, config, ...) + Rich rendering
+    └─ TUI 模式: CodingAgentApp(settings, agent).run()
+
+ 6. 每轮对话
+    ├─ 用户输入 → slash 命令? → handle_slash() 路由
+    ├─ 否则 → agent.astream(config)
+    ├─ Middleware 链处理
+    ├─ 流式输出 → StreamSink 渲染
+    ├─ Checkpointer 自动持久化
+    ├─ SessionStore.touch() 更新元数据
+    └─ SessionRecapController.note_turn_done() 更新 recap 快照
+```
+
+### 子 Agent DAG 调度流程
+
+```
+用户输入: "分析 bug 并写测试和审查修复"
+│
+├─ decide_subagent_routing(text) → 启发式判断是否适合 DAG 并行
+│   (检查关键词: "并"/"同时"/"并行"/多个任务...)
+│
+├─ 适合 → 注入 DAG 规划指令到 system prompt
+│
+├─ 模型输出多个 task() tool_calls, 含 depends_on 声明:
+│   task("researcher", "搜索 bug 原因", task_id="search")
+│   task("tester", "基于搜索结果写测试", depends_on=["search"], task_id="test")
+│   task("reviewer", "审查修复", depends_on=["test"], task_id="review")
+│
+├─ DAGSubAgentMiddleware 拦截 tool_calls:
+│   ├─ _parse_dag() → 提取 task_id / depends_on
+│   ├─ _topological_waves() → 拓扑排序:
+│   │   Wave 1: [search]          ← 无依赖
+│   │   Wave 2: [test]            ← 依赖 search
+│   │   Wave 3: [review]          ← 依赖 test
+│   └─ 波次内并行: asyncio.gather(*wave_tasks)
+│       波次间串行: 等待上一波完成
+│
+└─ 不适合 → 回退原生顺序执行 (depends_on 仍被遵守，只是不并行)
+```
+
+### SteerQueue — 中运行用户引导
+
+```
+SteerQueue (线程安全 FIFO)
+│
+├─ 添加引导:
+│   push("请用中文回复")  ← 用户在运行中通过 UI 提交
+│
+├─ 消费引导 (在下次模型调用前):
+│   drain() → ["请用中文回复"]
+│   → format_steer_message(items)
+│     → HumanMessage(content="[用户引导] 请用中文回复",
+│                     additional_kwargs={"coding_steer": True})
+│
+├─ 过滤 (UI/transcript):
+│   is_steer_message(msg) → 检查 additional_kwargs.coding_steer
+│   → Steer 消息不在 UI 中渲染
+│   → Steer 消息不参与 session recap
+│
+└─ 生命周期:
+    跨 agent rebuild 保持同一实例 (build_coding_agent 复用 steer_queue)
+```
+
+### 危险命令黑名单 (14 条正则)
+
+`safety.py` 的 `DANGEROUS_PATTERNS` 匹配以下模式:
+
+| # | 正则 | 描述 |
+|---|------|------|
+| 1 | `rm\s+(-[rRf]+\s+)*[/~]` | `rm -rf /` |
+| 2 | `rm\s+(-[rRf]+\s+)*\*` | `rm -rf *` |
+| 3 | `:\(\)\s*\{\s*:\|:&\s*\};:` | fork bomb |
+| 4 | `mkfs\.` | 格式化文件系统 |
+| 5 | `dd\s+if=` | 磁盘覆写 |
+| 6 | `>\s*/dev/sd` | 重定向到块设备 |
+| 7 | `shutdown\b` | 系统关机 |
+| 8 | `reboot\b` | 系统重启 |
+| 9 | `chmod\s+(-R\s+)?777` | 危险权限 |
+| 10 | `wget.*\|.*sh` | 管道执行远程脚本 |
+| 11 | `curl.*\|.*sh` | 管道执行远程脚本 |
+| 12 | `git\s+push\s+--force` | 强制推送 |
+| 13 | `git\s+push\s+-f` | 强制推送 |
+| 14 | `chown\s+(-R\s+)?[^:]+:[^ ]+\s+/` | 递归修改所有者 |
