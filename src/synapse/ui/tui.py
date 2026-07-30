@@ -25,7 +25,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Click, Key
+from textual.events import Click, Key, MouseUp
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -2371,6 +2371,21 @@ class CodingAgentApp(App[None]):
         if len(preview) > 48:
             preview = preview[:47].rstrip() + "…"
         self.append_event(f"copied {label} ({n} chars): {preview}", "dim")
+
+    # ------------------------------------------------------------------
+    #  Auto-copy on mouse-up selection
+    # ------------------------------------------------------------------
+    def on_mouse_up(self, event: MouseUp) -> None:
+        """After drag-select, auto-copy selected text to clipboard."""
+        # Defer one frame so Textual's compositor has fully finalised the selection.
+        self.call_after_refresh(self._auto_copy_selection)
+
+    def _auto_copy_selection(self) -> None:
+        if not self.screen.selections:
+            return
+        text = self.screen.get_selected_text()
+        if text and str(text).strip():
+            self._copy_text_to_clipboard(str(text), label="selection")
 
     # ------------------------------------------------------------------
     #  Alt+V clipboard paste (image or text)
