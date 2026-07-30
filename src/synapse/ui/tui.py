@@ -3274,6 +3274,34 @@ class CodingAgentApp(App[None]):
 
         self.push_screen(SubagentMonitorDialog(self._subagent_monitor))
 
+    def should_suppress_dag_task_tool_group(self, calls: list[dict]) -> bool:
+        """Suppress the parent ``task`` tool group when the subagent monitor
+        is tracking matching runs.
+
+        Called by TextualStreamSink before rendering a tool batch."""
+        if not calls:
+            return False
+        if not all(c.get("name") == "task" for c in calls):
+            return False
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return False
+        _, runs = monitor.snapshot()
+        known_ids = {r.call_id for r in runs if r.status in {"pending", "running"}}
+        if not known_ids:
+            return False
+        return all(c.get("id") in known_ids for c in calls)
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
+        """Refresh the in-turn subagent monitor block (no-op when dialog is closed)."""
+        # The dialog polls _subagent_monitor.revision; force a refresh when open.
+        if not force:
+            return
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        monitor._revision += 1  # noqa: SLF001 — owned monitor, bump revision for UI poll
+
     def _on_mcp_dialog_done(self, result: object) -> None:
         if result is None:
             return
