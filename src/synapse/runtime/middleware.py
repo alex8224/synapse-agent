@@ -334,7 +334,7 @@ def build_task_namespace_middleware():
 TOOL_INTENT_KEY = "intent"
 TOOL_INTENT_DESCRIPTION = (
     "Required. One short sentence describing WHY this tool is being called "
-    "(user-facing intent for the timeline UI). Prefer Chinese. "
+    "(user-facing intent for the timeline UI). "
     "Example: 'inspect pytest config' / 'locate login failure'. "
     "Do not dump raw args or only restate the tool name."
 )
@@ -747,20 +747,14 @@ def build_compact_tool_descriptions(
         if not changed:
             return request
 
-        _compact_tool_desc_saved_tokens.set(
-            max(0, (saved_chars + 3) // 4)
-        )
+        _compact_tool_desc_saved_tokens.set(max(0, (saved_chars + 3) // 4))
         return request.override(tools=new_tools)
 
-    return _dual_wrap_model_call(
-        name="compact_tool_descriptions", apply=_apply
-    )
+    return _dual_wrap_model_call(name="compact_tool_descriptions", apply=_apply)
 
 
 def _is_tool_dict(obj: Any) -> bool:
-    return isinstance(obj, dict) and (
-        "function" in obj or "name" in obj
-    )
+    return isinstance(obj, dict) and ("function" in obj or "name" in obj)
 
 
 def _compact_dict_tool(

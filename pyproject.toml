@@ -1,12 +1,13 @@
 [project]
-name = "synapse"
-version = "0.1.11"
+name = "synapse-cli-agent"
+version = "0.1.14"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
 authors = [
     { name = "alex8224", email = "alex8224@gmail.com" }
 ]
 requires-python = ">=3.12"
+
 dependencies = [
     "aiosqlite>=0.20.0",
     "deepagents>=0.6.12",
@@ -27,6 +28,12 @@ dependencies = [
     "websockets>=13,<16",
     "zstandard>=0.23.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/alex8224/synapse-agent"
+Repository = "https://github.com/alex8224/synapse-agent"
+Issues = "https://github.com/alex8224/synapse-agent/issues"
+Changelog = "https://github.com/alex8224/synapse-agent/blob/main/CHANGELOG.md"
 
 [project.scripts]
 synapse = "synapse.cli:main"
