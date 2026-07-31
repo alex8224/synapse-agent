@@ -405,6 +405,17 @@ class CodingAgentApp(App[None]):
         background: $theme-bg;
         content-align: left middle;
     }
+    #subagent-status {
+        height: auto;
+        min-height: 1;
+        padding: 0 2;
+        color: $theme-fg;
+        background: $theme-bar;
+        display: none;
+    }
+    #subagent-status.visible {
+        display: block;
+    }
     /* Must be in the app stylesheet: widget DEFAULT_CSS is parsed separately
        and cannot resolve the app's $theme-* variables. */
     TurnRailItem {
@@ -693,6 +704,7 @@ class CodingAgentApp(App[None]):
             yield Static(id="stream")
         with Vertical(id="bottom-chrome"):
             yield SteerQueueWidget(id="steer-queue")
+            yield Static("", id="subagent-status")
             yield Static("", id="status")
             yield Static("", id="complete-hint")
             yield Input(
@@ -2196,20 +2208,49 @@ class CodingAgentApp(App[None]):
             live.tick_live()
 
     def _maybe_auto_open_subagent_monitor(self) -> None:
-        """Auto-open the subagent monitor dialog when DAG tasks appear."""
-        if getattr(self, "_subagent_monitor_auto_opened", False):
-            return
+        """Render inline subagent status in the main TUI during DAG execution."""
         monitor = getattr(self, "_subagent_monitor", None)
         if monitor is None:
             return
         _, runs = monitor.snapshot()
+        status_widget = self.query_one("#subagent-status", Static)
         if not runs:
+            status_widget.remove_class("visible")
+            status_widget.update("")
             return
-        # Only auto-open when we have pending or running tasks.
-        if not any(r.status in {"pending", "running"} for r in runs):
-            return
-        self._subagent_monitor_auto_opened = True
-        self._open_subagent_monitor()
+        counts: dict[str, int] = {}
+        for r in runs:
+            s = r.status or ""
+            counts[s] = counts.get(s, 0) + 1
+        parts: list[str] = ["Subagents:"]
+        if counts.get("pending"):
+            parts.append(f"\u25a1 {counts['pending']} pending")
+        if counts.get("running"):
+            parts.append(f"\u26a1 {counts['running']} running")
+        if counts.get("ok"):
+            parts.append(f"\u2713 {counts['ok']} done")
+        if counts.get("error"):
+            parts.append(f"\u2717 {counts['error']} error")
+        text = "  ".join(parts)
+        if text != status_widget.renderable:
+            status_widget.update(text)
+            status_widget.add_class("visible")
+        # Keep the dialog auto-open as a fallback for the first detection
+        # in a turn — then the inline bar takes over for updates.
+        if not getattr(self, "_subagent_monitor_auto_opened", False):
+            active = any(r.status in {"pending", "running"} for r in runs)
+            if active:
+                self._subagent_monitor_auto_opened = True
+                self._open_subagent_monitor()
+
+    def _clear_subagent_status(self) -> None:
+        """Clear the inline subagent status bar (called on turn reset)."""
+        try:
+            w = self.query_one("#subagent-status", Static)
+            w.remove_class("visible")
+            w.update("")
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- stream ----------------------------------------------------------
 
@@ -3834,6 +3875,7 @@ class CodingAgentApp(App[None]):
         self._live_tool_block = None
         self._subagent_monitor.reset()
         self._subagent_monitor_auto_opened = False
+        self._clear_subagent_status()
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
@@ -4073,6 +4115,7 @@ class CodingAgentApp(App[None]):
             self._refresh_git_chrome()
         except Exception:  # noqa: BLE001
             pass
+        self._clear_subagent_status()
         self.query_one("#prompt", Input).focus()
         # If the model finished without another tool/model step, apply leftover
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
