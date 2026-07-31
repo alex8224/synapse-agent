@@ -157,6 +157,7 @@ def build_coding_agent(
     model_cache: dict[str, Any] | None = None,
     steer_queue: SteerQueue | None = None,
     progress: Callable[[str], None] | None = None,
+    force_parallel_subagents: bool | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -251,9 +252,15 @@ def build_coding_agent(
         memory_paths = [p for p in memory_paths if Path(p).exists() and Path(p).name != "AGENTS.md"]
     skills_paths = settings.resolved_skills_paths(project_root)
 
+    effective_parallel_subagents = (
+        bool(settings.parallel_subagents)
+        if force_parallel_subagents is None
+        else bool(force_parallel_subagents)
+    )
+    subagents_enabled = bool(effective_parallel_subagents)
     with span("subagents"):
         subagents = build_default_subagents(
-            enabled=settings.enable_subagents,
+            enabled=subagents_enabled,
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
@@ -267,7 +274,7 @@ def build_coding_agent(
     # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
     _dag_mw: Any = None
     _use_dag_subagents = bool(
-        getattr(settings, "parallel_subagents", False)
+        effective_parallel_subagents
         and subagents
     )
     if _use_dag_subagents:
@@ -281,6 +288,10 @@ def build_coding_agent(
             backend=backend,
             max_parallel=getattr(settings, "max_parallel_subagents", 6),
         )
+        if not getattr(_dag_mw, "_subagent_runnables", None):
+            _dag_mw = None
+            _use_dag_subagents = False
+            subagents = None
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
         readonly=settings.readonly,
@@ -487,7 +498,7 @@ def build_coding_agent(
             middleware=middleware,
             memory=memory_paths or None,
             skills=skills_paths or None,
-            subagents=None if _use_dag_subagents else subagents,
+            subagents=None,
             permissions=permissions,
             interrupt_on=interrupt_on,
             checkpointer=saver,
@@ -498,6 +509,10 @@ def build_coding_agent(
     agent._coding_model_profile = selected_profile.name  # type: ignore[attr-defined]
     agent._coding_checkpointer = saver  # type: ignore[attr-defined]
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
+    agent._coding_parallel_subagents = bool(_use_dag_subagents)  # type: ignore[attr-defined]
+    agent._coding_subagent_mode = (  # type: ignore[attr-defined]
+        "parallel" if _use_dag_subagents else "disabled"
+    )
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
     agent._coding_model_cache = model_cache  # type: ignore[attr-defined]
@@ -532,6 +547,59 @@ def build_coding_agent(
     return agent
 
 
+def rebuild_coding_agent(
+    settings: Settings,
+    agent: Any,
+    *,
+    project_root: Path | None = None,
+    model_name: str | None = None,
+    load_mcp: bool | None = None,
+    defer_mcp_reconnect: bool = False,
+    force_parallel_subagents: bool | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> Any:
+    """Rebuild an agent graph while reusing expensive live resources."""
+    checkpointer = getattr(agent, "_coding_checkpointer", None)
+    steer_queue = getattr(agent, "_coding_steer_queue", None)
+    reuse_model = model_name is None
+    model = getattr(agent, "_coding_model", None) if reuse_model else None
+    registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
+    model_cache = getattr(agent, "_coding_model_cache", None)
+    if force_parallel_subagents is None and hasattr(agent, "_coding_parallel_subagents"):
+        force_parallel_subagents = bool(getattr(agent, "_coding_parallel_subagents", False))
+
+    mcp_tools: list[Any] | None = None
+    if load_mcp is not None:
+        want_mcp = bool(load_mcp)
+    elif not bool(getattr(settings, "enable_mcp", True)):
+        want_mcp = False
+    else:
+        pool = get_active_mcp_pool()
+        pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else []
+        if pool is not None:
+            mcp_tools = pool_tools
+            want_mcp = False
+        elif bool(getattr(agent, "_coding_mcp_attached", False)):
+            want_mcp = not defer_mcp_reconnect
+        else:
+            want_mcp = False
+
+    return build_coding_agent(
+        settings,
+        project_root=project_root,
+        model_name=model_name,
+        checkpointer=checkpointer,
+        model=model,
+        model_registry=registry,
+        model_cache=model_cache,
+        load_mcp=want_mcp,
+        mcp_tools=mcp_tools,
+        steer_queue=steer_queue,
+        progress=progress,
+        force_parallel_subagents=force_parallel_subagents,
+    )
+
+
 def attach_mcp_to_agent(
     settings: Settings,
     agent: Any,
@@ -548,6 +616,7 @@ def attach_mcp_to_agent(
     steer_queue = getattr(agent, "_coding_steer_queue", None)
     pool = get_active_mcp_pool()
     pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else None
+    current_parallel = bool(getattr(agent, "_coding_parallel_subagents", False))
     return build_coding_agent(
         settings,
         project_root=project_root,
@@ -558,6 +627,7 @@ def attach_mcp_to_agent(
         mcp_tools=pool_tools,
         load_mcp=pool is None,
         steer_queue=steer_queue,
+        force_parallel_subagents=current_parallel,
     )
 
 

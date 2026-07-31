@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
@@ -490,6 +491,7 @@ def test_log_transformer_deduplicates_warnings_and_keeps_stack_context() -> None
 
 
 def test_native_transformers_are_used_when_wheel_is_installed() -> None:
+    pytest.importorskip("synapse_tool_compress_core")
     pipeline = ToolOutputTransformPipeline(use_native=True)
     result = pipeline.transform(
         _search(), TransformContext(tool_name="execute", status="success", query="authentication")
@@ -501,6 +503,7 @@ def test_native_transformers_are_used_when_wheel_is_installed() -> None:
 
 
 def test_native_diff_context_supports_legacy_wheel(monkeypatch) -> None:
+    pytest.importorskip("synapse_tool_compress_core")
     import synapse_tool_compress_core as native
 
     calls: list[str] = []
