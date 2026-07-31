@@ -47,14 +47,23 @@ class CodexResetDialog(DialogBase):
         max-height: 22;
         background: $theme-bar;
     }
-    CodexResetDialog #credit-list {
+    CodexResetDialog #dialog-body {
         height: auto;
+        min-height: 5;
+        max-height: 13;
+        padding: 0;
+    }
+    CodexResetDialog #credit-list {
+        width: 1fr;
+        height: auto;
+        min-height: 5;
         max-height: 13;
         overflow-y: auto;
     }
     CodexResetDialog .credit-row {
         width: 1fr;
-        height: 1;
+        height: auto;
+        min-height: 1;
         padding: 0 1;
         border-bottom: solid $theme-border;
         layout: horizontal;
@@ -66,14 +75,26 @@ class CodexResetDialog(DialogBase):
         color: $theme-muted;
         content-align: left middle;
     }
-    CodexResetDialog Button {
+    CodexResetDialog Button.-primary.-style-default,
+    CodexResetDialog Button.-primary.-style-default:hover {
         min-width: 9;
         height: 1;
+        padding: 0 1;
         margin: 0;
+        border: none;
+        background: $theme-user;
+        color: $theme-bg;
+        text-style: bold;
+    }
+    CodexResetDialog Button.-primary.-style-default:hover {
+        background: $theme-user 90%;
     }
     CodexResetDialog .empty {
-        padding: 2 4;
-        color: $theme-muted;
+        width: 1fr;
+        height: 3;
+        padding: 1 2;
+        color: $theme-fg;
+        content-align: left middle;
     }
     """
 

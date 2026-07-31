@@ -74,7 +74,79 @@ class TestSessionListInit:
         assert dlg._mode == "switch"
 
 
-class TestMcpPanelInit:
+class TestCodexResetDialog:
+    def test_credit_rows_are_mounted_with_nonzero_region(self):
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from synapse.integrations.openai_usage import ResetCreditDetail
+        from synapse.ui.dialogs.codex_reset import CodexResetDialog
+        from synapse.ui.theme import bootstrap_theme, get_theme
+
+        credit = ResetCreditDetail(
+            id="rc_1",
+            reset_type="codexRateLimits",
+            status="available",
+            granted_at=None,
+            expires_at=1_700_000_000,
+            title=None,
+            description=None,
+        )
+
+        class Host(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+            def compose(self) -> ComposeResult:
+                yield Static(id="host")
+
+            def on_mount(self) -> None:
+                self.push_screen(CodexResetDialog(credits=[credit], available_count=1))
+
+        bootstrap_theme("cursor-dark")
+        app = Host()
+
+        async def exercise() -> None:
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                dialog = app.screen
+                row = dialog.query_one(".credit-row")
+                assert row.region.height > 0
+                assert dialog.query_one("#credit-list").region.height > 0
+                assert dialog.query_one("#dialog-body").region.height > 0
+
+        asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+
+    def test_empty_state_is_mounted_with_nonzero_region(self):
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from synapse.ui.dialogs.codex_reset import CodexResetDialog
+        from synapse.ui.theme import bootstrap_theme, get_theme
+
+        class Host(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+            def compose(self) -> ComposeResult:
+                yield Static(id="host")
+
+            def on_mount(self) -> None:
+                self.push_screen(CodexResetDialog(credits=[], available_count=1))
+
+        bootstrap_theme("cursor-dark")
+        app = Host()
+
+        async def exercise() -> None:
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                dialog = app.screen
+                empty = dialog.query_one(".empty", Static)
+                assert empty.render().plain == "No detailed reset-credit rows available."
+                assert empty.region.height > 0
+                assert dialog.query_one("#dialog-body").region.height > 0
+
+        asyncio.run(asyncio.wait_for(exercise(), timeout=8))
     def test_empty_servers(self, monkeypatch):
         monkeypatch.setattr(
             "synapse.integrations.mcp_client.load_mcp_server_configs",

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from synapse.integrations.openai_usage import (
+    CodexUsageService,
     CodexUsageSnapshot,
     ResetCredits,
     UsageWindow,
@@ -10,6 +11,20 @@ from synapse.integrations.openai_usage import (
     parse_usage_payload,
     usage_style,
 )
+
+
+def test_usage_service_hides_label_without_oauth_profile(monkeypatch) -> None:
+    service = CodexUsageService(settings=object())
+    monkeypatch.setattr(service, "has_oauth_profile", lambda: False)
+
+    assert service.label == ""
+
+
+def test_usage_service_shows_label_with_oauth_profile(monkeypatch) -> None:
+    service = CodexUsageService(settings=object())
+    monkeypatch.setattr(service, "has_oauth_profile", lambda: True)
+
+    assert service.label.plain == "codex n/a"
 
 
 def test_parse_codex_usage_windows() -> None:

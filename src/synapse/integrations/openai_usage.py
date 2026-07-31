@@ -338,6 +338,8 @@ class CodexUsageService:
         """Return rich Text or a plain str for the bottombar render path."""
         from rich.text import Text
 
+        if not self.has_oauth_profile():
+            return ""
         if self.loading and self.snapshot is None:
             return Text("codex ...", style="#5f6368")
         if self.snapshot is None:
