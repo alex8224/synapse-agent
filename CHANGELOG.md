@@ -7,6 +7,22 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.19
+
+### 新增功能
+
+- Codex OAuth 用量底部栏组件：展示 5h/1d 用量窗口、重置剩余时间和账号到期时间；低于 50% 时红色显示。
+- Codex 速率限制重置能力：直接通过 HTTP 请求 wham/rate-limit-reset-credits 读取可用重置次数与到期详情，支持在弹窗中一键消费重置。
+- /codex reset、/codex credits 命令打开重置详情弹窗；底部栏 Codex 区域支持 hover 高亮与点击。
+- 启动时配置错误友好提示：models.json、settings.json 或内联 JSON 环境变量格式错误时输出简洁错误与修复提示，不再抛出完整 traceback。
+
+### 修复
+
+- /compact 改为后台 worker 执行，避免模型摘要阻塞 TUI；执行期间禁止取消，防止压缩状态损坏。
+- 兼容 LangChain 1.3 编译图闭包中的 SummarizationMiddleware 定位。
+
+---
+
 ## v0.1.18
 
 ### 新功能
