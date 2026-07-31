@@ -11,6 +11,7 @@ The workspace footer is always appended in code.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from synapse.settings.config_paths import project_config_dir, user_config_dir
@@ -226,15 +227,51 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
-def build_system_prompt(workspace: Path, *, ensure_user_file: bool = False) -> str:
-    """Build a system prompt with workspace context."""
+def _shell_prompt(shell_executable: str) -> str:
+    """Build non-overridable syntax guidance for the configured host shell."""
+    shell = shell_executable.strip() or ("pwsh" if sys.platform == "win32" else "bash")
+    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    if name in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
+        rules = (
+            "- Use PowerShell syntax, not Bash syntax.\n"
+            "- Do not use Bash heredocs such as `<<EOF` or `python - <<'PY'`.\n"
+            "- For multiline input, use a PowerShell here-string, `python -c`, or a "
+            "temporary script file.\n"
+            "- Do not assume Bash, WSL, or Git Bash is available.\n"
+        )
+    elif name in {"bash", "bash.exe", "sh", "sh.exe"}:
+        rules = "- Use Bash/POSIX shell syntax for `execute` commands.\n"
+    elif name in {"cmd", "cmd.exe"}:
+        rules = (
+            "- Use Windows cmd.exe syntax, not Bash or PowerShell syntax.\n"
+            "- Do not use Bash heredocs or PowerShell here-strings.\n"
+        )
+    else:
+        rules = (
+            "- Use syntax supported by this configured shell; do not assume Bash, PowerShell, "
+            "or cmd semantics.\n"
+        )
+
+    return f"## Shell environment\n- The `execute` tool uses `{shell}`.\n{rules}"
+
+
+def build_system_prompt(
+    workspace: Path,
+    *,
+    ensure_user_file: bool = False,
+    shell_executable: str | None = None,
+) -> str:
+    """Build a system prompt with workspace and effective host-shell context."""
     root = Path(workspace).resolve()
     body = load_coding_system_prompt(root, ensure_user_file=ensure_user_file)
+    effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
     return (
         f"{body}\n\n"
         f"## Current workspace\n"
         f"- Host root (shell/git only): `{root}`\n"
         f"- File-tool virtual root: `/` maps to the host root above\n"
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
-        f"- Shell commands run on the host, inside the workspace root.\n"
+        f"- Shell commands run on the host, inside the workspace root.\n\n"
+        f"{_shell_prompt(effective_shell)}"
     )

@@ -401,6 +401,7 @@ uv run synapse run "修复 calculator.sub 的 bug，使 tests 全部通过" -w t
 | `CHECKPOINT_BACKEND` | `sqlite` | `sqlite` 或 `memory` |
 | `INHERIT_ENV` | `true` | shell 继承主机环境 |
 | `VIRTUAL_MODE` | `true` | 文件路径虚拟根 |
+| `AGENT_SHOW_REASONING_PLACEHOLDERS` | `true` | 是否显示网关未暴露推理文本时的占位思考节点；Codex 加密推理可设为 `false` 隐藏 |
 
 ## 安全说明
 

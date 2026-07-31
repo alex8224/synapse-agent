@@ -15,6 +15,7 @@ from synapse.ui.stream import (
     _reasoning_token_count,
     _StreamPrinter,
     extract_last_ai_text,
+    reasoning_placeholder_text,
     render_math_in_text,
 )
 
@@ -184,6 +185,15 @@ def test_reasoning_token_count_from_usage_metadata():
         usage_metadata = {"output_token_details": {"reasoning": 16}}
 
     assert _reasoning_token_count(Msg()) == 16
+
+
+def test_reasoning_placeholder_text_respects_visibility_switch():
+    assert reasoning_placeholder_text(69, enabled=True) == (
+        "(reasoning text not exposed by gateway; ~69 reasoning tokens)\n"
+    )
+    assert reasoning_placeholder_text(69, enabled=False) == ""
+    assert reasoning_placeholder_text(0, enabled=True) == ""
+    assert reasoning_placeholder_text(None, enabled=True) == ""
 
 
 def test_extract_usage_includes_cache_read_tokens():

@@ -21,6 +21,21 @@ class _Host:
         return record
 
 
+def test_hidden_reasoning_placeholder_can_be_skipped_without_thought_node() -> None:
+    from synapse.ui.stream_events import reasoning_placeholder_text
+
+    host = _Host()
+    sink = TextualStreamSink(host)
+
+    placeholder = reasoning_placeholder_text(69, enabled=False)
+    if placeholder:
+        sink.write_reasoning(placeholder)
+    sink.close_reasoning()
+
+    assert "commit_thought" not in [name for name, _, _ in host.calls]
+    assert sink.streamed_reasoning is False
+
+
 def test_reasoning_after_answer_tokens_seals_preview_before_switch() -> None:
     host = _Host()
     sink = TextualStreamSink(host)

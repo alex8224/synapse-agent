@@ -246,6 +246,16 @@ def _is_ai_message(msg: Any) -> bool:
     return cls_name in {"ai", "aimessage", "aimessagechunk"}
 
 
+def reasoning_placeholder_text(token_count: int | None, *, enabled: bool) -> str:
+    """Return the synthetic hidden-reasoning label, or empty text when disabled."""
+    if not enabled or token_count is None or token_count <= 0:
+        return ""
+    return (
+        f"(reasoning text not exposed by gateway; "
+        f"~{token_count} reasoning tokens)\n"
+    )
+
+
 def _reasoning_token_count(msg: Any) -> int | None:
     usage = getattr(msg, "usage_metadata", None) or {}
     if not isinstance(usage, dict):

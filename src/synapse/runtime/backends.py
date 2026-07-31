@@ -147,6 +147,7 @@ class CodingLocalShellBackend(LocalShellBackend):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._shell_executable = (shell_executable or DEFAULT_SHELL_EXECUTABLE).strip()
+        self._effective_shell_executable = self._resolve_effective_shell_executable()
         self._shell_encoding = shell_encoding or "utf-8"
         self._shell_encoding_errors = shell_encoding_errors or "replace"
 
@@ -165,6 +166,21 @@ class CodingLocalShellBackend(LocalShellBackend):
                 matcher = ToolIgnoreMatcher([])
             self._tool_ignore_dedicated = False
         self._tool_ignore: ToolIgnoreMatcher = matcher
+
+    def _resolve_effective_shell_executable(self) -> str:
+        """Resolve the shell program selected at startup, including platform fallbacks."""
+        configured = self._shell_executable.strip()
+        if configured.lower() in {"", "system", "default"}:
+            return os.environ.get("COMSPEC", "cmd.exe") if os.name == "nt" else "/bin/sh"
+        args, _, executable = resolve_shell_invocation("", configured)
+        if isinstance(args, list) and args:
+            return str(args[0])
+        return executable or configured
+
+    @property
+    def shell_executable(self) -> str:
+        """Return the effective shell program used by ``execute``."""
+        return self._effective_shell_executable
 
     # --- native filesystem tool overrides ---
 

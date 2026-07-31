@@ -242,6 +242,11 @@ class Settings(BaseSettings):
     # Custom palettes: layered .coding-agent/themes.json
     theme: str = Field(default="cursor-dark", validation_alias="AGENT_THEME")
 
+    # TUI: render a synthetic thought when a gateway reports reasoning tokens but
+    # does not expose the reasoning text (for example Codex encrypted reasoning).
+    show_reasoning_placeholders: bool = Field(
+        default=True, validation_alias="AGENT_SHOW_REASONING_PLACEHOLDERS"
+    )
     # TUI tool timeline: keep tool-detail rows expanded under group headers.
     # Set false to auto-collapse batches after they finish (summary only).
     tool_details_expanded: bool = Field(

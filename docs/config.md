@@ -105,6 +105,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `PARALLEL_TOOL_CALLS` | `true` | 启用并行工具调用 |
 | `MAX_CONCURRENCY` | `8` | 最大并行度 |
 | `STREAM_CHUNK_TIMEOUT` | — | 流式块超时（秒，None=禁用） |
+| `AGENT_SHOW_REASONING_PLACEHOLDERS` | `true` | 网关仅返回推理 token 数、不暴露推理文本时，是否显示占位思考节点；设为 `false` 可隐藏 Codex 等加密推理占位 |
 | `LANGSMITH_TRACING` | `false` | 启用 LangSmith 追踪 |
 | `LANGSMITH_API_KEY` | — | LangSmith API Key |
 | `LANGSMITH_PROJECT` | `coding-agent` | LangSmith 项目名 |

@@ -77,7 +77,13 @@ def test_build_backend_default_shell_platform_aware(tmp_path: Path):
     backend = build_backend(settings)
     assert isinstance(backend, CodingLocalShellBackend)
     expected = "pwsh" if sys.platform == "win32" else "bash"
-    assert backend._shell_executable == expected
+    assert Path(backend.shell_executable).name.lower() in {
+        expected,
+        f"{expected}.exe",
+        "powershell",
+        "powershell.exe",
+        "sh",
+    }
     assert backend._shell_encoding == "utf-8"
     assert backend._env.get("PYTHONUTF8") == "1"
 

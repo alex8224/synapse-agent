@@ -492,7 +492,10 @@ def build_coding_agent(
     with span("create_deep_agent"):
         agent = create_deep_agent(
             model=model,
-            system_prompt=build_system_prompt(root),
+            system_prompt=build_system_prompt(
+                root,
+                shell_executable=backend.shell_executable,
+            ),
             backend=backend,
             tools=tools,
             middleware=middleware,

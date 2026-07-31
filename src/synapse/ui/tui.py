@@ -4175,6 +4175,9 @@ class CodingAgentApp(App[None]):
                 max_concurrency=self.settings.max_concurrency,
                 sink=sink,
                 cancel_event=self._cancel_event,
+                show_reasoning_placeholders=bool(
+                    getattr(self.settings, "show_reasoning_placeholders", True)
+                ),
             )
             if getattr(result, "cancelled", False):
                 self._skip_steer_followup = True
@@ -4286,6 +4289,9 @@ class CodingAgentApp(App[None]):
                 max_concurrency=self.settings.max_concurrency,
                 sink=sink,
                 cancel_event=self._cancel_event,
+                show_reasoning_placeholders=bool(
+                    getattr(self.settings, "show_reasoning_placeholders", True)
+                ),
             )
             if getattr(result, "cancelled", False):
                 self._skip_steer_followup = True

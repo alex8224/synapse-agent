@@ -65,6 +65,7 @@ from synapse.ui.stream_events import (
     extract_last_ai_text,
     human_nested_tools_detail,
     human_tool_label,
+    reasoning_placeholder_text,
 )
 from synapse.ui.stream_events import (
     aggregate_usage_from_messages as _aggregate_usage_from_messages,
@@ -552,12 +553,15 @@ def stream_agent(
     subgraphs: bool = True,
     sink: StreamSink | None = None,
     cancel_event: threading.Event | None = None,
+    show_reasoning_placeholders: bool = True,
 ) -> StreamResult:
     """Stream agent with reasoning + answer tokens and tool/subagent progress.
 
     Args:
         payload: User message dict or LangGraph ``Command`` (HITL resume).
         sink: Optional UI consumer. Defaults to Rich CLI sink.
+        show_reasoning_placeholders: Render a synthetic thought when only reasoning
+            token counts are available and the gateway hides the reasoning text.
     """
     # Sync-only SqliteSaver cannot astream. AsyncSqliteSaver + process runtime can.
     if prefer_async:
@@ -1056,12 +1060,14 @@ def stream_agent(
                         sink.close_reasoning()
                     elif reasoning and sink.streamed_reasoning:
                         sink.close_reasoning()
-                    elif r_tokens and r_tokens > 0 and not sink.streamed_reasoning:
-                        sink.write_reasoning(
-                            f"(reasoning text not exposed by gateway; "
-                            f"~{r_tokens} reasoning tokens)\n"
+                    elif not sink.streamed_reasoning:
+                        placeholder = reasoning_placeholder_text(
+                            r_tokens,
+                            enabled=show_reasoning_placeholders,
                         )
-                        sink.close_reasoning()
+                        if placeholder:
+                            sink.write_reasoning(placeholder)
+                            sink.close_reasoning()
 
                     # Always surface complete AI content once per message.
                     # Intermediate (content + tool_calls) and final answers both print.
