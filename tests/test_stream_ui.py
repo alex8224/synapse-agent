@@ -45,6 +45,47 @@ def test_extract_reasoning_from_additional_kwargs():
     assert _extract_reasoning(Msg()) == "step by step"
 
 
+def test_extract_reasoning_from_responses_summary_blocks():
+    """LangChain Responses API shapes reasoning as summary blocks."""
+
+    class Msg:
+        content = [
+            {
+                "type": "reasoning",
+                "summary": [
+                    {"index": 0, "type": "summary_text", "text": "think step"},
+                    {"index": 0, "type": "summary_text", "text": " by step"},
+                ],
+            },
+            {"type": "text", "text": "answer"},
+        ]
+        additional_kwargs = {}
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "think step by step"
+
+
+def test_extract_reasoning_from_flat_reasoning_block():
+    class Msg:
+        content = [
+            {"type": "reasoning", "text": "secret thought"},
+            {"type": "text", "text": "visible"},
+        ]
+        additional_kwargs = {}
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "secret thought"
+
+
+def test_extract_reasoning_from_empty_summary_falls_back():
+    class Msg:
+        content = [{"type": "reasoning", "summary": []}]
+        additional_kwargs = {}
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == ""
+
+
 def test_is_tool_message_accepts_langchain_type_tool():
     class Msg:
         type = "tool"

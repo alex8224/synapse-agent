@@ -79,6 +79,27 @@ def _normalize_content(content: Any) -> str:
     return str(content)
 
 
+def _reasoning_block_text(block: dict[str, Any]) -> str:
+    """Extract reasoning text from one ``reasoning``/``thinking`` content block.
+
+    Supports LangChain's Responses API shape::
+
+        {"type": "reasoning", "summary": [{"type": "summary_text", "text": "..."}]}
+
+    as well as flat blocks such as ``{"type": "reasoning", "text": "..."}``.
+    """
+    summary = block.get("summary")
+    if isinstance(summary, list):
+        chunks = [
+            str(entry.get("text"))
+            for entry in summary
+            if isinstance(entry, dict) and entry.get("text")
+        ]
+        if chunks:
+            return "".join(chunks)
+    return str(block.get("text") or block.get("reasoning") or "")
+
+
 def _extract_reasoning(msg: Any) -> str:
     """Extract model reasoning / thinking text from common provider fields."""
     parts: list[str] = []
@@ -104,7 +125,7 @@ def _extract_reasoning(msg: Any) -> str:
                 continue
             btype = str(block.get("type") or "")
             if btype in {"reasoning", "thinking"}:
-                parts.append(str(block.get("text") or block.get("reasoning") or ""))
+                parts.append(_reasoning_block_text(block))
 
     for key in ("reasoning_content", "reasoning"):
         val = getattr(msg, key, None)
