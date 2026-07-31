@@ -136,10 +136,14 @@ class TurnRail(Vertical):
 
     def clear_turns(self) -> None:
         self._turns = []
-        self.remove_children()
+        if self.is_attached:
+            self.remove_children()
 
     def set_turns(self, turns: list[tuple[str, UserTurnBlock]]) -> None:
         self._turns = list(turns or [])
+        self.relayout()
+
+    def on_mount(self) -> None:
         self.relayout()
 
     def on_resize(self, event: object) -> None:  # noqa: ANN001
@@ -154,6 +158,8 @@ class TurnRail(Vertical):
         return max(1, min(count if count else 1, 32))
 
     def relayout(self) -> None:
+        if not self.is_attached:
+            return
         turns = self._turns
         slots = turn_rail_tick_slots(len(turns), self._content_height())
         self.remove_children()

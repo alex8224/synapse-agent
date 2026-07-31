@@ -18,6 +18,7 @@ wheels/
 .env
 .coding-agent/
 .cmd-agent/
+.tmp/
 .synapse/
 .pytest_cache/
 .ruff_cache/
@@ -40,4 +41,4 @@ site/
 
 # OS
 Thumbs.db
-.DS_Store
+.DS_Store.tmp/

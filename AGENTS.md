@@ -131,3 +131,55 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1
 ```
 
 8. 脚本会创建并推送 `v{version}` tag；`.github/workflows/release.yml` 会从 `CHANGELOG.md` 提取同名段落、执行 `uv build` 并创建 GitHub Release。
+
+## 10. cdp_take_screenshot 工具使用说明
+
+### 10.1 已知限制
+- `filePath` 参数无法写入工作区目录（浏览器沙箱限制），所有指定 `filePath` 的尝试均会报 `Access denied`。
+- 不指定 `filePath` 时，截图以文本格式（含 base64）自动存入 `/large_tool_results/call_xx_xxx`。
+
+### 10.2 标准流程：截图 → 解码 → 识图
+
+执行完 `cdp_take_screenshot`（不指定 `filePath`）后，按以下步骤操作：
+
+#### Step 1 — 编写/复用解码脚本
+如果工作区不存在 `/decode_screenshot.py`，创建它：
+```python
+import base64, re, sys, glob, os
+
+files = glob.glob('large_tool_results/call_*')
+if not files:
+    print("No screenshot files found")
+    sys.exit(1)
+
+latest = max(files, key=os.path.getctime)
+print(f"Processing: {latest}")
+
+content = open(latest, 'r').read()
+m = re.search(r"data='([^']+)'", content)
+if not m:
+    print("No base64 data found")
+    sys.exit(1)
+
+os.makedirs('.tmp', exist_ok=True)
+out = f'.tmp/screenshot_{os.path.getmtime(latest)}.png'
+open(out, 'wb').write(base64.b64decode(m.group(1)))
+print(f"OK -> {out}")
+```
+
+#### Step 2 — 执行解码
+```bash
+python decode_screenshot.py
+# 输出示例: OK -> .tmp/screenshot_1712345678.1234567.png
+```
+
+#### Step 3 — 调用识图
+```bash
+# 使用 Step 2 返回的文件名
+describe_image(image_path="/.tmp/screenshot_1712345678.1234567.png", ...)
+```
+
+### 10.3 注意事项
+- 每次截图都会在 `/large_tool_results/` 生成一个新文件，解码脚本自动选最新的。
+- 输出到 `/.tmp/` 目录，该目录需加入 `.gitignore`。
+- 不要在对话中手动执行多步解码，应直接调用解码脚本。
