@@ -14,6 +14,7 @@ from synapse.runtime.backends import (
     resolve_shell_invocation,
 )
 from synapse.runtime.execute_capture import begin_execute_capture, end_execute_capture
+from synapse.tools.filesystem_search import build_filesystem_search_tools
 
 
 def test_default_shell_platform_aware():
@@ -182,6 +183,69 @@ def test_native_grep_supports_regex_glob_and_virtual_paths(tmp_path: Path):
         {"path": "/src/app.py", "line": 1, "text": "TODO: improve"},
         {"path": "/src/app.py", "line": 2, "text": "value = 42"},
     ]
+
+
+def test_native_grep_retries_empty_include_glob_result(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("TODO: recovered\n", encoding="utf-8")
+    empty_payload = {"matches": [], "total_matches": 0, "truncated": False}
+    file_payload = {
+        "matches": [{"path": "", "line": 1, "text": "TODO: recovered"}],
+        "total_matches": 1,
+        "truncated": False,
+    }
+    glob_payload = {
+        "matches": [{"path": "app.py", "is_dir": False}],
+    }
+
+    with (
+        patch("synapse_search_core.grep", side_effect=[empty_payload, file_payload]) as grep,
+        patch("synapse_search_core.glob", return_value=glob_payload) as glob,
+    ):
+        result = backend.grep("TODO", path="/src", glob="*.py", max_results=10)
+
+    assert result.error is None
+    assert result.matches == [{"path": "/src/app.py", "line": 1, "text": "TODO: recovered"}]
+    glob.assert_called_once_with(str(src), "*.py")
+    assert grep.call_count == 2
+    assert grep.call_args_list[0].kwargs["include_glob"] == "*.py"
+    assert "include_glob" not in grep.call_args_list[1].kwargs
+
+
+def test_search_files_tool_applies_glob_as_include_filter(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("TODO: include me\n", encoding="utf-8")
+    (src / "app.txt").write_text("TODO: exclude me\n", encoding="utf-8")
+    search_files = {
+        tool.name: tool for tool in build_filesystem_search_tools(backend)
+    }["search_files"]
+
+    result = search_files.invoke(
+        {
+            "pattern": "TODO",
+            "path": "/src",
+            "glob": "**/*.py",
+            "output_mode": "content",
+            "max_results": 10,
+            "head_limit": 10,
+        }
+    )
+
+    assert result == "/src/app.py:1: TODO: include me"
 
 
 def test_native_glob_respects_gitignore_and_deny_paths(tmp_path: Path):

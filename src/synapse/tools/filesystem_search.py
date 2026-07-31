@@ -39,46 +39,64 @@ class SearchFilesInput(BaseModel):
     """Arguments for the workspace regular-expression content search tool."""
 
     pattern: str = Field(
-        description="Regular expression to search for. Use escaped metacharacters for literal text."
+        description=(
+            "Required ripgrep-compatible regular expression, not a glob. Supported examples: "
+            "'def\\s+stream_agent' finds a function definition, 'TODO|FIXME' finds either word, "
+            "and 'config\\.json' matches the literal filename. Use glob separately to restrict "
+            "file paths."
+        )
     )
     path: str | None = Field(
         default=None,
-        description="Workspace file or directory to search. Omit to search the workspace root.",
+        description=(
+            "Workspace file or directory to search; omit only to search the entire workspace root."
+        ),
     )
     glob: str | None = Field(
         default=None,
-        description="Optional glob filter, such as '**/*.py' or 'src/**/*.ts'.",
+        description=(
+            "Optional include-only glob for file paths relative to path, such as '**/*.py'. "
+            "It does not match file contents and cannot express exclusions. Omit it when path "
+            "already identifies a file or narrow directory."
+        ),
     )
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
-        description="Return matching file paths, matching lines, or a count for each file.",
+        description=(
+            "Result shape: 'files_with_matches' returns paths only, 'content' returns matching "
+            "lines, and 'count' returns a match count per file."
+        ),
     )
     max_results: int = Field(
         default=200,
         ge=1,
         le=1000,
-        description="Maximum number of matching lines to return from the search backend.",
+        description="Search result limit from 1 to 1000 (inclusive); default 200.",
     )
     head_limit: int = Field(
         default=0,
         ge=0,
         le=1000,
-        description="Maximum entries to return to the model (0 = use max_results).",
+        description=(
+            "Displayed result limit from 0 to 1000 (inclusive); 0 means use max_results."
+        ),
     )
     offset: int = Field(
         default=0,
         ge=0,
-        description="Skip first N entries before applying head_limit (pagination).",
+        description="Non-negative result offset for pagination; apply it before head_limit.",
     )
     context_lines: int = Field(
         default=0,
         ge=0,
         le=10,
-        description="Number of context lines to include before and after each match.",
+        description=(
+            "Context lines before and after each match, from 0 to 10 (inclusive); never exceed 10."
+        ),
     )
     case_insensitive: bool = Field(
         default=False,
-        description="Enable case-insensitive search.",
+        description="Set true for case-insensitive regex matching; default false.",
     )
 
 

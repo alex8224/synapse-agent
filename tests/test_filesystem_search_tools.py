@@ -54,9 +54,24 @@ def test_search_tools_expose_synapse_owned_schemas() -> None:
     assert find_files.name == "find_files"
     assert search_files.name == "search_files"
     search_schema = search_files.tool_call_schema.model_json_schema()
-    assert search_schema["properties"]["pattern"]["description"].startswith("Regular expression")
-    assert "literal string" not in search_schema["properties"]["pattern"]["description"]
-    assert search_schema["properties"]["output_mode"]["default"] == "files_with_matches"
+    properties = search_schema["properties"]
+    pattern_description = properties["pattern"]["description"]
+    assert "ripgrep-compatible regular expression" in pattern_description
+    assert "not a glob" in pattern_description
+    assert r"def\s+stream_agent" in pattern_description
+    assert "TODO|FIXME" in pattern_description
+    assert r"config\.json" in pattern_description
+    glob_description = properties["glob"]["description"]
+    assert "include-only glob" in glob_description
+    assert "cannot express exclusions" in glob_description
+    assert properties["output_mode"]["default"] == "files_with_matches"
+    assert "paths only" in properties["output_mode"]["description"]
+    assert "1 to 1000" in properties["max_results"]["description"]
+    assert "0 means use max_results" in properties["head_limit"]["description"]
+    context_lines_schema = properties["context_lines"]
+    assert context_lines_schema["minimum"] == 0
+    assert context_lines_schema["maximum"] == 10
+    assert "never exceed 10" in context_lines_schema["description"]
     assert set(search_schema["required"]) == {"pattern"}
 
     find_schema = find_files.tool_call_schema.model_json_schema()

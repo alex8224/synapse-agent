@@ -18,6 +18,19 @@ def test_build_system_prompt_injects_powershell_rules(tmp_path: Path):
     assert "PowerShell here-string" in prompt
 
 
+def test_default_prompt_describes_search_glob_as_include_filter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from synapse.content import prompts as prompts_mod
+
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: tmp_path / "missing-user")
+    prompt = build_system_prompt(tmp_path)
+
+    assert "`glob` only as an optional\ninclude filter" in prompt
+    assert "does not express\ncache-directory exclusions" in prompt
+    assert "exclude common build artifacts and caches via `glob`" not in prompt
+
+
 def test_build_system_prompt_uses_effective_shell_path(tmp_path: Path):
     shell = r"C:\Program Files\PowerShell\7\pwsh.exe"
     prompt = build_system_prompt(tmp_path, shell_executable=shell)
@@ -43,5 +56,8 @@ def test_shell_context_survives_external_prompt_override(tmp_path: Path):
 
     assert prompt.startswith("CUSTOM PROMPT")
     assert "## Current workspace" in prompt
+    assert "## File search semantics" in prompt
+    assert "include-only path filter" in prompt
+    assert "cannot express exclusions" in prompt
     assert "## Shell environment" in prompt
     assert "Do not use Bash heredocs" in prompt

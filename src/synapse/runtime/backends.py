@@ -216,6 +216,38 @@ class CodingLocalShellBackend(LocalShellBackend):
                 return None
         return str(resolved)
 
+    def _grep_glob_candidates(
+        self,
+        search_core: Any,
+        base_path: Path,
+        pattern: str,
+        glob: str,
+        max_results: int,
+        context_lines: int,
+        case_insensitive: bool,
+    ) -> list[dict[str, Any]]:
+        """Retry an empty include-glob search against core-enumerated candidate files."""
+        candidates = search_core.glob(str(base_path), glob.lstrip("/"))["matches"]
+        matches: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if candidate.get("is_dir") or len(matches) >= max_results:
+                continue
+            relative_path = str(candidate["path"])
+            file_path = base_path / relative_path
+            remaining = max_results - len(matches)
+            payload = search_core.grep(
+                str(file_path),
+                pattern,
+                max_results=remaining,
+                context_lines=context_lines,
+                case_insensitive=case_insensitive,
+            )
+            for item in payload["matches"]:
+                matches.append(
+                    {"path": relative_path, "line": item["line"], "text": item["text"]}
+                )
+        return matches
+
     def grep(
         self,
         pattern: str,
@@ -237,10 +269,21 @@ class CodingLocalShellBackend(LocalShellBackend):
                 str(base_path), pattern, include_glob=glob, max_results=max_results,
                 context_lines=context_lines, case_insensitive=case_insensitive,
             )
+            raw_matches = list(payload["matches"])
+            if glob and not raw_matches and base_path.is_dir():
+                raw_matches = self._grep_glob_candidates(
+                    synapse_search_core,
+                    base_path,
+                    pattern,
+                    glob,
+                    max_results,
+                    context_lines,
+                    case_insensitive,
+                )
         except (OSError, RuntimeError, ValueError) as exc:
             return GrepResult(error=f"Error searching path '{path or '.'}': {exc}", matches=[])
         matches = []
-        for item in payload["matches"]:
+        for item in raw_matches:
             result_path = self._native_result_path(base_path, item["path"])
             if result_path is not None:
                 matches.append({"path": result_path, "line": item["line"], "text": item["text"]})

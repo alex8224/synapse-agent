@@ -7,6 +7,28 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.20
+
+### 新增功能
+
+- LLM Debug Inspector 支持采集并展示原始 HTTP 请求与响应 payload，便于排查模型传输问题。
+- 主 TUI 内联展示子 Agent 运行状态，并根据任务复杂度动态选择 DAG 并行执行路径。
+- 系统提示固定注入当前 shell 语法规则，减少 PowerShell、Bash 与 cmd 命令混用。
+
+### 修复
+
+- 完善 `search_files` 的 ripgrep-compatible pattern 示例、参数边界和 `glob` include-only 语义；当 native include-glob 异常返回空结果时，使用同一 Rust core 枚举候选并降级搜索，避免合法 `*.py` / `**/*.py` 过滤导致漏报。
+- 修复 Responses API、Anthropic thinking block 等多种 reasoning 内容提取与流式显示问题，并避免 reasoning 后重复输出答案。
+- 为 HTTP 客户端启用 SOCKS 代理支持，修复相关代理配置不可用问题。
+- 未配置 Codex OAuth profile 时隐藏用量标签，并修正重置弹窗样式。
+
+### 工程改进
+
+- 增加 `search_files` StructuredTool 到 Rust native core 的完整 glob 回归测试，并校验对外正则示例可由实际 matcher 编译。
+- 更新 Agent 装配、流式 UI、HTTP transport、提示注入和子 Agent 状态相关测试。
+
+---
+
 ## v0.1.19
 
 ### 新增功能

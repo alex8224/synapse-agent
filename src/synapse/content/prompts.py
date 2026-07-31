@@ -110,13 +110,10 @@ Do not use generic intent values such as `run tool` or `read_file`.
 Search only when required by a clear task.
 Keep searches targeted and avoid unnecessary full-file output.
 
-For `search_files`, exclude common build artifacts and caches via `glob`:
-* `target/`
-* `.venv/`
-* `.node_modules/`
-* `__pycache__/`
-* `.git/`
-* `*.pyc`
+For `search_files`, use `pattern` to match file contents and `glob` only as an optional
+include filter for file paths. Prefer a narrow `path`; omit `glob` when `path` already names a
+file or small directory. A value such as `**/*.py` includes Python files—it does not express
+cache-directory exclusions. Built-in ignore rules already skip common caches and build artifacts.
 
 For large files, read only relevant ranges. After editing, re-read changed regions when useful.
 
@@ -227,6 +224,18 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
+def _file_search_prompt() -> str:
+    """Build non-overridable guidance for the custom filesystem search tools."""
+    return (
+        "## File search semantics\n"
+        "- `search_files.pattern` is a ripgrep-compatible regex for file contents.\n"
+        "- `search_files.glob` is an optional include-only path filter relative to `path`; it "
+        "cannot express exclusions.\n"
+        "- Prefer a narrow `path` and omit `glob` when the path is already sufficiently narrow.\n"
+        "- Common ignored caches and build artifacts are skipped by built-in ignore rules.\n"
+    )
+
+
 def _shell_prompt(shell_executable: str) -> str:
     """Build non-overridable syntax guidance for the configured host shell."""
     shell = shell_executable.strip() or ("pwsh" if sys.platform == "win32" else "bash")
@@ -273,5 +282,6 @@ def build_system_prompt(
         f"- File-tool virtual root: `/` maps to the host root above\n"
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
         f"- Shell commands run on the host, inside the workspace root.\n\n"
+        f"{_file_search_prompt()}\n"
         f"{_shell_prompt(effective_shell)}"
     )

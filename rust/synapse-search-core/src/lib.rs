@@ -274,6 +274,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn documented_regex_examples_are_supported() {
+        for pattern in [r"def\s+stream_agent", r"TODO|FIXME", r"config\.json"] {
+            RegexMatcherBuilder::new()
+                .build(pattern)
+                .unwrap_or_else(|error| panic!("documented pattern {pattern:?} failed: {error}"));
+        }
+    }
+
+    #[test]
     fn truncates_match_text_at_character_boundary() {
         let text = "中".repeat(MAX_MATCH_TEXT_CHARS + 1);
         let result = truncate_text(&text);

@@ -26,6 +26,7 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
     )
     assert (
         "Think and reason in Chinese" in text
+        or "用中文思考和推理" in text
         or "Virtual filesystem" in text
     )
     assert "Current workspace" in text
@@ -127,9 +128,13 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             if tool.name in {"find_files", "search_files"}
         }
         assert set(search_tools) == {"find_files", "search_files"}
-        assert search_tools["search_files"].tool_call_schema.model_json_schema()["properties"][
-            "pattern"
-        ]["description"].startswith("Regular expression")
+        search_properties = search_tools[
+            "search_files"
+        ].tool_call_schema.model_json_schema()["properties"]
+        assert "ripgrep-compatible regular expression" in search_properties["pattern"][
+            "description"
+        ]
+        assert "include-only glob" in search_properties["glob"]["description"]
         exclusion = next(
             middleware
             for middleware in (kwargs.get("middleware") or [])
