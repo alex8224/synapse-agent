@@ -8,6 +8,7 @@ Exports:
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from dataclasses import dataclass
@@ -173,6 +174,11 @@ class DebugCaptureRecord:
     started_at: float
     duration_ms: float
     error: str | None = None
+    # Raw provider-level HTTP payloads (captured at the transport layer).
+    # Each is ``{"method", "url", "body", "body_truncated"}`` or None when the
+    # channel (e.g. websocket / non-OpenAI provider) cannot expose them.
+    raw_request: dict[str, Any] | None = None
+    raw_response: dict[str, Any] | None = None
 
     @property
     def total_request_tokens(self) -> int:
@@ -198,6 +204,43 @@ class DebugCaptureRecord:
 _store: DebugCaptureStore | None = None
 _lock: threading.RLock = threading.RLock()
 
+# Transport-layer raw HTTP capture attaches its payload to the currently
+# active model-call slot (set by the debug capture middleware around each
+# handler call), so the record created right after the handler returns picks
+# up the exact request/response bodies that were actually sent/received.
+_raw_slot: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "synapse_debug_raw_slot", default=None
+)
+
+
+def begin_raw_capture() -> dict[str, Any]:
+    """Open a capture slot for the current model call.
+
+    Returns the slot dict the HTTP transport fills in via ``note_raw_*``.
+    """
+    slot: dict[str, Any] = {}
+    _raw_slot.set(slot)
+    return slot
+
+
+def end_raw_capture() -> None:
+    """Close the capture slot (clears the context-local reference)."""
+    _raw_slot.set(None)
+
+
+def note_raw_request(payload: dict[str, Any]) -> None:
+    """Attach a raw HTTP request payload to the active model-call slot."""
+    slot = _raw_slot.get()
+    if slot is not None:
+        slot["request"] = payload
+
+
+def note_raw_response(payload: dict[str, Any]) -> None:
+    """Attach a raw HTTP response payload to the active model-call slot."""
+    slot = _raw_slot.get()
+    if slot is not None:
+        slot["response"] = payload
+
 
 class DebugCaptureStore:
     """Thread-safe ring buffer for LLM debug records.
@@ -211,6 +254,19 @@ class DebugCaptureStore:
         self._records: list[DebugCaptureRecord] = []
         self._turn_counter: int = 0
         self._call_counter: int = 0
+
+    # -- raw HTTP capture slot (context-local, filled by the transport) ------
+
+    def begin_raw_capture(self) -> dict[str, Any]:
+        """Open a capture slot for the current model call.
+
+        Returns the slot dict the HTTP transport fills in via ``note_raw_*``.
+        """
+        return begin_raw_capture()
+
+    def end_raw_capture(self) -> None:
+        """Close the capture slot (clears the context-local reference)."""
+        end_raw_capture()
 
     # -- write path (called from middleware / async context) -----------------
 
@@ -228,6 +284,8 @@ class DebugCaptureStore:
         started_at: float,
         started_perf: float | None = None,
         error: str | None = None,
+        raw_request: dict[str, Any] | None = None,
+        raw_response: dict[str, Any] | None = None,
     ) -> DebugCaptureRecord:
         """Serialize and store one request/response pair.
 
@@ -261,6 +319,8 @@ class DebugCaptureStore:
                 started_at=started_at,
                 duration_ms=(time.perf_counter() - (started_perf or started_at)) * 1000,
                 error=error,
+                raw_request=raw_request,
+                raw_response=raw_response,
             )
             self._records.append(record)
             # Ring buffer eviction

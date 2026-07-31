@@ -32,49 +32,65 @@ def build_debug_capture_middleware(store: DebugCaptureStore) -> AgentMiddleware:
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
             if not store.enabled:
                 return handler(request)
+            slot = store.begin_raw_capture()
             started_at = time.time()
             started_perf = time.perf_counter()
             try:
-                response = handler(request)
-            except Exception as exc:
+                try:
+                    response = handler(request)
+                except Exception as exc:
+                    store.record(
+                        request,
+                        None,
+                        started_at=started_at,
+                        started_perf=started_perf,
+                        error=str(exc),
+                        raw_request=slot.get("request"),
+                        raw_response=slot.get("response"),
+                    )
+                    raise
                 store.record(
                     request,
-                    None,
+                    response,
                     started_at=started_at,
                     started_perf=started_perf,
-                    error=str(exc),
+                    raw_request=slot.get("request"),
+                    raw_response=slot.get("response"),
                 )
-                raise
-            store.record(
-                request,
-                response,
-                started_at=started_at,
-                started_perf=started_perf,
-            )
-            return response
+                return response
+            finally:
+                store.end_raw_capture()
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             if not store.enabled:
                 return await handler(request)
+            slot = store.begin_raw_capture()
             started_at = time.time()
             started_perf = time.perf_counter()
             try:
-                response = await handler(request)
-            except Exception as exc:
+                try:
+                    response = await handler(request)
+                except Exception as exc:
+                    store.record(
+                        request,
+                        None,
+                        started_at=started_at,
+                        started_perf=started_perf,
+                        error=str(exc),
+                        raw_request=slot.get("request"),
+                        raw_response=slot.get("response"),
+                    )
+                    raise
                 store.record(
                     request,
-                    None,
+                    response,
                     started_at=started_at,
                     started_perf=started_perf,
-                    error=str(exc),
+                    raw_request=slot.get("request"),
+                    raw_response=slot.get("response"),
                 )
-                raise
-            store.record(
-                request,
-                response,
-                started_at=started_at,
-                started_perf=started_perf,
-            )
-            return response
+                return response
+            finally:
+                store.end_raw_capture()
 
     return _DebugCaptureMiddleware()

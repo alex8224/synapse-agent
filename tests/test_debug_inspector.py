@@ -5,6 +5,7 @@ import time
 from synapse.observability.debug_server import (
     _PAGE_HTML,
     _record_summary,
+    _record_to_dict,
     _request_delta_start,
     _tool_pairs,
 )
@@ -37,6 +38,7 @@ def test_page_uses_two_column_task_focused_layout() -> None:
     assert "概览" in _PAGE_HTML
     assert "请求" in _PAGE_HTML
     assert "响应" in _PAGE_HTML
+    assert "原始HTTP" in _PAGE_HTML
     assert "原始" in _PAGE_HTML
     assert "跟随最新" in _PAGE_HTML
     assert "collapsedTurns" in _PAGE_HTML
@@ -113,3 +115,25 @@ def test_tool_pairs_only_include_tools_directly_related_to_selected_call() -> No
     assert pairs[0]["error"] is False
     assert pairs[1]["result"] is None
     assert pairs[1]["error"] is None
+
+
+def test_record_detail_includes_raw_http_payloads() -> None:
+    record = _record(
+        call=1,
+        request=[{"role": "human", "content_full": "hi"}],
+        response=[],
+    )
+    record.raw_request = {
+        "method": "POST",
+        "url": "http://example/v1/chat/completions",
+        "body": '{"model":"m","messages":[]}',
+        "body_truncated": False,
+    }
+    record.raw_response = {"body": '{"choices":[]}', "body_truncated": False}
+
+    detail = _record_to_dict(record)
+
+    assert detail["raw_request"]["method"] == "POST"
+    assert detail["raw_request"]["body"] == '{"model":"m","messages":[]}'
+    assert detail["raw_response"]["body"] == '{"choices":[]}'
+    assert detail["raw_request"]["body_truncated"] is False

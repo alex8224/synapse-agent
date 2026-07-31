@@ -114,24 +114,38 @@ def build_openai_async_http_client(
     *,
     timeout: Any = None,
     proxy: str | None = None,
+    capture_store: Any = None,
 ) -> httpx.AsyncClient:
-    """Create one model-local AsyncClient on the process async runtime."""
+    """Create one model-local AsyncClient on the process async runtime.
+
+    The client is wrapped in a capture transport when a debug capture store is
+    available, so the exact HTTP request/response bodies sent to / received
+    from the provider land in ``DebugCaptureRecord.raw_request/raw_response``.
+    """
     enable_openai_long_keepalive_defaults()
     from synapse.runtime.async_runtime import get_async_runtime
 
     runtime = get_async_runtime()
 
+    if capture_store is None:
+        from synapse.observability.llm_debug import get_debug_store
+
+        capture_store = get_debug_store()
+
     async def _build() -> httpx.AsyncClient:
         from openai import DEFAULT_TIMEOUT
 
-        kwargs: dict[str, Any] = {
-            "verify": shared_openai_ssl_context(),
-            "limits": _LONG_KEEPALIVE_LIMITS,
-            "timeout": DEFAULT_TIMEOUT if timeout is None else timeout,
-        }
-        if proxy:
-            kwargs["proxy"] = proxy
-        return httpx.AsyncClient(**kwargs)
+        transport = httpx.AsyncHTTPTransport(
+            verify=shared_openai_ssl_context(),
+            limits=_LONG_KEEPALIVE_LIMITS,
+            proxy=proxy,
+        )
+        if capture_store is not None:
+            transport = _CapturingAsyncTransport(transport, capture_store)
+        return httpx.AsyncClient(
+            transport=transport,
+            timeout=DEFAULT_TIMEOUT if timeout is None else timeout,
+        )
 
     client = runtime.run(_build())
     runtime.track_connection(client)
@@ -159,6 +173,128 @@ def close_model_async_http_client(model: Any) -> None:
         model._coding_http_async_client = None
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------------------
+# Raw HTTP capture transport (OpenAI-compatible channel)
+# ---------------------------------------------------------------------------
+
+# Cap on the raw request/response body kept per model call. Bodies beyond this
+# size are truncated (the live stream handed to the SDK is never affected).
+_MAX_RAW_BODY_CHARS = 262_144
+
+
+class _AsyncGeneratorStream(httpx.AsyncByteStream):
+    """Adapt an async generator to httpx's AsyncByteStream protocol."""
+
+    def __init__(self, generator: Any) -> None:
+        self._generator = generator
+
+    def __aiter__(self) -> Any:
+        return self.aiter_bytes()
+
+    async def aiter_bytes(self) -> Any:
+        async for chunk in self._generator:
+            yield chunk
+
+    async def aclose(self) -> None:
+        close = getattr(self._generator, "aclose", None)
+        if close is not None:
+            await close()
+
+
+class _CapturingAsyncTransport(httpx.AsyncBaseTransport):
+    """Pass-through transport that records raw request/response bodies.
+
+    Wraps the inner transport and, while the debug store is enabled, captures:
+
+    - the exact request body sent to the provider (``request.content``), and
+    - the full response body (streamed or not) after the stream is consumed.
+
+    The payload is attached to the active model-call slot via
+    ``synapse.observability.llm_debug.note_raw_*``; the debug capture
+    middleware picks it up when it records the model call. When the store is
+    disabled the wrapper is a transparent pass-through.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, store: Any) -> None:
+        self._inner = inner
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        # Expose inner attributes (e.g. ``_pool`` used by keepalive helpers).
+        return getattr(self._inner, name)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if not self._store.enabled:
+            return await self._inner.handle_async_request(request)
+
+        from synapse.observability.llm_debug import note_raw_request
+
+        try:
+            response = await self._inner.handle_async_request(request)
+        except Exception:
+            # Record the attempted request even when the call never reached
+            # the provider (DNS / connect / timeout failures).
+            note_raw_request(_payload_for(request, request.content or b""))
+            raise
+        note_raw_request(_payload_for(request, request.content or b""))
+        return self._wrap_response(request, response)
+
+    @staticmethod
+    def _wrap_response(request: httpx.Request, response: httpx.Response) -> httpx.Response:
+        """Re-wrap the response stream so the body can be copied as it flows."""
+        captured = bytearray()
+        truncated = False
+
+        async def _stream() -> Any:
+            nonlocal truncated
+            try:
+                async for chunk in response.aiter_bytes():
+                    if not truncated:
+                        room = _MAX_RAW_BODY_CHARS - len(captured)
+                        if room > 0:
+                            captured.extend(chunk[:room])
+                            if len(chunk) > room:
+                                truncated = True
+                        else:
+                            truncated = True
+                    yield chunk
+            finally:
+                _finish_capture(captured, truncated)
+
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            stream=_AsyncGeneratorStream(_stream()),
+            request=request,
+            extensions=response.extensions,
+        )
+
+
+def _payload_for(request: httpx.Request, body: bytes) -> dict[str, Any]:
+    text = body.decode("utf-8", "replace")
+    return {
+        "method": request.method,
+        "url": str(request.url),
+        "body": text[:_MAX_RAW_BODY_CHARS],
+        "body_truncated": len(text) > _MAX_RAW_BODY_CHARS,
+    }
+
+
+def _finish_capture(body: bytearray, truncated: bool) -> None:
+    from synapse.observability.llm_debug import note_raw_response
+
+    text = bytes(body).decode("utf-8", "replace")
+    note_raw_response(
+        {
+            "body": text,
+            "body_truncated": truncated or len(text) > _MAX_RAW_BODY_CHARS,
+        }
+    )
 
 
 # --- deprecated API (no-op / thin wrappers) so old imports do not crash ---

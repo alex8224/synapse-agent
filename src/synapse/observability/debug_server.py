@@ -64,6 +64,9 @@ def _record_to_dict(record: Any, *, request_delta_start: int = 0) -> dict[str, A
         content = msg.get("content_full", "")
         msg["content_full"] = content[:16_384]
         msg["content_truncated"] = len(content) > len(msg["content_full"])
+    # Raw provider-level HTTP payloads (already bounded at capture time).
+    d["raw_request"] = record.raw_request
+    d["raw_response"] = record.raw_response
     return d
 
 

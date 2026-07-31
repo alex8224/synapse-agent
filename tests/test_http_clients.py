@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import httpx
 
 import synapse.integrations.http_clients as hc
 from synapse.integrations.http_clients import (
     HTTP_KEEPALIVE_EXPIRY_SECONDS,
+    _CapturingAsyncTransport,
     client_keepalive_expiry,
     enable_anthropic_long_keepalive_defaults,
     enable_long_keepalive_http_defaults,
     enable_openai_long_keepalive_defaults,
     long_keepalive_limits,
+)
+from synapse.observability.llm_debug import (
+    DebugCaptureStore,
+    begin_raw_capture,
+    end_raw_capture,
 )
 
 
@@ -112,3 +121,114 @@ def test_anthropic_default_client_uses_long_keepalive():
         assert pool._keepalive_expiry == 300.0
     finally:
         client.close()
+
+
+def _run_transport_capture(
+    store: DebugCaptureStore,
+    request_handler,
+) -> tuple[dict, dict]:
+    """Run one request through the capture transport inside a capture slot."""
+
+    async def run() -> tuple[dict, dict]:
+        transport = _CapturingAsyncTransport(httpx.MockTransport(request_handler), store)
+        slot = begin_raw_capture()
+        try:
+            async with httpx.AsyncClient(transport=transport) as client:
+                response = await client.post(
+                    "http://example.test/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                )
+                await response.aread()
+        finally:
+            end_raw_capture()
+        return slot.get("request"), slot.get("response")
+
+    return asyncio.run(run())
+
+
+def test_capture_transport_records_raw_request_and_response():
+    store = DebugCaptureStore()
+    store.enabled = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": "resp-1", "choices": [{"index": 0}]},
+            request=request,
+        )
+
+    raw_request, raw_response = _run_transport_capture(store, handler)
+
+    assert raw_request is not None
+    assert raw_request["method"] == "POST"
+    assert raw_request["url"] == "http://example.test/v1/chat/completions"
+    body = json.loads(raw_request["body"])
+    assert body["model"] == "test"
+    assert raw_request["body_truncated"] is False
+    assert json.loads(raw_response["body"])["id"] == "resp-1"
+
+
+def test_capture_transport_records_streamed_response_body():
+    store = DebugCaptureStore()
+    store.enabled = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        async def chunks():
+            yield b'data: {"delta": "a"}\n\n'
+            yield b'data: {"delta": "b"}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        return httpx.Response(
+            200,
+            stream=hc._AsyncGeneratorStream(chunks()),
+            request=request,
+        )
+
+    raw_request, raw_response = _run_transport_capture(store, handler)
+
+    expected = 'data: {"delta": "a"}\n\ndata: {"delta": "b"}\n\ndata: [DONE]\n\n'
+    assert raw_response is not None
+    assert raw_response["body"] == expected
+    assert raw_response["body_truncated"] is False
+
+
+def test_capture_transport_truncates_large_response_body():
+    store = DebugCaptureStore()
+    store.enabled = True
+    limit = hc._MAX_RAW_BODY_CHARS
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * (limit + 10_000), request=request)
+
+    _, raw_response = _run_transport_capture(store, handler)
+
+    assert raw_response is not None
+    assert len(raw_response["body"]) == limit
+    assert raw_response["body_truncated"] is True
+
+
+def test_capture_transport_is_pass_through_when_disabled():
+    store = DebugCaptureStore()
+    store.enabled = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    raw_request, raw_response = _run_transport_capture(store, handler)
+
+    assert raw_request is None
+    assert raw_response is None
+
+
+def test_capture_transport_records_request_on_provider_error():
+    store = DebugCaptureStore()
+    store.enabled = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "rate limited"}}, request=request)
+
+    raw_request, raw_response = _run_transport_capture(store, handler)
+
+    assert raw_request is not None
+    assert raw_response is not None
+    assert json.loads(raw_response["body"])["error"]["message"] == "rate limited"
