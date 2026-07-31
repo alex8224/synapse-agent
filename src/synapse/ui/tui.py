@@ -255,6 +255,23 @@ _RAIL_BAR_HEAVY = "▓▓▓"
 
 
 
+class SubagentStatusBar(Static):
+    """Clickable inline status bar for the current turn's subagents."""
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        event.prevent_default()
+        monitor = getattr(self.app, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        opener = getattr(self.app, "_open_subagent_monitor", None)
+        if callable(opener):
+            opener()
+
+
 class CodingAgentApp(App[None]):
     """Cursor-like agent transcript."""
 
@@ -607,6 +624,7 @@ class CodingAgentApp(App[None]):
         self._active_turn_thread_id: str | None = None
         self._active_steer_queue: SteerQueue | None = None
         self._subagent_monitor = SubagentMonitor()
+        self._subagent_status_text = ""
         self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
@@ -704,7 +722,7 @@ class CodingAgentApp(App[None]):
             yield Static(id="stream")
         with Vertical(id="bottom-chrome"):
             yield SteerQueueWidget(id="steer-queue")
-            yield Static("", id="subagent-status")
+            yield SubagentStatusBar("", id="subagent-status")
             yield Static("", id="status")
             yield Static("", id="complete-hint")
             yield Input(
@@ -2215,6 +2233,7 @@ class CodingAgentApp(App[None]):
         _, runs = monitor.snapshot()
         status_widget = self.query_one("#subagent-status", Static)
         if not runs:
+            self._subagent_status_text = ""
             status_widget.remove_class("visible")
             status_widget.update("")
             return
@@ -2232,7 +2251,8 @@ class CodingAgentApp(App[None]):
         if counts.get("error"):
             parts.append(f"\u2717 {counts['error']} error")
         text = "  ".join(parts)
-        if text != status_widget.renderable:
+        if text != getattr(self, "_subagent_status_text", ""):
+            self._subagent_status_text = text
             status_widget.update(text)
             status_widget.add_class("visible")
         # Keep the dialog auto-open as a fallback for the first detection
@@ -2245,6 +2265,7 @@ class CodingAgentApp(App[None]):
 
     def _clear_subagent_status(self) -> None:
         """Clear the inline subagent status bar (called on turn reset)."""
+        self._subagent_status_text = ""
         try:
             w = self.query_one("#subagent-status", Static)
             w.remove_class("visible")
