@@ -1,0 +1,9 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"obsolete"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Old question."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Old answer."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"obsolete"}}
+{"type":"compacted","payload":{"message":"Internal compaction summary.","replacement_history":[{"type":"message","id":"msg-1","role":"user","content":[{"type":"input_text","text":"Baseline question."}]},{"type":"message","id":"msg-2","role":"assistant","content":[{"type":"output_text","text":"Baseline answer."}]}]}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Follow-up question."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Follow-up answer."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2"}}

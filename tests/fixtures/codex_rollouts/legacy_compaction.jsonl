@@ -1,0 +1,5 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Question before legacy compaction."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Answer before legacy compaction."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
+{"type":"compacted","payload":{"message":"Legacy summary without replacement history."}}

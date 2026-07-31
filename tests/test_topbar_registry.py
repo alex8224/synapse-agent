@@ -1,0 +1,303 @@
+"""Topbar registry: freeform regions, components, packing."""
+
+from __future__ import annotations
+
+from rich.text import Text
+
+from synapse.ui.topbar import (
+    TopBarAlign,
+    TopBarRegion,
+    TopBarRegionSpec,
+    TopBarRegistry,
+    display_width,
+    install_default_components,
+    layout_from_registry,
+    locate_component_span,
+    pack_topbar_regions,
+    render_region_text,
+)
+
+
+def test_default_topbar_has_dedicated_tool_output_region() -> None:
+    registry = TopBarRegistry()
+    install_default_components(
+        registry,
+        workspace=lambda: "ws",
+        title=lambda: "title",
+        branch=lambda: "main",
+        usage=lambda: "1K/0/0",
+        tool_output=lambda: Text("OUT −2 KiB/75%", style="#81c995"),
+    )
+
+    assert registry.get_region("tool_output") is not None
+    assert [item.id for item in registry.components("tool_output")] == ["tool_output"]
+    line = layout_from_registry(registry, usable_width=100)
+    assert "OUT −2 KiB/75%" in line.plain
+
+
+def test_tool_output_yields_to_usage_when_topbar_is_narrow() -> None:
+    registry = TopBarRegistry()
+    install_default_components(
+        registry,
+        workspace=lambda: "",
+        title=lambda: "分析今日大的改动",
+        branch=lambda: "",
+        usage=lambda: Text("8.9M/8.6M/33K 99K/27%", style="#ffffff"),
+        tool_output=lambda: Text("OUT −18 KiB/17%", style="#81c995"),
+    )
+
+    line = layout_from_registry(registry, usable_width=40)
+    assert "8.9M/8.6M/33K 99K/27%" in line.plain
+
+
+def test_region_parse_and_reject() -> None:
+    assert TopBarRegion.parse("left") is TopBarRegion.LEFT
+    assert TopBarRegion.parse(TopBarRegion.RIGHT) is TopBarRegion.RIGHT
+    try:
+        TopBarRegion.parse("middle")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_register_order_and_region_move() -> None:
+    reg = TopBarRegistry()
+    reg.register_fn("a", lambda: "A", region="right", order=20)
+    reg.register_fn("b", lambda: "B", region="right", order=10)
+    assert render_region_text(reg.components("right")) == "B  ·  A"
+
+    assert reg.set_region("a", "left")
+    assert reg.set_order("b", 5)
+    assert [c.id for c in reg.components("left")] == ["a"]
+    assert [c.id for c in reg.components("right")] == ["b"]
+
+
+def test_visible_and_unregister() -> None:
+    reg = TopBarRegistry()
+    reg.register_fn("x", lambda: "X", region="left", order=1)
+    reg.register_fn("y", lambda: "Y", region="left", order=2)
+    assert reg.set_visible("x", False)
+    assert render_region_text(reg.components("left")) == "Y"
+    assert reg.unregister("y")
+    assert render_region_text(reg.components("left")) == ""
+    assert "x" in reg
+    assert len(reg.components("left", include_hidden=True)) == 1
+
+
+def test_install_defaults_layout_contains_pieces() -> None:
+    reg = TopBarRegistry()
+    install_default_components(
+        reg,
+        workspace=lambda: "proj/ws",
+        title=lambda: "My Session",
+        branch=lambda: "main",
+        usage=lambda: "1K/0/0 500/50%",
+    )
+    left = render_region_text(reg.components(TopBarRegion.LEFT))
+    right = render_region_text(reg.components(TopBarRegion.RIGHT))
+    assert "proj/ws" in left
+    assert "main" in left
+    assert left.index("proj/ws") < left.index("main")
+    assert "1K/0/0" in right
+    assert "main" not in right
+    line = layout_from_registry(reg, usable_width=100)
+    plain = line.plain
+    assert "My Session" in plain
+    assert display_width(plain) <= 100
+
+
+def test_custom_component_in_right_region() -> None:
+    reg = TopBarRegistry()
+    install_default_components(
+        reg,
+        workspace=lambda: "ws",
+        title=lambda: "t",
+        branch=lambda: "",
+        usage=lambda: "u",
+    )
+    reg.register_fn(
+        "mode",
+        lambda: "safe",
+        region=TopBarRegion.RIGHT,
+        order=5,
+        priority=30,
+    )
+    right = render_region_text(reg.components(TopBarRegion.RIGHT))
+    assert right == "safe  ·  u"
+    left = render_region_text(reg.components(TopBarRegion.LEFT))
+    assert left.startswith("≡") or "ws" in left
+
+
+def test_pack_prefers_right_over_center_when_tight() -> None:
+    packed = pack_topbar_regions(
+        usable_width=40,
+        left="≡  long-workspace-name",
+        center="a very long session title that should shrink",
+        right="2M/1.9M/12K 300K/60%",
+        col_gap=3,
+    )
+    assert display_width(packed.as_plain()) <= 40
+    assert packed.right
+
+
+def test_priority_drops_low_priority_sibling() -> None:
+    reg = TopBarRegistry()
+    reg.register_fn("keep", lambda: "KEEP", region="right", order=1, priority=100)
+    reg.register_fn("drop", lambda: "DROPME", region="right", order=2, priority=1)
+    line = layout_from_registry(reg, usable_width=12)
+    plain = line.plain
+    assert "KEEP" in plain
+    assert display_width(plain) <= 12
+
+
+def test_layout_returns_rich_text() -> None:
+    reg = TopBarRegistry()
+    reg.register_fn("l", lambda: "L", region="left", order=1)
+    reg.register_fn("c", lambda: "C", region="center", order=1)
+    reg.register_fn("r", lambda: "R", region="right", order=1)
+    line = layout_from_registry(reg, usable_width=40)
+    assert isinstance(line, Text)
+    assert "L" in line.plain and "C" in line.plain and "R" in line.plain
+
+
+def test_custom_region_with_width_align_fg_bg() -> None:
+    reg = TopBarRegistry()
+    reg.register_region(
+        "badge",
+        order=25,
+        width=10,
+        align="center",
+        fg="#ffffff",
+        bg="#c44",
+        gap_after=2,
+        priority=80,
+    )
+    reg.register_fn("badge_text", lambda: "HOT", region="badge", order=1)
+    reg.register_fn("left_x", lambda: "L", region="left", order=1)
+    reg.register_fn("right_x", lambda: "R", region="right", order=1)
+
+    spec = reg.get_region("badge")
+    assert isinstance(spec, TopBarRegionSpec)
+    assert spec.width == 10
+    assert spec.align is TopBarAlign.CENTER
+    assert spec.bg == "#c44"
+
+    line = layout_from_registry(reg, usable_width=40)
+    plain = line.plain
+    assert "HOT" in plain
+    assert "L" in plain and "R" in plain
+    assert display_width(plain) <= 40
+    # Region band background is painted on the badge text.
+    assert any(
+        span.style is not None and "on #c44" in str(span.style)
+        for span in line._spans  # noqa: SLF001 — Rich Text public span list is private-ish
+    )
+
+
+def test_default_regions_can_use_distinct_bg_bands() -> None:
+    """left / center / right each paint their own solid background band."""
+    reg = TopBarRegistry()
+    reg.set_region_style("left", bg="#111111", fg="#eeeeee", flex=1)
+    reg.set_region_style("center", bg="#222222", fg="#eeeeee", flex=2)
+    reg.set_region_style("right", bg="#333333", fg="#aaaaaa", flex=1)
+    reg.register_fn("l", lambda: "LEFT", region="left", order=1)
+    reg.register_fn("c", lambda: "MID", region="center", order=1)
+    reg.register_fn("r", lambda: "RIGHT", region="right", order=1)
+
+    line = layout_from_registry(reg, usable_width=60)
+    styles = [str(span.style) for span in line._spans if span.style is not None]  # noqa: SLF001
+    joined = " | ".join(styles)
+    assert "on #111111" in joined
+    assert "on #222222" in joined
+    assert "on #333333" in joined
+    assert "LEFT" in line.plain and "MID" in line.plain and "RIGHT" in line.plain
+    # Flex bands fill the row: painted width is much larger than bare text.
+    assert display_width(line.plain) == 60
+
+
+def test_region_bg_fills_allocated_width_not_just_glyphs() -> None:
+    """Region bg must cover pad cells (full band), not only text cells."""
+    from synapse.ui.topbar.core import pack_layout_from_registry, render_packed_line
+
+    reg = TopBarRegistry()
+    # Hide other default panels so leftover width all goes to left.
+    reg.set_region_style("center", visible=False)
+    reg.set_region_style("right", visible=False)
+    reg.set_region_style("left", bg="#abcdef", fg="#fff", flex=1, min_width=1)
+    reg.register_fn("only", lambda: "X", region="left", order=1)
+    packed = pack_layout_from_registry(reg, usable_width=20)
+    left = next(r for r in packed.regions if r.spec.id == "left")
+    assert left.width == 20  # full flex band, not glyph-width=1
+    line = render_packed_line(packed)
+    # Leading/trailing pads also carry the region bg.
+    pad_styles = [
+        str(span.style)
+        for span in line._spans  # noqa: SLF001
+        if span.style is not None and "on #abcdef" in str(span.style)
+    ]
+    assert pad_styles
+    assert display_width(line.plain) == 20
+
+
+def test_region_bg_preserves_component_text_foreground() -> None:
+    """Pre-styled component Text keeps fg; region bg is layered underneath."""
+    reg = TopBarRegistry()
+    reg.set_region_style("left", bg="#101010", fg="#cccccc")
+    reg.register_fn(
+        "branchy",
+        lambda: Text("main", style="#81c995"),
+        region="left",
+        order=1,
+    )
+    line = layout_from_registry(reg, usable_width=20)
+    assert "main" in line.plain
+    styles = [str(span.style) for span in line._spans if span.style is not None]  # noqa: SLF001
+    assert any("on #101010" in s for s in styles)
+    assert any("#81c995" in s for s in styles)
+
+
+def test_region_order_places_custom_before_left() -> None:
+    reg = TopBarRegistry()
+    # Keep sibling panels out of the way so order is easy to assert.
+    reg.set_region_style("center", visible=False)
+    reg.set_region_style("right", visible=False)
+    reg.set_region_style("left", flex=0, min_width=0)
+    reg.register_region("lead", order=1, width=4, align="left", fg="#0f0", flex=0)
+    reg.register_fn("lead_mark", lambda: ">>", region="lead")
+    reg.register_fn("ws", lambda: "WS", region="left")
+    line = layout_from_registry(reg, usable_width=30)
+    plain = line.plain.rstrip()
+    assert plain.index(">>") < plain.index("WS")
+
+
+def test_configure_region_style() -> None:
+    reg = TopBarRegistry()
+    assert reg.set_region_style("left", fg="#abc", bg="#111", align="right", width=12)
+    left = reg.get_region("left")
+    assert left is not None
+    assert left.fg == "#abc"
+    assert left.bg == "#111"
+    assert left.align is TopBarAlign.RIGHT
+    assert left.width == 12
+    assert not reg.set_region_style("nope", fg="#fff")
+
+
+
+def test_locate_component_span_branch() -> None:
+    reg = TopBarRegistry()
+    install_default_components(
+        reg,
+        workspace=lambda: "proj/ws",
+        title=lambda: "My Session",
+        branch=lambda: "main",
+        usage=lambda: "1K/0/0",
+    )
+    span = locate_component_span(reg, "branch", usable_width=100)
+    assert span is not None
+    start, width = span
+    assert start > 0
+    assert width > 0
+    left = render_region_text(reg.components(TopBarRegion.LEFT))
+    # branch text should sit inside left region content
+    assert "main" in left
+    assert start + width <= 100

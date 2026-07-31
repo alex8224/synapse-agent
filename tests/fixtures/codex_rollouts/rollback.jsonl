@@ -1,0 +1,13 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Keep this."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Kept reply."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Remove this."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Removed reply."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2"}}
+{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-3"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Use this instead."}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Replacement reply."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-3"}}
