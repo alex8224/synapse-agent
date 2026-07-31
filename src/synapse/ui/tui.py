@@ -2153,6 +2153,9 @@ class CodingAgentApp(App[None]):
         if self._phase not in {"idle", "ready", ""}:
             self._spin_i += 1
             self._render_status()
+            # Auto-open subagent monitor when DAG planning registers tasks
+            # during an active turn — shows live status immediately.
+            self._maybe_auto_open_subagent_monitor()
         else:
             # Drop expired status notices without waiting for the timer edge case.
             if self._status_notice and time.monotonic() >= float(self._status_notice_until or 0):
@@ -2164,6 +2167,22 @@ class CodingAgentApp(App[None]):
         live = self._live_stream_block
         if isinstance(live, ThoughtBlock) and live.live:
             live.tick_live()
+
+    def _maybe_auto_open_subagent_monitor(self) -> None:
+        """Auto-open the subagent monitor dialog when DAG tasks appear."""
+        if getattr(self, "_subagent_monitor_auto_opened", False):
+            return
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        # Only auto-open when we have pending or running tasks.
+        if not any(r.status in {"pending", "running"} for r in runs):
+            return
+        self._subagent_monitor_auto_opened = True
+        self._open_subagent_monitor()
 
     # -- stream ----------------------------------------------------------
 
@@ -3293,14 +3312,23 @@ class CodingAgentApp(App[None]):
         return all(c.get("id") in known_ids for c in calls)
 
     def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
-        """Refresh the in-turn subagent monitor block (no-op when dialog is closed)."""
-        # The dialog polls _subagent_monitor.revision; force a refresh when open.
-        if not force:
-            return
+        """Show an in-turn subagent status indicator when DAG tasks are detected.
+
+        On first call per turn (force=False), auto-opens the subagent monitor
+        dialog so the user can see live task planning and progress immediately.
+        When opened manually via /subagents, force=True refreshes the dialog."""
         monitor = getattr(self, "_subagent_monitor", None)
         if monitor is None:
             return
-        monitor._revision += 1  # noqa: SLF001 — owned monitor, bump revision for UI poll
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        if not force and getattr(self, "_subagent_monitor_auto_opened", False):
+            return
+        # Auto-open on first detection (the dialog polls and auto-refreshes).
+        if not force:
+            self._subagent_monitor_auto_opened = True
+        self._open_subagent_monitor()
 
     def _on_mcp_dialog_done(self, result: object) -> None:
         if result is None:
@@ -3778,6 +3806,7 @@ class CodingAgentApp(App[None]):
         self._live_tool_summary = ""
         self._live_tool_block = None
         self._subagent_monitor.reset()
+        self._subagent_monitor_auto_opened = False
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
