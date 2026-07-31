@@ -170,6 +170,51 @@ def test_vision_client_posts_to_selected_model():
     assert body["messages"][0]["content"][0]["image_url"]["url"] == PNG_DATA_URL
 
 
+def test_describe_image_tool_is_only_built_for_explicit_text_model():
+    from synapse.tools.describe_image import build_describe_image_tools
+
+    backend = SimpleNamespace()
+    config = VisionModelConfig(model="selected-vl")
+    assert build_describe_image_tools(image_input=True, backend=backend, config=config) == []
+    assert build_describe_image_tools(image_input=None, backend=backend, config=config) == []
+    tools = build_describe_image_tools(image_input=False, backend=backend, config=config)
+    assert [item.name for item in tools] == ["describe_image"]
+
+
+def test_describe_image_tool_reads_workspace_image_and_uses_vision_client():
+    from synapse.tools.describe_image import build_describe_image_tool
+
+    backend = SimpleNamespace(
+        download_files=lambda paths: [
+            SimpleNamespace(path=paths[0], content=b"png-bytes", error=None)
+        ]
+    )
+    tool = build_describe_image_tool(backend, VisionModelConfig(model="selected-vl"))
+    with patch.object(
+        VisionModelClient,
+        "describe_data_url",
+        new=AsyncMock(return_value="A build error dialog"),
+    ) as describe:
+        result = asyncio.run(
+            tool.ainvoke(
+                {"image_path": "/screenshots/error.png", "prompt": "Read the error"}
+            )
+        )
+    assert result == "A build error dialog"
+    data_url = describe.await_args.args[0]
+    assert data_url.startswith("data:image/png;base64,")
+    assert base64.b64decode(data_url.split(",", 1)[1]) == b"png-bytes"
+    assert describe.await_args.kwargs == {"extra_prompt": "Read the error"}
+
+
+def test_describe_image_tool_reports_missing_vision_config():
+    from synapse.tools.describe_image import build_describe_image_tool
+
+    tool = build_describe_image_tool(SimpleNamespace(), None)
+    result = asyncio.run(tool.ainvoke({"image_path": "/screenshot.png"}))
+    assert result == "Image description is unavailable: vision_model is not configured."
+
+
 def test_middleware_skips_configured_vision_for_native_model():
     from synapse.integrations.vision_middleware import build_describe_image_middleware
 

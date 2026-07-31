@@ -7,6 +7,26 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.18
+
+### 新功能
+
+- 新增 LLM Debug Inspector（`F11`），实时监控模型通信、工具调用和 token 消耗。
+- Inspector 支持采集开关、跟随最新、按类型筛选（异常/工具/慢调用）、回合折叠和调用详情查看。
+- Inspector 概览栏显示失败率（基于工具级错误检测），工具标签页展示失败工具及原因。
+
+### 修复
+
+- TUI：`F10` 恢复删除 session 弹框入口；修复鼠标选中与点击复制的冲突，拖选后自动复制。
+
+### 工程改进
+
+- `DebugCaptureRecord` 增加工具级错误检测（LangChain `ToolMessage.status` + 内容模式）。
+- `_tool_pairs` 返回 `error` 字段，区分 "等待中"（result null）与 "真失败"（有错误内容）。
+- Inspector 前端：失败率仅统计真正失败的工具，"待响应"不计入。
+
+---
+
 ## v0.1.17
 
 ### 新功能

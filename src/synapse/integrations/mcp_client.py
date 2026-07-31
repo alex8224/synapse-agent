@@ -13,11 +13,13 @@ import asyncio
 import atexit
 import json
 import logging
+import os
+import sys
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,31 @@ def _expand_mapping(raw: dict[str, Any] | None) -> dict[str, str]:
     for k, v in dict(raw or {}).items():
         out[str(k)] = str(_expand_env(v))
     return out
+
+
+def _valid_subprocess_stream(stream: TextIO | None) -> TextIO | None:
+    """Return a stream only when its OS descriptor is valid for inheritance."""
+    if stream is None or getattr(stream, "closed", False):
+        return None
+    try:
+        fd = stream.fileno()
+        os.fstat(fd)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return stream
+
+
+def _stdio_errlog() -> tuple[TextIO, bool]:
+    """Choose a valid stderr target and report whether the caller owns it.
+
+    Textual, redirected Windows launchers, and GUI executables can leave
+    ``sys.stderr`` present while its underlying descriptor is closed. The MCP
+    SDK passes this object to subprocess creation, which then raises EBADF.
+    """
+    stream = _valid_subprocess_stream(sys.stderr)
+    if stream is not None:
+        return stream, False
+    return open(os.devnull, "w", encoding="utf-8"), True  # noqa: SIM115
 
 
 def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
@@ -337,10 +364,11 @@ class _LoopThread:
 class _LiveServer:
     config: McpServerConfig
     session: Any
-    # Keep transport context managers open for process lifetime.
+    # Keep transport context managers and owned streams open for process lifetime.
     transport_cm: Any
     session_cm: Any
     streams: Any = None
+    errlog: TextIO | None = None
 
 
 class McpSessionPool:
@@ -385,6 +413,8 @@ class McpSessionPool:
                 await live.transport_cm.__aexit__(None, None, None)
             except Exception:  # noqa: BLE001
                 pass
+            if live.errlog is not None:
+                live.errlog.close()
         self._servers.clear()
 
     async def _open_stdio(self, server: McpServerConfig) -> _LiveServer:
@@ -398,16 +428,38 @@ class McpSessionPool:
             args=server.args,
             env=server.env or None,
         )
-        transport_cm = stdio_client(params)
-        read, write = await transport_cm.__aenter__()
-        session_cm = ClientSession(read, write)
-        session = await session_cm.__aenter__()
-        await session.initialize()
+        errlog, owns_errlog = _stdio_errlog()
+        transport_cm = stdio_client(params, errlog=errlog)
+        transport_entered = False
+        session_cm = None
+        session_entered = False
+        try:
+            read, write = await transport_cm.__aenter__()
+            transport_entered = True
+            session_cm = ClientSession(read, write)
+            session = await session_cm.__aenter__()
+            session_entered = True
+            await session.initialize()
+        except BaseException:
+            if session_entered and session_cm is not None:
+                try:
+                    await session_cm.__aexit__(None, None, None)
+                except BaseException:
+                    pass
+            if transport_entered:
+                try:
+                    await transport_cm.__aexit__(None, None, None)
+                except BaseException:
+                    pass
+            if owns_errlog:
+                errlog.close()
+            raise
         return _LiveServer(
             config=server,
             session=session,
             transport_cm=transport_cm,
             session_cm=session_cm,
+            errlog=errlog if owns_errlog else None,
         )
 
     async def _open_http(self, server: McpServerConfig) -> _LiveServer:
