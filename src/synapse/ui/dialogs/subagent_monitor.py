@@ -24,6 +24,8 @@ def _status_label(status: str) -> tuple[str, str]:
         return "ok", "green"
     if value == "error":
         return "error", "red"
+    if value == "pending":
+        return "pending", "dim"
     return "running", "yellow"
 
 
@@ -46,6 +48,8 @@ class SubagentRunRow(Static):
     enabled lets a mouse-down start a selection on a top-level row whose
     parent is not mounted yet while the list is being refreshed.
     """
+
+    ALLOW_SELECT = False
 
     ALLOW_SELECT = False
 
@@ -238,6 +242,15 @@ class SubagentMonitorDialog(ModalScreen[None]):
 
     def _render_list(self) -> None:
         list_view = self.query_one("#sa-list", VerticalScroll)
+        if self._rows and len(self._rows) == len(self._runs) and all(
+            row.run.call_id == run.call_id
+            for row, run in zip(self._rows, self._runs, strict=True)
+        ):
+            for idx, (row, run) in enumerate(zip(self._rows, self._runs, strict=True)):
+                row.update_run(run)
+                row.set_selected(idx == self._selected_idx)
+            return
+
         list_view.remove_children()
         self._rows = []
         if not self._runs:
@@ -298,11 +311,7 @@ class SubagentMonitorDialog(ModalScreen[None]):
                 mark, style = "o", "yellow"
             else:
                 mark, style = "v", "green"
-            rows: list[Any] = [Text(f"  {mark}  {title}", style=style)]
-            if body:
-                rows.append(Text(_short(body, limit=1000), style="dim"))
-            rows.append(Text(""))
-            return rows
+            return [Text(f"  {mark}  {title}", style=style), Text("")]
         label = "Thought" if kind == "thought" else title
         rows = [Text(f"  ◆  {label}", style="dim")]
         if body:

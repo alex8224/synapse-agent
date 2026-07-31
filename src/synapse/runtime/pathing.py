@@ -80,7 +80,8 @@ def to_virtual_path(path: str | os.PathLike[str] | None, workspace: Path) -> str
     # Windows absolute / UNC / host absolute under workspace root
     if is_windows_absolute(s) or os.path.isabs(s):
         try:
-            cand = Path(s)
+            # Normalize backslashes for cross-platform Path parsing.
+            cand = Path(s.replace("\\", "/"))
             # resolve() may fail for non-existing; still ok for relative_to with abs paths
             try:
                 cand_res = cand.resolve()

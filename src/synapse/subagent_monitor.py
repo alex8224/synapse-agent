@@ -50,6 +50,7 @@ class SubagentEvent:
     body: str = ""
     status: str = "ok"
     elapsed_s: float = 0.0
+    event_id: str = ""
     timestamp: float = field(default_factory=time.time)
 
 
@@ -123,10 +124,12 @@ class SubagentMonitor:
         description: str,
         wave: int | None = None,
         depends_on: list[str] | None = None,
+        status: str = "running",
     ) -> None:
         key = call_id or task_id
         if not key:
             return
+        next_status = status if status in {"pending", "running"} else "running"
         with self._lock:
             run = self._runs.get(key)
             if run is None:
@@ -135,13 +138,16 @@ class SubagentMonitor:
                     task_id=task_id,
                     subagent_type=subagent_type,
                     description=description,
+                    status=next_status,
                     wave=wave,
                     depends_on=list(depends_on or []),
                 )
                 self._runs[key] = run
                 self._order.append(key)
             else:
-                run.status = "running"
+                if run.status == "pending" and next_status == "running":
+                    run.started_at = time.time()
+                run.status = next_status
                 run.wave = wave
                 run.depends_on = list(depends_on or [])
             self._revision += 1
@@ -173,13 +179,29 @@ class SubagentMonitor:
         title: str,
         body: str = "",
         status: str = "ok",
+        event_id: str = "",
     ) -> None:
         with self._lock:
             run = self._runs.get(call_id)
             if run is None:
                 return
+            if event_id:
+                for event in run.events:
+                    if event.kind == kind and event.event_id == event_id:
+                        event.title = title
+                        event.body = body
+                        event.status = status
+                        event.timestamp = time.time()
+                        self._revision += 1
+                        return
             run.events.append(
-                SubagentEvent(kind=kind, title=title, body=body, status=status)
+                SubagentEvent(
+                    kind=kind,
+                    title=title,
+                    body=body,
+                    status=status,
+                    event_id=event_id,
+                )
             )
             self._revision += 1
 
@@ -194,8 +216,28 @@ class SubagentMonitor:
                 (event.kind, event.title, event.body, event.status)
                 for event in run.events
             }
+            existing_by_id = {
+                (event.kind, event.event_id): event
+                for event in run.events
+                if event.event_id
+            }
             changed = False
             for event in events:
+                if event.event_id:
+                    current = existing_by_id.get((event.kind, event.event_id))
+                    if current is not None:
+                        if (
+                            current.title != event.title
+                            or current.body != event.body
+                            or current.status != event.status
+                        ):
+                            current.title = event.title
+                            current.body = event.body
+                            current.status = event.status
+                            current.timestamp = time.time()
+                            changed = True
+                        continue
+                    existing_by_id[(event.kind, event.event_id)] = event
                 key = (event.kind, event.title, event.body, event.status)
                 if key in existing:
                     continue
@@ -245,10 +287,6 @@ def _tool_intent(args: Mapping[str, Any]) -> str:
 def _tool_title(name: str, args: Mapping[str, Any]) -> str:
     intent = _tool_intent(args)
     return f"{name} · {intent}" if intent else name
-
-
-def _tool_start_body(args: Mapping[str, Any], raw: str) -> str:
-    return ""
 
 
 def _message_tool_calls(message: Any) -> list[dict[str, Any]]:
@@ -302,12 +340,24 @@ def events_from_messages(
     messages: list[Any],
     *,
     tool_titles: dict[str, str] | None = None,
-    tool_title_queue: dict[str, list[str]] | None = None,
+    tool_title_queue: dict[str, list[tuple[str, str]]] | None = None,
 ) -> list[SubagentEvent]:
     """Build monitor events from a completed subagent message history."""
     events: list[SubagentEvent] = []
     titles = tool_titles if tool_titles is not None else {}
     title_queue = tool_title_queue if tool_title_queue is not None else {}
+
+    def upsert(event: SubagentEvent) -> None:
+        if event.event_id:
+            for existing in events:
+                if existing.kind == event.kind and existing.event_id == event.event_id:
+                    existing.title = event.title
+                    existing.body = event.body
+                    existing.status = event.status
+                    existing.timestamp = event.timestamp
+                    return
+        events.append(event)
+
     for message in messages or []:
         calls = _message_tool_calls(message)
         text = _message_text(message)
@@ -329,27 +379,32 @@ def events_from_messages(
                     args = {}
                 title = _tool_title(name, args)
                 call_id = str(call.get("id") or call.get("tool_call_id") or "")
+                event_id = call_id or f"{name}:{len(events)}:{title}"
                 if call_id:
                     titles[call_id] = title
-                title_queue.setdefault(name, []).append(title)
-                events.append(
+                title_queue.setdefault(name, []).append((title, event_id))
+                upsert(
                     SubagentEvent(
                         kind="tool",
                         title=title,
-                        body=_tool_start_body(args, ""),
+                        body="",
                         status="running",
+                        event_id=event_id,
                     )
                 )
             continue
         if msg_type in {"tool", "toolmessage"}:
             tool_call_id = str(getattr(message, "tool_call_id", "") or "")
             name = str(getattr(message, "name", "") or "tool")
-            events.append(
+            title = titles.get(tool_call_id, name)
+            event_id = tool_call_id or f"{name}:{title}"
+            upsert(
                 SubagentEvent(
                     kind="tool",
-                    title=titles.get(tool_call_id, name),
-                    body=text,
+                    title=title,
+                    body="",
                     status="ok",
+                    event_id=event_id,
                 )
             )
             continue
@@ -375,7 +430,8 @@ class SubagentStreamEventRecorder:
         self._monitor = monitor
         self._call_id = call_id
         self._tool_titles: dict[str, str] = {}
-        self._tool_title_queue: dict[str, list[str]] = {}
+        self._tool_title_queue: dict[str, list[tuple[str, str]]] = {}
+        self._tool_event_ids: dict[str, str] = {}
         self.final_output: Any = None
 
     def record(self, event: Mapping[str, Any]) -> None:
@@ -418,22 +474,29 @@ class SubagentStreamEventRecorder:
         name = str(event.get("name") or "tool")
         run_id = str(event.get("run_id") or "")
         queued_titles = self._tool_title_queue.get(name) or []
-        planned_title = queued_titles.pop(0) if queued_titles else ""
+        planned_title = ""
+        planned_event_id = ""
+        if queued_titles:
+            planned_title, planned_event_id = queued_titles.pop(0)
         if planned_title:
             if run_id:
                 self._tool_titles[run_id] = planned_title
+                self._tool_event_ids[run_id] = planned_event_id
             return
         raw_input = data.get("input")
         args = raw_input if isinstance(raw_input, Mapping) else {}
         title = _tool_title(name, args)
+        event_id = run_id or f"{name}:{title}"
         if run_id:
             self._tool_titles[run_id] = title
+            self._tool_event_ids[run_id] = event_id
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
             body="",
             status="running",
+            event_id=event_id,
         )
 
     def _record_tool_end(
@@ -444,12 +507,18 @@ class SubagentStreamEventRecorder:
         run_id = str(event.get("run_id") or "")
         name = str(event.get("name") or "tool")
         title = self._tool_titles.pop(run_id, name) if run_id else name
+        event_id = (
+            self._tool_event_ids.pop(run_id, run_id)
+            if run_id
+            else f"{name}:{title}"
+        )
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
-            body=_short_text(data.get("output")),
+            body="",
             status="ok",
+            event_id=event_id,
         )
 
     def _record_tool_error(
@@ -460,12 +529,18 @@ class SubagentStreamEventRecorder:
         run_id = str(event.get("run_id") or "")
         name = str(event.get("name") or "tool")
         title = self._tool_titles.pop(run_id, name) if run_id else name
+        event_id = (
+            self._tool_event_ids.pop(run_id, run_id)
+            if run_id
+            else f"{name}:{title}"
+        )
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
-            body=_short_text(data.get("error")),
+            body="",
             status="error",
+            event_id=event_id,
         )
 
 
@@ -479,7 +554,8 @@ class SubagentMonitorCallback(BaseCallbackHandler):
         self._monitor = monitor
         self._call_id = call_id
         self._tool_titles: dict[str, str] = {}
-        self._tool_title_queue: dict[str, list[str]] = {}
+        self._tool_title_queue: dict[str, list[tuple[str, str]]] = {}
+        self._tool_event_ids: dict[str, str] = {}
 
     def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
         self._monitor.add_event(
@@ -499,15 +575,18 @@ class SubagentMonitorCallback(BaseCallbackHandler):
                     args = {}
                 title = _tool_title(name, args)
                 call_id = str(call.get("id") or call.get("tool_call_id") or "")
+                queued = self._tool_title_queue.get(name) or []
+                event_id = call_id or f"{name}:{len(queued)}:{title}"
                 if call_id:
                     self._tool_titles[call_id] = title
-                self._tool_title_queue.setdefault(name, []).append(title)
+                self._tool_title_queue.setdefault(name, []).append((title, event_id))
                 self._monitor.add_event(
                     self._call_id,
                     kind="tool",
                     title=title,
-                    body=_tool_start_body(args, ""),
+                    body="",
                     status="running",
+                    event_id=event_id,
                 )
 
     def on_tool_start(self, serialized: dict[str, Any], input_str: str, **kwargs: Any) -> None:
@@ -520,45 +599,66 @@ class SubagentMonitorCallback(BaseCallbackHandler):
         explicit_id = str(kwargs.get("tool_call_id") or "")
         queued_titles = self._tool_title_queue.get(name) or []
         run_id = str(kwargs.get("run_id") or kwargs.get("tool_call_id") or "")
-        planned_title = self._tool_titles.get(explicit_id) or (
-            queued_titles.pop(0) if queued_titles else ""
-        )
+        queued_title = ""
+        queued_event_id = ""
+        if queued_titles:
+            queued_title, queued_event_id = queued_titles.pop(0)
+        planned_title = self._tool_titles.get(explicit_id) or queued_title
+        planned_event_id = explicit_id or queued_event_id
+        if not planned_event_id and planned_title:
+            planned_event_id = f"{name}:{planned_title}"
         if planned_title:
             if run_id:
                 self._tool_titles[run_id] = planned_title
+                self._tool_event_ids[run_id] = planned_event_id
             return
         args = _extract_tool_args(input_str, kwargs)
         title = _tool_title(name, args)
+        event_id = run_id or explicit_id or f"{name}:{title}"
         if run_id:
             self._tool_titles[run_id] = title
+            self._tool_event_ids[run_id] = event_id
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
-            body=_tool_start_body(args, input_str),
+            body="",
             status="running",
+            event_id=event_id,
         )
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id") or kwargs.get("tool_call_id") or "")
         name = str(kwargs.get("name") or "tool")
         title = self._tool_titles.pop(run_id, name) if run_id else name
+        event_id = (
+            self._tool_event_ids.pop(run_id, run_id)
+            if run_id
+            else f"{name}:{title}"
+        )
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
-            body=_short_text(output),
+            body="",
             status="ok",
+            event_id=event_id,
         )
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id") or kwargs.get("tool_call_id") or "")
         name = str(kwargs.get("name") or "tool")
         title = self._tool_titles.pop(run_id, name) if run_id else name
+        event_id = (
+            self._tool_event_ids.pop(run_id, run_id)
+            if run_id
+            else f"{name}:{title}"
+        )
         self._monitor.add_event(
             self._call_id,
             kind="tool",
             title=title,
-            body=_short_text(error),
+            body="",
             status="error",
+            event_id=event_id,
         )

@@ -62,6 +62,10 @@ def test_answer_selectable_text_is_body() -> None:
     assert block.selectable_text() == "line one\nline two"
 
 
+def test_answer_block_does_not_copy_on_mouse_click() -> None:
+    assert "on_click" not in AnswerBlock.__dict__
+
+
 def test_answer_get_selection_full_body() -> None:
     block = AnswerBlock("alpha\nbeta\ngamma")
     sel = Selection(None, None)

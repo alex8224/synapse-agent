@@ -56,6 +56,8 @@ class TextualStreamSink:
         self._group_open = False
         self._group_header_written = False
         self._expanded_item_id: str | None = None
+        # Suppressed DAG task group — when True, skip all tool group rendering.
+        self._dag_suppressed = False
         # Legacy fallback counters.
         self._legacy_pending = 0
         self._legacy_names: list[str] = []
@@ -368,6 +370,27 @@ class TextualStreamSink:
         """Open a tool group shell; item API fills details right after."""
         del parallel
         self._call("clear_stream")
+
+        # When all calls are DAG task() invocations tracked by the subagent
+        # monitor, suppress the parent tool group.  The monitor dialog renders
+        # its own live blocks.
+        app = self._app
+        if (
+            hasattr(app, "should_suppress_dag_task_tool_group")
+            and app.should_suppress_dag_task_tool_group(calls)  # type: ignore[union-attr]
+        ):
+            if hasattr(app, "sync_subagent_monitor_block"):
+                app.sync_subagent_monitor_block()  # type: ignore[union-attr]
+            self._group_items.clear()
+            self._group_open = False
+            self._group_header_written = False
+            self._expanded_item_id = None
+            self._dag_suppressed = True
+            self._legacy_pending = 0
+            self._legacy_failed = 0
+            self._legacy_names = []
+            return
+
         # One stream batch == one visual group.  If a previous batch was not
         # closed cleanly, seal it before starting the next header.
         if self._group_open and self._group_items:
@@ -386,6 +409,8 @@ class TextualStreamSink:
         self._call("set_activity", "tools", summary, False)
 
     def tool_item_started(self, item: ToolItem) -> None:
+        if self._dag_suppressed:
+            return
         if not self._group_open:
             self._group_open = True
             self._group_header_written = False
@@ -414,6 +439,8 @@ class TextualStreamSink:
 
     def tool_item_updated(self, item: ToolItem) -> None:
         """Refresh label/path after streaming args complete."""
+        if self._dag_suppressed:
+            return
         for i, existing in enumerate(self._group_items):
             if existing.id == item.id:
                 self._group_items[i] = item
@@ -431,6 +458,8 @@ class TextualStreamSink:
         preview: str | None = None,
         error: bool = False,
     ) -> None:
+        if self._dag_suppressed:
+            return
         _side_effect = False
         for it in self._group_items:
             if it.id != item_id:
@@ -478,6 +507,7 @@ class TextualStreamSink:
 
     def turn_finished(self) -> None:
         """Seal any leftover open group at end of one turn."""
+        self._dag_suppressed = False
         self._finalize_open_group(force=True)
 
     def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:

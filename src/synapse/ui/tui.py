@@ -257,6 +257,23 @@ _RAIL_BAR_HEAVY = "▓▓▓"
 
 
 
+class SubagentStatusBar(Static):
+    """Clickable inline status bar for the current turn's subagents."""
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        event.prevent_default()
+        monitor = getattr(self.app, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        opener = getattr(self.app, "_open_subagent_monitor", None)
+        if callable(opener):
+            opener()
+
+
 class CodingAgentApp(App[None]):
     """Cursor-like agent transcript."""
 
@@ -406,6 +423,17 @@ class CodingAgentApp(App[None]):
         /* No forced color: Rich Text carries per-region styles. */
         background: $theme-bg;
         content-align: left middle;
+    }
+    #subagent-status {
+        height: auto;
+        min-height: 1;
+        padding: 0 2;
+        color: $theme-fg;
+        background: $theme-bar;
+        display: none;
+    }
+    #subagent-status.visible {
+        display: block;
     }
     /* Must be in the app stylesheet: widget DEFAULT_CSS is parsed separately
        and cannot resolve the app's $theme-* variables. */
@@ -601,6 +629,7 @@ class CodingAgentApp(App[None]):
         self._active_turn_thread_id: str | None = None
         self._active_steer_queue: SteerQueue | None = None
         self._subagent_monitor = SubagentMonitor()
+        self._subagent_status_text = ""
         self._skip_steer_followup = False
         self._last_thought_body = ""
         self._last_thought_elapsed = 0.0
@@ -698,6 +727,7 @@ class CodingAgentApp(App[None]):
             yield Static(id="stream")
         with Vertical(id="bottom-chrome"):
             yield SteerQueueWidget(id="steer-queue")
+            yield SubagentStatusBar("", id="subagent-status")
             yield Static("", id="status")
             yield Static("", id="complete-hint")
             yield Input(
@@ -2330,6 +2360,9 @@ class CodingAgentApp(App[None]):
         if self._phase not in {"idle", "ready", ""}:
             self._spin_i += 1
             self._render_status()
+            # Auto-open subagent monitor when DAG planning registers tasks
+            # during an active turn — shows live status immediately.
+            self._maybe_auto_open_subagent_monitor()
         else:
             # Drop expired status notices without waiting for the timer edge case.
             if self._status_notice and time.monotonic() >= float(self._status_notice_until or 0):
@@ -2341,6 +2374,54 @@ class CodingAgentApp(App[None]):
         live = self._live_stream_block
         if isinstance(live, ThoughtBlock) and live.live:
             live.tick_live()
+
+    def _maybe_auto_open_subagent_monitor(self) -> None:
+        """Render inline subagent status in the main TUI during DAG execution."""
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        status_widget = self.query_one("#subagent-status", Static)
+        if not runs:
+            self._subagent_status_text = ""
+            status_widget.remove_class("visible")
+            status_widget.update("")
+            return
+        counts: dict[str, int] = {}
+        for r in runs:
+            s = r.status or ""
+            counts[s] = counts.get(s, 0) + 1
+        parts: list[str] = ["Subagents:"]
+        if counts.get("pending"):
+            parts.append(f"\u25a1 {counts['pending']} pending")
+        if counts.get("running"):
+            parts.append(f"\u26a1 {counts['running']} running")
+        if counts.get("ok"):
+            parts.append(f"\u2713 {counts['ok']} done")
+        if counts.get("error"):
+            parts.append(f"\u2717 {counts['error']} error")
+        text = "  ".join(parts)
+        if text != getattr(self, "_subagent_status_text", ""):
+            self._subagent_status_text = text
+            status_widget.update(text)
+            status_widget.add_class("visible")
+        # Keep the dialog auto-open as a fallback for the first detection
+        # in a turn — then the inline bar takes over for updates.
+        if not getattr(self, "_subagent_monitor_auto_opened", False):
+            active = any(r.status in {"pending", "running"} for r in runs)
+            if active:
+                self._subagent_monitor_auto_opened = True
+                self._open_subagent_monitor()
+
+    def _clear_subagent_status(self) -> None:
+        """Clear the inline subagent status bar (called on turn reset)."""
+        self._subagent_status_text = ""
+        try:
+            w = self.query_one("#subagent-status", Static)
+            w.remove_class("visible")
+            w.update("")
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- stream ----------------------------------------------------------
 
@@ -3454,6 +3535,43 @@ class CodingAgentApp(App[None]):
 
         self.push_screen(SubagentMonitorDialog(self._subagent_monitor))
 
+    def should_suppress_dag_task_tool_group(self, calls: list[dict]) -> bool:
+        """Suppress the parent ``task`` tool group when the subagent monitor
+        is tracking matching runs.
+
+        Called by TextualStreamSink before rendering a tool batch."""
+        if not calls:
+            return False
+        if not all(c.get("name") == "task" for c in calls):
+            return False
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return False
+        _, runs = monitor.snapshot()
+        known_ids = {r.call_id for r in runs if r.status in {"pending", "running"}}
+        if not known_ids:
+            return False
+        return all(c.get("id") in known_ids for c in calls)
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
+        """Show an in-turn subagent status indicator when DAG tasks are detected.
+
+        On first call per turn (force=False), auto-opens the subagent monitor
+        dialog so the user can see live task planning and progress immediately.
+        When opened manually via /subagents, force=True refreshes the dialog."""
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        if not force and getattr(self, "_subagent_monitor_auto_opened", False):
+            return
+        # Auto-open on first detection (the dialog polls and auto-refreshes).
+        if not force:
+            self._subagent_monitor_auto_opened = True
+        self._open_subagent_monitor()
+
     def _on_mcp_dialog_done(self, result: object) -> None:
         if result is None:
             return
@@ -3992,6 +4110,8 @@ class CodingAgentApp(App[None]):
         self._live_tool_summary = ""
         self._live_tool_block = None
         self._subagent_monitor.reset()
+        self._subagent_monitor_auto_opened = False
+        self._clear_subagent_status()
         self.clear_stream()
         self.set_activity("thinking", "starting", True)
         self._sync_prompt_placeholder()
@@ -4231,6 +4351,7 @@ class CodingAgentApp(App[None]):
             self._refresh_git_chrome()
         except Exception:  # noqa: BLE001
             pass
+        self._clear_subagent_status()
         self.query_one("#prompt", Input).focus()
         # If the model finished without another tool/model step, apply leftover
         # guidance as a follow-up turn (unless the run was Esc-cancelled).

@@ -163,6 +163,7 @@ def _rebuild_agent(
     agent: Any,
     load_mcp: bool | None = None,
     defer_mcp_reconnect: bool = False,
+    force_parallel_subagents: bool | None = None,
 ) -> Any:
     checkpointer = getattr(agent, "_coding_checkpointer", None)
     steer_queue = getattr(agent, "_coding_steer_queue", None)
@@ -171,6 +172,8 @@ def _rebuild_agent(
     model = getattr(agent, "_coding_model", None) if reuse_model else None
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
     model_cache = getattr(agent, "_coding_model_cache", None)
+    if force_parallel_subagents is None and hasattr(agent, "_coding_parallel_subagents"):
+        force_parallel_subagents = bool(getattr(agent, "_coding_parallel_subagents", False))
     mcp_tools: list[Any] | None = None
     if load_mcp is not None:
         # Explicit caller intent (/mcp reload, /mcp disable, ...).
@@ -206,6 +209,7 @@ def _rebuild_agent(
         load_mcp=want_mcp,
         mcp_tools=mcp_tools,
         steer_queue=steer_queue,
+        force_parallel_subagents=force_parallel_subagents,
     )
 
 
@@ -488,19 +492,16 @@ def handle_slash(
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if cmd in {"/subagents", "/subagent"}:
-        from synapse.runtime.subagents import build_default_subagents, format_subagents_lines
+        from synapse.runtime.subagents import format_subagents_lines
 
         specs = getattr(agent, "_coding_subagents", None)
-        if specs is None:
-            specs = build_default_subagents(
-                enabled=getattr(settings, "enable_subagents", True),
-                isolate_tools=True,
-            )
+        mode = getattr(agent, "_coding_subagent_mode", "disabled")
         plain = format_subagents_lines(specs)
+        plain.insert(0, f"subagent mode: {mode}")
         if not specs:
             md = "## Sub-agents\n\n*disabled*"
         else:
-            md = f"## Sub-agents ({len(specs)})\n\n"
+            md = f"## Sub-agents ({len(specs)})\n\nMode: `{markdown_escape(str(mode))}`\n\n"
             md += "| Name | Model | Isolation | Tools |\n|---|---|---|---|\n"
             for spec in specs:
                 name = spec.get("name") or "?"

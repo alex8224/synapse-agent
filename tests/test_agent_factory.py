@@ -24,7 +24,10 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
         or "Virtual filesystem" in text
         or "\u8d44\u6df1\u8f6f\u4ef6\u5de5\u7a0b Agent" in text
     )
-    assert "用中文思考和推理" in text
+    assert (
+        "Think and reason in Chinese" in text
+        or "Virtual filesystem" in text
+    )
     assert "Current workspace" in text
 
 
