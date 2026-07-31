@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.bottombar.components import key_hints, mcp, mode, model
+from synapse.ui.bottombar.components import codex_usage, key_hints, mcp, mode, model
 from synapse.ui.bottombar.core import (
     DEFAULT_COL_GAP,
     BottomBarAlign,
@@ -38,6 +38,7 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     key_hints.install,
     mode.install,
     model.install,
+    codex_usage.install,
     mcp.install,
 ]
 
@@ -91,6 +92,7 @@ def install_default_components(
     idle_hints: Callable[[], str] | None = None,
     busy_hints: Callable[[], str] | None = None,
     model: Callable[[], str] | None = None,
+    codex_usage: Callable[[], str | object] | None = None,
     mcp: Callable[[], str] | None = None,
     installers: list[ComponentInstaller] | None = None,
 ) -> None:
@@ -120,6 +122,7 @@ def install_default_components(
             busy_hints=busy_hints
             or (lambda: "Esc cancel · Enter queue guidance"),
             model=model or _empty,
+            codex_usage=codex_usage or _empty,
             mcp=mcp or _empty,
         )
     else:
@@ -130,6 +133,7 @@ def install_default_components(
             idle_hints=idle_hints or ctx.idle_hints,
             busy_hints=busy_hints or ctx.busy_hints,
             model=model or ctx.model,
+            codex_usage=codex_usage or ctx.codex_usage,
             mcp=mcp or ctx.mcp,
         )
 

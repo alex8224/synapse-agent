@@ -62,13 +62,16 @@ def test_install_defaults_layout_contains_pieces() -> None:
         idle_hints=lambda: "Tab complete · Esc cancel",
         busy_hints=lambda: "Esc cancel · Enter queue",
         model=lambda: "haha-grok-4.5 · max",
+        codex_usage=lambda: "5h 82%/10m · 1d 96%/2h",
         mcp=lambda: "mcp off",
     )
     left = render_region_text(reg.components(BottomBarRegion.LEFT))
     right = render_region_text(reg.components(BottomBarRegion.RIGHT))
     assert "Tab complete" in right
     assert "haha-grok-4.5 · max" in left
+    assert "5h 82%/10m · 1d 96%/2h" in left
     assert "mcp off" in left
+    assert left.index("haha-grok") < left.index("5h 82%") < left.index("mcp off")
     # thread is not shown by default
     assert "abcd…wxyz" not in left
     # order: model → mcp (left)
@@ -111,6 +114,7 @@ def test_mcp_label_colors_by_status() -> None:
         idle_hints=lambda: "",
         busy_hints=lambda: "",
         model=lambda: "m",
+        codex_usage=lambda: "codex n/a",
         mcp=lambda: status["v"],
     )
     left = render_region_text(reg.components(BottomBarRegion.LEFT))
@@ -144,6 +148,7 @@ def test_custom_component_in_left_region() -> None:
         idle_hints=lambda: "hints",
         busy_hints=lambda: "busy",
         model=lambda: "m · high",
+        codex_usage=lambda: "codex n/a",
         mcp=lambda: "mcp on",
     )
     reg.register_fn(
