@@ -9,8 +9,12 @@ targets OpenAI-compatible gateways (DeepSeek V4 etc.), so we restore:
 2. inbound complete messages: same field on ``AIMessage``
 3. outbound request messages: send ``reasoning_content`` back when present
    (required by DeepSeek when an assistant turn includes tool calls)
+4. Responses API reasoning: langchain-openai's converter drops
+   ``response.reasoning_text.delta``; re-emit it as incremental
+   ``additional_kwargs['reasoning_content']`` chunks so ``use_responses_api``
+   paths render reasoning in the TUI without corrupting future request messages.
 
-This module is safe to import multiple times (idempotent patch).
+This module is safe to import multiple times (idempotent patches).
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 _PATCHED = False
+_PATCHED_RESPONSES = False
 
 
 def enable_openai_compat_reasoning_patch() -> None:
@@ -72,6 +77,55 @@ def enable_openai_compat_reasoning_patch() -> None:
     oai_base._convert_dict_to_message = _convert_dict_to_message
     oai_base._convert_message_to_dict = _convert_message_to_dict
     _PATCHED = True
+
+
+def enable_responses_reasoning_patch() -> None:
+    """Idempotently forward ``response.reasoning_text.delta`` in Responses streams.
+
+    langchain-openai's ``_convert_responses_chunk_to_generation_chunk`` only
+    handles the reasoning *summary* events; plain ``response.reasoning_text.delta``
+    events fall into its else clause and are silently dropped. On the HTTP
+    Responses path (``use_responses_api=True`` without the WebSocket transport —
+    Codex OAuth, codex-prefixed models, or the WebSocket HTTP fallback) the TUI
+    then only ever sees the reasoning token count from usage.
+
+    Each reasoning delta is forwarded as its own chunk carrying incremental
+    ``additional_kwargs['reasoning_content']`` text (concatenated by the UI).
+    Do not use ``additional_kwargs['reasoning']`` here: LangChain reserves that
+    key for a Responses API reasoning mapping and tries to unpack it when history
+    messages are converted for the next request. The WebSocket transport already
+    re-emits these deltas itself and intercepts them before the converter, so the
+    two paths do not double-report.
+    """
+    global _PATCHED_RESPONSES
+    if _PATCHED_RESPONSES:
+        return
+
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.outputs import ChatGenerationChunk
+    from langchain_openai.chat_models import base as oai_base
+
+    orig_convert = oai_base._convert_responses_chunk_to_generation_chunk
+
+    def _convert_responses_chunk_to_generation_chunk(  # type: ignore[no-untyped-def]
+        chunk,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        if getattr(chunk, "type", None) == "response.reasoning_text.delta":
+            delta = getattr(chunk, "delta", None)
+            if delta:
+                message = AIMessageChunk(
+                    content=[],
+                    additional_kwargs={"reasoning_content": str(delta)},
+                )
+                return (*args[:3], ChatGenerationChunk(message=message))
+        return orig_convert(chunk, *args, **kwargs)
+
+    oai_base._convert_responses_chunk_to_generation_chunk = (
+        _convert_responses_chunk_to_generation_chunk
+    )
+    _PATCHED_RESPONSES = True
 
 
 def deepseek_thinking_kwargs(

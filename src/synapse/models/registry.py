@@ -40,6 +40,7 @@ from langchain.chat_models import init_chat_model
 from synapse.integrations.llm_openai_compat import (
     deepseek_thinking_kwargs,
     enable_openai_compat_reasoning_patch,
+    enable_responses_reasoning_patch,
 )
 from synapse.models.config import (
     DEFAULT_MODELS_CONFIG_REL,
@@ -219,6 +220,7 @@ class ModelRegistry:
                 progress("loading OpenAI SDK")
             with span("model:openai_compat_patch"):
                 enable_openai_compat_reasoning_patch()
+                enable_responses_reasoning_patch()
             if base_url:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:

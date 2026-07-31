@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import agenerate_from_stream
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import _convert_responses_chunk_to_generation_chunk
@@ -70,6 +70,25 @@ def prepare_responses_websocket_event(payload: dict[str, Any]) -> dict[str, Any]
     event.pop("thinking", None)
     event["type"] = "response.create"
     return event
+
+
+def _reasoning_chunk(text: str) -> ChatGenerationChunk:
+    """Wrap accumulated reasoning text in a chunk for the TUI stream.
+
+    langchain-openai's Responses converter does not forward
+    ``response.reasoning_text.delta``, so reasoning is re-emitted here as a single
+    chunk carrying ``additional_kwargs["reasoning_content"]`` (a key
+    ``_extract_reasoning`` reads). ``reasoning`` is reserved by LangChain for a
+    Responses API mapping and cannot safely hold text. The chunk carries no content
+    and no tool calls, so it is only visible to reasoning rendering, never to
+    answer/tool stream paths.
+    """
+    return ChatGenerationChunk(
+        message=AIMessageChunk(
+            content=[],
+            additional_kwargs={"reasoning_content": text},
+        )
+    )
 
 
 class ResponsesWebSocketChatOpenAI(ChatOpenAI):
@@ -186,6 +205,7 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
                     current_output_index = -1
                     current_sub_index = -1
                     has_reasoning = False
+                    reasoning_delta_parts: list[str] = []
                     original_schema_obj = kwargs.get("response_format")
 
                     while True:
@@ -209,6 +229,33 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
                                 code=str(code) if code else None,
                                 param=str(param) if param else None,
                             )
+
+                        # langchain-openai's Responses converter has no branch for
+                        # ``response.reasoning_text.delta``: reasoning deltas fall
+                        # into its else clause and are silently dropped, so the TUI
+                        # only ever sees the reasoning token count from usage.
+                        # Accumulate the deltas here and emit the full reasoning text
+                        # once the reasoning output item completes (or the response
+                        # terminates) as ``additional_kwargs["reasoning_content"]``,
+                        # which ``_extract_reasoning`` picks up for rendering.
+                        if event_type == "response.reasoning_text.delta":
+                            delta = getattr(response_event, "delta", None)
+                            if delta:
+                                reasoning_delta_parts.append(str(delta))
+                            continue
+
+                        if (
+                            event_type == "response.output_item.done"
+                            and reasoning_delta_parts
+                            and getattr(
+                                getattr(response_event, "item", None), "type", None
+                            )
+                            == "reasoning"
+                        ):
+                            yielded_chunk = True
+                            has_reasoning = True
+                            yield _reasoning_chunk("".join(reasoning_delta_parts))
+                            reasoning_delta_parts = []
 
                         (
                             current_index,
@@ -237,6 +284,14 @@ class ResponsesWebSocketChatOpenAI(ChatOpenAI):
                             yield generation_chunk
 
                         if event_type in _TERMINAL_EVENT_TYPES:
+                            # Safety net: a gateway may terminate without a
+                            # reasoning ``output_item.done`` (e.g. an aborted
+                            # response). Do not drop already-buffered reasoning.
+                            if reasoning_delta_parts:
+                                yielded_chunk = True
+                                has_reasoning = True
+                                yield _reasoning_chunk("".join(reasoning_delta_parts))
+                                reasoning_delta_parts = []
                             return
                 except asyncio.CancelledError:
                     await self._reset_responses_websocket()

@@ -181,7 +181,8 @@ def close_model_async_http_client(model: Any) -> None:
 
 # Cap on the raw request/response body kept per model call. Bodies beyond this
 # size are truncated (the live stream handed to the SDK is never affected).
-_MAX_RAW_BODY_CHARS = 262_144
+# 2 MiB per body keeps ~100 MB worst-case at the default 50-record ring buffer.
+_MAX_RAW_BODY_CHARS = 2 * 1024 * 1024
 
 
 class _AsyncGeneratorStream(httpx.AsyncByteStream):

@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk
 
 from synapse.integrations.llm_openai_websocket import (
     ResponsesWebSocketChatOpenAI,
+    _reasoning_chunk,
     prepare_responses_websocket_event,
 )
 
@@ -87,6 +88,15 @@ def test_prepare_responses_websocket_event(stream):
         "input": "hello",
         "reasoning": {"effort": "high"},
     }
+
+
+def test_websocket_reasoning_chunk_can_be_replayed_in_next_request():
+    message = _reasoning_chunk("先检查代码。").message
+    payload = ResponsesWebSocketChatOpenAI(
+        model="gpt-test", api_key="test-key", use_responses_api=True
+    )._get_request_payload([message])
+
+    assert payload["input"] == []
 
 
 def test_websocket_stream_reuses_connection():
@@ -314,6 +324,104 @@ def test_websocket_does_not_replay_after_yielding_chunk():
 
     assert responses.connect_count == 1
     assert connection.closed is True
+
+
+def test_websocket_forwards_reasoning_text_deltas():
+    """``response.reasoning_text.delta`` events must reach the stream as reasoning."""
+    connection = _FakeConnection(
+        [[
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="reasoning", id="r1"),
+            ),
+            SimpleNamespace(
+                type="response.content_part.added",
+                item_id="r1",
+                part=SimpleNamespace(type="reasoning_text"),
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="用户想查看未提交的改动。",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="让我运行 git status。",
+            ),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(type="reasoning", id="r1"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="final"),
+            SimpleNamespace(type="response.completed"),
+        ]]
+    )
+    manager = _FakeManager(connection)
+    responses = _FakeResponses(manager)
+    model = ResponsesWebSocketChatOpenAI(model="gpt-test", api_key="test-key")
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    def convert(event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        chunk = None
+        if event.type == "response.output_text.delta":
+            chunk = ChatGenerationChunk(message=AIMessageChunk(content=event.delta))
+        return current_index, current_output_index, current_sub_index, chunk
+
+    async def run():
+        with patch(
+            "synapse.integrations.llm_openai_websocket."
+            "_convert_responses_chunk_to_generation_chunk",
+            side_effect=convert,
+        ):
+            return [c.message async for c in model._astream([HumanMessage("a")])]
+
+    messages = asyncio.run(run())
+
+    reasoning = [
+        m.additional_kwargs.get("reasoning_content")
+        for m in messages
+        if m.additional_kwargs.get("reasoning_content")
+    ]
+    assert reasoning == ["用户想查看未提交的改动。让我运行 git status。"]
+    # Answer tokens still stream normally alongside the reasoning chunk.
+    assert [m.content for m in messages if m.content] == ["final"]
+
+
+def test_websocket_flushes_reasoning_on_terminal_event():
+    """Buffered reasoning is still emitted when the stream ends without item.done."""
+    connection = _FakeConnection(
+        [[
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="aborted mid-thought",
+            ),
+            SimpleNamespace(type="response.incomplete"),
+        ]]
+    )
+    manager = _FakeManager(connection)
+    responses = _FakeResponses(manager)
+    model = ResponsesWebSocketChatOpenAI(model="gpt-test", api_key="test-key")
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    def convert(event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        return current_index, current_output_index, current_sub_index, None
+
+    async def run():
+        with patch(
+            "synapse.integrations.llm_openai_websocket."
+            "_convert_responses_chunk_to_generation_chunk",
+            side_effect=convert,
+        ):
+            return [c.message async for c in model._astream([HumanMessage("a")])]
+
+    messages = asyncio.run(run())
+    reasoning = [
+        m.additional_kwargs.get("reasoning_content")
+        for m in messages
+        if m.additional_kwargs.get("reasoning_content")
+    ]
+    assert reasoning == ["aborted mid-thought"]
 
 
 def test_websocket_sdk_error_shape_retries():
