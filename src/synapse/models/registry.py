@@ -518,25 +518,41 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
 
 
 def load_models_config(path: Path | str | None) -> ModelRegistry | None:
-    """Load models JSON if path exists; return None when unset/missing."""
+    """Load models JSON if path exists; return None when unset/missing.
+
+    Raises:
+        ValueError: If the file does not contain valid JSON or a valid model registry.
+    """
     if path is None:
         return None
     p = Path(path).expanduser()
     if not p.is_file():
         return None
-    data = json.loads(p.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("models config root must be an object")
-    return _profiles_from_mapping(data)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("root must be an object")
+        return _profiles_from_mapping(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid models config JSON in {p}: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"invalid models config in {p}: {exc}") from exc
 
 
 def load_models_json_blob(blob: str | None) -> ModelRegistry | None:
+    """Load an inline MODELS_JSON registry, if configured."""
     if not blob or not blob.strip():
         return None
-    data = json.loads(blob)
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid MODELS_JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("MODELS_JSON root must be an object")
-    return _profiles_from_mapping(data)
+    try:
+        return _profiles_from_mapping(data)
+    except ValueError as exc:
+        raise ValueError(f"invalid MODELS_JSON: {exc}") from exc
 
 
 def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelProfile:

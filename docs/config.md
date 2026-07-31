@@ -113,6 +113,12 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 
 参见 [模型配置](models.md) 页面。
 
+### 配置错误提示
+
+启动时如果 `models.json`、`settings.json` 或内联 JSON 环境变量格式错误，Synapse 会输出
+简短的错误说明和修复提示后退出，不会显示完整 Python traceback。对于 `models.json`，错误信息会
+包含出错文件路径和 JSON 的行列位置；修复配置后重新启动即可。
+
 ## `.coding-agent/mcp_servers.json` 格式
 
 参见 [MCP Server](mcp.md) 页面。

@@ -93,6 +93,15 @@ def _print_auth_error(settings, exc: Exception) -> None:
         )
 
 
+def _print_settings_error(exc: Exception) -> None:
+    """Print a concise, actionable configuration error without a traceback."""
+    print_error(f"Configuration error: {exc}")
+    print_info(
+        "Check models.json, settings.json, and inline JSON environment variables "
+        "(MODELS_JSON / MCP_SERVERS_JSON)."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Authentication commands
 # ---------------------------------------------------------------------------
@@ -252,14 +261,18 @@ def _launch_tui(
     debug: bool,
 ) -> None:
     """Bootstrap settings and open the full-screen Textual TUI."""
-    env_path = _bootstrap_env()
-    settings = _resolve_settings(
-        workspace=workspace,
-        model=model,
-        require_approval=require_approval,
-        debug=debug,
-        readonly=readonly,
-    )
+    try:
+        env_path = _bootstrap_env()
+        settings = _resolve_settings(
+            workspace=workspace,
+            model=model,
+            require_approval=require_approval,
+            debug=debug,
+            readonly=readonly,
+        )
+    except (OSError, ValueError) as exc:
+        _print_settings_error(exc)
+        raise typer.Exit(code=1) from exc
     try:
         from synapse.ui.tui import run_tui
     except ImportError as exc:  # pragma: no cover - dependency missing

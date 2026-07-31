@@ -1,8 +1,10 @@
-"""CLI help smoke tests."""
+"""CLI help and startup error handling tests."""
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
-from synapse.cli import _bounded_preview_text, _preview_warning_text, app
+from synapse.cli import _bounded_preview_text, _launch_tui, _preview_warning_text, app
 
 runner = CliRunner()
 
@@ -79,3 +81,28 @@ def test_cli_mcp_help():
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0
     assert "mcp" in result.stdout.lower()
+
+
+def test_launch_tui_reports_invalid_models_json_without_traceback(tmp_path, monkeypatch, capsys):
+    models_path = tmp_path / "models.json"
+    models_path.write_text('{"models": {"main": {"model": "openai:test"},}', encoding="utf-8")
+    monkeypatch.setenv("AGENT_MODELS_CONFIG", str(models_path))
+    monkeypatch.delenv("MODELS_JSON", raising=False)
+    monkeypatch.setattr("synapse.cli._bootstrap_env", lambda: None)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _launch_tui(
+            workspace=tmp_path,
+            model=None,
+            require_approval=False,
+            readonly=False,
+            thread_id=None,
+            debug=False,
+        )
+
+    output = capsys.readouterr().out
+    assert getattr(exc_info.value, "exit_code", None) == 1
+    assert "Configuration error:" in output
+    assert str(models_path) in output
+    assert "invalid models config JSON" in output
+    assert "MODELS_JSON" in output
