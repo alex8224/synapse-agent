@@ -86,7 +86,8 @@ def _reasoning_block_text(block: dict[str, Any]) -> str:
 
         {"type": "reasoning", "summary": [{"type": "summary_text", "text": "..."}]}
 
-    as well as flat blocks such as ``{"type": "reasoning", "text": "..."}``.
+    flat blocks such as ``{"type": "reasoning", "text": "..."}``, and
+    Anthropic-style dict blocks like ``{"type": "thinking", "thinking": "..."}``.
     """
     summary = block.get("summary")
     if isinstance(summary, list):
@@ -97,7 +98,12 @@ def _reasoning_block_text(block: dict[str, Any]) -> str:
         ]
         if chunks:
             return "".join(chunks)
-    return str(block.get("text") or block.get("reasoning") or "")
+    return str(
+        block.get("text")
+        or block.get("reasoning")
+        or block.get("thinking")
+        or ""
+    )
 
 
 def _extract_reasoning(msg: Any) -> str:
@@ -127,7 +133,7 @@ def _extract_reasoning(msg: Any) -> str:
             if btype in {"reasoning", "thinking"}:
                 parts.append(_reasoning_block_text(block))
 
-    for key in ("reasoning_content", "reasoning"):
+    for key in ("reasoning_content", "reasoning", "thinking"):
         val = getattr(msg, key, None)
         if val:
             parts.append(str(val))

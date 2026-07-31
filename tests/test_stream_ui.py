@@ -86,6 +86,29 @@ def test_extract_reasoning_from_empty_summary_falls_back():
     assert _extract_reasoning(Msg()) == ""
 
 
+def test_extract_reasoning_from_anthropic_thinking_block():
+    """Anthropic-style dict blocks store text under the ``thinking`` key."""
+    class Msg:
+        content = [
+            {"type": "thinking", "thinking": "deep thought"},
+            {"type": "text", "text": "answer"},
+        ]
+        additional_kwargs = {}
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "deep thought"
+
+
+def test_extract_reasoning_from_thinking_top_level_field():
+    class Msg:
+        content = []
+        additional_kwargs = {}
+        response_metadata = {}
+        thinking = "top level thought"
+
+    assert _extract_reasoning(Msg()) == "top level thought"
+
+
 def test_is_tool_message_accepts_langchain_type_tool():
     class Msg:
         type = "tool"
