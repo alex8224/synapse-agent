@@ -82,28 +82,65 @@ def _normalize_content(content: Any) -> str:
 def _reasoning_block_text(block: dict[str, Any]) -> str:
     """Extract reasoning text from one ``reasoning``/``thinking`` content block.
 
-    Supports LangChain's Responses API shape::
+    Supports LangChain's Responses API shapes::
 
         {"type": "reasoning", "summary": [{"type": "summary_text", "text": "..."}]}
+        {"type": "reasoning",
+         "content": [{"type": "reasoning_text", "text": "..."}, ...]}  # full text
 
     flat blocks such as ``{"type": "reasoning", "text": "..."}``, and
     Anthropic-style dict blocks like ``{"type": "thinking", "thinking": "..."}``.
     """
+    parts: list[str] = []
     summary = block.get("summary")
     if isinstance(summary, list):
-        chunks = [
+        parts.extend(
             str(entry.get("text"))
             for entry in summary
             if isinstance(entry, dict) and entry.get("text")
-        ]
-        if chunks:
-            return "".join(chunks)
+        )
+    # Full reasoning text (Responses API reasoning item ``content`` blocks).
+    content = block.get("content")
+    if isinstance(content, list):
+        parts.extend(
+            str(entry.get("text"))
+            for entry in content
+            if isinstance(entry, dict) and entry.get("text")
+        )
+    if parts:
+        return "".join(parts)
     return str(
         block.get("text")
         or block.get("reasoning")
         or block.get("thinking")
         or ""
     )
+
+
+def _reasoning_text_value(val: Any) -> str:
+    """Stringify a reasoning payload that may be a dict/list, not just text."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list):
+        return "".join(_reasoning_text_value(entry) for entry in val)
+    if isinstance(val, dict):
+        for key in ("summary", "content"):
+            sub = val.get(key)
+            if isinstance(sub, list):
+                chunks = [
+                    str(entry.get("text"))
+                    for entry in sub
+                    if isinstance(entry, dict) and entry.get("text")
+                ]
+                if chunks:
+                    return "".join(chunks)
+        return str(
+            val.get("text")
+            or val.get("reasoning")
+            or val.get("thinking")
+            or ""
+        )
+    return str(val)
 
 
 def _extract_reasoning(msg: Any) -> str:
@@ -115,14 +152,14 @@ def _extract_reasoning(msg: Any) -> str:
         for key in ("reasoning_content", "reasoning", "thinking", "thought"):
             val = ak.get(key)
             if val:
-                parts.append(str(val))
+                parts.append(_reasoning_text_value(val))
 
     rm = getattr(msg, "response_metadata", None) or {}
     if isinstance(rm, dict):
         for key in ("reasoning_content", "reasoning", "thinking"):
             val = rm.get(key)
             if val:
-                parts.append(str(val))
+                parts.append(_reasoning_text_value(val))
 
     content = getattr(msg, "content", None)
     if isinstance(content, list):
@@ -136,7 +173,7 @@ def _extract_reasoning(msg: Any) -> str:
     for key in ("reasoning_content", "reasoning", "thinking"):
         val = getattr(msg, key, None)
         if val:
-            parts.append(str(val))
+            parts.append(_reasoning_text_value(val))
 
     seen: set[str] = set()
     out: list[str] = []

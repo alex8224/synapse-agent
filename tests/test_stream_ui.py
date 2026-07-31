@@ -99,6 +99,53 @@ def test_extract_reasoning_from_anthropic_thinking_block():
     assert _extract_reasoning(Msg()) == "deep thought"
 
 
+def test_extract_reasoning_from_responses_full_reasoning_text():
+    """Responses API reasoning items may carry full reasoning text blocks
+    (``content: [{"type": "reasoning_text", ...}]``) instead of summaries."""
+    class Msg:
+        content = [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "content": [
+                    {"type": "reasoning_text", "text": "full chain"},
+                    {"type": "reasoning_text", "text": " of thought"},
+                ],
+            },
+            {"type": "output_text", "text": "answer"},
+        ]
+        additional_kwargs = {}
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "full chain of thought"
+
+
+def test_extract_reasoning_from_reasoning_content_list_value():
+    """additional_kwargs reasoning values may be lists/dicts, not plain text."""
+    class Msg:
+        content = []
+        additional_kwargs = {
+            "reasoning": [
+                {"type": "reasoning_text", "text": "a"},
+                {"type": "reasoning_text", "text": "b"},
+            ]
+        }
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "ab"
+
+
+def test_extract_reasoning_from_reasoning_dict_value():
+    class Msg:
+        content = []
+        additional_kwargs = {
+            "reasoning": {"summary": [{"type": "summary_text", "text": "dict summary"}]}
+        }
+        response_metadata = {}
+
+    assert _extract_reasoning(Msg()) == "dict summary"
+
+
 def test_extract_reasoning_from_thinking_top_level_field():
     class Msg:
         content = []
