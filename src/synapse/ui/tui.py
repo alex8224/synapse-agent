@@ -587,6 +587,7 @@ class CodingAgentApp(App[None]):
         if agent is not None:
             self._agent_ready.set()
         self._busy = False
+        self._compacting_context = False
         self._cancel_event = threading.Event()
         self._phase = "idle"
         self._detail = "ready" if agent is not None else "starting"
@@ -2853,6 +2854,9 @@ class CodingAgentApp(App[None]):
         if not self._busy:
             return
         # Idempotent: repeated ESC only re-asserts the cancel flag.
+        if self._compacting_context:
+            self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
+            return
         self._cancel_event.set()
         self.set_activity("idle", "cancelling…", True)
         self.append_event("正在终止当前任务… (Esc)", "yellow")
@@ -3699,6 +3703,61 @@ class CodingAgentApp(App[None]):
 
     # -- input / turn ----------------------------------------------------
 
+    def _start_context_compact(self) -> None:
+        """Run /compact in a worker so model summarization cannot freeze the TUI."""
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        if self.agent is None:
+            self.append_event("agent still starting — try again in a moment", "yellow")
+            return
+
+        self._busy = True
+        self._compacting_context = True
+        self.set_activity("compacting", "compacting context", True)
+        self.flash_status("compacting context…", "dim")
+        self._sync_prompt_placeholder()
+        self._compact_context_bg(self.agent, self.thread_id)
+
+    @work(thread=True, exclusive=True, group="context-compact")
+    def _compact_context_bg(self, agent: Any, thread_id: str) -> None:
+        """Execute the model-backed /compact command away from Textual's UI loop."""
+        from synapse.commands.slash_cmds import handle_slash
+
+        try:
+            result = handle_slash(
+                "/compact",
+                settings=self.settings,
+                agent=agent,
+                thread_id=thread_id,
+                project_root=self.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.append_event, f"compact failed: {exc}", "bold red")
+        else:
+            self.call_from_thread(self._finish_context_compact, result)
+        finally:
+            self.call_from_thread(self._complete_context_compact)
+
+    def _finish_context_compact(self, result: Any) -> None:
+        """Render the completed compact command result on the UI thread."""
+        markdown = getattr(result, "markdown", None)
+        if isinstance(markdown, str) and markdown.strip():
+            self._mount_markdown_block(markdown)
+            return
+        self._emit_system_lines(
+            getattr(result, "lines", []) or [],
+            error=bool(getattr(result, "error", False)),
+        )
+
+    def _complete_context_compact(self) -> None:
+        """Restore interactive state without treating /compact as a user turn."""
+        self._compacting_context = False
+        self._busy = False
+        self._sync_prompt_placeholder()
+        self.set_activity("idle", "ready", True)
+        self.query_one("#prompt", Input).focus()
+
     def _handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
         from synapse.commands.slash_cmds import handle_slash
@@ -3720,6 +3779,9 @@ class CodingAgentApp(App[None]):
         parts = raw.split()
         cmd = parts[0].casefold() if parts else ""
 
+        if cmd == "/compact":
+            self._start_context_compact()
+            return True
         if cmd in {"/compression", "/tool-output", "/tool-compress"} and len(parts) == 1:
             self._open_compression_diagnostics()
             return True

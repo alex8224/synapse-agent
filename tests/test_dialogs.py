@@ -721,6 +721,25 @@ class TestSlashRouting:
         mock_hs.assert_called_once()
         app.push_screen.assert_not_called()
 
+    def test_compact_routes_to_background_worker(self, monkeypatch):
+        """`/compact` must not synchronously block Textual's input handler."""
+        app = _make_app(monkeypatch)
+        import synapse.commands.slash_cmds
+
+        orig = synapse.commands.slash_cmds.handle_slash
+        mock_hs = MagicMock()
+        synapse.commands.slash_cmds.handle_slash = mock_hs
+        app._start_context_compact = MagicMock()
+        try:
+            result = app._handle_slash("/compact")
+        finally:
+            synapse.commands.slash_cmds.handle_slash = orig
+
+        assert result is True
+        app._start_context_compact.assert_called_once_with()
+        mock_hs.assert_not_called()
+        app.push_screen.assert_not_called()
+
     def test_model_with_args_routes_to_background_worker(self, monkeypatch):
         """`/model <alias>` rebuilds off the UI thread via _switch_model_bg."""
         app = _make_app(monkeypatch)

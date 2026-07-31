@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from synapse.runtime.context_compact import (
+    _find_summarization_middleware,
     force_compact_via_agent,
     is_context_compact_text,
     is_lc_summarization_message,
@@ -81,6 +82,20 @@ def test_force_compact_uses_agent_async_runtime():
     # _should_summarize must be restored after the call, regardless of success.
     assert middleware._should_summarize([], 0) is False
     assert any("compacted" in line for line in lines)
+
+
+def test_find_summarization_middleware_in_current_compiled_graph():
+    """LangChain 1.3 stores model-call middleware in a compiled closure."""
+    from deepagents import create_deep_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+    agent = create_deep_agent(model=FakeListChatModel(responses=["ok"]))
+
+    middleware = _find_summarization_middleware(agent)
+
+    assert middleware is not None
+    assert middleware.name == "SummarizationMiddleware"
+    assert callable(middleware._should_summarize)
 
 
 def test_fold_hides_compact_messages():

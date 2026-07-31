@@ -7,6 +7,9 @@ helpers without registering a model-callable compaction tool.
 
 from __future__ import annotations
 
+import functools
+import inspect
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 
@@ -98,14 +101,63 @@ def force_compact_via_agent(
 
 
 def _find_summarization_middleware(agent: Any) -> Any | None:
-    """Return deepagents' built-in automatic summarization middleware."""
+    """Return deepagents' built-in automatic summarization middleware.
+
+    LangChain 1.3 compiles model-call middleware into the ``model`` node's
+    function closure, whereas older versions exposed it through
+    ``node.bound.middleware``. Support both representations so ``/compact``
+    continues to work across the supported dependency range.
+    """
     nodes = getattr(agent, "nodes", None)
     node = nodes.get("model") if isinstance(nodes, dict) else None
-    middleware = getattr(node, "bound", None)
-    for candidate in getattr(middleware, "middleware", ()):
+    bound = getattr(node, "bound", None)
+    for candidate in getattr(bound, "middleware", ()):
+        if getattr(candidate, "name", None) == "SummarizationMiddleware":
+            return candidate
+
+    for candidate in _iter_closure_values(getattr(bound, "func", None)):
+        if getattr(candidate, "name", None) == "SummarizationMiddleware":
+            return candidate
+    for candidate in _iter_closure_values(getattr(bound, "afunc", None)):
         if getattr(candidate, "name", None) == "SummarizationMiddleware":
             return candidate
     return None
+
+
+def _iter_closure_values(root: Any) -> Iterator[Any]:
+    """Yield nonlocal objects captured by a compiled model-node callable.
+
+    This deliberately follows only closure cells and their lightweight
+    containers. It avoids arbitrary ``__dict__`` traversal while still finding
+    middleware instances nested in LangChain's composed call handlers.
+    """
+    pending: list[Any] = [root]
+    seen: set[int] = set()
+    max_items = 256
+
+    while pending and len(seen) < max_items:
+        value = pending.pop()
+        if value is None or id(value) in seen:
+            continue
+        seen.add(id(value))
+        yield value
+
+        if inspect.ismethod(value):
+            pending.extend((value.__self__, value.__func__))
+        elif inspect.isfunction(value):
+            try:
+                closure = inspect.getclosurevars(value)
+            except (TypeError, ValueError):
+                continue
+            pending.extend(closure.nonlocals.values())
+        elif isinstance(value, functools.partial):
+            pending.append(value.func)
+            pending.extend(value.args)
+            pending.extend((value.keywords or {}).values())
+        elif isinstance(value, Mapping):
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
 
 
 def context_status_lines(agent: Any, thread_id: str) -> list[str]:
@@ -216,4 +268,3 @@ def is_context_compact_text(text: str | None) -> bool:
     if has_intent and ("ARTIFACTS" in body or "NEXT STEPS" in body):
         return True
     return False
-
