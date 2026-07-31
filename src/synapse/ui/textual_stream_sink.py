@@ -236,9 +236,31 @@ class TextualStreamSink:
 
     # -- reasoning -------------------------------------------------------
 
+    def _commit_open_answer(self) -> None:
+        """Seal a live answer before another transcript block takes its place."""
+        if not self._open_answer:
+            return
+        body = "".join(self._open_answer).strip()
+        self._open_answer.clear()
+        self._open_answer_chars = 0
+        if not body:
+            self._call("clear_stream")
+            return
+        key = self._norm(body)
+        if key in self._complete_texts:
+            return
+        self._complete_texts.add(key)
+        self.answer_buf.append(body)
+        self.streamed_answer = True
+        self._call("commit_answer", body)
+
     def write_reasoning(self, text: str) -> None:
         if not text:
             return
+        # A late reasoning/usage event may arrive after answer tokens. Seal the
+        # existing AnswerBlock before mounting a ThoughtBlock so it cannot become
+        # an orphaned plain-text preview and later duplicate the Markdown answer.
+        self._commit_open_answer()
         # New thought after a completed tool batch must not append into tools.
         # Never seal a still-running group (e.g. parent task/subagent).
         if self._group_open and self._group_header_written:

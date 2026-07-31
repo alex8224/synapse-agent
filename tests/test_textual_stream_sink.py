@@ -1,0 +1,42 @@
+"""Regression tests for the Textual transcript stream sink."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from synapse.ui.textual_stream_sink import TextualStreamSink
+
+
+class _Host:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+        return callback(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        def record(*args: Any, **kwargs: Any) -> None:
+            self.calls.append((name, args, kwargs))
+
+        return record
+
+
+def test_reasoning_after_answer_tokens_seals_preview_before_switch() -> None:
+    host = _Host()
+    sink = TextualStreamSink(host)
+
+    sink.write_answer_token("## 结论\n")
+    sink.write_answer_token("完成")
+    sink.write_reasoning(
+        "(reasoning text not exposed by gateway; ~69 reasoning tokens)\n"
+    )
+    sink.close_reasoning()
+    sink.write_answer_complete("## 结论\n完成", msg_id="msg-1")
+
+    commits = [(name, args) for name, args, _ in host.calls if name == "commit_answer"]
+    assert commits == [("commit_answer", ("## 结论\n完成",))]
+    assert sink.answer_buf == ["## 结论\n完成"]
+
+    names = [name for name, _, _ in host.calls]
+    assert names.index("commit_answer") < names.index("commit_thought")
+    assert "commit_thought" in names

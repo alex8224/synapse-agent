@@ -2430,8 +2430,10 @@ class CodingAgentApp(App[None]):
         text = body or ""
         kind = (kind or "answer").strip() or "answer"
         if self._live_stream_kind and self._live_stream_kind != kind:
-            self._live_stream_block = None
-            self._live_stream_kind = None
+            # Never abandon a live block in #log. The sink normally seals an
+            # answer before switching to reasoning; this defensive cleanup keeps
+            # direct/late stream transitions from leaving a duplicate preview.
+            self.clear_stream()
         if not text.strip() and self._live_stream_block is None:
             return
         if kind == "reasoning":
