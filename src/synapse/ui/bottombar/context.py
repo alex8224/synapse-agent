@@ -32,5 +32,7 @@ class BottomBarContext:
     busy_hints: LabelFn
     # Model id + thinking level (left; e.g. ``haha-grok-4.5 · max``).
     model: LabelFn
+    # Codex OAuth usage chrome (between model and MCP).
+    codex_usage: RichLabelFn
     # MCP chrome (left; ``mcp on`` / ``mcp off`` / ``mcp err``).
     mcp: LabelFn

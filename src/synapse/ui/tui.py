@@ -25,7 +25,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Click, Key, MouseUp
+from textual.events import Click, Key, MouseMove, MouseUp
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -38,6 +38,7 @@ from synapse.content.multimodal import (
     provider_from_settings,
     read_clipboard,
 )
+from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.sessions.session_recap import SessionRecapController
 from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
@@ -59,6 +60,7 @@ from synapse.ui.bottombar import (
     layout_from_registry as layout_bottombar_from_registry,
 )
 from synapse.ui.clipboard import copy_to_clipboard
+from synapse.ui.dialogs.codex_reset import CodexResetDialog
 from synapse.ui.formatters import (
     format_answer_divider as _format_answer_divider,
 )
@@ -573,6 +575,8 @@ class CodingAgentApp(App[None]):
         self._agent_error: str | None = None
         self._mcp_attaching = False
         self._mcp_reloading = False
+        self._codex = CodexUsageService(settings=settings)
+        self._codex_bottombar_hovered = False
         self._image_bank = ImageBank()
         # 粘贴截断映射: {占位符: 完整原始文本}
         self._paste_replacements: dict[str, str] = {}
@@ -583,6 +587,7 @@ class CodingAgentApp(App[None]):
         if agent is not None:
             self._agent_ready.set()
         self._busy = False
+        self._compacting_context = False
         self._cancel_event = threading.Event()
         self._phase = "idle"
         self._detail = "ready" if agent is not None else "starting"
@@ -721,7 +726,9 @@ class CodingAgentApp(App[None]):
         self._reload_tool_output_stats()
         set_metrics_notifier(self._on_tool_output_metrics_changed)
         self._refresh_bottombar()
+        self._refresh_codex_usage()
         self.set_interval(0.1, self._tick_status)
+        self.set_interval(60.0, self._refresh_codex_usage)
         log = self.query_one("#log", VerticalScroll)
         # Hide scrollbar chrome; mouse-wheel / keys / scroll_* still work.
         log.show_vertical_scrollbar = False
@@ -1516,9 +1523,111 @@ class CodingAgentApp(App[None]):
                 ),
                 busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy · F9 agents",
                 model=lambda: model_status_label(self.settings),
+                codex_usage=self._codex_usage_label,
                 mcp=self._mcp_label,
             ),
         )
+
+    def _codex_usage_label(self) -> str | Text:
+        """Render cached Codex usage; never block the UI render path."""
+        return self._codex.label
+
+    # -- codex reset-credits popup ------------------------------------------
+
+    def _open_codex_reset_dialog(self) -> None:
+        """Show reset-credit details in a popup; fetch details if needed."""
+        credits = self._codex.reset_credits
+        sn = self._codex.snapshot
+        available = (
+            sn.reset_credits.available_count
+            if sn and sn.reset_credits
+            else 0
+        )
+        # When we have a count but no detail rows yet, fetch first then re-open.
+        if available > 0 and credits is None:
+            self.flash_status("fetching reset-credit details…", "dim")
+            self._fetch_codex_reset_credits_for_dialog_bg()
+            return
+        dialog = CodexResetDialog(
+            credits=list(credits.credits) if credits else [],
+            available_count=available,
+            on_reset=self._on_codex_reset_request,
+        )
+        self.push_screen(dialog, lambda _: None)
+
+    @work(thread=True, exclusive=True, group="codex-usage")
+    def _fetch_codex_reset_credits_for_dialog_bg(self) -> None:
+        try:
+            self._codex.fetch_reset_credits()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.flash_status, f"Codex reset-credits fetch failed: {exc}", "yellow"
+            )
+            return
+        self.call_from_thread(self._open_codex_reset_dialog)
+
+    def _on_codex_reset_request(self, credit_id: str) -> None:
+        """User clicked Reset on a specific credit."""
+        if self._codex.consuming:
+            return
+        self._codex.consuming = True
+        self._refresh_bottombar()
+        self.flash_status("redeeming Codex reset…", "dim")
+        self._consume_codex_reset_bg(credit_id)
+
+    @work(thread=True, exclusive=True, group="codex-usage")
+    def _consume_codex_reset_bg(self, credit_id: str) -> None:
+        try:
+            result = self._codex.consume_reset(credit_id)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self.flash_status, f"Codex reset failed: {exc}", "yellow"
+            )
+            self.call_from_thread(self._on_codex_reset_consume_done)
+            return
+        self.call_from_thread(self._on_codex_reset_consumed, result)
+
+    def _on_codex_reset_consumed(self, result: ConsumeResetResult) -> None:
+        outcome = result.outcome
+        if outcome in {"reset", "alreadyRedeemed"}:
+            self.flash_status(f"Codex reset {outcome}; refreshing…", "dim")
+            self._refresh_codex_usage(force=True)
+        elif outcome == "nothingToReset":
+            self.flash_status("Codex reset: no eligible window.", "yellow")
+        elif outcome == "noCredit":
+            self.flash_status("Codex reset: no credits available.", "yellow")
+        else:
+            self.flash_status(f"Codex reset: {outcome}", "yellow")
+        self._on_codex_reset_consume_done()
+
+    def _on_codex_reset_consume_done(self) -> None:
+        self._codex.consuming = False
+        self._codex.reset_credits = None  # force refetch next open
+        self._refresh_bottombar()
+
+    def _has_codex_oauth_profile(self) -> bool:
+        """Return whether the currently selected profile uses Codex OAuth."""
+        return self._codex.has_oauth_profile()
+
+    def _refresh_codex_usage(self, *, force: bool = False) -> None:
+        """Start a background usage fetch when an OAuth profile is active."""
+        if not self._codex.should_refresh(force=force):
+            if not self._codex.has_oauth_profile():
+                self._codex.invalidate()
+                self._refresh_bottombar()
+            return
+        self._codex.loading = True
+        self._refresh_bottombar()
+        self._fetch_codex_usage_bg()
+
+    @work(thread=True, exclusive=True, group="codex-usage")
+    def _fetch_codex_usage_bg(self) -> None:
+        self._codex.refresh_usage()
+        self.call_from_thread(self._on_codex_usage_ready)
+
+    def _on_codex_usage_ready(self) -> None:
+        self._codex.loading = False
+        self._refresh_bottombar()
 
     def _bottombar_thread_label(self) -> str:
         """Short thread id for the bottombar right slot."""
@@ -1679,6 +1788,15 @@ class CodingAgentApp(App[None]):
             right_style=_C_MUTED,
             gap_style=_C_MUTED,
         )
+        if self._codex_bottombar_hovered:
+            from synapse.ui.topbar.core import locate_component_span
+
+            span = locate_component_span(
+                self._bottombar, "codex_usage", usable_width=usable
+            )
+            if span is not None:
+                start, width = span
+                line.stylize("on #2a2d31", start, start + width)
         bar.update(line)
 
     def register_topbar_region(
@@ -1847,6 +1965,38 @@ class CodingAgentApp(App[None]):
         control = getattr(event, "control", None) or getattr(event, "widget", None)
         if bar.dismiss_if_outside(control):
             event.stop()
+
+    @on(Click, "#bottombar")
+    def _on_bottombar_click(self, event: Click) -> None:
+        """Open Codex reset-credits dialog when the usage area is clicked."""
+        if not self._has_codex_oauth_profile():
+            return
+        if self._codex.snapshot is None:
+            return
+        if not self._point_in_codex_span(int(event.x)):
+            return
+        self._open_codex_reset_dialog()
+
+    @on(MouseMove)
+    def _on_app_mouse_move(self, event: MouseMove) -> None:
+        """Track whether the mouse hovers the Codex usage span."""
+        widget = getattr(event, "widget", None) or getattr(event, "control", None)
+        on_bottombar = widget is not None and getattr(widget, "id", "") == "bottombar"
+        hovered = False
+        if on_bottombar:
+            hovered = self._point_in_codex_span(int(event.x))
+        if hovered == self._codex_bottombar_hovered:
+            return
+        self._codex_bottombar_hovered = hovered
+        self._refresh_bottombar()
+
+    def _point_in_codex_span(self, x: int) -> bool:
+        from synapse.ui.topbar.core import locate_component_span
+
+        span = locate_component_span(
+            self._bottombar, "codex_usage", usable_width=self._bottombar_usable_width()
+        )
+        return span is not None and span[0] <= x < span[0] + span[1]
 
     @on(TopBar.OpenGitExplore)
     def on_top_bar_open_git_explore(self, event: TopBar.OpenGitExplore) -> None:
@@ -2704,6 +2854,9 @@ class CodingAgentApp(App[None]):
         if not self._busy:
             return
         # Idempotent: repeated ESC only re-asserts the cancel flag.
+        if self._compacting_context:
+            self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
+            return
         self._cancel_event.set()
         self.set_activity("idle", "cancelling…", True)
         self.append_event("正在终止当前任务… (Esc)", "yellow")
@@ -3546,8 +3699,64 @@ class CodingAgentApp(App[None]):
                 )
         self._reload_session_title()
         self._refresh_topbar()
+        self._refresh_codex_usage(force=True)
 
     # -- input / turn ----------------------------------------------------
+
+    def _start_context_compact(self) -> None:
+        """Run /compact in a worker so model summarization cannot freeze the TUI."""
+        if self._busy:
+            self.append_event("still running previous turn…", "yellow")
+            return
+        if self.agent is None:
+            self.append_event("agent still starting — try again in a moment", "yellow")
+            return
+
+        self._busy = True
+        self._compacting_context = True
+        self.set_activity("compacting", "compacting context", True)
+        self.flash_status("compacting context…", "dim")
+        self._sync_prompt_placeholder()
+        self._compact_context_bg(self.agent, self.thread_id)
+
+    @work(thread=True, exclusive=True, group="context-compact")
+    def _compact_context_bg(self, agent: Any, thread_id: str) -> None:
+        """Execute the model-backed /compact command away from Textual's UI loop."""
+        from synapse.commands.slash_cmds import handle_slash
+
+        try:
+            result = handle_slash(
+                "/compact",
+                settings=self.settings,
+                agent=agent,
+                thread_id=thread_id,
+                project_root=self.project_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self.append_event, f"compact failed: {exc}", "bold red")
+        else:
+            self.call_from_thread(self._finish_context_compact, result)
+        finally:
+            self.call_from_thread(self._complete_context_compact)
+
+    def _finish_context_compact(self, result: Any) -> None:
+        """Render the completed compact command result on the UI thread."""
+        markdown = getattr(result, "markdown", None)
+        if isinstance(markdown, str) and markdown.strip():
+            self._mount_markdown_block(markdown)
+            return
+        self._emit_system_lines(
+            getattr(result, "lines", []) or [],
+            error=bool(getattr(result, "error", False)),
+        )
+
+    def _complete_context_compact(self) -> None:
+        """Restore interactive state without treating /compact as a user turn."""
+        self._compacting_context = False
+        self._busy = False
+        self._sync_prompt_placeholder()
+        self.set_activity("idle", "ready", True)
+        self.query_one("#prompt", Input).focus()
 
     def _handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
@@ -3570,6 +3779,9 @@ class CodingAgentApp(App[None]):
         parts = raw.split()
         cmd = parts[0].casefold() if parts else ""
 
+        if cmd == "/compact":
+            self._start_context_compact()
+            return True
         if cmd in {"/compression", "/tool-output", "/tool-compress"} and len(parts) == 1:
             self._open_compression_diagnostics()
             return True
@@ -3592,10 +3804,13 @@ class CodingAgentApp(App[None]):
             if len(parts) == 1 or (len(parts) == 2 and parts[1].casefold() == "import"):
                 self._open_codex_import_dialog()
                 return True
+            if len(parts) == 2 and parts[1].casefold() in {"reset", "credits", "resets"}:
+                self._open_codex_reset_dialog()
+                return True
             if len(parts) == 3 and parts[1].casefold() == "import":
                 self._start_codex_import(parts[2])
                 return True
-            self.append_event("usage: /codex import [native_id]", "yellow")
+            self.append_event("usage: /codex import [native_id]  |  /codex reset", "yellow")
             return True
         if cmd == "/theme" and (len(parts) == 1 or parts[1].casefold() in {"list", "ls"}):
             self._open_theme_dialog()
