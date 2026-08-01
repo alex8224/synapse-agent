@@ -16,6 +16,11 @@ _ERROR_LINE = re.compile(
 _LOG_SUMMARY = re.compile(r"\b(passed|failed|skipped|collected|tests? run|exit code)\b", re.I)
 _NUMBERED_SOURCE_LINE = re.compile(r"^(?P<indent>\s*)\d+(?:\.\d+)?\t(?P<body>.*)$")
 _PATH_ROW = re.compile(r"^(?:(?:[A-Za-z]:)?[/\\]|\.{0,2}[/\\])?(?:[^/\\\s:]+[/\\])+[^/\\\s:]+$")
+# `[123] INFO ...` / `[12:34:56] ERROR ...` style structured log lines.
+_BRACKET_LOG_LINE = re.compile(
+    r"^\[\d+(?:[.:]\d+)*\]\s+(?:DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|CRITICAL|TRACE|FATAL)\b",
+    re.I,
+)
 _CODE_SUFFIXES = frozenset(
     {
         ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
@@ -122,24 +127,27 @@ def detect_content_type(content: str) -> Detection:
     )
     if git_summary_markers >= 2:
         return Detection(ContentType.GIT_SUMMARY, min(0.95, 0.45 + git_summary_markers / 20))
-    sampled = lines[:100]
-    log_markers = sum(
-        bool(_ERROR_LINE.search(line) or _LOG_SUMMARY.search(line)) for line in sampled
-    )
-    timestamped = timestamp_count
-    if log_markers >= 3 or (
-        timestamped >= max(3, len(sampled) // 2) and any(_ERROR_LINE.search(line) for line in lines)
-    ):
-        return Detection(ContentType.LOG, 0.8)
-    code_markers = _code_marker_count(content)
-    if code_markers >= 3:
-        return Detection(ContentType.CODE, min(0.95, 0.4 + code_markers / max(1, len(lines[:200]))))
+    # 合法 JSON 是强信号：在 LOG/CODE 判定之前识别，避免多行 JSON 中的
+    # error/failed 等关键词被误判为 LOG（lint/审计/API 响应等常见）。
     try:
         parsed = json.loads(content)
         if isinstance(parsed, (list, dict)):
             return Detection(ContentType.JSON, 0.9)
     except (ValueError, TypeError):
         pass
+    sampled = lines[:100]
+    log_markers = sum(
+        bool(_ERROR_LINE.search(line) or _LOG_SUMMARY.search(line)) for line in sampled
+    )
+    bracket_logs = sum(bool(_BRACKET_LOG_LINE.match(line)) for line in sampled)
+    timestamped = timestamp_count
+    if log_markers >= 3 or (
+        timestamped >= max(3, len(sampled) // 2) and any(_ERROR_LINE.search(line) for line in lines)
+    ) or bracket_logs >= max(3, len(sampled) // 2):
+        return Detection(ContentType.LOG, 0.8)
+    code_markers = _code_marker_count(content)
+    if code_markers >= 3:
+        return Detection(ContentType.CODE, min(0.95, 0.4 + code_markers / max(1, len(lines[:200]))))
     return Detection(ContentType.TEXT, 0.3)
 
 

@@ -144,6 +144,49 @@ def _numbered_python(lines: int = 90) -> str:
     return "\n".join(f"{index:6d}\t{line}" for index, line in enumerate(flattened, 1))
 
 
+def test_multiline_json_with_error_keywords_is_detected_as_json() -> None:
+    """Multi-line JSON containing error/failed keywords must stay JSON, not LOG."""
+    data = json.dumps(
+        [{"file": f"src/mod{i}.py", "error": "undefined name", "line": i} for i in range(10)],
+        indent=2,
+    )
+    assert detect_content_type(data).content_type is ContentType.JSON
+
+    single = json.dumps(
+        [{"id": i, "status": "error" if i == 10 else "ok", "payload": "x" * 100} for i in range(30)]
+    )
+    assert detect_content_type(single).content_type is ContentType.JSON
+
+    result = ToolOutputTransformPipeline().transform(
+        data, TransformContext(tool_name="execute", status="success")
+    )
+    assert result.transformer == "headroom-smart-crusher-v1"
+    assert '"file"' in result.content
+
+
+def test_bracket_level_log_lines_are_detected_as_log() -> None:
+    """`[NNN] INFO/ERROR` structured log lines route to LOG, not TEXT."""
+    log = "\n".join(
+        f"[{i:03d}] INFO build step {i}: compiling module_{i % 40}.c -> ok" for i in range(120)
+    )
+    assert detect_content_type(log).content_type is ContentType.LOG
+
+    small = "\n".join(f"[{i}] ERROR failed step {i}" for i in range(5))
+    assert detect_content_type(small).content_type is ContentType.LOG
+
+    result = ToolOutputTransformPipeline().transform(
+        log, TransformContext(tool_name="execute", status="success")
+    )
+    assert result.transformer == "headroom-log-v1"
+    assert len(result.content) < len(log)
+
+
+def test_bracket_lines_alone_do_not_trigger_log() -> None:
+    """Bare `[1]`-style numbering without a level keyword must not be LOG."""
+    text = "\n".join(f"[{i}] item {i}: the quick brown fox" for i in range(40))
+    assert detect_content_type(text).content_type is ContentType.TEXT
+
+
 def test_numbered_read_file_source_is_detected_and_protected(tmp_path: Path) -> None:
     repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
     middleware = build_tool_output_transform_middleware(repo, threshold_bytes=100)
