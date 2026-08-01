@@ -206,8 +206,8 @@ def test_native_grep_retries_empty_include_glob_result(tmp_path: Path):
     }
 
     with (
-        patch("synapse_search_core.grep", side_effect=[empty_payload, file_payload]) as grep,
-        patch("synapse_search_core.glob", return_value=glob_payload) as glob,
+        patch("synapse_core_tool.grep", side_effect=[empty_payload, file_payload]) as grep,
+        patch("synapse_core_tool.glob", return_value=glob_payload) as glob,
     ):
         result = backend.grep("TODO", path="/src", glob="*.py", max_results=10)
 
@@ -271,6 +271,77 @@ def test_native_glob_respects_gitignore_and_deny_paths(tmp_path: Path):
 
     assert result.error is None
     assert [item["path"] for item in result.matches] == ["/src/visible.py"]
+
+
+def test_native_read_returns_requested_raw_line_window(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    (tmp_path / "sample.txt").write_bytes(b"first\r\nsecond\r\nthird\r\n")
+
+    result = backend.read("/sample.txt", offset=1, limit=1)
+
+    assert result.error is None
+    assert result.file_data == {"content": "second\r\n", "encoding": "utf-8"}
+
+
+def test_native_edit_preserves_utf16_encoding(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    path = tmp_path / "utf16.txt"
+    path.write_bytes("before\r\nafter\r\n".encode("utf-16"))
+
+    result = backend.edit("/utf16.txt", "before\nafter", "updated\ntext")
+
+    assert result.error is None
+    assert result.occurrences == 1
+    assert path.read_bytes().startswith(b"\xff\xfe")
+    assert path.read_bytes().decode("utf-16") == "updated\r\ntext\r\n"
+
+
+def test_native_patch_preserves_crlf_and_trailing_newline(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    path = tmp_path / "patched.txt"
+    path.write_bytes(b"old\r\nkeep\r\n")
+
+    result = backend.patch(
+        "/patched.txt",
+        "@@ -1,2 +1,2 @@\n-old\n+new\n keep\n",
+    )
+
+    assert result == {"path": "/patched.txt", "hunks_applied": 1, "error": None}
+    assert path.read_bytes() == b"new\r\nkeep\r\n"
+
+
+def test_native_patch_respects_deny_paths(tmp_path: Path):
+    private = tmp_path / "private"
+    private.mkdir()
+    path = private / "blocked.txt"
+    path.write_text("old\n", encoding="utf-8")
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+        deny_paths=["private/"],
+    )
+
+    result = backend.patch("/private/blocked.txt", "@@ -1 +1 @@\n-old\n+new\n")
+
+    assert "denied by filesystem permissions" in str(result["error"])
+    assert path.read_text(encoding="utf-8") == "old\n"
 
 
 def test_execute_survives_non_utf8_bytes_via_replace(tmp_path: Path):

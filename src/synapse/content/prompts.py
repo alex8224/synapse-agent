@@ -47,7 +47,7 @@ Never scan the entire repository without a specific reason.
 
 ## Virtual filesystem
 
-File tools such as `find_files`, `search_files`, `read_file`, `edit_file`, and `write_file`
+File tools such as `find_files`, `search_files`, `read_file`, `edit_file`, `patch`, and `write_file`
 operate on a virtual filesystem rooted at `/`.
 
 Valid paths:
@@ -65,7 +65,8 @@ File-tool paths must:
 
 The real host workspace path may only be used by shell or git commands.
 
-Use `ls /` only when a concrete file task exists and the target path is unknown.
+Use `find_files` with a narrow pattern only when a concrete file task exists and the target path
+is unknown. Do not call the hidden DeepAgents tools `ls`, `glob`, or `grep`.
 If a virtual-path error occurs, convert the path to `/...`;
 do not retry a host or Windows path.
 
@@ -116,6 +117,11 @@ file or small directory. A value such as `**/*.py` includes Python files—it do
 cache-directory exclusions. Built-in ignore rules already skip common caches and build artifacts.
 
 For large files, read only relevant ranges. After editing, re-read changed regions when useful.
+
+Prefer `patch` for normal multi-line changes to existing files. Use `edit_file` for a small exact
+replacement when `old_string` is unique, or set `replace_all=true` intentionally. Use `write_file`
+only to create a new file; do not replace an existing file wholesale when `patch` or `edit_file`
+can preserve unrelated content.
 
 `list_sessions` and `read_session` are forbidden unless the user explicitly
 asks to inspect or compare other sessions.
@@ -224,15 +230,32 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
-def _file_search_prompt() -> str:
-    """Build non-overridable guidance for the custom filesystem search tools."""
+def filesystem_tool_prompt() -> str:
+    """Build authoritative guidance matching the model-facing filesystem schemas."""
     return (
-        "## File search semantics\n"
-        "- `search_files.pattern` is a ripgrep-compatible regex for file contents.\n"
+        "## Active filesystem tools (authoritative)\n"
+        "This section overrides generic DeepAgents filesystem guidance. The model-facing `ls`, "
+        "`glob`, and `grep` tools are hidden; never call them.\n"
+        "- Use `find_files(pattern, path, max_results, head_limit, offset)` to find paths by glob. "
+        "Use a narrow `path` or `pattern`; do not scan the whole workspace without a reason.\n"
+        "- Use `search_files(pattern, path, glob, output_mode, max_results, head_limit, offset, "
+        "context_lines, case_insensitive)` to search file contents. `pattern` is a "
+        "ripgrep-compatible regex.\n"
         "- `search_files.glob` is an optional include-only path filter relative to `path`; it "
         "cannot express exclusions.\n"
-        "- Prefer a narrow `path` and omit `glob` when the path is already sufficiently narrow.\n"
+        "- Omit `search_files.glob` when `path` already names a file or sufficiently narrow "
+        "directory.\n"
         "- Common ignored caches and build artifacts are skipped by built-in ignore rules.\n"
+        "- Use `read_file(file_path, offset, limit)` for bounded text reads. `offset` is "
+        "zero-based; use pagination for large files.\n"
+        "- Prefer `patch(file_path, patch)` for ordinary multi-line edits to an existing file; "
+        "pass only unified-diff hunks beginning with `@@`.\n"
+        "- Use `edit_file(file_path, old_string, new_string, replace_all)` only for a small exact "
+        "replacement. `old_string` must be unique unless `replace_all` is true.\n"
+        "- Use `write_file(file_path, content)` to create a new file, not for routine edits to an "
+        "existing file.\n"
+        "- Do not use `execute` as a substitute for file discovery, content search, reading, or "
+        "editing when the dedicated tools can perform the operation.\n"
     )
 
 
@@ -282,6 +305,6 @@ def build_system_prompt(
         f"- File-tool virtual root: `/` maps to the host root above\n"
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
         f"- Shell commands run on the host, inside the workspace root.\n\n"
-        f"{_file_search_prompt()}\n"
+        f"{filesystem_tool_prompt()}\n"
         f"{_shell_prompt(effective_shell)}"
     )

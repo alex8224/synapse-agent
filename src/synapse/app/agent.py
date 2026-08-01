@@ -25,6 +25,9 @@ from synapse.models.registry import (
     registry_from_settings,
 )
 from synapse.runtime.backends import build_backend
+from synapse.runtime.filesystem_tool_prompt_middleware import (
+    build_filesystem_tool_prompt_middleware,
+)
 from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.middleware import (
@@ -51,6 +54,7 @@ from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
 from synapse.tools import (
     build_describe_image_tools,
+    build_filesystem_patch_tool,
     build_filesystem_search_tools,
     build_session_tools,
 )
@@ -239,7 +243,7 @@ def build_coding_agent(
     # ``search_files`` tools explicitly below.
     model_request_excluded_tools = set(settings.excluded_tools) | {"ls", "glob", "grep"}
     if settings.readonly:
-        model_request_excluded_tools.update({"execute", "write_file", "edit_file"})
+        model_request_excluded_tools.update({"execute", "write_file", "edit_file", "patch"})
 
     interrupt_on = build_interrupt_on(require_approval=settings.require_approval)
     with span("checkpointer"):
@@ -302,6 +306,7 @@ def build_coding_agent(
     if extra_tools:
         tools.extend(extra_tools)
     tools.extend(build_filesystem_search_tools(backend))
+    tools.append(build_filesystem_patch_tool(backend))
     # 跨会话查阅工具
     try:
         session_tools = build_session_tools(
@@ -416,6 +421,9 @@ def build_coding_agent(
     output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
     middleware: list[Any] = [
         build_agent_md_middleware(project_root),
+        # DeepAgents injects generic guidance for ls/glob/grep before user
+        # middleware runs. Append the authoritative Synapse tool interface after it.
+        build_filesystem_tool_prompt_middleware(),
         build_describe_image_middleware(
             image_input=primary_image_input,
             config=vision_config,

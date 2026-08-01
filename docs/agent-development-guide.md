@@ -349,10 +349,14 @@ def git_status(workspace: str = ".") -> str:
 
 | 来源 | 工具 | 如何注册 |
 |------|------|---------|
-| `deepagents` 框架内置 | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, `write_todos`, `task` | `create_deep_agent` 自动注入 |
-| 项目自定义 | `git_status`, `git_diff`, `run_tests` | 传入 `tools=[...]` 参数 |
+| `deepagents` 框架内置（当前保留） | `read_file`, `write_file`, `edit_file`, `execute`, `write_todos`, `task` | `create_deep_agent` 自动注入；文件读写由 Synapse backend 接管 |
+| Synapse 文件工具 | `find_files`, `search_files`, `patch` | 传入 `tools=[...]`；底层调用 `synapse-core-tool` |
 | 会话工具 | `list_sessions`, `read_session` | 通过 `build_session_tools()` 动态创建 |
 | MCP 工具 | 由外部 MCP Server 提供 | `load_mcp_tools()` 动态加载 |
+
+DeepAgents 的 `ls`、`glob`、`grep` 会从模型请求中隐藏，避免与 Synapse 的
+`find_files`、`search_files` 产生重名语义冲突。最终系统提示词也会注入与实际 schema
+一致的权威工具说明。
 
 ### 6.3 `run_tests` 工具
 

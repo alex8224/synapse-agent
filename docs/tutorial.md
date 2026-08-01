@@ -744,18 +744,24 @@ def _build_checkpointer(settings):
 
 Agent 本身只是一个语言模型，只能"说"不能"做"。**工具**赋予了它行动能力。
 
-### 7.1 内置工具（Deep Agents 自带）
+### 7.1 当前 Agent 工具
 
 | 工具名 | 功能 | 对应的人类操作 |
 |--------|------|---------------|
 | `read_file` | 读取文件内容 | 用编辑器打开文件 |
-| `write_file` | 创建/覆盖文件 | 新建文件并写入 |
-| `edit_file` | 精确替换文件片段 | 修改文件中的某几行 |
-| `glob` | 按模式查找文件 | 在资源管理器里搜索 `*.py` |
+| `write_file` | 创建新文件 | 新建文件并写入 |
+| `edit_file` | 精确替换文件片段 | 修改一个唯一的小片段 |
+| `patch` | 应用 unified diff | 修改已有文件中的多行内容 |
+| `find_files` | 按 glob 模式查找路径 | 在资源管理器里搜索 `*.py` |
+| `search_files` | 使用正则搜索文件内容 | 在代码中查找符号或文本 |
 | `execute` | 执行 Shell 命令 | 在终端里输入命令 |
 | `write_todos` | 创建/更新任务列表 | 写待办事项清单 |
 | `task` | 委派子 Agent | 把任务分给同事 |
 | `compact_conversation` | 压缩对话上下文 | 清空不需要的聊天记录 |
+
+其中 `read_file`、`edit_file`、`find_files`、`search_files` 和 `patch` 的文件处理底层由
+`synapse-core-tool` 提供。Deep Agents 原有的 `ls`、`glob`、`grep` 不会暴露给主 Agent，
+以避免与 Synapse 文件搜索工具产生冲突。
 
 ### 7.2 自定义工具：会话查阅工具
 
@@ -986,8 +992,8 @@ Parallel Sub-Agent 系统的核心是 `DAGSubAgentMiddleware`，它**替换了**
 
 每个子 Agent 也是一个完整的 `CompiledStateGraph`（LangGraph 图），有自己的模型、系统提示词和工具集。创建时遵循以下原则：
 
-- **共享 backend**：researcher/tester/reviewer 共用同一个 `CodingLocalShellBackend`，否则子 Agent 的 `read_file`/`glob`/`execute` 会变成"空壳"。
-- **通过工具排除实现隔离**（而非 `FilesystemPermission`）：因为 `LocalShellBackend` 不支持权限模式，改用 `ToolExclusionMiddleware` 从模型可见工具列表中直接移除被禁工具（如 researcher 的 `write_file`、`edit_file`、`execute`）。
+- **共享 backend**：researcher/tester/reviewer 共用同一个 `CodingLocalShellBackend`，否则子 Agent 的文件读取、搜索和 `execute` 会变成"空壳"。
+- **通过工具排除实现隔离**（而非 `FilesystemPermission`）：因为 `LocalShellBackend` 不支持权限模式，改用 `ToolExclusionMiddleware` 从模型可见工具列表中直接移除被禁工具（如 researcher 的 `write_file`、`edit_file`、`patch`、`execute`）。
 - **禁用 write_todos**：所有子 Agent 额外排除 `write_todos` 类任务规划工具，防止子 Agent 内部再拆解出"子子 Agent"，造成递归复杂度爆炸。
 - **每个子 Agent 可指定不同模型**：通过 `tester_model` / `reviewer_model` / `researcher_model` 设置，比如 tester 用便宜的模型（如 DeepSeek），researcher 用强推理模型（如 Claude）。
 
@@ -1612,7 +1618,7 @@ synapse tui --readonly
 ```
 
 只读模式下，Agent 不能：
-- 写文件（`write_file`、`edit_file` 被排除）
+- 写文件（`write_file`、`edit_file`、`patch` 被排除）
 - 执行命令（`execute` 被排除）
 
 只能读取和搜索代码。

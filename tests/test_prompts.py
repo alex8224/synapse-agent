@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from langchain_core.messages import SystemMessage
+
 from synapse.content.prompts import build_system_prompt
+from synapse.runtime.filesystem_tool_prompt_middleware import (
+    build_filesystem_tool_prompt_middleware,
+)
 
 
 def test_build_system_prompt_injects_powershell_rules(tmp_path: Path):
@@ -29,6 +34,43 @@ def test_default_prompt_describes_search_glob_as_include_filter(
     assert "`glob` only as an optional\ninclude filter" in prompt
     assert "does not express\ncache-directory exclusions" in prompt
     assert "exclude common build artifacts and caches via `glob`" not in prompt
+
+
+def test_default_prompt_matches_active_filesystem_tools(tmp_path: Path, monkeypatch) -> None:
+    from synapse.content import prompts as prompts_mod
+
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: tmp_path / "missing-user")
+    prompt = build_system_prompt(tmp_path)
+
+    assert "## Active filesystem tools (authoritative)" in prompt
+    assert "The model-facing `ls`, `glob`, and `grep` tools are hidden" in prompt
+    assert "find_files(pattern, path, max_results, head_limit, offset)" in prompt
+    assert "read_file(file_path, offset, limit)" in prompt
+    assert "patch(file_path, patch)" in prompt
+    assert "Use `ls /`" not in prompt
+
+
+def test_filesystem_tool_prompt_middleware_appends_authoritative_guidance() -> None:
+    class _Request:
+        def __init__(self, system_message: SystemMessage) -> None:
+            self.system_message = system_message
+
+        def override(self, **changes):  # noqa: ANN003
+            return _Request(changes.get("system_message", self.system_message))
+
+    middleware = build_filesystem_tool_prompt_middleware()
+    request = _Request(SystemMessage(content="generic guidance for ls, glob, and grep"))
+
+    updated = middleware.wrap_model_call(request, lambda current: current)
+    text = "\n".join(
+        str(block.get("text", ""))
+        for block in updated.system_message.content_blocks
+        if isinstance(block, dict)
+    )
+
+    assert text.startswith("generic guidance")
+    assert "## Active filesystem tools (authoritative)" in text
+    assert text.rfind("never call them") > text.find("generic guidance")
 
 
 def test_build_system_prompt_uses_effective_shell_path(tmp_path: Path):
@@ -56,7 +98,7 @@ def test_shell_context_survives_external_prompt_override(tmp_path: Path):
 
     assert prompt.startswith("CUSTOM PROMPT")
     assert "## Current workspace" in prompt
-    assert "## File search semantics" in prompt
+    assert "## Active filesystem tools (authoritative)" in prompt
     assert "include-only path filter" in prompt
     assert "cannot express exclusions" in prompt
     assert "## Shell environment" in prompt

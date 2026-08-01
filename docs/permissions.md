@@ -41,7 +41,8 @@ synapse tui -w . --readonly
 export AGENT_READONLY=true
 ```
 
-只读模式通过 harness 工具排除实现，会移除 `write_file`、`edit_file`、`execute` 等写入类工具。
+只读模式通过 harness 工具排除实现，会移除 `write_file`、`edit_file`、`patch`、
+`execute` 等写入或执行类工具。
 
 ## 文件系统权限
 

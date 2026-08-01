@@ -128,6 +128,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             if tool.name in {"find_files", "search_files"}
         }
         assert set(search_tools) == {"find_files", "search_files"}
+        assert any(tool.name == "patch" for tool in kwargs["tools"])
         search_properties = search_tools[
             "search_files"
         ].tool_call_schema.model_json_schema()["properties"]
@@ -170,6 +171,10 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert model_retries[0].on_failure == "error"
         assert any(
             type(m).__name__ == "transform_tool_outputs"
+            for m in (kwargs.get("middleware") or [])
+        )
+        assert any(
+            type(m).__name__ == "_FilesystemToolPromptMiddleware"
             for m in (kwargs.get("middleware") or [])
         )
         assert not any(

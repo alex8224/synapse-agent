@@ -1840,7 +1840,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "rich" },
-    { name = "synapse-search-core" },
+    { name = "synapse-core-tool" },
     { name = "termaid" },
     { name = "texicode" },
     { name = "textual" },
@@ -1884,7 +1884,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "rich", specifier = ">=15.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.22" },
-    { name = "synapse-search-core", specifier = ">=0.1.0,<0.2.0" },
+    { name = "synapse-core-tool", directory = "rust/synapse-core-tool" },
     { name = "termaid", specifier = ">=0.7.1" },
     { name = "texicode", specifier = ">=1.0.3" },
     { name = "textual", specifier = ">=1.0.0" },
@@ -1904,15 +1904,9 @@ dev = [
 ]
 
 [[package]]
-name = "synapse-search-core"
-version = "0.1.1"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/e5/e01966c05efd0acae1ffa5f98fbaf49c620dcb777be612f14246ee81e15b/synapse_search_core-0.1.1-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:0e8c0a427cd755dab3fa7ec654f79bd32cc57ce02529927332512b10194ed656", size = 1242050, upload-time = "2026-07-30T07:53:45.301Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/92/108a537eec0ee1c7947f079203d02afb93fa98c1bbb2e62280489637d47d/synapse_search_core-0.1.1-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ffc8aea5a3f8cac252b439fb80e53e9afe682730b61511d0a97e86c9e98011b6", size = 1395917, upload-time = "2026-07-30T07:53:47.051Z" },
-    { url = "https://files.pythonhosted.org/packages/ae/be/e50f2ad6f3d27350a1853069a914f911ed5113e5d6e70cf395ca3f45b642/synapse_search_core-0.1.1-cp312-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:efc9d0bca3085d91484ba83542a46bcb0e373dea1ee22c09dc4eba4aa90896d2", size = 1399604, upload-time = "2026-07-30T07:53:48.664Z" },
-    { url = "https://files.pythonhosted.org/packages/51/40/2dd316e55a4c4f69eb576b9bc2b9ead532a6244ea7ea6e6308e6a2286e4c/synapse_search_core-0.1.1-cp312-abi3-win_amd64.whl", hash = "sha256:62aac06a858e61b8ce9826801571922d86977c9fcc64a2410fc393c60a8feff3", size = 1147101, upload-time = "2026-07-30T07:53:50.381Z" },
-]
+name = "synapse-core-tool"
+version = "0.1.0"
+source = { directory = "rust/synapse-core-tool" }
 
 [[package]]
 name = "tenacity"

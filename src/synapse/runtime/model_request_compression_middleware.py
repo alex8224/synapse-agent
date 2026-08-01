@@ -510,7 +510,7 @@ def _read_lifecycle(messages: list[Any], plan: list[dict[str, Any]]) -> list[dic
         call_id = str(getattr(message, "tool_call_id", None) or "")
         call = tool_calls.get(call_id) or {}
         name = str(call.get("tool_name") or getattr(message, "name", None) or "")
-        if name not in {"read_file", "edit_file", "write_file"}:
+        if name not in {"read_file", "edit_file", "write_file", "patch"}:
             continue
         operations.append({"message_index": index, "tool_call_id": call_id, **call})
     result: list[dict[str, Any]] = []
@@ -524,7 +524,7 @@ def _read_lifecycle(messages: list[Any], plan: list[dict[str, Any]]) -> list[dic
             and item.get("file_path") == operation.get("file_path")
         ]
         state = "fresh"
-        if any(item.get("tool_name") in {"edit_file", "write_file"} for item in later):
+        if any(item.get("tool_name") in {"edit_file", "write_file", "patch"} for item in later):
             state = "stale"
         elif any(item.get("tool_name") == "read_file" for item in later):
             state = "superseded"

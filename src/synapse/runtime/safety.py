@@ -164,6 +164,7 @@ def build_interrupt_on(*, require_approval: bool) -> dict[str, bool] | None:
         "execute": True,
         "write_file": True,
         "edit_file": True,
+        "patch": True,
     }
 
 

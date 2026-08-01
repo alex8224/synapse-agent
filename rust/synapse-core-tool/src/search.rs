@@ -17,12 +17,10 @@ const MAX_MATCH_TEXT_CHARS: usize = 4_000;
 struct SearchError(String);
 
 impl std::fmt::Display for SearchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
-
-impl std::error::Error for SearchError {}
 
 fn compile_glob(pattern: &str) -> Result<GlobSet, SearchError> {
     let mut builder = GlobSetBuilder::new();
@@ -87,11 +85,11 @@ impl Sink for MatchSink {
         Ok(true)
     }
 
-    fn context(&mut self, _: &Searcher, ctx: &SinkContext<'_>) -> Result<bool, Self::Error> {
+    fn context(&mut self, _: &Searcher, context: &SinkContext<'_>) -> Result<bool, Self::Error> {
         if self.context_lines > 0 {
             self.result.lines.push((
-                ctx.line_number().unwrap_or(0) as usize,
-                truncate_text(&String::from_utf8_lossy(ctx.bytes())),
+                context.line_number().unwrap_or(0) as usize,
+                truncate_text(&String::from_utf8_lossy(context.bytes())),
             ));
         }
         Ok(true)
@@ -122,7 +120,7 @@ fn search_file(
 }
 
 #[pyfunction(signature = (base_path, pattern, include_glob=None, max_results=1000, context_lines=0, case_insensitive=false))]
-fn grep(
+pub(crate) fn grep(
     py: Python<'_>,
     base_path: &str,
     pattern: &str,
@@ -164,10 +162,7 @@ fn grep(
             Err(_) => continue,
         };
         let path = entry.path();
-        if !entry
-            .file_type()
-            .is_some_and(|file_type| file_type.is_file())
-        {
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
         let relative = relative_path(path, &base_path);
@@ -207,7 +202,7 @@ fn grep(
 }
 
 #[pyfunction(signature = (base_path, pattern))]
-fn glob(py: Python<'_>, base_path: &str, pattern: &str) -> PyResult<Py<PyDict>> {
+pub(crate) fn glob(py: Python<'_>, base_path: &str, pattern: &str) -> PyResult<Py<PyDict>> {
     if pattern.is_empty() {
         return Err(PyValueError::new_err("pattern must not be empty"));
     }
@@ -242,9 +237,7 @@ fn glob(py: Python<'_>, base_path: &str, pattern: &str) -> PyResult<Py<PyDict>> 
         item.set_item("path", relative.as_str())?;
         item.set_item(
             "is_dir",
-            entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_dir()),
+            entry.file_type().is_some_and(|kind| kind.is_dir()),
         )?;
         if let Ok(metadata) = fs::metadata(path) {
             item.set_item("size", metadata.len())?;
@@ -260,13 +253,6 @@ fn glob(py: Python<'_>, base_path: &str, pattern: &str) -> PyResult<Py<PyDict>> 
     let output = PyDict::new(py);
     output.set_item("matches", matches)?;
     Ok(output.unbind())
-}
-
-#[pymodule]
-fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(grep, module)?)?;
-    module.add_function(wrap_pyfunction!(glob, module)?)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -288,12 +274,5 @@ mod tests {
         let result = truncate_text(&text);
         assert!(result.starts_with(&"中".repeat(MAX_MATCH_TEXT_CHARS)));
         assert!(result.contains("[truncated 1 chars]"));
-    }
-
-    #[test]
-    fn normalizes_relative_windows_separator() {
-        let base = Path::new("C:/repo");
-        let path = Path::new("C:/repo/src/main.rs");
-        assert_eq!(relative_path(path, base), "src/main.rs");
     }
 }

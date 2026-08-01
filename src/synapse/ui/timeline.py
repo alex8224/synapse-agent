@@ -76,7 +76,7 @@ def tool_category(name: str) -> str:
     n = (name or "").lower()
     if n in {"read_file", "read", "read_file_lines"}:
         return "read"
-    if n in {"write_file", "edit_file", "write", "edit", "create_file"}:
+    if n in {"write_file", "edit_file", "write", "edit", "patch", "create_file"}:
         return "edit"
     if n in {"ls", "list_dir", "list_directory"}:
         return "list"

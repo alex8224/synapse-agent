@@ -10,6 +10,7 @@ _DEFAULT_READONLY_EXCLUDES = frozenset(
         "execute",
         "write_file",
         "edit_file",
+        "patch",
     }
 )
 
@@ -24,7 +25,7 @@ def apply_harness_exclusions(
 
     ``ls`` is excluded by default because ``execute`` can run the project's
     native directory commands. Read-only mode additionally excludes ``execute``,
-    ``write_file``, and ``edit_file``.
+    ``write_file``, ``edit_file``, and ``patch``.
 
     ``model_spec`` is used only to disable deepagents' built-in general-purpose
     subagent. Tool exclusions are applied by Synapse request middleware instead

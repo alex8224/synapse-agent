@@ -39,7 +39,7 @@ def _tool_exclusion_middleware(excluded: set[str], *, allow_execute: bool = Fals
     return [build_tool_exclusion_middleware(blocked)]
 
 
-_READONLY_TOOL_NAMES = {"write_file", "edit_file"}
+_READONLY_TOOL_NAMES = {"write_file", "edit_file", "patch"}
 
 
 _PARALLEL_HINT = (
@@ -70,8 +70,8 @@ def build_default_subagents(
     routes by reading each subagent's description.
 
     When ``isolate_tools`` is True (LocalShell-safe):
-    - researcher: exclude write_file/edit_file/execute
-    - reviewer: exclude write_file/edit_file
+    - researcher: exclude write_file/edit_file/patch/execute
+    - reviewer: exclude write_file/edit_file/patch
     - tester: uses built-in ``execute`` and project ``AGENTS.md`` commands
     """
     if not enabled:
@@ -131,7 +131,8 @@ def build_default_subagents(
         ),
         "system_prompt": (
             "You are a codebase researcher.\n"
-            "- Prefer read_file/glob over broad shell scans.\n"
+            "- Prefer read_file and the targeted file-search tools available to you over broad "
+            "shell scans.\n"
             "- Do not modify files.\n"
             "- Do not run destructive shell commands.\n"
             "- Return concrete file paths and short evidence snippets.\n"

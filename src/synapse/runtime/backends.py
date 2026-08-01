@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends import LocalShellBackend
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult
 
 from synapse.runtime.execute_capture import capture_execute_output
 from synapse.runtime.tool_ignore import ToolIgnoreMatcher, relative_to_root
@@ -184,6 +184,79 @@ class CodingLocalShellBackend(LocalShellBackend):
 
     # --- native filesystem tool overrides ---
 
+    def _resolve_native_file_path(self, file_path: str) -> Path:
+        """Resolve and authorize a model-facing file path for native mutation tools."""
+        resolved = self._resolve_path(file_path)
+        if self._tool_ignore_dedicated:
+            root = Path(self.cwd).resolve()
+            relative = relative_to_root(resolved, root)
+            if self._tool_ignore.is_ignored(relative):
+                msg = f"Path '{file_path}' is denied by filesystem permissions"
+                raise PermissionError(msg)
+        return resolved
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        """Read a text file through the native bounded reader."""
+        import synapse_core_tool
+
+        try:
+            resolved = self._resolve_native_file_path(file_path)
+            if not resolved.is_file():
+                return ReadResult(error=f"File '{file_path}' not found")
+            payload = synapse_core_tool.read(
+                str(resolved),
+                offset=offset + 1,
+                limit=limit,
+            )
+            total_lines = int(payload["total_lines"])
+            if total_lines and offset >= total_lines:
+                return ReadResult(
+                    error=f"Line offset {offset} exceeds file length ({total_lines} lines)"
+                )
+            content = str(payload["content"])
+            if not content and total_lines == 0:
+                content = "System reminder: File exists but has empty contents"
+            return ReadResult(file_data={"content": content, "encoding": "utf-8"})
+        except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+            return ReadResult(error=f"Error reading file '{file_path}': {exc}")
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Apply an exact edit through the native encoding-preserving editor."""
+        import synapse_core_tool
+
+        try:
+            resolved = self._resolve_native_file_path(file_path)
+            payload = synapse_core_tool.edit(
+                str(resolved),
+                old_string,
+                new_string,
+                replace_all=replace_all,
+            )
+            return EditResult(path=file_path, occurrences=int(payload["replacements"]))
+        except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+            return EditResult(error=f"Error editing file '{file_path}': {exc}")
+
+    def patch(self, file_path: str, patch: str) -> dict[str, Any]:
+        """Apply a unified diff through the native encoding-preserving patcher."""
+        import synapse_core_tool
+
+        try:
+            resolved = self._resolve_native_file_path(file_path)
+            payload = synapse_core_tool.patch(str(resolved), patch)
+            return {
+                "path": file_path,
+                "hunks_applied": int(payload["hunks_applied"]),
+                "error": None,
+            }
+        except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+            return {"path": file_path, "hunks_applied": 0, "error": str(exc)}
+
     def _resolve_native_search_path(self, path: str | None) -> Path | None:
         """Resolve an agent path before passing it to the native filesystem engine.
 
@@ -218,7 +291,7 @@ class CodingLocalShellBackend(LocalShellBackend):
 
     def _grep_glob_candidates(
         self,
-        search_core: Any,
+        core_tool: Any,
         base_path: Path,
         pattern: str,
         glob: str,
@@ -227,7 +300,7 @@ class CodingLocalShellBackend(LocalShellBackend):
         case_insensitive: bool,
     ) -> list[dict[str, Any]]:
         """Retry an empty include-glob search against core-enumerated candidate files."""
-        candidates = search_core.glob(str(base_path), glob.lstrip("/"))["matches"]
+        candidates = core_tool.glob(str(base_path), glob.lstrip("/"))["matches"]
         matches: list[dict[str, Any]] = []
         for candidate in candidates:
             if candidate.get("is_dir") or len(matches) >= max_results:
@@ -235,7 +308,7 @@ class CodingLocalShellBackend(LocalShellBackend):
             relative_path = str(candidate["path"])
             file_path = base_path / relative_path
             remaining = max_results - len(matches)
-            payload = search_core.grep(
+            payload = core_tool.grep(
                 str(file_path),
                 pattern,
                 max_results=remaining,
@@ -258,21 +331,21 @@ class CodingLocalShellBackend(LocalShellBackend):
         case_insensitive: bool = False,
     ) -> Any:
         """Search with the required native Rust engine using regular expressions."""
-        import synapse_search_core
+        import synapse_core_tool
         from deepagents.backends.filesystem import GrepResult
 
         base_path = self._resolve_native_search_path(path)
         if base_path is None:
             return GrepResult(matches=[])
         try:
-            payload = synapse_search_core.grep(
+            payload = synapse_core_tool.grep(
                 str(base_path), pattern, include_glob=glob, max_results=max_results,
                 context_lines=context_lines, case_insensitive=case_insensitive,
             )
             raw_matches = list(payload["matches"])
             if glob and not raw_matches and base_path.is_dir():
                 raw_matches = self._grep_glob_candidates(
-                    synapse_search_core,
+                    synapse_core_tool,
                     base_path,
                     pattern,
                     glob,
@@ -298,14 +371,14 @@ class CodingLocalShellBackend(LocalShellBackend):
         """Find files with the required native Rust engine."""
         from datetime import datetime
 
-        import synapse_search_core
+        import synapse_core_tool
         from deepagents.backends.filesystem import GlobResult
 
         base_path = self._resolve_native_search_path(path)
         if base_path is None or not base_path.is_dir():
             return GlobResult(matches=[])
         try:
-            payload = synapse_search_core.glob(str(base_path), pattern.lstrip("/"))
+            payload = synapse_core_tool.glob(str(base_path), pattern.lstrip("/"))
         except (OSError, RuntimeError, ValueError) as exc:
             return GlobResult(
                 error=f"Error globbing path '{path or '<default>'}': {exc}", matches=[]

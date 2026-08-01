@@ -1,21 +1,22 @@
 [package]
-name = "synapse-search-core"
-version = "0.1.1"
+name = "synapse-core-tool"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0"
-description = "Native workspace search algorithms for Synapse."
+description = "Native filesystem tools for Synapse."
 publish = false
 
 [lib]
-name = "synapse_search_core"
+name = "synapse_core_tool"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+chardetng = "0.1"
+encoding_rs = "0.8"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 globset = "0.4"
 ignore = "0.4"
 pyo3 = { version = "0.23", features = ["abi3-py312", "extension-module"] }
-serde_json = "1.0"
 thiserror = "2.0"
