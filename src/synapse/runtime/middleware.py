@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -374,6 +375,65 @@ def build_path_normalize_middleware(workspace: Path):
     return _dual_wrap_tool_call(name="normalize_virtual_paths", apply=_apply)
 
 
+_NUMBERED_READ_LINE = re.compile(r"^\s*(\d+(?:\.\d+)?)\t(.*)$")
+
+
+def _rewrite_read_file_line_numbers(content: Any) -> str | None:
+    """Make deepagents' numbered text reads unambiguous without touching source text.
+
+    The upstream formatter emits a padded line marker followed by a tab.  The
+    replacement retains every source character after the separator, including
+    leading indentation. Continuation markers (for example ``5.1``) are kept.
+    """
+    if not isinstance(content, str):
+        return None
+    rewritten: list[str] = []
+    changed = False
+    for line in content.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        ending = line[len(body) :]
+        match = _NUMBERED_READ_LINE.match(body)
+        if match is None:
+            rewritten.append(line)
+            continue
+        rewritten.append(f"{match.group(1)} |{match.group(2)}{ending}")
+        changed = True
+    return "".join(rewritten) if changed else None
+
+
+def build_read_file_line_number_middleware():
+    """Rewrite successful text ``read_file`` rows as ``N |<exact source>``."""
+
+    def _rewrite(request: Any, result: Any) -> Any:
+        call = getattr(request, "tool_call", None)
+        call_name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+        if call_name != "read_file" or not isinstance(result, ToolMessage):
+            return result
+        if result.status == "error":
+            return result
+        rewritten = _rewrite_read_file_line_numbers(result.content)
+        if rewritten is None:
+            return result
+        return result.model_copy(update={"content": rewritten})
+
+    def wrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        return _rewrite(request, handler(request))
+
+    async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        return _rewrite(request, await handler(request))
+
+    return type(
+        "read_file_line_number_separator",
+        (AgentMiddleware,),
+        {
+            "state_schema": AgentState,
+            "tools": [],
+            "wrap_tool_call": wrap_tool_call,
+            "awrap_tool_call": awrap_tool_call,
+        },
+    )()
+
+
 def build_tool_error_recovery_middleware():
     """Return tool failures to the model instead of terminating the agent graph."""
 
@@ -691,8 +751,9 @@ _COMPACT_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Use glob/grep/read_file instead of find/grep/cat."
     ),
     "read_file": (
-        "Read a file from the filesystem and return content with cat -n line numbers. "
-        "Use pagination (offset/limit) for large files: read_file(path, offset=0, limit=100). "
+        "Read a file from the filesystem and return rows as LINE |<exact source>; text after | "
+        "is the unmodified source, including indentation. Use pagination (offset/limit) for large "
+        "files: read_file(path, offset=0, limit=100). "
         "Always read a file before editing it. "
         "Supports images, audio, video, and PDF via multimodal reads."
     ),

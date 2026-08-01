@@ -122,10 +122,16 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert kwargs["model"] is fake_model
         assert kwargs["backend"] is not None
         assert kwargs["checkpointer"] is not None
+        tools_by_name = {tool.name: tool for tool in kwargs["tools"]}
+        assert "apply_patch" in tools_by_name
+        assert "unified diff" in tools_by_name["apply_patch"].description
+        assert "patch" in tools_by_name["apply_patch"].tool_call_schema.model_json_schema()[
+            "properties"
+        ]
         search_tools = {
-            tool.name: tool
-            for tool in kwargs["tools"]
-            if tool.name in {"find_files", "search_files"}
+            name: tool
+            for name, tool in tools_by_name.items()
+            if name in {"find_files", "search_files"}
         }
         assert set(search_tools) == {"find_files", "search_files"}
         search_properties = search_tools[
@@ -158,9 +164,24 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         find_files_tool.name = "find_files"
         search_files_tool = MagicMock(name="search_files_tool")
         search_files_tool.name = "search_files"
-        request = _Request([ls_tool, glob_tool, grep_tool, find_files_tool, search_files_tool])
+        apply_patch_tool = MagicMock(name="apply_patch_tool")
+        apply_patch_tool.name = "apply_patch"
+        request = _Request(
+            [
+                ls_tool,
+                glob_tool,
+                grep_tool,
+                find_files_tool,
+                search_files_tool,
+                apply_patch_tool,
+            ]
+        )
         filtered = exclusion.wrap_model_call(request, lambda current: current)
-        assert [tool.name for tool in filtered.tools] == ["find_files", "search_files"]
+        assert [tool.name for tool in filtered.tools] == [
+            "find_files",
+            "search_files",
+            "apply_patch",
+        ]
         model_retries = [
             middleware
             for middleware in (kwargs.get("middleware") or [])

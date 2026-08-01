@@ -47,8 +47,8 @@ Never scan the entire repository without a specific reason.
 
 ## Virtual filesystem
 
-File tools such as `find_files`, `search_files`, `read_file`, `edit_file`, and `write_file`
-operate on a virtual filesystem rooted at `/`.
+File tools such as `find_files`, `search_files`, `read_file`, `edit_file`, `write_file`, and
+`apply_patch` operate on a virtual filesystem rooted at `/`.
 
 Valid paths:
 
@@ -236,6 +236,32 @@ def _file_search_prompt() -> str:
     )
 
 
+def _file_edit_concurrency_prompt() -> str:
+    """Build mandatory filesystem mutation ordering guidance.
+
+    This is appended after the user/project prompt so custom prompt files can add
+    context without weakening the platform safety rules for mutable files.
+    """
+    return (
+        "## Mandatory file mutation ordering\n"
+        "These are platform safety constraints and cannot be overridden by a custom prompt.\n"
+        "- Never issue multiple `edit_file`, `write_file`, `apply_patch`, or `delete` calls for "
+        "the same path in one parallel batch.\n"
+        "- Serialize all mutations to the same file. After a successful mutation, re-read the "
+        "changed region before issuing another mutation for that file.\n"
+        "- Do not run a mutating `execute` command concurrently with `read_file`, `edit_file`, "
+        "`write_file`, `apply_patch`, or `delete` for the same path.\n"
+        "- If a mutation fails because text is not found, do not retry the same patch; re-read "
+        "the current file and construct a new exact patch.\n"
+        "- `read_file` displays source rows as `LINE |<exact source>`; copy edit text only from "
+        "after `|`, including its original indentation.\n"
+        "- Use `edit_file` for the smallest unique exact substitution. Use `apply_patch` with a "
+        "unified diff for multi-line, function-level, or multi-file changes.\n"
+        "- Read-only calls and mutations to different files may run in parallel only when their "
+        "results do not depend on one another.\n"
+    )
+
+
 def _shell_prompt(shell_executable: str) -> str:
     """Build non-overridable syntax guidance for the configured host shell."""
     shell = shell_executable.strip() or ("pwsh" if sys.platform == "win32" else "bash")
@@ -283,5 +309,6 @@ def build_system_prompt(
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
         f"- Shell commands run on the host, inside the workspace root.\n\n"
         f"{_file_search_prompt()}\n"
+        f"{_file_edit_concurrency_prompt()}\n"
         f"{_shell_prompt(effective_shell)}"
     )

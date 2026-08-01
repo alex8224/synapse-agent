@@ -32,6 +32,7 @@ from synapse.runtime.middleware import (
     build_intent_schema_middleware,
     build_model_retry_middleware,
     build_path_normalize_middleware,
+    build_read_file_line_number_middleware,
     build_strip_redundant_prompt_blocks,
     build_task_namespace_middleware,
     build_tool_error_recovery_middleware,
@@ -50,6 +51,7 @@ from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
 from synapse.tools import (
+    build_apply_patch_tools,
     build_describe_image_tools,
     build_filesystem_search_tools,
     build_session_tools,
@@ -302,6 +304,8 @@ def build_coding_agent(
     if extra_tools:
         tools.extend(extra_tools)
     tools.extend(build_filesystem_search_tools(backend))
+    if not settings.readonly:
+        tools.extend(build_apply_patch_tools(backend))
     # 跨会话查阅工具
     try:
         session_tools = build_session_tools(
@@ -450,6 +454,7 @@ def build_coding_agent(
     # recovery inside archival so both normal and recovered error ToolMessages
     # are durable before the graph checkpoints them.
     middleware.append(build_tool_error_recovery_middleware())
+    middleware.append(build_read_file_line_number_middleware())
     middleware.extend(
         [
             build_path_normalize_middleware(root),

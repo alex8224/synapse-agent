@@ -61,3 +61,10 @@ def test_shell_context_survives_external_prompt_override(tmp_path: Path):
     assert "cannot express exclusions" in prompt
     assert "## Shell environment" in prompt
     assert "Do not use Bash heredocs" in prompt
+    assert "## Mandatory file mutation ordering" in prompt
+    assert "cannot be overridden by a custom prompt" in prompt
+    assert (
+        "Never issue multiple `edit_file`, `write_file`, `apply_patch`, or `delete` calls"
+        in prompt
+    )
+    assert "Use `apply_patch` with a unified diff" in prompt
