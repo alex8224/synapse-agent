@@ -21,6 +21,78 @@ from synapse.ui.dialogs.model_picker import THINKING_LEVELS
 from synapse.ui.dialogs.safety_panel import PROFILES
 
 # =========================================================================
+# OptionRow text truncation
+# =========================================================================
+
+class TestOptionRowTruncation:
+    """Long CJK labels must be truncated by cell width, never wrap-clipped."""
+
+    def test_short_text_is_unchanged(self):
+        from synapse.ui.dialogs.base import _truncate_to_cells
+
+        assert _truncate_to_cells("short", 60) == "short"
+
+    def test_cjk_label_is_truncated_within_cell_budget(self):
+        from rich.cells import cell_len
+
+        from synapse.ui.dialogs.base import _truncate_to_cells
+
+        long_cjk = (
+            "现在是如何维护模型和推理级别的关系的？我发现没记住，"
+            "每次新的都只会用默认会话级别"
+        )
+        out = _truncate_to_cells(long_cjk, 40)
+        assert out.endswith("\u2026")
+        assert out[:-1] in long_cjk  # prefix preserved from the original
+        assert cell_len(out) <= 40
+
+    def test_ascii_word_is_truncated(self):
+        from synapse.ui.dialogs.base import _truncate_to_cells
+
+        out = _truncate_to_cells("a" * 80, 20)
+        assert out.endswith("\u2026")
+        assert len(out) <= 20
+
+    def test_option_row_keeps_label_prefix(self):
+        """Regression: overlong CJK title used to render as just the bullet."""
+        from textual.app import App, ComposeResult
+        from textual.containers import Vertical
+
+        from synapse.ui.dialogs.base import OptionItem, OptionRow
+        from synapse.ui.theme import bootstrap_theme, get_theme
+
+        long_cjk = (
+            "现在是如何维护模型和推理级别的关系的？我发现没记住，"
+            "每次新的都只会用默认会话级别"
+        )
+
+        class Host(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+            def compose(self) -> ComposeResult:
+                with Vertical(id="rows"):
+                    yield OptionRow(
+                        OptionItem(key="k", label=long_cjk, detail="2026-08-01T14:45"),
+                        mark="  ",
+                    )
+
+        bootstrap_theme("cursor-dark")
+        app = Host()
+
+        async def exercise() -> None:
+            async with app.run_test(size=(80, 10)) as pilot:
+                await pilot.pause()
+                row = app.query_one(OptionRow)
+                plain = row.render().plain
+                # label prefix survives; the row is not clipped to just the bullet
+                assert "现在是如何维护" in plain
+                assert "\u2026" in plain  # truncated with ellipsis, not dropped
+
+        asyncio.run(asyncio.wait_for(exercise(), timeout=15))
+
+
+# =========================================================================
 # OptionItem
 # =========================================================================
 

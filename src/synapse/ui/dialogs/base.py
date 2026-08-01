@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,6 +13,31 @@ from textual.containers import Vertical, VerticalScroll
 from textual.events import Click
 from textual.screen import ModalScreen
 from textual.widgets import Static
+
+# Dialog window is fixed at width 66 (see dialog_css): border(2) + body
+# padding(2) + row padding(2) leaves ~60 content cells per row.
+# We truncate text manually so a very long word (e.g. a CJK session title with
+# no spaces) never reaches Textual's word-wrap path: otherwise the overlong
+# word wraps to line 2 and `height: 1; overflow: hidden` clips it, leaving the
+# row looking like "●" with an empty title.
+_ROW_CONTENT_CELLS = 60
+
+
+def _truncate_to_cells(text: str, max_cells: int) -> str:
+    """Truncate ``text`` to at most ``max_cells`` display cells, adding "…"."""
+    if max_cells <= 0:
+        return ""
+    if cell_len(text) <= max_cells:
+        return text
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        width = cell_len(ch)
+        if used + width > max_cells - 1:  # reserve 1 cell for "…"
+            break
+        out.append(ch)
+        used += width
+    return "".join(out) + "\u2026"
 
 
 @dataclass
@@ -119,17 +145,26 @@ class OptionRow(Static):
         item = self.item
         prefix = self._mark + item.indent
         if not item.show_bullet:
-            row = Text(f"{prefix}{item.label}")
+            row_prefix = prefix
         elif self._checkable:
             bullet = "\u2612" if item.checked else "\u2610"  # ☑ / ☐
-            row = Text(f"{prefix}{bullet}  {item.label}")
+            row_prefix = f"{prefix}{bullet}  "
         else:
             bullet = "\u25cf" if item.selected else "\u25cb"  # ● / ○
-            row = Text(f"{prefix}{bullet}  {item.label}")
+            row_prefix = f"{prefix}{bullet}  "
+        head_cells = cell_len(row_prefix)
+        label = _truncate_to_cells(item.label, max(0, _ROW_CONTENT_CELLS - head_cells))
+        row = Text(row_prefix + label)
         if item.detail:
-            row.append(f"  {item.detail}", style="dim")
+            detail_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
+            detail = _truncate_to_cells(item.detail, detail_avail)
+            if detail:
+                row.append(f"  {detail}", style="dim")
         if item.meta:
-            row.append(f"  {item.meta}", style="dim")
+            meta_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
+            meta = _truncate_to_cells(item.meta, meta_avail)
+            if meta:
+                row.append(f"  {meta}", style="dim")
         self.update(row)
 
     def set_hover(self, on: bool) -> None:
