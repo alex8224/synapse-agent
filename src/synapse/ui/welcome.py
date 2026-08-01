@@ -10,10 +10,11 @@ from rich.text import Text
 from textual.widgets import Static
 
 _BRAILLE_BLANK = "\u2800"
-_SHIMMER_FPS = 12.0
+_SHIMMER_FPS = 20.0
 _REVEAL_DURATION = 3.0
 _VISIBLE_DURATION = 3.0
-_ERASE_DURATION = 3.0
+_ERASE_DURATION = 2.0
+_ERASE_TRAIL = 0.35  # per-cell erase window in wave-progress units; smaller = snappier wipe
 _HIDDEN_DURATION = 0.8
 _CYCLE_SECONDS = (
     _REVEAL_DURATION + _VISIBLE_DURATION + _ERASE_DURATION + _HIDDEN_DURATION
@@ -164,7 +165,7 @@ def _logo_style(
         column_norm = column / max(1, width - 1)
         position = row + column_norm * 0.4
         progress = (phase_elapsed / _ERASE_DURATION) * (total_rows + 0.4)
-        local = max(0.0, min(1.0, (progress - position) / 0.6))
+        local = max(0.0, min(1.0, (progress - position) / _ERASE_TRAIL))
         return _dot_char_erase(full_value, local), fg
     return _dot_char(full_value, 1.0), fg
 
