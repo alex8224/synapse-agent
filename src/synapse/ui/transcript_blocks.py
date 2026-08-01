@@ -47,13 +47,15 @@ class ThoughtBlock(SelectableStatic):
         body: str,
         *,
         live: bool = False,
+        expand_on_seal: bool = False,
         dim_color: _Color | None = None,
         thought_mark: str = _DEFAULT_THOUGHT_MARK,
     ) -> None:
         self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
         self.body = body or ""
         self.live = bool(live)
-        self.collapsed = not self.live
+        self.expand_on_seal = bool(expand_on_seal)
+        self.collapsed = not (self.live or self.expand_on_seal)
         self._dim_color = dim_color
         self._thought_mark = thought_mark or _DEFAULT_THOUGHT_MARK
         self._started_at: float | None = None
@@ -82,7 +84,7 @@ class ThoughtBlock(SelectableStatic):
     def update_live(self, elapsed_s: float, body: str) -> None:
         """Refresh in place while tokens are still arriving."""
         self.live = True
-        self.collapsed = False
+        self.collapsed = not self.expand_on_seal
         self._sync_elapsed(elapsed_s)
         self.body = body or ""
         self._render_block()
@@ -103,7 +105,7 @@ class ThoughtBlock(SelectableStatic):
         self._sync_elapsed(elapsed_s)
         self._started_at = None
         self.body = body or ""
-        self.collapsed = True
+        self.collapsed = not self.expand_on_seal
         self._render_block()
 
     def _render_block(self) -> None:
@@ -115,9 +117,10 @@ class ThoughtBlock(SelectableStatic):
                     style=f"italic {dim}",
                 )
             ]
-            preview = stream_tail_preview(self.body)
-            if preview.strip():
-                lines.append(Text(preview, style=dim))
+            if self.expand_on_seal:
+                preview = stream_tail_preview(self.body)
+                if preview.strip():
+                    lines.append(Text(preview, style=dim))
             lines.append(Text(""))
             self.update(Group(*lines))
             return

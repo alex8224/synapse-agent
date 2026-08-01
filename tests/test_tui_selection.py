@@ -66,6 +66,23 @@ def test_answer_block_does_not_copy_on_mouse_click() -> None:
     assert "on_click" not in AnswerBlock.__dict__
 
 
+def test_thought_block_collapses_on_seal_by_default() -> None:
+    block = ThoughtBlock(1.5, "alpha beta", expand_on_seal=False)
+    block.update_live(2.0, "alpha beta gamma")
+    assert block.collapsed is True  # streaming stays collapsed by default
+    block.seal(3.0, "alpha beta gamma delta")
+    assert block.collapsed is True  # sealed default collapses
+
+
+def test_thought_block_stays_expanded_on_seal_when_configured() -> None:
+    block = ThoughtBlock(1.5, "alpha beta", expand_on_seal=True)
+    assert block.collapsed is False  # non-live block built expanded
+    block.update_live(2.0, "alpha beta gamma")
+    assert block.collapsed is False  # streaming expands when configured
+    block.seal(3.0, "alpha beta gamma delta")
+    assert block.collapsed is False
+
+
 def test_answer_get_selection_full_body() -> None:
     block = AnswerBlock("alpha\nbeta\ngamma")
     sel = Selection(None, None)

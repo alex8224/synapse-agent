@@ -94,6 +94,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 |---|---|---|
 | `AGENT_THEME` | `cursor-dark` | TUI 主题 |
 | `AGENT_TOOL_DETAILS_EXPANDED` | `true` | 工具详情默认展开 |
+| `AGENT_EXPAND_THINKING` | `false` | 推理块不自动展开：流式时仅显示状态行，结束后折叠为一行预览；设为 `true` 时流式与结束后均完整展开 |
 | `AGENT_DEBUG` | `false` | 调试模式 |
 
 ### 其他

@@ -247,6 +247,10 @@ class Settings(BaseSettings):
     show_reasoning_placeholders: bool = Field(
         default=True, validation_alias="AGENT_SHOW_REASONING_PLACEHOLDERS"
     )
+    # TUI: keep ThoughtBlock rows expanded while reasoning streams and after it
+    # finishes. Default false = collapsed (streaming shows only the status line,
+    # sealed rows collapse to a one-line preview).
+    expand_thinking: bool = Field(default=False, validation_alias="AGENT_EXPAND_THINKING")
     # TUI tool timeline: keep tool-detail rows expanded under group headers.
     # Set false to auto-collapse batches after they finish (summary only).
     tool_details_expanded: bool = Field(

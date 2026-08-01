@@ -53,6 +53,16 @@ def test_reasoning_placeholder_visibility_default_and_env(monkeypatch):
     assert settings_off.show_reasoning_placeholders is False
 
 
+def test_expand_thinking_default_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_EXPAND_THINKING", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.expand_thinking is False
+
+    monkeypatch.setenv("AGENT_EXPAND_THINKING", "true")
+    settings_on = Settings(_env_file=None)
+    assert settings_on.expand_thinking is True
+
+
 def test_tool_details_expanded_default_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_TOOL_DETAILS_EXPANDED", raising=False)
     settings = Settings(_env_file=None)

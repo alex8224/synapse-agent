@@ -2443,6 +2443,7 @@ class CodingAgentApp(App[None]):
                     float(elapsed_s or 0.0),
                     text,
                     live=True,
+                    expand_on_seal=bool(getattr(self.settings, "expand_thinking", False)),
                     dim_color=lambda: _C_DIM,
                     thought_mark=_MARK_THOUGHT,
                 )
@@ -2703,7 +2704,7 @@ class CodingAgentApp(App[None]):
     def commit_thought(self, elapsed_s: float, body: str) -> None:
         self._last_thought_body = body or ""
         self._last_thought_elapsed = elapsed_s
-        self._thought_expanded = False
+        self._thought_expanded = bool(getattr(self.settings, "expand_thinking", False))
         live = self._live_stream_block
         if (
             isinstance(live, ThoughtBlock)
@@ -2717,6 +2718,7 @@ class CodingAgentApp(App[None]):
             block = ThoughtBlock(
                 elapsed_s,
                 body,
+                expand_on_seal=bool(getattr(self.settings, "expand_thinking", False)),
                 dim_color=lambda: _C_DIM,
                 thought_mark=_MARK_THOUGHT,
             )
