@@ -2700,16 +2700,24 @@ class CodingAgentApp(App[None]):
 
     # ------------------------------------------------------------------
 
+    def _expand_thinking(self) -> bool:
+        """Whether sealed thought rows keep the full reasoning text visible.
+
+        Config default: False (collapsed one-line preview after finish).
+        """
+        return bool(getattr(self.settings, "expand_thinking", False))
+
     def commit_thought(self, elapsed_s: float, body: str) -> None:
         self._last_thought_body = body or ""
         self._last_thought_elapsed = elapsed_s
-        self._thought_expanded = False
+        expand = self._expand_thinking()
+        self._thought_expanded = expand
         live = self._live_stream_block
         if (
             isinstance(live, ThoughtBlock)
             and self._live_stream_kind == "reasoning"
         ):
-            live.seal(elapsed_s, body or "")
+            live.seal(elapsed_s, body or "", expand=expand)
             self._live_stream_block = None
             self._live_stream_kind = None
             self._follow_timeline_if_needed()
@@ -2717,6 +2725,7 @@ class CodingAgentApp(App[None]):
             block = ThoughtBlock(
                 elapsed_s,
                 body,
+                collapsed=not expand,
                 dim_color=lambda: _C_DIM,
                 thought_mark=_MARK_THOUGHT,
             )

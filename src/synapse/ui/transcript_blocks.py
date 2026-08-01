@@ -49,11 +49,12 @@ class ThoughtBlock(SelectableStatic):
         live: bool = False,
         dim_color: _Color | None = None,
         thought_mark: str = _DEFAULT_THOUGHT_MARK,
+        collapsed: bool | None = None,
     ) -> None:
         self.elapsed_s = max(0.0, float(elapsed_s or 0.0))
         self.body = body or ""
         self.live = bool(live)
-        self.collapsed = not self.live
+        self.collapsed = not self.live if collapsed is None else collapsed
         self._dim_color = dim_color
         self._thought_mark = thought_mark or _DEFAULT_THOUGHT_MARK
         self._started_at: float | None = None
@@ -97,13 +98,13 @@ class ThoughtBlock(SelectableStatic):
         self.elapsed_s = new_elapsed
         self._render_block()
 
-    def seal(self, elapsed_s: float, body: str) -> None:
+    def seal(self, elapsed_s: float, body: str, *, expand: bool = False) -> None:
         """Finalize this row as a historical ThoughtBlock without remounting."""
         self.live = False
         self._sync_elapsed(elapsed_s)
         self._started_at = None
         self.body = body or ""
-        self.collapsed = True
+        self.collapsed = not expand
         self._render_block()
 
     def _render_block(self) -> None:

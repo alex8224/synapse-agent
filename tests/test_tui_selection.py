@@ -98,6 +98,24 @@ def test_thought_selectable_text_collapsed_preview() -> None:
     assert "..." in text or len(text) < len(body) + 40
 
 
+def test_thought_seal_collapsed_by_default() -> None:
+    body = "word " * 50
+    block = ThoughtBlock(1.2, body, live=True)
+    assert block.collapsed is False
+    block.seal(1.2, body)
+    assert block.collapsed is True
+
+
+def test_thought_seal_expand_keeps_full_body() -> None:
+    body = "word " * 50  # longer than the 160-char preview cap
+    block = ThoughtBlock(1.2, body, live=True)
+    block.seal(1.2, body, expand=True)
+    assert block.collapsed is False
+    assert block.selectable_text() == f"Thought for 1.2s\n{body.strip()}"
+    block.toggle()
+    assert block.collapsed is True
+
+
 def test_tool_group_selectable_text_lists_items() -> None:
     block = ToolGroupBlock("Read 2 files")
     block.add_item(

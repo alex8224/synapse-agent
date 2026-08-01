@@ -252,6 +252,9 @@ class Settings(BaseSettings):
     tool_details_expanded: bool = Field(
         default=True, validation_alias="AGENT_TOOL_DETAILS_EXPANDED"
     )
+    # TUI thought blocks: keep reasoning rows expanded after they finish instead
+    # of collapsing to a one-line preview. Click or ctrl+t still toggles.
+    expand_thinking: bool = Field(default=False, validation_alias="AGENT_EXPAND_THINKING")
     # TUI session recap: after idle following a completed turn, show one-line summary.
     session_recap_enabled: bool = Field(default=True, validation_alias="AGENT_SESSION_RECAP")
     session_recap_idle_seconds: float = Field(

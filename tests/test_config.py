@@ -17,6 +17,15 @@ def test_default_approval_is_off(monkeypatch):
     assert build_interrupt_on(require_approval=settings.require_approval) is None
 
 
+def test_expand_thinking_default_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_EXPAND_THINKING", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.expand_thinking is False
+
+    monkeypatch.setenv("AGENT_EXPAND_THINKING", "true")
+    assert Settings(_env_file=None).expand_thinking is True
+
+
 def test_tool_output_transform_defaults_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM", raising=False)
     monkeypatch.delenv("AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES", raising=False)
