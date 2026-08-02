@@ -1,6 +1,6 @@
 [project]
 name = "synapse-cli-agent"
-version = "0.1.20"
+version = "0.1.21"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
 authors = [

@@ -7,6 +7,31 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.21
+
+### 新增功能
+
+- 会话工具 `list_sessions` 重构为 `search_session`：新增本地增量全文索引（`SessionSearchIndex`），除标题/摘要/模型外支持会话消息全文双路命中；`query` 为空时列出最近会话，支持 `limit`/`offset` 分页与摘要。
+- `read_session` 支持 `include_tools`（默认去掉工具消息，输出体积最多缩小 13 倍）与 `offset`/`limit` 轮次分页。
+- 新增原生 `patch` 工具，`read_file`/`edit_file`/`patch` 全部路由到 `synapse-core-tool` 编码保持的原生实现。
+- 新增 `AGENT_EXPAND_THINKING` 设置，控制 reasoning 块的展开/收起。
+
+### 修复
+
+- 修复 `load_messages_from_checkpointer` 只读最新 checkpoint 导致新版 SqliteSaver（delta 存储）下读不到消息：改为 delta 重建优先、旧逻辑兜底。
+- 修复 `search_session` 索引库并发写锁竞争（`database is locked`）：WAL + busy_timeout + 同步降级容错。
+- 修复 JSON 类型检测晚于 LOG、无法识别括号风格日志的问题。
+- 修复长对话框行标签被裁剪的问题。
+
+### 工程改进
+
+- 文件系统核心由 `synapse-search-core` 迁移并更名为 `synapse-core-tool`（新增原生 read/edit/patch），CI workflow 同步迁移为 `native-core-tool-wheels.yml`。
+- 隐藏 DeepAgents 内置 `ls`/`glob`/`grep`，新增 prompt 中间件注入权威文件工具指引。
+- 主 TUI 欢迎 logo 动画时机调整。
+- 清理 `list_sessions` 旧名残留（docstring、错误提示、prompts、文档）。
+
+---
+
 ## v0.1.20
 
 ### 新增功能
