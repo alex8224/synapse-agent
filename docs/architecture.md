@@ -146,7 +146,7 @@
 │                                                                     │
 │  ┌────────────────────  工具系统  ──────────────────────────────┐  │
 │  │  tools/session_tools.py  (工厂+闭包依赖注入)                  │  │
-│  │  ├─ list_sessions(query, limit)    搜索本地会话               │  │
+│  │  ├─ search_session(query, ...)     搜索本地会话               │  │
 │  │  ├─ read_session(thread_id, ...)   读取对话历史               │  │
 │  │  └─ read_tool_result(ref, ...)     读取压缩工具输出原文       │  │
 │  │                                                               │  │
@@ -312,7 +312,7 @@ cli.py
       │    └→ CodingLocalShellBackend (subprocess)
       ├─ task (子Agent)
       │    └→ DAGSubAgentMiddleware (缓存结果)
-      ├─ list_sessions/read_session
+      ├─ search_session/read_session
       │    └→ SessionStore (SQLite)
       ├─ MCP tools
       │    └→ McpSessionPool (stdio/SSE/HTTP)
@@ -589,7 +589,7 @@ Schema 演进：`_ensure_column()` 用 `PRAGMA table_info` 检测 `active_model`
 
 **`resolve_startup_binding()` 模型恢复**：CLI --model 显式 > 会话级绑定 (`get_model_binding(thread_id)`) > 全局最后使用 (`get_last_model_binding`)。通过 `apply_binding_to_settings()` 写回 settings。
 
-**`build_session_tools()` 闭包依赖注入**：`SessionStore` 和 `checkpoint_path` 通过闭包注入两个工具（`list_sessions` / `read_session`）。两个工具标记了 `**默认禁止调用**` docstring。
+**`build_session_tools()` 闭包依赖注入**：`SessionStore`、`checkpoint_path` 和 `tool_output_db_path` 通过闭包注入三个工具（`search_session` / `read_session` / `read_tool_result`）。三个工具标记了 `**默认禁止调用**` docstring。
 
 ### Codex 导入完整流水线
 

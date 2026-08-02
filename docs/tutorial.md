@@ -771,8 +771,8 @@ Agent 本身只是一个语言模型，只能"说"不能"做"。**工具**赋予
 # src/synapse/tools/session_tools.py
 
 @tool
-def list_sessions(query="", limit=20):
-    """列出本地会话记录，支持按标题/ID 模糊搜索。"""
+def search_session(query="", limit=20):
+    """搜索本地会话，支持按标题/摘要/消息全文匹配；query 为空时列出最近会话。"""
     # 默认禁止调用，只有用户明确要求才用
     ...
 

@@ -1,6 +1,6 @@
 """Multi-model registry built on top of deepagents/LangChain model assembly.
 
-Preferred configuration: `.coding-agent/models.json`
+Preferred configuration: `.synapse/models.json`
 Secrets stay in env / `.env` via `api_key_env`.
 
 Top-level fields:
@@ -654,7 +654,7 @@ def merge_model_registries(
 
 
 def default_models_config_path(workspace: Path | str | None = None) -> Path:
-    """Canonical project path: <workspace>/.coding-agent/models.json."""
+    """Canonical project path: <workspace>/.synapse/models.json."""
     base = Path(workspace).expanduser().resolve() if workspace is not None else Path.cwd()
     return (base / DEFAULT_MODELS_CONFIG_REL).resolve()
 

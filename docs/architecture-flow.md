@@ -423,11 +423,11 @@ idle > 180s + turn_count >= 3 → 单行摘要: `"任务 {user}；工具 {tools}
 
 ### 9.1 跨会话查阅工具
 
-`build_session_tools()` → `[list_sessions, read_session, read_tool_result]`
+`build_session_tools()` → `[search_session, read_session, read_tool_result]`
 
 | 工具 | 依赖 | 数据源 |
 |---|---|---|
-| `list_sessions` | SessionStore | sessions.sqlite |
+| `search_session` | SessionStore + SessionSearchIndex | sessions.sqlite + search-index.sqlite |
 | `read_session` | SessionStore + SqliteSaver | sessions.sqlite + checkpoints.sqlite |
 | `read_tool_result` | ToolOutputRepository | tool-outputs.sqlite |
 

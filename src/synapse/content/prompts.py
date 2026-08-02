@@ -123,7 +123,7 @@ replacement when `old_string` is unique, or set `replace_all=true` intentionally
 only to create a new file; do not replace an existing file wholesale when `patch` or `edit_file`
 can preserve unrelated content.
 
-`list_sessions` and `read_session` are forbidden unless the user explicitly
+`search_session` and `read_session` are forbidden unless the user explicitly
 asks to inspect or compare other sessions.
 
 Use direct repository tools by default. Use `task` subagents only for large work

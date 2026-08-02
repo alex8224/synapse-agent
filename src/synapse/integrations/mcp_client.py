@@ -131,7 +131,7 @@ def load_mcp_server_configs(
     """Load MCP servers from one or more JSON files (later overrides by name).
 
     When ``path``/``paths`` are unset, loads layered:
-      ``~/.coding-agent/mcp.json`` then ``<workspace>/.coding-agent/mcp.json``.
+      ``~/.synapse/mcp.json`` then ``<workspace>/.synapse/mcp.json``.
     """
     file_paths: list[Path] = []
     if paths:

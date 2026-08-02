@@ -307,7 +307,7 @@ def build_coding_agent(
         tools.extend(extra_tools)
     tools.extend(build_filesystem_search_tools(backend))
     tools.append(build_filesystem_patch_tool(backend))
-    # 跨会话查阅工具
+    # 跨会话查阅工具（search_session / read_session / read_tool_result）
     try:
         session_tools = build_session_tools(
             sessions_path=settings.resolved_sessions_path(),

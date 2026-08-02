@@ -550,7 +550,11 @@ def default_sessions_path(checkpoint_path: Path | str | None = None) -> Path:
     return Path(".coding-agent/sessions.sqlite").resolve()
 
 
-def format_session_table(items: Iterable[SessionInfo]) -> str:
+def format_session_table(
+    items: Iterable[SessionInfo],
+    *,
+    include_summary: bool = False,
+) -> str:
     rows = list(items)
     if not rows:
         return "(no sessions)"
@@ -558,8 +562,10 @@ def format_session_table(items: Iterable[SessionInfo]) -> str:
     for s in rows:
         model = s.binding().display()[:20]
         lines.append(
-            f"{s.thread_id:<12} {s.updated_at:<24} {model:<20} {s.title[:48]}"
+            f"{s.thread_id:<12} {s.updated_at:<24} {model:<20} {s.title[:100]}"
         )
+        if include_summary and (s.summary or "").strip():
+            lines.append(f"  summary: {(s.summary or '').strip()[:120]}")
     return "\n".join(lines)
 
 

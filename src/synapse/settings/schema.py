@@ -239,7 +239,7 @@ class Settings(BaseSettings):
     #  catppuccin-mocha one-dark
     # Built-in light: solarized-light github-light one-light gruvbox-light
     #  catppuccin-latte tokyo-night-light ayu-light nord-light
-    # Custom palettes: layered .coding-agent/themes.json
+    # Custom palettes: layered .synapse/themes.json
     theme: str = Field(default="cursor-dark", validation_alias="AGENT_THEME")
 
     # TUI: render a synthetic thought when a gateway reports reasoning tokens but
@@ -407,9 +407,9 @@ def load_settings(**overrides: Any) -> Settings:
     """Load settings from layered config + optional env/legacy `.env`.
 
     Layers (later wins for settings.json / models / mcp):
-      1. ``~/.coding-agent/``
-      2. exe-adjacent ``.coding-agent/`` (portable bundle)
-      3. ``<workspace>/.coding-agent/``
+      1. ``~/.synapse/``
+      2. exe-adjacent ``.synapse/`` (portable bundle)
+      3. ``<workspace>/.synapse/``
 
     Secrets: prefer ``api_key`` in ``models.json``. ``.env`` is legacy only.
     """

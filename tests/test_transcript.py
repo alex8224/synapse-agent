@@ -170,3 +170,55 @@ def test_fold_user_multimodal_images():
     assert events[0].text == "look at this"
     assert len(events[0].images) == 1
     assert events[0].images[0][0] == raw
+
+
+def _five_turn_messages() -> list:
+    from synapse.sessions.transcript import split_messages_by_turns
+
+    msgs = []
+    for i in range(1, 6):
+        msgs.append(_Human(f"q{i}"))
+        msgs.append(_AI(f"a{i}"))
+    return split_messages_by_turns(msgs)
+
+
+def test_format_turns_as_text_all_by_default():
+    from synapse.sessions.transcript import format_turns_as_text
+
+    out = format_turns_as_text(_five_turn_messages())
+    assert all(f"第 {i} 轮" in out for i in range(1, 6))
+    assert "[共 " not in out
+
+
+def test_format_turns_as_text_offset_limit():
+    from synapse.sessions.transcript import format_turns_as_text
+
+    out = format_turns_as_text(_five_turn_messages(), offset=1, limit=2)
+    assert "[共 5 轮，显示第 2-3 轮]" in out
+    assert "第 2 轮" in out
+    assert "第 3 轮" in out
+    assert "第 1 轮" not in out
+    assert "第 4 轮" not in out
+
+
+def test_format_turns_as_text_max_turns_offset_combination():
+    from synapse.sessions.transcript import format_turns_as_text
+
+    # 最后 3 轮中的第 2 轮 -> 全局第 4 轮
+    out = format_turns_as_text(_five_turn_messages(), max_turns=3, offset=1, limit=1)
+    assert "第 4 轮" in out
+    assert "[共 5 轮，显示第 4-4 轮]" in out
+
+
+def test_format_turns_as_text_offset_beyond_end_is_empty():
+    from synapse.sessions.transcript import format_turns_as_text
+
+    out = format_turns_as_text(_five_turn_messages(), offset=99, limit=5)
+    assert "--- 第 " not in out
+    assert "轮次" not in out
+
+
+def test_format_turns_as_text_empty():
+    from synapse.sessions.transcript import format_turns_as_text
+
+    assert format_turns_as_text([]) == "(无对话内容)"

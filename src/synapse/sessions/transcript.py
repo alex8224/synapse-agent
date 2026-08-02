@@ -274,9 +274,16 @@ def load_messages_from_checkpointer(
 ) -> list[Any]:
     """从 LangGraph checkpointer 加载 thread 的消息。
 
-    先从最新 checkpoint 的 channel_values 中取 messages。
-    若不存在（上下文压缩后），沿 parent_config 链向上回退，
-    找到第一个包含 messages 的 checkpoint 后返回。
+    新版本 SqliteSaver/AsyncSqliteSaver 使用 delta 存储：checkpoint blob 只保存
+    ``updated_channels`` 增量，完整 ``messages`` 需要沿 parent 链合并
+    ``get_delta_channel_history`` 的 seed + writes 才能重建。老版本 saver 则把
+    messages 直接放进 ``channel_values`` 快照。
+
+    加载策略：
+    1. 优先用 ``get_delta_channel_history`` 重建 messages（delta 存储）。
+    2. 回退：从最新 checkpoint 的 ``channel_values`` 取 messages；若为
+       空（上下文压缩后），沿 parent_config 链向上回退，找到第一个包含
+       messages 的快照。
 
     Args:
         checkpointer: LangGraph checkpointer 实例
@@ -285,11 +292,27 @@ def load_messages_from_checkpointer(
     """
     if checkpointer is None or not thread_id:
         return []
+
+    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+
+    # 1. Delta 存储：seed + writes 合并重建（sqlite saver 与 memory saver 均支持）。
+    get_delta = getattr(checkpointer, "get_delta_channel_history", None)
+    if callable(get_delta):
+        try:
+            history = get_delta(config=config, channels=["messages"])
+        except Exception:  # noqa: BLE001
+            history = None
+        if history:
+            dh = history.get("messages")
+            if dh is not None:
+                rebuilt = _rebuild_messages_from_delta_history(dh)
+                if rebuilt:
+                    return rebuilt
+
+    # 2. 回退：完整 channel_values 快照 + parent 链回退。
     get_tuple = getattr(checkpointer, "get_tuple", None)
     if not callable(get_tuple):
         return []
-
-    config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
     for _ in range(max(1, max_parents + 1)):
         try:
             tup = get_tuple(config)
@@ -311,6 +334,35 @@ def load_messages_from_checkpointer(
         config = parent
 
     return []
+
+
+def _rebuild_messages_from_delta_history(dh: Any) -> list[Any]:
+    """从 ``DeltaChannelHistory``（seed + writes）重建 messages 列表。
+
+    delta history 形如::
+
+        {"messages": {"seed": <_DeltaSnapshot(value=[...])>,
+                      "writes": [(checkpoint_id, "messages", [msg, ...]), ...]}}
+
+    重建顺序 = seed 初始消息 + 按 checkpoint 顺序追加的 writes 增量。
+    """
+    messages: list[Any] = []
+    try:
+        seed = dh.get("seed")
+        if seed is not None:
+            value = getattr(seed, "value", None)
+            if isinstance(value, list):
+                messages.extend(value)
+        writes = dh.get("writes") or []
+        for item in writes:
+            if not (isinstance(item, tuple) and len(item) >= 3):
+                continue
+            msgs = item[2]
+            if isinstance(msgs, list):
+                messages.extend(msgs)
+    except Exception:  # noqa: BLE001
+        return []
+    return messages
 
 
 def load_messages_from_sqlite_file(
@@ -636,6 +688,8 @@ def format_turns_as_text(
     turns: list[list[Any]],
     *,
     max_turns: int = 0,
+    offset: int = 0,
+    limit: int = 0,
     max_chars_per_turn: int = 8000,
 ) -> str:
     """将轮次列表格式化为可读文本。
@@ -643,6 +697,8 @@ def format_turns_as_text(
     Args:
         turns: split_messages_by_turns 的输出
         max_turns: 0 = 全量，N = 仅最后 N 轮
+        offset: 在 max_turns 之后，跳过前 offset 轮（0 = 不跳过）
+        limit: 最多返回 limit 轮（0 = 全部）
         max_chars_per_turn: 每轮最大字符数，超出截断
     """
     if not turns:
@@ -651,19 +707,26 @@ def format_turns_as_text(
     target = turns
     if max_turns > 0:
         target = turns[-max_turns:]
+    total_turns = len(turns)
+
+    if offset > 0 or limit > 0:
+        start = max(0, offset)
+        end = start + limit if limit > 0 else None
+        window = target[start:end]
+    else:
+        window = target
+        start = 0
+
+    base = total_turns - len(target)  # max_turns 截断时跳过的头部轮数
+    first_global = base + start + 1
+    last_global = base + start + len(window)
 
     lines: list[str] = []
-    total_turns = len(turns)
-    if 0 < max_turns < total_turns:
-        lines.append(f"[共 {total_turns} 轮，以下为最后 {max_turns} 轮]\n")
+    if 0 < len(window) < total_turns:
+        lines.append(f"[共 {total_turns} 轮，显示第 {first_global}-{last_global} 轮]\n")
 
-    for i, turn in enumerate(target):
-        turn_idx = (
-            total_turns - len(target) + i + 1
-            if max_turns and max_turns < total_turns
-            else i + 1
-        )
-        lines.append(f"--- 第 {turn_idx} 轮 ---")
+    for i, turn in enumerate(window):
+        lines.append(f"--- 第 {first_global + i} 轮 ---")
         for msg in turn:
             item = message_to_export_dict(msg)
             role = item["role"].upper()

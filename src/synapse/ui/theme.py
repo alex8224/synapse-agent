@@ -3,7 +3,7 @@
 Config surfaces:
 
 - ``settings.json`` key ``theme`` (active name), loaded via ``Settings.theme``
-- ``.coding-agent/themes.json`` (user → project layers)::
+- ``.synapse/themes.json`` (user → project layers)::
 
       {
         "themes": {
