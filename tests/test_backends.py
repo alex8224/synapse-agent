@@ -36,9 +36,10 @@ def test_resolve_pwsh_uses_argument_list():
     assert isinstance(args, list)
     exe = args[0].lower()
     if "pwsh" in exe or "powershell" in exe:
-        # pwsh found: expect PowerShell-style invocation
+        # pwsh found: expect PowerShell-style invocation with UTF-8 bootstrap
         assert args[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
-        assert args[4] == "Get-Location"
+        assert "OutputEncoding=[System.Text.Encoding]::UTF8" in args[4]
+        assert args[4].endswith("Get-Location")
     else:
         # Non-Windows fallback to bash
         assert args[1:] == ["-lc", "Get-Location"]

@@ -36,6 +36,19 @@ def _basename(path_or_name: str) -> str:
     return Path(path_or_name).name.lower()
 
 
+# Bootstrap injected into every pwsh `-Command` invocation. On Chinese Windows
+# the pwsh console code page is GBK (936), so pwsh writes stdout as GBK bytes
+# while subprocess/execute capture decode UTF-8 -> mojibake (and GBK crashes
+# in the deep-agents harness). Pin the three encodings to UTF-8 inside the
+# child process so both the agent shell backend and the execute tool receive
+# clean UTF-8 output regardless of the user's system locale.
+_PS_UTF8_BOOTSTRAP = (
+    "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+    "[Console]::InputEncoding=[System.Text.Encoding]::UTF8;"
+)
+
+
 def resolve_shell_invocation(
     command: str,
     shell_executable: str | None,
@@ -71,7 +84,17 @@ def resolve_shell_invocation(
                 exe = shutil.which("bash") or shutil.which("sh") or "bash"
                 return [exe, "-lc", command], False, None
             exe = raw
-        return [exe, "-NoProfile", "-NonInteractive", "-Command", command], False, None
+        return (
+            [
+                exe,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"{_PS_UTF8_BOOTSTRAP} {command}",
+            ],
+            False,
+            None,
+        )
 
     # bash / sh
     if base in {"bash", "bash.exe", "sh", "sh.exe"}:
