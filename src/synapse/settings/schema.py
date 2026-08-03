@@ -264,6 +264,11 @@ class Settings(BaseSettings):
     session_recap_min_turns: int = Field(
         default=3, validation_alias="AGENT_SESSION_RECAP_MIN_TURNS"
     )
+    # TUI transcript restore: number of recent visible turns rendered initially.
+    # Older turns are loaded when the user scrolls to the top.
+    history_tail_turns: int = Field(
+        default=20, ge=1, validation_alias="AGENT_HISTORY_TAIL_TURNS"
+    )
     # DeepSeek V4 thinking / other reasoning models via OpenAI-compatible API
     enable_thinking: bool = Field(default=True, validation_alias="ENABLE_THINKING")
     reasoning_effort: str = Field(default="high", validation_alias="REASONING_EFFORT")

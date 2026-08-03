@@ -73,6 +73,16 @@ def test_tool_details_expanded_default_and_env(monkeypatch):
     assert settings_off.tool_details_expanded is False
 
 
+def test_history_tail_turns_default_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_HISTORY_TAIL_TURNS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.history_tail_turns == 20
+
+    monkeypatch.setenv("AGENT_HISTORY_TAIL_TURNS", "7")
+    configured = Settings(_env_file=None)
+    assert configured.history_tail_turns == 7
+
+
 def test_stream_chunk_timeout_default_disabled_and_env(monkeypatch):
     """langchain-openai default 120s stall timeout must be off unless configured."""
     monkeypatch.delenv("STREAM_CHUNK_TIMEOUT", raising=False)

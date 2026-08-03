@@ -70,6 +70,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `CHECKPOINT_BACKEND` | `sqlite` | 检查点后端（`sqlite`/`memory`） |
 | `CHECKPOINT_PATH` | `.coding-agent/checkpoints.sqlite` | 检查点存储路径 |
 | `SESSIONS_PATH` | — | 会话元数据路径 |
+| `AGENT_HISTORY_TAIL_TURNS` | `20` | TUI 启动时初始渲染的最近可见会话轮数；滚动到顶部后加载更早历史 |
 
 ### 子代理
 

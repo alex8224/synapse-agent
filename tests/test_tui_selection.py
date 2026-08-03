@@ -8,6 +8,7 @@ from textual.selection import Selection
 from synapse.ui.timeline import ToolItem
 from synapse.ui.tui import (
     AnswerBlock,
+    CodingAgentApp,
     SelectableStatic,
     ThoughtBlock,
     ToolGroupBlock,
@@ -15,6 +16,25 @@ from synapse.ui.tui import (
     _annotate_strip_offsets,
     _stylize_strip_char_span,
 )
+
+
+def test_history_load_done_ignores_stale_generation() -> None:
+    app = object.__new__(CodingAgentApp)
+    app._history_loading = True
+    app._history_generation = 2
+    app._history_thread_id = "thread-current"
+    app._history_messages = [object()]
+    app._history_start_idx = 20
+
+    app._history_load_done(
+        None,
+        20,
+        "thread-current",
+        1,
+        "stale worker",
+    )
+
+    assert app._history_loading is True
 
 
 def test_annotate_strip_offsets_stamps_meta() -> None:

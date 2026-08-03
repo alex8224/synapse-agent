@@ -201,6 +201,80 @@ def test_format_turns_as_text_offset_limit():
     assert "第 4 轮" not in out
 
 
+def _turn_messages(n: int) -> list:
+    msgs = []
+    for i in range(1, n + 1):
+        msgs.append(_Human(f"q{i}"))
+        msgs.append(_AI(f"a{i}"))
+    return msgs
+
+
+def test_turn_start_indexes():
+    from synapse.sessions.transcript import turn_start_indexes
+
+    msgs = _turn_messages(5)
+    assert turn_start_indexes(msgs) == [0, 2, 4, 6, 8]
+
+
+def test_fold_tail_window_pages_from_the_end():
+    from synapse.sessions.transcript import fold_tail_window
+
+    msgs = _turn_messages(5)
+    win = fold_tail_window(msgs, tail_turns=2)
+    assert [e.text for e in win.events if e.kind == "user"] == ["q4", "q5"]
+    assert win.start_idx == 6
+    assert win.has_more is True
+
+
+def test_fold_tail_window_all_when_under_limit():
+    from synapse.sessions.transcript import fold_tail_window
+
+    msgs = _turn_messages(3)
+    win = fold_tail_window(msgs, tail_turns=10)
+    assert win.start_idx == 0
+    assert win.has_more is False
+    assert [e.text for e in win.events if e.kind == "user"] == ["q1", "q2", "q3"]
+
+
+def test_fold_earlier_window_pages_backwards():
+    from synapse.sessions.transcript import fold_earlier_window
+
+    msgs = _turn_messages(5)
+    win = fold_earlier_window(msgs, before_idx=6, tail_turns=2)
+    assert [e.text for e in win.events if e.kind == "user"] == ["q2", "q3"]
+    assert win.start_idx == 2
+    assert win.has_more is True
+
+    win2 = fold_earlier_window(msgs, before_idx=2, tail_turns=2)
+    assert [e.text for e in win2.events if e.kind == "user"] == ["q1"]
+    assert win2.start_idx == 0
+    assert win2.has_more is False
+
+
+def test_turn_start_indexes_skips_steer_human_messages():
+    from langchain_core.messages import HumanMessage
+
+    from synapse.runtime.steer import format_steer_message
+    from synapse.sessions.transcript import fold_tail_window, turn_start_indexes
+
+    msgs = [
+        _Human("visible q1"),
+        _AI("a1"),
+        HumanMessage(
+            content=format_steer_message(["内部"]),
+            additional_kwargs={"coding_steer": True},
+        ),
+        _AI("a1b"),
+        _Human("visible q2"),
+        _AI("a2"),
+    ]
+    assert turn_start_indexes(msgs) == [0, 4]
+    win = fold_tail_window(msgs, tail_turns=1)
+    assert [e.text for e in win.events if e.kind == "user"] == ["visible q2"]
+    assert win.start_idx == 4
+    assert win.has_more is True
+
+
 def test_format_turns_as_text_max_turns_offset_combination():
     from synapse.sessions.transcript import format_turns_as_text
 

@@ -649,6 +649,18 @@ class CodingAgentApp(App[None]):
         self._in_tool_rail = False
         # After tools run, next final answer gets a ◇ divider above it.
         self._pending_answer_divider = False
+        # Paginated transcript restore: only the last N visible turns are
+        # painted at startup; older pages load on demand when scrolling up.
+        # `history_tail_turns` is an optional settings knob (default 20).
+        self._history_tail_turns = max(
+            1, int(getattr(settings, "history_tail_turns", 20) or 20)
+        )
+        self._history_messages: list[Any] | None = None
+        self._history_start_idx = 0
+        self._history_has_more = False
+        self._history_loading = False
+        self._history_thread_id = ""
+        self._history_generation = 0
         self._session_recap = SessionRecapController(
             enabled=bool(getattr(settings, "session_recap_enabled", True)),
             idle_seconds=float(
@@ -759,6 +771,10 @@ class CodingAgentApp(App[None]):
         self._refresh_codex_usage()
         self.set_interval(0.1, self._tick_status)
         self.set_interval(60.0, self._refresh_codex_usage)
+        # Poll scroll position: when the transcript reaches the top and older
+        # turns remain, kick off an async page load (no Textual scroll events
+        # in this version, so a cheap 300 ms poll is used instead).
+        self.set_interval(0.3, self._check_history_edge)
         log = self.query_one("#log", VerticalScroll)
         # Hide scrollbar chrome; mouse-wheel / keys / scroll_* still work.
         log.show_vertical_scrollbar = False
@@ -2971,6 +2987,13 @@ class CodingAgentApp(App[None]):
         self._live_stream_kind = None
         self._user_turns.clear()
         self._in_tool_rail = False
+        # Drop paginated-history state together with the DOM.
+        self._history_messages = None
+        self._history_start_idx = 0
+        self._history_has_more = False
+        self._history_loading = False
+        self._history_thread_id = ""
+        self._history_generation += 1
         self._session_recap.reset()
         try:
             self.query_one("#turn-rail", TurnRail).clear_turns()
@@ -3009,12 +3032,16 @@ class CodingAgentApp(App[None]):
         self._usage_base_output = 0
         self._usage_base_cache = 0
 
-    def _render_restored_tools(
+    def _build_restored_tool_group(
         self,
         tool_calls: list[dict],
         tool_results: list[dict],
-    ) -> None:
-        """Render a historical tool batch as a collapsed group."""
+    ) -> tuple[ToolGroupBlock | None, bool]:
+        """Build a historical tool batch as a group without mounting it.
+
+        Returns ``(block, divider_needed)``; ``divider_needed`` mirrors the
+        live path where a finished tool batch marks the next answer with a ◇.
+        """
         from synapse.ui.timeline import (
             build_tool_item,
             extract_todos,
@@ -3024,10 +3051,12 @@ class CodingAgentApp(App[None]):
         )
 
         if not tool_calls and not tool_results:
-            return
+            return None, False
         items: list[ToolItem] = []
         result_by_id = {
-            str(r.get("id") or ""): r for r in (tool_results or []) if isinstance(r, dict)
+            str(r.get("id") or ""): r
+            for r in (tool_results or [])
+            if isinstance(r, dict)
         }
         result_by_name: dict[str, list[dict]] = {}
         for r in tool_results or []:
@@ -3087,23 +3116,142 @@ class CodingAgentApp(App[None]):
             items.append(item)
 
         if not items:
-            return
+            return None, False
         summary = summarize_items(items, running=False)
-        self.write_tool_group_header(summary, collapsed=True)
+        if (summary or "").strip() in {"", "0 tools", "tools", "Running 0 tools"}:
+            return None, False
+        block = ToolGroupBlock(summary)
+        block.collapsed = True
         for it in items:
-            self.write_tool_item(it)
-        self.close_tool_group()
+            block.add_item(it)
+        block._sync_summary_from_items(running=False)
+        has_todo = any(
+            (it.name or "").lower() in {"write_todos", "todo_write", "todos"}
+            or str(it.label or "").startswith("Todos ")
+            for it in items
+        )
+        keep_open = has_todo or self._tool_details_expanded()
+        block.set_collapsed(not keep_open)
+        block._render_block()
+        return block, True
+
+    def _build_answer_divider(self) -> Any:
+        """Create an AnswerDivider widget without mounting it."""
+        width = 0
+        try:
+            log = self.query_one("#log", VerticalScroll)
+            width = int(getattr(log.size, "width", 0) or 0)
+        except Exception:  # noqa: BLE001
+            width = 0
+        if width <= 0:
+            width = int(getattr(self.size, "width", 0) or 0)
+        # Subtract log padding (0 1) so the rule centers in the content box.
+        usable = max(28, (width or 56) - 2)
+        return AnswerDivider(usable, muted_color=lambda: _C_MUTED)
+
+    def _build_restored_blocks(self, events: list[Any]) -> list[Any]:
+        """Build transcript widgets from folded events without mounting them.
+
+        Maintains the same bookkeeping lists as the live path
+        (``_user_turns`` / ``_thought_blocks`` / ``_tool_blocks``) so toggle
+        actions and the turn rail keep working for restored history.
+        """
+        blocks: list[Any] = []
+        pending_divider = False
+        turn_count = len(self._user_turns)
+        for ev in events:
+            kind = ev.kind
+            if kind == "user":
+                pending_divider = False
+                turn_count += 1
+                block = UserTurnBlock(
+                    ev.text or "",
+                    stamp=_stamp(),
+                    turn_index=turn_count,
+                    image_count=len(getattr(ev, "images", None) or []),
+                )
+                self._user_turns.append(block)
+                blocks.append(block)
+            elif kind == "thought":
+                # Historical thoughts: collapsed, elapsed unknown.
+                block = ThoughtBlock(
+                    0.0,
+                    ev.text,
+                    expand_on_seal=bool(
+                        getattr(self.settings, "expand_thinking", False)
+                    ),
+                    dim_color=lambda: _C_DIM,
+                    thought_mark=_MARK_THOUGHT,
+                )
+                self._thought_blocks.append(block)
+                blocks.append(block)
+            elif kind == "tools":
+                group, divider = self._build_restored_tool_group(
+                    ev.tool_calls, ev.tool_results
+                )
+                if group is not None:
+                    self._tool_blocks.append(group)
+                    blocks.append(group)
+                    pending_divider = divider
+            elif kind == "answer":
+                try:
+                    from synapse.runtime.context_compact import (
+                        is_context_compact_text,
+                    )
+
+                    if is_context_compact_text(ev.text):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+                if pending_divider:
+                    blocks.append(self._build_answer_divider())
+                    pending_divider = False
+                block = AnswerBlock(
+                    ev.text,
+                    live=False,
+                    fg_color=lambda: _C_FG,
+                    markdown_max_chars=_MARKDOWN_MAX_CHARS,
+                )
+                blocks.append(block)
+        self._refresh_turn_rail()
+        return blocks
+
+    def _mount_blocks(self, blocks: list[Any]) -> None:
+        """Mount a batch of transcript blocks (single layout pass)."""
+        if not blocks:
+            return
+        self._dismiss_welcome()
+        timeline = self.query_one("#log", VerticalScroll)
+        follow = (
+            timeline.max_scroll_y <= 0
+            or timeline.scroll_y >= timeline.max_scroll_y - 1
+        )
+        timeline.mount(*blocks)
+        if follow:
+            self.call_after_refresh(self._scroll_timeline)
 
     def _restore_session_transcript(self, *, announce: bool = True) -> None:
         """Load checkpoint messages for current thread and paint the timeline.
 
         LLM context is restored by reusing the same ``thread_id`` with the
         LangGraph checkpointer; this method only rebuilds the visual history.
+        The transcript is paginated: only the last ``history_tail_turns``
+        visible user turns are painted; older turns are loaded asynchronously
+        when the user scrolls the timeline to the top.
         """
         if self.agent is None:
             return
-        from synapse.sessions.transcript import fold_messages_for_ui, load_thread_messages
+        from synapse.sessions.transcript import (
+            fold_tail_window,
+            load_thread_messages,
+            turn_start_indexes,
+        )
 
+        # Invalidate an in-flight page load before attempting to read the new
+        # transcript.  This also covers restore failures, where the state
+        # reset below cannot be reached.
+        self._history_generation += 1
+        self._history_loading = False
         try:
             messages = load_thread_messages(
                 agent=self.agent,
@@ -3115,42 +3263,232 @@ class CodingAgentApp(App[None]):
                 self.append_event(f"restore transcript failed: {exc}", "yellow")
             return
 
-        events = fold_messages_for_ui(messages)
-        if not events:
+        # Reset paging state for the current thread before painting.
+        self._history_messages = messages
+        self._history_start_idx = 0
+        self._history_has_more = False
+        self._history_loading = False
+        self._history_thread_id = self.thread_id
+
+        window = fold_tail_window(messages, tail_turns=self._history_tail_turns)
+        if not window.events:
             if announce and messages is not None:
                 # Only announce emptiness on explicit /switch restore.
                 self.append_event("(empty session transcript)", "dim")
             return
 
-        n_user = n_answer = n_tools = n_thought = 0
-        for ev in events:
-            kind = ev.kind
-            if kind == "user":
-                self.append_user(ev.text, images=getattr(ev, "images", None) or None)
-                n_user += 1
-            elif kind == "thought":
-                # Historical thoughts: collapsed, elapsed unknown.
-                self.commit_thought(0.0, ev.text)
-                n_thought += 1
-            elif kind == "tools":
-                self._render_restored_tools(ev.tool_calls, ev.tool_results)
-                n_tools += 1
-            elif kind == "answer":
-                self.commit_answer(ev.text)
-                n_answer += 1
+        self._history_start_idx = window.start_idx
+        self._history_has_more = window.has_more
+        blocks = self._build_restored_blocks(window.events)
+        self._mount_blocks(blocks)
 
         # Hydrate session token chrome from AIMessage usage_metadata.
         self._apply_restored_usage(messages)
 
         if announce:
+            total_turns = len(turn_start_indexes(messages))
+            loaded_turns = sum(1 for b in blocks if isinstance(b, UserTurnBlock))
             self.append_event(
-                f"restored transcript: {n_user} user / {n_answer} answers"
-                f" / {n_tools} tool groups / {n_thought} thoughts"
+                f"restored transcript: {loaded_turns} / {total_turns} user turns"
                 f"  ({len(messages)} msgs)",
                 "dim",
             )
+            if window.has_more:
+                self.append_event("scroll to top to load earlier history", "dim")
         # Jump to bottom after paint.
         self.call_after_refresh(self._scroll_timeline)
+
+    def _check_history_edge(self) -> None:
+        """Poll: when the transcript is at the top and older turns remain,
+        kick off an async page load."""
+        if self._history_loading or not self._history_has_more:
+            return
+        if self._history_messages is None or self._history_start_idx <= 0:
+            return
+        try:
+            timeline = self.query_one("#log", VerticalScroll)
+        except Exception:  # noqa: BLE001
+            return
+        if timeline.scroll_y > 0:
+            return
+        self._request_earlier_history()
+
+    def _request_earlier_history(self) -> None:
+        """Freeze the paging cursor and fold the next page off-thread."""
+        messages = self._history_messages
+        if messages is None:
+            return
+        self._history_loading = True
+        generation = self._history_generation
+        self._load_earlier_history_bg(
+            messages,
+            self._history_start_idx,
+            self._history_tail_turns,
+            self._history_thread_id,
+            generation,
+        )
+
+    @work(thread=True, exclusive=True, group="history")
+    def _load_earlier_history_bg(
+        self,
+        messages: list[Any],
+        before_idx: int,
+        tail_turns: int,
+        thread_id: str,
+        generation: int,
+    ) -> None:
+        """Fold an earlier page off the UI thread; insertion happens via callback."""
+        from synapse.sessions.transcript import fold_earlier_window
+
+        try:
+            window = fold_earlier_window(
+                messages, before_idx=before_idx, tail_turns=tail_turns
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(
+                self._history_load_done,
+                None,
+                before_idx,
+                thread_id,
+                generation,
+                str(exc),
+            )
+            return
+        self.call_from_thread(
+            self._history_load_done,
+            window,
+            before_idx,
+            thread_id,
+            generation,
+            None,
+        )
+
+    def _history_load_done(
+        self,
+        window: Any,
+        expected_idx: int,
+        thread_id: str,
+        generation: int,
+        error: str | None,
+    ) -> None:
+        """Apply a folded page on the UI thread (stale results are dropped)."""
+        if (
+            self._history_generation != generation
+            or self._history_thread_id != thread_id
+            or self._history_messages is None
+            or self._history_start_idx != expected_idx
+        ):
+            return
+        self._history_loading = False
+        if error:
+            self.append_event(f"load earlier history failed: {error}", "yellow")
+            return
+        if window is None:
+            return
+        if not window.events:
+            self._history_has_more = False
+            return
+        blocks = self._build_restored_blocks(window.events)
+        self._insert_earlier_blocks(blocks)
+        if not self._prepend_blocks(blocks):
+            # Anchor disappeared (transcript rebuilt); drop this page, roll back
+            # bookkeeping side effects and keep the cursor for a later retry.
+            self._discard_earlier_blocks(blocks)
+            return
+        self._history_start_idx = window.start_idx
+        self._history_has_more = window.has_more
+        if not window.has_more:
+            self.append_event("earliest history loaded", "dim")
+
+    def _insert_earlier_blocks(self, blocks: list[Any]) -> None:
+        """Insert older pages at the front of bookkeeping lists and renumber
+        turn indexes so the rail stays globally consistent."""
+        user_blocks = [b for b in blocks if isinstance(b, UserTurnBlock)]
+        thought_blocks = [b for b in blocks if isinstance(b, ThoughtBlock)]
+        tool_blocks = [b for b in blocks if isinstance(b, ToolGroupBlock)]
+        for b in user_blocks:
+            if b in self._user_turns:
+                self._user_turns.remove(b)
+        for b in thought_blocks:
+            if b in self._thought_blocks:
+                self._thought_blocks.remove(b)
+        for b in tool_blocks:
+            if b in self._tool_blocks:
+                self._tool_blocks.remove(b)
+        self._user_turns[0:0] = user_blocks
+        self._thought_blocks[0:0] = thought_blocks
+        self._tool_blocks[0:0] = tool_blocks
+        if user_blocks:
+            k = len(user_blocks)
+            for i, b in enumerate(user_blocks):
+                b.turn_index = i + 1
+            for b in self._user_turns[k:]:
+                if b.turn_index is not None:
+                    b.turn_index = int(b.turn_index) + k
+                    try:
+                        b._render_block()
+                    except Exception:  # noqa: BLE001
+                        pass
+        self._refresh_turn_rail()
+
+    def _discard_earlier_blocks(self, blocks: list[Any]) -> None:
+        """Roll back ``_insert_earlier_blocks`` when a page could not be mounted."""
+        user_blocks = [b for b in blocks if isinstance(b, UserTurnBlock)]
+        thought_blocks = [b for b in blocks if isinstance(b, ThoughtBlock)]
+        tool_blocks = [b for b in blocks if isinstance(b, ToolGroupBlock)]
+        for b in user_blocks:
+            if b in self._user_turns:
+                self._user_turns.remove(b)
+        for b in thought_blocks:
+            if b in self._thought_blocks:
+                self._thought_blocks.remove(b)
+        for b in tool_blocks:
+            if b in self._tool_blocks:
+                self._tool_blocks.remove(b)
+        if user_blocks:
+            k = len(user_blocks)
+            for b in self._user_turns:
+                if b.turn_index is not None:
+                    b.turn_index = max(1, int(b.turn_index) - k)
+                    try:
+                        b._render_block()
+                    except Exception:  # noqa: BLE001
+                        pass
+        self._refresh_turn_rail()
+
+    def _prepend_blocks(self, blocks: list[Any]) -> bool:
+        """Insert blocks at the top of the timeline, keeping the viewport.
+
+        Returns False when the anchor disappeared (page dropped, cursor
+        untouched so the next scroll retries).
+        """
+        if not blocks:
+            return False
+        timeline = self.query_one("#log", VerticalScroll)
+        try:
+            anchor = next(iter(timeline.children))
+        except StopIteration:
+            self._mount_blocks(blocks)
+            return True
+        old_max = timeline.max_scroll_y
+        old_y = timeline.scroll_y
+        try:
+            # Textual 8.x has no Widget.before(); mount with before= anchor.
+            timeline.mount(*blocks, before=anchor)
+        except Exception:  # noqa: BLE001
+            return False
+        self.call_after_refresh(self._keep_scroll_after_prepend, old_max, old_y)
+        return True
+
+    def _keep_scroll_after_prepend(self, old_max: int, old_y: float) -> None:
+        """Offset the scroll position by the height added above the viewport."""
+        try:
+            timeline = self.query_one("#log", VerticalScroll)
+        except Exception:  # noqa: BLE001
+            return
+        delta = max(0, timeline.max_scroll_y - old_max)
+        target = min(old_y + delta, timeline.max_scroll_y)
+        timeline.scroll_to(y=max(0, target), animate=False)
 
     # -- theme -----------------------------------------------------------
 

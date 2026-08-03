@@ -605,6 +605,111 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
     return events
 
 
+@dataclass
+class TranscriptWindow:
+    """A foldable slice of a thread plus the paging boundary.
+
+    Attributes:
+        events: UI events folded from ``messages[start_idx:end_idx]``.
+        start_idx: message index where this window starts.
+        has_more: True when older visible user turns exist before ``start_idx``.
+    """
+
+    events: list[UiTranscriptEvent] = field(default_factory=list)
+    start_idx: int = 0
+    has_more: bool = False
+
+
+def _is_steer_message_noise(msg: Any) -> bool:
+    """True when ``msg`` is model-only steer chrome (never painted)."""
+    try:
+        from synapse.runtime.steer import is_steer_message
+
+        return is_steer_message(msg)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def turn_start_indexes(messages: list[Any]) -> list[int]:
+    """Indexes of human messages that fold into a visible ``user`` turn.
+
+    Mirrors the filtering inside ``fold_messages_for_ui`` (summarization /
+    steer / context-compaction wrappers never start a visible turn), so the
+    paging boundaries stay aligned with what the TUI actually paints.
+    """
+    out: list[int] = []
+    for i, msg in enumerate(messages or []):
+        if _message_role(msg) not in {"human", "user"}:
+            continue
+        if is_lc_summarization_message(msg):
+            continue
+        if _is_steer_message_noise(msg):
+            continue
+        text = _message_content(msg).strip()
+        if is_context_compact_text(text):
+            continue
+        try:
+            from synapse.runtime.steer import is_steer_message as _is_steer
+
+            if _is_steer(text=text):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        if not text and not _message_images(msg):
+            continue
+        out.append(i)
+    return out
+
+
+def fold_tail_window(
+    messages: list[Any],
+    *,
+    tail_turns: int = 20,
+) -> TranscriptWindow:
+    """Fold only the last ``tail_turns`` visible user turns of a thread.
+
+    Used at TUI startup so huge threads paint a bounded window instead of the
+    full transcript; ``has_more`` tells the UI that older turns exist and can
+    be fetched page by page via ``fold_earlier_window``.
+    """
+    starts = turn_start_indexes(messages or [])
+    if not starts:
+        return TranscriptWindow(events=[], start_idx=0, has_more=False)
+    n = min(len(starts), max(1, int(tail_turns)))
+    boundary = starts[len(starts) - n]
+    events = fold_messages_for_ui(messages[boundary:])
+    return TranscriptWindow(
+        events=events,
+        start_idx=boundary,
+        has_more=any(i < boundary for i in starts),
+    )
+
+
+def fold_earlier_window(
+    messages: list[Any],
+    *,
+    before_idx: int,
+    tail_turns: int = 20,
+) -> TranscriptWindow:
+    """Fold up to ``tail_turns`` visible user turns strictly before ``before_idx``.
+
+    Used for scroll-up paging: returns the next older page (the newest page of
+    the history already painted by the UI). ``start_idx`` is the message index
+    where the returned page begins; ``has_more`` indicates older pages remain.
+    """
+    starts = [i for i in turn_start_indexes(messages or []) if i < int(before_idx)]
+    if not starts:
+        return TranscriptWindow(events=[], start_idx=0, has_more=False)
+    n = min(len(starts), max(1, int(tail_turns)))
+    boundary = starts[len(starts) - n]
+    events = fold_messages_for_ui(messages[boundary:int(before_idx)])
+    return TranscriptWindow(
+        events=events,
+        start_idx=boundary,
+        has_more=any(i < boundary for i in starts),
+    )
+
+
 def _looks_error(content: str) -> bool:
     low = (content or "").casefold()
     return low.startswith("error") or "traceback" in low or "exception:" in low

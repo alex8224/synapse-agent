@@ -142,7 +142,7 @@ def test_settings_json_layer(tmp_path, monkeypatch):
     proj.mkdir()
     (proj / ".synapse").mkdir()
     (proj / ".synapse" / "settings.json").write_text(
-        '{"max_concurrency": 9}',
+        '{"max_concurrency": 9, "history_tail_turns": 7}',
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -155,7 +155,11 @@ def test_settings_json_layer(tmp_path, monkeypatch):
     )
     cfg = load_layered_settings_file(proj)
     assert cfg["max_concurrency"] == 9
+    assert cfg["history_tail_turns"] == 7
     assert cfg["token_stream"] is False
+
+    settings = load_settings(workspace=proj.resolve())
+    assert settings.history_tail_turns == 7
 
 
 def test_merge_profiles_inherit_key():
