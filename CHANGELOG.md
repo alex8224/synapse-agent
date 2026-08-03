@@ -7,6 +7,23 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.22
+
+### 新增功能
+
+- TUI 恢复会话时改为分页加载：启动只渲染最近 `AGENT_HISTORY_TAIL_TURNS` 轮（默认 20），滚动到 transcript 顶部时异步加载更早历史并保持滚动位置，避免超长会话导致启动卡顿。
+- 新增 `AGENT_HISTORY_TAIL_TURNS` 设置，控制 TUI 启动时初始渲染的最近可见会话轮数（支持环境变量与分层 `settings.json`）。
+
+### 修复
+
+- 修复历史分页异步加载的请求代际竞争：切换/重新加载会话后，旧分页 worker 的回调不再清除当前请求的加载状态或插入过期数据。
+
+### 工程改进
+
+- 直接依赖版本固定到 `uv.lock` 对应版本。
+
+---
+
 ## v0.1.21
 
 ### 新增功能
