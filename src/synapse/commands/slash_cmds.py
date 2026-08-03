@@ -173,6 +173,7 @@ def _rebuild_agent(
     model = getattr(agent, "_coding_model", None) if reuse_model else None
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
     model_cache = getattr(agent, "_coding_model_cache", None)
+    prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
     if force_parallel_subagents is None and hasattr(agent, "_coding_parallel_subagents"):
         force_parallel_subagents = bool(getattr(agent, "_coding_parallel_subagents", False))
     mcp_tools: list[Any] | None = None
@@ -211,6 +212,7 @@ def _rebuild_agent(
         mcp_tools=mcp_tools,
         steer_queue=steer_queue,
         force_parallel_subagents=force_parallel_subagents,
+        prompt_cache_key=prompt_cache_key,
     )
 
 

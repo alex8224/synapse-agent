@@ -4,7 +4,13 @@ from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from synapse.integrations.openai_oauth_middleware import _prepare_codex_request
+from synapse.integrations.openai_oauth_middleware import (
+    _codex_prompt_cache_key,
+    _prepare_codex_request,
+)
+
+INCLUDE = ["reasoning.encrypted_content"]
+STREAM_OPTIONS = {"reasoning_summary_delivery": "sequential_cutoff"}
 
 
 class _Request(SimpleNamespace):
@@ -14,7 +20,7 @@ class _Request(SimpleNamespace):
         return _Request(**values)
 
 
-def test_prepare_codex_request_rewrites_all_system_roles_to_developer() -> None:
+def test_prepare_codex_request_moves_system_to_instructions() -> None:
     system = SystemMessage(content="primary instructions")
     history_system = SystemMessage(content="historical instructions")
     user = HumanMessage(content="hello")
@@ -29,14 +35,19 @@ def test_prepare_codex_request_rewrites_all_system_roles_to_developer() -> None:
 
     prepared = _prepare_codex_request(request)
 
-    assert prepared.system_message.additional_kwargs["__openai_role__"] == "developer"
+    # System instructions are hoisted to the top-level `instructions` field
+    # (codex-rs contract); history system messages stay as developer messages.
+    assert prepared.system_message is None
     assert prepared.messages[0].additional_kwargs["__openai_role__"] == "developer"
     assert prepared.messages[1] is user
-    assert prepared.model_settings == {
-        "extra_body": {"service_tier": "priority"},
-        "timeout": 30,
-        "store": False,
-    }
+    assert prepared.model_settings["instructions"] == "primary instructions"
+    assert prepared.model_settings["store"] is False
+    assert prepared.model_settings["include"] == INCLUDE
+    assert prepared.model_settings["stream_options"] == STREAM_OPTIONS
+    assert prepared.model_settings["prompt_cache_key"] == _codex_prompt_cache_key(
+        "primary instructions"
+    )
+    assert prepared.model_settings["extra_body"] == {"service_tier": "priority"}
     assert system.additional_kwargs == {}
     assert history_system.additional_kwargs == {}
 
@@ -48,8 +59,12 @@ def test_prepare_codex_request_preserves_developer_and_forces_store_false() -> N
     request = _Request(system_message=developer, messages=[], model_settings={"store": True})
 
     prepared = _prepare_codex_request(request)
-    assert prepared.system_message is developer
-    assert prepared.model_settings == {"store": False}
+    assert prepared.system_message is None
+    assert prepared.model_settings["instructions"] == "instructions"
+    assert prepared.model_settings["store"] is False
+    assert prepared.model_settings["include"] == INCLUDE
+    assert prepared.model_settings["stream_options"] == STREAM_OPTIONS
+    assert "service_tier" not in prepared.model_settings
 
 
 def test_prepare_codex_request_fast_mode_injects_service_tier() -> None:
@@ -62,7 +77,14 @@ def test_prepare_codex_request_fast_mode_injects_service_tier() -> None:
     prepared = _prepare_codex_request(request, fast_mode=True)
 
     # Top-level service_tier is authoritative; extra_body must not duplicate it.
-    assert prepared.model_settings == {"store": False, "service_tier": "priority"}
+    assert prepared.model_settings == {
+        "store": False,
+        "service_tier": "priority",
+        "include": INCLUDE,
+        "stream_options": STREAM_OPTIONS,
+    }
+    assert "prompt_cache_key" not in prepared.model_settings
+    assert "instructions" not in prepared.model_settings
 
 
 def test_prepare_codex_request_fast_mode_off_is_noop() -> None:
@@ -73,8 +95,40 @@ def test_prepare_codex_request_fast_mode_off_is_noop() -> None:
     )
 
     prepared = _prepare_codex_request(request, fast_mode=False)
-    assert prepared.model_settings == {"store": False}
+    assert prepared.model_settings["store"] is False
     assert "service_tier" not in prepared.model_settings
+    assert prepared.model_settings["include"] == INCLUDE
+    assert prepared.model_settings["stream_options"] == STREAM_OPTIONS
+    assert "prompt_cache_key" not in prepared.model_settings
+
+
+def test_system_message_with_block_content_extracts_instructions() -> None:
+    system = SystemMessage(
+        content=[
+            {"type": "text", "text": "primary instructions"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+            {"type": "text", "text": "second paragraph"},
+        ]
+    )
+    request = _Request(system_message=system, messages=[], model_settings={})
+
+    prepared = _prepare_codex_request(request)
+
+    assert prepared.system_message is None
+    assert prepared.model_settings["instructions"] == (
+        "primary instructions\nsecond paragraph"
+    )
+    assert prepared.model_settings["prompt_cache_key"] == _codex_prompt_cache_key(
+        "primary instructions\nsecond paragraph"
+    )
+
+
+def test_external_prompt_cache_key_overrides_digest() -> None:
+    system = SystemMessage(content="primary instructions")
+    request = _Request(system_message=system, messages=[], model_settings={})
+
+    prepared = _prepare_codex_request(request, prompt_cache_key="thread-42")
+    assert prepared.model_settings["prompt_cache_key"] == "thread-42"
 
 
 def test_build_middleware_polls_fast_mode_callable() -> None:

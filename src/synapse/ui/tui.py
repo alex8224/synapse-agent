@@ -818,6 +818,7 @@ class CodingAgentApp(App[None]):
                 project_root=self.project_root,
                 load_mcp=False,
                 progress=report_progress,
+                prompt_cache_key=lambda: self.thread_id,
             )
             self.agent = agent
             self._agent_ready.set()
@@ -4988,6 +4989,7 @@ def run_tui(
             project_root=root,
             load_mcp=bool(settings.enable_mcp)
             and bool(getattr(settings, "mcp_eager", False)),
+            prompt_cache_key=lambda: tid,
         )
         if settings.enable_mcp and not getattr(agent, "_coding_mcp_attached", True):
             from synapse.app.agent import attach_mcp_to_agent

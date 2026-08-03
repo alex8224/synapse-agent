@@ -165,6 +165,7 @@ def build_coding_agent(
     steer_queue: SteerQueue | None = None,
     progress: Callable[[str], None] | None = None,
     force_parallel_subagents: bool | None = None,
+    prompt_cache_key: Callable[[], str | None] | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -176,6 +177,10 @@ def build_coding_agent(
     - automatic context summarization is built into deepagents
 
     Pass ``model=`` / ``checkpointer=`` to rebuild cheaply (e.g. attach MCP).
+    ``prompt_cache_key`` is polled per Codex OAuth request (mirroring the
+    codex-rs ``session_id``-keyed prompt cache); pass a callable returning the
+    current thread/session id so cache keys stay stable within a session and
+    change across sessions.
     """
     from deepagents import create_deep_agent
 
@@ -496,7 +501,8 @@ def build_coding_agent(
 
         middleware.append(
             build_openai_oauth_compat_middleware(
-                fast_mode=lambda: bool(getattr(settings, "openai_fast_mode", False))
+                fast_mode=lambda: bool(getattr(settings, "openai_fast_mode", False)),
+                prompt_cache_key=prompt_cache_key,
             )
         )
 
@@ -544,6 +550,9 @@ def build_coding_agent(
     )
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
+    # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so
+    # session-scoped cache keys survive model/MCP switches.
+    agent._coding_prompt_cache_key = prompt_cache_key  # type: ignore[attr-defined]
     # All model I/O is async-only and bound to the process runtime loop.
     # 长期记忆 / 知识库 / 规划（默认 None，在 CLI/TUI 层异步查询）
     agent._coding_knowledge_base = _kb  # type: ignore[attr-defined]
@@ -588,6 +597,7 @@ def rebuild_coding_agent(
     model = getattr(agent, "_coding_model", None) if reuse_model else None
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
     model_cache = getattr(agent, "_coding_model_cache", None)
+    prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
     if force_parallel_subagents is None and hasattr(agent, "_coding_parallel_subagents"):
         force_parallel_subagents = bool(getattr(agent, "_coding_parallel_subagents", False))
 
@@ -620,6 +630,7 @@ def rebuild_coding_agent(
         steer_queue=steer_queue,
         progress=progress,
         force_parallel_subagents=force_parallel_subagents,
+        prompt_cache_key=prompt_cache_key,
     )
 
 
@@ -637,6 +648,7 @@ def attach_mcp_to_agent(
     registry = getattr(agent, "_coding_model_registry", None)
     model_cache = getattr(agent, "_coding_model_cache", None)
     steer_queue = getattr(agent, "_coding_steer_queue", None)
+    prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
     pool = get_active_mcp_pool()
     pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else None
     current_parallel = bool(getattr(agent, "_coding_parallel_subagents", False))
@@ -651,6 +663,7 @@ def attach_mcp_to_agent(
         load_mcp=pool is None,
         steer_queue=steer_queue,
         force_parallel_subagents=current_parallel,
+        prompt_cache_key=prompt_cache_key,
     )
 
 
