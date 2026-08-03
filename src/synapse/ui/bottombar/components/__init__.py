@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.bottombar.components import codex_usage, key_hints, mcp, mode, model
+from synapse.ui.bottombar.components import codex_usage, fast, key_hints, mcp, mode, model
 from synapse.ui.bottombar.core import (
     DEFAULT_COL_GAP,
     BottomBarAlign,
@@ -38,6 +38,7 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     key_hints.install,
     mode.install,
     model.install,
+    fast.install,
     codex_usage.install,
     mcp.install,
 ]
@@ -94,6 +95,7 @@ def install_default_components(
     model: Callable[[], str] | None = None,
     codex_usage: Callable[[], str | object] | None = None,
     mcp: Callable[[], str] | None = None,
+    fast_mode: Callable[[], bool] | None = None,
     installers: list[ComponentInstaller] | None = None,
 ) -> None:
     """Install default regions + component modules.
@@ -104,6 +106,9 @@ def install_default_components(
 
     def _empty() -> str:
         return ""
+
+    def _off() -> bool:
+        return False
 
     if ctx is None:
         if busy is None:
@@ -124,6 +129,7 @@ def install_default_components(
             model=model or _empty,
             codex_usage=codex_usage or _empty,
             mcp=mcp or _empty,
+            fast_mode=fast_mode or _off,
         )
     else:
         ctx = _Ctx(
@@ -135,6 +141,7 @@ def install_default_components(
             model=model or ctx.model,
             codex_usage=codex_usage or ctx.codex_usage,
             mcp=mcp or ctx.mcp,
+            fast_mode=fast_mode or ctx.fast_mode,
         )
 
     install_default_regions(registry)

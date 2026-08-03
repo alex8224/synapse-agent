@@ -44,6 +44,7 @@ ROOT_COMMANDS: list[str] = [
     "/subagents",
     "/mcp",
     "/model",
+    "/fast",
     "/theme",
     "/codex",
 ]
@@ -405,6 +406,15 @@ def complete_slash(
             return with_prefix(levels, rest[:2])
         if len(rest) == 3 and rest[1].casefold() == "thinking" and not trailing_space:
             return with_prefix(_filter_prefix(levels, rest[2]), rest[:2])
+        return []
+
+    # /fast [on|off|status]
+    if cmd_cf == "/fast":
+        options = ["on", "off", "status"]
+        if not rest and trailing_space:
+            return with_prefix(options, [])
+        if len(rest) == 1 and not trailing_space:
+            return with_prefix(_filter_prefix(options, rest[0]), [])
         return []
 
     # /theme [list|<name>]

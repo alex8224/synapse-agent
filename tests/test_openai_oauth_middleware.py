@@ -50,3 +50,51 @@ def test_prepare_codex_request_preserves_developer_and_forces_store_false() -> N
     prepared = _prepare_codex_request(request)
     assert prepared.system_message is developer
     assert prepared.model_settings == {"store": False}
+
+
+def test_prepare_codex_request_fast_mode_injects_service_tier() -> None:
+    request = _Request(
+        system_message=None,
+        messages=[],
+        model_settings={"store": False, "extra_body": {"service_tier": "priority"}},
+    )
+
+    prepared = _prepare_codex_request(request, fast_mode=True)
+
+    # Top-level service_tier is authoritative; extra_body must not duplicate it.
+    assert prepared.model_settings == {"store": False, "service_tier": "priority"}
+
+
+def test_prepare_codex_request_fast_mode_off_is_noop() -> None:
+    request = _Request(
+        system_message=None,
+        messages=[],
+        model_settings={"store": False},
+    )
+
+    prepared = _prepare_codex_request(request, fast_mode=False)
+    assert prepared.model_settings == {"store": False}
+    assert "service_tier" not in prepared.model_settings
+
+
+def test_build_middleware_polls_fast_mode_callable() -> None:
+    from synapse.integrations.openai_oauth_middleware import (
+        build_openai_oauth_compat_middleware,
+    )
+
+    state = {"on": True}
+    mw = build_openai_oauth_compat_middleware(fast_mode=lambda: state["on"])
+
+    async def handler(request):
+        return request.model_settings
+
+    import asyncio
+
+    request = _Request(system_message=None, messages=[], model_settings={})
+    settings = asyncio.run(mw.awrap_model_call(request, handler))
+    assert settings.get("service_tier") == "priority"
+
+    state["on"] = False
+    request2 = _Request(system_message=None, messages=[], model_settings={})
+    settings2 = asyncio.run(mw.awrap_model_call(request2, handler))
+    assert "service_tier" not in settings2

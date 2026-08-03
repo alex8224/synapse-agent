@@ -32,6 +32,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `OPENAI_API_KEY` | — | OpenAI API Key |
 | `OPENAI_BASE_URL` | — | OpenAI API 自定义网关 |
 | `OPENAI_WEBSOCKET` | `false` | 启用 WebSocket 连接；瞬时断流按模型 `max_retries` 重连，耗尽后在尚未输出内容时回退 HTTP/SSE |
+| `OPENAI_FAST_MODE` | `false` | Codex Fast 档：对 `auth=openai_oauth` 的模型请求注入 `service_tier=priority`（优先处理、计费更高）。可用 `/fast on\|off\|status` 运行时切换；详见 [models.md](models.md) 的「Codex Fast 档」 |
 | `ANTHROPIC_API_KEY` | — | Anthropic API Key |
 | `AGENT_MODELS_CONFIG` | — | `models.json` 路径（覆盖默认） |
 | `MODELS_JSON` | — | 内联 JSON（替代文件） |

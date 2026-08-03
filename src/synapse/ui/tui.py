@@ -1635,6 +1635,10 @@ class CodingAgentApp(App[None]):
                 model=lambda: model_status_label(self.settings),
                 codex_usage=self._codex_usage_label,
                 mcp=self._mcp_label,
+                fast_mode=lambda: bool(
+                    getattr(self.settings, "openai_fast_mode", False)
+                )
+                and self._has_codex_oauth_profile(),
             ),
         )
 

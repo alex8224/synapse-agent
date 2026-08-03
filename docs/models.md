@@ -172,6 +172,14 @@ Synapse 会自动将 Agent 的 OpenAI `system` 消息转换为 Codex backend 接
 并移除 DeepSeek 兼容的 `extra_body.thinking` 字段，只发送 Codex 支持的 reasoning 参数；
 Responses 请求会强制设置 `store: false`。
 
+### Codex Fast 档（service_tier=priority）
+
+设置 `OPENAI_FAST_MODE=true`（或配置 `openai_fast_mode`）可对 Codex OAuth profile 启用 Fast 档：
+每条 Responses 请求注入 `service_tier=priority`（优先处理，费用更高）。运行时可用
+`/fast`、`/fast on`、`/fast off`、`/fast status` 切换，无需重建模型；开启后底栏模型
+思考级别旁会显示黄色 `FAST` 徽标。Fast 档只对 `auth=openai_oauth` 的模型生效，
+第三方 OpenAI 兼容网关不受影响；底栏徽标也仅在 OAuth profile 下显示。
+
 ## 自定义 OpenAI 兼容网关
 
 Synapse 支持任何 OpenAI 兼容的 API：

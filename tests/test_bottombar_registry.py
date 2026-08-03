@@ -138,6 +138,40 @@ def test_mcp_label_colors_by_status() -> None:
     assert "f28b82" in err_style
 
 
+def test_fast_badge_shown_only_when_fast_mode_active() -> None:
+    fast_state = {"on": True}
+    reg = BottomBarRegistry()
+    install_default_components(
+        reg,
+        busy=lambda: False,
+        thread=lambda: "",
+        mode=lambda: "",
+        idle_hints=lambda: "hints",
+        busy_hints=lambda: "busy",
+        model=lambda: "gpt-5-codex · high",
+        codex_usage=lambda: "codex n/a",
+        mcp=lambda: "mcp on",
+        fast_mode=lambda: fast_state["on"],
+    )
+    left = render_region_text(reg.components(BottomBarRegion.LEFT))
+    assert "FAST" in left
+    # Badge sits right after the model · thinking label, before codex usage.
+    assert left.index("gpt-5-codex") < left.index("FAST") < left.index("codex n/a")
+
+    fast_comp = next(c for c in reg.components(BottomBarRegion.LEFT) if c.id == "fast")
+    painted = fast_comp.content()
+    assert isinstance(painted, Text)
+    assert painted.plain == " FAST "  # padding inside the yellow pill
+    assert painted.plain.strip() == "FAST"
+    painted_style = str(painted.style or "") + " ".join(str(s.style) for s in painted.spans)
+    assert "ffd60a" in painted_style  # brand yellow background
+    assert "202124" in painted_style  # dark grey foreground
+
+    fast_state["on"] = False
+    left_off = render_region_text(reg.components(BottomBarRegion.LEFT))
+    assert "FAST" not in left_off
+
+
 def test_custom_component_in_left_region() -> None:
     reg = BottomBarRegistry()
     install_default_components(

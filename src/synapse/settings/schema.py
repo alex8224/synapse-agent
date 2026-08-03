@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
     openai_websocket: bool = Field(default=False, validation_alias="OPENAI_WEBSOCKET")
+    # Codex Fast tier: sends service_tier="priority" on OpenAI Responses
+    # requests for Codex OAuth profiles (chatgpt.com/backend-api/codex).
+    # Only meaningful with auth=openai_oauth; see /fast command and docs/config.md.
+    openai_fast_mode: bool = Field(default=False, validation_alias="OPENAI_FAST_MODE")
     anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     # Multi-model catalog (JSON file or inline JSON). Empty => legacy single model.
     models_config_path: Path | None = Field(default=None, validation_alias="AGENT_MODELS_CONFIG")

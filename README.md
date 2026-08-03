@@ -192,6 +192,13 @@ OpenAI 兼容网关，也不需要设置 `OPENAI_API_KEY`。浏览器授权回�
 Agent 的 OpenAI `system` 消息转换为 Codex backend 接受的 `developer` 消息，并移除 DeepSeek
 兼容的 `extra_body.thinking` 字段，只发送 Codex 支持的 reasoning 参数，并强制设置 `store: false`。
 
+#### Codex Fast 档（service_tier=priority）
+
+设置 `OPENAI_FAST_MODE=true` 或运行 `/fast on` 可对 Codex OAuth profile 启用 Fast 档：
+每条 Responses 请求注入 `service_tier=priority`（优先处理，费用更高）。运行时可用
+`/fast`、`/fast on`、`/fast off`、`/fast status` 切换，无需重建模型；开启后底栏模型
+思考级别旁显示黄色 `FAST` 徽标。仅对 `auth=openai_oauth` 模型生效，第三方网关不受影响。
+
 ### 方式二：models.json（多模型 profiles，推荐）
 
 在 `~/.synapse/` 或 `<workspace>/.synapse/` 下创建 `models.json`。支持多 profile、自定义模型参数（temperature、max_tokens、thinking 等）。

@@ -494,7 +494,11 @@ def build_coding_agent(
             build_openai_oauth_compat_middleware,
         )
 
-        middleware.append(build_openai_oauth_compat_middleware())
+        middleware.append(
+            build_openai_oauth_compat_middleware(
+                fast_mode=lambda: bool(getattr(settings, "openai_fast_mode", False))
+            )
+        )
 
     # Debug capture middleware — innermost, records final provider-ready
     # request/response pairs for the Debug Inspector (F11 / /debug).

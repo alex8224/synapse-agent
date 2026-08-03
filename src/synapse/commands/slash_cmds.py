@@ -73,6 +73,7 @@ HELP_TEXT = """## Slash Commands
 | `/model` | Open model picker (TUI) |
 | `/model <alias\\|provider:model>` | Switch model |
 | `/model thinking <level>` | Set thinking level |
+| `/fast [on|off|status]` | Toggle Codex Fast tier (service_tier=priority, OAuth profiles) |
 
 ### Appearance
 | Command | Description |
@@ -217,6 +218,51 @@ def _mcp_attach_pending(settings: Any) -> bool:
     return bool(getattr(settings, "enable_mcp", True) and get_active_mcp_pool() is None)
 
 
+def _fast_mode_active(settings: Any) -> bool:
+    return bool(getattr(settings, "openai_fast_mode", False))
+
+
+def handle_fast(args: list[str], *, settings: Any) -> SlashResult:
+    """Handle ``/fast``: show or toggle the Codex Fast tier (service_tier=priority)."""
+    arg = (args[0] if args else "").strip().lower()
+    current = _fast_mode_active(settings)
+    if arg in {"", "status"}:
+        state = "on" if current else "off"
+        note = "" if current else " (use /fast on)"
+        return SlashResult(
+            handled=True,
+            lines=[f"fast mode: {state}{note} — Codex Fast tier (service_tier=priority)"],
+            markdown=f"## Fast Mode\n\nStatus: **{state}**\n\n"
+            "Applies to Codex OAuth profiles only (OpenAI Responses API). "
+            "Toggle with `/fast on` / `/fast off`.",
+        )
+    if arg in {"on", "enable"}:
+        if current:
+            return SlashResult(handled=True, lines=["fast mode: already on"])
+        settings.openai_fast_mode = True
+        return SlashResult(
+            handled=True,
+            lines=["fast mode: on — requests use service_tier=priority"],
+            notice="fast on",
+            settings_changed=True,
+        )
+    if arg in {"off", "disable"}:
+        if not current:
+            return SlashResult(handled=True, lines=["fast mode: already off"])
+        settings.openai_fast_mode = False
+        return SlashResult(
+            handled=True,
+            lines=["fast mode: off"],
+            notice="fast off",
+            settings_changed=True,
+        )
+    return SlashResult(
+        handled=True,
+        lines=[f"unknown /fast argument: {arg}", "usage: /fast [on|off|status]"],
+        error=True,
+    )
+
+
 def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
     """Update thinking params on the live model without rebuilding the graph.
 
@@ -356,6 +402,9 @@ def handle_slash(
             persist_model_binding=_persist_model_binding,
             mcp_attach_pending=_mcp_attach_pending,
         )
+
+    if cmd == "/fast":
+        return handle_fast(args, settings=settings)
 
     if cmd == "/theme":
         return handle_theme(args, settings=settings, project_root=root)

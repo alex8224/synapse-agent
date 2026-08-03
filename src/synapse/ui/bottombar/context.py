@@ -13,6 +13,10 @@ RichLabelFn = Callable[[], str | Text]
 BoolFn = Callable[[], bool]
 
 
+def _never() -> bool:
+    return False
+
+
 @dataclass(slots=True)
 class BottomBarContext:
     """Data sources for built-in (and custom) bottombar components.
@@ -36,3 +40,6 @@ class BottomBarContext:
     codex_usage: RichLabelFn
     # MCP chrome (left; ``mcp on`` / ``mcp off`` / ``mcp err``).
     mcp: LabelFn
+    # True while Codex Fast tier is active for the current OAuth profile.
+    # Renders a static ``FAST`` badge next to the model/thinking label.
+    fast_mode: BoolFn = _never
