@@ -14,6 +14,12 @@ from synapse.sessions.store import (
     resolve_startup_binding,
     title_from_user_message,
 )
+from synapse.sessions.summary import (
+    build_turn_entry,
+    merge_turn_summary,
+    parse_entries,
+    persist_local_summary,
+)
 
 __all__ = [
     "ModelBinding",
@@ -28,4 +34,8 @@ __all__ = [
     "pick_startup_thread_id",
     "resolve_startup_binding",
     "title_from_user_message",
+    "build_turn_entry",
+    "merge_turn_summary",
+    "parse_entries",
+    "persist_local_summary",
 ]

@@ -147,6 +147,24 @@ class Settings(BaseSettings):
     )
     sessions_path: Path | None = Field(default=None, validation_alias="SESSIONS_PATH")
 
+    # Global project catalog (user-layer ~/.synapse/catalog.sqlite projection).
+    # Enables cross-project session lists / search and future orchestration.
+    project_catalog_enabled: bool = Field(
+        default=True, validation_alias="AGENT_PROJECT_CATALOG_ENABLED"
+    )
+    project_catalog_path: Path | None = Field(
+        default=None, validation_alias="PROJECT_CATALOG_PATH"
+    )
+    # Session summary: "off" disables writing summaries entirely; "local" builds
+    # a deterministic, token-free turn digest (no model call). An LLM-driven
+    # mode is a future extension slot.
+    session_summary_mode: Literal["off", "local"] = Field(
+        default="local", validation_alias="SESSION_SUMMARY_MODE"
+    )
+    session_summary_max_chars: int = Field(
+        default=600, ge=80, le=4000, validation_alias="SESSION_SUMMARY_MAX_CHARS"
+    )
+
     # When resuming a session with a large context, issue one background
     # no-op model request so the provider pre-fills (and caches) the history.
     # The user's first real message then hits the cached prefix instead of
@@ -368,6 +386,7 @@ class Settings(BaseSettings):
         "sessions_path",
         "models_config_path",
         "mcp_config_path",
+        "project_catalog_path",
         mode="before",
     )
     @classmethod
@@ -415,6 +434,14 @@ class Settings(BaseSettings):
         if self.sessions_path is not None:
             return Path(self.sessions_path).expanduser().resolve()
         return self.checkpoint_path.parent / "sessions.sqlite"
+
+    def resolved_catalog_path(self) -> Path:
+        """User-layer global project catalog database."""
+        from synapse.projects.catalog import default_catalog_path
+
+        if self.project_catalog_path is not None:
+            return Path(self.project_catalog_path).expanduser().resolve()
+        return default_catalog_path()
 
     def resolved_tool_output_db_path(self) -> Path:
         """SQLite database for reversible transformed tool outputs."""

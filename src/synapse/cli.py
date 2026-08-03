@@ -9,6 +9,7 @@ from typing import Any
 
 import typer
 
+from synapse.projects.catalog import ProjectCatalog, ProjectInfo
 from synapse.sessions.store import SessionStore, format_session_table
 from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
@@ -30,12 +31,14 @@ mcp_app = typer.Typer(help="Inspect MCP server configuration and tools.")
 tool_output_app = typer.Typer(help="Inspect reversible tool-output transformation metrics.")
 auth_app = typer.Typer(help="Manage provider authentication.")
 auth_openai_app = typer.Typer(help="Manage OpenAI Codex OAuth authentication.")
+projects_app = typer.Typer(help="Global project catalog (cross-project sessions and runs).")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(tool_output_app, name="tool-output")
 auth_app.add_typer(auth_openai_app, name="openai")
 app.add_typer(auth_app, name="auth")
+app.add_typer(projects_app, name="projects")
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +470,193 @@ def sessions_list(
         "--all",
         help="Include empty placeholder sessions (default: hide them)",
     ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all-projects",
+        help="List across every registered project via the global catalog",
+    ),
 ) -> None:
     """List recent sessions."""
     settings = load_settings()
+    if all_projects:
+        from synapse.projects.catalog import ProjectCatalog
+
+        catalog = ProjectCatalog(settings.resolved_catalog_path())
+        items = catalog.list_sessions(limit=limit)
+        if not items:
+            console.print("No sessions in the global catalog.")
+            console.print(
+                "Hint: start `synapse` at least once per project to register it, "
+                "or run `synapse projects sync`."
+            )
+            return
+        for item in items:
+            console.print(
+                f"{item.updated_at[:16].replace('T', ' ')}  "
+                f"[{item.project_name}] {item.thread_id}  {item.title}"
+            )
+        return
     store = _session_store(settings)
     items = store.list(limit=limit) if all_sessions else store.list_nonempty(limit=limit)
     console.print(format_session_table(items))
+
+
+# ---------------------------------------------------------------------------
+# Sub-commands: projects (global catalog)
+# ---------------------------------------------------------------------------
+
+
+def _catalog() -> ProjectCatalog:
+    return ProjectCatalog(load_settings().resolved_catalog_path())
+
+
+def _resolve_project_ref(ref: str) -> ProjectInfo | None:
+    return _catalog().resolve_project(ref)
+
+
+@projects_app.command("list")
+def projects_list(
+    limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max projects"),
+) -> None:
+    """List every registered project (most recently active first)."""
+    items = _catalog().list_projects(limit=limit)
+    if not items:
+        console.print("No projects registered yet.")
+        console.print("Hint: run `synapse` inside a project to register it automatically.")
+        return
+    console.print(f"{'project':<24} {'sessions':>8} {'runs':>5}  {'last active':<16} path")
+    for item in items:
+        console.print(
+            f"{item.project_id[:12]:<24} {item.session_count:>8} {item.run_count:>5}  "
+            f"{item.last_active_at[:16].replace('T', ' '):<16} {item.workspace_path}"
+        )
+
+
+@projects_app.command("show")
+def projects_show(ref: str = typer.Argument(..., help="Project id prefix, name, or path")) -> None:
+    """Show one project and its recent sessions."""
+    project = _resolve_project_ref(ref)
+    if project is None:
+        print_error(f"project not found: {ref}")
+        raise typer.Exit(code=1)
+    console.print(f"project_id:  {project.project_id}")
+    console.print(f"name:        {project.name}")
+    console.print(f"workspace:   {project.workspace_path}")
+    console.print(f"git_remote:  {project.git_remote or '-'}")
+    console.print(f"git_branch:  {project.git_branch or '-'}")
+    console.print(f"created:     {project.created_at}")
+    console.print(f"last active: {project.last_active_at}")
+    console.print(f"sessions:    {project.session_count}")
+    console.print(f"runs:        {project.run_count}")
+    sessions = _catalog().list_sessions(project_id=project.project_id, limit=10)
+    if sessions:
+        console.print("\nrecent sessions:")
+        for item in sessions:
+            console.print(
+                f"  {item.updated_at[:16].replace('T', ' ')}  {item.thread_id}  {item.title}"
+            )
+
+
+@projects_app.command("sessions")
+def projects_sessions(
+    ref: str = typer.Argument(..., help="Project id prefix, name, or path"),
+    limit: int = typer.Option(100, "--limit", "-n", min=1, max=1000, help="Max sessions"),
+    search: str | None = typer.Option(None, "--search", help="Filter by title/summary text"),
+) -> None:
+    """List sessions of one project (from the global catalog projection)."""
+    project = _resolve_project_ref(ref)
+    if project is None:
+        print_error(f"project not found: {ref}")
+        raise typer.Exit(code=1)
+    catalog = _catalog()
+    items = (
+        catalog.search_sessions(search, workspace=project.workspace_path, limit=limit)
+        if search
+        else catalog.list_sessions(workspace=project.workspace_path, limit=limit)
+    )
+    if not items:
+        console.print(f"No sessions for project {project.name}.")
+        return
+    for item in items:
+        line = (
+            f"{item.updated_at[:16].replace('T', ' ')}  {item.thread_id}  {item.title}"
+        )
+        if item.summary:
+            line += f"\n    {item.summary}"
+        console.print(line)
+
+
+@projects_app.command("search")
+def projects_search(
+    query: str = typer.Argument(..., help="Text to match against session titles/summaries"),
+    limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max sessions"),
+) -> None:
+    """Search sessions across all registered projects."""
+    items = _catalog().search_sessions(query, limit=limit)
+    if not items:
+        console.print(f"No sessions match {query!r}.")
+        return
+    console.print(f"{len(items)} session(s) match {query!r}:")
+    for item in items:
+        console.print(
+            f"{item.updated_at[:16].replace('T', ' ')}  [{item.project_name}] "
+            f"{item.thread_id}  {item.title}"
+        )
+        if item.summary:
+            console.print(f"    {item.summary}")
+
+
+@projects_app.command("sync")
+def projects_sync(
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Project workspace (default: cwd)"
+    ),
+) -> None:
+    """Reconcile the current (or given) project's sessions into the catalog."""
+    settings = (
+        load_settings(workspace=workspace) if workspace is not None else load_settings()
+    )
+    catalog = ProjectCatalog(settings.resolved_catalog_path())
+    project = catalog.register_project(settings.workspace)
+    count = catalog.sync_project(settings)
+    console.print(
+        f"project {project.name} ({project.project_id[:12]}): "
+        f"{count} session(s) projected."
+    )
+
+
+@projects_app.command("runs")
+def projects_runs(
+    ref: str | None = typer.Option(None, "--project", help="Project id prefix, name, or path"),
+    limit: int = typer.Option(50, "--limit", "-n", min=1, max=500, help="Max runs"),
+) -> None:
+    """List recorded launches (TUI/CLI) per project."""
+    catalog = _catalog()
+    project = _resolve_project_ref(ref) if ref else None
+    items = catalog.list_runs(
+        project_id=project.project_id if project is not None else None, limit=limit
+    )
+    if not items:
+        console.print("No recorded runs.")
+        return
+    for run in items:
+        project_info = catalog.get_project(project_id=run.project_id)
+        name = project_info.name if project_info is not None else run.project_id[:12]
+        status = "running" if run.finished_at is None else f"exit={run.exit_code}"
+        console.print(
+            f"{run.started_at[:16].replace('T', ' ')}  [{name}] {run.mode}  "
+            f"{status}  thread={run.thread_id or '-'}"
+        )
+
+
+@projects_app.command("stats")
+def projects_stats() -> None:
+    """Aggregate activity counts across the catalog."""
+    stats = _catalog().stats()
+    console.print(f"projects:       {stats['projects']}")
+    console.print(f"projected sessions: {stats['sessions']}")
+    console.print(f"recorded runs:  {stats['runs']}")
+    console.print(f"active today:   {stats['active_today']}")
 
 
 @sessions_app.command("codex-list")

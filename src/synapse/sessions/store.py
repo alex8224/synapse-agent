@@ -427,6 +427,15 @@ class SessionStore:
         self._conn.commit()
         return self.get(thread_id)
 
+    def set_summary(self, thread_id: str, summary: str | None) -> bool:
+        """Persist a session summary (away digest for global views)."""
+        cur = self._conn.execute(
+            "UPDATE sessions SET summary = ?, updated_at = ? WHERE thread_id = ?",
+            (summary, _utcnow(), thread_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def delete(self, thread_id: str) -> bool:
         cur = self._conn.execute(
             "DELETE FROM sessions WHERE thread_id = ?",

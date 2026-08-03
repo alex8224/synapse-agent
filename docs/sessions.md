@@ -90,6 +90,62 @@ synapse sessions codex-import <native_id>
 
 导入时会进行安全检查：过滤内部提示内容、校验文件完整性、跳过不支持的旧版格式。
 
+## 全局项目目录（跨项目管理）
+
+会话数据默认按项目（workspace）隔离在各自的 `<workspace>/.synapse/` 下。
+Synapse 在用户层维护一份**全局项目目录**（`~/.synapse/catalog.sqlite`），
+只读投影每个已注册项目的会话元数据与运行记录，用于跨项目查看与搜索。
+
+### 工作原理
+
+- 每次启动 TUI 时自动注册当前项目（`projects` 表）并投影会话（`project_sessions` 表）；
+- 每轮对话结束后，会话摘要增量写入项目库并同步到目录；
+- 项目库始终是数据真源，目录只是投影；`projects sync` 可随时全量对账；
+- 跨项目引用使用 `(project_id, thread_id)` 复合标识，不修改现有 thread_id。
+
+### 常用命令
+
+```bash
+# 列出所有已注册项目（按最近活跃排序）
+synapse projects list
+
+# 查看单个项目及其最近会话
+synapse projects show <id|名称|路径>
+
+# 列出某个项目的会话（含摘要）
+synapse projects sessions <id|名称|路径>
+
+# 跨项目搜索会话标题/摘要
+synapse projects search jwt
+
+# 手动对账当前项目的会话到目录
+synapse projects sync
+
+# 查看项目运行记录（TUI/CLI 启动历史）
+synapse projects runs
+
+# 目录聚合统计
+synapse projects stats
+
+# 会话列表跨项目模式
+synapse sessions list --all-projects
+```
+
+### 配置
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `AGENT_PROJECT_CATALOG_ENABLED` | `true` | 启用全局项目目录 |
+| `PROJECT_CATALOG_PATH` | `~/.synapse/catalog.sqlite` | 目录数据库路径 |
+| `SESSION_SUMMARY_MODE` | `local` | `off` 关闭；`local` 每轮生成确定性本地摘要（不调用模型） |
+| `SESSION_SUMMARY_MAX_CHARS` | `600` | 摘要最大字符数（超出裁剪最旧条目） |
+
+### 会话摘要
+
+`local` 模式下，每轮结束后把（任务、工具、进展）合并进会话的
+`summary` 字段（`sessions.summary` 列），供全局列表与搜索使用。
+摘要只含工具名与回答开头片段，不包含工具输出原文或密钥等敏感内容。
+
 ## 配置
 
 | 变量 | 默认值 | 说明 |

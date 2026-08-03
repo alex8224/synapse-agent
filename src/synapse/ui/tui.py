@@ -673,6 +673,9 @@ class CodingAgentApp(App[None]):
             ),
             min_turns=int(getattr(settings, "session_recap_min_turns", 3) or 3),
         )
+        # Global project catalog (projection) and per-turn summary persistence.
+        self._project_catalog: Any = None
+        self._summary_store: Any = None
         self._context_tokens = 0
         self._last_out_tokens = 0
         self._input_tokens = 0
@@ -4790,6 +4793,64 @@ class CodingAgentApp(App[None]):
             )
         except Exception:  # noqa: BLE001
             pass
+        self._persist_turn_summary(user_text=user_text)
+        self._project_session_into_catalog()
+
+    def attach_project_catalog(self, catalog: Any) -> None:
+        """Wire the user-layer catalog opened by ``run_tui`` (optional)."""
+        self._project_catalog = catalog
+
+    def _persist_turn_summary(self, *, user_text: str) -> None:
+        """Deterministic local digest per completed turn (no model call)."""
+        mode = getattr(self.settings, "session_summary_mode", "local")
+        if mode == "off" or not user_text or self._busy:
+            return
+        try:
+            if self._summary_store is None:
+                from synapse.sessions.store import SessionStore
+
+                self._summary_store = SessionStore(self.settings.resolved_sessions_path())
+            from synapse.sessions.summary import persist_local_summary
+
+            persist_local_summary(
+                self._summary_store,
+                self.thread_id,
+                user_text=user_text,
+                tool_summary=self._last_tool_summary or "",
+                answer_text=self._last_answer_text or "",
+                max_chars=int(
+                    getattr(self.settings, "session_summary_max_chars", 600) or 600
+                ),
+            )
+        except Exception:  # noqa: BLE001 - summaries are best-effort
+            pass
+
+    def _project_session_into_catalog(self) -> None:
+        """Mirror the current session row into the global catalog."""
+        if not bool(getattr(self.settings, "project_catalog_enabled", True)):
+            return
+        if self._project_catalog is None:
+            return
+        try:
+            if self._summary_store is None:
+                from synapse.sessions.store import SessionStore
+
+                self._summary_store = SessionStore(self.settings.resolved_sessions_path())
+            info = self._summary_store.get(self.thread_id)
+            if info is None:
+                return
+            self._project_catalog.upsert_session(
+                self.settings.workspace,
+                thread_id=info.thread_id,
+                title=info.title,
+                model=info.model or info.active_model,
+                summary=info.summary,
+                updated_at=info.updated_at,
+                created_at=info.created_at,
+                tags=info.tags,
+            )
+        except Exception:  # noqa: BLE001 - projection is best-effort
+            pass
 
     def _prompt_has_draft(self) -> bool:
         try:
@@ -4925,4 +4986,27 @@ def run_tui(
         project_root=root,
         defer_agent_build=defer,
     )
-    app.run()
+
+    # Global project catalog: register + reconcile projections, record a run.
+    catalog = None
+    run_id: str | None = None
+    if bool(getattr(settings, "project_catalog_enabled", True)):
+        try:
+            from synapse.projects.catalog import ProjectCatalog
+
+            catalog = ProjectCatalog(settings.resolved_catalog_path())
+            catalog.register_project(settings.workspace)
+            catalog.sync_project(settings)
+            run_id = catalog.record_run(settings.workspace, mode="tui", thread_id=tid)
+            app.attach_project_catalog(catalog)
+        except Exception:  # noqa: BLE001 - catalog is best-effort
+            catalog = None
+    try:
+        app.run()
+    finally:
+        if catalog is not None and run_id is not None:
+            try:
+                catalog.finish_run(run_id)
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+            catalog.close()

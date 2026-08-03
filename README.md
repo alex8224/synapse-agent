@@ -19,10 +19,11 @@
 | 记忆 | `AGENTS.md` |
 | Skills | `skills/**`（Agent Skills frontmatter） |
 | 会话 | sqlite checkpointer + 会话元数据管理 |
+| 全局项目目录 | 用户层 `~/.synapse/catalog.sqlite` 投影所有项目的会话元数据与运行记录，支持跨项目查看/搜索（`synapse projects ...`） |
 | 多模型 | `ModelRegistry`（单模型兼容 / JSON 多 profile） |
 | MCP | 配置 MCP Server 后注入为 tools |
 | 权限/只读 | `FilesystemPermission` + `HarnessProfile.excluded_tools` |
-| CLI | `run` / `chat` / `tui` / `sessions` / `models` / `mcp` / `version` |
+| CLI | `run` / `chat` / `tui` / `sessions` / `projects` / `models` / `mcp` / `version` |
 | 可选 HITL | `--require-approval`（默认关） |
 
 ## 安装
