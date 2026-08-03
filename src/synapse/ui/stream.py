@@ -572,6 +572,10 @@ def stream_agent(
     started = time.time()
     final: dict[str, Any] = {}
     printed_ids: set[str] = set()
+    # Same-id AIMessage may first arrive without tool_calls (mid-stream
+    # placeholder) and again with the completed tool_calls. Track which ids
+    # already rendered their tool batch so we allow exactly one upgrade.
+    calls_printed_ids: set[str] = set()
     tool_calls = 0
     input_tokens = 0
     output_tokens = 0
@@ -855,9 +859,19 @@ def stream_agent(
                 for msg in messages:
                     msg_id = getattr(msg, "id", None) or id(msg)
                     dedupe_key = f"{'/'.join(ns)}:{msg_id}"
+                    calls_now = getattr(msg, "tool_calls", None) or []
                     if dedupe_key in printed_ids:
-                        continue
-                    printed_ids.add(dedupe_key)
+                        # Allow exactly one upgrade: the earlier occurrence had
+                        # no tool_calls (mid-stream placeholder) and only text
+                        # was rendered; this pass carries the completed batch.
+                        # Text dedupe is handled by the sink (msg_id/text).
+                        if not calls_now or dedupe_key in calls_printed_ids:
+                            continue
+                        calls_printed_ids.add(dedupe_key)
+                    else:
+                        printed_ids.add(dedupe_key)
+                        if calls_now:
+                            calls_printed_ids.add(dedupe_key)
 
                     if is_steer_message(msg):
                         suppress_msg_ids.add(str(msg_id))

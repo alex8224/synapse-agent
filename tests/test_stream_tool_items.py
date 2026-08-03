@@ -536,3 +536,120 @@ def test_build_tool_item_todo_preview_unit():
     assert item.preview is not None
     assert "○ a" in item.preview
     assert "✓ b" in item.preview
+
+
+class _UpgradeToolCallsAgent:
+    """Same-id AIMessage first arrives without tool_calls, then with them.
+
+    Mirrors streaming backends (Responses API path included) that emit a
+    mid-stream placeholder message before the completed tool batch. The old
+    ``printed_ids`` dedupe dropped the upgrade, leaving the
+    "model requested tool call(s)" activity with no rendered tool items.
+    """
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "messages",
+            (
+                _Chunk(
+                    type="ai",
+                    content="",
+                    id="m1",
+                    tool_call_chunks=[
+                        {
+                            "name": "execute",
+                            "args": "{}",
+                            "id": "call1",
+                            "index": 0,
+                            "type": "tool_call_chunk",
+                        }
+                    ],
+                ),
+                {"langgraph_node": "model"},
+            ),
+        )
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [_Chunk(type="ai", content="", tool_calls=[], id="m1")]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "dir"},
+                                    "id": "call1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                            id="m1",
+                        )
+                    ]
+                }
+            },
+        )
+        # Duplicate completed batch: must not render a second time.
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "dir"},
+                                    "id": "call1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                            id="m1",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "messages": [
+                        _Chunk(type="tool", name="execute", content="ok", id="t1")
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_renders_tool_batch_on_same_id_upgrade() -> None:
+    """Same-id AIMessage upgrade (no calls -> calls) must render the tools once."""
+    sink = _ItemSink()
+    result = stream_agent(
+        _UpgradeToolCallsAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    started = [e for e in sink.events if e[0] == "tool_item_started"]
+    assert started, sink.events
+    assert started[0][3] == "execute"
+    # The duplicate completed batch must be deduped.
+    assert len(started) == 1
+    assert result.tool_calls == 1
