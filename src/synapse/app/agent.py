@@ -48,6 +48,9 @@ from synapse.runtime.steer import SteerQueue, build_steer_middleware
 from synapse.runtime.subagents import build_default_subagents
 from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
+from synapse.runtime.tool_response_truncate_middleware import (
+    build_tool_response_truncate_middleware,
+)
 from synapse.settings import Settings
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
@@ -478,6 +481,11 @@ def build_coding_agent(
     # Replace verbose upstream tool descriptions with concise alternatives
     # to reduce tool-schema token overhead (~4K -> ~200 chars per tool).
     middleware.append(build_compact_tool_descriptions())
+    # Deterministic tool-RESPONSE truncation (off by default). Clips oversized
+    # ToolMessage content in messages outside a token-counted keep window while
+    # preserving tool-output:// references; request-only and cache-friendly.
+    # See tool_response_truncate_middleware.
+    middleware.append(build_tool_response_truncate_middleware(settings))
     middleware.append(build_model_request_compression_middleware(output_repository))
     # Must be innermost so no later middleware can reintroduce unsupported Codex
     # roles or DeepSeek-specific request fields after this final adaptation.

@@ -617,6 +617,11 @@ class CodingAgentApp(App[None]):
         self._busy = False
         self._compacting_context = False
         self._cancel_event = threading.Event()
+        # Optional background provider prewarm after resuming a large session.
+        # Cancelled as soon as the user submits a real message so the warm-up
+        # and the real turn never queue two huge requests concurrently.
+        self._prewarm_cancel_event = threading.Event()
+        self._prewarm_started = False
         self._phase = "idle"
         self._detail = "ready" if agent is not None else "starting"
         self._activity_started = time.monotonic()
@@ -873,6 +878,9 @@ class CodingAgentApp(App[None]):
             self._mcp_attaching = False
             if not self._busy:
                 self.call_from_thread(self.set_activity, "idle", "ready", True)
+                # MCP attach failed or was skipped: the phase-1 agent is the
+                # final shape, so prewarm it (no-op if already started).
+                self.call_from_thread(self._maybe_start_prewarm)
 
     def _on_agent_ready(self, with_mcp: bool) -> None:
         label = "agent ready" + (" + MCP" if with_mcp else " (MCP pending)")
@@ -880,6 +888,50 @@ class CodingAgentApp(App[None]):
         self.set_activity("idle", "ready", True)
         self._bind_steer_queue()
         self._restore_session_transcript(announce=True)
+        # Prewarm only when MCP will never attach: a prewarm sent before the
+        # MCP phase would use a different tool schema than real turns, which
+        # breaks the provider prefix cache entirely. With MCP enabled, prewarm
+        # fires from _on_mcp_attached instead.
+        if not bool(getattr(self.settings, "enable_mcp", True)):
+            self._maybe_start_prewarm()
+
+    def _maybe_start_prewarm(self) -> None:
+        """Kick off an optional background provider prewarm after resume.
+
+        Enabled only via ``session_prewarm_enabled`` (default off). Uses the
+        live agent on a throwaway thread so the cached prefix matches a real
+        turn; the user's first message cancels it. Must be called only once the
+        agent is in its final shape (MCP attached), otherwise the tool schema
+        differs from real turns and the provider cache cannot be hit. See
+        ``synapse.runtime.session_prewarm`` for details.
+        """
+        if not bool(getattr(self.settings, "session_prewarm_enabled", False)):
+            return
+        if self._prewarm_started or self.agent is None or not self.thread_id:
+            return
+        # MCP is attaching right now: wait for _on_mcp_attached to call us
+        # again with the final agent so the cached prefix matches real turns.
+        if self._mcp_attaching:
+            return
+        self._prewarm_started = True
+        self._prewarm_cancel_event = threading.Event()
+
+        def _worker() -> None:
+            from synapse.runtime.session_prewarm import prewarm_session
+
+            try:
+                prewarm_session(
+                    self.agent,
+                    self.thread_id,
+                    cancel_event=self._prewarm_cancel_event,
+                    notify=lambda text: self.call_from_thread(
+                        self.append_event, text, "dim"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - prewarm must never break the session
+                pass
+
+        threading.Thread(target=_worker, name="session-prewarm", daemon=True).start()
 
     def _on_mcp_attached(self) -> None:
         servers = list(getattr(build_coding_agent, "last_mcp_servers", []) or [])
@@ -892,6 +944,9 @@ class CodingAgentApp(App[None]):
         for w in warnings:
             self.append_event(f"mcp: {w}", "yellow")
         self.set_activity("idle", "ready", True)
+        # Agent is now in its final shape (MCP tools included); prewarm with
+        # the exact same tool schema real turns will use.
+        self._maybe_start_prewarm()
 
     def _set_complete_hint(self, value: str) -> None:
         from synapse.commands.slash_complete import (
@@ -4374,6 +4429,9 @@ class CodingAgentApp(App[None]):
         event.input.value = ""
         if not text:
             return
+        # A real turn supersedes the background prewarm; stop it so two huge
+        # requests never queue on the provider at the same time.
+        self._prewarm_cancel_event.set()
 
         # 将被截断的粘贴占位符替换回完整原始文本
         for placeholder, full_text in list(self._paste_replacements.items()):

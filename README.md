@@ -399,6 +399,8 @@ uv run synapse run "修复 calculator.sub 的 bug，使 tests 全部通过" -w t
 | `AGENT_TUI_DEFER_AGENT` | `true` | TUI 先起 UI，后台 build agent |
 | `AGENT_MCP_CONFIG` | - | MCP servers JSON |
 | `CHECKPOINT_BACKEND` | `sqlite` | `sqlite` 或 `memory` |
+| `AGENT_SESSION_PREWARM_ENABLED` | `false` | 恢复大上下文会话后在后台预热 provider 缓存（首次请求仍按输入 token 计费；详见 `docs/config.md`） |
+| `AGENT_ENABLE_TOOL_RESPONSE_TRUNCATE` | `false` | 启用工具响应折叠（keep 窗口外的大工具输出压成摘要+引用，大上下文会话可省 20-30%；详见 `docs/config.md`） |
 | `INHERIT_ENV` | `true` | shell 继承主机环境 |
 | `VIRTUAL_MODE` | `true` | 文件路径虚拟根 |
 | `AGENT_SHOW_REASONING_PLACEHOLDERS` | `true` | 是否显示网关未暴露推理文本时的占位思考节点；Codex 加密推理可设为 `false` 隐藏 |
