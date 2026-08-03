@@ -15,6 +15,7 @@ from synapse.ui.tui import (
     UserTurnBlock,
     _annotate_strip_offsets,
     _stylize_strip_char_span,
+    compress_paste_placeholder,
 )
 
 
@@ -124,6 +125,40 @@ def test_answer_get_selection_partial_line() -> None:
 def test_user_turn_selectable_text() -> None:
     block = UserTurnBlock("build a feature")
     assert block.selectable_text() == "build a feature"
+
+
+def test_user_turn_render_cap_keeps_full_text() -> None:
+    big = ("word " * 2000).strip()  # ~10k chars
+    block = UserTurnBlock(big)
+    render_text, content_truncated = block._render_source()
+    assert content_truncated is True
+    assert len(render_text) == 250
+    # The complete payload stays available for copy/selection.
+    assert block.full_text == big
+    assert block.selectable_text() == big
+    # The block marks itself truncated so the UI shows the collapse hint.
+    assert block._truncated is True
+
+
+def test_user_turn_render_keeps_surroundings_with_placeholder() -> None:
+    """A paste placeholder compresses the block, not the user's own text."""
+    big = "L" * 100_000
+    placeholder = f"[def foo(): {big[:20]}... {len(big)} chars]"
+    compressed = compress_paste_placeholder(placeholder)
+    render_source = f"请分析这段代码：{compressed}，重点是性能"
+    block = UserTurnBlock(
+        render_source,
+        full_text=f"请分析这段代码：{big}，重点是性能",
+    )
+    render_text, content_truncated = block._render_source()
+    # Surrounding user text is kept as-is; only the placeholder count is capped.
+    assert content_truncated is False
+    assert "请分析这段代码：" in render_text
+    assert "，重点是性能" in render_text
+    assert "250+ chars" in render_text
+    # Full payload remains available for copy/selection.
+    assert block.selectable_text() == f"请分析这段代码：{big}，重点是性能"
+    assert len(render_text) < 500
 
 
 def test_thought_selectable_text_collapsed_preview() -> None:

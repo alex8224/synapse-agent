@@ -133,7 +133,11 @@ from synapse.ui.turn_rail import turn_rail_tick_slots as _turn_rail_tick_slots
 from synapse.ui.turn_rail_widgets import TurnRail
 from synapse.ui.turn_rail_widgets import TurnRailGap as _TurnRailGap
 from synapse.ui.turn_rail_widgets import TurnRailItem as _TurnRailItem
+from synapse.ui.user_turn import (
+    compress_paste_placeholder as _compress_paste_placeholder,
+)
 from synapse.ui.user_turn import format_user_turn_meta as _format_user_turn_meta
+from synapse.ui.user_turn import has_paste_placeholder as _has_paste_placeholder
 from synapse.ui.user_turn import wrap_user_turn_text as _wrap_user_turn_text
 from synapse.ui.user_turn_block import UserTurnBlock
 from synapse.ui.welcome import WelcomeView
@@ -154,6 +158,8 @@ format_turn_rail_bucket_label = _format_turn_rail_bucket_label
 turn_rail_tick_slots = _turn_rail_tick_slots
 format_user_turn_meta = _format_user_turn_meta
 wrap_user_turn_text = _wrap_user_turn_text
+compress_paste_placeholder = _compress_paste_placeholder
+has_paste_placeholder = _has_paste_placeholder
 TodoRow = _TodoRow
 TODO_MARK_ACTIVE = _TODO_MARK_ACTIVE
 TODO_MARK_DONE = _TODO_MARK_DONE
@@ -2620,6 +2626,8 @@ class CodingAgentApp(App[None]):
         self,
         text: str,
         images: list[Any] | None = None,
+        *,
+        full_text: str | None = None,
     ) -> None:
         imgs = list(images or [])
         block = UserTurnBlock(
@@ -2627,6 +2635,7 @@ class CodingAgentApp(App[None]):
             stamp=_stamp(),
             turn_index=len(self._user_turns) + 1,
             image_count=len(imgs),
+            full_text=full_text,
         )
         self._user_turns.append(block)
         self._mount_block(block)
@@ -4436,10 +4445,14 @@ class CodingAgentApp(App[None]):
         # requests never queue on the provider at the same time.
         self._prewarm_cancel_event.set()
 
-        # 将被截断的粘贴占位符替换回完整原始文本
+        # 渲染用文本保留粘贴占位符（大块内容在显示时压缩），推理/历史用完整展开文本。
+        display = text
         for placeholder, full_text in list(self._paste_replacements.items()):
             if placeholder in text:
                 text = text.replace(placeholder, full_text)
+                display = display.replace(
+                    placeholder, compress_paste_placeholder(placeholder)
+                )
         self._paste_replacements.clear()
 
         # Parse [image#N] placeholders from text and resolve to attachments.
@@ -4501,9 +4514,8 @@ class CodingAgentApp(App[None]):
             return
 
         self._image_bank.clear()
-        display = text
 
-        self.append_user(display, images=turn_images or None)
+        self.append_user(display, images=turn_images or None, full_text=text)
         self._capture_turn_context()
         self._busy = True
         self._skip_steer_followup = False

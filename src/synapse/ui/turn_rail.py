@@ -15,10 +15,15 @@ def format_turn_rail_preview(
     max_len: int = _RAIL_PREVIEW_MAX,
 ) -> str:
     """Single-line user-turn preview for the right rail (ellipsis when long)."""
-    one = _WS_RE.sub(" ", (text or "").strip())
+    text = text or ""
+    limit = max(8, int(max_len or _RAIL_PREVIEW_MAX))
+    # Cheap cap first: the preview only ever shows ~``limit`` characters, so
+    # never run the whitespace collapse over a multi-megabyte paste.
+    if len(text) > limit * 4 + 64:
+        text = text[: limit * 4 + 64]
+    one = _WS_RE.sub(" ", text.strip())
     if not one:
         return "(empty)"
-    limit = max(8, int(max_len or _RAIL_PREVIEW_MAX))
     if len(one) > limit:
         return one[: limit - 1].rstrip() + "…"
     return one

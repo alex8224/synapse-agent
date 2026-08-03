@@ -79,7 +79,13 @@ def title_from_user_message(text: str | None, *, max_len: int = 80) -> str | Non
     """Normalize first user message into a session title."""
     if not text:
         return None
-    one = " ".join(str(text).strip().split())
+    raw = str(text)
+    max_len = max(1, int(max_len or 80))
+    # Cheap cap before whitespace collapsing: a title never shows more than
+    # ~``max_len`` chars, so never run the full collapse over a huge paste.
+    if len(raw) > max_len * 4 + 64:
+        raw = raw[: max_len * 4 + 64]
+    one = " ".join(raw.strip().split())
     if not one:
         return None
     return one[:max_len]

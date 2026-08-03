@@ -10,7 +10,13 @@ from textual.events import Click
 
 from synapse.ui.selectable_static import SelectableStatic
 from synapse.ui.topbar import display_width, truncate_to_width
-from synapse.ui.user_turn import format_user_turn_meta, wrap_user_turn_text
+from synapse.ui.user_turn import (
+    RENDER_MAX_CHARS,
+    RENDER_WITH_PLACEHOLDER_MAX,
+    format_user_turn_meta,
+    has_paste_placeholder,
+    wrap_user_turn_text,
+)
 
 _USER_PREVIEW_MAX_LINES = 3
 _USER_PREVIEW_MIN_COLS = 20
@@ -55,9 +61,14 @@ class UserTurnBlock(SelectableStatic):
         stamp: str | None = None,
         turn_index: int | None = None,
         image_count: int = 0,
+        full_text: str | None = None,
     ) -> None:
         super().__init__()
-        self.full_text = text or ""
+        # ``full_text`` is the complete payload (kept for copy/selection and
+        # anything that needs the original). ``text`` is the render source,
+        # which may already carry compressed ``[...N chars]`` placeholders.
+        self.full_text = (full_text if full_text is not None else text) or ""
+        self.render_text = text or ""
         self.stamp = stamp or _stamp()
         self.turn_index = turn_index
         self.image_count = int(image_count or 0)
@@ -85,6 +96,22 @@ class UserTurnBlock(SelectableStatic):
                 width = 72
         return max(_USER_PREVIEW_MIN_COLS, width - self._rail_overlap_cols())
 
+    def _render_source(self) -> tuple[str, bool]:
+        """Display source: paste placeholders compressed, surroundings intact.
+
+        Returns ``(render_text, content_truncated)``. Plain long text is capped
+        at ``RENDER_MAX_CHARS``; text carrying ``[...N chars]`` paste
+        placeholders keeps the surrounding user-typed content as-is (the
+        placeholders were already compressed on submit) and only falls back to
+        ``RENDER_WITH_PLACEHOLDER_MAX`` as a safety ceiling.
+        """
+        text = self.render_text or ""
+        if len(text) > RENDER_MAX_CHARS and not has_paste_placeholder(text):
+            return text[:RENDER_MAX_CHARS], True
+        if len(text) > RENDER_WITH_PLACEHOLDER_MAX:
+            return text[:RENDER_WITH_PLACEHOLDER_MAX], True
+        return text, False
+
     def _render_block(self) -> None:
         dim = _theme_color("dim", _DEFAULT_DIM)
         fg = _theme_color("fg", _DEFAULT_FG)
@@ -103,16 +130,29 @@ class UserTurnBlock(SelectableStatic):
         gap = 2
         body_width = max(12, width - mark_width - meta_width - gap)
 
+        render_text, content_truncated = self._render_source()
         if self.collapsed:
             lines, truncated = wrap_user_turn_text(
-                self.full_text, width=body_width, max_lines=_USER_PREVIEW_MAX_LINES
+                render_text, width=body_width, max_lines=_USER_PREVIEW_MAX_LINES
             )
-            full_lines, _ = wrap_user_turn_text(self.full_text, width=body_width, max_lines=None)
-            self._truncated = truncated or len(full_lines) > _USER_PREVIEW_MAX_LINES
+            self._truncated = content_truncated or truncated
+            if content_truncated:
+                hint_label = f"… truncated · total {len(self.full_text)} chars"
+                if truncated:
+                    hint_label += " · click to expand"
+            else:
+                hint_label = "click to expand" if truncated else None
         else:
-            lines, _ = wrap_user_turn_text(self.full_text, width=body_width, max_lines=None)
-            full_lines = lines
-            self._truncated = len(full_lines) > _USER_PREVIEW_MAX_LINES
+            lines, truncated = wrap_user_turn_text(
+                render_text, width=body_width, max_lines=None
+            )
+            self._truncated = content_truncated or len(lines) > _USER_PREVIEW_MAX_LINES
+            if content_truncated:
+                hint_label = f"… truncated · total {len(self.full_text)} chars"
+                if self._truncated:
+                    hint_label += " · click to collapse"
+            else:
+                hint_label = "click to collapse" if self._truncated else None
 
         bg = f"on {bar}"
         rows: list[Text] = []
@@ -133,12 +173,12 @@ class UserTurnBlock(SelectableStatic):
                     row.append(" " * padding, style=bg)
             rows.append(row)
 
-        if self._truncated:
+        if hint_label:
             hint = Text()
             hint.append(" " * mark_width, style=bg)
-            label = "click to expand" if self.collapsed else "click to collapse"
-            hint.append(label, style=f"{muted} {bg}")
-            padding = max(0, width - mark_width - display_width(label))
+            hint_label = truncate_to_width(hint_label, max(4, width - mark_width))
+            hint.append(hint_label, style=f"{muted} {bg}")
+            padding = max(0, width - mark_width - display_width(hint_label))
             if padding:
                 hint.append(" " * padding, style=bg)
             rows.append(hint)
@@ -163,8 +203,13 @@ class UserTurnBlock(SelectableStatic):
                 pass
         event.stop()
         full_width = max(12, self._content_width() - display_width(" ●  ") - 14)
-        full_lines, _ = wrap_user_turn_text(self.full_text, width=full_width, max_lines=None)
-        if len(full_lines) <= _USER_PREVIEW_MAX_LINES:
+        # Only the (capped) render source decides expandability; the full
+        # payload is never wrapped just to answer that question.
+        render_text, _ = self._render_source()
+        _, truncated = wrap_user_turn_text(
+            render_text, width=full_width, max_lines=_USER_PREVIEW_MAX_LINES
+        )
+        if not truncated:
             return
         self.collapsed = not self.collapsed
         if self.collapsed:
