@@ -2,6 +2,8 @@
 
 基于 **LangChain Deep Agents** 的本地 Synapse。
 
+本项目以 [Apache License 2.0](LICENSE) 发布。第三方依赖和 Rust 子组件可能使用各自的许可证；分发时请同时保留相应的许可证与 NOTICE 文件。
+
 - Harness: `deepagents.create_deep_agent`
 - Backend: `LocalShellBackend`（**无 sandbox**）
 - 默认审批: **关闭 / 自动通过**

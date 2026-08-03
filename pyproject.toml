@@ -3,6 +3,7 @@ name = "synapse-cli-agent"
 version = "0.1.22"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
+license = { file = "LICENSE" }
 authors = [
     { name = "alex8224", email = "alex8224@gmail.com" }
 ]
