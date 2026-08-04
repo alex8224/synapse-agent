@@ -170,6 +170,17 @@ display_width = _display_width
 _annotate_strip_offsets = _annotate_strip_offsets_impl
 _stylize_strip_char_span = _stylize_strip_char_span_impl
 
+
+class _MarkdownBlock(Static):
+    """A Markdown transcript block that can rebuild after a theme switch."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        super().__init__(render_markdown(source))
+
+    def repaint_markdown(self) -> None:
+        self.update(render_markdown(self.source))
+
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
@@ -2757,9 +2768,10 @@ class CodingAgentApp(App[None]):
         self._dismiss_welcome()
         if len(text) > _MARKDOWN_MAX_CHARS:
             renderable: Any = Text(text, style=_C_FG)
+            block = Static(renderable)
         else:
-            renderable = render_markdown(text)
-        self._mount_block(Static(renderable), dismiss_welcome=False)
+            block = _MarkdownBlock(text)
+        self._mount_block(block, dismiss_welcome=False)
 
     def append_user(
         self,
@@ -3748,6 +3760,8 @@ class CodingAgentApp(App[None]):
             ("ThoughtBlock", "_render_block"),
             ("ToolGroupBlock", "_render_block"),
             ("TodoChecklist", "_render_block"),
+            ("AnswerBlock", "_render_block"),
+            ("_MarkdownBlock", "repaint_markdown"),
             ("AnswerDivider", "_render_block"),
             ("TurnRailItem", "_show_bar"),
         ):

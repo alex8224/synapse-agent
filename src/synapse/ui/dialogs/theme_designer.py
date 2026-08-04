@@ -522,6 +522,7 @@ class ThemeDesignerDialog(ModalScreen[Any]):
         self._rich_info_border = str(getattr(current, "rich_info_border", "") or "")
         self._rich_ok_border = str(getattr(current, "rich_ok_border", "") or "")
         self._rich_activity = str(getattr(current, "rich_activity", "") or "")
+        self._markdown = dict(getattr(current, "markdown", ()) or ())
         self._values = {key: str(getattr(current, key, "") or "") for key, _ in _COLOR_FIELDS}
         self._selected_color_key = _COLOR_FIELDS[0][0]
         self._picker_hsv = _hex_to_hsv(self._values[self._selected_color_key]) or (0.0, 0.0, 0.5)
@@ -721,6 +722,8 @@ class ThemeDesignerDialog(ModalScreen[Any]):
                 data[key] = value
         if self._code_theme:
             data["code_theme"] = self._code_theme
+        if self._markdown:
+            data["markdown"] = dict(self._markdown)
         for field, value in (
             ("rich_user", self._rich_user),
             ("rich_info_border", self._rich_info_border),

@@ -147,3 +147,36 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 ## `.coding-agent/mcp_servers.json` 格式
 
 参见 [MCP Server](mcp.md) 页面。
+
+## `themes.json` Markdown 样式
+
+`themes.json` 支持在继承现有主题的基础上覆盖 Rich Markdown 元素的样式。主题配置仍按用户层到项目层合并，项目层可以只覆盖部分字段：
+
+```json
+{
+  "themes": {
+    "my-dark": {
+      "extends": "cursor-dark",
+      "label": "My Dark",
+      "markdown": {
+        "h1": "bold #ff9e64",
+        "h2": "bold #e0af68",
+        "paragraph": "#c0caf5",
+        "code": "bold #7dcfff",
+        "block_quote": "italic #565f89",
+        "link_url": "underline #7aa2f7",
+        "table.border": "#414868",
+        "table.header": "bold #bb9af7"
+      }
+    }
+  }
+}
+```
+
+支持的 Markdown 键包括：`h1`～`h6`、`paragraph`、`strong`、`em`、`s`、`code`、
+`code_block`、`block_quote`、`item`、`link`、`link_url`、`kbd`、`hr`、
+`table.border` 和 `table.header`。值使用 Rich style 语法；非法样式和未知键会被忽略，
+不会阻止其他主题加载。
+
+`code` 控制行内代码的样式；代码围栏内部的语法高亮仍由主题的 `code_theme`（Pygments
+主题名）控制。Markdown 样式在渲染期间局部应用，不会污染其他 Rich 输出。

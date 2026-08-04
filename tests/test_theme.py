@@ -185,6 +185,64 @@ def test_css_variables_keys():
     assert "theme-border-focus" in vars_
 
 
+def test_markdown_styles_follow_palette_and_allow_overrides():
+    theme = BUILTIN_THEMES["cursor-dark"]
+    assert theme.markdown
+    assert dict(theme.markdown)["h1"] == f"bold {theme.green}"
+    assert dict(theme.markdown)["table.border"] == theme.border
+    styles = theme.markdown_styles()
+    assert styles["markdown.paragraph"] == theme.fg
+    assert styles["markdown.table.border"] == theme.border
+    assert styles["markdown.code"] == f"bold {theme.orange}"
+
+    custom = theme_mod._theme_from_dict(
+        "markdown-test",
+        {
+            "extends": "cursor-dark",
+            "markdown": {
+                "h1": "bold #123456",
+                "link_url": "underline #abcdef",
+                "not-a-markdown-key": "red",
+            },
+        },
+        catalog={},
+    )
+    assert custom.markdown == (
+        ("h1", "bold #123456"),
+        ("link_url", "underline #abcdef"),
+    )
+    assert custom.markdown_styles()["markdown.h1"] == "bold #123456"
+    assert custom.markdown_styles()["markdown.paragraph"] == custom.fg
+
+
+def test_all_builtin_themes_have_valid_markdown_mapping():
+    from rich.theme import Theme as RichTheme
+
+    for name, theme in BUILTIN_THEMES.items():
+        assert set(dict(theme.markdown)) == theme_mod._MARKDOWN_STYLE_KEYS, name
+        RichTheme(theme.markdown_styles())
+
+
+def test_markdown_styles_inherit_and_ignore_invalid_values():
+    base = theme_mod._theme_from_dict(
+        "markdown-base",
+        {"extends": "cursor-dark", "markdown": {"h1": "bold #123456"}},
+        catalog={},
+    )
+    child = theme_mod._theme_from_dict(
+        "markdown-child",
+        {
+            "extends": "markdown-base",
+            "markdown": {
+                "h2": "bold #abcdef",
+                "h1": "not-a-rich-style@@",
+            },
+        },
+        catalog={"markdown-base": base},
+    )
+    assert dict(child.markdown) == {"h1": "bold #123456", "h2": "bold #abcdef"}
+
+
 def _contrast_ratio(foreground: str, background: str) -> float:
     def luminance(color: str) -> float:
         channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]

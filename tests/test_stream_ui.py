@@ -395,3 +395,75 @@ def test_render_markdown_tables_use_full_rounded_borders():
     assert "┼" in out  # ┼ grid cross when show_lines=True
     assert "file" in out and "a.py" in out and "b.py" in out
 
+
+def test_render_markdown_uses_active_theme_for_rich_elements():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from synapse.ui import theme as theme_mod
+    from synapse.ui.stream import render_markdown
+
+    original = theme_mod.get_theme().name
+    try:
+        theme_mod.set_theme("cursor-dark", persist=False, reload=False)
+        active = theme_mod.get_theme()
+        c = Console(
+            file=StringIO(),
+            width=80,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            emoji=False,
+            record=True,
+        )
+        c.print(render_markdown("# Heading\n\nText `inline` [link](https://example.com)"))
+        styles = {segment.text: str(segment.style) for segment in c._record_buffer}
+        assert any(style == f"bold {active.green}" for style in styles.values())
+        assert any(style == f"bold {active.orange}" for style in styles.values())
+        assert any(
+            f"underline {active.user}" in style and "link https://example.com" in style
+            for style in styles.values()
+        )
+        assert str(c.get_style("markdown.code")) == "bold cyan on black"
+    finally:
+        theme_mod.set_theme(original, persist=False, reload=False)
+
+
+def test_render_markdown_custom_style_override_is_applied_and_restored():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from synapse.ui import theme as theme_mod
+
+    original = theme_mod.get_theme().name
+    custom = theme_mod._theme_from_dict(
+        "render-markdown-test",
+        {
+            "extends": "cursor-dark",
+            "markdown": {"code": "bold #123456 on #654321"},
+        },
+        catalog={},
+    )
+    try:
+        theme_mod.set_active_theme(custom)
+        c = Console(
+            file=StringIO(),
+            width=80,
+            force_terminal=True,
+            color_system="truecolor",
+            highlight=False,
+            emoji=False,
+            record=True,
+        )
+        from synapse.ui.stream import render_markdown
+
+        c.print(render_markdown("`inline`"))
+        assert any(
+            str(segment.style) == "bold #123456 on #654321"
+            for segment in c._record_buffer
+        )
+        assert str(c.get_style("markdown.code")) == "bold cyan on black"
+    finally:
+        theme_mod.set_theme(original, persist=False, reload=False)

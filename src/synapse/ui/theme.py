@@ -46,6 +46,9 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
+from rich.errors import StyleSyntaxError
+from rich.style import Style
+
 from synapse.settings.config_paths import (
     SETTINGS_FILENAME,
     existing_files,
@@ -54,6 +57,31 @@ from synapse.settings.config_paths import (
     load_layered_json,
     project_config_dir,
     user_config_dir,
+)
+
+_MARKDOWN_STYLE_KEYS = frozenset(
+    {
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "paragraph",
+        "strong",
+        "em",
+        "s",
+        "code",
+        "code_block",
+        "block_quote",
+        "item",
+        "link",
+        "link_url",
+        "kbd",
+        "hr",
+        "table.border",
+        "table.header",
+    }
 )
 
 THEMES_FILENAME = "themes.json"
@@ -80,6 +108,7 @@ _PALETTE_KEYS = frozenset(
         "border_focus",
         "error",
         "code_theme",
+        "markdown",
         "rich_user",
         "rich_info_border",
         "rich_ok_border",
@@ -125,6 +154,45 @@ _VALID_PROMPT_BORDER_STYLES: frozenset[str] = frozenset({
     "vkey",
     "wide",
 })
+
+
+def _palette_markdown_styles(
+    *,
+    fg: str,
+    dim: str,
+    muted: str,
+    green: str,
+    orange: str,
+    user: str,
+    border: str,
+) -> tuple[tuple[str, str], ...]:
+    """Build the built-in Markdown mapping from one palette."""
+    return tuple(
+        sorted(
+            {
+                "h1": f"bold {green}",
+                "h2": f"bold {green}",
+                "h3": f"bold {user}",
+                "h4": f"bold {fg}",
+                "h5": f"bold {fg}",
+                "h6": f"bold {dim}",
+                "paragraph": fg,
+                "strong": f"bold {fg}",
+                "em": f"italic {fg}",
+                "s": f"strike {dim}",
+                "code": f"bold {orange}",
+                "code_block": fg,
+                "block_quote": f"italic {dim}",
+                "item": fg,
+                "link": f"underline {user}",
+                "link_url": f"underline {user}",
+                "kbd": f"bold {orange}",
+                "hr": muted,
+                "table.border": border,
+                "table.header": f"bold {fg}",
+            }.items()
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -180,6 +248,9 @@ class Theme:
     css_border_focus: str = ""
     # Border style for #prompt input: tall, heavy, dashed, double, round, solid.
     prompt_border: str = "tall"
+    # Rich Markdown style overrides. Stored as a sorted immutable tuple so
+    # frozen Theme instances remain safe to inherit and compare.
+    markdown: tuple[tuple[str, str], ...] = ()
 
     def css_variables(self) -> dict[str, str]:
         """Textual stylesheet variables (names without leading ``$``)."""
@@ -203,6 +274,30 @@ class Theme:
             "theme-top-pad-x": str(pad),
             "theme-prompt-border-style": border_style,
         }
+
+    def markdown_styles(self) -> dict[str, str]:
+        """Return Rich style names for Markdown elements.
+
+        The base mapping follows the existing Synapse palette. Custom theme
+        values override individual entries and are already validated while
+        loading ``themes.json``.
+        """
+        styles = {
+            f"markdown.{key}": value
+            for key, value in _palette_markdown_styles(
+                fg=self.fg,
+                dim=self.dim,
+                muted=self.muted,
+                green=self.green,
+                orange=self.orange,
+                user=self.user,
+                border=self.border,
+            )
+        }
+        for key, value in self.markdown:
+            if key in _MARKDOWN_STYLE_KEYS:
+                styles[f"markdown.{key}"] = value
+        return styles
 
     @property
     def is_terminal_inherit(self) -> bool:
@@ -282,6 +377,7 @@ def _t(
     css_border: str = "",
     css_border_focus: str = "",
     prompt_border: str = "tall",
+    markdown: tuple[tuple[str, str], ...] | None = None,
 ) -> Theme:
     return Theme(
         name=name,
@@ -321,6 +417,17 @@ def _t(
         css_border=css_border,
         css_border_focus=css_border_focus,
         prompt_border=prompt_border,
+        markdown=markdown
+        if markdown is not None
+        else _palette_markdown_styles(
+            fg=fg,
+            dim=dim,
+            muted=muted,
+            green=green,
+            orange=orange,
+            user=user,
+            border=border,
+        ),
     )
 
 
@@ -724,6 +831,24 @@ def _normalize_color(value: object) -> str | None:
     return text
 
 
+def _normalize_markdown_styles(value: object) -> tuple[tuple[str, str], ...]:
+    """Validate and normalize user-provided Rich Markdown styles."""
+    if not isinstance(value, dict):
+        return ()
+    styles: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        style = str(raw_value).strip() if raw_value is not None else ""
+        if key not in _MARKDOWN_STYLE_KEYS or not style:
+            continue
+        try:
+            Style.parse(style)
+        except (StyleSyntaxError, TypeError, ValueError):
+            continue
+        styles[key] = style
+    return tuple(sorted(styles.items()))
+
+
 def _theme_from_dict(
     name: str,
     data: dict[str, Any],
@@ -757,6 +882,8 @@ def _theme_from_dict(
         if key not in data:
             continue
         raw = data[key]
+        if key == "markdown":
+            continue
         if key == "code_theme":
             val = str(raw).strip() if raw is not None else ""
             if val:
@@ -787,6 +914,29 @@ def _theme_from_dict(
         color = _normalize_color(raw)
         if color is not None:
             updates[key] = color
+
+    # Built-in themes carry a complete mapping, while custom themes carry
+    # only explicit overrides. Rebuild palette-derived defaults after scalar
+    # overrides so ``extends`` remains responsive to a custom ``green`` /
+    # ``orange`` / ``user`` value, then preserve explicit parent overrides.
+    base_defaults = dict(
+        _palette_markdown_styles(
+            fg=base.fg,
+            dim=base.dim,
+            muted=base.muted,
+            green=base.green,
+            orange=base.orange,
+            user=base.user,
+            border=base.border,
+        )
+    )
+    inherited_overrides = {
+        key: value
+        for key, value in base.markdown
+        if value != base_defaults.get(key)
+    }
+    inherited_overrides.update(_normalize_markdown_styles(data.get("markdown")))
+    updates["markdown"] = tuple(sorted(inherited_overrides.items()))
     return replace(base, **updates)
 
 

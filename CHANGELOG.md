@@ -7,6 +7,26 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.23
+
+### 新增功能
+
+- Rich Markdown 渲染接入 Synapse 主题系统：内置主题提供完整 Markdown 样式映射，支持标题、段落、强调、行内代码、引用、链接、列表和表格等元素跟随主题配色。
+- `themes.json` 支持通过独立的 `markdown` 字段覆盖 Markdown 元素的 Rich style，并支持主题继承与分层配置。
+- 运行时切换主题会重绘已显示的答案、思考内容和独立 Markdown 块；主题设计器保存主题时保留 Markdown 样式配置。
+
+### 修复
+
+- 修复 Rich Markdown 使用内置默认颜色、导致 Markdown 内容无法跟随 Synapse 主题切换的问题。
+- 修复主题设计器保存已有主题时可能丢失手写 Markdown 样式覆盖的问题。
+
+### 工程改进
+
+- 增加 Markdown 主题解析、Rich 样式注入、主题继承、运行时重绘和内置主题完整性测试。
+- 补充 Markdown 主题配置文档，并保留代码块使用 `code_theme` 控制语法高亮的边界说明。
+
+---
+
 ## v0.1.22
 
 ### 新增功能

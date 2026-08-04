@@ -87,6 +87,23 @@ def test_answer_block_does_not_copy_on_mouse_click() -> None:
     assert "on_click" not in AnswerBlock.__dict__
 
 
+def test_markdown_block_rebuilds_renderable_after_theme_switch() -> None:
+    from synapse.ui import theme as theme_mod
+    from synapse.ui.tui import _MarkdownBlock
+
+    original = theme_mod.get_theme().name
+    try:
+        theme_mod.set_theme("cursor-dark", persist=False, reload=False)
+        block = _MarkdownBlock("# heading")
+        first = block.content
+        theme_mod.set_theme("dracula", persist=False, reload=False)
+        block.repaint_markdown()
+        assert block.content is not first
+        assert block.source == "# heading"
+    finally:
+        theme_mod.set_theme(original, persist=False, reload=False)
+
+
 def test_thought_block_collapses_on_seal_by_default() -> None:
     block = ThoughtBlock(1.5, "alpha beta", expand_on_seal=False)
     block.update_live(2.0, "alpha beta gamma")

@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme as RichTheme
 
 console = Console(highlight=False, soft_wrap=True, emoji=False)
 
@@ -303,6 +304,27 @@ class _FullBorderMarkdown(_Markdown):
         "code_block": _MermaidCodeBlock,
         "blockquote_open": _QuoteLineBlockQuote,
     }
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        """Render Markdown while its palette is temporarily on the Console.
+
+        ``yield from`` is intentional: Rich renders child Markdown elements
+        while iterating this generator. Keeping the theme on the stack for
+        the entire iteration also covers custom tables, quotes, and Mermaid
+        fallback elements without leaking the theme to later renderables.
+        """
+        theme = _theme()
+        if theme is None:
+            yield from super().__rich_console__(console, options)
+            return
+
+        console.push_theme(RichTheme(theme.markdown_styles()))
+        try:
+            yield from super().__rich_console__(console, options)
+        finally:
+            console.pop_theme()
 
 
 def render_markdown(text: str) -> _Markdown:
