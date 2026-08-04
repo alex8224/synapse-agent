@@ -7,6 +7,22 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.25
+
+### 新增功能
+
+- `synapse-web` 新增 `--public-url` 参数：指定 `textual-serve` 生成的页面 WebSocket 与静态资源地址，支持 nginx/TLS 反向代理场景（`https://` 自动推导 `wss://`）。
+
+### 修复
+
+- 修复容器经 nginx 反向代理后页面内 WebSocket/静态资源地址使用 `http://<host>:<port>` 导致浏览器无法连接的问题。
+
+### 工程改进
+
+- Docker 部署文档补充容器仅绑定回环端口 + nginx 443 反代的配置示例。
+
+---
+
 ## v0.1.24
 
 ### 新增功能
