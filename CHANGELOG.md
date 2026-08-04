@@ -7,6 +7,21 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.24
+
+### 新增功能
+
+- 新增 `synapse-web` 控制台入口（`synapse.web:main`）：无需源码即可通过安装的 wheel 启动 Web TUI，支持 `--host`、`--port`、`--workspace` 参数。
+- 新增 `Dockerfile.web` 最小镜像：基于 `python:3.12-slim`，无 Rust 工具链，运行时依赖全部通过预编译 wheel 安装；支持 `pypi`（从 PyPI 安装发布版本）与 `local`（安装构建上下文中的本地 wheel）两种构建模式。
+- 新增 `.dockerignore` 与 Docker 部署文档（`docs/docker-web.md`），包含远程机器构建、运行、端口映射与 `/workspace` 数据持久化说明。
+
+### 工程改进
+
+- `scripts/serve_web.py` 改为 `synapse.web` 的兼容薄包装。
+- 文档导航新增 Docker Web TUI 页面。
+
+---
+
 ## v0.1.23
 
 ### 新增功能
