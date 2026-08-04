@@ -83,3 +83,41 @@ http://<gateway1-ip>:8000
 - 每个浏览器标签页对应一个独立的 TUI 子进程。
 - agent 的工具执行都发生在容器内，适合作为沙箱隔离。
 - 容器以非 root 用户 `synapse` 运行，镜像只暴露 `8000` 端口。
+
+## 通过 nginx 443 反向代理
+
+容器不应直接监听公网。推荐让容器只绑定本机回环地址，由 nginx 承担 TLS 与公网入口：
+
+```bash
+docker run --rm -d --name synapse-web \
+  -p 127.0.0.1:8000:8000 \
+  -v "$PWD:/workspace" \
+  synapse-web \
+  --host 127.0.0.1 --port 8000 \
+  --public-url https://synapse-agent.best/tui
+```
+
+`--public-url` 是必须的：`textual-serve` 用它生成页面中的 WebSocket 与静态资源
+地址。不设置时默认使用 `http://<host>:<port>`，经 nginx 反代后浏览器无法连接。
+`https://` 前缀会自动推导出 `wss://`。
+
+nginx 站点中为 Web TUI 增加一个路径并转发到回环端口（需支持 WebSocket 升级）：
+
+```nginx
+location /tui/ {
+    proxy_pass http://127.0.0.1:8000/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400;
+}
+```
+
+重载配置后访问：
+
+```text
+https://synapse-agent.best/tui
+```

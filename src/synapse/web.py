@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Workspace directory passed to the TUI (default: current dir)",
     )
+    parser.add_argument(
+        "--public-url",
+        default=None,
+        help=(
+            "External URL (scheme://host[:port][/path]) used in the served page "
+            "for WebSocket/static links. Required when behind an nginx/TLS "
+            "reverse proxy; otherwise derived from --host/--port."
+        ),
+    )
     return parser
 
 
@@ -46,6 +55,7 @@ def main(argv: list[str] | None = None) -> None:
         build_command(args.workspace),
         host=args.host,
         port=args.port,
+        public_url=args.public_url,
     )
     server.serve()
 
