@@ -35,6 +35,16 @@ class _FakeConnection:
         self.closed = True
 
 
+class _SendFailureConnection(_FakeConnection):
+    def __init__(self, exc):
+        super().__init__([])
+        self.exc = exc
+
+    async def send(self, event):
+        self.sent.append(event)
+        raise self.exc
+
+
 class _FakeManager:
     def __init__(self, connection):
         self.connection = connection
@@ -240,6 +250,49 @@ def test_websocket_transient_error_reconnects_then_succeeds():
     assert asyncio.run(run()) == ["recovered"]
     assert responses.connect_count == 2
     assert first.closed is True
+
+
+def test_websocket_send_queue_full_reconnects_then_succeeds():
+    class WebSocketQueueFullError(RuntimeError):
+        pass
+
+    first = _SendFailureConnection(
+        WebSocketQueueFullError("send queue is full, message discarded")
+    )
+    second = _FakeConnection([[SimpleNamespace(type="response.completed")]])
+    responses = _FakeResponses([_FakeManager(first), _FakeManager(second)])
+    model = ResponsesWebSocketChatOpenAI(
+        model="gpt-test",
+        api_key="test-key",
+        max_retries=1,
+    )
+    object.__setattr__(model, "root_async_client", SimpleNamespace(responses=responses))
+
+    async def no_sleep(_delay):
+        return None
+
+    def convert(_event, *args, **kwargs):
+        current_index, current_output_index, current_sub_index = args[:3]
+        return current_index, current_output_index, current_sub_index, None
+
+    async def run():
+        with (
+            patch(
+                "synapse.integrations.llm_openai_websocket."
+                "_convert_responses_chunk_to_generation_chunk",
+                side_effect=convert,
+            ),
+            patch(
+                "synapse.integrations.llm_openai_websocket.asyncio.sleep",
+                side_effect=no_sleep,
+            ),
+        ):
+            return [chunk async for chunk in model._astream([HumanMessage("a")])]
+
+    assert asyncio.run(run()) == []
+    assert responses.connect_count == 2
+    assert first.closed is True
+    assert model._responses_ws_connection is second
 
 
 def test_websocket_retries_exhausted_falls_back_to_http_sse():

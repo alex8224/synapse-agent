@@ -18,6 +18,7 @@
 | 规划 | `write_todos` |
 | 子代理 | 默认 `researcher` / `tester` / `reviewer`（`task` 委派） |
 | 自定义工具 | 会话查阅工具；git/测试/搜索等通过 `execute` 调用项目命令 |
+| 长程目标 | `/goal <objective>` 设置跨回合持久目标，Agent 自动续跑直至完成/受阻/预算耗尽；`get_goal`/`create_goal`/`update_goal` 工具 + token/时间用量记账 |
 | 记忆 | `AGENTS.md` |
 | Skills | `skills/**`（Agent Skills frontmatter） |
 | 会话 | sqlite checkpointer + 会话元数据管理 |

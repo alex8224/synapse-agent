@@ -403,7 +403,11 @@ def test_format_model_status_and_thinking_token(tmp_path: Path):
 
 def test_session_store_crud(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions.sqlite")
+    from synapse.goals.store import GoalStore
+
+    goals = GoalStore(tmp_path / "sessions.sqlite")
     store.ensure("abc123", title="session abc123", model="openai:x")
+    goals.insert("abc123", "remove with session")
     store.touch("abc123", title_hint="Fix the bug in auth", model="openai:x")
     info = store.get("abc123")
     assert info is not None
@@ -413,6 +417,8 @@ def test_session_store_crud(tmp_path: Path):
     assert store.get("abc123").title == "Renamed session"
     store.delete("abc123")
     assert store.get("abc123") is None
+    assert goals.get("abc123") is None
+    goals.close()
 
 
 def test_session_prune_empty_and_resume_last(tmp_path: Path):

@@ -611,6 +611,9 @@ class CodingAgentApp(App[None]):
         self._mcp_reloading = False
         self._codex = CodexUsageService(settings=settings)
         self._codex_bottombar_hovered = False
+        self._current_goal: Any = None
+        self._goal_listener_bound = False
+        self._goal_listener_fn: Any = None
         self._image_bank = ImageBank()
         # 粘贴截断映射: {占位符: 完整原始文本}
         self._paste_replacements: dict[str, str] = {}
@@ -897,6 +900,8 @@ class CodingAgentApp(App[None]):
         self.append_event(label, "dim")
         self.set_activity("idle", "ready", True)
         self._bind_steer_queue()
+        self._bind_goal_listener()
+        self._load_current_goal()
         self._restore_session_transcript(announce=True)
         # Prewarm only when MCP will never attach: a prewarm sent before the
         # MCP phase would use a different tool schema than real turns, which
@@ -1622,7 +1627,7 @@ class CodingAgentApp(App[None]):
             )
 
     def _install_default_bottombar(self) -> None:
-        """Register key_hints / mode / model / mcp under the prompt."""
+        """Register key_hints / mode / model / mcp / goal under the prompt."""
         install_default_bottombar_components(
             self._bottombar,
             BottomBarContext(
@@ -1640,8 +1645,130 @@ class CodingAgentApp(App[None]):
                     getattr(self.settings, "openai_fast_mode", False)
                 )
                 and self._has_codex_oauth_profile(),
+                goal=self._goal_label,
             ),
         )
+
+    def _goal_label(self) -> str:
+        """Render the long-running goal chrome（缓存状态，绝不阻塞渲染路径）。"""
+        goal = getattr(self, "_current_goal", None)
+        if goal is None:
+            return ""
+        try:
+            from synapse.ui.bottombar.components.goal import goal_indicator_text
+
+            return goal_indicator_text(goal)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _bind_goal_listener(self) -> None:
+        """订阅 GoalService 变更以刷新 bottombar。"""
+        service = getattr(self.agent, "_coding_goal_service", None)
+        if service is None:
+            return
+        if getattr(self, "_goal_listener_bound", False):
+            return
+
+        def _on_goal_changed(thread_id: str, goal: object | None) -> None:
+            def _apply() -> None:
+                current_thread_id = self.__dict__.get("thread_id")
+                if thread_id and current_thread_id and thread_id != current_thread_id:
+                    return
+                previous = self.__dict__.get("_current_goal")
+                self.__dict__["_current_goal"] = goal
+                try:
+                    self._bottombar.refresh()
+                except Exception:  # noqa: BLE001
+                    pass
+                from synapse.goals.model import ThreadGoalStatus
+
+                # 预算耗尽且回合仍在运行：注入收尾引导，让模型停止新工作。
+                if goal is not None and self.__dict__.get("_busy", False):
+                    if goal.status == ThreadGoalStatus.BUDGET_LIMITED:
+                        from synapse.goals.steering import budget_limit_prompt
+
+                        runtime = service.runtime(thread_id)
+                        queue = (
+                            getattr(self, "_active_steer_queue", None)
+                            or self._turn_steer_queue()
+                            if runtime.mark_budget_reported(goal.goal_id)
+                            else None
+                        )
+                        if queue is not None:
+                            try:
+                                queue.push(budget_limit_prompt(goal))
+                            except Exception:  # noqa: BLE001
+                                pass
+                    elif (
+                        previous is not None
+                        and getattr(previous, "objective", None) != goal.objective
+                    ):
+                        from synapse.goals.steering import objective_updated_prompt
+
+                        queue = (
+                            getattr(self, "_active_steer_queue", None)
+                            or self._turn_steer_queue()
+                        )
+                        if queue is not None:
+                            try:
+                                queue.push(objective_updated_prompt(goal))
+                            except Exception:  # noqa: BLE001
+                                pass
+                    return
+                # 目标变为 active 且线程空闲（/goal 设置、resume 等）：立即续跑。
+                if goal is not None and goal.status == ThreadGoalStatus.ACTIVE:
+                    try:
+                        queue = self.__dict__.get("_active_steer_queue")
+                        if queue is None:
+                            queue = get_agent_steer_queue(self.__dict__.get("agent"))
+                        if queue is not None:
+                            from synapse.goals.steering import (
+                                GOAL_STEER_PREFIX,
+                                continuation_prompt,
+                            )
+
+                            if not any(
+                                str(item).strip().startswith(GOAL_STEER_PREFIX)
+                                for item in queue.peek_items()
+                            ):
+                                queue.push(
+                                    f"{GOAL_STEER_PREFIX}\n{continuation_prompt(goal)}"
+                                )
+                                schedule = getattr(self, "_schedule_followup_steer", None)
+                                if schedule is not None:
+                                    schedule(queue)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            try:
+                self.call_from_thread(_apply)
+            except RuntimeError:
+                # 已在 UI 线程（slash 处理中同步通知）：直接执行。
+                _apply()
+            except Exception:  # noqa: BLE001 - 非 Textual 线程环境同步回退
+                try:
+                    _apply()
+                except Exception:  # noqa: BLE001 - 通知不能阻断 goal 持久化
+                    pass
+
+        self._goal_listener_bound = True
+        self._goal_listener_fn = _on_goal_changed
+        service.add_listener(_on_goal_changed)
+
+    def _load_current_goal(self) -> None:
+        """启动/切会话后加载当前 thread 的 goal（用于 bottombar 与续跑）。"""
+        service = getattr(self.agent, "_coding_goal_service", None)
+        if service is None:
+            return
+        try:
+            goal = service.get(self.thread_id)
+        except Exception:  # noqa: BLE001
+            goal = None
+        self._current_goal = goal
+        try:
+            self._bottombar.refresh()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _codex_usage_label(self) -> str | Text:
         """Render cached Codex usage; never block the UI render path."""
@@ -2384,8 +2511,9 @@ class CodingAgentApp(App[None]):
 
     def _turn_steer_queue(self) -> SteerQueue | None:
         """Return the queue consumed by the active graph run."""
-        if self._busy and self._active_steer_queue is not None:
-            return self._active_steer_queue
+        active_queue = getattr(self, "_active_steer_queue", None)
+        if getattr(self, "_busy", False) and active_queue is not None:
+            return active_queue
         return get_agent_steer_queue(self.agent)
 
     def _capture_turn_context(self) -> None:
@@ -2401,7 +2529,13 @@ class CodingAgentApp(App[None]):
         self._active_steer_queue = None
 
     def _on_steer_items_changed(self, items: list[str]) -> None:
-        self._steer_items = [str(item).strip() for item in items if str(item).strip()]
+        from synapse.goals.steering import GOAL_STEER_PREFIX
+
+        self._steer_items = [
+            str(item).strip()
+            for item in items
+            if str(item).strip() and not str(item).strip().startswith(GOAL_STEER_PREFIX)
+        ]
         self._steer_last_count = len(self._steer_items)
         try:
             self.query_one("#steer-queue", SteerQueueWidget).set_items(
@@ -4387,6 +4521,7 @@ class CodingAgentApp(App[None]):
             self.action_clear_log()
             if thread_changed:
                 self._reset_session_token_chrome()
+                self._load_current_goal()
 
         # Title may change via /rename, /switch, /new, first-message bind, etc.
         self._reload_session_title()
@@ -4787,12 +4922,77 @@ class CodingAgentApp(App[None]):
             self._bind_steer_queue()
             self._note_session_recap_turn()
             return
+        # 长程目标：最终结算，并按需自动发起续跑回合。
+        self._settle_goal_turn(completed_queue)
         # Capture snapshot before steer follow-up may start another busy turn.
         self._note_session_recap_turn()
         if self._schedule_followup_steer(completed_queue):
             return
         self._clear_turn_context()
         self._bind_steer_queue()
+
+    def _settle_goal_turn(self, completed_queue: SteerQueue | None) -> None:
+        """回合结束后的 goal 结算与自动继续（长程执行核心）。
+
+        - 结算本回合 token/时间用量并刷新 bottombar；
+        - 若目标仍 active、未设置自动继续上限、用户无待处理输入，
+          向 steer 队列推送 continuation 引导，由既有 follow-up 机制
+          自动开启下一回合。
+        """
+        service = getattr(self.agent, "_coding_goal_service", None)
+        if service is None:
+            return
+        try:
+            goal = service.on_turn_end(self.thread_id)
+        except Exception:  # noqa: BLE001 - 结算失败不阻断 UI
+            goal = service.get(self.thread_id) if self.thread_id else None
+        self._current_goal = goal
+        try:
+            self._bottombar.refresh()
+        except Exception:  # noqa: BLE001
+            pass
+        if goal is None:
+            return
+        if completed_queue is not None and completed_queue.peek_count() > 0:
+            return  # 用户 steer 优先，不叠加自动续跑
+        self._maybe_continue_goal(completed_queue)
+
+    def _maybe_continue_goal(self, queue: SteerQueue | None = None) -> bool:
+        """若当前 thread 存在 active goal 且线程空闲，调度一次续跑回合。
+
+        复用 steer follow-up 机制：向 steer 队列推送 continuation 引导
+        （模型可见、不进面板），由 ``_schedule_followup_steer`` 自动开启
+        新回合。返回是否已调度。已存在未消费的 goal continuation 时
+        不重复推送。
+        """
+        if self.__dict__.get("_busy", False):
+            return False
+        settings = self.__dict__.get("settings")
+        if not bool(getattr(settings, "goal_auto_continue", True)):
+            return False
+        agent = self.__dict__.get("agent")
+        service = getattr(agent, "_coding_goal_service", None)
+        thread_id = self.__dict__.get("thread_id")
+        if service is None or not thread_id:
+            return False
+        from synapse.goals.model import ThreadGoalStatus
+        from synapse.goals.steering import GOAL_STEER_PREFIX, continuation_prompt
+
+        goal = service.get(thread_id)
+        if goal is None or goal.status != ThreadGoalStatus.ACTIVE:
+            return False
+        q = queue or self._turn_steer_queue()
+        if q is None:
+            return False
+        if any(
+            str(item).strip().startswith(GOAL_STEER_PREFIX) for item in q.peek_items()
+        ):
+            return False
+        try:
+            q.push(f"{GOAL_STEER_PREFIX}\n{continuation_prompt(goal)}")
+        except Exception:  # noqa: BLE001
+            return False
+        return self._schedule_followup_steer(q)
 
     def _note_session_recap_turn(self) -> None:
         """Remember latest turn facts for idle recap."""

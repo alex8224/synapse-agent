@@ -49,6 +49,7 @@ nav:
   - 快速开始: quickstart.md
   - CLI 命令参考: cli.md
   - 配置指南: config.md
+  - 子代理架构调研: subagent-architecture-survey.md
   - 模型配置: models.md
   - MCP Server: mcp.md
   - 会话管理: sessions.md

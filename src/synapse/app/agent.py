@@ -11,6 +11,11 @@ from typing import Any
 
 from synapse.app.agent_md import build_agent_md_middleware
 from synapse.content.prompts import build_system_prompt
+
+# 长程目标（goal）子系统：工具 + 记账 middleware + 进程级服务
+from synapse.goals.middleware import build_goal_middleware
+from synapse.goals.runtime import get_goal_service, init_goal_service
+from synapse.goals.tools import build_goal_tools
 from synapse.integrations.describe_image import VisionModelConfig
 from synapse.integrations.mcp_client import (
     get_active_mcp_pool,
@@ -326,6 +331,13 @@ def build_coding_agent(
     except Exception:  # noqa: BLE001
         pass
 
+    # 长程目标工具（get_goal / create_goal / update_goal）+ 进程级服务
+    if getattr(settings, "enable_goals", True):
+        try:
+            tools.extend(build_goal_tools())
+        except Exception:  # noqa: BLE001 - goal 工具失败不阻断 agent 构建
+            pass
+
     # -- 长期记忆 / 知识库（默认关闭，按需创建实例） --
     # 实例存储为 agent 私有属性，由 CLI/TUI 在执行前异步查询。
 
@@ -427,6 +439,12 @@ def build_coding_agent(
     )
 
     output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    goals_enabled = bool(getattr(settings, "enable_goals", True))
+    if goals_enabled:
+        try:
+            init_goal_service(settings.resolved_sessions_path())
+        except Exception:  # noqa: BLE001 - goal 服务失败时降级为禁用
+            goals_enabled = False
     middleware: list[Any] = [
         build_agent_md_middleware(project_root),
         # DeepAgents injects generic guidance for ls/glob/grep before user
@@ -439,6 +457,8 @@ def build_coding_agent(
         build_model_retry_middleware(),
         build_task_namespace_middleware(),
         build_tool_exclusion_middleware(model_request_excluded_tools),
+        # 长程目标记账：每次模型调用边界结算 token/时间用量。
+        build_goal_middleware(enabled=goals_enabled),
     ]
     transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
     try:
@@ -537,6 +557,7 @@ def build_coding_agent(
     agent._coding_model_spec = model_spec  # type: ignore[attr-defined]
     agent._coding_model_profile = selected_profile.name  # type: ignore[attr-defined]
     agent._coding_checkpointer = saver  # type: ignore[attr-defined]
+    agent._coding_goal_service = get_goal_service() if goals_enabled else None  # type: ignore[attr-defined]
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
     agent._coding_parallel_subagents = bool(_use_dag_subagents)  # type: ignore[attr-defined]
     agent._coding_subagent_mode = (  # type: ignore[attr-defined]

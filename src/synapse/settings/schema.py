@@ -178,6 +178,16 @@ class Settings(BaseSettings):
         default=False, validation_alias="AGENT_SESSION_PREWARM_ENABLED"
     )
 
+    # -- Long-running goals (移植自 Codex thread goal) --
+    # 每 thread 一个持久化目标，Agent 可跨回合自动续跑直至完成/受阻/预算耗尽。
+    # enable_goals=False 时不给 Agent 注入 goal 工具，也不做用量记账。
+    enable_goals: bool = Field(default=True, validation_alias="AGENT_ENABLE_GOALS")
+    # 回合结束后若目标仍 active，自动开启下一回合继续推进（长程执行核心）。
+    # 用户取消回合或输入新消息时不会触发。
+    goal_auto_continue: bool = Field(
+        default=True, validation_alias="AGENT_GOAL_AUTO_CONTINUE"
+    )
+
     # -- Tool-RESPONSE truncation (large-context cost control) --
     # Deterministically clips oversized ToolMessage content (execute logs,
     # read_file dumps) in messages outside a keep window, right before the

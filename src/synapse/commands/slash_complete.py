@@ -47,6 +47,15 @@ ROOT_COMMANDS: list[str] = [
     "/fast",
     "/theme",
     "/codex",
+    "/goal",
+]
+
+GOAL_SUBCOMMANDS: list[str] = [
+    "show",
+    "clear",
+    "pause",
+    "resume",
+    "edit",
 ]
 
 SESSION_SUBCOMMANDS: list[str] = [
@@ -301,6 +310,14 @@ def complete_slash(
                 return _session_complete_lines(cmd, [rest[0]], sessions, partial=" ".join(rest[1:]))
         if rest and not trailing_space:
             return _session_complete_lines(cmd, [], sessions, partial=" ".join(rest))
+        return []
+
+    # /goal <sub>
+    if cmd_cf == "/goal":
+        if not rest and trailing_space:
+            return with_prefix(GOAL_SUBCOMMANDS, [])
+        if len(rest) == 1 and not trailing_space:
+            return with_prefix(_filter_prefix(GOAL_SUBCOMMANDS, rest[0]), [])
         return []
 
     # /session <sub>

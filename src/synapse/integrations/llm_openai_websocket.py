@@ -24,6 +24,7 @@ _TRANSIENT_WEBSOCKET_ERROR_MARKERS = (
     "connection closed",
     "connection reset",
     "disconnected before completion",
+    "send queue is full",
     "stream closed before response.completed",
     "temporarily unavailable",
     "timeout",
@@ -50,7 +51,11 @@ def _is_retryable_websocket_error(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return True
     name = type(exc).__name__.casefold()
-    if "connectionclosed" in name or "websocketconnection" in name:
+    if (
+        "connectionclosed" in name
+        or "websocketconnection" in name
+        or "websocketqueuefull" in name
+    ):
         return True
     message = str(exc).casefold()
     return any(marker in message for marker in _TRANSIENT_WEBSOCKET_ERROR_MARKERS)

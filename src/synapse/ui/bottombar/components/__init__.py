@@ -19,7 +19,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.bottombar.components import codex_usage, fast, key_hints, mcp, mode, model
+from synapse.ui.bottombar.components import (
+    codex_usage,
+    fast,
+    goal,
+    key_hints,
+    mcp,
+    mode,
+    model,
+)
 from synapse.ui.bottombar.core import (
     DEFAULT_COL_GAP,
     BottomBarAlign,
@@ -37,6 +45,7 @@ ComponentInstaller = Callable[[BottomBarRegistry, "BottomBarContext"], None]
 DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     key_hints.install,
     mode.install,
+    goal.install,
     model.install,
     fast.install,
     codex_usage.install,
@@ -96,6 +105,7 @@ def install_default_components(
     codex_usage: Callable[[], str | object] | None = None,
     mcp: Callable[[], str] | None = None,
     fast_mode: Callable[[], bool] | None = None,
+    goal: Callable[[], str | object] | None = None,
     installers: list[ComponentInstaller] | None = None,
 ) -> None:
     """Install default regions + component modules.
@@ -130,6 +140,7 @@ def install_default_components(
             codex_usage=codex_usage or _empty,
             mcp=mcp or _empty,
             fast_mode=fast_mode or _off,
+            goal=goal or _empty,
         )
     else:
         ctx = _Ctx(
@@ -142,6 +153,7 @@ def install_default_components(
             codex_usage=codex_usage or ctx.codex_usage,
             mcp=mcp or ctx.mcp,
             fast_mode=fast_mode or ctx.fast_mode,
+            goal=goal or ctx.goal,
         )
 
     install_default_regions(registry)

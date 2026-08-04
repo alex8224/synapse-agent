@@ -57,6 +57,16 @@ HELP_TEXT = """## Slash Commands
 | `/export [md\\|json] [path]` | Export transcript to file |
 | `/codex import [id]` | Import Codex session (TUI) |
 
+### Goals (long-running tasks)
+| Command | Description |
+|---|---|
+| `/goal` | Show current long-running goal |
+| `/goal <objective>` | Set a new goal (auto-continues across turns) |
+| `/goal edit <objective>` | Edit the current goal |
+| `/goal pause` / `/goal resume` | Pause / resume the goal |
+| `/goal clear` | Clear the goal |
+| `gooooal` | Alias for `/goal` |
+
 ### MCP
 | Command | Description |
 |---|---|
@@ -115,6 +125,15 @@ HELP_TEXT = """## Slash Commands
 | `/subagents` | List sub-agents |
 """
 
+
+
+def _is_goal_alias(cmd: str) -> bool:
+    """识别 ``gooooal``（g + o* + al）别名。"""
+    name = cmd.casefold()
+    if not (name.startswith("/g") and name.endswith("al")):
+        return False
+    middle = name[2:-2]
+    return bool(middle and set(middle) == {"o"})
 
 
 def _store(settings: Any) -> SessionStore:
@@ -407,6 +426,11 @@ def handle_slash(
 
     if cmd == "/fast":
         return handle_fast(args, settings=settings)
+
+    if cmd == "/goal" or _is_goal_alias(cmd):
+        from synapse.commands.goal import handle_goal
+
+        return handle_goal(args, thread_id=thread_id, settings=settings)
 
     if cmd == "/theme":
         return handle_theme(args, settings=settings, project_root=root)

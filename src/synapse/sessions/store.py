@@ -443,10 +443,13 @@ class SessionStore:
         return cur.rowcount > 0
 
     def delete(self, thread_id: str) -> bool:
-        cur = self._conn.execute(
-            "DELETE FROM sessions WHERE thread_id = ?",
-            (thread_id,),
-        )
+        cur = self._conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
+        # GoalStore 使用同一个数据库，但旧数据库可能尚未创建该表。
+        goal_table = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_goals'"
+        ).fetchone()
+        if goal_table is not None:
+            self._conn.execute("DELETE FROM thread_goals WHERE thread_id = ?", (thread_id,))
         self._conn.commit()
         return cur.rowcount > 0
 

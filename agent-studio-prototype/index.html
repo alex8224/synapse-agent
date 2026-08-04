@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Synapse Agent Studio：可配置子代理与可视化工作流的交互原型。">
+  <meta name="theme-color" content="#0a1012">
+  <title>Synapse Agent Studio — Prototype</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./script.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#studio"><span class="brand-mark">S</span><span>synapse</span><small>AGENT STUDIO</small></a>
+      <nav class="main-nav" aria-label="工作区导航">
+        <button class="nav-item active" data-view="workflow"><span>◇</span>工作流</button>
+        <button class="nav-item" data-view="agents"><span>◌</span>Agent Registry</button>
+        <button class="nav-item" data-view="runs"><span>↗</span>运行记录</button>
+        <button class="nav-item" data-view="artifacts"><span>□</span>Artifacts</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="workspace-chip"><i></i>synapse / local</div><button class="theme-switch" type="button">◐ 切换主题</button></div>
+    </aside>
+
+    <main class="workspace" id="studio">
+      <header class="topbar">
+        <div><p class="breadcrumb">WORKFLOWS <span>/</span> repository-audit</p><h1 id="view-title">Repository Audit <span>v0.3</span></h1></div>
+        <div class="topbar-actions"><span class="saved-state" id="save-state"><i></i>已保存</span><button class="button ghost" id="export-button">导出 YAML</button><button class="button primary" id="run-button">▶ 运行工作流</button></div>
+      </header>
+
+      <section class="workflow-layout panel-view" data-panel="workflow">
+        <section class="canvas-panel">
+          <div class="canvas-toolbar"><div class="canvas-tabs"><button class="canvas-tab active">编排设计</button><button class="canvas-tab" data-view="runs">运行观测</button></div><div><button class="icon-button" id="add-node">＋ 节点</button><button class="icon-button" id="fit-view">⌗</button></div></div>
+          <div class="workflow-canvas" id="workflow-canvas">
+            <div class="canvas-grid"></div>
+            <svg class="edges" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" class="arrow-head"/></marker></defs><!-- input fans out to the two parallel workers --><path d="M 150 260 L 194 148" class="edge edge-active" marker-end="url(#arrow)"/><path d="M 150 260 L 194 372" class="edge edge-dashed" marker-end="url(#arrow)"/><!-- architecture is reviewed before synthesis --><path d="M 424 148 L 474 148" class="edge edge-active" marker-end="url(#arrow)"/><path d="M 704 148 C 738 148 738 258 774 258" class="edge edge-active" marker-end="url(#arrow)"/><!-- independent test evidence joins synthesis --><path d="M 424 372 C 550 372 650 330 774 294" class="edge edge-dashed" marker-end="url(#arrow)"/><!-- report reaches output --><path d="M 1004 278 L 1050 278" class="edge edge-active" marker-end="url(#arrow)"/></svg>
+            <div class="node start-node" style="--x:15px;--y:220px" data-node="input"><span class="node-port right"></span><span class="node-kind">INPUT</span><strong>审计目标</strong><small>用户请求 / 项目上下文</small></div>
+            <article class="node agent-node selected" style="--x:194px;--y:85px" data-node="architecture"><span class="node-port left"></span><span class="node-port right"></span><header><span class="node-avatar cyan">R</span><span><small>AGENT · READ ONLY</small><strong>Architecture Scan</strong></span><button class="node-menu">···</button></header><p>映射模块、边界与关键调用链</p><footer><span>gpt-5-mini</span><span>3 tools</span></footer></article>
+            <article class="node agent-node" style="--x:194px;--y:309px" data-node="tests"><span class="node-port left"></span><span class="node-port right"></span><header><span class="node-avatar violet">T</span><span><small>AGENT · EXECUTE</small><strong>Test Signal</strong></span><button class="node-menu">···</button></header><p>识别测试缺口并运行目标验证</p><footer><span>gpt-5-mini</span><span>4 tools</span></footer></article>
+            <article class="node agent-node" style="--x:474px;--y:85px" data-node="security"><span class="node-port left"></span><span class="node-port right"></span><header><span class="node-avatar orange">S</span><span><small>AGENT · READ ONLY</small><strong>Security Review</strong></span><button class="node-menu">···</button></header><p>从依赖、权限与数据流审查风险</p><footer><span>claude-sonnet</span><span>3 tools</span></footer></article>
+            <article class="node agent-node" style="--x:774px;--y:215px" data-node="synthesis"><span class="node-port left"></span><span class="node-port right"></span><header><span class="node-avatar lime">Σ</span><span><small>AGENT · SYNTHESIS</small><strong>Evidence Report</strong></span><button class="node-menu">···</button></header><p>合并 findings，附路径与风险分级</p><footer><span>gpt-5</span><span>2 tools</span></footer></article>
+            <div class="node end-node" style="--x:1050px;--y:238px" data-node="output"><span class="node-port left"></span><span class="node-kind">OUTPUT</span><strong>审计报告</strong><small>Markdown + Artifacts</small></div>
+            <div class="canvas-legend"><span><i class="legend-line active"></i>运行路径</span><span><i class="legend-line"></i>数据依赖</span><span><i class="legend-dot"></i>并行节点</span></div>
+          </div>
+          <section class="runtime-strip"><div class="runtime-head"><span class="pulse"></span><strong>最近一次运行</strong><span class="mono">run_01J8A4F7</span><span class="runtime-time" id="runtime-time">尚未运行</span><button class="link-button" id="open-run">查看详情 →</button></div><div class="run-lanes" id="run-lanes"><div class="run-lane"><span class="lane-dot idle"></span><span>Architecture Scan</span><b>等待运行</b></div><div class="run-lane"><span class="lane-dot idle"></span><span>Test Signal</span><b>等待运行</b></div><div class="run-lane"><span class="lane-dot idle"></span><span>Security Review</span><b>等待依赖</b></div><div class="run-lane"><span class="lane-dot idle"></span><span>Evidence Report</span><b>等待依赖</b></div></div></section>
+        </section>
+
+        <aside class="inspector">
+          <div class="inspector-head"><div><span class="eyebrow">NODE INSPECTOR</span><h2 id="inspector-name">Architecture Scan</h2></div><button class="close-inspector">×</button></div>
+          <div class="inspector-scroll">
+            <section class="inspector-section"><label class="field-label">Agent Profile</label><select id="agent-select" class="field-select"><option value="researcher">researcher / code explorer</option><option value="tester">tester / verification runner</option><option value="security">security-reviewer / auditor</option><option value="writer">report-writer / synthesis</option></select><p class="field-hint">从 Registry 引用。节点可覆盖默认设置。</p></section>
+            <section class="inspector-section grid-fields"><div><label class="field-label">模型</label><select id="model-select" class="field-select"><option value="gpt-5-mini">GPT-5 mini</option><option value="gpt-5">GPT-5</option><option value="claude-sonnet">Claude Sonnet</option><option value="gemini-flash">Gemini Flash</option></select></div><div><label class="field-label">超时</label><div class="input-suffix"><input id="timeout-input" type="number" min="30" value="180"><span>s</span></div></div></section>
+            <section class="inspector-section"><div class="section-row"><label class="field-label">工具权限</label><button class="link-button" id="tool-policy">编辑策略</button></div><div class="tool-chips" id="tool-chips"><button class="tool-chip enabled">read_file</button><button class="tool-chip enabled">search_files</button><button class="tool-chip enabled">find_files</button><button class="tool-chip disabled">execute</button></div><p class="field-hint">点击切换工具可见性。执行权限另由安全策略决定。</p></section>
+            <section class="inspector-section"><div class="section-row"><label class="field-label">节点提示词</label><span class="token-chip" id="prompt-count">0 chars</span></div><textarea id="prompt-input" rows="7"></textarea><p class="field-hint">变量：<code>{{input.objective}}</code>；上游：<code>{{nodes.tests.summary}}</code></p></section>
+            <section class="inspector-section"><label class="field-label">运行策略</label><div class="policy-row"><span>依赖失败时继续</span><label class="toggle"><input id="continue-toggle" type="checkbox"><i></i></label></div><div class="policy-row"><span>保留完整 trace</span><label class="toggle"><input id="trace-toggle" type="checkbox" checked><i></i></label></div></section>
+          </div><footer class="inspector-footer"><button class="button danger ghost" id="delete-node">删除节点</button><button class="button primary" id="save-node">保存节点</button></footer>
+        </aside>
+      </section>
+
+      <section class="agent-registry panel-view hidden" data-panel="agents"><div class="section-top"><div><p class="eyebrow">AGENT REGISTRY</p><h2>可配置的 Agent，不再硬编码角色</h2><p>模型、工具、提示词、预算和权限都以版本化配置管理。</p></div><button class="button primary" id="new-agent">＋ 新建 Agent</button></div><div class="agent-grid" id="agent-grid"></div></section>
+      <section class="runs-view panel-view hidden" data-panel="runs"><div class="section-top"><div><p class="eyebrow">RUN HISTORY</p><h2>统一事件流与可追溯运行</h2><p>运行状态、耗时、token、工具调用和 artifact 都归属同一个 workflow run。</p></div><button class="button ghost" id="clear-events">清空演示事件</button></div><div class="event-layout"><section class="event-log" id="event-log"></section><aside class="run-summary"><span class="eyebrow">RUN SUMMARY</span><h3 id="summary-status">尚未运行</h3><dl><div><dt>总耗时</dt><dd id="summary-time">—</dd></div><div><dt>Token</dt><dd id="summary-tokens">—</dd></div><div><dt>工具调用</dt><dd id="summary-tools">—</dd></div><div><dt>Artifacts</dt><dd id="summary-artifacts">—</dd></div></dl></aside></div></section>
+      <section class="artifacts-view panel-view hidden" data-panel="artifacts"><div class="section-top"><div><p class="eyebrow">ARTIFACT STORE</p><h2>结构化结果代替裸文本拼接</h2><p>下游节点读取摘要和证据引用，而非将完整输出直接注入 prompt。</p></div></div><div class="artifact-card"><header><span class="artifact-icon">▤</span><div><h3>architecture-findings.json</h3><p>Architecture Scan · schema: finding-set/v1</p></div><span class="artifact-tag">JSON</span></header><pre>{
+  "summary": "核心运行时由 app、runtime、ui 三层组成",
+  "findings": 4,
+  "evidence": ["src/synapse/app/agent.py:175"],
+  "confidence": 0.91
+}</pre></div></section>
+    </main>
+  </div>
+  <dialog class="modal" id="yaml-modal"><div class="modal-head"><div><span class="eyebrow">WORKFLOW DEFINITION</span><h2>repository-audit.yaml</h2></div><button class="close-modal">×</button></div><pre id="yaml-output"></pre><footer><button class="button ghost close-modal">关闭</button><button class="button primary" id="copy-yaml">复制 YAML</button></footer></dialog><div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
+
+
