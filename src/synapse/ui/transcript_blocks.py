@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from rich.console import Group
+from rich.padding import Padding
 from rich.text import Text
 from textual.events import Click
 
@@ -36,6 +37,16 @@ def _resolve_color(color: _Color | None, fallback: str, theme_attribute: str) ->
         return str(getattr(get_theme(), theme_attribute, fallback))
     except Exception:  # noqa: BLE001
         return fallback
+
+
+# Column where the "Thought for" label starts (2 spaces + mark + 2 spaces);
+# collapsed/live previews and the expanded markdown content align to it.
+_THOUGHT_TEXT_COL = 5
+
+
+def _indent_preview(text: str, width: int = _THOUGHT_TEXT_COL) -> str:
+    """Indent every preview line so it nests under the ``Thought for`` label."""
+    return "\n".join(" " * width + line for line in text.splitlines())
 
 
 class ThoughtBlock(SelectableStatic):
@@ -120,7 +131,7 @@ class ThoughtBlock(SelectableStatic):
             if self.expand_on_seal:
                 preview = stream_tail_preview(self.body)
                 if preview.strip():
-                    lines.append(Text(preview, style=dim))
+                    lines.append(Text(_indent_preview(preview), style=dim))
             lines.append(Text(""))
             self.update(Group(*lines))
             return
@@ -130,9 +141,11 @@ class ThoughtBlock(SelectableStatic):
                 preview = " ".join(self.body.split())
                 if len(preview) > 160:
                     preview = preview[:159].rstrip() + "..."
-                lines.append(Text(f"  {preview}", style=dim))
+                lines.append(Text(_indent_preview(preview), style=dim))
             else:
-                lines.append(render_markdown(self.body))
+                lines.append(
+                    Padding(render_markdown(self.body), (0, 0, 0, _THOUGHT_TEXT_COL))
+                )
         lines.append(Text(""))
         self.update(Group(*lines))
 

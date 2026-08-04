@@ -7,11 +7,13 @@ from typing import ClassVar
 
 from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
+from rich.markdown import BlockQuote as _BlockQuote
 from rich.markdown import CodeBlock as _CodeBlock
 from rich.markdown import Markdown as _Markdown
 from rich.markdown import MarkdownElement
 from rich.markdown import TableElement as _TableElement
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
@@ -270,6 +272,27 @@ class _FullTableElement(_TableElement):
         yield table
 
 
+class _QuoteLineBlockQuote(_BlockQuote):
+    """Blockquote with a slim vertical gutter instead of Rich's chunky ``▌``.
+
+    Rich draws ``▌`` (LEFT HALF BLOCK) per quote line by default; a hairline
+    ``│`` reads cleaner for expanded reasoning inside the transcript.
+    """
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        render_options = options.update(width=options.max_width - 4)
+        lines = console.render_lines(self.elements, render_options, style=self.style)
+        style = self.style
+        new_line = Segment("\n")
+        padding = Segment("│ ", style)
+        for line in lines:
+            yield padding
+            yield from line
+            yield new_line
+
+
 class _FullBorderMarkdown(_Markdown):
     """Rich Markdown with full table borders and mermaid diagram fences."""
 
@@ -278,6 +301,7 @@ class _FullBorderMarkdown(_Markdown):
         "table_open": _FullTableElement,
         "fence": _MermaidCodeBlock,
         "code_block": _MermaidCodeBlock,
+        "blockquote_open": _QuoteLineBlockQuote,
     }
 
 
