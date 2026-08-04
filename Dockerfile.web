@@ -1,0 +1,40 @@
+# Minimal image for running the Synapse Web TUI via textual-serve.
+# No Rust toolchain: every runtime dependency installs from prebuilt wheels.
+#
+# Build (installs the published wheel from PyPI):
+#   docker build -f Dockerfile.web -t synapse-web .
+#
+# Build (installs a local prebuilt wheel copied into the build context):
+#   docker build -f Dockerfile.web --build-arg SYNAPSE_MODE=local -t synapse-web .
+#
+# Run (mount a workspace for the agent and publish the web port):
+#   docker run --rm -p 8000:8000 -v "$PWD:/workspace" synapse-web
+#   # then open http://<host>:8000
+
+ARG SYNAPSE_MODE=pypi
+
+# pypi mode: install the released wheel and its dependencies from PyPI.
+FROM python:3.12-slim AS pypi
+ARG SYNAPSE_VERSION=0.1.23
+RUN pip install --no-cache-dir --disable-pip-version-check \
+    "synapse-cli-agent==${SYNAPSE_VERSION}"
+
+# local mode: install a locally built wheel from the build context (dist/).
+FROM python:3.12-slim AS local
+COPY dist/ /tmp/dist/
+RUN pip install --no-cache-dir --disable-pip-version-check /tmp/dist/*.whl
+
+FROM ${SYNAPSE_MODE} AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Run as an unprivileged user.
+RUN useradd --create-home --uid 1000 synapse
+USER synapse
+WORKDIR /workspace
+
+EXPOSE 8000
+
+ENTRYPOINT ["synapse-web"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]

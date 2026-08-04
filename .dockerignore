@@ -1,0 +1,15 @@
+.git
+.venv
+site/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+large_tool_results/
+conversation_history/
+landing/
+logs/
+*.egg-info

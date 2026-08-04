@@ -56,3 +56,4 @@ nav:
   - Skills 插件: skills.md
   - 权限与安全: permissions.md
   - 原生核心工具: native-core-tool.md
+  - Docker Web TUI: docker-web.md
