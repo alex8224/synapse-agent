@@ -40,13 +40,17 @@ class GitChangesPopover(Vertical):
         layer: overlay;
         width: auto;
         height: auto;
-        max-height: 16;
+        /* Outer box never scrolls: 1 title + 14 body + 2 border rows, so the
+           only scrollbar is #git-changes-body's. (Textual max-height includes
+           border/padding; 16 used to overflow by one row and draw a second
+           scrollbar next to the body's.) */
+        max-height: 17;
         padding: 0 1;
         border: solid $theme-border;
         background: $theme-bar;
         color: $theme-fg;
         overflow-x: hidden;
-        overflow-y: auto;
+        overflow-y: hidden;
         /* Quiet 1-cell rail: track blends into bar; thumb is muted border. */
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 0;

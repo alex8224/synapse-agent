@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
 from synapse.ui.topbar.core import TopBarRegistry
+from synapse.ui.topbar.git_changes_popover import GitChangesPopover
 from synapse.ui.topbar.git_chrome import GitChangedFile
 from synapse.ui.topbar.tool_output_popover import ToolOutputPopover
 from synapse.ui.topbar.widget import TopBar
@@ -54,6 +56,47 @@ def _sample_files() -> list[GitChangedFile]:
             source_path=None,
         )
     ]
+
+
+def _many_files(count: int = 17) -> list[GitChangedFile]:
+    return [
+        GitChangedFile(
+            path=f"src/synapse/ui/dialogs/module_{i:02d}.py",
+            status="M",
+            lines_added=3,
+            lines_deleted=1,
+            is_untracked=False,
+            source_path=None,
+        )
+        for i in range(count)
+    ]
+
+
+def test_popover_never_draws_a_second_scrollbar() -> None:
+    """Regression: the outer popover used to overflow by one row (max-height 16
+    vs 1 title + 14 body + 2 border) and drew its own scrollbar next to the
+    body's. The outer box must never scroll; the body owns the only rail."""
+
+    from textual.app import App
+
+    from synapse.ui.theme import get_theme
+
+    class HostApp(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            return {**super().get_css_variables(), **get_theme().css_variables()}
+
+    async def exercise() -> None:
+        app = HostApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            pop = GitChangesPopover(_many_files(17))
+            await app.screen.mount(pop)
+            await pilot.pause()
+            assert pop.max_scroll_y == 0, "outer popover must not scroll"
+            body = pop.query_one("#git-changes-body")
+            assert body.max_scroll_y > 0, "body must be the scrolling region"
+            assert pop.size.height <= 17
+
+    asyncio.run(exercise())
 
 
 def _make_topbar(files: list[GitChangedFile]) -> TopBar:
