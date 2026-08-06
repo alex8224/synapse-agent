@@ -49,6 +49,28 @@ def test_tui_does_not_retain_full_history_message_field() -> None:
     assert "_history_messages" not in inspect.getsource(CodingAgentApp)
 
 
+def test_transcript_migration_done_ignores_stale_session() -> None:
+    app = object.__new__(CodingAgentApp)
+    app._history_generation = 4
+    app._history_loading = True
+    app.thread_id = "current-thread"
+    app._history_tail_turns = 20
+    app._paint_restored_transcript = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("stale migration painted")
+    )
+
+    CodingAgentApp._transcript_migration_done(
+        app,
+        "old-thread",
+        3,
+        True,
+        True,
+        None,
+    )
+
+    assert app._history_loading is True
+
+
 def test_trim_mounted_history_pages_releases_widget_references() -> None:
     class Block:
         def __init__(self) -> None:

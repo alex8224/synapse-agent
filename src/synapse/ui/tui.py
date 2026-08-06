@@ -3565,12 +3565,12 @@ class CodingAgentApp(App[None]):
 
         LLM context is restored by reusing the same ``thread_id`` with the
         LangGraph checkpointer; this method only rebuilds the visual history.
-        The first open of a legacy thread builds a compact SQLite projection;
-        subsequent opens and earlier-page reads never retain full message objects.
+        The first open of a legacy thread builds a compact SQLite projection in
+        a disposable child process, so full-history allocations never raise the
+        long-lived TUI process memory high-water mark.
         """
         if self.agent is None:
             return
-        from synapse.sessions.transcript import load_thread_messages
 
         # Invalidate an in-flight page load before attempting to read the new
         # transcript.  This also covers restore failures, where the state
@@ -3578,25 +3578,68 @@ class CodingAgentApp(App[None]):
         self._history_generation += 1
         self._history_loading = False
         projection = self._transcript_projection
-        page = projection.load_tail(self.thread_id, turns=self._history_tail_turns)
         if not projection.contains_thread(self.thread_id):
-            # One-time compatibility import for sessions created before the
-            # projection existed. Full messages are released immediately.
-            try:
-                messages = load_thread_messages(
-                    agent=self.agent,
-                    settings=self.settings,
-                    thread_id=self.thread_id,
+            self._history_loading = True
+            thread_id = self.thread_id
+            generation = self._history_generation
+            if announce:
+                self.append_event("preparing legacy transcript…", "dim")
+            self._migrate_transcript_projection_bg(thread_id, generation, announce)
+            return
+
+        page = projection.load_tail(self.thread_id, turns=self._history_tail_turns)
+        self._paint_restored_transcript(page, announce=announce)
+
+    @work(thread=True, exclusive=True, group="transcript-migration")
+    def _migrate_transcript_projection_bg(
+        self,
+        thread_id: str,
+        generation: int,
+        announce: bool,
+    ) -> None:
+        """Migrate a legacy checkpoint outside the long-lived TUI process."""
+        from synapse.sessions.transcript_migration import migrate_transcript_projection
+
+        result = migrate_transcript_projection(
+            checkpoint_path=self.settings.checkpoint_path,
+            projection_path=self._transcript_projection.path,
+            thread_id=thread_id,
+        )
+        self.call_from_thread(
+            self._transcript_migration_done,
+            thread_id,
+            generation,
+            announce,
+            result.success,
+            result.error,
+        )
+
+    def _transcript_migration_done(
+        self,
+        thread_id: str,
+        generation: int,
+        announce: bool,
+        success: bool,
+        error: str | None,
+    ) -> None:
+        """Paint migrated history only if the requesting session is still active."""
+        if self._history_generation != generation or self.thread_id != thread_id:
+            return
+        self._history_loading = False
+        if not success:
+            if announce:
+                self.append_event(
+                    f"restore transcript failed: {error or 'migration failed'}",
+                    "yellow",
                 )
-                projection.replace_from_messages(self.thread_id, messages)
-                del messages
-                page = projection.load_tail(
-                    self.thread_id, turns=self._history_tail_turns
-                )
-            except Exception as exc:  # noqa: BLE001
-                if announce:
-                    self.append_event(f"restore transcript failed: {exc}", "yellow")
-                return
+            return
+        page = self._transcript_projection.load_tail(
+            thread_id, turns=self._history_tail_turns
+        )
+        self._paint_restored_transcript(page, announce=announce)
+
+    def _paint_restored_transcript(self, page: Any, *, announce: bool) -> None:
+        """Apply one compact transcript tail page on the Textual UI thread."""
 
         # Reset paging state for the current thread before painting. Never keep
         # the full LangChain message list in the TUI.
@@ -3617,7 +3660,7 @@ class CodingAgentApp(App[None]):
         self._mount_blocks(blocks)
         self._history_pages = [blocks]
 
-        usage = projection.load_usage(self.thread_id)
+        usage = self._transcript_projection.load_usage(self.thread_id)
         if usage is not None:
             self._apply_projected_usage(usage)
 
