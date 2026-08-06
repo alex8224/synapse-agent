@@ -431,22 +431,22 @@ def test_tui_maybe_continue_goal_schedules_continuation(tmp_path) -> None:
     from synapse.goals.steering import GOAL_STEER_PREFIX
     from synapse.goals.store import GoalStore
     from synapse.runtime.steer import SteerQueue
-    from synapse.ui.tui import CodingAgentApp
+    from synapse.ui.turn.controller import TurnController
 
     svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
     svc.set_goal("t1", "objective")
     queue = SteerQueue()
 
-    fake = object.__new__(CodingAgentApp)
-    fake._busy = False
-    fake.settings = SimpleNamespace(goal_auto_continue=True)
-    fake.agent = SimpleNamespace(_coding_goal_service=svc)
-    fake.thread_id = "t1"
-    fake._active_steer_queue = None
-    fake._turn_steer_queue = lambda: queue
-    fake._schedule_followup_steer = lambda q: True
+    fake = object.__new__(TurnController)
+    fake._app = SimpleNamespace(
+        _busy=False,
+        settings=SimpleNamespace(goal_auto_continue=True),
+        agent=SimpleNamespace(_coding_goal_service=svc),
+        thread_id="t1",
+        _turn_steer_queue=lambda: queue,
+    )
 
-    bound = types.MethodType(CodingAgentApp._maybe_continue_goal, fake)
+    bound = types.MethodType(TurnController.maybe_continue_goal, fake)
     assert bound() is True
     assert queue.peek_count() == 1
     assert str(queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
@@ -458,7 +458,7 @@ def test_tui_maybe_continue_goal_schedules_continuation(tmp_path) -> None:
     # 非 active 目标不续跑
     svc.pause_goal("t1")
     queue2 = SteerQueue()
-    fake._turn_steer_queue = lambda: queue2
+    fake._app._turn_steer_queue = lambda: queue2
     assert bound() is False
     assert queue2.peek_count() == 0
 

@@ -6,6 +6,7 @@ import asyncio
 import gc
 import inspect
 import weakref
+from types import SimpleNamespace
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -14,6 +15,7 @@ from textual.selection import Selection
 from textual.widgets import Static
 
 from synapse.ui.timeline import ToolItem
+from synapse.ui.transcript.history import TranscriptHistoryController
 from synapse.ui.tui import (
     AnswerBlock,
     CodingAgentApp,
@@ -29,10 +31,12 @@ from synapse.ui.tui import (
 
 def test_history_load_done_ignores_stale_generation() -> None:
     app = object.__new__(CodingAgentApp)
-    app._history_loading = True
-    app._history_generation = 2
-    app._history_thread_id = "thread-current"
-    app._history_before_turn = 20
+    history = TranscriptHistoryController(app)
+    app._history = history
+    history.state.loading = True
+    history.state.generation = 2
+    history.state.thread_id = "thread-current"
+    history.state.before_turn = 20
 
     app._history_load_done(
         None,
@@ -42,7 +46,7 @@ def test_history_load_done_ignores_stale_generation() -> None:
         "stale worker",
     )
 
-    assert app._history_loading is True
+    assert history.state.loading is True
 
 
 def test_tui_does_not_retain_full_history_message_field() -> None:
@@ -51,10 +55,12 @@ def test_tui_does_not_retain_full_history_message_field() -> None:
 
 def test_transcript_migration_done_ignores_stale_session() -> None:
     app = object.__new__(CodingAgentApp)
-    app._history_generation = 4
-    app._history_loading = True
+    history = TranscriptHistoryController(app)
+    app._history = history
+    history.state.generation = 4
+    history.state.loading = True
+    history.state.tail_turns = 20
     app.thread_id = "current-thread"
-    app._history_tail_turns = 20
     app._paint_restored_transcript = lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("stale migration painted")
     )
@@ -68,7 +74,7 @@ def test_transcript_migration_done_ignores_stale_session() -> None:
         None,
     )
 
-    assert app._history_loading is True
+    assert history.state.loading is True
 
 
 def test_trim_mounted_history_pages_releases_widget_references() -> None:
@@ -79,24 +85,32 @@ def test_trim_mounted_history_pages_releases_widget_references() -> None:
         def remove(self) -> None:
             self.removed = True
 
+    from synapse.ui.transcript.state import TranscriptState
+
+    class _FakeTranscript:
+        def __init__(self) -> None:
+            self.state = TranscriptState()
+            self._refresh_turn_rail = lambda: None
+
     app = object.__new__(CodingAgentApp)
+    history = TranscriptHistoryController(app)
+    app._history = history
     older = UserTurnBlock("older", stamp="", turn_index=1)
     newest = UserTurnBlock("newest", stamp="", turn_index=2)
     older_marker = Block()
     older.remove = older_marker.remove  # type: ignore[method-assign]
     newest_marker = Block()
     newest.remove = newest_marker.remove  # type: ignore[method-assign]
-    app._history_pages = [[older], [newest]]
-    app._history_max_pages = 1
-    app._user_turns = [older, newest]
-    app._thought_blocks = []
-    app._tool_blocks = []
-    app._refresh_turn_rail = lambda: None
+    history.state.pages = [[older], [newest]]
+    history.state.max_pages = 1
+    fake = _FakeTranscript()
+    fake.state.user_turns = [older, newest]
+    app._transcript = fake
 
     CodingAgentApp._trim_mounted_history_pages(app)
 
-    assert app._history_pages == [[older]]
-    assert app._user_turns == [older]
+    assert history.state.pages == [[older]]
+    assert fake.state.user_turns == [older]
     assert older_marker.removed is False
     assert newest_marker.removed is True
 
@@ -107,10 +121,14 @@ def test_transcript_reset_releases_old_widgets_before_reload(monkeypatch) -> Non
     class Mini(App[None]):
         def __init__(self) -> None:
             App.__init__(self)
-            self._history_generation = 0
             self._transcript_generation = 0
-            self._history_loading = False
             self._restore_calls: list[bool] = []
+            self._history = TranscriptHistoryController(self)
+            self.agent = object()
+            self._transcript = SimpleNamespace(
+                _show_welcome=lambda: None,
+                _scroll_timeline=lambda: None,
+            )
 
         def compose(self) -> ComposeResult:
             with Vertical(id="main"):
@@ -119,7 +137,7 @@ def test_transcript_reset_releases_old_widgets_before_reload(monkeypatch) -> Non
                 yield TurnRail(id="turn-rail")
 
         def _clear_transcript_state(self) -> None:
-            self._history_loading = False
+            self._history.state.loading = False
 
         @property
         def transcript_generation(self) -> int:

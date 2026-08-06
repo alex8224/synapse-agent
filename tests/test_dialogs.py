@@ -248,12 +248,13 @@ class TestCodexResetDialog:
 
 class TestMcpPanelCallbacks:
     def test_temporary_toggle_dispatches_server_toggle(self):
-        from synapse.ui.tui import CodingAgentApp
+        from synapse.ui.dialogs.controller import SlashController
 
         app = MagicMock()
-        app._apply_mcp_server_toggle = MagicMock()
-        CodingAgentApp._on_mcp_dialog_done(
-            app, ("mcp-toggle-server", "example-server")
+        fake = object.__new__(SlashController)
+        fake._app = app
+        SlashController.on_mcp_dialog_done(
+            fake, ("mcp-toggle-server", "example-server")
         )
 
         app._apply_mcp_server_toggle.assert_called_once_with("example-server")
@@ -989,14 +990,14 @@ class TestSlashRouting:
         orig = synapse.commands.slash_cmds.handle_slash
         mock_hs = MagicMock()
         synapse.commands.slash_cmds.handle_slash = mock_hs
-        app._start_context_compact = MagicMock()
+        app._slash.start_context_compact = MagicMock()
         try:
             result = app._handle_slash("/compact")
         finally:
             synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
-        app._start_context_compact.assert_called_once_with()
+        app._slash.start_context_compact.assert_called_once_with()
         mock_hs.assert_not_called()
         app.push_screen.assert_not_called()
 
@@ -1146,7 +1147,7 @@ class TestApplyOkResult:
 
     def test_schedule_reset_invalidates_old_stream_before_worker_runs(self, monkeypatch):
         app = self._make_app(monkeypatch)
-        app._history_generation = 4
+        app._history.state.generation = 4
         app._transcript_generation = 7
         app.run_worker = MagicMock()
 
@@ -1159,7 +1160,7 @@ class TestApplyOkResult:
             announce=True,
         )
 
-        assert app._history_generation == 5
+        assert app._history.state.generation == 5
         assert app._transcript_generation == 8
         app.run_worker.assert_called_once()
         call = app.run_worker.call_args

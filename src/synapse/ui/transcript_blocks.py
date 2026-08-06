@@ -10,6 +10,7 @@ from rich.console import Group
 from rich.padding import Padding
 from rich.text import Text
 from textual.events import Click
+from textual.widgets import Static
 
 from synapse.ui.formatters import stream_tail_preview
 from synapse.ui.selectable_static import SelectableStatic
@@ -227,6 +228,17 @@ class AnswerBlock(SelectableStatic):
         else:
             renderable = render_markdown(body)
         self.update(Group(renderable, Text("")))
+
+
+class _MarkdownBlock(Static):
+    """A Markdown transcript block that can rebuild after a theme switch."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        super().__init__(render_markdown(source))
+
+    def repaint_markdown(self) -> None:
+        self.update(render_markdown(self.source))
 
 
 __all__ = ["AnswerBlock", "ThoughtBlock"]

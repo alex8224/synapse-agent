@@ -89,30 +89,31 @@ def test_codex_picker_includes_rollout_only_session_and_hides_empty_thread(tmp_p
 
 def test_codex_dialog_result_starts_background_import(monkeypatch) -> None:
     app = _make_app(monkeypatch)
-    app._start_codex_import = MagicMock()
+    app._slash.start_codex_import = MagicMock()
 
     app._on_codex_import_dialog_done(("codex-import", "native-1"))
 
-    app._start_codex_import.assert_called_once_with("native-1")
+    app._slash.start_codex_import.assert_called_once_with("native-1")
 
 
 def test_codex_import_completion_switches_through_existing_session_path(monkeypatch) -> None:
     app = _make_app(monkeypatch)
+    app._slash.apply_session_switch = MagicMock()
     result = SimpleNamespace(thread_id="imported-thread", reused=False, recovered=False)
 
     app._finish_codex_import(result)
 
-    app._apply_session_switch.assert_called_once_with("imported-thread")
+    app._slash.apply_session_switch.assert_called_once_with("imported-thread")
     app.flash_status.assert_called_once()
 
 
 def test_codex_slash_routes_to_picker_and_explicit_import_worker(monkeypatch) -> None:
     app = _make_app(monkeypatch)
-    app._open_codex_import_dialog = MagicMock()
-    app._start_codex_import = MagicMock()
+    app._slash.open_codex_import_dialog = MagicMock()
+    app._slash.start_codex_import = MagicMock()
 
     assert app._handle_slash("/codex") is True
-    app._open_codex_import_dialog.assert_called_once()
+    app._slash.open_codex_import_dialog.assert_called_once()
 
     assert app._handle_slash("/codex import native-1") is True
-    app._start_codex_import.assert_called_once_with("native-1")
+    app._slash.start_codex_import.assert_called_once_with("native-1")
