@@ -165,6 +165,8 @@ def build_coding_agent(
     mcp_tools: list[Any] | None = None,
     load_mcp: bool | None = None,
     model: Any | None = None,
+    backend: Any | None = None,
+    system_prompt: str | None = None,
     model_registry: Any | None = None,
     model_cache: dict[str, Any] | None = None,
     steer_queue: SteerQueue | None = None,
@@ -182,6 +184,11 @@ def build_coding_agent(
     - automatic context summarization is built into deepagents
 
     Pass ``model=`` / ``checkpointer=`` to rebuild cheaply (e.g. attach MCP).
+    Pass ``backend=`` to run the agent against a custom backend (e.g. a
+    remote/container-backed shell for benchmark harnesses); defaults to the
+    local ``CodingLocalShellBackend``.
+    Pass ``system_prompt=`` to override the default coding prompt (used by
+    benchmark harnesses that need a neutral terminal-agent persona).
     ``prompt_cache_key`` is polled per Codex OAuth request (mirroring the
     codex-rs ``session_id``-keyed prompt cache); pass a callable returning the
     current thread/session id so cache keys stay stable within a session and
@@ -209,7 +216,7 @@ def build_coding_agent(
     if progress is not None:
         progress("preparing backend")
     with span("backend"):
-        backend = build_backend(settings)
+        backend = backend or build_backend(settings)
 
     model_cache_hit = False
     if model_cache is None:
@@ -536,12 +543,13 @@ def build_coding_agent(
     if progress is not None:
         progress("compiling agent graph")
     with span("create_deep_agent"):
+        prompt = system_prompt if system_prompt is not None else build_system_prompt(
+            root,
+            shell_executable=backend.shell_executable,
+        )
         agent = create_deep_agent(
             model=model,
-            system_prompt=build_system_prompt(
-                root,
-                shell_executable=backend.shell_executable,
-            ),
+            system_prompt=prompt,
             backend=backend,
             tools=tools,
             middleware=middleware,

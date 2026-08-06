@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import socket
+import tempfile
 import threading
+import time
 import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from synapse.observability.llm_debug import DebugCaptureStore
 
@@ -34,17 +37,22 @@ _PORT_END = 9100
 
 
 def _find_free_port(start: int = _PORT_START, end: int = _PORT_END) -> int:
-    """Find a free TCP port in [start, end); fall back to OS-assigned."""
+    """Find a bindable TCP port in [start, end); 0 (OS-assigned) if none.
+
+    Probes by actually binding instead of ``connect_ex``: a connect probe can
+    report a port as free while a later bind still fails, e.g. on Windows where
+    ports may be administratively excluded (WinError 10013).
+    """
     for port in range(start, end):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
     # Exhausted: let the OS decide
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    return 0
 
 # ---------------------------------------------------------------------------
 # JSON encoder for DebugCaptureRecord
@@ -220,6 +228,76 @@ _PAGE_HTML = (Path(__file__).with_name("debug_inspector.html")).read_text(encodi
 
 
 # ---------------------------------------------------------------------------
+# Heap dump export
+# ---------------------------------------------------------------------------
+
+_DUMP_SUBDIR = "synapse_heap_dumps"
+_MAX_DUMP_FILES = 5
+_HEAP_DUMP_FILE_RE = re.compile(r"^heap_\d+_\d+\.json$")
+
+
+def _dump_dir() -> Path:
+    """Directory where exported heap dumps are stored."""
+    path = Path(tempfile.gettempdir()) / _DUMP_SUBDIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _prune_dumps(dump_dir: Path, keep: int = _MAX_DUMP_FILES) -> None:
+    """Delete oldest dump files, keeping only the most recent ``keep``."""
+    files = sorted(
+        dump_dir.glob("heap_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old in files[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _write_heap_dump() -> dict[str, Any]:
+    """Snapshot the in-process heap to a JSON file and return export metadata.
+
+    Uses :func:`synapse.observability.heap_dump.collect_heap_stats`, which walks
+    ``gc.get_objects()`` and aggregates sizes by type. The full snapshot is
+    written to ``<tempdir>/synapse_heap_dumps/heap_<pid>_<ts>.json``; only a
+    bounded summary is returned over the wire.
+    """
+    from synapse.observability.heap_dump import collect_heap_stats
+
+    stats = collect_heap_stats()
+    filename = f"heap_{stats['pid']}_{int(time.time())}.json"
+    dump_dir = _dump_dir()
+    target = dump_dir / filename
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(stats, fh, ensure_ascii=False)
+    _prune_dumps(dump_dir)
+    container_bytes = stats["container_bytes"]
+    return {
+        "file": filename,
+        "size_bytes": target.stat().st_size,
+        "collected_at": time.time(),
+        "pid": stats["pid"],
+        "python": stats["python"],
+        "gc_objects": stats["gc_objects"],
+        "gc_garbage": stats["gc_garbage"],
+        "process_memory": stats.get("process_memory", {}),
+        # Approximate Python-managed bytes: tracked objects + reachable scalars.
+        "python_approx_bytes": (
+            sum(entry[2] for entry in stats["top_types"])
+            + container_bytes["str"][1]
+            + container_bytes["bytes"][1]
+            + container_bytes["bytearray"][1]
+        ),
+        "top_types": stats["top_types"][:15],
+        "container_bytes": container_bytes,
+        "download_url": f"/api/heap-dump/download?file={filename}",
+    }
+
+
+# ---------------------------------------------------------------------------
 # HTTP Request Handler
 # ---------------------------------------------------------------------------
 
@@ -308,6 +386,24 @@ class _DebugHandler(BaseHTTPRequestHandler):
                 self._json(detail)
             return
 
+        if path == "/api/heap-dump/download":
+            names = parse_qs(parsed.query).get("file", [])
+            if len(names) != 1 or not _HEAP_DUMP_FILE_RE.match(names[0]):
+                self._text("Bad Request", 400)
+                return
+            target = _dump_dir() / names[0]
+            if not target.is_file():
+                self._text("Not Found", 404)
+                return
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", f'attachment; filename="{names[0]}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         self._text("Not Found", 404)
 
     def do_POST(self) -> None:
@@ -330,6 +426,10 @@ class _DebugHandler(BaseHTTPRequestHandler):
                 return
             store.clear()
             self._json({"enabled": store.enabled, "record_count": store.record_count})
+            return
+
+        if path == "/api/heap-dump":
+            self._json(_write_heap_dump())
             return
 
         self._text("Not Found", 404)
@@ -368,7 +468,7 @@ class DebugHttpServer:
         self._store = store
         self._host = host
         self._port: int = 0  # assigned on start()
-        self._httpd: HTTPServer | None = None
+        self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     @property
@@ -384,7 +484,14 @@ class DebugHttpServer:
 
         self._port = _find_free_port()
         _DebugHandler.store = self._store
-        self._httpd = HTTPServer((self._host, self._port), _DebugHandler)
+        try:
+            self._httpd = ThreadingHTTPServer((self._host, self._port), _DebugHandler)
+        except OSError:
+            # Preferred port raced away or is administratively blocked
+            # (e.g. Windows port exclusions); let the OS assign one.
+            self._httpd = ThreadingHTTPServer((self._host, 0), _DebugHandler)
+        # Read the actually bound port (differs from the preference when 0).
+        self._port = self._httpd.server_address[1]
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="debug-http-server",

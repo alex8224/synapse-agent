@@ -14,8 +14,12 @@ from synapse.sessions.store import SessionStore, format_session_table
 from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
+    extract_last_ai_text,
+    print_banner,
     print_error,
+    print_final,
     print_info,
+    stream_agent,
 )
 
 app = typer.Typer(
@@ -425,6 +429,173 @@ def tui_cmd(
         thread_id=thread_id,
         debug=debug,
     )
+
+
+# ---------------------------------------------------------------------------
+# One-shot run command (headless, for scripts / evals)
+# ---------------------------------------------------------------------------
+
+
+def _print_tokens_from_state(state: dict) -> None:
+    """Print token usage summary from agent final state."""
+    from synapse.ui.stream_events import _extract_usage
+
+    messages = state.get("messages") if isinstance(state, dict) else []
+    if not messages:
+        return
+    seen: set[str] = set()
+    total_in = 0
+    total_out = 0
+    for msg in messages:
+        msg_id = getattr(msg, "id", None) or id(msg)
+        key = f"usage:{msg_id}"
+        if key in seen:
+            continue
+        usage = _extract_usage(msg)
+        if usage["input_tokens"] or usage["output_tokens"]:
+            seen.add(key)
+            total_in += usage["input_tokens"]
+            total_out += usage["output_tokens"]
+    if total_in or total_out:
+        total = total_in + total_out
+        print_info(f"tokens: {total} (in={total_in} out={total_out})")
+
+
+def _run_once(
+    agent,
+    payload: dict | Any,
+    config: dict,
+    *,
+    use_stream: bool = True,
+    token_stream: bool = True,
+    max_concurrency: int = 8,
+    sink=None,
+) -> tuple[str, bool, Any]:
+    """Execute one turn.
+
+    Returns:
+        (answer_text, already_displayed, stream_result_or_none)
+    """
+    if use_stream:
+        streamed = stream_agent(
+            agent,
+            payload,
+            config,
+            token_stream=token_stream,
+            prefer_async=True,
+            max_concurrency=max_concurrency,
+            sink=sink,
+        )
+        if streamed.final_text:
+            return streamed.final_text, streamed.streamed_answer, streamed
+        if streamed.state.get("messages"):
+            return extract_last_ai_text(streamed.state), False, streamed
+        if streamed.interrupted:
+            return "", True, streamed
+        print_info("stream empty, falling back to invoke...")
+    else:
+        print_info("running...")
+
+    # Model clients are async-only (see b788b62); use ainvoke instead of invoke.
+    invoked = asyncio.run(agent.ainvoke(payload, config=config))
+    state = invoked if isinstance(invoked, dict) else {"messages": invoked}
+    _print_tokens_from_state(state)
+    return (
+        extract_last_ai_text(state),
+        False,
+        None,
+    )
+
+
+@app.command("run")
+def run_cmd(
+    task: str = typer.Argument(..., help="Task for the coding agent"),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Model profile alias or provider:model"
+    ),
+    require_approval: bool = typer.Option(
+        False,
+        "--require-approval/--no-require-approval",
+        help="Enable HITL approval (default: disabled, auto-pass)",
+    ),
+    readonly: bool = typer.Option(
+        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
+    ),
+    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
+    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+    stream: bool = typer.Option(
+        True, "--stream/--no-stream", help="Stream intermediate updates"
+    ),
+) -> None:
+    """Run a single coding task headless and exit."""
+    env_path = _bootstrap_env()
+    settings = _resolve_settings(
+        workspace=workspace,
+        model=model,
+        require_approval=require_approval,
+        debug=debug,
+        readonly=readonly,
+    )
+    print_banner(str(settings.workspace), settings.model, settings.require_approval)
+    if env_path is not None:
+        print_info(f"loaded env: {env_path}")
+    print_info(
+        f"auth: key={settings.mask_openai_key()} "
+        f"base_url={settings.openai_base_url!r} model={settings.model!r}"
+    )
+
+    try:
+        from synapse.app.agent import build_coding_agent, default_thread_id
+
+        agent = build_coding_agent(
+            settings,
+            project_root=Path.cwd(),
+            load_mcp=bool(settings.enable_mcp),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print_error(f"failed to build agent: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    tid = thread_id or default_thread_id()
+    store = _session_store(settings)
+    store.touch(tid, title_hint=task, model=settings.model)
+    config = {
+        "configurable": {"thread_id": tid},
+        "max_concurrency": settings.max_concurrency,
+    }
+    payload = {"messages": [{"role": "user", "content": task}]}
+    print_info(f"thread_id={tid}")
+    print_info(
+        f"stream: token={settings.token_stream} "
+        f"parallel_tools={settings.parallel_tool_calls} "
+        f"max_concurrency={settings.max_concurrency}"
+    )
+
+    try:
+        answer, already, streamed = _run_once(
+            agent,
+            payload,
+            config,
+            use_stream=stream,
+            token_stream=settings.token_stream,
+            max_concurrency=settings.max_concurrency,
+        )
+        if streamed is not None and getattr(streamed, "interrupted", False):
+            print_error(
+                "task paused for approval; run without --require-approval "
+                f"or resume later with thread_id={tid}"
+            )
+            raise typer.Exit(code=2)
+        if not already:
+            print_final(answer)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _print_auth_error(settings, exc)
+        raise typer.Exit(code=1) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1327,12 @@ def main() -> None:
 
         ensure_started()
         mark("cli:main")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from synapse.observability.heap_dump import start_heap_dump_watchdog
+
+        start_heap_dump_watchdog()
     except Exception:  # noqa: BLE001
         pass
     app()

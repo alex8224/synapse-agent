@@ -64,9 +64,7 @@ def build_goal_middleware(enabled: bool = True):
     usage 并结算）；goal 未启用时是纯 no-op。
     """
     if not enabled:
-        return type("goal_middleware_disabled", (AgentMiddleware,), {})(
-            state_schema=AgentState
-        )
+        return _DisabledGoalMiddleware()
 
     def _before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:  # noqa: ARG001
         service = get_goal_service()
@@ -120,3 +118,16 @@ def build_goal_middleware(enabled: bool = True):
             "awrap_model_call": _awrap_model_call,
         },
     )()
+
+
+class _DisabledGoalMiddleware(AgentMiddleware):
+    """No-op middleware used when goals are disabled.
+
+    A plain subclass keeps ``state_schema`` set (``AgentMiddleware`` declares it
+    as a class attribute, so instances do not need an explicit ``__init__``).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_schema = AgentState
+
