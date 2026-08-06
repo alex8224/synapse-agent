@@ -92,7 +92,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_ENABLE_GOALS` | `true` | 启用长程目标：给 Agent 注入 `get_goal`/`create_goal`/`update_goal` 工具并统计目标 token/时间用量。关闭后不做记账、不注入工具 |
 | `AGENT_GOAL_AUTO_CONTINUE` | `true` | 回合结束后若目标仍为 active，自动开启下一回合继续推进（长程执行核心；用户取消回合或输入新消息时不触发） |
 
-用法：`/goal <objective>` 设置目标（`/goal` 查看摘要，`/goal pause|resume|clear|edit` 管理，`gooooal` 为别名）。目标跨回合持久化；预算耗尽自动置为 budget-limited 并停止自动续跑。
+用法：`/goal <objective>` 设置目标（`/goal` 查看摘要，`/goal pause|resume|clear|edit` 管理，`gooooal` 为别名）。目标跨回合持久化；预算耗尽自动置为 budget-limited 并停止自动续跑。运行中按 Esc 会中止当前回合并把 active 目标置为 paused，可用 `/goal resume` 恢复。
 
 ### 子代理
 

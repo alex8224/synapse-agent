@@ -3257,8 +3257,32 @@ class CodingAgentApp(App[None]):
             self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
             return
         self._cancel_event.set()
+        # 对齐 Codex：interrupt 时把当前 thread 的 active goal 置为 paused。
+        # 否则 goal 保持 ACTIVE，自动续跑会在取消后的任意时机重新拉起回合，
+        # 用户无法真正停住 loop；置为 paused 后可经 /goal resume 恢复。
+        self._pause_goal_for_interrupt()
         self.set_activity("idle", "cancelling…", True)
         self.append_event("正在终止当前任务… (Esc)", "yellow")
+
+    def _pause_goal_for_interrupt(self) -> None:
+        """ESC 打断回合时暂停当前 active goal（对齐 Codex ``pause_active_goal_for_interrupt``）。
+
+        仅在 goal 为 active 时置为 paused：已完成/受阻/受限的目标保持原状态，
+        避免把终态误改回 paused。
+        """
+        service = getattr(self.agent, "_coding_goal_service", None)
+        thread_id = self.thread_id
+        if service is None or not thread_id:
+            return
+        try:
+            from synapse.goals.model import ThreadGoalStatus
+
+            goal = service.get(thread_id)
+            if goal is None or goal.status != ThreadGoalStatus.ACTIVE:
+                return
+            service.pause_goal(thread_id)
+        except Exception:  # noqa: BLE001 - 取消路径不因 goal 操作失败而阻塞
+            pass
 
     def on_key(self, event: Key) -> None:
         # When a modal dialog is open, let it handle keys exclusively.
@@ -4565,6 +4589,9 @@ class CodingAgentApp(App[None]):
             self.thread_id = thread_id
             self._reset_session_token_chrome()
             self._reload_tool_output_stats()
+            # 与 _handle_slash 路径对齐：切换会话后必须刷新 goal 状态，
+            # 否则 _current_goal 残留上一会话的 goal，bottombar 会误显示。
+            self._load_current_goal()
         clear_log = thread_changed or bool(getattr(ok, "clear_log", False))
         reload_transcript = bool(getattr(ok, "reload_transcript", False))
         if clear_log:
@@ -5189,6 +5216,16 @@ class CodingAgentApp(App[None]):
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
         if getattr(self, "_skip_steer_followup", False):
             self._skip_steer_followup = False
+            # Esc supersedes guidance already queued for this run, including an
+            # auto-goal continuation whose call_after_refresh callback may still
+            # be pending. Keeping it would either restart work later or prevent
+            # /goal resume from enqueueing a fresh continuation.
+            if completed_queue is not None:
+                completed_queue.clear()
+            # ESC 取消确认后消费取消事件：若残留 set，后续 /goal resume 等
+            # 触发的 followup 续跑会被 _start_followup_steer 的取消检查拦截，
+            # 导致 pause 的 goal 无法恢复。
+            self._cancel_event = threading.Event()
             self._clear_turn_context()
             self._bind_steer_queue()
             self._note_session_recap_turn()
@@ -5424,16 +5461,27 @@ class CodingAgentApp(App[None]):
     def _schedule_followup_steer(self, queue: SteerQueue | None) -> bool:
         if queue is None or queue.peek_count() <= 0:
             return False
+        # Bind the cancellation token to this scheduled callback. ``_turn_done``
+        # may replace ``self._cancel_event`` before Textual runs call_after_refresh;
+        # consulting the replacement would let an Esc-cancelled stale callback
+        # start another turn.
+        scheduled_cancel_event = self._cancel_event
         self._busy = True
         self._sync_prompt_placeholder()
-        if self.call_after_refresh(self._start_followup_steer, queue):
+        if self.call_after_refresh(
+            self._start_followup_steer, queue, scheduled_cancel_event
+        ):
             return True
         self._busy = False
         self._sync_prompt_placeholder()
         return False
 
-    def _start_followup_steer(self, queue: SteerQueue) -> None:
-        if self._cancel_event.is_set():
+    def _start_followup_steer(
+        self,
+        queue: SteerQueue,
+        scheduled_cancel_event: threading.Event,
+    ) -> None:
+        if scheduled_cancel_event.is_set():
             self._skip_steer_followup = True
             self._turn_done()
             return

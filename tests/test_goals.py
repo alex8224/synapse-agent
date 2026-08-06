@@ -567,3 +567,213 @@ def test_goal_end_to_end_with_real_agent(tmp_path) -> None:
         assert not rt.turn_active()
     finally:
         reset_goal_service()
+
+
+# ---------------------------------------------------------------------------
+# TUI：ESC interrupt 暂停 active goal / 切换会话刷新 goal 状态（对齐 Codex）
+# ---------------------------------------------------------------------------
+def test_esc_interrupt_pauses_active_goal(tmp_path) -> None:
+    """ESC 取消回合时，当前 thread 的 active goal 被置为 paused。
+
+    对齐 Codex ``pause_active_goal_for_interrupt``：goal 保持 ACTIVE 会让
+    自动续跑在取消后重新拉起回合，置为 paused 才能真正停住 loop。
+    """
+    import types
+    from types import SimpleNamespace
+
+    from synapse.ui.tui import CodingAgentApp
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+
+    fake = object.__new__(CodingAgentApp)
+    fake.agent = SimpleNamespace(_coding_goal_service=svc)
+    fake.thread_id = "t1"
+
+    fake._pause_goal_for_interrupt = types.MethodType(
+        CodingAgentApp._pause_goal_for_interrupt, fake
+    )
+    fake._pause_goal_for_interrupt()
+
+    goal = svc.get("t1")
+    assert goal is not None
+    assert goal.status == ThreadGoalStatus.PAUSED
+
+
+def test_esc_interrupt_keeps_terminal_goal_status(tmp_path) -> None:
+    """ESC 取消不会把已完成/受阻/受限的 goal 误改回 paused。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.ui.tui import CodingAgentApp
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+    svc.mark_status("t1", ThreadGoalStatus.COMPLETE)
+
+    fake = object.__new__(CodingAgentApp)
+    fake.agent = SimpleNamespace(_coding_goal_service=svc)
+    fake.thread_id = "t1"
+
+    fake._pause_goal_for_interrupt = types.MethodType(
+        CodingAgentApp._pause_goal_for_interrupt, fake
+    )
+    fake._pause_goal_for_interrupt()
+
+    goal = svc.get("t1")
+    assert goal is not None
+    assert goal.status == ThreadGoalStatus.COMPLETE
+
+
+def test_apply_ok_result_reloads_goal_after_thread_switch(tmp_path) -> None:
+    """sessions dialog 切换会话后，bottombar goal 状态必须刷新（对齐 Codex）。"""
+    import types
+
+    from synapse.commands.result import SlashResult
+    from synapse.ui.tui import CodingAgentApp
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+    calls: list[str] = []
+
+    fake = object.__new__(CodingAgentApp)
+    fake.thread_id = "t1"
+    fake._current_goal = svc.get("t1")
+    fake._bottombar = types.SimpleNamespace(refresh=lambda: None)
+    fake.agent = types.SimpleNamespace(_coding_goal_service=svc)
+    fake._load_current_goal = types.MethodType(CodingAgentApp._load_current_goal, fake)
+    fake._apply_ok_result = types.MethodType(CodingAgentApp._apply_ok_result, fake)
+    # 其余 UI 方法依赖 Textual 运行时（size/reactive），替换为记录调用，
+    # 聚焦验证 thread 切换后 goal 状态刷新这一核心逻辑。
+    fake._reset_session_token_chrome = lambda: calls.append("reset_chrome")
+    fake._reload_tool_output_stats = lambda: calls.append("reload_stats")
+    fake._schedule_transcript_reset = lambda **kwargs: calls.append("reset_transcript")
+    fake._emit_system_lines = lambda *args, **kwargs: calls.append("emit_lines")
+    fake._reload_session_title = lambda: calls.append("reload_title")
+    fake._refresh_topbar = lambda: calls.append("refresh_topbar")
+    fake._refresh_codex_usage = lambda **kwargs: calls.append("refresh_codex")
+
+    fake._apply_ok_result(SlashResult(thread_id="t2", clear_log=True))
+
+    assert fake.thread_id == "t2"
+    # 空会话没有 goal：_current_goal 被清除，bottombar 隐藏 goal 状态。
+    assert fake._current_goal is None
+    assert "reset_chrome" in calls
+    assert "reload_stats" in calls
+
+
+def test_turn_done_cancel_consumes_cancel_event(tmp_path) -> None:
+    """ESC 取消确认后应重置 event 并丢弃本轮尚未执行的 followup。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    queue = SteerQueue()
+    queue.push("stale followup")
+    fake = object.__new__(CodingAgentApp)
+    fake._skip_steer_followup = True
+    fake._cancel_event = threading.Event()
+    fake._cancel_event.set()
+    fake._busy = True
+    fake._active_steer_queue = queue
+    fake.agent = SimpleNamespace()
+    fake._sync_prompt_placeholder = lambda: None
+    fake._on_steer_items_changed = lambda *args, **kwargs: None
+    fake._commit_live_tools_to_log = lambda: None
+    fake.clear_stream = lambda: None
+    fake.set_activity = lambda *args, **kwargs: None
+    fake._refresh_git_chrome = lambda: None
+    fake._clear_subagent_status = lambda: None
+    fake.query_one = lambda *args, **kwargs: SimpleNamespace(focus=lambda: None)
+    fake._clear_turn_context = lambda: None
+    fake._bind_steer_queue = lambda: None
+    fake._note_session_recap_turn = lambda: None
+
+    fake._turn_done = types.MethodType(CodingAgentApp._turn_done, fake)
+    fake._turn_done()
+
+    assert fake._skip_steer_followup is False
+    assert not fake._cancel_event.is_set()
+    assert queue.peek_count() == 0
+
+
+def test_scheduled_followup_keeps_cancel_event_from_scheduling_time() -> None:
+    """ESC 后即使当前 cancel event 被重置，已排队的 followup 也不能启动。
+
+    ``call_after_refresh`` 延迟执行回调；取消完成路径会为后续新回合创建新的
+    event。回调必须检查调度时的旧 event，否则会漏掉已经发生的 ESC。
+    """
+    import types
+
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    queue = SteerQueue()
+    queue.push("pending followup")
+    scheduled: list[tuple[object, tuple[object, ...]]] = []
+    calls: list[str] = []
+
+    fake = object.__new__(CodingAgentApp)
+    fake._busy = False
+    fake._cancel_event = threading.Event()
+    fake._skip_steer_followup = False
+    fake._sync_prompt_placeholder = lambda: None
+    fake.call_after_refresh = lambda callback, *args: scheduled.append(
+        (callback, args)
+    ) or True
+    fake._turn_done = lambda: calls.append("turn_done")
+    fake._maybe_followup_steer = lambda _queue: calls.append("followup_started")
+    fake._schedule_followup_steer = types.MethodType(
+        CodingAgentApp._schedule_followup_steer, fake
+    )
+    fake._start_followup_steer = types.MethodType(
+        CodingAgentApp._start_followup_steer, fake
+    )
+
+    cancelled_turn_event = fake._cancel_event
+    assert fake._schedule_followup_steer(queue) is True
+    cancelled_turn_event.set()  # ESC arrives before call_after_refresh runs
+    fake._cancel_event = threading.Event()  # _turn_done prepares future turns
+
+    callback, args = scheduled.pop()
+    callback(*args)
+
+    assert calls == ["turn_done"]
+    assert fake._skip_steer_followup is True
+
+
+def test_goal_resume_after_esc_pause_schedules_continuation(tmp_path) -> None:
+    """ESC 暂停的 goal 经 resume 后恢复 ACTIVE，续跑可再次调度。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.goals.runtime import GoalService
+    from synapse.goals.steering import GOAL_STEER_PREFIX
+    from synapse.goals.store import GoalStore
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+    svc.pause_goal("t1")  # 模拟 ESC interrupt 置为 paused
+
+    queue = SteerQueue()
+    fake = object.__new__(CodingAgentApp)
+    fake._busy = False
+    fake.settings = SimpleNamespace(goal_auto_continue=True)
+    fake.agent = SimpleNamespace(_coding_goal_service=svc)
+    fake.thread_id = "t1"
+    fake._active_steer_queue = None
+    fake._turn_steer_queue = lambda: queue
+    fake._schedule_followup_steer = lambda q: True
+
+    goal, error = svc.resume_goal("t1")
+    assert goal is not None and error is None
+    assert goal.status == ThreadGoalStatus.ACTIVE
+
+    bound = types.MethodType(CodingAgentApp._maybe_continue_goal, fake)
+    assert bound() is True
+    assert queue.peek_count() == 1
+    assert str(queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
