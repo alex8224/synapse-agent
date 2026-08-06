@@ -1,460 +1,153 @@
-# Synapse
+<p align="center">
+  <img src="assets/synapse-logo.svg" alt="Synapse" width="96">
+</p>
 
-基于 **LangChain Deep Agents** 的本地 Synapse。
+<h1 align="center">Synapse</h1>
 
-本项目以 [Apache License 2.0](LICENSE) 发布。第三方依赖和 Rust 子组件可能使用各自的许可证；分发时请同时保留相应的许可证与 NOTICE 文件。
+<p align="center">
+  The open-source coding agent that lives in your terminal — built on <strong>LangChain Deep Agents</strong>. Ask it to fix a test, refactor a module, or carry a goal across turns until it is done.
+</p>
 
-- Harness: `deepagents.create_deep_agent`
-- Backend: `LocalShellBackend`（**无 sandbox**）
-- 默认审批: **关闭 / 自动通过**
-- 依赖管理: `uv`
+<p align="center">
+  <a href="https://pypi.org/project/synapse-cli-agent/"><img src="https://img.shields.io/pypi/v/synapse-cli-agent?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI" alt="PyPI version"></a>
+  <a href="https://github.com/alex8224/synapse-agent"><img src="https://img.shields.io/badge/GitHub-synapse--agent-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-3da639?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0"></a>
+</p>
 
-## 功能
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="docs/">Docs</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-| 能力 | 说明 |
-|---|---|
-| 读改代码 | `read/write/edit/glob`；目录和搜索通过 `execute` 调用项目命令 |
-| 执行命令 | `execute` 本地 shell |
-| 规划 | `write_todos` |
-| 子代理 | 默认 `researcher` / `tester` / `reviewer`（`task` 委派） |
-| 自定义工具 | 会话查阅工具；git/测试/搜索等通过 `execute` 调用项目命令 |
-| 长程目标 | `/goal <objective>` 设置跨回合持久目标，Agent 自动续跑直至完成/受阻/预算耗尽；`get_goal`/`create_goal`/`update_goal` 工具 + token/时间用量记账 |
-| 记忆 | `AGENTS.md` |
-| Skills | `skills/**`（Agent Skills frontmatter） |
-| 会话 | sqlite checkpointer + 会话元数据管理 |
-| 全局项目目录 | 用户层 `~/.synapse/catalog.sqlite` 投影所有项目的会话元数据与运行记录，支持跨项目查看/搜索（`synapse projects ...`） |
-| 多模型 | `ModelRegistry`（单模型兼容 / JSON 多 profile） |
-| MCP | 配置 MCP Server 后注入为 tools |
-| 权限/只读 | `FilesystemPermission` + `HarnessProfile.excluded_tools` |
-| CLI | `run` / `chat` / `tui` / `sessions` / `projects` / `models` / `mcp` / `version` |
-| 可选 HITL | `--require-approval`（默认关） |
+![Synapse TUI](assets/tui-preview.png)
 
-## 安装
+Synapse is a terminal-first coding-agent runtime. Unlike a one-shot "run this and reply" prompt, it is designed for sessions that last more than a few turns: a responsive TUI that keeps the timeline, tool calls, and context usage visible; token-aware handling of tool output; and persistent goals that keep the agent working until the work is actually done.
 
-### 前置要求
+## Install
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)（会自动安装和管理所需的 Python >= 3.12）
+One command, no clone required:
 
-### 方法一：从 PyPI 安装为系统 CLI 工具（推荐）
-
-无需克隆仓库或预装 Python：
-
-```powershell
+```bash
 uv tool install synapse-cli-agent
 ```
 
-开发者如需从本地源码可编辑安装：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Force
-# 或：uv tool install --editable --force .
-```
-
-安装后任意目录直接使用：
+Then start the TUI from anywhere:
 
 ```bash
 synapse tui -w .
-synapse run "查看当前仓库结构并总结" -w .
 ```
 
-仓库根目录还提供 `synapse.cmd` 薄启动器（优先 PATH 上的入口，其次 `.venv\Scripts`，最后回退 `uv run`）。
-
-### 方法二：本地 venv 开发
+<details>
+<summary><b>Or run from source</b></summary>
 
 ```bash
-# 同步依赖
+git clone https://github.com/alex8224/synapse-agent.git
+cd synapse-agent
 uv sync
 
-# 使用 venv 入口（Windows）
+# Windows venv entry
 .\.venv\Scripts\synapse.exe tui -w .
 
-# 或模块入口
+# Or module entry
 uv run python -m synapse tui -w .
-
-# 兼容旧写法
-uv run synapse chat -w .
 ```
 
-### 卸载
+</details>
 
-```powershell
-uv tool uninstall synapse-cli-agent
-# 或
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Uninstall
-```
+## Use it
 
-## 快速开始
+Type it like you would ask a colleague:
 
-安装并配置完成后，即可运行：
+- "Fix the failing test in `tests/test_backends.py`"
+- "Refactor this module and add type annotations"
+- "Review the latest commit and suggest improvements"
+- "Keep working on this goal until it is done" (via `/goal`)
 
-```bash
-# TUI 交互界面（推荐）
-synapse tui -w .
+Three ways to talk to it:
 
-# 单次执行
-synapse run "总结当前项目结构" -w .
+| Mode | What it does |
+| --- | --- |
+| **TUI** | Full terminal UI: timeline, turn rail, tool groups, context usage, themes |
+| **Chat** | Plain interactive REPL — `synapse chat -w .` |
+| **Run** | One-shot task that prints the answer — `synapse run "summarize this repo" -w .` |
 
-# CLI 对话
-synapse chat -w .
-```
+## Why it is built for long sessions
 
-### 会话管理
+- **Long-running goals** — `/goal <objective>` survives turn boundaries, tracks tokens and elapsed time, and steers the next turn automatically until the goal is completed, paused, blocked, or budget-limited.
+- **Token-aware tool output** — search results, logs, diffs, JSON, and code are classified and compressed before they re-enter the model context; large originals stay recoverable through references.
+- **Managed long context** — automatic summarization and `/compact` keep sessions inside the model window, with occupancy and savings visible in the TUI.
+- **Direct Codex OAuth** — sign in with the Codex-compatible browser flow or import an existing Codex grant. No API key required; tokens refresh automatically.
+- **Your model, your choice** — OpenAI-compatible providers via `models.json` profiles (OpenAI, DeepSeek, local gateways, and more), including a persistent WebSocket mode.
+- **MCP built in** — attach MCP servers and their tools appear in the agent automatically.
+- **Sessions that resume** — SQLite checkpoints, a global project catalog across all your projects, and a lightweight paged transcript so even huge sessions reopen fast.
+- **Memory and skills** — `AGENTS.md` memory plus Agent Skills (`skills/**`) that load only when relevant.
+- **Sub-agents** — built-in `researcher`, `tester`, and `reviewer` roles for parallel delegation.
+- **Approvals when you want them** — optional human-in-the-loop (`--require-approval`) and safety profiles.
 
-```bash
-synapse sessions list
-synapse sessions export <thread_id> -f md
-# 默认写入 .coding-agent/exports/<thread_id>.md；打印到终端加 --stdout
-```
+## Slash commands
 
-### 模型与 MCP 管理
+Type `/help` in the TUI for the full reference. The essentials:
 
-```bash
-synapse models list
-synapse mcp list
-```
+| Command | What it does |
+| --- | --- |
+| `/goal <objective>` | Set a long-running goal that auto-continues across turns |
+| `/goal pause` · `/goal resume` · `/goal clear` | Manage the active goal |
+| `/new` · `/switch <id>` · `/sessions` | Create, switch, and list sessions |
+| `/export [md\|json]` | Export the transcript to a file |
+| `/model <provider:model>` | Switch models at runtime |
+| `/fast [on\|off\|status]` | Toggle the Codex Fast tier (OAuth profiles) |
+| `/mcp list` · `/mcp reload` | Manage MCP servers |
+| `/theme <name>` | Switch UI themes |
+| `/compact` | Force context compaction |
+| `/context` | Show context usage stats |
+| `/safety <profile>` | Switch safety profiles |
+| `/approve` · `/reject` | Human-in-the-loop decisions |
 
-## 配置
+## Pick a model
 
-Synapse 采用**分层配置**策略：用户全局配置（`~/.synapse/`）与项目本地配置（`<workspace>/.synapse/`）合并，项目层覆盖用户层。
-
-```
-~/.synapse/              # 用户全局层（优先级低）
-  models.json            # 模型 profiles + api_key（推荐方式）
-  mcp.json               # MCP Server 定义
-  settings.json          # 非敏感 Settings 覆盖
-  themes.json            # 自定义 UI 主题
-
-<workspace>/.synapse/    # 项目层（优先级高，覆盖用户层）
-  models.json
-  mcp.json
-  settings.json
-  themes.json
-  system_prompt.md       # 自定义系统提示
-  sessions.sqlite
-  checkpoints.sqlite
-```
-
-### 方式一：环境变量（.env 快速入门）
-
-从模板创建，填入密钥即可：
-
-```bash
-cp .env.example .env
-```
-
-核心变量：
-
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `MODEL` | 是 | 模型标识，如 `openai:gpt-4.1`、`openai:deepseek-chat` |
-| `OPENAI_API_KEY` | 是* | OpenAI 兼容 API 密钥 |
-| `OPENAI_BASE_URL` | 否 | 自定义 API 端点（中转/本地服务需填） |
-| `OPENAI_WEBSOCKET` | 否 | 普通 Responses API 使用 WebSocket；默认 `false`（HTTP/SSE）。瞬时断流按模型 `max_retries` 重连，耗尽后在尚未输出内容时回退 HTTP/SSE |
-| `ANTHROPIC_API_KEY` | 否 | Anthropic 原生 API 密钥 |
-| `WORKSPACE` | 否 | 工作区路径，默认 `.` |
-| `SHELL_EXECUTABLE` | 否 | Shell 类型，默认 `pwsh`（可选 `cmd`/`bash`） |
-| `SHELL_TIMEOUT` | 否 | 命令超时秒数，默认 120 |
-| `TOKEN_STREAM` | 否 | token 级流式输出，默认 `true` |
-| `PARALLEL_TOOL_CALLS` | 否 | 并发工具调用，默认 `true` |
-
-完整变量列表见 `.env.example`。
-
-### OpenAI Codex OAuth（ChatGPT Plus/Pro）
-
-除普通 API Key 外，Synapse 可使用 Codex 的 ChatGPT OAuth 登录。凭据仅保存到用户目录
-`~/.synapse/openai_oauth.json`，不会写入项目配置或显示在终端中。
-
-```bash
-# 浏览器登录；也可加 --no-browser 手动打开终端打印的链接
-synapse auth openai login
-
-# 若本机已通过 Codex CLI 登录，安全导入其现有登录态
-synapse auth openai login --import-codex
-
-synapse auth openai status
-synapse auth openai logout
-```
-
-然后在 `~/.synapse/models.json` 或 `<workspace>/.synapse/models.json` 配置模型：
+Synapse works with any OpenAI-compatible endpoint. Configure profiles in `~/.synapse/models.json` (or `<workspace>/.synapse/models.json`):
 
 ```json
 {
-  "default": "codex",
+  "default": "deepseek",
   "models": {
-    "codex": {
-      "model": "openai:gpt-5",
-      "auth": "openai_oauth"
-    }
-  }
-}
-```
-
-OAuth profile 强制使用 Codex backend，不能通过 `base_url` 覆盖。该登录方式不能用于第三方
-OpenAI 兼容网关，也不需要设置 `OPENAI_API_KEY`。浏览器授权回调固定使用
-`http://localhost:1455/auth/callback`；若端口被占用，请关闭占用进程后重试。Synapse 会自动将
-Agent 的 OpenAI `system` 消息转换为 Codex backend 接受的 `developer` 消息，并移除 DeepSeek
-兼容的 `extra_body.thinking` 字段，只发送 Codex 支持的 reasoning 参数，并强制设置 `store: false`。
-
-#### Codex Fast 档（service_tier=priority）
-
-设置 `OPENAI_FAST_MODE=true` 或运行 `/fast on` 可对 Codex OAuth profile 启用 Fast 档：
-每条 Responses 请求注入 `service_tier=priority`（优先处理，费用更高）。运行时可用
-`/fast`、`/fast on`、`/fast off`、`/fast status` 切换，无需重建模型；开启后底栏模型
-思考级别旁显示黄色 `FAST` 徽标。仅对 `auth=openai_oauth` 模型生效，第三方网关不受影响。
-
-### 方式二：models.json（多模型 profiles，推荐）
-
-在 `~/.synapse/` 或 `<workspace>/.synapse/` 下创建 `models.json`。支持多 profile、自定义模型参数（temperature、max_tokens、thinking 等）。
-
-参考示例：`examples/models.example.json`
-
-```json
-{
-  "default": "primary",
-  "models": {
-    "primary": {
-      "model": "openai:gpt-4.1",
-      "api_key": "sk-REPLACE_ME",
-      "websocket": false,
-      "context_window": 128000,
-      "temperature": 0.2,
-      "max_tokens": 8192
-    },
     "deepseek": {
       "model": "openai:deepseek-v4-pro",
-      "api_key": "sk-REPLACE_ME",
+      "api_key": "sk-...",
       "base_url": "http://127.0.0.1:3000/v1",
-      "context_window": 128000,
-      "thinking": "high",
-      "temperature": 0.2
+      "thinking": "high"
     }
   }
 }
 ```
 
-OpenAI Responses API 同时支持 HTTP/SSE 与普通 LLM WebSocket。profile 中设置
-`"websocket": true` 后，Synapse 使用持久 `/v1/responses` WebSocket；省略或设为
-`false` 时保持现有 HTTP/SSE。自定义 OpenAI-compatible 网关必须实现该 WebSocket
-端点，否则请保持关闭。WebSocket 模式会自动启用 `use_responses_api`。
+For a zero-config Codex experience, use the OAuth profile — see [Models](docs/models.md).
 
-通过 `AGENT_ACTIVE_MODEL` 环境变量或 CLI 参数切换 profile。
+## Documentation
 
-#### 非多模态模型的图片识别
+| | |
+| --- | --- |
+| [Quickstart](docs/quickstart.md) | First run, CLI reference, common workflows |
+| [Configuration](docs/config.md) | Layered settings, environment variables, paths |
+| [Models](docs/models.md) | Provider profiles, OAuth, Fast tier, WebSocket mode |
+| [MCP](docs/mcp.md) | Attaching and managing MCP servers |
+| [Sessions](docs/sessions.md) | Checkpoints, resume, transcript paging |
+| [Skills](docs/skills.md) | Bundled skills and the Agent Skills format |
+| [Permissions](docs/permissions.md) | Read-only mode and approval flows |
+| [Install](docs/install.md) | All installation methods |
 
-主模型与识图模型独立配置。主模型 profile 不写 `image_input` 时，Synapse 会按常见模型名推断；未知的 OpenAI-compatible 模型默认按纯文本模型处理。需要覆盖推断时，在 profile 中写 `"image_input": true/false`。
+## Repository layout
 
-识图模型放在同一层 `models.json` 顶层的 `vision_model` 配置中（也支持 `settings.json`），可以自由更换任意兼容 OpenAI Chat Completions 图片输入的服务：
-
-```json
-{
-  "vision_model": {
-    "model": "qwen-vl-max",
-    "base_url": "https://your-vision-gateway.example/v1",
-    "api_key_env": "VISION_API_KEY",
-    "timeout_secs": 45,
-    "max_input_bytes": 10485760,
-    "max_retries": 2,
-    "fallback_model": "qwen-vl-plus",
-    "allow_remote_urls": false,
-    "think": true,
-    "prompt": "Describe the image for a text-only coding assistant. Extract visible text and errors."
-  }
-}
+```
+src/synapse/    Agent assembly, commands, runtime, sessions, TUI, integrations
+rust/           Optional native compression cores (PyO3)
+docs/           User documentation
+tests/          Python test suite
+scripts/        Install / release helpers
 ```
 
-`vision_model.model`、`base_url`、`api_key_env` 均可更换；`api_key` 也支持，但建议使用环境变量。`think` 是识图模型独立的思考开关，开启后发送 `thinking: {"type": "enabled"}`；它不影响主模型。默认只处理本地/内存图片；将 `allow_remote_urls` 设为 `true` 才会把消息中的 HTTP(S) 图片 URL 转发给识图服务。该服务只用于把图片转换成文字，配置后图片内容会发送到指定服务。主模型 profile 显式配置 `image_input=false` 时，Synapse 还会自动注入 `describe_image` 工具，让 Agent 主动读取并识别工作区内的图片；未配置 `vision_model` 时工具会明确返回不可用。多模态主模型会跳过 middleware，且不会注入该工具。
+## License
 
-### MCP 服务器配置
-
-在 `~/.synapse/` 或 `<workspace>/.synapse/` 下创建 `mcp.json`。
-
-参考示例：`examples/mcp.example.json`
-
-```json
-{
-  "servers": [
-    {
-      "name": "filesystem",
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "enabled": false
-    },
-    {
-      "name": "anysearch",
-      "transport": "streamable_http",
-      "url": "https://api.anysearch.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${ANYSEARCH_API_KEY}"
-      },
-      "enabled": false,
-      "tool_prefix": "anysearch__"
-    }
-  ]
-}
-```
-
-配置后通过 `synapse mcp list` 查看状态，可在 TUI 中动态启用/禁用。
-
-### Settings 覆盖
-
-在 `~/.synapse/settings.json` 或 `<workspace>/.synapse/settings.json` 中写入非敏感配置，与 `.env` 环境变量作用相同但优先级更高（项目层 > 用户层 > 环境变量）。
-
-## 使用技巧
-
-### TUI 快捷键
-
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl+T` | 折叠/展开最近工具组 |
-| `Ctrl+E` | 展开/收起最近 Thought 摘要 |
-| `Ctrl+L` | 清空 transcript |
-| `Alt+C` | 复制当前划选（无选区时复制最近答案） |
-| `Ctrl+Shift+Y` | 复制最近一条助手答案 |
-| `Ctrl+C` / `Ctrl+Q` | 退出 |
-
-文本选择：transcript 中答案/Thought/工具组/用户条支持鼠标拖选（有高亮），划选后用 `Alt+C` 复制。
-
-### 斜杠命令（chat / TUI）
-
-- `/help` `/thread` `/new` `/sessions` `/session ...` `/switch <id>`
-- `/rename` `/export [md\|json] [path]`
-- `/model` `/model <alias>`
-- `/mcp list|tools|test|reload|enable|disable|config`
-- `/clear` `/exit`
-
-补全：TUI 输入 `/` 后有 ghost 建议（`Tab`/`→` 接受，`Shift+Tab` 上一项，`Ctrl+Space` 列出候选）；chat 模式下 `Tab` 补全。
-
-### MCP transports
-
-| transport | 用途 | 关键字段 |
-|-----------|------|----------|
-| `stdio` | 本地 MCP 进程 | `command` / `args` / `env` |
-| `sse` | 远程 SSE | `url` / `headers` |
-| `streamable_http` / `http` | 远程 Streamable HTTP | `url` / `headers` |
-
-连接在后台事件循环中保持复用；`/mcp reload` 重建 agent 与连接池。
-
-### models.json 字段说明
-
-| 字段 | 含义 |
-|---|---|
-| `api_key` | **推荐**：密钥直接写在 models.json |
-| `api_key_env` | 旧方式：从环境变量读密钥 |
-| `auth` | 认证方式；设为 `openai_oauth` 时使用 `synapse auth openai login` 保存的 Codex OAuth 登录态 |
-| `headers` | 模型级 HTTP 请求头对象；同名头覆盖顶层 `headers`，适用于自定义 `User-Agent` 等请求指纹 |
-| `thinking` / `thinking_level` / `reasoning_effort` | 思考级别：`off\|minimal\|low\|medium\|high\|max` |
-| `enable_thinking` | 兼容旧字段 bool |
-| `temperature` / `max_tokens` / `timeout` 等 | 直接传给 ChatModel |
-| `stream_chunk_timeout` | 流式相邻 chunk 静默超时（秒）；默认关闭，避免长思考被 langchain-openai 120s 掐断 |
-| `model_kwargs` | 请求体 kwargs |
-| `extra_body` | 厂商扩展体（与 thinking 合并） |
-
-### 自定义请求头与请求指纹
-
-参考 `cmd-agent` 的配置方式，`models.json` 顶层 `headers` 会应用到全部 OpenAI 兼容模型；
-模型内 `headers` 按 HTTP 头名称（不区分大小写）覆盖全局值。分层配置的优先级为：
-项目模型 > 用户模型 > 项目全局 > 用户全局。可用于设置 `User-Agent`、客户端标识等请求指纹。
-
-```json
-{
-  "headers": {
-    "User-Agent": "synapse-global/1.0",
-    "X-Client-Channel": "desktop"
-  },
-  "models": {
-    "codex": {
-      "model": "openai:gpt-5",
-      "auth": "openai_oauth",
-      "headers": {
-        "User-Agent": "synapse-codex/1.0"
-      }
-    }
-  }
-}
-```
-
-OAuth 模式中 `ChatGPT-Account-Id`、`originator` 等协议认证头由运行时强制设置，不能被配置覆盖。
-请求头值支持 `${ENV_NAME}` / `$ENV_NAME` 环境变量展开；不要将私密 token 写入项目级配置。
-
-`.env` 仍可读，仅作迁移/CI 兼容，**不推荐**作为常规分发方式。
-
-## 示例：修复 sample_repo
-
-`tests/fixtures/sample_repo` 中 `sub()` 有意写错，可用于验证 agent 闭环：
-
-```bash
-# 先确认测试失败
-uv run pytest tests/fixtures/sample_repo -q
-
-# 让 agent 修复（需要有效模型密钥）
-uv run synapse run "修复 calculator.sub 的 bug，使 tests 全部通过" -w tests/fixtures/sample_repo
-```
-
-## 环境变量参考
-
-关键 Agent 行为变量：
-
-| 变量 | 默认 | 含义 |
-|---|---|---|
-| `MODEL` | `openai:gpt-4.1` | `provider:model` 或 profile 名 |
-| `AGENT_MODELS_CONFIG` | - | 多模型 JSON 路径 |
-| `AGENT_ACTIVE_MODEL` | - | 当前 profile 别名 |
-| `WORKSPACE` | `.` | 工作区 |
-| `AGENT_REQUIRE_APPROVAL` | `false` | 是否启用 HITL |
-| `AGENT_ENABLE_SUBAGENTS` | `true` | 默认子代理 |
-| `AGENT_READONLY` | `false` | 排除写/执行工具 |
-| `AGENT_ENABLE_FS_PERMISSIONS` | `false` | 文件系统权限规则 |
-| `AGENT_ENABLE_MCP` | `true` | 启用 MCP 注入 |
-| `AGENT_MCP_EAGER` | `false` | 启动时立刻连 MCP（默认延迟到 TUI 后台二阶段） |
-| `AGENT_TUI_DEFER_AGENT` | `true` | TUI 先起 UI，后台 build agent |
-| `AGENT_MCP_CONFIG` | - | MCP servers JSON |
-| `CHECKPOINT_BACKEND` | `sqlite` | `sqlite` 或 `memory` |
-| `AGENT_SESSION_PREWARM_ENABLED` | `false` | 恢复大上下文会话后在后台预热 provider 缓存（首次请求仍按输入 token 计费；详见 `docs/config.md`） |
-| `AGENT_ENABLE_TOOL_RESPONSE_TRUNCATE` | `false` | 启用工具响应折叠（keep 窗口外的大工具输出压成摘要+引用，大上下文会话可省 20-30%；详见 `docs/config.md`） |
-| `INHERIT_ENV` | `true` | shell 继承主机环境 |
-| `VIRTUAL_MODE` | `true` | 文件路径虚拟根 |
-| `AGENT_SHOW_REASONING_PLACEHOLDERS` | `true` | 是否显示网关未暴露推理文本时的占位思考节点；Codex 加密推理可设为 `false` 隐藏 |
-
-## 安全说明
-
-- **不使用 sandbox**：命令在宿主机执行。
-- 默认**不审批**；仅建议在受信开发机使用。
-- 可用 `--require-approval` 临时打开 HITL。
-- `safety.py` 提供危险命令黑名单（警告/检测用）；默认不拦截 agent 内置 `execute`。
-- `--readonly` / `AGENT_READONLY=true` 通过 harness 排除 `execute/write_file/edit_file`。
-
-## 开发
-
-```bash
-uv run pytest
-uv run ruff check src tests
-```
-
-## 项目结构
-
-```text
-src/synapse/
-  agent.py           # create_deep_agent 装配
-  backends.py        # LocalShellBackend
-  cli.py             # typer CLI
-  config.py          # pydantic-settings
-  models_registry.py # 多模型目录
-  mcp_client.py      # MCP → tools
-  sessions.py        # 会话元数据
-  subagents.py       # 默认子代理
-  harness.py         # excluded_tools
-  fs_permissions.py  # FilesystemPermission
-  prompts.py
-  safety.py
-  tools/             # session tools
-  ui/                # stream + TUI
-docs/design.md
-skills/              # agent skills
-examples/            # models/mcp 配置样例
-AGENTS.md
-```
-
-## 设计文档
-
-更完整的架构与分期说明见 [`docs/design.md`](docs/design.md)。
+Apache License 2.0 — see [LICENSE](LICENSE). Third-party dependencies and Rust subcomponents may carry their own licenses; retain the corresponding license and NOTICE files when distributing.
