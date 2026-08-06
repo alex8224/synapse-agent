@@ -91,6 +91,7 @@ from synapse.ui.selectable_static import (
 )
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.stream import extract_last_ai_text, render_markdown, stream_agent
+from synapse.ui.textual_lifecycle import clear_textual_style_cache_refs
 from synapse.ui.textual_stream_sink import TextualStreamSink
 from synapse.ui.timeline import TODO_MARK_ACTIVE as _TODO_MARK_ACTIVE
 from synapse.ui.timeline import TODO_MARK_DONE as _TODO_MARK_DONE
@@ -686,6 +687,8 @@ class CodingAgentApp(App[None]):
         self._history_loading = False
         self._history_thread_id = ""
         self._history_generation = 0
+        # Invalidates callbacks queued by a stream sink from an older session.
+        self._transcript_generation = 0
         self._session_recap = SessionRecapController(
             enabled=bool(getattr(settings, "session_recap_enabled", True)),
             idle_seconds=float(
@@ -779,6 +782,22 @@ class CodingAgentApp(App[None]):
                 ),
             )
             yield Static("", id="bottombar")
+
+    @property
+    def transcript_generation(self) -> int:
+        """Generation used to reject callbacks from an older session stream."""
+        return self._transcript_generation
+
+    def _call_for_transcript(
+        self,
+        generation: int,
+        callback: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Run a UI callback only while its originating transcript is current."""
+        if generation == self._transcript_generation:
+            self.call_from_thread(callback, *args, **kwargs)
 
     def on_unmount(self) -> None:
         clear_metrics_notifier()
@@ -3190,11 +3209,13 @@ class CodingAgentApp(App[None]):
             event.stop()
             event.prevent_default()
 
-    def action_clear_log(self) -> None:
-        self.query_one("#log", VerticalScroll).remove_children()
-        self.clear_stream()
+    def _clear_transcript_state(self) -> None:
+        """Release all Python-side references to the current transcript."""
         self._last_thought_body = ""
+        self._last_thought_elapsed = 0.0
+        self._thought_expanded = False
         self._last_tool_items.clear()
+        self._last_tool_summary = ""
         self._last_answer_text = ""
         self._live_tool_items.clear()
         self._live_tool_summary = ""
@@ -3205,19 +3226,81 @@ class CodingAgentApp(App[None]):
         self._live_stream_kind = None
         self._user_turns.clear()
         self._in_tool_rail = False
+        self._pending_answer_divider = False
+        self._image_bank.clear()
+        self._paste_replacements.clear()
+        self._subagent_monitor.reset()
+        self._subagent_monitor_auto_opened = False
+        self._subagent_status_text = ""
         # Drop paginated-history state together with the DOM.
         self._history_messages = None
         self._history_start_idx = 0
         self._history_has_more = False
         self._history_loading = False
         self._history_thread_id = ""
-        self._history_generation += 1
         self._session_recap.reset()
-        try:
-            self.query_one("#turn-rail", TurnRail).clear_turns()
-        except Exception:  # noqa: BLE001
-            pass
-        self._show_welcome()
+
+    async def _reset_transcript_async(
+        self,
+        *,
+        reload_transcript: bool = False,
+        announce: bool = False,
+        generation: int | None = None,
+    ) -> None:
+        """Unmount the old session completely before painting another one."""
+        if generation is None:
+            self._history_generation += 1
+            self._transcript_generation += 1
+            generation = self._transcript_generation
+        elif generation != self._transcript_generation:
+            return
+        self._history_loading = False
+
+        log = self.query_one("#log", VerticalScroll)
+        rail = self.query_one("#turn-rail", TurnRail)
+        await log.remove_children()
+        rail.clear_turns()
+
+        # A newer switch may supersede this worker while it waits for Textual
+        # message pumps to close. Never restore the superseded session.
+        if generation != self._transcript_generation:
+            return
+
+        self._clear_transcript_state()
+        clear_textual_style_cache_refs()
+        # Detached nodes may still be referenced by the screen compositor's
+        # latest WidgetPlacement set until a full layout invalidation runs.
+        self.refresh(layout=True)
+
+        if reload_transcript:
+            self._restore_session_transcript(announce=announce)
+        else:
+            self._show_welcome()
+
+    def _schedule_transcript_reset(
+        self,
+        *,
+        reload_transcript: bool = False,
+        announce: bool = False,
+    ) -> None:
+        """Serialize transcript replacement in one exclusive Textual worker."""
+        # Invalidate old stream callbacks synchronously; waiting until the worker
+        # starts leaves a race where a queued callback can enter the new session.
+        self._history_generation += 1
+        self._transcript_generation += 1
+        generation = self._transcript_generation
+        self.run_worker(
+            self._reset_transcript_async(
+                reload_transcript=reload_transcript,
+                announce=announce,
+                generation=generation,
+            ),
+            exclusive=True,
+            group="session-transcript",
+        )
+
+    def action_clear_log(self) -> None:
+        self._schedule_transcript_reset()
 
     def action_open_selectable_view(self) -> None:
         """Open a full-conversation plain-text view for mouse selection & copy."""
@@ -4342,17 +4425,22 @@ class CodingAgentApp(App[None]):
             self.agent = agent
             self._bind_steer_queue()
         thread_id = getattr(ok, "thread_id", None)
-        if thread_id is not None and thread_id != self.thread_id:
+        thread_changed = thread_id is not None and thread_id != self.thread_id
+        if thread_changed:
             self.thread_id = thread_id
-            self.action_clear_log()
             self._reset_session_token_chrome()
             self._reload_tool_output_stats()
-        if getattr(ok, "clear_log", False):
-            self.action_clear_log()
+        clear_log = thread_changed or bool(getattr(ok, "clear_log", False))
+        reload_transcript = bool(getattr(ok, "reload_transcript", False))
+        if clear_log:
+            self._schedule_transcript_reset(
+                reload_transcript=reload_transcript,
+                announce=reload_transcript,
+            )
         if agent is not None or getattr(ok, "settings_changed", False):
             self.sub_title = model_status_label(self.settings)
             self._render_status()
-        if getattr(ok, "reload_transcript", False):
+        if reload_transcript and not clear_log:
             self._restore_session_transcript(announce=True)
         theme_name = getattr(ok, "theme_name", None)
         if theme_name:
@@ -4531,8 +4619,13 @@ class CodingAgentApp(App[None]):
             self.thread_id = result.thread_id
             thread_changed = True
 
-        if result.clear_log or thread_changed:
-            self.action_clear_log()
+        clear_log = bool(result.clear_log or thread_changed)
+        reload_transcript = bool(getattr(result, "reload_transcript", False))
+        if clear_log:
+            self._schedule_transcript_reset(
+                reload_transcript=reload_transcript,
+                announce=reload_transcript,
+            )
             if thread_changed:
                 self._reset_session_token_chrome()
                 self._load_current_goal()
@@ -4546,7 +4639,7 @@ class CodingAgentApp(App[None]):
 
         # Restore visual history after switch/new. LLM context follows thread_id
         # via checkpointer; this only rebuilds the transcript chrome.
-        if getattr(result, "reload_transcript", False):
+        if reload_transcript and not clear_log:
             self._restore_session_transcript(announce=True)
             self._refresh_topbar()
 
@@ -4715,6 +4808,7 @@ class CodingAgentApp(App[None]):
             return
 
         self._begin_turn_usage()
+        transcript_generation = self._transcript_generation
         sink = TextualStreamSink(self)
         config = {
             "configurable": {
@@ -4748,7 +4842,8 @@ class CodingAgentApp(App[None]):
             )
             if getattr(result, "cancelled", False):
                 self._skip_steer_followup = True
-                self.call_from_thread(
+                self._call_for_transcript(
+                    transcript_generation,
                     self.append_event,
                     "已终止（上下文已保留）。可继续输入。",
                     "yellow",
@@ -4763,7 +4858,8 @@ class CodingAgentApp(App[None]):
                 or getattr(result, "last_input_tokens", 0)
             ):
                 # Idempotent with live note_usage: baseline + turn totals.
-                self.call_from_thread(
+                self._call_for_transcript(
+                    transcript_generation,
                     self.apply_turn_usage,
                     turn_input=int(result.input_tokens or 0),
                     turn_output=int(result.output_tokens or 0),
@@ -4782,7 +4878,8 @@ class CodingAgentApp(App[None]):
                 )
 
             if getattr(result, "compact_events", 0):
-                self.call_from_thread(
+                self._call_for_transcript(
+                    transcript_generation,
                     self.append_event,
                     f"context compacted ×{result.compact_events}",
                     "dim",
@@ -4791,23 +4888,37 @@ class CodingAgentApp(App[None]):
             if not result.streamed_answer:
                 answer = result.final_text or extract_last_ai_text(result.state)
                 if answer:
-                    self.call_from_thread(self.commit_answer, answer)
+                    self._call_for_transcript(
+                        transcript_generation, self.commit_answer, answer
+                    )
                 elif getattr(result, "interrupted", False):
-                    self.call_from_thread(
+                    self._call_for_transcript(
+                        transcript_generation,
                         self.append_event,
                         "HITL: use /approve or /reject",
                         "yellow",
                     )
                 else:
-                    self.call_from_thread(self.append_event, "(empty response)", "dim")
+                    self._call_for_transcript(
+                        transcript_generation,
+                        self.append_event,
+                        "(empty response)",
+                        "dim",
+                    )
             elif getattr(result, "interrupted", False):
-                self.call_from_thread(
+                self._call_for_transcript(
+                    transcript_generation,
                     self.append_event,
                     "HITL: use /approve or /reject",
                     "yellow",
                 )
         except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(self.append_event, f"ERROR: {exc}", "bold red")
+            self._call_for_transcript(
+                transcript_generation,
+                self.append_event,
+                f"ERROR: {exc}",
+                "bold red",
+            )
         finally:
             self.call_from_thread(self._turn_done)
 

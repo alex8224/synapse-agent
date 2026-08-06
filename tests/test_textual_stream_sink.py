@@ -10,6 +10,7 @@ from synapse.ui.textual_stream_sink import TextualStreamSink
 class _Host:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.transcript_generation = 0
 
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
         return callback(*args, **kwargs)
@@ -55,3 +56,14 @@ def test_reasoning_after_answer_tokens_seals_preview_before_switch() -> None:
     names = [name for name, _, _ in host.calls]
     assert names.index("commit_answer") < names.index("commit_thought")
     assert "commit_thought" in names
+
+
+def test_sink_drops_callbacks_after_transcript_generation_changes() -> None:
+    host = _Host()
+    sink = TextualStreamSink(host)
+
+    host.transcript_generation += 1
+    sink.write_answer_complete("stale answer", msg_id="stale")
+    sink.activity_stop()
+
+    assert host.calls == []

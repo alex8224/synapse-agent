@@ -27,22 +27,11 @@ from synapse.ui.git_explore import (
     load_file_diff,
     make_diff_view,
 )
+from synapse.ui.textual_lifecycle import clear_textual_style_cache_refs
 from synapse.ui.topbar.git_chrome import (
     GitChangedFile,
     probe_git_changed_files,
 )
-
-
-def _clear_textual_style_cache_refs() -> None:
-    """Release detached widgets retained by Textual's instance-keyed style LRU."""
-    try:
-        from textual._styles_cache import StylesCache
-
-        cache_clear = getattr(StylesCache.get_inner_outer, "cache_clear", None)
-        if callable(cache_clear):
-            cache_clear()
-    except Exception:  # noqa: BLE001
-        pass
 
 
 class ExploreFileRow(Static):
@@ -408,7 +397,7 @@ class GitExploreScreen(ModalScreen[None]):
         for widget in self._closing_diff_widgets:
             self._clear_diff_view_caches(widget)
         self._closing_diff_widgets.clear()
-        _clear_textual_style_cache_refs()
+        clear_textual_style_cache_refs()
         try:
             asyncio.get_running_loop().call_soon(gc.collect)
         except RuntimeError:
@@ -428,7 +417,7 @@ class GitExploreScreen(ModalScreen[None]):
             return
         panel = self.query_one("#ge-file-list", VerticalScroll)
         await panel.remove_children()
-        _clear_textual_style_cache_refs()
+        clear_textual_style_cache_refs()
         if not self._alive():
             return
         if not self._files:
@@ -472,7 +461,7 @@ class GitExploreScreen(ModalScreen[None]):
         # Once the old tree is detached, release its DiffView data and LRU keys.
         for child in outgoing:
             self._clear_diff_view_caches(child)
-        _clear_textual_style_cache_refs()
+        clear_textual_style_cache_refs()
 
         if not self._alive():
             for widget in widgets:

@@ -231,7 +231,10 @@ def build_coding_agent(
                     model_name=model_name,
                     progress=progress,
                 )
-            if len(model_cache) >= 8:
+            # Session switches may restore different model profiles. Keep only a
+            # small working set so model clients and their HTTP pools do not grow
+            # with every profile visited in a long-lived TUI process.
+            if len(model_cache) >= 4:
                 evicted = model_cache.pop(next(iter(model_cache)))
                 try:
                     from synapse.integrations.http_clients import close_model_async_http_client

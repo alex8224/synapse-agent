@@ -15,6 +15,9 @@ class TextualStreamHost(Protocol):
 
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any: ...
 
+    @property
+    def transcript_generation(self) -> int: ...
+
 
 _WS_RE = re.compile(r"\s+")
 _STREAM_INTERVAL_SMALL = 0.12
@@ -30,6 +33,7 @@ class TextualStreamSink:
 
     def __init__(self, app: TextualStreamHost) -> None:
         self._app = app
+        self._generation = int(getattr(app, "transcript_generation", 0))
         self.streamed_answer = False
         self.streamed_reasoning = False
         self.answer_buf: list[str] = []
@@ -64,6 +68,8 @@ class TextualStreamSink:
         self._legacy_failed = 0
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> None:
+        if int(getattr(self._app, "transcript_generation", 0)) != self._generation:
+            return
         fn = getattr(self._app, method)
         try:
             self._app.call_from_thread(fn, *args, **kwargs)

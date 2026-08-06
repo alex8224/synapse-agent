@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
+import weakref
+
+from textual.app import App, ComposeResult
+from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Offset
 from textual.selection import Selection
+from textual.widgets import Static
 
 from synapse.ui.timeline import ToolItem
 from synapse.ui.tui import (
@@ -36,6 +43,62 @@ def test_history_load_done_ignores_stale_generation() -> None:
     )
 
     assert app._history_loading is True
+
+
+def test_transcript_reset_releases_old_widgets_before_reload(monkeypatch) -> None:
+    from synapse.ui.turn_rail_widgets import TurnRail
+
+    class Mini(App[None]):
+        def __init__(self) -> None:
+            App.__init__(self)
+            self._history_generation = 0
+            self._transcript_generation = 0
+            self._history_loading = False
+            self._restore_calls: list[bool] = []
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="main"):
+                yield Static(id="welcome")
+                yield VerticalScroll(id="log")
+                yield TurnRail(id="turn-rail")
+
+        def _clear_transcript_state(self) -> None:
+            self._history_loading = False
+
+        @property
+        def transcript_generation(self) -> int:
+            return self._transcript_generation
+
+        def _restore_session_transcript(self, *, announce: bool = True) -> None:
+            # Old nodes must be gone before the replacement starts mounting.
+            assert not self.query_one("#log", VerticalScroll).children
+            self._restore_calls.append(announce)
+            self.query_one("#log", VerticalScroll).mount(Static("new session"))
+
+    async def exercise() -> None:
+        app = Mini()
+        async with app.run_test(size=(80, 24)) as pilot:
+            log = app.query_one("#log", VerticalScroll)
+            old = [Static(f"old-{index}") for index in range(80)]
+            await log.mount(*old)
+            await pilot.pause()
+            refs = [weakref.ref(widget) for widget in old]
+            del old
+
+            await CodingAgentApp._reset_transcript_async(
+                app,
+                reload_transcript=True,
+                announce=True,
+            )
+            await pilot.pause()
+            gc.collect()
+
+            assert app._restore_calls == [True]
+            assert [str(child.render()) for child in log.children] == ["new session"]
+            assert all(ref() is None for ref in refs)
+            assert app.transcript_generation == 1
+
+    asyncio.run(exercise())
 
 
 def test_annotate_strip_offsets_stamps_meta() -> None:
@@ -218,7 +281,7 @@ def test_selectable_static_inherits_allow_select() -> None:
 def test_drag_select_sets_content_offset_and_highlight() -> None:
     import asyncio
 
-    from textual.app import App, ComposeResult
+    from textual.app import App
     from textual.containers import VerticalScroll
     from textual.geometry import Offset
     from textual.selection import SelectEnd

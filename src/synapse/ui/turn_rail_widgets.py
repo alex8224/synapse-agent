@@ -64,8 +64,24 @@ class TurnRailItem(Static):
             self.add_class("-dense")
         self._show_bar()
 
+    def set_data(
+        self,
+        indices: list[int],
+        previews: list[str],
+        targets: list[UserTurnBlock],
+    ) -> None:
+        """Reuse this fixed rail slot for another turn bucket."""
+        self.indices = [int(index) for index in indices]
+        self.previews = list(previews)
+        self.targets = list(targets)
+        self._cycle = 0
+        self.set_class(len(self.indices) > 1, "-dense")
+        self._show_bar()
+
     def _bar_glyph(self) -> str:
         count = len(self.indices)
+        if count == 0:
+            return ""
         if count <= 1:
             return _RAIL_BAR
         if count <= 3:
@@ -133,11 +149,12 @@ class TurnRail(Vertical):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._turns: list[tuple[str, UserTurnBlock]] = []
+        self._slots: list[TurnRailItem] = []
 
     def clear_turns(self) -> None:
         self._turns = []
-        if self.is_attached:
-            self.remove_children()
+        for slot in self._slots:
+            slot.set_data([], [], [])
 
     def set_turns(self, turns: list[tuple[str, UserTurnBlock]]) -> None:
         self._turns = list(turns or [])
@@ -162,14 +179,20 @@ class TurnRail(Vertical):
             return
         turns = self._turns
         slots = turn_rail_tick_slots(len(turns), self._content_height())
-        self.remove_children()
-        for indices in slots:
-            if not indices:
-                self.mount(TurnRailGap())
+        while len(self._slots) < len(slots):
+            slot = TurnRailItem([], [], [])
+            self._slots.append(slot)
+            self.mount(slot)
+        for index, slot in enumerate(self._slots):
+            active = index < len(slots)
+            slot.display = active
+            if not active:
+                slot.set_data([], [], [])
                 continue
+            indices = slots[index]
             previews = [turns[index][0] for index in indices if 0 <= index < len(turns)]
             targets = [turns[index][1] for index in indices if 0 <= index < len(turns)]
-            self.mount(TurnRailItem(indices, previews, targets))
+            slot.set_data(indices, previews, targets)
 
 
 __all__ = ["TurnRail", "TurnRailGap", "TurnRailItem"]

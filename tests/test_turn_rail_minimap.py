@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
+
+from textual.app import App, ComposeResult
 
 from synapse.ui.tui import (
     format_turn_rail_bucket_label,
@@ -16,14 +19,12 @@ def test_relayout_before_mount_is_deferred():
 
     with (
         patch.object(rail, "mount") as mount,
-        patch.object(rail, "remove_children") as remove_children,
     ):
         rail.set_turns([])
         rail.on_resize(object())
         rail.clear_turns()
 
     mount.assert_not_called()
-    remove_children.assert_not_called()
 
 
 def test_tick_slots_empty():
@@ -76,3 +77,29 @@ def test_bucket_label():
     lab = format_turn_rail_bucket_label([0, 1, 2], ["alpha", "b", "c"])
     assert lab.startswith("#1-3")
     assert "alpha" in lab
+
+
+def test_turn_rail_reuses_slots_across_updates() -> None:
+    class Mini(App[None]):
+        def compose(self) -> ComposeResult:
+            yield TurnRail(id="turn-rail")
+
+    async def exercise() -> None:
+        app = Mini()
+        async with app.run_test(size=(100, 30)) as pilot:
+            rail = app.query_one(TurnRail)
+            target = object()
+            rail.set_turns([(f"turn {i}", target) for i in range(10)])  # type: ignore[list-item]
+            await pilot.pause()
+            first_ids = [id(child) for child in rail.children]
+
+            for count in range(11, 80):
+                rail.set_turns(
+                    [(f"turn {i}", target) for i in range(count)]  # type: ignore[list-item]
+                )
+                await pilot.pause()
+
+            assert [id(child) for child in rail.children] == first_ids
+            assert len(app._registry) == len(first_ids) + 2
+
+    asyncio.run(exercise())

@@ -971,6 +971,7 @@ class TestApplyOkResult:
             "_reload_session_title",
             "_render_status",
             "action_clear_log",
+            "_schedule_transcript_reset",
             "append_event",
             "flash_status",
             "apply_theme",
@@ -998,6 +999,56 @@ class TestApplyOkResult:
         app._apply_ok_result(ok)
         assert app.agent is new_agent
         assert app.thread_id == "new-thread"
+        app._schedule_transcript_reset.assert_called_once_with(
+            reload_transcript=False,
+            announce=False,
+        )
+        app.action_clear_log.assert_not_called()
+
+    def test_thread_switch_clears_once_then_reloads(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        ok = MagicMock(
+            agent=None,
+            thread_id="new-thread",
+            settings_changed=False,
+            clear_log=True,
+            reload_transcript=True,
+            theme_name=None,
+            error=False,
+            notice=None,
+            lines=[],
+        )
+
+        app._apply_ok_result(ok)
+
+        app._schedule_transcript_reset.assert_called_once_with(
+            reload_transcript=True,
+            announce=True,
+        )
+        app._restore_session_transcript.assert_not_called()
+        app.action_clear_log.assert_not_called()
+
+    def test_schedule_reset_invalidates_old_stream_before_worker_runs(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        app._history_generation = 4
+        app._transcript_generation = 7
+        app.run_worker = MagicMock()
+
+        # Exercise the real scheduler, not the fixture mock.
+        from synapse.ui.tui import CodingAgentApp
+
+        CodingAgentApp._schedule_transcript_reset(
+            app,
+            reload_transcript=True,
+            announce=True,
+        )
+
+        assert app._history_generation == 5
+        assert app._transcript_generation == 8
+        app.run_worker.assert_called_once()
+        call = app.run_worker.call_args
+        assert call.kwargs == {"exclusive": True, "group": "session-transcript"}
+        call.args[0].close()
 
     def test_applies_theme(self, monkeypatch):
         app = self._make_app(monkeypatch)
