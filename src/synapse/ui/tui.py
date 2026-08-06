@@ -1725,8 +1725,25 @@ class CodingAgentApp(App[None]):
             self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
             return
         self._cancel_event.set()
+        self._pause_goal_for_interrupt()
         self.set_activity("idle", "cancelling…", True)
         self.append_event("正在终止当前任务… (Esc)", "yellow")
+
+    def _pause_goal_for_interrupt(self) -> None:
+        """Pause the current active goal when Esc interrupts a turn."""
+        service = getattr(self.agent, "_coding_goal_service", None)
+        thread_id = self.thread_id
+        if service is None or not thread_id:
+            return
+        try:
+            from synapse.goals.model import ThreadGoalStatus
+
+            goal = service.get(thread_id)
+            if goal is None or goal.status != ThreadGoalStatus.ACTIVE:
+                return
+            service.pause_goal(thread_id)
+        except Exception:  # noqa: BLE001 - cancellation must remain reliable
+            pass
 
     def on_key(self, event: Key) -> None:
         # When a modal dialog is open, let it handle keys exclusively.
@@ -2273,7 +2290,11 @@ class CodingAgentApp(App[None]):
 
 
     def _apply_ok_result(self, ok: object, notice_ttl: float = 4.0) -> None:
-        self._slash.apply_ok_result(ok, notice_ttl)
+        controller = getattr(self, "_slash", None)
+        if controller is None:
+            controller = SlashController(self)
+            self.__dict__["_slash"] = controller
+        controller.apply_ok_result(ok, notice_ttl)
 
     # -- input / turn ----------------------------------------------------
 
@@ -2414,13 +2435,21 @@ class CodingAgentApp(App[None]):
         )
 
     def _turn_done(self) -> None:
-        self._turn.turn_done()
+        controller = getattr(self, "_turn", None)
+        if controller is None:
+            controller = TurnController(self)
+            self.__dict__["_turn"] = controller
+        controller.turn_done()
 
     def _settle_goal_turn(self, completed_queue: SteerQueue | None) -> None:
         self._turn.settle_goal_turn(completed_queue)
 
     def _maybe_continue_goal(self, queue: SteerQueue | None = None) -> bool:
-        return self._turn.maybe_continue_goal(queue)
+        controller = getattr(self, "_turn", None)
+        if controller is None:
+            controller = TurnController(self)
+            self.__dict__["_turn"] = controller
+        return controller.maybe_continue_goal(queue)
 
     def _note_session_recap_turn(self) -> None:
         self._turn.note_session_recap_turn()
@@ -2441,10 +2470,22 @@ class CodingAgentApp(App[None]):
         self._turn.maybe_show_session_recap()
 
     def _schedule_followup_steer(self, queue: SteerQueue | None) -> bool:
-        return self._turn.schedule_followup_steer(queue)
+        controller = getattr(self, "_turn", None)
+        if controller is None:
+            controller = TurnController(self)
+            self.__dict__["_turn"] = controller
+        return controller.schedule_followup_steer(queue)
 
-    def _start_followup_steer(self, queue: SteerQueue) -> None:
-        self._turn.start_followup_steer(queue)
+    def _start_followup_steer(
+        self,
+        queue: SteerQueue,
+        scheduled_cancel_event: threading.Event | None = None,
+    ) -> None:
+        controller = getattr(self, "_turn", None)
+        if controller is None:
+            controller = TurnController(self)
+            self.__dict__["_turn"] = controller
+        controller.start_followup_steer(queue, scheduled_cancel_event)
 
     def _maybe_followup_steer(self, queue: SteerQueue | None = None) -> None:
         self._turn.maybe_followup_steer(queue)

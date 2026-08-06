@@ -368,6 +368,12 @@ class TurnController:
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
         if getattr(app, "_skip_steer_followup", False):
             app._skip_steer_followup = False
+            # Esc supersedes guidance already queued for this run, including a
+            # delayed goal continuation callback.
+            if completed_queue is not None:
+                completed_queue.clear()
+            # Consume the cancelled token so a later resume starts cleanly.
+            app._cancel_event = threading.Event()
             self.clear_turn_context()
             app._bind_steer_queue()
             self.note_session_recap_turn()
@@ -453,7 +459,12 @@ class TurnController:
     def note_session_recap_turn(self) -> None:
         """Remember latest turn facts for idle recap."""
         app = self._app
-        state = app._transcript.state
+        transcript = getattr(app, "_transcript", None)
+        if transcript is None:
+            # Compatibility path for lightweight hosts that exercise turn
+            # cleanup without constructing the full Textual transcript.
+            return
+        state = transcript.state
         user_text = ""
         if state.user_turns:
             user_text = getattr(state.user_turns[-1], "full_text", "") or ""
@@ -621,19 +632,27 @@ class TurnController:
         app = self._app
         if queue is None or queue.peek_count() <= 0:
             return False
+        scheduled_cancel_event = app._cancel_event
         app._busy = True
         app._sync_prompt_placeholder()
-        if app.call_after_refresh(self.start_followup_steer, queue):
+        if app.call_after_refresh(
+            self.start_followup_steer, queue, scheduled_cancel_event
+        ):
             return True
         app._busy = False
         app._sync_prompt_placeholder()
         return False
 
-    def start_followup_steer(self, queue: SteerQueue) -> None:
+    def start_followup_steer(
+        self,
+        queue: SteerQueue,
+        scheduled_cancel_event: threading.Event | None = None,
+    ) -> None:
         app = self._app
-        if app._cancel_event.is_set():
+        cancel_event = scheduled_cancel_event or app._cancel_event
+        if cancel_event.is_set():
             app._skip_steer_followup = True
-            self.turn_done()
+            app._turn_done()
             return
         if queue.peek_count() <= 0:
             app._busy = False

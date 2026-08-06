@@ -208,6 +208,7 @@ class SlashController:
             app.thread_id = thread_id
             app._reset_session_token_chrome()
             app._reload_tool_output_stats()
+            app._load_current_goal()
         clear_log = thread_changed or bool(getattr(ok, "clear_log", False))
         reload_transcript = bool(getattr(ok, "reload_transcript", False))
         if clear_log:
