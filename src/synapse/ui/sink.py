@@ -61,6 +61,22 @@ class StreamSink(Protocol):
     def info(self, message: str) -> None:
         """Non-error status line."""
 
+    def note_usage(
+        self,
+        *,
+        turn_input: int = 0,
+        turn_output: int = 0,
+        turn_cache: int = 0,
+        last_input: int = 0,
+        last_output: int = 0,
+        last_cache: int = 0,
+        output_tokens_per_second: float | None = None,
+        ttft_s: float | None = None,
+        rate_basis: str = "end_to_end",
+        rate_estimated: bool = False,
+    ) -> None:
+        """Receive cumulative usage and the latest model-call rate."""
+
 
 def sink_supports_tool_items(sink: Any) -> bool:
     """True if sink implements Cursor-style per-item tool events."""

@@ -10,6 +10,7 @@ from synapse.ui.topbar import (
 from synapse.ui.tui import (
     format_byte_count,
     format_context_occupancy_label,
+    format_token_rate,
     format_usage_label,
 )
 
@@ -55,6 +56,10 @@ def test_usage_label_compact_in_cache_out() -> None:
         cache_tokens=0,
         output_tokens=0,
     ) == "1K/0/0"
+
+
+def test_token_rate_label_compact() -> None:
+    assert format_token_rate(42.6) == "43 tok/s"
 
 
 def test_display_width_cjk_double() -> None:

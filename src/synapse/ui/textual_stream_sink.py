@@ -86,6 +86,10 @@ class TextualStreamSink:
         last_input: int = 0,
         last_output: int = 0,
         last_cache: int = 0,
+        output_tokens_per_second: float | None = None,
+        ttft_s: float | None = None,
+        rate_basis: str = "end_to_end",
+        rate_estimated: bool = False,
     ) -> None:
         """Push per-model-call usage to the app topbar (live)."""
         self._call(
@@ -96,6 +100,10 @@ class TextualStreamSink:
             last_input=int(last_input or 0),
             last_output=int(last_output or 0),
             last_cache=int(last_cache or 0),
+            output_tokens_per_second=output_tokens_per_second,
+            ttft_s=ttft_s,
+            rate_basis=str(rate_basis or "end_to_end"),
+            rate_estimated=bool(rate_estimated),
         )
 
 

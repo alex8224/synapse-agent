@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from synapse.ui.sink import sink_supports_tool_items
@@ -78,6 +79,9 @@ class _ItemSink:
     def info(self, message: str) -> None:
         self.events.append(("info", message))
 
+    def note_usage(self, **kwargs: Any) -> None:
+        self.events.append(("usage", kwargs))
+
 
 def test_sink_supports_tool_items():
     assert sink_supports_tool_items(_ItemSink()) is True
@@ -92,6 +96,64 @@ class _Chunk:
     def __init__(self, **kwargs: Any) -> None:
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+
+class _UsageAgent:
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "messages",
+            (_Chunk(type="ai", content="ans", id="m1"), {"langgraph_node": "model"}),
+        )
+        time.sleep(0.01)
+        yield (
+            "messages",
+            (_Chunk(type="ai", content="wer", id="m1"), {"langgraph_node": "model"}),
+        )
+        time.sleep(0.01)
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="answer",
+                            id="m1",
+                            usage_metadata={
+                                "input_tokens": 20,
+                                "output_tokens": 10,
+                                "total_tokens": 30,
+                            },
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_reports_completed_output_rate() -> None:
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _UsageAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    assert result.output_tokens == 10
+    assert result.last_rate_basis == "end_to_end"
+    assert result.last_ttft_s is not None
+    assert result.last_output_tokens_per_second is not None
+    usage_events = [event for event in sink.events if event[0] == "usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0][1]["output_tokens_per_second"] == (
+        result.last_output_tokens_per_second
+    )
 
 
 class _SteerUpdateAgent:

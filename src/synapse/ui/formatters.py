@@ -47,6 +47,21 @@ def format_token_count(n: int) -> str:
     return f"{(n + 500_000) // 1_000_000}M"
 
 
+def format_token_rate(rate: float | None, *, estimated: bool = False) -> str:
+    """Format output token throughput for compact UI chrome."""
+    if rate is None:
+        return ""
+    try:
+        value = float(rate)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    prefix = "~" if estimated else ""
+    rendered = f"{value:.1f}" if value < 10 else f"{value:.0f}"
+    return f"{prefix}{rendered} tok/s"
+
+
 def format_byte_count(n: int) -> str:
     """Compact binary byte count with an explicit unit."""
     size = max(0, int(n or 0))

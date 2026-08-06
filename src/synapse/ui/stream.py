@@ -29,6 +29,7 @@ from synapse.runtime.context_compact import (
 )
 from synapse.runtime.pathing import summarize_tool_result
 from synapse.runtime.steer import is_steer_message
+from synapse.runtime.token_rate import TokenRateTracker
 
 # soft_wrap keeps long lines readable; force_terminal helps Windows color.
 # highlight=False avoids over-styling plain identifiers in non-markdown UI.
@@ -533,9 +534,24 @@ class RichStreamSink:
         last_input: int = 0,
         last_output: int = 0,
         last_cache: int = 0,
+        output_tokens_per_second: float | None = None,
+        ttft_s: float | None = None,
+        rate_basis: str = "end_to_end",
+        rate_estimated: bool = False,
     ) -> None:
         """Optional live token chrome (TUI overrides)."""
-        del turn_input, turn_output, turn_cache, last_input, last_output, last_cache
+        del (
+            turn_input,
+            turn_output,
+            turn_cache,
+            last_input,
+            last_output,
+            last_cache,
+            output_tokens_per_second,
+            ttft_s,
+            rate_basis,
+            rate_estimated,
+        )
 
 
 
@@ -583,7 +599,14 @@ def stream_agent(
     last_input_tokens = 0
     last_output_tokens = 0
     last_cache_tokens = 0
+    last_output_tokens_per_second: float | None = None
+    last_ttft_s: float | None = None
+    last_rate_basis = "end_to_end"
+    last_rate_estimated = False
+    last_live_rate_push = 0.0
     _usage_seen: set[str] = set()  # dedupe usage from repeated messages
+    rate_tracker = TokenRateTracker()
+    rate_tracker.model_started()
     sink = sink or RichStreamSink()
     active_tools: list[str] = []
     use_tool_items = sink_supports_tool_items(sink)
@@ -595,6 +618,42 @@ def stream_agent(
     sub_scope_seq: dict[tuple[str, ...], int] = {}
     parent_task_items: dict[str, str] = {}
     current_parent_task_ids: set[str] = set()
+
+    def _note_usage(*, estimated: bool = False, force: bool = False) -> None:
+        nonlocal last_live_rate_push
+        note = getattr(sink, "note_usage", None)
+        if not callable(note):
+            return
+        now = time.monotonic()
+        if estimated and not force and now - last_live_rate_push < 0.35:
+            return
+        if estimated:
+            snapshot = rate_tracker.live_snapshot(now)
+            if snapshot.elapsed_s < 0.5 or snapshot.tokens_per_second is None:
+                return
+            last_live_rate_push = now
+            rate = snapshot.tokens_per_second
+            ttft = snapshot.ttft_s
+            basis = snapshot.basis.value
+        else:
+            rate = last_output_tokens_per_second
+            ttft = last_ttft_s
+            basis = last_rate_basis
+        try:
+            note(
+                turn_input=input_tokens,
+                turn_output=output_tokens,
+                turn_cache=cache_tokens,
+                last_input=last_input_tokens,
+                last_output=last_output_tokens,
+                last_cache=last_cache_tokens,
+                output_tokens_per_second=rate,
+                ttft_s=ttft,
+                rate_basis=basis,
+                rate_estimated=estimated,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _sub_task_call_id(namespace: tuple[str, ...]) -> str | None:
         """Extract the nearest injected task call ID from the namespace."""
@@ -806,12 +865,17 @@ def stream_agent(
                     continue
 
                 reasoning_delta = _extract_reasoning(msg_chunk)
+                text = _chunk_text(msg_chunk)
+                tool_call_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
+                if reasoning_delta:
+                    rate_tracker.output_observed(reasoning_delta)
+                if tool_call_chunks:
+                    rate_tracker.output_observed(str(tool_call_chunks))
                 if reasoning_delta:
                     sink.activity_update("reasoning", "model thinking")
                     sink.write_reasoning(reasoning_delta)
 
                 # Content tokens first — same chunk may also carry tool_call_chunks.
-                text = _chunk_text(msg_chunk)
                 msg_id = getattr(msg_chunk, "id", None)
                 if msg_id is not None:
                     msg_id = str(msg_id)
@@ -822,9 +886,12 @@ def stream_agent(
                         _note_compact()
                         _drop_leaked_stream()
                         continue
+                    rate_tracker.output_observed(text)
                     sink.write_answer_token(text, msg_id=msg_id)
 
-                tool_call_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
+                if reasoning_delta or text or tool_call_chunks:
+                    _note_usage(estimated=True)
+
                 if tool_call_chunks:
                     sink.finalize_line()
                     sink.activity_update("tool", "model requested tool call(s)")
@@ -968,6 +1035,7 @@ def stream_agent(
                             except ValueError:
                                 pass
                         sink.activity_start("model", "waiting for model")
+                        rate_tracker.model_started()
                         continue
 
                     if not _is_ai_message(msg):
@@ -994,20 +1062,14 @@ def stream_agent(
                             last_input_tokens = int(u["input_tokens"] or 0)
                             last_output_tokens = int(u["output_tokens"] or 0)
                             last_cache_tokens = int(u.get("cache_tokens", 0) or 0)
+                            rate_snapshot = rate_tracker.model_finished(last_output_tokens)
+                            if rate_snapshot.tokens_per_second is not None:
+                                last_output_tokens_per_second = rate_snapshot.tokens_per_second
+                                last_ttft_s = rate_snapshot.ttft_s
+                                last_rate_basis = rate_snapshot.basis.value
+                                last_rate_estimated = False
                             _usage_seen.add(usage_key)
-                            note = getattr(sink, "note_usage", None)
-                            if callable(note):
-                                try:
-                                    note(
-                                        turn_input=input_tokens,
-                                        turn_output=output_tokens,
-                                        turn_cache=cache_tokens,
-                                        last_input=last_input_tokens,
-                                        last_output=last_output_tokens,
-                                        last_cache=last_cache_tokens,
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    pass
+                            _note_usage(estimated=last_rate_estimated, force=True)
 
                     reasoning = _extract_reasoning(msg)
                     text = _normalize_content(getattr(msg, "content", "")).strip()
@@ -1189,6 +1251,9 @@ def stream_agent(
         last_input_tokens=last_input_tokens,
         last_output_tokens=last_output_tokens,
         last_cache_tokens=last_cache_tokens,
+        last_output_tokens_per_second=last_output_tokens_per_second,
+        last_ttft_s=last_ttft_s,
+        last_rate_basis=last_rate_basis,
         cancelled=cancelled,
         interrupted=interrupted,
         compact_events=compact_events,

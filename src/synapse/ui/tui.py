@@ -74,6 +74,7 @@ from synapse.ui.formatters import (
     format_context_occupancy_label,
     format_mcp_status_label,
     format_token_count,
+    format_token_rate,
     model_status_label,
     short_workspace_label,
     soften_turn_footer,
@@ -715,6 +716,10 @@ class CodingAgentApp(App[None]):
         self._input_tokens = 0
         self._cache_tokens = 0
         self._output_tokens = 0
+        self._output_tokens_per_second: float | None = None
+        self._last_ttft_s: float | None = None
+        self._last_rate_basis = "end_to_end"
+        self._token_rate_estimated = False
         # Snapshot before a live turn so mid-turn updates stay absolute.
         self._usage_base_input = 0
         self._usage_base_output = 0
@@ -1465,6 +1470,14 @@ class CodingAgentApp(App[None]):
             if label:
                 label.append(" ", style=_C_MUTED)
             label.append(occupancy, style=_C_GREEN)
+        rate_label = format_token_rate(
+            self._output_tokens_per_second,
+            estimated=self._token_rate_estimated,
+        )
+        if rate_label:
+            if label:
+                label.append(" ", style=_C_MUTED)
+            label.append(rate_label, style=_C_ORANGE)
         return label
 
 
@@ -1518,6 +1531,10 @@ class CodingAgentApp(App[None]):
         self._usage_base_input = int(self._input_tokens or 0)
         self._usage_base_output = int(self._output_tokens or 0)
         self._usage_base_cache = int(self._cache_tokens or 0)
+        self._output_tokens_per_second = None
+        self._last_ttft_s = None
+        self._last_rate_basis = "end_to_end"
+        self._token_rate_estimated = False
 
     def apply_turn_usage(
         self,
@@ -1528,6 +1545,10 @@ class CodingAgentApp(App[None]):
         last_input: int = 0,
         last_output: int = 0,
         last_cache: int = 0,
+        output_tokens_per_second: float | None = None,
+        ttft_s: float | None = None,
+        rate_basis: str = "end_to_end",
+        rate_estimated: bool = False,
     ) -> None:
         """Apply cumulative-in-turn usage (from stream) onto session chrome.
 
@@ -1542,6 +1563,11 @@ class CodingAgentApp(App[None]):
         if last_input or last_output or last_cache:
             self._context_tokens = int(last_input or 0)
             self._last_out_tokens = int(last_output or 0)
+        if output_tokens_per_second is not None:
+            self._output_tokens_per_second = float(output_tokens_per_second)
+            self._last_ttft_s = float(ttft_s) if ttft_s is not None else None
+            self._last_rate_basis = str(rate_basis or "end_to_end")
+            self._token_rate_estimated = bool(rate_estimated)
         self._refresh_topbar()
 
     def _apply_restored_usage(self, messages: list[Any] | None) -> None:
@@ -1559,6 +1585,10 @@ class CodingAgentApp(App[None]):
         self._cache_tokens = int(agg.get("cache_tokens") or 0)
         self._context_tokens = int(agg.get("last_input_tokens") or 0)
         self._last_out_tokens = int(agg.get("last_output_tokens") or 0)
+        self._output_tokens_per_second = None
+        self._last_ttft_s = None
+        self._last_rate_basis = "end_to_end"
+        self._token_rate_estimated = False
         self._usage_base_input = self._input_tokens
         self._usage_base_output = self._output_tokens
         self._usage_base_cache = self._cache_tokens
@@ -1571,6 +1601,10 @@ class CodingAgentApp(App[None]):
         self._cache_tokens = max(0, int(usage.cache_tokens))
         self._context_tokens = max(0, int(usage.last_input_tokens))
         self._last_out_tokens = max(0, int(usage.last_output_tokens))
+        self._output_tokens_per_second = None
+        self._last_ttft_s = None
+        self._last_rate_basis = "end_to_end"
+        self._token_rate_estimated = False
         self._usage_base_input = self._input_tokens
         self._usage_base_output = self._output_tokens
         self._usage_base_cache = self._cache_tokens
@@ -4976,6 +5010,12 @@ class CodingAgentApp(App[None]):
                         or 0
                     ),
                     last_cache=int(getattr(result, "last_cache_tokens", 0) or 0),
+                    output_tokens_per_second=getattr(
+                        result, "last_output_tokens_per_second", None
+                    ),
+                    ttft_s=getattr(result, "last_ttft_s", None),
+                    rate_basis=str(getattr(result, "last_rate_basis", "end_to_end")),
+                    rate_estimated=False,
                 )
 
             if getattr(result, "compact_events", 0):
@@ -5104,6 +5144,11 @@ class CodingAgentApp(App[None]):
                         or 0
                     ),
                     last_cache=int(getattr(result, "last_cache_tokens", 0) or 0),
+                    output_tokens_per_second=getattr(
+                        result, "last_output_tokens_per_second", None
+                    ),
+                    ttft_s=getattr(result, "last_ttft_s", None),
+                    rate_basis=str(getattr(result, "last_rate_basis", "end_to_end")),
                 )
             if not result.streamed_answer:
                 answer = result.final_text or extract_last_ai_text(result.state)

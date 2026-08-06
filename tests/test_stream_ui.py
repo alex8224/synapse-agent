@@ -218,6 +218,9 @@ def test_stream_result_defaults():
     assert result.tool_calls == 2
     assert result.final_text == "pong"
     assert result.cache_tokens == 0
+    assert result.last_output_tokens_per_second is None
+    assert result.last_ttft_s is None
+    assert result.last_rate_basis == "end_to_end"
 
 
 def test_extract_last_ai_text_from_messages():

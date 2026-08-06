@@ -211,6 +211,9 @@ class StreamResult:
     last_input_tokens: int = 0
     last_output_tokens: int = 0
     last_cache_tokens: int = 0
+    last_output_tokens_per_second: float | None = None
+    last_ttft_s: float | None = None
+    last_rate_basis: str = "end_to_end"
     cancelled: bool = False  # user abort (ESC / cancel_event)
     interrupted: bool = False  # graph paused for HITL approval
     compact_events: int = 0  # context-compaction summaries hidden from UI
