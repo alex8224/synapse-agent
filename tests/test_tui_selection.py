@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import inspect
 import weakref
 
 from textual.app import App, ComposeResult
@@ -31,8 +32,7 @@ def test_history_load_done_ignores_stale_generation() -> None:
     app._history_loading = True
     app._history_generation = 2
     app._history_thread_id = "thread-current"
-    app._history_messages = [object()]
-    app._history_start_idx = 20
+    app._history_before_turn = 20
 
     app._history_load_done(
         None,
@@ -43,6 +43,40 @@ def test_history_load_done_ignores_stale_generation() -> None:
     )
 
     assert app._history_loading is True
+
+
+def test_tui_does_not_retain_full_history_message_field() -> None:
+    assert "_history_messages" not in inspect.getsource(CodingAgentApp)
+
+
+def test_trim_mounted_history_pages_releases_widget_references() -> None:
+    class Block:
+        def __init__(self) -> None:
+            self.removed = False
+
+        def remove(self) -> None:
+            self.removed = True
+
+    app = object.__new__(CodingAgentApp)
+    older = UserTurnBlock("older", stamp="", turn_index=1)
+    newest = UserTurnBlock("newest", stamp="", turn_index=2)
+    older_marker = Block()
+    older.remove = older_marker.remove  # type: ignore[method-assign]
+    newest_marker = Block()
+    newest.remove = newest_marker.remove  # type: ignore[method-assign]
+    app._history_pages = [[older], [newest]]
+    app._history_max_pages = 1
+    app._user_turns = [older, newest]
+    app._thought_blocks = []
+    app._tool_blocks = []
+    app._refresh_turn_rail = lambda: None
+
+    CodingAgentApp._trim_mounted_history_pages(app)
+
+    assert app._history_pages == [[older]]
+    assert app._user_turns == [older]
+    assert older_marker.removed is False
+    assert newest_marker.removed is True
 
 
 def test_transcript_reset_releases_old_widgets_before_reload(monkeypatch) -> None:

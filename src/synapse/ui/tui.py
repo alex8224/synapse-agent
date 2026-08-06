@@ -41,6 +41,11 @@ from synapse.content.multimodal import (
 from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
 from synapse.runtime.steer import SteerQueue, format_steer_message, get_agent_steer_queue
 from synapse.sessions.session_recap import SessionRecapController
+from synapse.sessions.transcript_projection import (
+    TranscriptProjection,
+    TranscriptUsage,
+    default_transcript_projection_path,
+)
 from synapse.subagent_monitor import MONITOR_CONFIG_KEY, SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
@@ -681,12 +686,18 @@ class CodingAgentApp(App[None]):
         self._history_tail_turns = max(
             1, int(getattr(settings, "history_tail_turns", 20) or 20)
         )
-        self._history_messages: list[Any] | None = None
-        self._history_start_idx = 0
+        self._history_before_turn = 0
+        self._history_total_turns = 0
+        self._history_total_events = 0
+        self._history_max_pages = 5
+        self._history_pages: list[list[Any]] = []
         self._history_has_more = False
         self._history_loading = False
         self._history_thread_id = ""
         self._history_generation = 0
+        self._transcript_projection = TranscriptProjection(
+            default_transcript_projection_path(settings.resolved_sessions_path())
+        )
         # Invalidates callbacks queued by a stream sink from an older session.
         self._transcript_generation = 0
         self._session_recap = SessionRecapController(
@@ -801,6 +812,10 @@ class CodingAgentApp(App[None]):
 
     def on_unmount(self) -> None:
         clear_metrics_notifier()
+        try:
+            self._transcript_projection.close()
+        except Exception:  # noqa: BLE001 - shutdown best effort
+            pass
 
     def on_mount(self) -> None:
         # Apply configured theme before first paint of chrome widgets.
@@ -1544,6 +1559,18 @@ class CodingAgentApp(App[None]):
         self._cache_tokens = int(agg.get("cache_tokens") or 0)
         self._context_tokens = int(agg.get("last_input_tokens") or 0)
         self._last_out_tokens = int(agg.get("last_output_tokens") or 0)
+        self._usage_base_input = self._input_tokens
+        self._usage_base_output = self._output_tokens
+        self._usage_base_cache = self._cache_tokens
+        self._refresh_topbar()
+
+    def _apply_projected_usage(self, usage: TranscriptUsage) -> None:
+        """Hydrate topbar totals from the O(1) transcript usage projection."""
+        self._input_tokens = max(0, int(usage.input_tokens))
+        self._output_tokens = max(0, int(usage.output_tokens))
+        self._cache_tokens = max(0, int(usage.cache_tokens))
+        self._context_tokens = max(0, int(usage.last_input_tokens))
+        self._last_out_tokens = max(0, int(usage.last_output_tokens))
         self._usage_base_input = self._input_tokens
         self._usage_base_output = self._output_tokens
         self._usage_base_cache = self._cache_tokens
@@ -3233,8 +3260,10 @@ class CodingAgentApp(App[None]):
         self._subagent_monitor_auto_opened = False
         self._subagent_status_text = ""
         # Drop paginated-history state together with the DOM.
-        self._history_messages = None
-        self._history_start_idx = 0
+        self._history_before_turn = 0
+        self._history_total_turns = 0
+        self._history_total_events = 0
+        self._history_pages = []
         self._history_has_more = False
         self._history_loading = False
         self._history_thread_id = ""
@@ -3532,69 +3561,74 @@ class CodingAgentApp(App[None]):
             self.call_after_refresh(self._scroll_timeline)
 
     def _restore_session_transcript(self, *, announce: bool = True) -> None:
-        """Load checkpoint messages for current thread and paint the timeline.
+        """Load a compact tail page for current thread and paint the timeline.
 
         LLM context is restored by reusing the same ``thread_id`` with the
         LangGraph checkpointer; this method only rebuilds the visual history.
-        The transcript is paginated: only the last ``history_tail_turns``
-        visible user turns are painted; older turns are loaded asynchronously
-        when the user scrolls the timeline to the top.
+        The first open of a legacy thread builds a compact SQLite projection;
+        subsequent opens and earlier-page reads never retain full message objects.
         """
         if self.agent is None:
             return
-        from synapse.sessions.transcript import (
-            fold_tail_window,
-            load_thread_messages,
-            turn_start_indexes,
-        )
+        from synapse.sessions.transcript import load_thread_messages
 
         # Invalidate an in-flight page load before attempting to read the new
         # transcript.  This also covers restore failures, where the state
         # reset below cannot be reached.
         self._history_generation += 1
         self._history_loading = False
-        try:
-            messages = load_thread_messages(
-                agent=self.agent,
-                settings=self.settings,
-                thread_id=self.thread_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if announce:
-                self.append_event(f"restore transcript failed: {exc}", "yellow")
-            return
+        projection = self._transcript_projection
+        page = projection.load_tail(self.thread_id, turns=self._history_tail_turns)
+        if not projection.contains_thread(self.thread_id):
+            # One-time compatibility import for sessions created before the
+            # projection existed. Full messages are released immediately.
+            try:
+                messages = load_thread_messages(
+                    agent=self.agent,
+                    settings=self.settings,
+                    thread_id=self.thread_id,
+                )
+                projection.replace_from_messages(self.thread_id, messages)
+                del messages
+                page = projection.load_tail(
+                    self.thread_id, turns=self._history_tail_turns
+                )
+            except Exception as exc:  # noqa: BLE001
+                if announce:
+                    self.append_event(f"restore transcript failed: {exc}", "yellow")
+                return
 
-        # Reset paging state for the current thread before painting.
-        self._history_messages = messages
-        self._history_start_idx = 0
-        self._history_has_more = False
+        # Reset paging state for the current thread before painting. Never keep
+        # the full LangChain message list in the TUI.
+        self._history_before_turn = page.start_turn
+        self._history_total_turns = page.total_turns
+        self._history_total_events = page.total_events
+        self._history_has_more = page.has_more
         self._history_loading = False
         self._history_thread_id = self.thread_id
 
-        window = fold_tail_window(messages, tail_turns=self._history_tail_turns)
-        if not window.events:
-            if announce and messages is not None:
+        if not page.events:
+            if announce:
                 # Only announce emptiness on explicit /switch restore.
                 self.append_event("(empty session transcript)", "dim")
             return
 
-        self._history_start_idx = window.start_idx
-        self._history_has_more = window.has_more
-        blocks = self._build_restored_blocks(window.events)
+        blocks = self._build_restored_blocks(page.events)
         self._mount_blocks(blocks)
+        self._history_pages = [blocks]
 
-        # Hydrate session token chrome from AIMessage usage_metadata.
-        self._apply_restored_usage(messages)
+        usage = projection.load_usage(self.thread_id)
+        if usage is not None:
+            self._apply_projected_usage(usage)
 
         if announce:
-            total_turns = len(turn_start_indexes(messages))
             loaded_turns = sum(1 for b in blocks if isinstance(b, UserTurnBlock))
             self.append_event(
-                f"restored transcript: {loaded_turns} / {total_turns} user turns"
-                f"  ({len(messages)} msgs)",
+                f"restored transcript: {loaded_turns} / {page.total_turns} user turns"
+                f"  ({page.total_events} events)",
                 "dim",
             )
-            if window.has_more:
+            if page.has_more:
                 self.append_event("scroll to top to load earlier history", "dim")
         # Jump to bottom after paint.
         self.call_after_refresh(self._scroll_timeline)
@@ -3604,7 +3638,7 @@ class CodingAgentApp(App[None]):
         kick off an async page load."""
         if self._history_loading or not self._history_has_more:
             return
-        if self._history_messages is None or self._history_start_idx <= 0:
+        if self._history_before_turn <= 1:
             return
         try:
             timeline = self.query_one("#log", VerticalScroll)
@@ -3616,14 +3650,13 @@ class CodingAgentApp(App[None]):
 
     def _request_earlier_history(self) -> None:
         """Freeze the paging cursor and fold the next page off-thread."""
-        messages = self._history_messages
-        if messages is None:
+        before_turn = self._history_before_turn
+        if before_turn <= 1:
             return
         self._history_loading = True
         generation = self._history_generation
         self._load_earlier_history_bg(
-            messages,
-            self._history_start_idx,
+            before_turn,
             self._history_tail_turns,
             self._history_thread_id,
             generation,
@@ -3632,24 +3665,23 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="history")
     def _load_earlier_history_bg(
         self,
-        messages: list[Any],
-        before_idx: int,
+        before_turn: int,
         tail_turns: int,
         thread_id: str,
         generation: int,
     ) -> None:
-        """Fold an earlier page off the UI thread; insertion happens via callback."""
-        from synapse.sessions.transcript import fold_earlier_window
-
+        """Read an earlier projected page off-thread; insert on the UI thread."""
         try:
-            window = fold_earlier_window(
-                messages, before_idx=before_idx, tail_turns=tail_turns
+            page = self._transcript_projection.load_before(
+                thread_id,
+                before_turn=before_turn,
+                turns=tail_turns,
             )
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(
                 self._history_load_done,
                 None,
-                before_idx,
+                before_turn,
                 thread_id,
                 generation,
                 str(exc),
@@ -3657,8 +3689,8 @@ class CodingAgentApp(App[None]):
             return
         self.call_from_thread(
             self._history_load_done,
-            window,
-            before_idx,
+            page,
+            before_turn,
             thread_id,
             generation,
             None,
@@ -3666,8 +3698,8 @@ class CodingAgentApp(App[None]):
 
     def _history_load_done(
         self,
-        window: Any,
-        expected_idx: int,
+        page: Any,
+        expected_turn: int,
         thread_id: str,
         generation: int,
         error: str | None,
@@ -3676,30 +3708,56 @@ class CodingAgentApp(App[None]):
         if (
             self._history_generation != generation
             or self._history_thread_id != thread_id
-            or self._history_messages is None
-            or self._history_start_idx != expected_idx
+            or self._history_before_turn != expected_turn
         ):
             return
         self._history_loading = False
         if error:
             self.append_event(f"load earlier history failed: {error}", "yellow")
             return
-        if window is None:
+        if page is None:
             return
-        if not window.events:
+        if not page.events:
             self._history_has_more = False
             return
-        blocks = self._build_restored_blocks(window.events)
+        blocks = self._build_restored_blocks(page.events)
         self._insert_earlier_blocks(blocks)
         if not self._prepend_blocks(blocks):
             # Anchor disappeared (transcript rebuilt); drop this page, roll back
             # bookkeeping side effects and keep the cursor for a later retry.
             self._discard_earlier_blocks(blocks)
             return
-        self._history_start_idx = window.start_idx
-        self._history_has_more = window.has_more
-        if not window.has_more:
+        self._history_pages.insert(0, blocks)
+        self._trim_mounted_history_pages()
+        self._history_before_turn = page.start_turn
+        self._history_has_more = page.has_more
+        if not page.has_more:
             self.append_event("earliest history loaded", "dim")
+
+    def _trim_mounted_history_pages(self) -> None:
+        """Keep a bounded history DOM and release all business-list references."""
+        while len(self._history_pages) > self._history_max_pages:
+            page = self._history_pages.pop()
+            users = [block for block in page if isinstance(block, UserTurnBlock)]
+            thoughts = [block for block in page if isinstance(block, ThoughtBlock)]
+            tools = [block for block in page if isinstance(block, ToolGroupBlock)]
+            for block in users:
+                if block in self._user_turns:
+                    self._user_turns.remove(block)
+            for block in thoughts:
+                if block in self._thought_blocks:
+                    self._thought_blocks.remove(block)
+            for block in tools:
+                if block in self._tool_blocks:
+                    self._tool_blocks.remove(block)
+            for block in page:
+                try:
+                    block.remove()
+                except Exception:  # noqa: BLE001 - page may already be detached
+                    pass
+        for index, block in enumerate(self._user_turns, start=1):
+            block.turn_index = index
+        self._refresh_turn_rail()
 
     def _insert_earlier_blocks(self, blocks: list[Any]) -> None:
         """Insert older pages at the front of bookkeeping lists and renumber
@@ -5135,8 +5193,66 @@ class CodingAgentApp(App[None]):
             )
         except Exception:  # noqa: BLE001
             pass
+        self._persist_transcript_turn(user_text=user_text)
         self._persist_turn_summary(user_text=user_text)
         self._project_session_into_catalog()
+
+    def _persist_transcript_turn(self, *, user_text: str) -> None:
+        """Append one bounded visual turn and cumulative usage to the projection."""
+        if not user_text:
+            return
+        from synapse.sessions.transcript import UiTranscriptEvent
+
+        events = [UiTranscriptEvent(kind="user", text=user_text)]
+        thought_text = ""
+        if self._thought_blocks:
+            thought_text = str(getattr(self._thought_blocks[-1], "body", "") or "").strip()
+        if thought_text:
+            events.append(UiTranscriptEvent(kind="thought", text=thought_text))
+        if self._last_tool_items:
+            calls: list[dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
+            for index, item in enumerate(self._last_tool_items):
+                item_id = str(item.id or f"tool-{index}")
+                calls.append(
+                    {
+                        "id": item_id,
+                        "name": item.name or "tool",
+                        "args": {"label": item.label, "path": item.path},
+                    }
+                )
+                results.append(
+                    {
+                        "id": item_id,
+                        "name": item.name or "tool",
+                        "content": item.preview or "",
+                        "status": "error" if item.error else "ok",
+                    }
+                )
+            events.append(
+                UiTranscriptEvent(
+                    kind="tools",
+                    tool_calls=calls,
+                    tool_results=results,
+                )
+            )
+        if self._last_answer_text:
+            events.append(UiTranscriptEvent(kind="answer", text=self._last_answer_text))
+        usage = TranscriptUsage(
+            input_tokens=int(self._input_tokens or 0),
+            output_tokens=int(self._output_tokens or 0),
+            cache_tokens=int(self._cache_tokens or 0),
+            last_input_tokens=int(self._context_tokens or 0),
+            last_output_tokens=int(self._last_out_tokens or 0),
+        )
+        try:
+            self._transcript_projection.append_turn(
+                self.thread_id,
+                events,
+                usage=usage,
+            )
+        except Exception:  # noqa: BLE001 - checkpoint remains source of truth
+            pass
 
     def attach_project_catalog(self, catalog: Any) -> None:
         """Wire the user-layer catalog opened by ``run_tui`` (optional)."""

@@ -75,7 +75,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `PROJECT_CATALOG_PATH` | `~/.synapse/catalog.sqlite` | 全局项目目录数据库路径（默认用户层，可覆盖为任意路径） |
 | `SESSION_SUMMARY_MODE` | `local` | 会话摘要模式：`off` 关闭；`local` 在每轮结束后生成确定性本地摘要（不调用模型）。LLM 摘要为未来扩展位 |
 | `SESSION_SUMMARY_MAX_CHARS` | `600` | 本地会话摘要的最大字符数（含多轮条目，超出时从最旧条目开始裁剪） |
-| `AGENT_HISTORY_TAIL_TURNS` | `20` | TUI 启动时初始渲染的最近可见会话轮数；滚动到顶部后加载更早历史 |
+| `AGENT_HISTORY_TAIL_TURNS` | `20` | TUI 从轻量 transcript 投影初始读取/渲染的最近可见会话轮数；滚动到顶部后按 turn 游标加载更早历史，最多挂载 5 页 |
 | `AGENT_SESSION_PREWARM_ENABLED` | `false` | 恢复大上下文会话后，在后台对该会话历史发起一次最小模型请求，让 provider 预填充并缓存历史前缀，用户第一条消息可命中缓存、大幅缩短首 token 等待。注意：预热本身会按输入 token 计费一次，仅在需要时开启 |
 | `AGENT_ENABLE_TOOL_RESPONSE_TRUNCATE` | `false` | 启用工具响应裁剪：keep 窗口（默认最近 40K tokens）外的 `execute`/`read_file`/`search_files` 输出折叠为摘要，减小每轮请求体积（大上下文会话可省 20-30%）。请求层变换，不修改历史 |
 | `AGENT_TOOL_RESPONSE_TRUNCATE_KEEP_TOKENS` | `40000` | 工具响应裁剪的 keep 窗口（token），窗口内消息不裁剪 |
