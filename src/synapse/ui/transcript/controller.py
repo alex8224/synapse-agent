@@ -41,6 +41,34 @@ class TranscriptController:
         self._app = app
         self.state = TranscriptState()
 
+    # -- TextualStreamHost ------------------------------------------------
+
+    @property
+    def transcript_generation(self) -> int:
+        """Generation used to reject callbacks from an older session stream."""
+        return int(getattr(self._app, "transcript_generation", 0))
+
+    def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+        """Forward thread dispatch without exposing the full App to the sink."""
+        return self._app.call_from_thread(callback, *args, **kwargs)
+
+    def apply_turn_usage(self, **kwargs: Any) -> None:
+        self._app.apply_turn_usage(**kwargs)
+
+    def set_activity(
+        self, phase: str, detail: str = "", reset_timer: bool = False
+    ) -> None:
+        self._app.set_activity(phase, detail, reset_timer)
+
+    def _refresh_git_chrome(self) -> None:
+        self._app._refresh_git_chrome()
+
+    def should_suppress_dag_task_tool_group(self, calls: list[Any]) -> bool:
+        return bool(self._app.should_suppress_dag_task_tool_group(calls))
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
+        self._app.sync_subagent_monitor_block(force=force)
+
     # -- stream ----------------------------------------------------------
 
     def set_stream(self, kind: str, body: str, elapsed_s: float = 0.0) -> None:

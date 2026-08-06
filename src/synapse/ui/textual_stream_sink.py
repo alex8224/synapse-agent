@@ -4,19 +4,59 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from synapse.ui.formatters import stream_tail_preview
 from synapse.ui.timeline import ToolItem, is_todo_tool, parse_todo_preview_lines, summarize_items
 
 
+@runtime_checkable
 class TextualStreamHost(Protocol):
-    """Minimal host surface required by ``TextualStreamSink``."""
+    """Transcript/controller surface required by ``TextualStreamSink``.
+
+    The sink is intentionally hosted by ``TranscriptController`` rather than
+    the full ``CodingAgentApp``.  Keeping this surface explicit prevents new
+    stream callbacks from silently reaching into unrelated app state.
+    """
 
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any: ...
 
     @property
     def transcript_generation(self) -> int: ...
+
+    def apply_turn_usage(self, **kwargs: Any) -> None: ...
+
+    def set_stream(self, kind: str, body: str, elapsed_s: float = 0.0) -> None: ...
+
+    def clear_stream(self) -> None: ...
+
+    def set_activity(
+        self, phase: str, detail: str = "", reset_timer: bool = False
+    ) -> None: ...
+
+    def commit_thought(self, elapsed_s: float, body: str) -> None: ...
+
+    def commit_answer(self, text: str) -> None: ...
+
+    def write_tool_group_header(self, summary: str, collapsed: bool = True) -> None: ...
+
+    def update_tool_group_header(self, summary: str) -> None: ...
+
+    def write_tool_item(self, item: ToolItem) -> None: ...
+
+    def update_tool_item(self, item_id: str, **kwargs: Any) -> None: ...
+
+    def close_tool_group(self) -> None: ...
+
+    def append_event(self, message: str, style: str = "dim") -> None: ...
+
+    def append_meta(self, message: str) -> None: ...
+
+    def _refresh_git_chrome(self) -> None: ...
+
+    def should_suppress_dag_task_tool_group(self, calls: list[Any]) -> bool: ...
+
+    def sync_subagent_monitor_block(self, *, force: bool = False) -> None: ...
 
 
 _WS_RE = re.compile(r"\s+")
@@ -31,9 +71,9 @@ class TextualStreamSink:
     Supports enhanced tool-item API (preferred) and legacy bulk API.
     """
 
-    def __init__(self, app: TextualStreamHost) -> None:
-        self._app = app
-        self._generation = int(getattr(app, "transcript_generation", 0))
+    def __init__(self, host: TextualStreamHost) -> None:
+        self._host = host
+        self._generation = int(host.transcript_generation)
         self.streamed_answer = False
         self.streamed_reasoning = False
         self.answer_buf: list[str] = []
@@ -68,11 +108,11 @@ class TextualStreamSink:
         self._legacy_failed = 0
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> None:
-        if int(getattr(self._app, "transcript_generation", 0)) != self._generation:
+        if self._host.transcript_generation != self._generation:
             return
-        fn = getattr(self._app, method)
+        fn = getattr(self._host, method)
         try:
-            self._app.call_from_thread(fn, *args, **kwargs)
+            self._host.call_from_thread(fn, *args, **kwargs)
         except RuntimeError:
             fn(*args, **kwargs)
 
@@ -410,13 +450,11 @@ class TextualStreamSink:
         # When all calls are DAG task() invocations tracked by the subagent
         # monitor, suppress the parent tool group.  The monitor dialog renders
         # its own live blocks.
-        app = self._app
+        host = self._host
         if (
-            hasattr(app, "should_suppress_dag_task_tool_group")
-            and app.should_suppress_dag_task_tool_group(calls)  # type: ignore[union-attr]
+            host.should_suppress_dag_task_tool_group(calls)
         ):
-            if hasattr(app, "sync_subagent_monitor_block"):
-                app.sync_subagent_monitor_block()  # type: ignore[union-attr]
+            host.sync_subagent_monitor_block()
             self._group_items.clear()
             self._group_open = False
             self._group_header_written = False

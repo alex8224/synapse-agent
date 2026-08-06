@@ -67,3 +67,11 @@ def test_sink_drops_callbacks_after_transcript_generation_changes() -> None:
     sink.activity_stop()
 
     assert host.calls == []
+
+
+def test_sink_host_protocol_is_explicit() -> None:
+    """The sink must depend on the declared transcript host surface."""
+    from synapse.ui.textual_stream_sink import TextualStreamHost
+    from synapse.ui.transcript.controller import TranscriptController
+
+    assert isinstance(TranscriptController(object()), TextualStreamHost)

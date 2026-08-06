@@ -152,7 +152,7 @@ class TurnController:
 
         app._begin_turn_usage()
         transcript_generation = app._transcript_generation
-        sink = TextualStreamSink(app)
+        sink = TextualStreamSink(app._transcript)
         request = build_turn_request(
             text=text,
             attachments=attachments,
@@ -206,7 +206,7 @@ class TurnController:
             app.call_from_thread(app._turn_done)
             return
         app._begin_turn_usage()
-        sink = TextualStreamSink(app)
+        sink = TextualStreamSink(app._transcript)
         # Allow Esc to abort resume stream as well.
         app._cancel_event = threading.Event()
         config = {
