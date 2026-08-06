@@ -105,6 +105,11 @@ class GitExploreScreen(ModalScreen[None]):
     GitExploreScreen {
         align: center middle;
         background: $theme-bg 60%;
+        /* Near-full-screen window may overflow tiny terminals; never draw a
+           second scrollbar at the screen edge. */
+        scrollbar-size: 0 0;
+        scrollbar-background: $theme-bg;
+        scrollbar-color: $theme-bg;
     }
     GitExploreScreen > #ge-window {
         width: 96%;

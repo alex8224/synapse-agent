@@ -101,6 +101,9 @@ class CodexResetDialog(DialogBase):
     BINDINGS = [Binding("escape", "cancel", "Close", show=False, priority=True)]
     _title_icon = ""
     _title_keys = "esc close"
+    # Compact dialog: smaller window than the shared DialogBase defaults.
+    _window_max_height: int = 22
+    _body_max_height: int = 13
 
     def __init__(self, *, credits: list[Any], available_count: int, on_reset=None) -> None:
         super().__init__()

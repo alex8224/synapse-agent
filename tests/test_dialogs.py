@@ -270,6 +270,122 @@ class TestThemePickerInit:
         assert dlg._current == "cursor-dark"
 
 
+class TestDialogTransparentBackground:
+    """Standard modal dialogs reuse the ThemeDesigner transparent-screen
+    approach so the app content stays visible behind the dialog window."""
+
+    def test_dialog_base_css_and_inline_style(self):
+        from synapse.config import Settings
+        from synapse.ui.dialogs.base import DialogBase
+        from synapse.ui.dialogs.session_list import SessionListDialog
+
+        assert "background: transparent" in DialogBase.DEFAULT_CSS
+        assert "background: $theme-bg 60%" not in DialogBase.DEFAULT_CSS
+        dlg = SessionListDialog(
+            Settings(_env_file=None, theme="cursor-dark"),
+            current_thread="t1",
+            mode="switch",
+        )
+        assert dlg.styles.background.a == 0
+
+    def test_mcp_panel_uses_transparent_screen(self):
+        from synapse.config import Settings
+        from synapse.ui.dialogs.mcp_panel import McpPanelDialog
+
+        assert "background: transparent" in McpPanelDialog.DEFAULT_CSS
+        assert "background: $theme-bg 60%" not in McpPanelDialog.DEFAULT_CSS
+        dlg = McpPanelDialog(Settings(_env_file=None, theme="cursor-dark"))
+        assert dlg.styles.background.a == 0
+
+    def test_subagent_monitor_uses_transparent_screen(self):
+        from synapse.ui.dialogs.subagent_monitor import SubagentMonitorDialog
+
+        assert "background: transparent" in SubagentMonitorDialog.DEFAULT_CSS
+        assert "background: $theme-bg 60%" not in SubagentMonitorDialog.DEFAULT_CSS
+        dlg = SubagentMonitorDialog(MagicMock())
+        assert dlg.styles.background.a == 0
+
+
+class TestDialogWindowFitsScreen:
+    """Window height is capped to the terminal so the modal screen itself
+    never starts scrolling and draws a second scrollbar at the screen edge
+    (regression: fixed max-height windows overflowed small terminals)."""
+
+    def _make_dialog(self):
+        from synapse.ui.dialogs.base import DialogBase, OptionItem
+
+        class TestDialog(DialogBase):
+            title_text = "Sessions"
+
+            def compose_body(self):
+                return super().compose_body()
+
+            def on_mount(self):
+                super().on_mount()
+                body = self.query_one("#dialog-body")
+                body.set_options(
+                    [
+                        OptionItem(
+                            key=f"k{i}",
+                            label=f"Session {i} with a fairly long title",
+                            detail="2026-01-01 12:00",
+                        )
+                        for i in range(40)
+                    ]
+                )
+
+        return TestDialog()
+
+    def test_window_fits_small_terminal(self):
+        import asyncio
+
+        from textual.app import App
+
+        from synapse.ui.theme import get_theme
+
+        class HostApp(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+        async def exercise() -> None:
+            app = HostApp()
+            async with app.run_test(size=(100, 24)) as pilot:
+                await app.push_screen(self._make_dialog())
+                await pilot.pause()
+                await pilot.pause()
+                assert app.screen.max_scroll_y == 0
+                win = app.screen.query_one("#dialog-window")
+                assert win.size.height + 2 <= 24
+                body = app.screen.query_one("#dialog-body")
+                assert body.size.height <= win.size.height
+
+        asyncio.run(exercise())
+
+    def test_large_terminal_keeps_configured_max_height(self):
+        import asyncio
+
+        from textual.app import App
+
+        from synapse.ui.theme import get_theme
+
+        class HostApp(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+        async def exercise() -> None:
+            app = HostApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await app.push_screen(self._make_dialog())
+                await pilot.pause()
+                await pilot.pause()
+                win = app.screen.query_one("#dialog-window")
+                body = app.screen.query_one("#dialog-body")
+                assert win.size.height <= 28
+                assert body.size.height <= 22
+
+        asyncio.run(exercise())
+
+
 class TestThemeDesignerDialog:
     def test_init_loads_current_palette(self):
         from synapse.config import Settings

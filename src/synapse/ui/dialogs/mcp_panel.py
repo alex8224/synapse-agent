@@ -21,7 +21,7 @@ from synapse.ui.dialogs.base import DialogBase, OptionItem
 MCP_DIALOG_CSS = """
 McpPanelDialog {
     align: center middle;
-    background: $theme-bg 60%;
+    background: transparent;
 }
 McpPanelDialog > #dialog-window {
     width: 72;
@@ -171,6 +171,9 @@ class McpPanelDialog(DialogBase):
         "\u2191\u2193 move \u00b7 space/\u21b5 fold/toggle \u00b7 d toggle server \u00b7"
         " ctrl+a all \u00b7 s save \u00b7 r reload \u00b7 esc close"
     )
+    # Wider dialog: larger body than the shared DialogBase defaults.
+    _window_max_height: int = 38
+    _body_max_height: int = 32
 
     def __init__(
         self,

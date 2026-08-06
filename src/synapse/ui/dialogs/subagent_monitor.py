@@ -98,7 +98,12 @@ class SubagentMonitorDialog(ModalScreen[None]):
     DEFAULT_CSS = """
     SubagentMonitorDialog {
         align: center middle;
-        background: $theme-bg 60%;
+        background: transparent;
+        /* Near-full-screen window may overflow tiny terminals; never draw a
+           second scrollbar at the screen edge. */
+        scrollbar-size: 0 0;
+        scrollbar-background: $theme-bg;
+        scrollbar-color: $theme-bg;
     }
     SubagentMonitorDialog > #sa-window {
         width: 94%;
@@ -172,6 +177,10 @@ class SubagentMonitorDialog(ModalScreen[None]):
 
     def __init__(self, monitor: SubagentMonitor) -> None:
         super().__init__()
+        # Transparent screen layer so app content stays visible behind the
+        # window (same approach as ThemeDesignerDialog); the window itself
+        # remains opaque via #sa-window.
+        self.styles.background = "transparent"
         self._monitor = monitor
         self._revision = -1
         self._runs: list[SubagentRun] = []

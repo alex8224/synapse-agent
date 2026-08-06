@@ -60,7 +60,20 @@ class OptionItem:
 dialog_css = """
 DialogBase {
     align: center middle;
-    background: $theme-bg 60%;
+    /* Transparent screen layer so the app content stays visible behind the
+       dialog window (same approach as ThemeDesignerDialog). The window itself
+       remains opaque via #dialog-window below. */
+    background: transparent;
+    /* On very small terminals the window may still exceed the screen; hide
+       the modal-screen scrollbar so it never draws a second bar next to the
+       dialog body's own scroll area (window height is capped in on_mount). */
+    scrollbar-size: 0 0;
+    scrollbar-background: $theme-bg;
+    scrollbar-color: $theme-bg;
+    scrollbar-background-hover: $theme-bg;
+    scrollbar-color-hover: $theme-bg;
+    scrollbar-background-active: $theme-bg;
+    scrollbar-color-active: $theme-bg;
 }
 DialogBase > #dialog-window {
     width: 66;
@@ -339,6 +352,19 @@ class DialogBase(ModalScreen[Any]):
     _title_icon: str = "\u25c6"  # ◆
     # Border subtitle (bottom-right), compact keyboard hint.
     _title_keys: str = "\u2191\u2193 enter \u00b7 esc"
+    # Window/body height caps (CSS max-height). on_mount shrinks them further
+    # on small terminals so the window never overflows the modal screen
+    # (which would draw a second scrollbar at the right screen edge).
+    _window_max_height: int = 28
+    _body_max_height: int = 22
+
+    def __init__(self) -> None:
+        super().__init__()
+        # ``Screen.DEFAULT_CSS`` may otherwise win the root background cascade
+        # on non-ANSI themes and paint an opaque full-screen layer. Inline
+        # styles have the required priority while the dialog window itself
+        # remains opaque via ``#dialog-window``.
+        self.styles.background = "transparent"
 
     @property
     def title_text(self) -> str:
@@ -354,8 +380,17 @@ class DialogBase(ModalScreen[Any]):
         return
 
     def on_mount(self) -> None:
-        # Title lives on the window border (always visible, high contrast).
+        # Cap window height to the screen: keep the configured maximum on big
+        # terminals but shrink on small ones (leave 2 rows of margin) so the
+        # modal screen itself never starts scrolling.
+        screen_h = self.screen.size.height
         win = self.query_one("#dialog-window")
+        win_max = min(self._window_max_height, max(6, screen_h - 2))
+        win.styles.max_height = win_max
+        self.query_one("#dialog-body", DialogBody).styles.max_height = max(
+            3, min(self._body_max_height, win_max - 2)
+        )
+        # Title lives on the window border (always visible, high contrast).
         icon = (self._title_icon or "").strip()
         title = (self.title_text or "Dialog").strip()
         win.border_title = f"{icon} {title}".strip() if icon else title
