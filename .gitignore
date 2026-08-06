@@ -39,6 +39,13 @@ conversation_history/
 logs/
 site/
 
+# Benchmark evaluation artifacts (local, not part of the repo)
+benchmark21/
+jobs/
+tmp/
+harbor_eval/
+landing/
+
 # OS
 Thumbs.db
 .DS_Store.tmp/

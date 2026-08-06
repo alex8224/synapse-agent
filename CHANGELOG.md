@@ -7,6 +7,26 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.26
+
+### 新增功能
+
+- 恢复 `synapse run` 单次执行命令：headless 跑完一个任务后退出，支持 `-w/--workspace`、`-m/--model`、`--readonly`、`--thread-id`、`--debug`、`--stream/--no-stream`；适配 async-only 模型客户端（`ainvoke`）。
+- `build_coding_agent` 新增 `backend=` 与 `system_prompt=` 注入参数，支持评测 harness 将 agent 桥接到远程/容器后端并覆盖默认编码提示。
+- TUI 会话转录改为分页渲染（compact projection），长对话浏览性能提升。
+- 新增堆转储导出（`observability/heap_dump.py`），便于排查长会话内存问题。
+
+### 修复
+
+- 修复 TUI 切换会话时未释放上一会话资源（stream sink / rail widgets）的问题。
+- 修复 `enable_goals=False` 时 goal 记账 disabled middleware 构造崩溃（`goal_middleware_disabled() takes no arguments`）。
+
+### 工程改进
+
+- Git Explore 对话框与 turn rail 相关组件同步更新，补充对应单测（transcript projection、heap dump、selection、dialogs 等）。
+
+---
+
 ## v0.1.25
 
 ### 新增功能
