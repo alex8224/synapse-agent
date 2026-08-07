@@ -50,12 +50,16 @@ class InstrumentedStreamSink:
         *,
         thread_id: str,
         event_sink: AgentEventSink | None = None,
+        turn_id: str | None = None,
     ) -> None:
         self.renderer = renderer
-        self.accumulator = TurnAccumulator(
-            thread_id=thread_id,
-            event_sink=event_sink or NullEventSink(),
-        )
+        accumulator_options: dict[str, Any] = {
+            "thread_id": thread_id,
+            "event_sink": event_sink or NullEventSink(),
+        }
+        if turn_id is not None:
+            accumulator_options["turn_id"] = turn_id
+        self.accumulator = TurnAccumulator(**accumulator_options)
         self._open_answer = self.accumulator.open_answer
         self._enhanced = all(
             callable(getattr(renderer, name, None))

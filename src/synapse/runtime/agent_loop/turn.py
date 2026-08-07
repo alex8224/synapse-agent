@@ -191,6 +191,7 @@ class AgentTurnRuntime:
                 max_concurrency=int(getattr(settings, "max_concurrency", 4)),
                 sink=runner_options.renderer or _HeadlessRenderer(),
                 event_sink=safe_sink,
+                turn_id=context.turn_id,
                 cancel_event=token.event,
                 show_reasoning_placeholders=bool(
                     getattr(settings, "show_reasoning_placeholders", True)

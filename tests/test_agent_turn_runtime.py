@@ -74,6 +74,25 @@ def test_headless_run_completes_without_sink() -> None:
         runtime_loop.close()
 
 
+def test_runtime_passes_frozen_turn_id_to_stream_runner() -> None:
+    received: list[str | None] = []
+
+    def runner(*args: Any, turn_id: str | None = None, **kwargs: Any) -> StreamResult:
+        del args, kwargs
+        received.append(turn_id)
+        return _completed_result()
+
+    runtime_loop = AsyncRuntime(name="test-turn-id")
+    try:
+        runtime = AgentTurnRuntime(runtime_loop, stream_runner=runner)
+        result = runtime.run(_context(turn_id="frozen-turn"), timeout=3)
+
+        assert result.status is TurnStatus.COMPLETED
+        assert received == ["frozen-turn"]
+    finally:
+        runtime_loop.close()
+
+
 def test_async_runtime_close_drains_cleanup_spawned_during_cancel() -> None:
     runtime_loop = AsyncRuntime(name="test-runtime-cancel-cleanup")
     started = threading.Event()

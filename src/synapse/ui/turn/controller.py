@@ -128,9 +128,17 @@ class TurnController:
             turn_id=context.turn_id,
         )
         bridge = TextualTurnEventBridge(renderer, app._transcript.call_from_thread)
-        subscription = runtime.subscribe(bridge.emit, after_sequence=after_sequence)
-        for envelope in subscription.replay:
+        # SessionRuntime subscriptions deliver SessionEventEnvelope objects;
+        # the renderer/bridge consumes the inner turn event only.  Passing the
+        # envelope directly makes the renderer fail on ``event.kind`` and it
+        # then closes itself, leaving the initial activity line permanently
+        # visible while the transcript stays empty.
+        def forward(envelope: Any) -> None:
             bridge.emit(envelope.event)
+
+        subscription = runtime.subscribe(forward, after_sequence=after_sequence)
+        for envelope in subscription.replay:
+            forward(envelope)
         self._event_bridge = bridge
         self._session_subscription = subscription
         return runtime
@@ -158,7 +166,11 @@ class TurnController:
 
     def _attach_renderer(self, runtime: SessionRuntime, context: TurnContext) -> None:
         del context
-        self.attach(runtime, after_sequence=runtime.snapshot().latest_sequence)
+        # ``SessionRuntime.start()`` schedules execution before invoking
+        # ``on_started``. A fast provider can therefore publish activity/text
+        # before this callback attaches. Replay the bounded broker history;
+        # TextualTurnEventRenderer filters events from older turn ids.
+        self.attach(runtime, after_sequence=0)
 
     def _detach_renderer(self) -> None:
         subscription = self._session_subscription

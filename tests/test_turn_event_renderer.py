@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from synapse.runtime.sessions import SessionEventBroker
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     TextPayload,
@@ -11,6 +12,7 @@ from synapse.runtime.streaming import (
     TurnEventKind,
     TurnTerminalPayload,
 )
+from synapse.ui.turn.controller import TurnController
 from synapse.ui.turn.event_bridge import TextualTurnEventBridge
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
 
@@ -137,3 +139,58 @@ def test_bridge_keeps_terminal_and_stops_after_close() -> None:
     assert renderer.closed is True
     bridge.emit(_event(41, TurnEventKind.INFO, "ignored"))
     assert bridge.pending_count == 0
+
+
+def test_turn_controller_unwraps_session_event_envelope_for_renderer() -> None:
+    host = _Host()
+    broker = SessionEventBroker("thread")
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "thread_id": "thread",
+            "active_context": lambda self: type(
+                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
+            )(),
+            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
+                callback, after_sequence=after_sequence
+            ),
+        },
+    )()
+    app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    controller = TurnController(app)
+
+    controller.attach(runtime)
+    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("hello", "m1")))
+
+    answers = [call for call in host.calls if call[0] == "commit_answer"]
+    assert answers == [("commit_answer", ("hello",), {})]
+    controller._detach_renderer()
+
+
+def test_turn_controller_replays_events_emitted_before_renderer_attach() -> None:
+    host = _Host()
+    broker = SessionEventBroker("thread")
+    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("early", "m1")))
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "thread_id": "thread",
+            "active_context": lambda self: type(
+                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
+            )(),
+            "snapshot": lambda self: type("Snapshot", (), {"latest_sequence": 1})(),
+            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
+                callback, after_sequence=after_sequence
+            ),
+        },
+    )()
+    app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    controller = TurnController(app)
+
+    controller._attach_renderer(runtime, runtime.active_context())
+
+    answers = [call for call in host.calls if call[0] == "commit_answer"]
+    assert answers == [("commit_answer", ("early",), {})]
+    controller._detach_renderer()

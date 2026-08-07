@@ -575,6 +575,7 @@ def stream_agent(
     subgraphs: bool = True,
     sink: StreamSink | None = None,
     event_sink: AgentEventSink | None = None,
+    turn_id: str | None = None,
     cancel_event: threading.Event | None = None,
     show_reasoning_placeholders: bool = True,
 ) -> StreamResult:
@@ -619,6 +620,7 @@ def stream_agent(
         renderer,
         thread_id=InstrumentedStreamSink.thread_id_from_config(config),
         event_sink=event_sink,
+        turn_id=turn_id,
     )
     active_tools: list[str] = []
     use_tool_items = sink_supports_tool_items(sink)
