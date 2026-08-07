@@ -7,6 +7,26 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.27
+
+### 新增功能
+
+- TUI topbar 实时显示 token 输出速率与首 token 时间（TTFT）。
+- README 重设计并拆分中英文版本，`docs/sessions.md` 同步补充会话说明。
+
+### 修复
+
+- 修复 TUI 控制器拆分后 Esc 取消与 goal 状态未保留的问题（跨控制器保留 goal 取消状态、Esc 时暂停 active goal）。
+- 修复 TUI 旧版 transcript projections 迁移在主线程阻塞的问题，改为在子进程中执行。
+- 修复对话框 modal 屏幕出现第二个滚动条、git changes popover 滚动条重复的问题。
+
+### 工程改进
+
+- `tui.py` 拆分为领域控制器（ChromeController、TranscriptController、SlashController、PromptController、TurnController），完成控制器抽取并修复 Codex usage 线程模型。
+- 限制 TUI session 与工具输出内存占用，降低长会话资源消耗。
+
+---
+
 ## v0.1.26
 
 ### 新增功能
