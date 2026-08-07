@@ -1913,49 +1913,6 @@ class CodingAgentApp(App[None]):
 
 
 
-
-
-
-
-
-    def should_suppress_dag_task_tool_group(self, calls: list[dict]) -> bool:
-        """Suppress the parent ``task`` tool group when the subagent monitor
-        is tracking matching runs.
-
-        Called by TextualStreamSink before rendering a tool batch."""
-        if not calls:
-            return False
-        if not all(c.get("name") == "task" for c in calls):
-            return False
-        monitor = getattr(self, "_subagent_monitor", None)
-        if monitor is None:
-            return False
-        _, runs = monitor.snapshot()
-        known_ids = {r.call_id for r in runs if r.status in {"pending", "running"}}
-        if not known_ids:
-            return False
-        return all(c.get("id") in known_ids for c in calls)
-
-    def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
-        """Show an in-turn subagent status indicator when DAG tasks are detected.
-
-        On first call per turn (force=False), auto-opens the subagent monitor
-        dialog so the user can see live task planning and progress immediately.
-        When opened manually via /subagents, force=True refreshes the dialog."""
-        monitor = getattr(self, "_subagent_monitor", None)
-        if monitor is None:
-            return
-        _, runs = monitor.snapshot()
-        if not runs:
-            return
-        if not force and getattr(self, "_subagent_monitor_auto_opened", False):
-            return
-        # Auto-open on first detection (the dialog polls and auto-refreshes).
-        if not force:
-            self._subagent_monitor_auto_opened = True
-        self._open_subagent_monitor()
-
-
     def _apply_mcp_server_toggle(self, server_name: str) -> None:
         """Temporarily toggle one MCP server through the existing slash handler."""
         self._slash.mcp_server_toggle(server_name)

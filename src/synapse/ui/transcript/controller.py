@@ -64,10 +64,39 @@ class TranscriptController:
         self._app._refresh_git_chrome()
 
     def should_suppress_dag_task_tool_group(self, calls: list[Any]) -> bool:
-        return bool(self._app.should_suppress_dag_task_tool_group(calls))
+        """Suppress the parent ``task`` tool group when the subagent monitor
+        is tracking matching runs (called by TextualStreamSink)."""
+        if not calls:
+            return False
+        if not all(c.get("name") == "task" for c in calls):
+            return False
+        monitor = getattr(self._app, "_subagent_monitor", None)
+        if monitor is None:
+            return False
+        _, runs = monitor.snapshot()
+        known_ids = {r.call_id for r in runs if r.status in {"pending", "running"}}
+        if not known_ids:
+            return False
+        return all(c.get("id") in known_ids for c in calls)
 
     def sync_subagent_monitor_block(self, *, force: bool = False) -> None:
-        self._app.sync_subagent_monitor_block(force=force)
+        """Show an in-turn subagent status indicator when DAG tasks are detected.
+
+        On first call per turn (force=False), auto-opens the subagent monitor
+        dialog so the user can see live task planning and progress immediately.
+        When opened manually via /subagents, force=True refreshes the dialog."""
+        monitor = getattr(self._app, "_subagent_monitor", None)
+        if monitor is None:
+            return
+        _, runs = monitor.snapshot()
+        if not runs:
+            return
+        if not force and getattr(self._app, "_subagent_monitor_auto_opened", False):
+            return
+        # Auto-open on first detection (the dialog polls and auto-refreshes).
+        if not force:
+            self._app._subagent_monitor_auto_opened = True
+        self._app._open_subagent_monitor()
 
     # -- stream ----------------------------------------------------------
 
