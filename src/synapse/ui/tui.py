@@ -30,7 +30,6 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 import synapse.ui.tui_styles as _styles
-from synapse.app.agent import build_coding_agent
 from synapse.content.input_history import InputHistory
 from synapse.content.multimodal import (
     ImageBank,
@@ -46,6 +45,7 @@ from synapse.sessions.transcript_projection import (
 from synapse.subagent_monitor import SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
+from synapse.ui.agent_lifecycle import AgentLifecycleController
 from synapse.ui.bottombar import (
     BottomBarAlign,
     BottomBarComponent,
@@ -313,10 +313,11 @@ class CodingAgentApp(App[None]):
         self.thread_id = thread_id
         self.env_path = env_path
         self.project_root = project_root or Path.cwd()
-        self._defer_agent_build = bool(defer_agent_build and agent is None)
-        self._agent_ready = threading.Event()
-        self._agent_error: str | None = None
-        self._mcp_attaching = False
+        self._lifecycle = AgentLifecycleController(
+            self,
+            agent=agent,
+            defer_agent_build=defer_agent_build,
+        )
         self._mcp_reloading = False
         self._codex = CodexUsageService(settings=settings)
         self._codex_bottombar_hovered = False
@@ -324,16 +325,9 @@ class CodingAgentApp(App[None]):
         self._goal_listener_bound = False
         self._goal_listener_fn: Any = None
         self._image_bank = ImageBank()
-        if agent is not None:
-            self._agent_ready.set()
         self._busy = False
         self._compacting_context = False
         self._cancel_event = threading.Event()
-        # Optional background provider prewarm after resuming a large session.
-        # Cancelled as soon as the user submits a real message so the warm-up
-        # and the real turn never queue two huge requests concurrently.
-        self._prewarm_cancel_event = threading.Event()
-        self._prewarm_started = False
         self._steer_bound_queue: SteerQueue | None = None
         self._steer_listener: Any | None = None
         self._status = StatusController(self)
@@ -453,6 +447,49 @@ class CodingAgentApp(App[None]):
         """Generation used to reject callbacks from an older session stream."""
         return self._transcript_generation
 
+    @property
+    def _agent_ready(self) -> threading.Event:
+        """Compatibility view of the lifecycle controller's readiness event."""
+        lifecycle = self.__dict__.get("_lifecycle")
+        if lifecycle is None:
+            lifecycle = AgentLifecycleController(
+                self,
+                agent=getattr(self, "agent", None),
+                defer_agent_build=False,
+            )
+            self.__dict__["_lifecycle"] = lifecycle
+        return lifecycle.agent_ready
+
+    @property
+    def _agent_error(self) -> str | None:
+        lifecycle = self.__dict__.get("_lifecycle")
+        return lifecycle.agent_error if lifecycle is not None else None
+
+    @property
+    def _mcp_attaching(self) -> bool:
+        lifecycle = self.__dict__.get("_lifecycle")
+        return lifecycle.mcp_attaching if lifecycle is not None else False
+
+    @_mcp_attaching.setter
+    def _mcp_attaching(self, value: bool) -> None:
+        lifecycle = self.__dict__.get("_lifecycle")
+        if lifecycle is None:
+            lifecycle = AgentLifecycleController(
+                self,
+                agent=getattr(self, "agent", None),
+                defer_agent_build=False,
+            )
+            self.__dict__["_lifecycle"] = lifecycle
+        lifecycle.set_mcp_attaching(value)
+
+    @property
+    def _prewarm_cancel_event(self) -> threading.Event:
+        return self._lifecycle.prewarm_cancel_event
+
+    @property
+    def _prewarm_started(self) -> bool:
+        return self._lifecycle.state.prewarm_started
+
     def _call_for_transcript(
         self,
         generation: int,
@@ -496,7 +533,7 @@ class CodingAgentApp(App[None]):
         log.show_vertical_scrollbar = False
         log.show_horizontal_scrollbar = False
         self.query_one("#prompt", Input).focus()
-        if self._defer_agent_build or self.agent is None:
+        if self._lifecycle.should_build_on_mount():
             self.set_activity("starting", "loading agent…", True)
             self.append_event("starting agent in background…", "dim")
             self._bg_build_agent()
@@ -505,162 +542,17 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="startup")
     def _bg_build_agent(self) -> None:
-        """Build agent off the UI thread; attach MCP in a second phase."""
-        from synapse.app.agent import attach_mcp_to_agent, build_coding_agent
-        from synapse.observability.startup_trace import duration
-
-        startup_started = time.perf_counter()
-
-        def report_progress(detail: str) -> None:
-            self.call_from_thread(self.set_activity, "starting", detail, False)
-
-        try:
-            agent = build_coding_agent(
-                self.settings,
-                project_root=self.project_root,
-                load_mcp=False,
-                progress=report_progress,
-                prompt_cache_key=lambda: self.thread_id,
-            )
-            self.agent = agent
-            self._agent_ready.set()
-            duration("agent.ready", startup_started, phase="startup")
-            self.call_from_thread(self._on_agent_ready, False)
-        except Exception as exc:  # noqa: BLE001
-            self._agent_error = str(exc)
-            self._agent_ready.set()
-            self.call_from_thread(
-                self.append_event,
-                f"agent start failed: {exc}",
-                "bold red",
-            )
-            self.call_from_thread(self.set_activity, "idle", "agent failed", True)
-            return
-
-        if not bool(getattr(self.settings, "enable_mcp", True)):
-            return
-        if getattr(agent, "_coding_mcp_attached", False):
-            return
-        mcp_started = time.perf_counter()
-        try:
-            self._mcp_attaching = True
-            self.call_from_thread(
-                self.set_activity, "starting", "connecting MCP…", False
-            )
-            agent2 = attach_mcp_to_agent(
-                self.settings,
-                agent,
-                project_root=self.project_root,
-            )
-            if self.agent is not agent:
-                # A model switch replaced phase-1 while MCP was connecting.
-                # Rebuild the current graph with the now-live pool; this path
-                # reuses tools and performs no second network connection.
-                current = self.agent
-                if current is None:
-                    return
-                current_with_mcp = attach_mcp_to_agent(
-                    self.settings,
-                    current,
-                    project_root=self.project_root,
-                )
-                if self.agent is current:
-                    self.agent = current_with_mcp
-                    self.call_from_thread(self._bind_steer_queue)
-                    self.call_from_thread(self._on_mcp_attached)
-                return
-            self.agent = agent2
-            self.call_from_thread(self._bind_steer_queue)
-            if not self._busy:
-                self.call_from_thread(self._on_mcp_attached)
-            else:
-                self.call_from_thread(
-                    self.append_event,
-                    "MCP tools attached (will apply next turn)",
-                    "dim",
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(
-                self.append_event,
-                f"MCP attach failed (agent still usable): {exc}",
-                "yellow",
-            )
-        finally:
-            duration("mcp.attach", mcp_started, phase="startup")
-            self._mcp_attaching = False
-            if not self._busy:
-                self.call_from_thread(self.set_activity, "idle", "ready", True)
-                # MCP attach failed or was skipped: the phase-1 agent is the
-                # final shape, so prewarm it (no-op if already started).
-                self.call_from_thread(self._maybe_start_prewarm)
+        """Build the agent off the UI thread; the controller owns the worker body."""
+        self._lifecycle.build_agent()
 
     def _on_agent_ready(self, with_mcp: bool) -> None:
-        label = "agent ready" + (" + MCP" if with_mcp else " (MCP pending)")
-        self.append_event(label, "dim")
-        self.set_activity("idle", "ready", True)
-        self._bind_steer_queue()
-        self._bind_goal_listener()
-        self._load_current_goal()
-        self._restore_session_transcript(announce=True)
-        # Prewarm only when MCP will never attach: a prewarm sent before the
-        # MCP phase would use a different tool schema than real turns, which
-        # breaks the provider prefix cache entirely. With MCP enabled, prewarm
-        # fires from _on_mcp_attached instead.
-        if not bool(getattr(self.settings, "enable_mcp", True)):
-            self._maybe_start_prewarm()
+        self._lifecycle.on_agent_ready(with_mcp)
 
     def _maybe_start_prewarm(self) -> None:
-        """Kick off an optional background provider prewarm after resume.
-
-        Enabled only via ``session_prewarm_enabled`` (default off). Uses the
-        live agent on a throwaway thread so the cached prefix matches a real
-        turn; the user's first message cancels it. Must be called only once the
-        agent is in its final shape (MCP attached), otherwise the tool schema
-        differs from real turns and the provider cache cannot be hit. See
-        ``synapse.runtime.session_prewarm`` for details.
-        """
-        if not bool(getattr(self.settings, "session_prewarm_enabled", False)):
-            return
-        if self._prewarm_started or self.agent is None or not self.thread_id:
-            return
-        # MCP is attaching right now: wait for _on_mcp_attached to call us
-        # again with the final agent so the cached prefix matches real turns.
-        if self._mcp_attaching:
-            return
-        self._prewarm_started = True
-        self._prewarm_cancel_event = threading.Event()
-
-        def _worker() -> None:
-            from synapse.runtime.session_prewarm import prewarm_session
-
-            try:
-                prewarm_session(
-                    self.agent,
-                    self.thread_id,
-                    cancel_event=self._prewarm_cancel_event,
-                    notify=lambda text: self.call_from_thread(
-                        self.append_event, text, "dim"
-                    ),
-                )
-            except Exception:  # noqa: BLE001 - prewarm must never break the session
-                pass
-
-        threading.Thread(target=_worker, name="session-prewarm", daemon=True).start()
+        self._lifecycle.maybe_start_prewarm()
 
     def _on_mcp_attached(self) -> None:
-        servers = list(getattr(build_coding_agent, "last_mcp_servers", []) or [])
-        tools = list(getattr(build_coding_agent, "last_mcp_tool_names", []) or [])
-        warnings = list(getattr(build_coding_agent, "last_mcp_warnings", []) or [])
-        self.append_event(
-            f"MCP ready: servers={servers or '-'} tools={len(tools)}",
-            "dim",
-        )
-        for w in warnings:
-            self.append_event(f"mcp: {w}", "yellow")
-        self.set_activity("idle", "ready", True)
-        # Agent is now in its final shape (MCP tools included); prewarm with
-        # the exact same tool schema real turns will use.
-        self._maybe_start_prewarm()
+        self._lifecycle.on_mcp_attached()
 
     # -- prompt controller forwarding --------------------------------------
 
@@ -2031,9 +1923,9 @@ class CodingAgentApp(App[None]):
             self.call_from_thread(self._attach_mcp_after_switch)
 
     def _attach_mcp_after_switch(self) -> None:
-        if self._mcp_attaching or self.agent is None:
+        if self._lifecycle.mcp_attaching or self.agent is None:
             return
-        self._mcp_attaching = True
+        self._lifecycle.set_mcp_attaching(True)
         self._attach_mcp_after_switch_bg(self.agent)
 
     @work(thread=True, exclusive=True, group="model-switch-mcp")
@@ -2058,7 +1950,7 @@ class CodingAgentApp(App[None]):
             return
         finally:
             duration("mcp.attach", mcp_started, phase="model_switch")
-            self._mcp_attaching = False
+            self._lifecycle.set_mcp_attaching(False)
         if self.agent is not base_agent:
             return
         self.agent = agent
@@ -2075,7 +1967,7 @@ class CodingAgentApp(App[None]):
     def _import_codex_session_bg(self, native_id: str) -> None:
         """Seed one Codex text snapshot, then switch through the normal session path."""
         turn_agent = self._active_turn_agent or self.agent
-        if not self._agent_ready.wait(timeout=180) or turn_agent is None:
+        if not self._lifecycle.agent_ready.wait(timeout=180) or turn_agent is None:
             self.call_from_thread(
                 self.append_event,
                 "Codex import unavailable: agent is still starting",

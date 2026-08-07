@@ -43,7 +43,11 @@ class TurnController:
             return
         # A real turn supersedes the background prewarm; stop it so two huge
         # requests never queue on the provider at the same time.
-        app._prewarm_cancel_event.set()
+        lifecycle = getattr(app, "_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.cancel_prewarm()
+        else:
+            app._prewarm_cancel_event.set()
 
         # 渲染用文本保留粘贴占位符（大块内容在显示时压缩），推理/历史用完整展开文本。
         text, display = app._prompt.expand_paste(text)
