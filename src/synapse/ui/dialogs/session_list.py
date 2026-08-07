@@ -38,8 +38,8 @@ class SessionListDialog(DialogBase):
         try:
             from synapse.sessions.store import SessionStore
 
-            store = SessionStore(settings.resolved_sessions_path())
-            self._sessions = store.list_nonempty(limit=50)
+            with SessionStore(settings.resolved_sessions_path()) as store:
+                self._sessions = store.list_nonempty(limit=50)
         except Exception:  # noqa: BLE001
             self._sessions = []
 

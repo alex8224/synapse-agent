@@ -361,6 +361,7 @@ class CodingAgentApp(App[None]):
         # Global project catalog (projection) and per-turn summary persistence.
         self._project_catalog: Any = None
         self._summary_store: Any = None
+        self._session_store: Any = None
         self._context_tokens = 0
         self._last_out_tokens = 0
         self._input_tokens = 0
@@ -389,6 +390,7 @@ class CodingAgentApp(App[None]):
         self._tool_output_stats: dict[str, Any] = {}
         self._tool_output_stats_thread_id: str | None = None
         self._tool_output_refresh_pending = False
+        self._tool_output_refresh_dirty = False
         self._chrome = ChromeController(self)
         self._topbar = TopBarRegistry()
         self._install_default_topbar()
@@ -508,6 +510,18 @@ class CodingAgentApp(App[None]):
             self._transcript_projection.close()
         except Exception:  # noqa: BLE001 - shutdown best effort
             pass
+        summary_store = getattr(self, "_summary_store", None)
+        if summary_store is not None:
+            try:
+                summary_store.close()
+            except Exception:  # noqa: BLE001 - shutdown best effort
+                pass
+        session_store = getattr(self, "_session_store", None)
+        if session_store is not None and session_store is not summary_store:
+            try:
+                session_store.close()
+            except Exception:  # noqa: BLE001 - shutdown best effort
+                pass
 
     def on_mount(self) -> None:
         # Apply configured theme before first paint of chrome widgets.
@@ -636,8 +650,9 @@ class CodingAgentApp(App[None]):
     def _on_tool_output_metrics_changed(self, thread_id: str) -> None:
         self._chrome.on_tool_output_metrics_changed(thread_id)
 
-    def _refresh_tool_output_stats(self) -> None:
-        self._chrome.refresh_tool_output_stats()
+    @work(thread=True, exclusive=True, group="tool-output-stats")
+    def _refresh_tool_output_stats_bg(self, thread_id: str) -> None:
+        self._chrome.refresh_tool_output_stats_bg(thread_id)
 
     def _begin_turn_usage(self) -> None:
         self._chrome.begin_turn_usage()

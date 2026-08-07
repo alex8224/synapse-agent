@@ -9,6 +9,7 @@ without a running Textual app.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +38,8 @@ class PromptController:
         self._input_history = input_history
         self._image_bank = image_bank
         self.state = PromptState()
+        self._complete_context: Any = None
+        self._complete_context_at = 0.0
 
     # -- helpers ------------------------------------------------------------
 
@@ -44,7 +47,11 @@ class PromptController:
         """Slash-completion context (settings-driven)."""
         from synapse.commands.slash_complete import build_complete_context
 
-        return build_complete_context(self._app.settings)
+        now = time.monotonic()
+        if self._complete_context is None or now - self._complete_context_at >= 5.0:
+            self._complete_context = build_complete_context(self._app.settings)
+            self._complete_context_at = now
+        return self._complete_context
 
     def _prompt_widget(self) -> Input:
         return self._app.query_one("#prompt", Input)

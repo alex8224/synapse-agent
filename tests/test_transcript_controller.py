@@ -21,6 +21,7 @@ class _FakeTimeline:
         except (AttributeError, TypeError):
             pass
         self.children.append(block)
+        block.remove = lambda: self.children.remove(block)
 
     def scroll_end(self, animate: bool = False) -> None:
         pass
@@ -54,7 +55,11 @@ class _FakeMain:
 
 class _FakeApp:
     def __init__(self) -> None:
-        self.settings = SimpleNamespace(expand_thinking=False, tool_details_expanded=True)
+        self.settings = SimpleNamespace(
+            expand_thinking=False,
+            tool_details_expanded=True,
+            history_tail_turns=20,
+        )
         self.screen = SimpleNamespace(selections=[], get_selected_text=lambda: "")
         self.size = SimpleNamespace(width=100)
         self.timeline = _FakeTimeline()
@@ -81,6 +86,7 @@ class _FakeApp:
 def _make() -> tuple[TranscriptController, _FakeApp]:
     app = _FakeApp()
     controller = TranscriptController(app)
+    app._transcript = controller
     return controller, app
 
 
@@ -115,6 +121,21 @@ def test_reset_all_drops_mounted_references() -> None:
     assert controller.state.live_stream_block is None
     assert controller.state.pending_answer_divider is False
     assert controller.state.last_answer_text == ""
+
+
+def test_live_transcript_keeps_only_configured_completed_turns() -> None:
+    controller, app = _make()
+    app.settings.history_tail_turns = 2
+
+    for index in range(4):
+        controller.append_user(f"user-{index}")
+        controller.commit_answer(f"answer-{index}")
+
+    visible_users = [block.full_text for block in controller.state.user_turns]
+    assert visible_users == ["user-2", "user-3"]
+    assert len(controller.state.live_turn_pages) == 1
+    assert len(controller.state.current_turn_blocks) == 2
+    assert all("user-0" not in getattr(block, "full_text", "") for block in app.timeline.children)
 
 
 def test_commit_thought_without_live_stream_mounts_sealed_block() -> None:

@@ -87,6 +87,15 @@ class TurnPersistenceController:
         )
         try:
             app._transcript_projection.append_turn(app.thread_id, events, usage=usage)
+            history = getattr(app, "_history", None)
+            history_state = getattr(history, "state", None)
+            if history_state is not None and history_state.thread_id == app.thread_id:
+                history_state.total_turns += 1
+                history_state.before_turn = min(
+                    history_state.before_turn or history_state.total_turns,
+                    max(1, history_state.total_turns - len(app._transcript.state.user_turns) + 1),
+                )
+                history_state.has_more = history_state.before_turn > 1
         except Exception:  # noqa: BLE001 - checkpoint remains source of truth
             pass
 
@@ -164,5 +173,8 @@ class TurnPersistenceController:
         if app._summary_store is None:
             from synapse.sessions.store import SessionStore
 
-            app._summary_store = SessionStore(app.settings.resolved_sessions_path())
+            app._summary_store = getattr(app, "_session_store", None)
+            if app._summary_store is None:
+                app._summary_store = SessionStore(app.settings.resolved_sessions_path())
+                app._session_store = app._summary_store
         return app._summary_store

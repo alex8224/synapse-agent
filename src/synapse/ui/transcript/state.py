@@ -17,6 +17,9 @@ class TranscriptState:
     user_turns: list[UserTurnBlock] = field(default_factory=list)
     thought_blocks: list[ThoughtBlock] = field(default_factory=list)
     tool_blocks: list[ToolGroupBlock] = field(default_factory=list)
+    # Completed mounted turns, oldest first. Each page starts with one UserTurnBlock.
+    live_turn_pages: list[list[object]] = field(default_factory=list)
+    current_turn_blocks: list[object] = field(default_factory=list)
     live_stream_block: ThoughtBlock | AnswerBlock | None = None
     live_stream_kind: str | None = None
     live_tool_block: ToolGroupBlock | None = None

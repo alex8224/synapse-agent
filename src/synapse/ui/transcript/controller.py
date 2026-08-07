@@ -204,6 +204,7 @@ class TranscriptController:
         timeline = self._app.query_one("#log", VerticalScroll)
         follow = timeline.max_scroll_y <= 0 or timeline.scroll_y >= timeline.max_scroll_y - 1
         timeline.mount(block)
+        self.state.current_turn_blocks.append(block)
         if follow:
             self._app.call_after_refresh(self._scroll_timeline)
 
@@ -230,11 +231,18 @@ class TranscriptController:
         full_text: str | None = None,
     ) -> None:
         st = self.state
+        if st.current_turn_blocks:
+            st.live_turn_pages.append(st.current_turn_blocks)
+            st.current_turn_blocks = []
+            self._trim_live_turn_pages()
         imgs = list(images or [])
+        history_state = getattr(getattr(self._app, "_history", None), "state", None)
+        total_turns = int(getattr(history_state, "total_turns", 0) or 0)
+        turn_index = max(total_turns + 1, len(st.user_turns) + 1)
         block = UserTurnBlock(
             text or "",
             stamp=_stamp(),
-            turn_index=len(st.user_turns) + 1,
+            turn_index=turn_index,
             image_count=len(imgs),
             full_text=full_text,
         )
@@ -243,6 +251,48 @@ class TranscriptController:
         self._refresh_turn_rail()
         st.in_tool_rail = False
         st.pending_answer_divider = False
+
+    def _trim_live_turn_pages(self) -> None:
+        """Unmount completed live turns beyond the configured visible window."""
+        st = self.state
+        limit = max(1, int(getattr(self._app.settings, "history_tail_turns", 20) or 20))
+        removed = False
+        while len(st.live_turn_pages) >= limit:
+            page = st.live_turn_pages.pop(0)
+            self._drop_page_references(page)
+            for block in page:
+                try:
+                    block.remove()
+                except Exception:  # noqa: BLE001 - block may already be detached
+                    pass
+            removed = True
+        if not removed:
+            return
+        self._renumber_user_turns()
+        self._refresh_turn_rail()
+        try:
+            from synapse.ui.textual_lifecycle import clear_textual_style_cache_refs
+
+            clear_textual_style_cache_refs()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _drop_page_references(self, page: list[object]) -> None:
+        st = self.state
+        for block in page:
+            if isinstance(block, UserTurnBlock) and block in st.user_turns:
+                st.user_turns.remove(block)
+            elif isinstance(block, ThoughtBlock) and block in st.thought_blocks:
+                st.thought_blocks.remove(block)
+            elif isinstance(block, ToolGroupBlock) and block in st.tool_blocks:
+                st.tool_blocks.remove(block)
+
+    def _renumber_user_turns(self) -> None:
+        history_state = getattr(getattr(self._app, "_history", None), "state", None)
+        total_turns = int(getattr(history_state, "total_turns", 0) or 0)
+        start = max(1, total_turns - len(self.state.user_turns) + 1)
+        for index, block in enumerate(self.state.user_turns, start=start):
+            block.turn_index = index
 
     def _refresh_turn_rail(self) -> None:
         """Rebuild right-side turn markers from current user anchors."""
@@ -590,6 +640,8 @@ class TranscriptController:
         st.user_turns.clear()
         st.thought_blocks.clear()
         st.tool_blocks.clear()
+        st.live_turn_pages.clear()
+        st.current_turn_blocks.clear()
         st.live_stream_block = None
         st.live_stream_kind = None
         st.live_tool_block = None

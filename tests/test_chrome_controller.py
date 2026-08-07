@@ -37,6 +37,44 @@ def test_fetch_codex_usage_bg_falls_back_inline_on_ui_thread() -> None:
     assert app.calls == ["ready"]
 
 
+def test_reload_tool_output_stats_schedules_worker_without_reading_inline() -> None:
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = False
+    app._tool_output_refresh_dirty = False
+    app._tool_output_repo = SimpleNamespace(
+        chrome_stats=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("inline read"))
+    )
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+
+    ChromeController(app).reload_tool_output_stats()
+
+    assert scheduled == ["thread-1"]
+    assert app._tool_output_refresh_pending is True
+
+
+def test_apply_tool_output_stats_reloads_once_when_dirty() -> None:
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = True
+    app._tool_output_refresh_dirty = True
+    app._tool_output_stats = {}
+    app._tool_output_stats_thread_id = None
+    app._refresh_topbar = lambda: app.calls.append("topbar")
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.apply_tool_output_stats("thread-1", {"transformed": 1})
+
+    assert app._tool_output_stats == {"transformed": 1}
+    assert app.calls == ["topbar"]
+    assert scheduled == ["thread-1"]
+
+
 def test_fetch_codex_reset_credits_bg_falls_back_inline_on_ui_thread() -> None:
     app = _App()
     controller = ChromeController(app)

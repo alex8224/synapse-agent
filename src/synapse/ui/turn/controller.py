@@ -82,7 +82,11 @@ class TurnController:
         try:
             from synapse.sessions.store import SessionStore
 
-            SessionStore(app.settings.resolved_sessions_path()).touch(
+            store = getattr(app, "_session_store", None)
+            if store is None:
+                store = SessionStore(app.settings.resolved_sessions_path())
+                app._session_store = store
+            store.touch(
                 app.thread_id,
                 title_hint=text,
                 model=str(app.settings.model),

@@ -145,8 +145,8 @@ def build_complete_context(settings: Any | None) -> SlashCompleteContext:
     if settings is None:
         return ctx
     try:
-        store = SessionStore(settings.resolved_sessions_path())
-        sessions = store.list(limit=50)
+        with SessionStore(settings.resolved_sessions_path()) as store:
+            sessions = store.list(limit=50)
         ctx.sessions = [SessionChoice(thread_id=s.thread_id, title=s.title or "") for s in sessions]
         ctx.thread_ids = [s.thread_id for s in sessions]
         ctx.session_titles = [

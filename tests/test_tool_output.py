@@ -95,6 +95,9 @@ def test_search_log_and_retrieval_metrics(tmp_path: Path) -> None:
     )
     stats = repo.stats(thread_id="thread-a")
     assert stats["transformed"] == 2 and stats["retrieval_bytes"] > 0
+    chrome = repo.chrome_stats(thread_id="thread-a")
+    assert chrome["transformed"] == stats["transformed"]
+    assert chrome["effective_saved_bytes"] == stats["effective_saved_bytes"]
 
 
 def test_diff_json_code_and_plugin_transforms() -> None:

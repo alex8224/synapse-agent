@@ -517,5 +517,7 @@ class TranscriptHistoryController:
             or timeline.scroll_y >= timeline.max_scroll_y - 1
         )
         timeline.mount(*blocks)
+        # ``TranscriptController._mount_block`` tracks live writes; restored batches
+        # are owned by ``state.pages`` and must not be counted a second time.
         if follow:
             app.call_after_refresh(app._transcript._scroll_timeline)

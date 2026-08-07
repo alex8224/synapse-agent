@@ -489,6 +489,47 @@ class ToolOutputRepository:
             "model_reuse_events": model_reuse_events,
         }
 
+    def chrome_stats(self, *, thread_id: str) -> dict[str, Any]:
+        """Return O(1)-memory counters required by the TUI topbar.
+
+        SQLite's JSON1 extension performs the cumulative sums in-process so a
+        long-running session never materializes and parses every event in Python.
+        """
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS events,
+                    COALESCE(SUM(CASE WHEN json_extract(event_json, '$.outcome') =
+                        'transformed' THEN 1 ELSE 0 END), 0) AS transformed,
+                    COALESCE(SUM(CAST(json_extract(event_json, '$.original_bytes') AS INTEGER)), 0)
+                        AS original_bytes,
+                    COALESCE(SUM(CAST(json_extract(event_json, '$.visible_bytes') AS INTEGER)), 0)
+                        AS visible_bytes
+                FROM tool_output_events
+                WHERE thread_id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+            retrieval = conn.execute(
+                "SELECT COALESCE(SUM(returned_bytes), 0) AS returned_bytes "
+                "FROM tool_output_retrieval_events WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        original = int(row["original_bytes"] or 0)
+        visible = int(row["visible_bytes"] or 0)
+        returned = int(retrieval["returned_bytes"] or 0)
+        saved = max(0, original - visible)
+        return {
+            "events": int(row["events"] or 0),
+            "transformed": int(row["transformed"] or 0),
+            "original_bytes": original,
+            "visible_bytes": visible,
+            "saved_bytes": saved,
+            "retrieval_bytes": returned,
+            "effective_saved_bytes": max(0, saved - returned),
+        }
+
     def stats(self, *, thread_id: str | None = None) -> dict[str, Any]:
         where, params = (" WHERE thread_id = ?", (thread_id,)) if thread_id else ("", ())
         with self._lock, self._connection() as conn:
@@ -718,4 +759,3 @@ class ToolOutputRepository:
                     seen.add(line_no)
                     selected.append((line_no, lines[line_no]))
         return sorted(selected)
-

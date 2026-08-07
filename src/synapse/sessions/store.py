@@ -131,6 +131,7 @@ class SessionStore:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._closed = False
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 
@@ -169,7 +170,22 @@ class SessionStore:
             self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._conn.close()
+
+    def __enter__(self) -> SessionStore:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - interpreter shutdown fallback
+            pass
 
     def ensure(
         self,

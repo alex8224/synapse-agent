@@ -7,6 +7,7 @@ and forwards here; the controller reads/writes host state through ``_app``.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -79,9 +80,11 @@ class ChromeController:
         try:
             from synapse.sessions.store import SessionStore
 
-            info = SessionStore(app.settings.resolved_sessions_path()).get(
-                app.thread_id
-            )
+            store = getattr(app, "_session_store", None)
+            if store is None:
+                store = SessionStore(app.settings.resolved_sessions_path())
+                app._session_store = store
+            info = store.get(app.thread_id)
             if info is not None:
                 title = (info.title or "").strip()
         except Exception:  # noqa: BLE001
@@ -326,31 +329,57 @@ class ChromeController:
         return dict(app._tool_output_stats or {})
 
     def reload_tool_output_stats(self) -> None:
-        """Load persistent metrics for the active session outside the render path."""
+        """Schedule persistent metrics loading outside Textual's UI thread."""
         app = self._app
-        try:
-            stats = app._tool_output_repo.stats(thread_id=app.thread_id)
-        except Exception:  # noqa: BLE001
-            stats = {}
-        app._tool_output_stats = stats
-        app._tool_output_stats_thread_id = app.thread_id
-        app._refresh_topbar()
-
-    def on_tool_output_metrics_changed(self, thread_id: str) -> None:
-        """Receive a worker-thread metric write and coalesce UI refreshes."""
-        app = self._app
-        if thread_id != app.thread_id or app._tool_output_refresh_pending:
+        if app._tool_output_refresh_pending:
             return
         app._tool_output_refresh_pending = True
-        try:
-            app.call_from_thread(self.refresh_tool_output_stats)
-        except Exception:  # noqa: BLE001
-            app._tool_output_refresh_pending = False
+        if not bool(getattr(app, "is_running", False)):
+            self.refresh_tool_output_stats_bg(app.thread_id, debounce=False)
+            return
+        app._refresh_tool_output_stats_bg(app.thread_id)
 
-    def refresh_tool_output_stats(self) -> None:
+    def on_tool_output_metrics_changed(self, thread_id: str) -> None:
+        """Coalesce metric writes; never aggregate SQLite rows on the UI thread."""
+        app = self._app
+        if thread_id != app.thread_id:
+            return
+        if app._tool_output_refresh_pending:
+            app._tool_output_refresh_dirty = True
+            return
+        try:
+            app.call_from_thread(self.reload_tool_output_stats)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def refresh_tool_output_stats_bg(self, thread_id: str, *, debounce: bool = True) -> None:
+        """Worker body: aggregate metrics, then publish one immutable snapshot."""
+        app = self._app
+        if debounce:
+            time.sleep(0.35)
+        try:
+            stats = app._tool_output_repo.chrome_stats(thread_id=thread_id)
+        except Exception:  # noqa: BLE001
+            stats = {}
+        try:
+            app.call_from_thread(self.apply_tool_output_stats, thread_id, stats)
+        except RuntimeError:
+            self.apply_tool_output_stats(thread_id, stats)
+
+    def apply_tool_output_stats(self, thread_id: str, stats: dict[str, Any]) -> None:
+        """UI-thread apply step for a completed metrics refresh."""
         app = self._app
         app._tool_output_refresh_pending = False
-        self.reload_tool_output_stats()
+        dirty = bool(app._tool_output_refresh_dirty)
+        app._tool_output_refresh_dirty = False
+        if thread_id != app.thread_id:
+            self.reload_tool_output_stats()
+            return
+        app._tool_output_stats = dict(stats or {})
+        app._tool_output_stats_thread_id = thread_id
+        app._refresh_topbar()
+        if dirty:
+            self.reload_tool_output_stats()
 
     # -- git chrome -------------------------------------------------------------
 

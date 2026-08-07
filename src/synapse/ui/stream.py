@@ -625,7 +625,7 @@ def stream_agent(
         if not callable(note):
             return
         now = time.monotonic()
-        if estimated and not force and now - last_live_rate_push < 0.35:
+        if estimated and not force and now - last_live_rate_push < 0.5:
             return
         if estimated:
             snapshot = rate_tracker.live_snapshot(now)

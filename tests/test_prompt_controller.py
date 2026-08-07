@@ -81,6 +81,24 @@ def _make_controller(project_root: str | None = "ws") -> tuple[PromptController,
     return controller, app
 
 
+def test_complete_context_is_cached_between_keystrokes(monkeypatch) -> None:
+    controller, _ = _make_controller()
+    built: list[object] = []
+
+    def build(_settings):
+        value = object()
+        built.append(value)
+        return value
+
+    monkeypatch.setattr("synapse.commands.slash_complete.build_complete_context", build)
+
+    first = controller.complete_ctx()
+    second = controller.complete_ctx()
+
+    assert first is second
+    assert built == [first]
+
+
 def test_expand_paste_replaces_placeholder_and_clears() -> None:
     controller, _ = _make_controller()
     controller.state.paste_replacements["[prefix... 12345 chars]"] = "FULL TEXT BODY"
