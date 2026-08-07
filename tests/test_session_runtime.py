@@ -12,6 +12,7 @@ from synapse.runtime.sessions import SessionEventBroker, SessionRuntime, Session
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     TextPayload,
+    ToolItemPayload,
     TurnEvent,
     TurnEventKind,
     TurnTerminalPayload,
@@ -130,6 +131,29 @@ def test_broker_retains_terminal_under_preview_pressure() -> None:
     events = broker.events_after(0)
     assert len(events) <= 17
     assert events[-1].event.kind is TurnEventKind.TURN_FAILED
+
+
+def test_broker_retains_tool_item_lifecycle_under_pressure() -> None:
+    broker = SessionEventBroker("thread", max_events=16)
+    item = ToolItemPayload(
+        item_id="item-1",
+        call_id="call-1",
+        name="read_file",
+        category="read",
+        label="Read /a.py",
+        path="/a.py",
+        status="running",
+        preview=None,
+        error=False,
+        sub=False,
+        parent_id=None,
+    )
+    broker.emit(_event(1, TurnEventKind.TOOL_STARTED, item))
+    for sequence in range(2, 40):
+        broker.emit(_event(sequence, TurnEventKind.ANSWER_DELTA, TextPayload("x")))
+
+    kinds = [envelope.event.kind for envelope in broker.events_after(0)]
+    assert TurnEventKind.TOOL_STARTED in kinds
 
 
 def test_broker_forward_to_replays_and_retains_terminal_after_sink_failure() -> None:

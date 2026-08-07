@@ -12,6 +12,7 @@ from synapse.runtime.streaming import (
     ToolFinishedPayload,
     ToolItem,
     ToolItemPayload,
+    ToolResultPayload,
     TurnEvent,
     TurnEventKind,
     UsagePayload,
@@ -101,6 +102,8 @@ class TextualTurnEventRenderer:
                 preview=payload.preview,
                 error=payload.error,
             )
+        elif kind is TurnEventKind.TOOL_RESULT and isinstance(payload, ToolResultPayload):
+            self._sink.tool_result(payload.name, payload.status, sub=payload.sub)
         elif kind is TurnEventKind.TOOL_BATCH_FINISHED and isinstance(
             payload, ToolBatchFinishedPayload
         ):

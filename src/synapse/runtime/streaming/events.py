@@ -24,6 +24,7 @@ class TurnEventKind(StrEnum):
     TOOL_STARTED = "tool_started"
     TOOL_UPDATED = "tool_updated"
     TOOL_FINISHED = "tool_finished"
+    TOOL_RESULT = "tool_result"
     TOOL_BATCH_FINISHED = "tool_batch_finished"
     USAGE_UPDATED = "usage_updated"
     INFO = "info"
@@ -96,6 +97,15 @@ class ToolFinishedPayload:
     status: str
     preview: str | None = None
     error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultPayload:
+    """Legacy tool completion used when per-item events are unavailable."""
+
+    name: str
+    status: str
+    sub: bool = False
 
 
 @dataclass(frozen=True, slots=True)

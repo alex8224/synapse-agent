@@ -35,7 +35,7 @@ class _SafeEventSink:
 
 
 class _HeadlessRenderer:
-    """No-op legacy renderer while P1 parser still exposes StreamSink calls."""
+    """No-op renderer that still enables the parser's enhanced tool-item path."""
 
     streamed_answer = False
     streamed_reasoning = False
@@ -56,6 +56,11 @@ class _HeadlessRenderer:
             "finalize_line",
             "tool_calls_started",
             "tool_result",
+            "tool_item_started",
+            "tool_item_updated",
+            "tool_item_finished",
+            "tool_group_closed",
+            "turn_finished",
             "info",
             "note_usage",
         }:

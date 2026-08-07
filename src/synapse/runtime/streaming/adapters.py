@@ -11,6 +11,7 @@ from synapse.runtime.streaming.events import (
     ToolBatchFinishedPayload,
     ToolBatchPayload,
     ToolFinishedPayload,
+    ToolResultPayload,
     TurnEventKind,
     UsagePayload,
     tool_call_payload,
@@ -210,8 +211,8 @@ class InstrumentedStreamSink:
 
     def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:
         self.accumulator.emit(
-            TurnEventKind.INFO,
-            {"tool": name, "status": status, "sub": sub},
+            TurnEventKind.TOOL_RESULT,
+            ToolResultPayload(name=name, status=status, sub=sub),
         )
         self._forward("tool_result", name, status, sub=sub)
 

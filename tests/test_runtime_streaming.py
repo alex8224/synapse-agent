@@ -11,6 +11,8 @@ from typing import Any
 from synapse.runtime.streaming import (
     CollectingEventSink,
     CompositeEventSink,
+    InstrumentedStreamSink,
+    ToolResultPayload,
     TurnAccumulator,
     TurnEventKind,
     TurnTerminalPayload,
@@ -164,6 +166,25 @@ def test_composite_sink_isolates_observer_failure() -> None:
 
     assert len(collected.events) == 1
     assert collected.events[0].payload == "ok"
+
+
+def test_legacy_tool_result_emits_structured_event() -> None:
+    collected = CollectingEventSink()
+    sink = InstrumentedStreamSink(
+        _NoopRenderer(),
+        thread_id="tool-thread",
+        event_sink=collected,
+    )
+
+    sink.tool_result("read_file", "ok (20 chars, 2 lines)")
+
+    assert len(collected.events) == 1
+    assert collected.events[0].kind is TurnEventKind.TOOL_RESULT
+    assert collected.events[0].payload == ToolResultPayload(
+        name="read_file",
+        status="ok (20 chars, 2 lines)",
+        sub=False,
+    )
 
 
 def test_accumulator_emits_only_one_terminal_event() -> None:

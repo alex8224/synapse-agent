@@ -8,6 +8,9 @@ from synapse.runtime.sessions import SessionEventBroker
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     TextPayload,
+    ToolBatchPayload,
+    ToolCallPayload,
+    ToolResultPayload,
     TurnEvent,
     TurnEventKind,
     TurnTerminalPayload,
@@ -69,6 +72,38 @@ def test_event_renderer_maps_answer_and_terminal() -> None:
     assert answers[-1][1] == ("hello",)
     assert renderer.closed is True
     assert renderer.last_sequence == 4
+
+
+def test_event_renderer_routes_legacy_tool_result_to_tool_group() -> None:
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.emit(
+        _event(
+            1,
+            TurnEventKind.TOOL_BATCH_STARTED,
+            ToolBatchPayload(
+                calls=(ToolCallPayload("call-1", "read_file", "{'file_path': '/a.py'}"),),
+                parallel=False,
+            ),
+        )
+    )
+    renderer.emit(
+        _event(
+            2,
+            TurnEventKind.TOOL_RESULT,
+            ToolResultPayload("read_file", "ok (20 chars, 2 lines)"),
+        )
+    )
+
+    assert not [
+        call
+        for call in host.calls
+        if call[0] == "append_meta" and "{'tool':" in str(call[1])
+    ]
+    headers = [call for call in host.calls if call[0] == "write_tool_group_header"]
+    assert headers
+    assert "read" in str(headers[-1][1]).lower()
 
 
 def test_generation_change_detaches_renderer() -> None:

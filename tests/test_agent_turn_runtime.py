@@ -17,7 +17,7 @@ from synapse.runtime.agent_loop import (
     TurnStatus,
 )
 from synapse.runtime.async_runtime import AsyncRuntime
-from synapse.runtime.streaming import TurnEventKind, TurnTerminalPayload
+from synapse.runtime.streaming import CollectingEventSink, TurnEventKind, TurnTerminalPayload
 from synapse.ui.stream_events import StreamResult
 
 
@@ -70,6 +70,72 @@ def test_headless_run_completes_without_sink() -> None:
         assert result.final_text == "answer"
         assert result.input_tokens == 3
         assert result.output_tokens == 2
+    finally:
+        runtime_loop.close()
+
+
+def test_headless_renderer_enables_structured_tool_item_events() -> None:
+    class _ToolAgent:
+        def stream(self, payload: Any, config: Any = None, **kwargs: Any):
+            del payload, config, kwargs
+            yield (
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            SimpleNamespace(
+                                type="ai",
+                                content="",
+                                id="tool-call",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {"file_path": "/a.py"},
+                                        "id": "call-1",
+                                    }
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            SimpleNamespace(
+                                type="tool",
+                                name="read_file",
+                                content="ok",
+                                id="tool-result",
+                                tool_call_id="call-1",
+                            )
+                        ]
+                    }
+                },
+            )
+
+    base = _context(turn_id="tool-turn")
+    context = TurnContext(
+        thread_id=base.thread_id,
+        turn_id=base.turn_id,
+        agent=_ToolAgent(),
+        settings=base.settings,
+        request=base.request,
+    )
+    events = CollectingEventSink()
+    runtime_loop = AsyncRuntime(name="test-turn-tool-items")
+    try:
+        runtime = AgentTurnRuntime(runtime_loop)
+        result = runtime.run(context, sink=events, timeout=3)
+
+        kinds = [event.kind for event in events.events]
+        assert TurnEventKind.TOOL_STARTED in kinds
+        assert TurnEventKind.TOOL_FINISHED in kinds
+        assert TurnEventKind.TOOL_BATCH_FINISHED in kinds
+        assert TurnEventKind.TOOL_RESULT not in kinds
+        assert result.tool_calls == 1
     finally:
         runtime_loop.close()
 

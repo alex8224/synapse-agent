@@ -1,9 +1,9 @@
 # Agent Runtime 与 TUI 解耦及全局项目管理总体方案
 
-> 文档状态：Proposed  
-> 实施状态：尚未开始  
-> 首要里程碑：先完成 Agent loop 与 TUI 的生命周期解耦，再扩展后台会话和跨项目能力。  
-> 权威进度台账：[progress.md](progress.md)  
+> 文档状态：Accepted<br>
+> 实施状态：已完成（P0-P8 及 P7 UI 收尾）<br>
+> 完成范围：Agent loop 与 TUI 的生命周期解耦、后台多会话、跨项目能力及稳定性收口均已完成。<br>
+> 权威进度台账：[progress.md](progress.md)<br>
 > 架构决策记录：[decisions.md](decisions.md)
 
 ## 1. 结论
