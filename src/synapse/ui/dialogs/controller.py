@@ -20,18 +20,51 @@ from synapse.ui.formatters import model_status_label
 
 @dataclass
 class TuiCommandEffects:
-    """Declarative effects of a handled slash command (future refactor target).
-
-    Currently informational: the controller still mutates host state directly
-    for compatibility; this dataclass documents the intended effect surface.
-    """
+    """Declarative host changes produced by a handled slash command."""
 
     agent: Any | None = None
     thread_id: str | None = None
     clear_transcript: bool = False
     reload_transcript: bool = False
     status_notice: str | None = None
+    status_style: str = "dim"
     lines: list[str] = field(default_factory=list)
+    settings_changed: bool = False
+    theme_name: str | None = None
+    markdown: str | None = None
+    error: bool = False
+    resume_action: str | None = None
+    resume_message: str | None = None
+
+    @classmethod
+    def from_result(cls, result: object, *, previous_thread_id: str) -> TuiCommandEffects:
+        """Normalize SlashResult-like values at the controller boundary."""
+        thread_id = getattr(result, "thread_id", None)
+        thread_changed = thread_id is not None and thread_id != previous_thread_id
+        return cls(
+            agent=getattr(result, "agent", None),
+            thread_id=thread_id,
+            clear_transcript=bool(getattr(result, "clear_log", False) or thread_changed),
+            reload_transcript=bool(getattr(result, "reload_transcript", False)),
+            status_notice=(getattr(result, "notice", None) or "").strip() or None,
+            lines=list(getattr(result, "lines", []) or []),
+            settings_changed=bool(getattr(result, "settings_changed", False)),
+            theme_name=getattr(result, "theme_name", None),
+            markdown=getattr(result, "markdown", None),
+            error=bool(getattr(result, "error", False)),
+            resume_action=(
+                value
+                if isinstance(value := getattr(result, "resume_action", None), str)
+                and value.strip()
+                else None
+            ),
+            resume_message=(
+                value
+                if isinstance(value := getattr(result, "resume_message", None), str)
+                and value.strip()
+                else None
+            ),
+        )
 
 
 class SlashController:
@@ -125,132 +158,78 @@ class SlashController:
             app.exit()
             return True
 
-        if result.agent is not None:
-            app.agent = result.agent
-            app._bind_steer_queue()
-
-        thread_changed = False
-        if result.thread_id is not None and result.thread_id != prev_thread:
-            app.thread_id = result.thread_id
-            thread_changed = True
-
-        clear_log = bool(result.clear_log or thread_changed)
-        reload_transcript = bool(getattr(result, "reload_transcript", False))
-        if clear_log:
-            app._schedule_transcript_reset(
-                reload_transcript=reload_transcript,
-                announce=reload_transcript,
-            )
-            if thread_changed:
-                app._reset_session_token_chrome()
-                app._load_current_goal()
-
-        # Title may change via /rename, /switch, /new, first-message bind, etc.
-        app._reload_session_title()
-        app._refresh_topbar()
-        if result.agent is not None or getattr(result, "settings_changed", False):
-            app.sub_title = model_status_label(app.settings)
-            app._render_status()
-
-        # Restore visual history after switch/new. LLM context follows thread_id
-        # via checkpointer; this only rebuilds the transcript chrome.
-        if reload_transcript and not clear_log:
-            app._restore_session_transcript(announce=True)
-            app._refresh_topbar()
-
-        theme_name = getattr(result, "theme_name", None)
-        if theme_name:
-            try:
-                app.apply_theme(str(theme_name), persist=False, announce=False)
-            except Exception as exc:  # noqa: BLE001
-                app.append_event(f"theme apply failed: {exc}", "yellow")
-
-        _notice = (getattr(result, "notice", None) or "").strip()
-        _has_lines = bool([x for x in (result.lines or []) if str(x or "").strip()])
-        _markdown = getattr(result, "markdown", None)
-        if isinstance(_markdown, str) and _markdown.strip():
-            app._mount_markdown_block(_markdown)
-        elif _notice or _has_lines:
-            app._dismiss_welcome()
-        if isinstance(_markdown, str) and _markdown.strip():
-            pass  # already rendered
-        elif _notice and not result.error:
-            app.flash_status(_notice, "dim")
-        else:
-            app._emit_system_lines(result.lines, error=bool(result.error))
-
-        # HITL: /approve or /reject resumes the paused graph.
-        resume_action = getattr(result, "resume_action", None)
-        if resume_action:
-            if app.agent is None:
-                app.append_event("agent not ready — cannot resume HITL", "yellow")
-                return True
-            if app._busy:
-                app.append_event("still running previous turn…", "yellow")
-                return True
-            app._capture_turn_context()
-            app._busy = True
-            app.set_activity("tool", f"HITL {resume_action}", True)
-            app.run_resume(
-                str(resume_action),
-                getattr(result, "resume_message", None),
-            )
+        self.apply_effects(TuiCommandEffects.from_result(result, previous_thread_id=prev_thread))
         return True
 
-    def apply_ok_result(self, ok: object, notice_ttl: float = 4.0) -> None:
-        """Apply a SlashResult returned by handle_slash after a dialog pick."""
+    def apply_effects(self, effects: TuiCommandEffects, *, notice_ttl: float = 4.0) -> None:
+        """Apply normalized command effects to the Textual host."""
         app = self._app
-        agent = getattr(ok, "agent", None)
-        if agent is not None:
-            app.agent = agent
+        previous_thread_id = app.thread_id
+        thread_changed = effects.thread_id is not None and effects.thread_id != previous_thread_id
+        if effects.agent is not None:
+            app.agent = effects.agent
             app._bind_steer_queue()
-        thread_id = getattr(ok, "thread_id", None)
-        thread_changed = thread_id is not None and thread_id != app.thread_id
         if thread_changed:
-            app.thread_id = thread_id
+            app.thread_id = effects.thread_id
             app._reset_session_token_chrome()
             app._reload_tool_output_stats()
             app._load_current_goal()
-        clear_log = thread_changed or bool(getattr(ok, "clear_log", False))
-        reload_transcript = bool(getattr(ok, "reload_transcript", False))
-        if clear_log:
+        if effects.clear_transcript:
             app._schedule_transcript_reset(
-                reload_transcript=reload_transcript,
-                announce=reload_transcript,
+                reload_transcript=effects.reload_transcript,
+                announce=effects.reload_transcript,
             )
-        if agent is not None or getattr(ok, "settings_changed", False):
+        elif effects.reload_transcript:
+            app._restore_session_transcript(announce=True)
+        if effects.agent is not None or effects.settings_changed:
             app.sub_title = model_status_label(app.settings)
             app._render_status()
-        if reload_transcript and not clear_log:
-            app._restore_session_transcript(announce=True)
-        theme_name = getattr(ok, "theme_name", None)
-        if theme_name:
+        if effects.theme_name:
             try:
-                app.apply_theme(str(theme_name), persist=False, announce=False)
+                app.apply_theme(str(effects.theme_name), persist=False, announce=False)
             except Exception as exc:  # noqa: BLE001
                 app.append_event(f"theme apply failed: {exc}", "yellow")
-        _notice = (getattr(ok, "notice", None) or "").strip()
-        if _notice and not getattr(ok, "error", False):
-            app.flash_status(_notice, "dim", ttl=notice_ttl)
-        else:
-            lines = getattr(ok, "lines", []) or []
-            if notice_ttl != 4.0 and len(lines) <= 2:
-                cleaned = [str(x).strip() for x in lines if str(x or "").strip()]
-                if cleaned and sum(len(x) for x in cleaned) <= 140:
-                    style = "yellow" if getattr(ok, "error", False) else "dim"
-                    app.flash_status(" · ".join(cleaned), style, ttl=notice_ttl)
-                else:
-                    app._emit_system_lines(
-                        lines, error=bool(getattr(ok, "error", False))
-                    )
+        has_lines = any(str(line or "").strip() for line in effects.lines)
+        if isinstance(effects.markdown, str) and effects.markdown.strip():
+            app._mount_markdown_block(effects.markdown)
+        elif effects.status_notice or has_lines:
+            app._dismiss_welcome()
+        if not (isinstance(effects.markdown, str) and effects.markdown.strip()):
+            if effects.status_notice and not effects.error:
+                app.flash_status(effects.status_notice, effects.status_style, ttl=notice_ttl)
             else:
-                app._emit_system_lines(
-                    lines,
-                    error=bool(getattr(ok, "error", False)),
-                )
+                app._emit_system_lines(effects.lines, error=effects.error)
         app._reload_session_title()
         app._refresh_topbar()
         app._refresh_codex_usage(force=True)
+        if effects.resume_action:
+            self._resume_after_effects(effects.resume_action, effects.resume_message)
+
+    def _resume_after_effects(self, action: str, message: str | None) -> None:
+        """Start a HITL resume after its slash result has updated host state."""
+        app = self._app
+        if app.agent is None:
+            app.append_event("agent not ready — cannot resume HITL", "yellow")
+            return
+        if app._busy:
+            app.append_event("still running previous turn…", "yellow")
+            return
+        app._capture_turn_context()
+        app._busy = True
+        app.set_activity("tool", f"HITL {action}", True)
+        app.run_resume(action, message)
+
+    def apply_ok_result(self, ok: object, notice_ttl: float = 4.0) -> None:
+        """Apply a SlashResult returned by handle_slash after a dialog pick."""
+        effects = TuiCommandEffects.from_result(ok, previous_thread_id=self._app.thread_id)
+        if notice_ttl != 4.0 and not effects.status_notice and len(effects.lines) <= 2:
+            cleaned = [str(line).strip() for line in effects.lines if str(line or "").strip()]
+            if cleaned and sum(len(line) for line in cleaned) <= 140:
+                effects.status_notice = " · ".join(cleaned)
+                effects.lines = []
+                effects.error = False
+                effects.status_style = "yellow" if getattr(ok, "error", False) else "dim"
+        self.apply_effects(effects, notice_ttl=notice_ttl)
 
 
     # -- dialogs ------------------------------------------------------------

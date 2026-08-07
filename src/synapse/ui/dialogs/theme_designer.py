@@ -511,6 +511,9 @@ class ThemeDesignerDialog(ModalScreen[Any]):
 
         current = tm.get_theme()
         self._original = current.name
+        # Keep the concrete palette too: reloads can remove a custom theme
+        # while this modal owns a process-wide preview sentinel.
+        self._original_theme = current
         self._name = ""
         self._label = ""
         self._extends = current.name if current.name in list_theme_names() else "cursor-dark"
@@ -707,6 +710,21 @@ class ThemeDesignerDialog(ModalScreen[Any]):
             return
         self._dismiss_started = True
         self._cancel_preview_timer()
+        # Preview switched the process-wide active theme to the designer
+        # sentinel. Apply the saved palette synchronously so closing the modal
+        # never leaves an unregistered theme active, even when the deferred
+        # host apply runs after the app has shut down (tests/headless hosts).
+        try:
+            from synapse.ui.theme import set_theme
+
+            set_theme(
+                name,
+                workspace=self._project_root,
+                persist=False,
+                reload=True,
+            )
+        except Exception:  # noqa: BLE001 - host apply below still refreshes CSS
+            pass
         self.dismiss(("theme", name))
         self._defer_host_theme_apply(name, persist=True, announce=True)
 
@@ -806,7 +824,12 @@ class ThemeDesignerDialog(ModalScreen[Any]):
                 reload=False,
             )
         except Exception:  # noqa: BLE001
-            pass
+            try:
+                from synapse.ui.theme import set_active_theme
+
+                set_active_theme(self._original_theme)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _defer_host_theme_apply(
         self,

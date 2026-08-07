@@ -402,6 +402,25 @@ class TestThemeDesignerDialog:
         assert dlg._values["bg"] == theme.bg
         assert dlg._values["fg"] == theme.fg
 
+    def test_restore_original_falls_back_from_unregistered_preview(self, monkeypatch):
+        from dataclasses import replace
+
+        from synapse.config import Settings
+        from synapse.ui.dialogs.theme_designer import ThemeDesignerDialog
+        from synapse.ui.theme import get_theme, set_active_theme
+
+        dialog = ThemeDesignerDialog(
+            Settings(_env_file=None, theme="cursor-dark"),
+            project_root=Path.cwd(),
+        )
+        original = get_theme()
+        dialog._original = "missing-custom-theme"
+        set_active_theme(replace(original, name="__designer_temp__", label="Temp"))
+
+        dialog._restore_original()
+
+        assert get_theme() is original
+
     def test_unified_modal_css_and_preview_debounce_guards(self, monkeypatch):
         """Designer uses standard modal chrome and guards expensive previews."""
         from synapse.config import Settings
@@ -561,34 +580,43 @@ class TestThemeDesignerDialog:
                 )
 
         bootstrap_theme("cursor-dark")
-        app = PickerHost()
+        from synapse.ui.theme import get_theme, set_theme
 
-        async def exercise() -> None:
-            async with app.run_test(size=(100, 40)) as pilot:
-                await pilot.pause()
-                dialog = app.screen
-                assert isinstance(dialog, ThemeDesignerDialog)
-                assert not list(dialog.query(".color-input"))
+        original_theme = get_theme().name
+        try:
+            app = PickerHost()
 
-                await pilot.click("#role-user")
-                assert dialog._selected_color_key == "user"
+            async def exercise() -> None:
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    dialog = app.screen
+                    assert isinstance(dialog, ThemeDesignerDialog)
+                    assert not list(dialog.query(".color-input"))
 
-                original = dialog._values["user"]
-                await pilot.click("#hue-strip", offset=(17, 1))
-                await pilot.click("#color-plane", offset=(24, 2))
-                await pilot.pause()
-                picked = dialog._values["user"]
-                assert picked != original
-                assert picked.startswith("#") and len(picked) == 7
+                    await pilot.click("#role-user")
+                    assert dialog._selected_color_key == "user"
 
-                await pilot.press("left")
-                await pilot.pause()
-                assert dialog._values["user"] != picked
+                    original = dialog._values["user"]
+                    await pilot.click("#hue-strip", offset=(17, 1))
+                    await pilot.click("#color-plane", offset=(24, 2))
+                    await pilot.pause()
+                    picked = dialog._values["user"]
+                    assert picked != original
+                    assert picked.startswith("#") and len(picked) == 7
 
-                await pilot.click("#inherit-color")
-                assert dialog._values["user"] == ""
+                    await pilot.press("left")
+                    await pilot.pause()
+                    assert dialog._values["user"] != picked
 
-        asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+                    await pilot.click("#inherit-color")
+                    assert dialog._values["user"] == ""
+
+            asyncio.run(asyncio.wait_for(exercise(), timeout=8))
+        finally:
+            # Preview leaves the process-wide active theme on the designer
+            # sentinel when the modal is not dismissed; restore it for the
+            # next test.
+            set_theme(original_theme, persist=False, reload=False)
 
     def test_open_theme_designer_action_pushes_screen(self, monkeypatch):
         app = _make_app(monkeypatch)

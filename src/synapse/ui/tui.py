@@ -34,7 +34,7 @@ from synapse.content.multimodal import (
     ImageBank,
 )
 from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
-from synapse.runtime.steer import SteerQueue, get_agent_steer_queue
+from synapse.runtime.steer import SteerQueue
 from synapse.sessions.session_recap import SessionRecapController
 from synapse.sessions.transcript_projection import (
     TranscriptProjection,
@@ -86,8 +86,10 @@ from synapse.ui.selectable_static import (
     _stylize_strip_char_span as _stylize_strip_char_span_impl,
 )
 from synapse.ui.status_controller import StatusController
+from synapse.ui.steer_controller import SteerController
 from synapse.ui.steer_widget import SteerQueueWidget
 from synapse.ui.subagent_status_bar import SubagentStatusBar
+from synapse.ui.theme_controller import ThemeController
 from synapse.ui.timeline import TODO_MARK_ACTIVE as _TODO_MARK_ACTIVE
 from synapse.ui.timeline import TODO_MARK_DONE as _TODO_MARK_DONE
 from synapse.ui.timeline import TODO_MARK_PENDING as _TODO_MARK_PENDING
@@ -327,8 +329,8 @@ class CodingAgentApp(App[None]):
         self._busy = False
         self._compacting_context = False
         self._cancel_event = threading.Event()
-        self._steer_bound_queue: SteerQueue | None = None
-        self._steer_listener: Any | None = None
+        self._steer = SteerController(self)
+        self._theme = ThemeController(self)
         self._status = StatusController(self)
         self._status._detail = "ready" if agent is not None else "starting"
         self._active_turn_agent: Any | None = None
@@ -736,12 +738,14 @@ class CodingAgentApp(App[None]):
         )
         self.push_screen(dialog, lambda _: None)
 
+    @work(thread=True, exclusive=True, group="codex-usage")
     def _fetch_codex_reset_credits_for_dialog_bg(self) -> None:
         self._chrome.fetch_codex_reset_credits_for_dialog_bg()
 
     def _on_codex_reset_request(self, credit_id: str) -> None:
         self._chrome.on_codex_reset_request(credit_id)
 
+    @work(thread=True, exclusive=True, group="codex-usage")
     def _consume_codex_reset_bg(self, credit_id: str) -> None:
         self._chrome.consume_codex_reset_bg(credit_id)
 
@@ -757,6 +761,7 @@ class CodingAgentApp(App[None]):
     def _refresh_codex_usage(self, *, force: bool = False) -> None:
         self._chrome.refresh_codex_usage(force=force)
 
+    @work(thread=True, exclusive=True, group="codex-usage")
     def _fetch_codex_usage_bg(self) -> None:
         self._chrome.fetch_codex_usage_bg()
 
@@ -1257,44 +1262,10 @@ class CodingAgentApp(App[None]):
         self._status.render_status()
 
     def _bind_steer_queue(self) -> None:
-        """Attach the UI listener to the queue owned by the current agent."""
-        queue = self._turn_steer_queue()
-        if queue is self._steer_bound_queue:
-            if queue is not None:
-                self._on_steer_items_changed(queue.peek_items())
-            return
-
-        old_queue = self._steer_bound_queue
-        old_listener = self._steer_listener
-        if old_queue is not None and old_listener is not None:
-            old_queue.remove_listener(old_listener)
-
-        self._steer_bound_queue = queue
-        self._steer_listener = None
-        if queue is None:
-            self._on_steer_items_changed([])
-            return
-
-        def _on_change(items: list[str], *, source: SteerQueue = queue) -> None:
-            def _apply(snapshot: list[str]) -> None:
-                if self._steer_bound_queue is source:
-                    self._on_steer_items_changed(snapshot)
-
-            try:
-                self.call_from_thread(_apply, list(items))
-            except Exception:  # noqa: BLE001
-                _apply(list(items))
-
-        self._steer_listener = _on_change
-        queue.add_listener(_on_change)
-        self._on_steer_items_changed(queue.peek_items())
+        self._steer.bind_queue()
 
     def _turn_steer_queue(self) -> SteerQueue | None:
-        """Return the queue consumed by the active graph run."""
-        active_queue = getattr(self, "_active_steer_queue", None)
-        if getattr(self, "_busy", False) and active_queue is not None:
-            return active_queue
-        return get_agent_steer_queue(self.agent)
+        return self._steer.turn_queue()
 
     def _capture_turn_context(self) -> None:
         self._turn.capture_turn_context()
@@ -1309,18 +1280,10 @@ class CodingAgentApp(App[None]):
         self._status.sync_prompt_placeholder()
 
     def drop_steer_at(self, index: int) -> None:
-        """UI: remove one pending steer note by index."""
-        q = self._turn_steer_queue()
-        if q is None:
-            return
-        q.remove_at(int(index))
+        self._steer.drop_at(index)
 
     def clear_steer_queue(self) -> None:
-        """UI: clear all pending steer notes."""
-        q = self._turn_steer_queue()
-        if q is None:
-            return
-        q.clear()
+        self._steer.clear()
 
     def _tick_status(self) -> None:
         busy = self._status.tick()
@@ -1712,79 +1675,10 @@ class CodingAgentApp(App[None]):
         persist: bool = False,
         announce: bool = False,
     ) -> str:
-        """Activate a theme at runtime (CSS variables + Rich paint slots).
-
-        Also switches Textual ``App.theme`` so surface/panel match the palette
-        (required for transparent ``ansi``; solid dark/light shells otherwise).
-        """
-        from synapse.ui.theme import apply_textual_theme, get_theme, set_theme
-
-        theme = set_theme(
-            name or getattr(self.settings, "theme", None),
-            workspace=self.project_root,
-            persist=persist,
-            scope="user",
-        )
-        try:
-            self.settings.theme = theme.name
-        except Exception:  # noqa: BLE001
-            pass
-        # Drive Textual surface/panel (default textual-dark paints opaque black
-        # and would hide terminal acrylic under $theme-bg=transparent).
-        try:
-            apply_textual_theme(self, theme)
-        except Exception:  # noqa: BLE001
-            pass
-        # refresh_css() calls get_css_variables() which returns the active
-        # theme palette; this triggers a full reparse + re-apply of all
-        # $theme-* variables across every widget.
-        try:
-            self.refresh_css(animate=False)
-        except Exception:  # noqa: BLE001
-            pass
-        self._repaint_themed_widgets()
-        if announce:
-            self.flash_status(f"theme: {theme.name} ({theme.label})", "dim")
-        return get_theme().name
+        return self._theme.apply_theme(name, persist=persist, announce=announce)
 
     def _repaint_themed_widgets(self) -> None:
-        """Re-render widgets that baked colors into Rich Text."""
-        for cls_name, method in (
-            ("WelcomeView", "refresh_logo"),
-            ("UserTurnBlock", "_render_block"),
-            ("ThoughtBlock", "_render_block"),
-            ("ToolGroupBlock", "_render_block"),
-            ("TodoChecklist", "_render_block"),
-            ("AnswerBlock", "_render_block"),
-            ("_MarkdownBlock", "repaint_markdown"),
-            ("AnswerDivider", "_render_block"),
-            ("TurnRailItem", "_show_bar"),
-        ):
-            try:
-                for widget in self.query(cls_name):
-                    fn = getattr(widget, method, None)
-                    if callable(fn):
-                        fn()
-            except Exception:  # noqa: BLE001
-                continue
-        try:
-            steer = self.query_one("#steer-queue", SteerQueueWidget)
-            paint = getattr(steer, "_paint_block", None)
-            if callable(paint):
-                paint()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            # Region band colors track the active palette.
-            self._apply_topbar_region_bands()
-            self._refresh_topbar()
-            self._render_status()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self.refresh(layout=False)
-        except Exception:  # noqa: BLE001
-            pass
+        self._theme.repaint_widgets()
 
     # -- dialogs ----------------------------------------------------------
 

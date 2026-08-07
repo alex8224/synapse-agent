@@ -676,17 +676,29 @@ class ChromeController:
         )
         app.push_screen(dialog, lambda _: None)
 
+    def _thread_call(self, callback: Any, *args: Any, **kwargs: Any) -> None:
+        """Run a UI callback, falling back to inline execution on the UI thread."""
+        try:
+            self._app.call_from_thread(callback, *args, **kwargs)
+        except RuntimeError:
+            callback(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - non-Textual hosts degrade to inline
+            try:
+                callback(*args, **kwargs)
+            except Exception:  # noqa: BLE001 - best-effort UI update
+                pass
+
     def fetch_codex_reset_credits_for_dialog_bg(self) -> None:
         try:
             self._app._codex.fetch_reset_credits()
         except Exception as exc:  # noqa: BLE001
-            self._app.call_from_thread(
+            self._thread_call(
                 self._app.flash_status,
                 f"Codex reset-credits fetch failed: {exc}",
                 "yellow",
             )
             return
-        self._app.call_from_thread(self._app._open_codex_reset_dialog)
+        self._thread_call(self._app._open_codex_reset_dialog)
 
     def on_codex_reset_request(self, credit_id: str) -> None:
         """User clicked Reset on a specific credit."""
@@ -702,12 +714,12 @@ class ChromeController:
         try:
             result = self._app._codex.consume_reset(credit_id)
         except Exception as exc:  # noqa: BLE001
-            self._app.call_from_thread(
+            self._thread_call(
                 self._app.flash_status, f"Codex reset failed: {exc}", "yellow"
             )
-            self._app.call_from_thread(self._app._on_codex_reset_consume_done)
+            self._thread_call(self._app._on_codex_reset_consume_done)
             return
-        self._app.call_from_thread(self._app._on_codex_reset_consumed, result)
+        self._thread_call(self._app._on_codex_reset_consumed, result)
 
     def on_codex_reset_consumed(self, result: ConsumeResetResult) -> None:
         app = self._app
@@ -743,7 +755,7 @@ class ChromeController:
 
     def fetch_codex_usage_bg(self) -> None:
         self._app._codex.refresh_usage()
-        self._app.call_from_thread(self._app._on_codex_usage_ready)
+        self._thread_call(self._app._on_codex_usage_ready)
 
     def on_codex_usage_ready(self) -> None:
         app = self._app

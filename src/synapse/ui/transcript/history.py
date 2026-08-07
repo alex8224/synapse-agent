@@ -18,10 +18,13 @@ from typing import Any
 
 from textual.containers import VerticalScroll
 
-import synapse.ui.tui_styles as _styles
 from synapse.ui.tool_blocks import ToolGroupBlock
-from synapse.ui.transcript_blocks import AnswerBlock, ThoughtBlock
-from synapse.ui.tui_styles import _MARK_THOUGHT, _MARKDOWN_MAX_CHARS
+from synapse.ui.transcript.factory import (
+    build_answer_divider,
+    build_restored_blocks,
+    build_restored_tool_group,
+)
+from synapse.ui.transcript_blocks import ThoughtBlock
 from synapse.ui.turn_rail_widgets import TurnRail
 from synapse.ui.user_turn_block import UserTurnBlock
 
@@ -494,189 +497,13 @@ class TranscriptHistoryController:
         tool_calls: list[dict],
         tool_results: list[dict],
     ) -> tuple[ToolGroupBlock | None, bool]:
-        """Build a historical tool batch as a group without mounting it.
-
-        Returns ``(block, divider_needed)``; ``divider_needed`` mirrors the
-        live path where a finished tool batch marks the next answer with a ◇.
-        """
-        from synapse.ui.timeline import (
-            build_tool_item,
-            extract_todos,
-            format_todos_preview,
-            is_todo_tool,
-            summarize_items,
-            truncate_preview,
-        )
-
-        if not tool_calls and not tool_results:
-            return None, False
-        items: list[Any] = []
-        result_by_id = {
-            str(r.get("id") or ""): r
-            for r in (tool_results or [])
-            if isinstance(r, dict)
-        }
-        result_by_name: dict[str, list[dict]] = {}
-        for r in tool_results or []:
-            if not isinstance(r, dict):
-                continue
-            result_by_name.setdefault(str(r.get("name") or ""), []).append(r)
-
-        for i, call in enumerate(tool_calls or []):
-            if not isinstance(call, dict):
-                continue
-            cid = str(call.get("id") or f"hist-{i}")
-            item = build_tool_item(call, item_id=cid, index=i)
-            res = result_by_id.get(cid)
-            if res is None:
-                bucket = result_by_name.get(str(call.get("name") or ""), [])
-                if bucket:
-                    res = bucket.pop(0)
-            if res is not None:
-                content = str(res.get("content") or "")
-                status = str(res.get("status") or "ok")
-                item.status = "error" if status == "error" else "done"
-                item.error = item.status == "error"
-                # Prefer checklist from tool args over dumping tool-result JSON.
-                if is_todo_tool(item.name):
-                    args = call.get("args") if isinstance(call, dict) else {}
-                    checklist = format_todos_preview(extract_todos(args))
-                    item.preview = checklist or (
-                        truncate_preview(content) if content else None
-                    )
-                else:
-                    item.preview = truncate_preview(content) if content else None
-            else:
-                item.status = "done"
-            items.append(item)
-
-        # Orphan results (no matching call) as plain items.
-        used_ids = {it.id for it in items}
-        for r in tool_results or []:
-            if not isinstance(r, dict):
-                continue
-            rid = str(r.get("id") or "")
-            if rid and rid in used_ids:
-                continue
-            if rid and any(it.id == rid for it in items):
-                continue
-            fake = {
-                "name": r.get("name") or "tool",
-                "args": {},
-                "id": rid or f"orphan-{len(items)}",
-            }
-            item = build_tool_item(fake, item_id=str(fake["id"]), index=len(items))
-            content = str(r.get("content") or "")
-            status = str(r.get("status") or "ok")
-            item.status = "error" if status == "error" else "done"
-            item.error = item.status == "error"
-            item.preview = truncate_preview(content) if content else None
-            items.append(item)
-
-        if not items:
-            return None, False
-        summary = summarize_items(items, running=False)
-        if (summary or "").strip() in {"", "0 tools", "tools", "Running 0 tools"}:
-            return None, False
-        block = ToolGroupBlock(summary)
-        block.collapsed = True
-        for it in items:
-            block.add_item(it)
-        block._sync_summary_from_items(running=False)
-        has_todo = any(
-            (it.name or "").lower() in {"write_todos", "todo_write", "todos"}
-            or str(it.label or "").startswith("Todos ")
-            for it in items
-        )
-        keep_open = has_todo or self._app._transcript._tool_details_expanded()
-        block.set_collapsed(not keep_open)
-        block._render_block()
-        return block, True
+        return build_restored_tool_group(self._app, tool_calls, tool_results)
 
     def build_answer_divider(self) -> Any:
-        """Create an AnswerDivider widget without mounting it."""
-        from synapse.ui.answer_divider import AnswerDivider
-
-        width = 0
-        try:
-            log = self._app.query_one("#log", VerticalScroll)
-            width = int(getattr(log.size, "width", 0) or 0)
-        except Exception:  # noqa: BLE001
-            width = 0
-        if width <= 0:
-            width = int(getattr(self._app.size, "width", 0) or 0)
-        # Subtract log padding (0 1) so the rule centers in the content box.
-        usable = max(28, (width or 56) - 2)
-        return AnswerDivider(usable, muted_color=lambda: _styles._C_MUTED)
+        return build_answer_divider(self._app)
 
     def build_restored_blocks(self, events: list[Any]) -> list[Any]:
-        """Build transcript widgets from folded events without mounting them.
-
-        Maintains the same bookkeeping lists as the live path
-        (``user_turns`` / ``thought_blocks`` / ``tool_blocks``) so toggle
-        actions and the turn rail keep working for restored history.
-        """
-        app = self._app
-        ts = app._transcript.state
-        blocks: list[Any] = []
-        pending_divider = False
-        turn_count = len(ts.user_turns)
-        for ev in events:
-            kind = ev.kind
-            if kind == "user":
-                pending_divider = False
-                turn_count += 1
-                block = UserTurnBlock(
-                    ev.text or "",
-                    stamp=_stamp(),
-                    turn_index=turn_count,
-                    image_count=len(getattr(ev, "images", None) or []),
-                )
-                ts.user_turns.append(block)
-                blocks.append(block)
-            elif kind == "thought":
-                # Historical thoughts: collapsed, elapsed unknown.
-                block = ThoughtBlock(
-                    0.0,
-                    ev.text,
-                    expand_on_seal=bool(
-                        getattr(app.settings, "expand_thinking", False)
-                    ),
-                    dim_color=lambda: _styles._C_DIM,
-                    thought_mark=_MARK_THOUGHT,
-                )
-                ts.thought_blocks.append(block)
-                blocks.append(block)
-            elif kind == "tools":
-                group, divider = self.build_restored_tool_group(
-                    ev.tool_calls, ev.tool_results
-                )
-                if group is not None:
-                    ts.tool_blocks.append(group)
-                    blocks.append(group)
-                    pending_divider = divider
-            elif kind == "answer":
-                try:
-                    from synapse.runtime.context_compact import (
-                        is_context_compact_text,
-                    )
-
-                    if is_context_compact_text(ev.text):
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
-                if pending_divider:
-                    blocks.append(self.build_answer_divider())
-                    pending_divider = False
-                block = AnswerBlock(
-                    ev.text,
-                    live=False,
-                    fg_color=lambda: _styles._C_FG,
-                    markdown_max_chars=_MARKDOWN_MAX_CHARS,
-                )
-                blocks.append(block)
-        app._transcript._refresh_turn_rail()
-        return blocks
+        return build_restored_blocks(self._app, events)
 
     def mount_blocks(self, blocks: list[Any]) -> None:
         """Mount a batch of transcript blocks (single layout pass)."""
@@ -692,9 +519,3 @@ class TranscriptHistoryController:
         timeline.mount(*blocks)
         if follow:
             app.call_after_refresh(app._transcript._scroll_timeline)
-
-
-def _stamp() -> str:
-    from datetime import datetime
-
-    return datetime.now().strftime("%I:%M %p").lstrip("0")
