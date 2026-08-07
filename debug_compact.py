@@ -1,13 +1,12 @@
-"""Debug: why _find_summarization_middleware returns None with deepagents 0.6.12 + langchain 1.3.14."""
-import asyncio
-import inspect
+"""Debug: why _find_summarization_middleware returns None with deepagents
+0.6.12 + langchain 1.3.14."""
+
 import functools
+import inspect
 from collections.abc import Mapping
 
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage
-
 from deepagents import create_deep_agent
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
 from synapse.runtime.context_compact import (
     _find_summarization_middleware,
