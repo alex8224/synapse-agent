@@ -15,7 +15,6 @@ Layout (Grok/Cursor chrome):
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1890,72 +1889,15 @@ class CodingAgentApp(App[None]):
     @work(thread=True, exclusive=True, group="model-switch")
     def _switch_model_bg(self, command: str, activity: str) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
-        from synapse.commands.slash_cmds import handle_slash
-        from synapse.observability.startup_trace import duration
-
-        switch_started = time.perf_counter()
-        self.call_from_thread(self._clear_status_notice)
-        self.call_from_thread(self.set_activity, "switching", activity, True)
-        try:
-            ok = handle_slash(
-                command,
-                settings=self.settings,
-                agent=self.agent,
-                thread_id=self.thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            duration("model.switch", switch_started, command=command, success=False)
-            self.call_from_thread(
-                self.append_event, f"{activity} failed: {exc}", "yellow"
-            )
-            self.call_from_thread(self.set_activity, "idle", "", True)
-            return
-        duration(
-            "model.switch",
-            switch_started,
-            command=command,
-            success=not bool(getattr(ok, "error", False)),
-        )
-        self.call_from_thread(self._apply_ok_result, ok, 1.5)
-        self.call_from_thread(self.set_activity, "idle", "", True)
-        if getattr(ok, "mcp_attach_pending", False):
-            self.call_from_thread(self._attach_mcp_after_switch)
+        self._slash.switch_model_bg(command, activity)
 
     def _attach_mcp_after_switch(self) -> None:
-        if self._lifecycle.mcp_attaching or self.agent is None:
-            return
-        self._lifecycle.set_mcp_attaching(True)
-        self._attach_mcp_after_switch_bg(self.agent)
+        """Reattach MCP after a model switch (worker body in SlashController)."""
+        self._slash.attach_mcp_after_switch()
 
     @work(thread=True, exclusive=True, group="model-switch-mcp")
     def _attach_mcp_after_switch_bg(self, base_agent: Any) -> None:
-        from synapse.app.agent import attach_mcp_to_agent
-        from synapse.observability.startup_trace import duration
-
-        mcp_started = time.perf_counter()
-        self.call_from_thread(self.flash_status, "reconnecting MCP…", "dim", ttl=1.5)
-        try:
-            agent = attach_mcp_to_agent(
-                self.settings,
-                base_agent,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(
-                self.append_event,
-                f"MCP reconnect failed (agent still usable): {exc}",
-                "yellow",
-            )
-            return
-        finally:
-            duration("mcp.attach", mcp_started, phase="model_switch")
-            self._lifecycle.set_mcp_attaching(False)
-        if self.agent is not base_agent:
-            return
-        self.agent = agent
-        self.call_from_thread(self._bind_steer_queue)
-        self.call_from_thread(self.flash_status, "MCP reconnected", "dim", ttl=1.5)
+        self._slash.attach_mcp_after_switch_bg(base_agent)
 
 
 
@@ -1965,31 +1907,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="codex-import")
     def _import_codex_session_bg(self, native_id: str) -> None:
-        """Seed one Codex text snapshot, then switch through the normal session path."""
-        turn_agent = self._active_turn_agent or self.agent
-        if not self._lifecycle.agent_ready.wait(timeout=180) or turn_agent is None:
-            self.call_from_thread(
-                self.append_event,
-                "Codex import unavailable: agent is still starting",
-                "yellow",
-            )
-            self.call_from_thread(self._turn_done)
-            return
-        try:
-            from synapse.integrations.codex_import import import_codex_session
-
-            result = import_codex_session(
-                native_id=native_id,
-                settings=self.settings,
-                agent=turn_agent,
-                workspace=Path(self.settings.workspace),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(self.append_event, f"Codex import failed: {exc}", "yellow")
-        else:
-            self.call_from_thread(self._finish_codex_import, result)
-        finally:
-            self.call_from_thread(self._turn_done)
+        """Seed one Codex text snapshot (worker body in SlashController)."""
+        self._slash.import_codex_session_bg(native_id)
 
 
 
@@ -2039,145 +1958,21 @@ class CodingAgentApp(App[None]):
 
     def _apply_mcp_server_toggle(self, server_name: str) -> None:
         """Temporarily toggle one MCP server through the existing slash handler."""
-        if getattr(self, "_mcp_reloading", False):
-            return
-        self._mcp_reloading = True
-        self.set_activity("switching", f"toggling MCP server {server_name}\u2026", True)
-        self._apply_mcp_server_toggle_bg(server_name)
+        self._slash.mcp_server_toggle(server_name)
 
     @work(thread=True, exclusive=True, group="mcp-reload")
     def _apply_mcp_server_toggle_bg(self, server_name: str) -> None:
-        from synapse.commands.slash_cmds import handle_slash
-        from synapse.observability.startup_trace import duration
-
-        reload_started = time.perf_counter()
-        try:
-            ok = handle_slash(
-                f"/mcp toggle {server_name}",
-                settings=self.settings,
-                agent=self.agent,
-                thread_id=self.thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            duration("mcp.toggle", reload_started, success=False)
-            self.call_from_thread(
-                self.append_event, f"MCP server toggle failed: {exc}", "yellow"
-            )
-            self.call_from_thread(self.set_activity, "idle", "", True)
-            self._mcp_reloading = False
-            return
-        duration(
-            "mcp.toggle", reload_started, success=not bool(getattr(ok, "error", False))
-        )
-        self.call_from_thread(self._apply_ok_result, ok)
-        self.call_from_thread(self.set_activity, "idle", "", True)
-        self._mcp_reloading = False
+        self._slash.mcp_server_toggle_bg(server_name)
 
 
     @work(thread=True, exclusive=True, group="mcp-save")
     def _apply_mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
-        from synapse.commands.slash_cmds import handle_slash
-        from synapse.integrations.mcp_client import load_mcp_server_configs
-        from synapse.observability.startup_trace import duration
-        from synapse.ui.dialogs.mcp_panel import _save_include_tools_to_config
-
-        save_started = time.perf_counter()
-        # 1. Write include_tools to config file for each changed server.
-        for server_name, include_tools in to_save.items():
-            try:
-                _save_include_tools_to_config(
-                    self.settings,
-                    server_name,
-                    include_tools,
-                    self.project_root,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        # 2. Reload in-memory settings from the updated config files.
-        try:
-            fresh = load_mcp_server_configs(
-                path=getattr(self.settings, "mcp_config_path", None),
-                workspace=getattr(self.settings, "workspace", None),
-            )
-            import json
-
-            raw = {
-                "servers": [
-                    {
-                        "name": s.name,
-                        "transport": s.transport,
-                        "command": s.command,
-                        "args": s.args,
-                        "env": s.env,
-                        "url": s.url,
-                        "headers": s.headers,
-                        "enabled": s.enabled,
-                        "tool_prefix": s.tool_prefix,
-                        "include_tools": s.include_tools,
-                        "exclude_tools": s.exclude_tools,
-                    }
-                    for s in fresh
-                ]
-            }
-            self.settings.mcp_servers_json = json.dumps(raw)
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 3. Reload the agent with updated MCP tools.
-        try:
-            ok = handle_slash(
-                "/mcp reload",
-                settings=self.settings,
-                agent=self.agent,
-                thread_id=self.thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            duration("mcp.save", save_started, success=False)
-            self.call_from_thread(
-                self.append_event, f"MCP save/reload failed: {exc}", "yellow"
-            )
-            self.call_from_thread(self.set_activity, "idle", "", True)
-            self._mcp_reloading = False
-            return
-        duration(
-            "mcp.save", save_started, success=not bool(getattr(ok, "error", False))
-        )
-        self.call_from_thread(self._apply_ok_result, ok)
-        self.call_from_thread(self.set_activity, "idle", "", True)
-        self._mcp_reloading = False
+        self._slash.mcp_save_bg(to_save)
 
 
     @work(thread=True, exclusive=True, group="mcp-reload")
     def _apply_mcp_reload_bg(self) -> None:
-        from synapse.commands.slash_cmds import handle_slash
-        from synapse.observability.startup_trace import duration
-
-        reload_started = time.perf_counter()
-        try:
-            ok = handle_slash(
-                "/mcp reload",
-                settings=self.settings,
-                agent=self.agent,
-                thread_id=self.thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            duration("mcp.reload", reload_started, success=False)
-            self.call_from_thread(
-                self.append_event, f"MCP reload failed: {exc}", "yellow"
-            )
-            self.call_from_thread(self.set_activity, "idle", "", True)
-            self._mcp_reloading = False
-            return
-        duration(
-            "mcp.reload", reload_started, success=not bool(getattr(ok, "error", False))
-        )
-        self.call_from_thread(self._apply_ok_result, ok)
-        self.call_from_thread(self.set_activity, "idle", "", True)
-        self._mcp_reloading = False
+        self._slash.mcp_reload_bg()
 
 
 
@@ -2193,23 +1988,8 @@ class CodingAgentApp(App[None]):
 
     @work(thread=True, exclusive=True, group="context-compact")
     def _compact_context_bg(self, agent: Any, thread_id: str) -> None:
-        """Execute the model-backed /compact command away from Textual's UI loop."""
-        from synapse.commands.slash_cmds import handle_slash
-
-        try:
-            result = handle_slash(
-                "/compact",
-                settings=self.settings,
-                agent=agent,
-                thread_id=thread_id,
-                project_root=self.project_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(self.append_event, f"compact failed: {exc}", "bold red")
-        else:
-            self.call_from_thread(self._finish_context_compact, result)
-        finally:
-            self.call_from_thread(self._complete_context_compact)
+        """Execute /compact away from Textual's UI loop (body in SlashController)."""
+        self._slash.compact_context_bg(agent, thread_id)
 
 
 
