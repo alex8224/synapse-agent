@@ -57,17 +57,21 @@ def _usage_from_response(response: Any) -> tuple[int, int, int]:
     return input_tokens, output_tokens, cache_read
 
 
-def build_goal_middleware(enabled: bool = True):
+def build_goal_middleware(enabled: bool = True, service: Any | None = None):
     """构建 goal 记账 middleware。
 
     每个模型调用边界结算一次（``wrap_model_call`` 包住 handler，从响应提取
-    usage 并结算）；goal 未启用时是纯 no-op。
+    usage 并结算）；goal 未启用时是纯 no-op。``service`` 显式传入时使用项目
+    实例（P6-05），否则回退到进程级单例。
     """
     if not enabled:
         return _DisabledGoalMiddleware()
 
+    def _goal_service() -> Any | None:
+        return service if service is not None else get_goal_service()
+
     def _before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:  # noqa: ARG001
-        service = get_goal_service()
+        service = _goal_service()
         thread_id = _config_thread_id()
         if service is None or not thread_id:
             return None
@@ -81,7 +85,7 @@ def build_goal_middleware(enabled: bool = True):
         return _before_model(self, state, runtime)
 
     def _settle(response: Any) -> None:
-        service = get_goal_service()
+        service = _goal_service()
         thread_id = _config_thread_id()
         if service is None or not thread_id:
             return
@@ -130,4 +134,3 @@ class _DisabledGoalMiddleware(AgentMiddleware):
     def __init__(self) -> None:
         super().__init__()
         self.state_schema = AgentState
-

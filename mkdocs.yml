@@ -49,6 +49,21 @@ nav:
   - 快速开始: quickstart.md
   - CLI 命令参考: cli.md
   - 配置指南: config.md
+  - Agent Runtime 解耦计划:
+      - 总体方案: agent-runtime-decoupling/index.md
+      - 实施进度: agent-runtime-decoupling/progress.md
+      - 架构决策: agent-runtime-decoupling/decisions.md
+      - P0 基线与护栏: agent-runtime-decoupling/phase-0-baseline.md
+      - P0 基线报告: agent-runtime-decoupling/baseline-report.md
+      - P1 Streaming Core: agent-runtime-decoupling/phase-1-streaming-core.md
+      - P2 AgentTurnRuntime: agent-runtime-decoupling/phase-2-turn-runtime.md
+      - P3 TUI 切换: agent-runtime-decoupling/phase-3-tui-cutover.md
+      - P4 SessionRuntime: agent-runtime-decoupling/phase-4-session-runtime.md
+      - P5 同项目多会话: agent-runtime-decoupling/phase-5-multi-session.md
+      - P6 ProjectRuntime: agent-runtime-decoupling/phase-6-project-runtime.md
+      - P7 全局控制面: agent-runtime-decoupling/phase-7-global-control-plane.md
+      - P8 稳定性收口: agent-runtime-decoupling/phase-8-hardening.md
+      - 迁移说明与余留风险: agent-runtime-decoupling/migration.md
   - 子代理架构调研: subagent-architecture-survey.md
   - 模型配置: models.md
   - MCP Server: mcp.md

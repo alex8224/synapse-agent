@@ -461,13 +461,25 @@ class ProjectCatalog:
     ) -> int:
         """Full reconciliation from one project's ``sessions.sqlite``.
 
-        Opens the project database read-only and mirrors every session row.
-        Returns the number of projected sessions. Never raises: corrupt or
-        missing project databases simply project nothing.
+        Opens the project database read-only and mirrors every session row,
+        then removes catalog projections whose thread disappeared from the
+        source database (P7-08). Returns the number of projected sessions.
+        Never raises: corrupt or missing project databases simply project
+        nothing.
         """
-        self.register_project(settings.workspace, detect_git=False)
+        project = self.register_project(settings.workspace, detect_git=False)
         path = settings.resolved_sessions_path()
         if not Path(path).is_file():
+            # Source gone: drop stale projections instead of leaving ghosts.
+            self._conn.execute(
+                "DELETE FROM project_sessions WHERE project_id = ?",
+                (project.project_id,),
+            )
+            self._conn.execute(
+                "UPDATE projects SET session_count = 0 WHERE project_id = ?",
+                (project.project_id,),
+            )
+            self._conn.commit()
             return 0
         count = 0
         try:
@@ -478,6 +490,7 @@ class ProjectCatalog:
                     "SELECT thread_id, title, model, summary, updated_at, created_at, "
                     "tags_json FROM sessions"
                 ).fetchall()
+                seen: set[str] = set()
                 for row in rows:
                     try:
                         tags = json.loads(row["tags_json"] or "[]")
@@ -485,9 +498,11 @@ class ProjectCatalog:
                             tags = []
                     except Exception:  # noqa: BLE001 - corrupt tags degrade to []
                         tags = []
+                    thread_id = str(row["thread_id"])
+                    seen.add(thread_id)
                     self.upsert_session(
                         settings.workspace,
-                        thread_id=str(row["thread_id"]),
+                        thread_id=thread_id,
                         title=str(row["title"] or ""),
                         model=row["model"],
                         summary=row["summary"],
@@ -497,6 +512,27 @@ class ProjectCatalog:
                         now=now,
                     )
                     count += 1
+                # P7-08: reconcile deletions — remove projections no longer in
+                # the source database (including empty-thread pruning).
+                if seen:
+                    placeholders = ",".join("?" for _ in seen)
+                    self._conn.execute(
+                        f"DELETE FROM project_sessions WHERE project_id = ? "
+                        f"AND thread_id NOT IN ({placeholders})",
+                        (project.project_id, *sorted(seen)),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM project_sessions WHERE project_id = ?",
+                        (project.project_id,),
+                    )
+                self._conn.execute(
+                    "UPDATE projects SET session_count = "
+                    "(SELECT COUNT(*) FROM project_sessions WHERE project_id = ?) "
+                    "WHERE project_id = ?",
+                    (project.project_id, project.project_id),
+                )
+                self._conn.commit()
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -586,6 +622,84 @@ class ProjectCatalog:
             "runs": int(runs),
             "active_today": int(active_projects),
         }
+
+    # ------------------------------------------------------------------
+    # P7-06: cross-project session resolution / projection removal
+    # ------------------------------------------------------------------
+
+    def resolve_session(
+        self, ref: str, *, project_id: str | None = None
+    ) -> CatalogSession | None:
+        """Resolve ``<project>:<thread>`` (or project + thread id/prefix).
+
+        ``ref`` may be a global ``project_id:thread_id`` string or a bare
+        thread id when ``project_id`` is supplied. Ambiguity returns None.
+        """
+        text = (ref or "").strip()
+        if not text:
+            return None
+        if ":" in text and project_id is None:
+            project_part, _, thread_part = text.partition(":")
+            project_part = project_part.strip()
+            thread_part = thread_part.strip()
+            if not project_part or not thread_part:
+                return None
+            project = self.resolve_project(project_part)
+            if project is None:
+                return None
+            return self._match_session(project.project_id, thread_part)
+        if project_id is None:
+            return None
+        project = self.resolve_project(project_id)
+        if project is None:
+            return None
+        return self._match_session(project.project_id, text)
+
+    def _match_session(self, project_id: str, thread_ref: str) -> CatalogSession | None:
+        """Exact thread id first, then a unique prefix match."""
+        base = """
+            SELECT ps.*, p.name AS project_name, p.workspace_path
+            FROM project_sessions ps
+            JOIN projects p ON p.project_id = ps.project_id
+            WHERE ps.project_id = ?
+        """
+        exact = self._conn.execute(
+            base + " AND ps.thread_id = ?",
+            (project_id, thread_ref),
+        ).fetchone()
+        if exact is not None:
+            return self._row_to_catalog_session(exact)
+        rows = self._conn.execute(
+            base + " AND ps.thread_id LIKE ?",
+            (project_id, f"{thread_ref}%"),
+        ).fetchall()
+        if len(rows) == 1:
+            return self._row_to_catalog_session(rows[0])
+        return None
+
+    def remove_session_projection(
+        self,
+        *,
+        project_id: str | None = None,
+        workspace: Path | str | None = None,
+        thread_id: str,
+    ) -> bool:
+        """Drop one session from the projection (source DB untouched)."""
+        project = self.get_project(workspace=workspace, project_id=project_id)
+        if project is None:
+            return False
+        cursor = self._conn.execute(
+            "DELETE FROM project_sessions WHERE project_id = ? AND thread_id = ?",
+            (project.project_id, thread_id),
+        )
+        self._conn.execute(
+            "UPDATE projects SET session_count = "
+            "(SELECT COUNT(*) FROM project_sessions WHERE project_id = ?) "
+            "WHERE project_id = ?",
+            (project.project_id, project.project_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     # ------------------------------------------------------------------
     # Run ledger (Phase 4: orchestration basis)

@@ -119,6 +119,54 @@ def test_stream_agent_respects_cancel_event():
     assert any("cancel" in m.lower() for m in sink.infos)
 
 
+class _CleanupOnCancelAgent:
+    """Mimic LangGraph attaching an async-exit task to CancelledError."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.cleanup_finished = threading.Event()
+
+    async def astream(self, payload, config=None, **kwargs):  # noqa: ANN001, ARG002
+        import asyncio
+
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+
+            async def finish_cleanup() -> None:
+                await asyncio.sleep(0.05)
+                self.cleanup_finished.set()
+
+            cleanup_task = asyncio.create_task(finish_cleanup())
+            raise asyncio.CancelledError("graph cleanup interrupted", cleanup_task) from None
+        if False:  # pragma: no cover - retain async-generator shape
+            yield None
+
+
+def test_stream_cancel_waits_for_attached_langgraph_cleanup_task() -> None:
+    agent = _CleanupOnCancelAgent()
+    cancel = threading.Event()
+
+    def cancel_soon() -> None:
+        assert agent.started.wait(timeout=2.0)
+        cancel.set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    result = stream_agent(
+        agent,
+        {"messages": [{"role": "user", "content": "x"}]},
+        {"configurable": {"thread_id": "cleanup-test"}},
+        token_stream=False,
+        prefer_async=True,
+        sink=_Sink(),
+        cancel_event=cancel,
+    )
+
+    assert result.cancelled is True
+    assert agent.cleanup_finished.is_set()
+
+
 class _SqliteOnlyAgent:
     """Mimic LangGraph agent with sync SqliteSaver: astream fails, stream works."""
 

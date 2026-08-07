@@ -337,8 +337,10 @@ class TestGoalCommand:
             handle_goal(["task"], thread_id="t1")
             result = handle_goal(["pause"], thread_id="t1")
             assert any("paused" in line for line in result.lines)
+            assert result.cancel_active_turn is True
             result = handle_goal(["resume"], thread_id="t1")
             assert any("resumed" in line for line in result.lines)
+            assert result.cancel_active_turn is False
             result = handle_goal(["clear"], thread_id="t1")
             assert any("cleared" in line for line in result.lines)
             result = handle_goal(["clear"], thread_id="t1")

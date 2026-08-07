@@ -97,7 +97,7 @@ def run_tui(
         except Exception:  # noqa: BLE001 - catalog is best-effort
             catalog = None
     try:
-        app.run()
+        return app.run()
     finally:
         if catalog is not None and run_id is not None:
             try:

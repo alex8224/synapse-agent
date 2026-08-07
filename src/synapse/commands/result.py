@@ -31,4 +31,6 @@ class SlashResult:
     # HITL: UI should resume the paused graph with this decision.
     resume_action: str | None = None  # "approve" | "reject"
     resume_message: str | None = None
-
+    # Goal pause is a runtime action too: stop the current graph turn after
+    # the durable goal state has been changed to paused.
+    cancel_active_turn: bool = False

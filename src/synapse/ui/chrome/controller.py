@@ -428,8 +428,7 @@ class ChromeController:
             app._topbar,
             TopBarContext(
                 workspace=lambda: short_workspace_label(app.settings.workspace),
-                title=lambda: (app._session_title or "").strip()
-                or self.session_title_label(max_len=56),
+                title=lambda: self.render_session_title(),
                 branch=self.render_branch_chrome,
                 usage=self.usage_right_label,
                 tool_output=self.tool_output_label,
@@ -437,6 +436,21 @@ class ChromeController:
             ),
         )
         self.apply_topbar_region_bands()
+
+    def render_session_title(self, *, max_len: int = 56) -> str:
+        """Session title with a background-session count badge when applicable."""
+        app = self._app
+        title = (app._session_title or "").strip() or self.session_title_label(max_len=max_len)
+        turn = getattr(app, "_turn", None)
+        if turn is None:
+            return title
+        try:
+            bg = turn.background_running_count()
+        except Exception:  # noqa: BLE001 - chrome must never break on state probes
+            return title
+        if bg > 0:
+            return f"[{bg} bg] {title}"
+        return title
 
     def apply_topbar_region_bands(self) -> None:
         """Apply theme topbar metrics (gap/pad already in CSS; optional band bg).
@@ -563,11 +577,14 @@ class ChromeController:
                     if goal.status == ThreadGoalStatus.BUDGET_LIMITED:
                         from synapse.goals.steering import budget_limit_prompt
 
-                        runtime = service.runtime(thread_id)
+                        goal_runtime = service.runtime(thread_id)
+                        session_runtime = getattr(
+                            getattr(app, "_turn", None), "session_runtime", None
+                        )
                         queue = (
-                            getattr(app, "_active_steer_queue", None)
-                            or app._turn_steer_queue()
-                            if runtime.mark_budget_reported(goal.goal_id)
+                            session_runtime.steer_queue()
+                            if session_runtime is not None
+                            and goal_runtime.mark_budget_reported(goal.goal_id)
                             else None
                         )
                         if queue is not None:
@@ -581,9 +598,13 @@ class ChromeController:
                     ):
                         from synapse.goals.steering import objective_updated_prompt
 
+                        session_runtime = getattr(
+                            getattr(app, "_turn", None), "session_runtime", None
+                        )
                         queue = (
-                            getattr(app, "_active_steer_queue", None)
-                            or app._turn_steer_queue()
+                            session_runtime.steer_queue()
+                            if session_runtime is not None
+                            else app._turn_steer_queue()
                         )
                         if queue is not None:
                             try:
@@ -594,9 +615,14 @@ class ChromeController:
                 # 目标变为 active 且线程空闲（/goal 设置、resume 等）：立即续跑。
                 if goal is not None and goal.status == ThreadGoalStatus.ACTIVE:
                     try:
-                        queue = app.__dict__.get("_active_steer_queue")
-                        if queue is None:
-                            queue = get_agent_steer_queue(app.__dict__.get("agent"))
+                        session_runtime = getattr(
+                            getattr(app, "_turn", None), "session_runtime", None
+                        )
+                        queue = (
+                            session_runtime.steer_queue()
+                            if session_runtime is not None
+                            else get_agent_steer_queue(app.__dict__.get("agent"))
+                        )
                         if queue is not None:
                             from synapse.goals.steering import (
                                 GOAL_STEER_PREFIX,

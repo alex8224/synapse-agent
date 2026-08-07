@@ -23,6 +23,7 @@ Design constraints:
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from collections.abc import Callable
@@ -30,6 +31,7 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage
 
+from synapse.runtime.async_runtime import await_cancel_cleanup
 from synapse.sessions.transcript import load_messages_from_agent
 
 # Short prompt designed to produce a trivial, tool-free response while still
@@ -109,15 +111,25 @@ def prewarm_session(
 
         if runtime is not None and callable(getattr(agent, "astream", None)):
             async def _run() -> bool:
-                async for _ in agent.astream(
+                stream = agent.astream(
                     payload,
                     config=config,
                     stream_mode=["messages"],
                     version="v2",
-                ):
-                    if cancel_event is not None and cancel_event.is_set():
-                        return False
-                return True
+                )
+                try:
+                    async for _ in stream:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return False
+                    return True
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if callable(close):
+                        try:
+                            await close()
+                        except asyncio.CancelledError as exc:
+                            await await_cancel_cleanup(exc)
+                            raise
 
             completed = runtime.run(_run())
         else:

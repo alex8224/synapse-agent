@@ -18,8 +18,17 @@ class SteerController:
     def turn_queue(self) -> SteerQueue | None:
         """Return the queue consumed by the active graph run when available."""
         app = self._app
+        controller = getattr(app, "_turn", None)
+        runtime = getattr(controller, "session_runtime", None)
+        if runtime is not None:
+            queue = runtime.steer_queue()
+            if queue is not None:
+                return queue
+        busy = bool(getattr(controller, "busy", getattr(app, "_busy", False)))
         active_queue = getattr(app, "_active_steer_queue", None)
-        if getattr(app, "_busy", False) and active_queue is not None:
+        if busy and active_queue is not None:
+            # Compatibility for a turn started before SessionRuntime was
+            # attached (and for lightweight hosts used outside the full TUI).
             return active_queue
         return get_agent_steer_queue(app.agent)
 

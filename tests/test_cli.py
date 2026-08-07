@@ -1,5 +1,7 @@
 """CLI help and startup error handling tests."""
 
+from pathlib import Path
+
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -106,3 +108,90 @@ def test_launch_tui_reports_invalid_models_json_without_traceback(tmp_path, monk
     assert str(models_path) in output
     assert "invalid models config JSON" in output
     assert "MODELS_JSON" in output
+
+
+def test_resolve_launch_target_workspace_only(tmp_path):
+    from synapse.cli import _resolve_launch_target
+
+    overrides, thread_id, root = _resolve_launch_target(
+        workspace=tmp_path,
+        session=None,
+        project=None,
+        model=None,
+        require_approval=False,
+        readonly=False,
+        debug=False,
+    )
+    assert overrides["workspace"] == tmp_path
+    assert thread_id is None
+    assert root == tmp_path.resolve()
+
+
+def test_resolve_launch_target_session_reference(tmp_path, monkeypatch):
+    from synapse.cli import _resolve_launch_target
+
+    calls: dict[str, object] = {}
+
+    class _FakeInfo:
+        project_id = "proj-1"
+        workspace_path = "/ws/p1"
+
+    class _FakeCatalog:
+        def __init__(self, *a, **k):
+            del a, k
+            calls["catalog"] = True
+
+        def resolve_project(self, ref):
+            del ref
+            return _FakeInfo()
+
+        def get_project(self, project_id=None):
+            del project_id
+            return _FakeInfo()
+
+    class _FakeSettings:
+        def resolved_catalog_path(self):
+            return None
+
+    monkeypatch.setattr("synapse.cli.ProjectCatalog", _FakeCatalog)
+    monkeypatch.setattr(
+        "synapse.cli.load_settings", lambda **k: _FakeSettings()
+    )
+    monkeypatch.setattr(
+        "synapse.runtime.sessions.resolve_session_ref",
+        lambda value, *, catalog=None, verify=False: type(
+            "R", (), {"project_id": "proj-1"}
+        )(),
+    )
+
+    overrides, thread_id, root = _resolve_launch_target(
+        workspace=None,
+        session="proj-1:thread-9",
+        project=None,
+        model=None,
+        require_approval=False,
+        readonly=False,
+        debug=False,
+    )
+    assert overrides["workspace"] == "/ws/p1"
+    assert thread_id == "thread-9"
+    assert root == Path("/ws/p1").resolve()
+
+
+def test_resolve_launch_target_no_args_still_has_workspace_key(tmp_path):
+    """Regression: _resolve_settings requires the workspace key even when unset."""
+    from synapse.cli import _resolve_launch_target
+
+    overrides, thread_id, root = _resolve_launch_target(
+        workspace=None,
+        session=None,
+        project=None,
+        model=None,
+        require_approval=False,
+        readonly=False,
+        debug=False,
+    )
+    assert "workspace" in overrides
+    assert overrides["workspace"] is None
+    assert thread_id is None
+    assert root is None

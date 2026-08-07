@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from synapse.runtime.steer import is_steer_message
+from synapse.runtime.streaming.events import normalize_stream_item
 from synapse.ui.timeline import item_label
 
 
@@ -464,35 +465,5 @@ def human_nested_tools_detail(calls: list[Any], *, limit: int = 5) -> str:
         text = f"{text} · +{more}"
     return text
 def _normalize_stream_item(item: Any) -> tuple[str, Any, tuple[str, ...]]:
-    ns: tuple[str, ...] = ()
-
-    if isinstance(item, dict) and "type" in item and "data" in item:
-        mode = str(item.get("type") or "updates")
-        data = item.get("data")
-        raw_ns = item.get("ns") or item.get("namespace") or ()
-        if raw_ns:
-            ns = tuple(str(x) for x in raw_ns)
-        return mode, data, ns
-
-    if isinstance(item, tuple):
-        if len(item) == 3:
-            maybe_ns, mode, data = item
-            if isinstance(maybe_ns, (tuple, list)):
-                return str(mode), data, tuple(str(x) for x in maybe_ns)
-            return str(maybe_ns), mode, ()
-        if len(item) == 2:
-            a, b = item
-            if isinstance(a, str) and a in {
-                "messages",
-                "updates",
-                "values",
-                "custom",
-                "events",
-                "debug",
-            }:
-                return a, b, ()
-            if isinstance(a, (tuple, list)):
-                return "updates", b, tuple(str(x) for x in a)
-            return str(a), b, ()
-
-    return "updates", item, ()
+    """Compatibility wrapper for the runtime-owned normalizer."""
+    return normalize_stream_item(item)

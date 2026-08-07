@@ -58,12 +58,16 @@ _RETRYABLE_5XX_STATUSES = frozenset({429, 502, 503, 504})
 
 
 # ---------------------------------------------------------------------------
-#  Module-level retry notifier (set by stream / TUI before each turn)
+#  Context-local retry notifier (set by stream runtime for each turn)
 # ---------------------------------------------------------------------------
-_retry_notifier: Callable[[int, float, str], None] | None = None
+_retry_notifier: contextvars.ContextVar[
+    Callable[[int, float, str], None] | None
+] = contextvars.ContextVar("synapse_retry_notifier", default=None)
 
 
-def set_retry_notifier(fn: Callable[[int, float, str], None] | None) -> None:
+def set_retry_notifier(
+    fn: Callable[[int, float, str], None] | None,
+) -> contextvars.Token[Callable[[int, float, str], None] | None]:
     """Install a callback invoked before each retry delay.
 
     ``fn(attempt, delay, reason)`` where *attempt* is 1-indexed,
@@ -71,13 +75,17 @@ def set_retry_notifier(fn: Callable[[int, float, str], None] | None) -> None:
     the exception that triggered the retry.
     ``None`` clears the notifier.
     """
-    global _retry_notifier
-    _retry_notifier = fn
+    return _retry_notifier.set(fn)
 
 
-def clear_retry_notifier() -> None:
-    """Remove any installed retry notifier."""
-    set_retry_notifier(None)
+def clear_retry_notifier(
+    token: contextvars.Token[Callable[[int, float, str], None] | None] | None = None,
+) -> None:
+    """Restore the previous notifier, or clear the current context slot."""
+    if token is not None:
+        _retry_notifier.reset(token)
+    else:
+        _retry_notifier.set(None)
 
 
 def _model_error_text(exc: Exception) -> str:
@@ -150,10 +158,11 @@ class NotifyingModelRetryMiddleware(ModelRetryMiddleware):
     """``ModelRetryMiddleware`` subclass that fires a notifier on each retry."""
 
     def _notify_retry(self, attempt: int, delay: float, exc: Exception) -> None:
-        if _retry_notifier is not None:
+        notifier = _retry_notifier.get()
+        if notifier is not None:
             try:
                 reason = _format_retry_reason(exc)
-                _retry_notifier(attempt, delay, reason)
+                notifier(attempt, delay, reason)
             except Exception:  # noqa: BLE001
                 pass
 

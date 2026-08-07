@@ -118,6 +118,7 @@ def handle_goal(args: list[str], *, thread_id: str | None, settings: Any = None)
             handled=True,
             lines=[f"goal {action}.", *goal_summary_lines(goal)],
             notice=f"goal {action}",
+            cancel_active_turn=cmd == "pause",
         )
 
     # 设置新目标

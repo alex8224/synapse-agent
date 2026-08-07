@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from textual.widgets import Input
 
 from synapse.sessions.transcript_projection import TranscriptUsage
+
+
+@dataclass(frozen=True, slots=True)
+class TurnPersistenceRecord:
+    """Immutable inputs used by transcript, summary, and catalog projections."""
+
+    thread_id: str
+    workspace: str
+    user_text: str
+    thought_text: str
+    answer_text: str
+    tool_summary: str
+    tool_items: tuple[Any, ...]
+    usage: TranscriptUsage
 
 
 class TurnPersistenceController:
@@ -40,6 +55,80 @@ class TurnPersistenceController:
         self.persist_transcript_turn(user_text=user_text)
         self.persist_turn_summary(user_text=user_text)
         self.project_session_into_catalog()
+
+    def persist_record(self, record: TurnPersistenceRecord) -> None:
+        """Persist execution projections solely from one frozen runtime record."""
+        if not record.user_text:
+            return
+        from synapse.sessions.transcript import UiTranscriptEvent
+
+        events = [UiTranscriptEvent(kind="user", text=record.user_text)]
+        if record.thought_text:
+            events.append(UiTranscriptEvent(kind="thought", text=record.thought_text))
+        if record.tool_items:
+            calls: list[dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
+            for index, item in enumerate(record.tool_items):
+                item_id = str(getattr(item, "id", None) or f"tool-{index}")
+                name = str(getattr(item, "name", None) or "tool")
+                calls.append(
+                    {
+                        "id": item_id,
+                        "name": name,
+                        "args": {
+                            "label": getattr(item, "label", ""),
+                            "path": getattr(item, "path", None),
+                        },
+                    }
+                )
+                results.append(
+                    {
+                        "id": item_id,
+                        "name": name,
+                        "content": getattr(item, "preview", "") or "",
+                        "status": "error" if getattr(item, "error", False) else "ok",
+                    }
+                )
+            events.append(UiTranscriptEvent(kind="tools", tool_calls=calls, tool_results=results))
+        if record.answer_text:
+            events.append(UiTranscriptEvent(kind="answer", text=record.answer_text))
+
+        app = self._app
+        app._transcript_projection.append_turn(record.thread_id, events, usage=record.usage)
+        mode = getattr(app.settings, "session_summary_mode", "local")
+        if mode != "off":
+            from synapse.sessions.summary import persist_local_summary
+
+            persist_local_summary(
+                self._summary_store(),
+                record.thread_id,
+                user_text=record.user_text,
+                tool_summary=record.tool_summary,
+                answer_text=record.answer_text,
+                max_chars=int(getattr(app.settings, "session_summary_max_chars", 600) or 600),
+            )
+        self.project_record_into_catalog(record)
+
+    def project_record_into_catalog(self, record: TurnPersistenceRecord) -> None:
+        """Project the frozen session identity without consulting the active page."""
+        app = self._app
+        if not bool(getattr(app.settings, "project_catalog_enabled", True)):
+            return
+        if app._project_catalog is None:
+            return
+        info = self._summary_store().get(record.thread_id)
+        if info is None:
+            return
+        app._project_catalog.upsert_session(
+            record.workspace,
+            thread_id=info.thread_id,
+            title=info.title,
+            model=info.model or info.active_model,
+            summary=info.summary,
+            updated_at=info.updated_at,
+            created_at=info.created_at,
+            tags=info.tags,
+        )
 
     def persist_transcript_turn(self, *, user_text: str) -> None:
         """Append one bounded visual turn and cumulative usage to the projection."""

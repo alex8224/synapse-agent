@@ -45,6 +45,12 @@ class TopBar(Static):
             super().__init__()
             self.path = path
 
+    class OpenProjectDrawer(Message):
+        """Request the app to open the floating project/session drawer."""
+
+    class ToggleProjectDrawer(Message):
+        """Request the app to toggle the floating project/session drawer."""
+
     def __init__(
         self,
         *,
@@ -462,13 +468,45 @@ class TopBar(Static):
         self.dismiss()
         self.post_message(self.OpenGitExplore(path))
 
+    def request_open_drawer(self) -> None:
+        """Ask the app to open the project/session drawer."""
+        self.dismiss()
+        self.post_message(self.ToggleProjectDrawer())
+
     def on_click(self, event: Click) -> None:
-        """Click branch chrome → open Git Explore (works even when clean)."""
+        """Click branch chrome → open Git Explore; workspace chrome → drawer."""
         try:
             x = int(getattr(event, "x", -1))
         except Exception:  # noqa: BLE001
             x = -1
-        if x < 0 or not self._pointer_on_branch(x):
+        if x < 0:
             return
-        event.stop()
-        self.request_explore(None)
+        if self._pointer_on_branch(x):
+            event.stop()
+            self.request_explore(None)
+            return
+        if self._pointer_on_workspace(x):
+            event.stop()
+            self.request_open_drawer()
+
+    def _workspace_span(self) -> tuple[int, int] | None:
+        """Locate the workspace (leftmost) component span for click handling."""
+        try:
+            reg = self._registry_provider()
+        except Exception:  # noqa: BLE001
+            return None
+        from synapse.ui.topbar.core import locate_component_span
+
+        return locate_component_span(
+            reg, "workspace", usable_width=self._usable_width()
+        )
+
+    def _pointer_on_workspace(self, x: int) -> bool:
+        span = self._workspace_span()
+        if span is None:
+            return False
+        start, width = span
+        if width <= 0:
+            return False
+        content_x = int(x) - 1
+        return start <= content_x < start + width

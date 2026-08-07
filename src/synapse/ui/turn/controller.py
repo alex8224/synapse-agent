@@ -13,16 +13,18 @@ from typing import Any
 from textual.widgets import Input
 
 from synapse.content.multimodal import find_placeholders
+from synapse.runtime.agent_loop import AgentTurnRuntime, TurnContext, TurnStatus
+from synapse.runtime.agent_loop.request import build_resume_request, build_turn_request
+from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
 from synapse.runtime.steer import (
     SteerQueue,
     format_steer_message,
     get_agent_steer_queue,
 )
-from synapse.subagent_monitor import MONITOR_CONFIG_KEY
-from synapse.ui.stream import extract_last_ai_text, stream_agent
-from synapse.ui.textual_stream_sink import TextualStreamSink
+from synapse.ui.stream import extract_last_ai_text
+from synapse.ui.turn.event_bridge import TextualTurnEventBridge
+from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
 from synapse.ui.turn.persistence import TurnPersistenceController
-from synapse.ui.turn.request import build_turn_request
 
 
 class TurnController:
@@ -31,6 +33,142 @@ class TurnController:
     def __init__(self, app: Any) -> None:
         self._app = app
         self._persistence = TurnPersistenceController(app)
+        self._runtime = AgentTurnRuntime()
+        self._session_runtime: SessionRuntime | None = None
+        self._sessions: dict[str, SessionRuntime] = {}
+        self._attached_thread_id: str | None = None
+        self._event_bridge: TextualTurnEventBridge | None = None
+        self._session_subscription: Any | None = None
+
+    @property
+    def session_runtime(self) -> SessionRuntime | None:
+        return self._session_runtime
+
+    @property
+    def busy(self) -> bool:
+        runtime = getattr(self, "_session_runtime", None)
+        if runtime is None:
+            state = getattr(self._app, "__dict__", {})
+            return bool(state.get("_busy_projection", state.get("_busy", False)))
+        return runtime.snapshot().status in {SessionStatus.RUNNING, SessionStatus.CANCELLING}
+
+    def sync_busy_projection(self) -> None:
+        """Clear the legacy UI projection after SessionRuntime publishes terminal state."""
+        if not self.busy:
+            self._app.__dict__["_busy_projection"] = False
+
+    def cancel(self, reason: str = "user") -> bool:
+        runtime = self._sessions.get(self._app.thread_id)
+        if runtime is None:
+            attached = self._session_runtime
+            attached_thread = getattr(attached, "thread_id", self._app.thread_id)
+            if attached_thread == self._app.thread_id:
+                runtime = attached
+        return runtime.cancel(reason) if runtime is not None else False
+
+    def steer(self, text: str) -> bool:
+        runtime = self._sessions.get(self._app.thread_id)
+        if runtime is None:
+            attached = self._session_runtime
+            attached_thread = getattr(attached, "thread_id", self._app.thread_id)
+            if attached_thread == self._app.thread_id:
+                runtime = attached
+        return runtime.steer(text) if runtime is not None else False
+
+    def _persist_runtime_result(self, context: TurnContext, result: Any) -> None:
+        """Project a settled turn using its frozen identity, never current app routing."""
+        self._persistence.persist_runtime_result(context, result)
+
+    def background_running_count(self) -> int:
+        current = self._app.thread_id
+        return sum(
+            runtime.snapshot().status
+            in {SessionStatus.QUEUED, SessionStatus.STARTING, SessionStatus.RUNNING}
+            for thread_id, runtime in self._sessions.items()
+            if thread_id != current
+        )
+
+    def runtime_status_map(self) -> dict[str, str]:
+        """Map thread_id -> runtime status for session-list chrome.
+
+        Idle/failed/cold sessions that are not in memory carry no status here;
+        the dialog falls back to their stored metadata.
+        """
+        sessions = tuple(self._sessions.values())
+        return {runtime.thread_id: runtime.snapshot().status.value for runtime in sessions}
+
+    def detach(self, thread_id: str | None = None) -> None:
+        """Detach rendering only; never cancel the session-owned turn."""
+        if thread_id is not None and self._attached_thread_id != thread_id:
+            return
+        self._detach_renderer()
+        self._attached_thread_id = None
+        self._session_runtime = None
+
+    def attach(
+        self,
+        target: str | SessionRuntime,
+        *,
+        after_sequence: int = 0,
+    ) -> SessionRuntime | None:
+        """Attach chrome to a session id/runtime and replay events after a cursor."""
+        self._detach_renderer()
+        runtime = self._sessions.get(target) if isinstance(target, str) else target
+        self._attached_thread_id = target if isinstance(target, str) else target.thread_id
+        self._session_runtime = runtime
+        if runtime is None:
+            return None
+        context = runtime.active_context()
+        if context is None:
+            return runtime
+        app = self._app
+        renderer = TextualTurnEventRenderer(
+            app._transcript,
+            thread_id=context.thread_id,
+            turn_id=context.turn_id,
+        )
+        bridge = TextualTurnEventBridge(renderer, app._transcript.call_from_thread)
+        subscription = runtime.subscribe(bridge.emit, after_sequence=after_sequence)
+        for envelope in subscription.replay:
+            bridge.emit(envelope.event)
+        self._event_bridge = bridge
+        self._session_subscription = subscription
+        return runtime
+
+    def _session_for(self, *, thread_id: str, agent: Any) -> SessionRuntime:
+        runtime = self._sessions.get(thread_id)
+        if runtime is not None and runtime.thread_id == thread_id and runtime.agent is agent:
+            return runtime
+        if runtime is not None and runtime.snapshot().active_turn_id is not None:
+            raise RuntimeError("cannot replace active SessionRuntime")
+        if runtime is None or runtime.thread_id != thread_id or runtime.agent is not agent:
+            runtime = SessionRuntime(
+                thread_id=thread_id,
+                agent=agent,
+                settings=self._app.settings,
+                turn_runtime=self._runtime,
+                persist_result=self._persist_runtime_result,
+                goal_service=getattr(agent, "_coding_goal_service", None),
+            )
+            self._sessions[thread_id] = runtime
+        if self._attached_thread_id in {None, thread_id}:
+            self._attached_thread_id = thread_id
+            self._session_runtime = runtime
+        return runtime
+
+    def _attach_renderer(self, runtime: SessionRuntime, context: TurnContext) -> None:
+        del context
+        self.attach(runtime, after_sequence=runtime.snapshot().latest_sequence)
+
+    def _detach_renderer(self) -> None:
+        subscription = self._session_subscription
+        if subscription is not None:
+            subscription.close()
+        self._session_subscription = None
+        bridge = self._event_bridge
+        if bridge is not None:
+            bridge.close()
+        self._event_bridge = None
 
     # -- submit ------------------------------------------------------------
 
@@ -69,14 +207,10 @@ class TurnController:
         if app._handle_slash(text):
             app._image_bank.clear()
             return
-        if app._busy:
+        if self.busy:
             # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
-            app._bind_steer_queue()
-            q = app._turn_steer_queue()
-            if q is not None:
-                pending = q.push(text)
-                if pending:
-                    return
+            if self.steer(text):
+                return
             app.append_event("still running previous turn…", "yellow")
             return
         try:
@@ -115,9 +249,7 @@ class TurnController:
 
         app.append_user(display, images=turn_images or None, full_text=text)
         self.capture_turn_context()
-        app._busy = True
         app._skip_steer_followup = False
-        app._cancel_event = threading.Event()
         app._transcript.reset_for_turn()
         app._subagent_monitor.reset()
         app._subagent_monitor_auto_opened = False
@@ -147,8 +279,9 @@ class TurnController:
             )
             app.call_from_thread(app._turn_done)
             return
-        turn_agent = app._active_turn_agent or app.agent
-        turn_thread_id = app._active_turn_thread_id or app.thread_id
+        runtime = self._session_runtime
+        turn_agent = runtime.agent if runtime is not None and self.busy else app.agent
+        turn_thread_id = runtime.thread_id if runtime is not None and self.busy else app.thread_id
         if app._agent_error or turn_agent is None:
             app.call_from_thread(
                 app.append_event,
@@ -160,7 +293,6 @@ class TurnController:
 
         app._begin_turn_usage()
         transcript_generation = app._transcript_generation
-        sink = TextualStreamSink(app._transcript)
         request = build_turn_request(
             text=text,
             attachments=attachments,
@@ -169,25 +301,33 @@ class TurnController:
             monitor_id=app._subagent_monitor.monitor_id,
             max_concurrency=app.settings.max_concurrency,
         )
+        runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
         try:
-            result = stream_agent(
-                turn_agent,
-                request.payload,
-                request.config,
-                token_stream=app.settings.token_stream,
-                prefer_async=True,
-                max_concurrency=app.settings.max_concurrency,
-                sink=sink,
-                cancel_event=app._cancel_event,
-                show_reasoning_placeholders=bool(
-                    getattr(app.settings, "show_reasoning_placeholders", True)
+            handle = runtime.start_threadsafe(
+                UserTurn(
+                    text=text,
+                    attachments=tuple(attachments or ()),
+                    monitor_id=app._subagent_monitor.monitor_id,
+                    request=request,
                 ),
+                on_started=lambda context: self._attach_renderer(runtime, context),
             )
+            result, _snapshot = runtime.wait_threadsafe(handle)
+            bridge = self._event_bridge
+            if bridge is not None:
+                bridge.drain()
             if self.apply_stream_result(
                 result, transcript_generation=transcript_generation
             ):
                 return
-        except Exception as exc:  # noqa: BLE001
+            if result.status is TurnStatus.FAILED:
+                app._call_for_transcript(
+                    transcript_generation,
+                    app.append_event,
+                    f"ERROR: {result.error_type}: {result.error_message}",
+                    "bold red",
+                )
+        except Exception as exc:  # noqa: BLE001 - UI boundary
             app._call_for_transcript(
                 transcript_generation,
                 app.append_event,
@@ -195,6 +335,7 @@ class TurnController:
                 "bold red",
             )
         finally:
+            self._detach_renderer()
             app.call_from_thread(app._turn_done)
 
     def run_resume(self, action: str, message: str | None = None) -> None:
@@ -207,21 +348,16 @@ class TurnController:
         )
 
         app = self._app
-        turn_agent = app._active_turn_agent or app.agent
-        turn_thread_id = app._active_turn_thread_id or app.thread_id
+        runtime = self._session_runtime
+        turn_agent = runtime.agent if runtime is not None else app.agent
+        turn_thread_id = runtime.thread_id if runtime is not None else app.thread_id
         if turn_agent is None:
             app.call_from_thread(app.append_event, "agent unavailable", "bold red")
             app.call_from_thread(app._turn_done)
             return
         app._begin_turn_usage()
-        sink = TextualStreamSink(app._transcript)
-        # Allow Esc to abort resume stream as well.
-        app._cancel_event = threading.Event()
         config = {
-            "configurable": {
-                "thread_id": turn_thread_id,
-                MONITOR_CONFIG_KEY: app._subagent_monitor.monitor_id,
-            },
+            "configurable": {"thread_id": turn_thread_id},
             "max_concurrency": app.settings.max_concurrency,
         }
         try:
@@ -233,24 +369,31 @@ class TurnController:
                 app.call_from_thread(app.append_event, line, "dim")
             decisions = build_decisions(pending, action=action, message=message)
             payload = build_resume_payload(decisions)
-            result = stream_agent(
-                turn_agent,
-                payload,
-                config,
-                token_stream=app.settings.token_stream,
-                prefer_async=True,
+            request = build_resume_request(
+                payload=payload,
+                thread_id=turn_thread_id,
+                monitor_id=app._subagent_monitor.monitor_id,
                 max_concurrency=app.settings.max_concurrency,
-                sink=sink,
-                cancel_event=app._cancel_event,
-                show_reasoning_placeholders=bool(
-                    getattr(app.settings, "show_reasoning_placeholders", True)
-                ),
             )
+            runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+            handle = runtime.start_threadsafe(
+                UserTurn(
+                    text="",
+                    monitor_id=app._subagent_monitor.monitor_id,
+                    request=request,
+                ),
+                on_started=lambda context: self._attach_renderer(runtime, context),
+            )
+            result, _snapshot = runtime.wait_threadsafe(handle)
+            bridge = self._event_bridge
+            if bridge is not None:
+                bridge.drain()
             if self.apply_stream_result(result, transcript_generation=None, resume=True):
                 return
         except Exception as exc:  # noqa: BLE001
             app.call_from_thread(app.append_event, f"ERROR: {exc}", "bold red")
         finally:
+            self._detach_renderer()
             app.call_from_thread(app._turn_done)
 
     def apply_stream_result(
@@ -336,25 +479,26 @@ class TurnController:
     # -- turn context -------------------------------------------------------
 
     def capture_turn_context(self) -> None:
-        """Freeze the agent, thread, and queue used by one graph run."""
+        """Ensure the current session freezes the agent and thread identity."""
         app = self._app
-        turn_agent = app.agent
-        app._active_turn_agent = turn_agent
-        app._active_turn_thread_id = app.thread_id
-        app._active_steer_queue = get_agent_steer_queue(turn_agent)
+        self._session_for(thread_id=app.thread_id, agent=app.agent)
 
     def clear_turn_context(self) -> None:
-        app = self._app
-        app._active_turn_agent = None
-        app._active_turn_thread_id = None
-        app._active_steer_queue = None
+        """Compatibility no-op; SessionRuntime owns immutable turn context."""
 
     # -- turn end -----------------------------------------------------------
 
     def turn_done(self) -> None:
         app = self._app
-        completed_queue = app._active_steer_queue or get_agent_steer_queue(app.agent)
-        app._busy = False
+        if self._session_runtime is None:
+            app.__dict__["_busy_projection"] = False
+        self.sync_busy_projection()
+        runtime = self._session_runtime
+        completed_queue = (
+            runtime.steer_queue()
+            if runtime is not None
+            else getattr(app, "_active_steer_queue", None)
+        )
         app._sync_prompt_placeholder()
         # An immediate middleware drain retains the panel while the turn is
         # active. Reconcile it now so applied guidance disappears at turn end.
@@ -376,18 +520,20 @@ class TurnController:
         # guidance as a follow-up turn (unless the run was Esc-cancelled).
         if getattr(app, "_skip_steer_followup", False):
             app._skip_steer_followup = False
+            cancel_event = getattr(app, "_cancel_event", None)
+            if isinstance(cancel_event, threading.Event):
+                cancel_event.clear()
             # Esc supersedes guidance already queued for this run, including a
             # delayed goal continuation callback.
             if completed_queue is not None:
                 completed_queue.clear()
-            # Consume the cancelled token so a later resume starts cleanly.
-            app._cancel_event = threading.Event()
             self.clear_turn_context()
             app._bind_steer_queue()
             self.note_session_recap_turn()
             return
-        # 长程目标：最终结算，并按需自动发起续跑回合。
-        self.settle_goal_turn(completed_queue)
+        # SessionRuntime has already settled goal usage/state before this callback.
+        if runtime is not None:
+            app._current_goal = runtime.snapshot().goal
         # Capture snapshot before steer follow-up may start another busy turn.
         self.note_session_recap_turn()
         if self.schedule_followup_steer(completed_queue):
@@ -433,7 +579,7 @@ class TurnController:
         不重复推送。
         """
         app = self._app
-        if app.__dict__.get("_busy", False):
+        if self.busy:
             return False
         settings = app.__dict__.get("settings")
         if not bool(getattr(settings, "goal_auto_continue", True)):
@@ -529,10 +675,7 @@ class TurnController:
         if not content:
             return
         # Silent follow-up: model gets content; no transcript/status steer copy.
-        if app._active_turn_agent is None:
-            self.capture_turn_context()
-        app._active_steer_queue = q
-        app._busy = True
+        self.capture_turn_context()
         app._skip_steer_followup = False
         app._cancel_event = threading.Event()
         app.clear_stream()

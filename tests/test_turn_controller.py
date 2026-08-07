@@ -178,3 +178,107 @@ def test_build_turn_request_overrides_concurrency() -> None:
         max_concurrency=8,
     )
     assert req.config["max_concurrency"] == 8
+
+
+def test_busy_cancel_and_steer_delegate_to_session_runtime() -> None:
+    app = _FakeApp()
+    controller = TurnController(app)
+    calls: list[tuple[str, str]] = []
+
+    class _Runtime:
+        def snapshot(self) -> Any:
+            from synapse.runtime.sessions import SessionStatus
+
+            return SimpleNamespace(status=SessionStatus.RUNNING)
+
+        def cancel(self, reason: str) -> bool:
+            calls.append(("cancel", reason))
+            return True
+
+        def steer(self, text: str) -> bool:
+            calls.append(("steer", text))
+            return True
+
+    controller._session_runtime = _Runtime()  # type: ignore[assignment]
+
+    assert controller.busy is True
+    assert controller.cancel("escape") is True
+    assert controller.steer("focus") is True
+    assert calls == [("cancel", "escape"), ("steer", "focus")]
+
+
+def test_switch_keeps_background_session_running() -> None:
+    """P5-06: detaching one session and attaching another must not cancel the old turn."""
+    import concurrent.futures
+
+    from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
+    from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
+
+    class _Controlled:
+        def __init__(self) -> None:
+            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
+
+        def submit(
+            self, context: Any, *, sink: Any, cancel_token: CancelToken
+        ) -> TurnHandle:
+            del sink
+            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+            self.futures[context.thread_id] = future
+            return TurnHandle(context.turn_id, future, cancel_token)
+
+    controlled = _Controlled()
+    app = _FakeApp()
+    app._transcript = SimpleNamespace(  # renderer attachment surface
+        call_from_thread=lambda fn, *a, **k: fn(*a, **k),
+        transcript_generation=0,
+    )
+    controller = TurnController(app)
+
+    runtime_a = SessionRuntime(
+        thread_id="a",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        turn_runtime=controlled,  # type: ignore[arg-type]
+    )
+    runtime_b = SessionRuntime(
+        thread_id="b",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        turn_runtime=controlled,  # type: ignore[arg-type]
+    )
+    controller._sessions["a"] = runtime_a
+    controller._sessions["b"] = runtime_b
+
+    # Both sessions start a turn (background "a" while "b" is attached).
+    handle_a = runtime_a.start(UserTurn("A"))[0]
+    runtime_b.start(UserTurn("B"))
+    app.thread_id = "b"
+    controller.attach("b")
+    assert controller.background_running_count() == 1
+    assert controller.runtime_status_map()["a"] == SessionStatus.RUNNING.value
+    assert controller.runtime_status_map()["b"] == SessionStatus.RUNNING.value
+
+    # Finish the background session; the attached session stays busy.
+    controlled.futures["a"].set_result(
+        TurnResult(
+            turn_id=handle_a.turn_id,
+            thread_id="a",
+            status=TurnStatus.COMPLETED,
+            final_text="A done",
+            input_tokens=1,
+            output_tokens=1,
+        )
+    )
+    assert controller.runtime_status_map()["a"] in {
+        SessionStatus.IDLE.value,
+        SessionStatus.RUNNING.value,
+    }
+    assert controller.busy is True  # session "b" still active
+    controller._detach_renderer()
+
+
+def test_runtime_status_map_only_includes_memory_sessions() -> None:
+    app = _FakeApp()
+    controller = TurnController(app)
+    assert controller.runtime_status_map() == {}
+    assert controller.background_running_count() == 0

@@ -35,6 +35,7 @@ class TuiCommandEffects:
     error: bool = False
     resume_action: str | None = None
     resume_message: str | None = None
+    cancel_active_turn: bool = False
 
     @classmethod
     def from_result(cls, result: object, *, previous_thread_id: str) -> TuiCommandEffects:
@@ -52,6 +53,7 @@ class TuiCommandEffects:
             theme_name=getattr(result, "theme_name", None),
             markdown=getattr(result, "markdown", None),
             error=bool(getattr(result, "error", False)),
+            cancel_active_turn=bool(getattr(result, "cancel_active_turn", False)),
             resume_action=(
                 value
                 if isinstance(value := getattr(result, "resume_action", None), str)
@@ -166,11 +168,20 @@ class SlashController:
         app = self._app
         previous_thread_id = app.thread_id
         thread_changed = effects.thread_id is not None and effects.thread_id != previous_thread_id
+        if effects.cancel_active_turn:
+            # The goal store is already paused by handle_goal(). Cancel the
+            # session-owned turn as the runtime half of the same operation.
+            app._turn.cancel("goal_pause")
         if effects.agent is not None:
             app.agent = effects.agent
             app._bind_steer_queue()
         if thread_changed:
+            turn_controller = getattr(app, "_turn", None)
+            if turn_controller is not None:
+                turn_controller.detach(previous_thread_id)
             app.thread_id = effects.thread_id
+            if turn_controller is not None:
+                turn_controller.attach(app.thread_id)
             app._reset_session_token_chrome()
             app._reload_tool_output_stats()
             app._load_current_goal()
@@ -340,11 +351,14 @@ class SlashController:
         from synapse.ui.dialogs import SessionListDialog
 
         app = self._app
+        turn = getattr(app, "_turn", None)
+        runtime_status = turn.runtime_status_map() if turn is not None else {}
         app.push_screen(
             SessionListDialog(
                 app.settings,
                 current_thread=app.thread_id,
                 mode=mode,
+                runtime_status=runtime_status,
             ),
             self.on_session_dialog_done,
         )
@@ -640,7 +654,9 @@ class SlashController:
     def import_codex_session_bg(self, native_id: str) -> None:
         """Seed one Codex text snapshot, then switch through the normal path."""
         app = self._app
-        turn_agent = app._active_turn_agent or app.agent
+        controller = getattr(app, "_turn", None)
+        runtime = getattr(controller, "session_runtime", None)
+        turn_agent = runtime.agent if runtime is not None and controller.busy else app.agent
         ready = getattr(app, "_lifecycle", None)
         if ready is not None:
             ready = ready.agent_ready.wait(timeout=180)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -144,6 +145,54 @@ class TestSessionListInit:
         dlg = SessionListDialog(settings, current_thread="t1", mode="switch")
         assert dlg._sessions == []
         assert dlg._mode == "switch"
+
+    def test_runtime_status_is_propagated_to_items(self, monkeypatch):
+        from synapse.config import Settings
+        from synapse.sessions.store import SessionInfo
+        from synapse.ui.dialogs.session_list import SessionListDialog
+
+        class _FakeStore:
+            def __enter__(self) -> _FakeStore:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                return None
+
+            def list_nonempty(self, limit: int) -> list[SessionInfo]:
+                del limit
+                return [
+                    SessionInfo(
+                        thread_id="t1",
+                        title="first",
+                        model="test",
+                        created_at="2026-08-07 09:00:00",
+                        updated_at="2026-08-07 10:00:00",
+                        tags=[],
+                    ),
+                    SessionInfo(
+                        thread_id="t2",
+                        title="second",
+                        model="test",
+                        created_at="2026-08-07 09:01:00",
+                        updated_at="2026-08-07 10:01:00",
+                        tags=[],
+                    ),
+                ]
+
+        monkeypatch.setattr(
+            "synapse.sessions.store.SessionStore", lambda *a, **k: _FakeStore()
+        )
+        settings = Settings(_env_file=None, theme="cursor-dark")
+        dlg = SessionListDialog(
+            settings,
+            current_thread="t1",
+            mode="switch",
+            runtime_status={"t2": "running"},
+        )
+        list(dlg.compose_body())
+        by_key = {item.key: item for item in dlg._items}
+        assert by_key["t2"].meta == "[running]"
+        assert by_key["t1"].meta == ""
 
 
 class TestCodexResetDialog:

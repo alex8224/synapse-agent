@@ -28,6 +28,8 @@ __all__ = [
     "config_search_roots",
     "executable_config_dirs",
     "find_dotenv",
+    "load_global_settings",
+    "load_project_settings",
     "load_settings",
     "project_config_dir",
     "user_config_dir",
@@ -66,6 +68,23 @@ def bootstrap_project_env(project_root: Path | None = None) -> Path | None:
         return None
     load_dotenv(dotenv_path=env_path, override=True, encoding="utf-8")
     return env_path
+
+
+def project_env_mapping(project_root: Path | None = None) -> dict[str, str]:
+    """Parse a project's legacy ``.env`` as a private mapping.
+
+    Never mutates ``os.environ``: concurrent projects must not clobber each
+    other's process-global secrets (ADR-008).  Prefer ``models.json`` keys.
+    """
+    env_path = find_dotenv(project_root)
+    if env_path is None:
+        return {}
+    try:
+        from dotenv import dotenv_values
+
+        return dict(dotenv_values(str(env_path), encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - legacy env is best-effort
+        return {}
 
 
 class Settings(BaseSettings):
@@ -507,12 +526,46 @@ def load_settings(**overrides: Any) -> Settings:
 
     Secrets: prefer ``api_key`` in ``models.json``. ``.env`` is legacy only.
     """
+    return _load_settings_impl(overrides=overrides, apply_env=True)
+
+
+def load_project_settings(workspace: Path | str | None = None, **overrides: Any) -> Settings:
+    """Load an isolated per-project Settings snapshot (P6-04).
+
+    Reads the workspace's legacy ``.env`` as a private mapping and never
+    mutates ``os.environ`` or the process ``cwd``, so concurrent projects do
+    not clobber each other's global secrets (ADR-008).
+    """
+    if workspace is not None:
+        overrides = {**overrides, "workspace": workspace}
+    return _load_settings_impl(overrides=overrides, apply_env=False)
+
+
+def load_global_settings(**overrides: Any) -> Settings:
+    """Load user-layer-only settings for the global control plane (P7-01).
+
+    Resolves catalog/UI/model config without touching the process ``cwd``:
+    does not create ``<cwd>/.synapse``, does not load a project ``.env``, and
+    does not register the cwd as a project.  The workspace stays unresolved
+    until the user picks a concrete project.
+    """
+    return _load_settings_impl(overrides=overrides, apply_env=False, global_only=True)
+
+
+def _load_settings_impl(
+    *,
+    overrides: dict[str, Any],
+    apply_env: bool,
+    global_only: bool = False,
+) -> Settings:
     project_root = overrides.get("workspace")
     root_path = Path(project_root).expanduser().resolve() if project_root is not None else None
-    # Legacy: optional .env for migration
-    bootstrap_project_env(root_path)
+    # Legacy: optional .env for migration. Concurrent-project paths skip the
+    # process-env override so one project never mutates another's environment.
+    if apply_env:
+        bootstrap_project_env(root_path)
 
-    env_path = find_dotenv(root_path)
+    env_path = None if global_only else find_dotenv(root_path)
     if env_path is not None:
         settings = Settings(_env_file=str(env_path))
     else:
@@ -601,7 +654,8 @@ def load_settings(**overrides: Any) -> Settings:
     if path_updates:
         settings = settings.model_copy(update=path_updates)
 
-    settings.ensure_dirs()
+    if not global_only:
+        settings.ensure_dirs()
 
     # Layered models.json → selected profile (api_key / base_url / thinking).
     # Model profile resolution is runtime configuration, while UI activation is

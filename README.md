@@ -39,6 +39,18 @@ Then start the TUI from anywhere:
 synapse tui -w .
 ```
 
+Open a session in any registered project from the global catalog:
+
+```bash
+synapse --session <project_id>:<thread_id>   # global session reference
+synapse --project <ref>                      # project by id prefix, name, or path
+```
+
+Inside the TUI, click the topbar `≡` (or the workspace label) to open the
+floating project drawer: it lists every registered project, groups their
+sessions, marks live runtime status, and lets you switch sessions in place or
+jump to another project (the TUI restarts into that project).
+
 <details>
 <summary><b>Or run from source</b></summary>
 

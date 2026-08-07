@@ -1,0 +1,291 @@
+"""P5 same-project multi-session RuntimeManager contracts."""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+from types import SimpleNamespace
+from typing import Any
+
+from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
+from synapse.runtime.sessions import RuntimeManager, SessionRuntime, SessionStatus, UserTurn
+from synapse.runtime.streaming import EVENT_VERSION, TextPayload, TurnEvent, TurnEventKind
+
+
+class _ControlledTurnRuntime:
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+        self.future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+        self.sink: Any = None
+        self.token: CancelToken | None = None
+
+    def submit(self, context: Any, *, sink: Any, cancel_token: CancelToken) -> TurnHandle:
+        self.sink = sink
+        self.token = cancel_token
+        return TurnHandle(context.turn_id, self.future, cancel_token)
+
+
+class _SessionFactory:
+    def __init__(self) -> None:
+        self.turns: dict[str, _ControlledTurnRuntime] = {}
+
+    def __call__(self, *, thread_id: str, agent: Any, settings: Any) -> SessionRuntime:
+        controlled = _ControlledTurnRuntime(thread_id)
+        self.turns[thread_id] = controlled
+        return SessionRuntime(
+            thread_id=thread_id,
+            agent=agent,
+            settings=settings,
+            turn_runtime=controlled,  # type: ignore[arg-type]
+        )
+
+
+def _result(thread_id: str, text: str, status: TurnStatus = TurnStatus.COMPLETED) -> TurnResult:
+    return TurnResult(
+        turn_id=f"turn-{thread_id}",
+        thread_id=thread_id,
+        status=status,
+        final_text=text,
+        input_tokens=1,
+        output_tokens=1,
+    )
+
+
+def _event(thread_id: str, sequence: int, text: str) -> TurnEvent:
+    return TurnEvent(
+        version=EVENT_VERSION,
+        thread_id=thread_id,
+        turn_id=f"turn-{thread_id}",
+        sequence=sequence,
+        kind=TurnEventKind.ANSWER_DELTA,
+        payload=TextPayload(text),
+    )
+
+
+def _manager(factory: _SessionFactory, *, limit: int = 2) -> RuntimeManager:
+    return RuntimeManager(
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        agent_factory=lambda thread_id, shared: SimpleNamespace(
+            thread_id=thread_id,
+            shared=shared,
+        ),
+        session_factory=factory,
+        max_concurrent_sessions=limit,
+    )
+
+
+def test_two_sessions_run_concurrently_without_event_crosstalk() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        handle_a = await manager.submit("a", UserTurn("A"))
+        handle_b = await manager.submit("b", UserTurn("B"))
+        session_a = manager.get_session("a")
+        session_b = manager.get_session("b")
+        assert session_a is not None and session_b is not None
+        events_a: list[str] = []
+        events_b: list[str] = []
+        sub_a = session_a.subscribe(
+            lambda envelope: events_a.append(envelope.event.payload.text)
+        )
+        sub_b = session_b.subscribe(
+            lambda envelope: events_b.append(envelope.event.payload.text)
+        )
+        factory.turns["a"].sink.emit(_event("a", 1, "a1"))
+        factory.turns["b"].sink.emit(_event("b", 1, "b1"))
+        factory.turns["a"].sink.emit(_event("a", 2, "a2"))
+        factory.turns["a"].future.set_result(_result("a", "A done"))
+        factory.turns["b"].future.set_result(_result("b", "B done"))
+        await asyncio.gather(
+            asyncio.wrap_future(handle_a.future),
+            asyncio.wrap_future(handle_b.future),
+        )
+        await session_a.wait_for_settlement(handle_a)
+        await session_b.wait_for_settlement(handle_b)
+        assert events_a == ["a1", "a2"]
+        assert events_b == ["b1"]
+        assert manager.snapshot("a").usage.total_tokens == 2  # type: ignore[union-attr]
+        assert manager.snapshot("b").usage.total_tokens == 2  # type: ignore[union-attr]
+        sub_a.close()
+        sub_b.close()
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_same_session_rejects_second_submit_while_first_is_active() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        handle = await manager.submit("a", UserTurn("first"))
+        try:
+            await manager.submit("a", UserTurn("second"))
+        except RuntimeError as exc:
+            assert "active turn" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("second submit should fail")
+        factory.turns["a"].future.set_result(_result("a", "done"))
+        await asyncio.wrap_future(handle.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_cancel_one_session_does_not_cancel_other() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        handle_a = await manager.submit("a", UserTurn("A"))
+        handle_b = await manager.submit("b", UserTurn("B"))
+        assert manager.cancel("b", "escape") is True
+        assert factory.turns["b"].token is not None
+        assert factory.turns["b"].token.cancelled is True
+        assert factory.turns["a"].token is not None
+        assert factory.turns["a"].token.cancelled is False
+        factory.turns["a"].future.set_result(_result("a", "A done"))
+        factory.turns["b"].future.set_result(
+            _result("b", "", status=TurnStatus.CANCELLED)
+        )
+        await asyncio.gather(
+            asyncio.wrap_future(handle_a.future),
+            asyncio.wrap_future(handle_b.future),
+        )
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_global_limit_exposes_queued_state() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory, limit=1)
+        handle_a = await manager.submit("a", UserTurn("A"))
+        submit_b = asyncio.create_task(manager.submit("b", UserTurn("B")))
+        for _ in range(20):
+            snapshot = manager.snapshot("b")
+            if snapshot is not None and snapshot.status is SessionStatus.QUEUED:
+                break
+            await asyncio.sleep(0)
+        assert manager.snapshot("b").status is SessionStatus.QUEUED  # type: ignore[union-attr]
+        factory.turns["a"].future.set_result(_result("a", "done"))
+        await asyncio.wrap_future(handle_a.future)
+        handle_b = await asyncio.wait_for(submit_b, timeout=2)
+        assert manager.snapshot("b").status is SessionStatus.RUNNING  # type: ignore[union-attr]
+        factory.turns["b"].future.set_result(_result("b", "done"))
+        await asyncio.wrap_future(handle_b.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_active_session_cannot_be_deleted_without_explicit_cancel() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        handle = await manager.submit("a", UserTurn("A"))
+        try:
+            await manager.close_session("a")
+        except RuntimeError as exc:
+            assert "active turn" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("active close should fail")
+        factory.turns["a"].future.set_result(_result("a", "done"))
+        await asyncio.wrap_future(handle.future)
+        await manager.get_session("a").wait_for_settlement(handle)  # type: ignore[union-attr]
+        assert await manager.close_session("a") is True
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -> None:
+    """P5-02/03: each session gets an independent graph but shares project resources."""
+    calls: list[dict[str, Any]] = []
+
+    class _FakeModel:
+        pass
+
+    class _FakeCheckpointer:
+        pass
+
+    def fake_build(
+        settings: Any,
+        *,
+        project_root: Any = None,
+        checkpointer: Any = None,
+        model: Any = None,
+        model_registry: Any = None,
+        model_cache: Any = None,
+        mcp_tools: Any = None,
+        load_mcp: bool | None = None,
+        backend: Any = None,
+        steer_queue: Any = None,
+        prompt_cache_key: Any = None,
+        **_: Any,
+    ) -> Any:
+        del load_mcp
+        calls.append(
+            {
+                "settings": settings,
+                "project_root": project_root,
+                "checkpointer": checkpointer,
+                "model": model,
+                "model_registry": model_registry,
+                "model_cache": model_cache,
+                "mcp_tools": mcp_tools,
+                "backend": backend,
+                "steer_queue": steer_queue,
+                "prompt_cache_key": prompt_cache_key,
+            }
+        )
+        return SimpleNamespace(
+            steer_queue=steer_queue,
+            prompt_cache_key=prompt_cache_key,
+        )
+
+    monkeypatch.setattr("synapse.app.agent.build_coding_agent", fake_build)
+
+    from synapse.runtime.sessions import (
+        ProjectSharedResources,
+        build_session_agent_factory,
+    )
+
+    model = _FakeModel()
+    checkpointer = _FakeCheckpointer()
+    template = SimpleNamespace(
+        _coding_model=model,
+        _coding_checkpointer=checkpointer,
+        _coding_model_cache={"k": "v"},
+        _coding_model_registry="registry",
+    )
+    settings = SimpleNamespace(workspace="/ws")
+    factory = build_session_agent_factory(
+        settings=settings,
+        project_root="/ws",
+        template_agent=template,
+    )
+    resources = ProjectSharedResources(
+        model_client=model,
+        checkpointer=checkpointer,
+        mcp_tools=(object(),),
+        backend_config="backend",
+    )
+
+    agent_a = factory("thread-a", resources)
+    agent_b = factory("thread-b", resources)
+
+    assert len(calls) == 2
+    first, second = calls
+    # Shared expensive resources are reused across graphs.
+    assert first["model"] is model and second["model"] is model
+    assert first["checkpointer"] is checkpointer and second["checkpointer"] is checkpointer
+    assert first["model_cache"] == {"k": "v"} and second["model_cache"] == {"k": "v"}
+    assert first["mcp_tools"] is not None and len(first["mcp_tools"]) == 1
+    assert first["backend"] == "backend"
+    # Each graph gets its own steer queue.
+    assert first["steer_queue"] is not None
+    assert second["steer_queue"] is not None
+    assert first["steer_queue"] is not second["steer_queue"]
+    # Prompt cache is keyed per thread.
+    assert agent_a.prompt_cache_key() == "thread-a"
+    assert agent_b.prompt_cache_key() == "thread-b"

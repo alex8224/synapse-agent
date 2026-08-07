@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from synapse.ui.dialogs.controller import TuiCommandEffects
+from synapse.ui.dialogs.controller import SlashController, TuiCommandEffects
 
 
 def test_effects_normalize_thread_switch_and_hitl_action() -> None:
@@ -51,3 +51,19 @@ def test_effects_ignore_non_string_magicmock_like_resume_values() -> None:
 
     assert effects.resume_action is None
     assert effects.resume_message is None
+
+
+def test_cancel_active_turn_effect_cancels_session_runtime() -> None:
+    calls: list[str] = []
+    app = SimpleNamespace(
+        thread_id="thread",
+        _turn=SimpleNamespace(cancel=lambda reason: calls.append(reason)),
+        _emit_system_lines=lambda *args, **kwargs: None,
+        _reload_session_title=lambda: None,
+        _refresh_topbar=lambda: None,
+        _refresh_codex_usage=lambda **kwargs: None,
+    )
+
+    SlashController(app).apply_effects(TuiCommandEffects(cancel_active_turn=True))
+
+    assert calls == ["goal_pause"]

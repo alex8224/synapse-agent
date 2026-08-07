@@ -173,6 +173,8 @@ def build_coding_agent(
     progress: Callable[[str], None] | None = None,
     force_parallel_subagents: bool | None = None,
     prompt_cache_key: Callable[[], str | None] | None = None,
+    goal_service: Any | None = None,
+    mcp_pool_key: str | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -344,7 +346,7 @@ def build_coding_agent(
     # 长程目标工具（get_goal / create_goal / update_goal）+ 进程级服务
     if getattr(settings, "enable_goals", True):
         try:
-            tools.extend(build_goal_tools())
+            tools.extend(build_goal_tools(service=goal_service))
         except Exception:  # noqa: BLE001 - goal 工具失败不阻断 agent 构建
             pass
 
@@ -397,7 +399,14 @@ def build_coding_agent(
             )
         if servers:
             with span(f"mcp:connect servers={len(servers)}"):
-                mcp_result = load_mcp_tools(servers, enabled=True)
+                if mcp_pool_key is not None:
+                    from synapse.integrations.mcp_client import get_mcp_pool_registry
+
+                    _pool, mcp_result = get_mcp_pool_registry().acquire(
+                        mcp_pool_key, servers=servers, enabled=True
+                    )
+                else:
+                    mcp_result = load_mcp_tools(servers, enabled=True)
             tools.extend(mcp_result.tools)
             build_coding_agent.last_mcp_warnings = list(mcp_result.warnings)  # type: ignore[attr-defined]
             build_coding_agent.last_mcp_servers = list(mcp_result.servers)  # type: ignore[attr-defined]
@@ -452,7 +461,10 @@ def build_coding_agent(
     goals_enabled = bool(getattr(settings, "enable_goals", True))
     if goals_enabled:
         try:
-            init_goal_service(settings.resolved_sessions_path())
+            if goal_service is None:
+                init_goal_service(settings.resolved_sessions_path())
+            else:
+                goals_enabled = True
         except Exception:  # noqa: BLE001 - goal 服务失败时降级为禁用
             goals_enabled = False
     middleware: list[Any] = [
@@ -468,7 +480,7 @@ def build_coding_agent(
         build_task_namespace_middleware(),
         build_tool_exclusion_middleware(model_request_excluded_tools),
         # 长程目标记账：每次模型调用边界结算 token/时间用量。
-        build_goal_middleware(enabled=goals_enabled),
+        build_goal_middleware(enabled=goals_enabled, service=goal_service),
     ]
     transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
     try:
@@ -568,7 +580,11 @@ def build_coding_agent(
     agent._coding_model_spec = model_spec  # type: ignore[attr-defined]
     agent._coding_model_profile = selected_profile.name  # type: ignore[attr-defined]
     agent._coding_checkpointer = saver  # type: ignore[attr-defined]
-    agent._coding_goal_service = get_goal_service() if goals_enabled else None  # type: ignore[attr-defined]
+    agent._coding_goal_service = (
+        goal_service
+        if goal_service is not None
+        else (get_goal_service() if goals_enabled else None)
+    )  # type: ignore[attr-defined]
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
     agent._coding_parallel_subagents = bool(_use_dag_subagents)  # type: ignore[attr-defined]
     agent._coding_subagent_mode = (  # type: ignore[attr-defined]

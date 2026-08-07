@@ -298,6 +298,17 @@ class CodingAgentApp(App[None]):
         except Exception:  # noqa: BLE001
             return variables
 
+    @property
+    def _busy(self) -> bool:
+        """Compatibility projection; SessionRuntime owns Agent turn busy state."""
+        controller = self.__dict__.get("_turn")
+        runtime_busy = bool(controller.busy) if controller is not None else False
+        return runtime_busy or bool(self.__dict__.get("_busy_projection", False))
+
+    @_busy.setter
+    def _busy(self, value: bool) -> None:
+        self.__dict__["_busy_projection"] = bool(value)
+
     def __init__(
         self,
         *,
@@ -326,16 +337,12 @@ class CodingAgentApp(App[None]):
         self._goal_listener_bound = False
         self._goal_listener_fn: Any = None
         self._image_bank = ImageBank()
-        self._busy = False
         self._compacting_context = False
         self._cancel_event = threading.Event()
         self._steer = SteerController(self)
         self._theme = ThemeController(self)
         self._status = StatusController(self)
         self._status._detail = "ready" if agent is not None else "starting"
-        self._active_turn_agent: Any | None = None
-        self._active_turn_thread_id: str | None = None
-        self._active_steer_queue: SteerQueue | None = None
         self._subagent_monitor = SubagentMonitor()
         self._subagent_status_text = ""
         self._skip_steer_followup = False
@@ -1151,6 +1158,63 @@ class CodingAgentApp(App[None]):
         event.stop()
         self._open_git_explore(getattr(event, "path", None))
 
+    @on(TopBar.ToggleProjectDrawer)
+    def on_top_bar_toggle_project_drawer(self, event: TopBar.ToggleProjectDrawer) -> None:
+        """Workspace chrome (``≡``) click → open the project/session drawer."""
+        event.stop()
+        self._open_project_drawer()
+
+    def _open_project_drawer(self) -> None:
+        from synapse.ui.drawer import ProjectDrawer
+
+        turn = getattr(self, "_turn", None)
+        runtime_status = turn.runtime_status_map() if turn is not None else {}
+        self.push_screen(
+            ProjectDrawer(
+                current_project_id=self._current_project_id(),
+                current_thread_id=self.thread_id,
+                runtime_status=runtime_status,
+            ),
+            self._on_project_drawer_done,
+        )
+
+    def _current_project_id(self) -> str:
+        """Stable project id for the active workspace (best-effort)."""
+        try:
+            from synapse.projects.catalog import ProjectCatalog
+            from synapse.runtime.projects.identity import (
+                ensure_project_identity,
+                read_project_identity,
+            )
+
+            identity = read_project_identity(self.project_root)
+            if identity is not None:
+                return str(identity["project_id"])
+            catalog = ProjectCatalog(self.settings.resolved_catalog_path())
+            info = catalog.get_project(workspace=self.project_root)
+            if info is not None:
+                return info.project_id
+            return ensure_project_identity(self.project_root)
+        except Exception:  # noqa: BLE001 - best-effort identity for the drawer
+            return ""
+
+    def _on_project_drawer_done(self, result: object) -> None:
+        if result is None:
+            return
+        action, project_id, thread_id = result
+        if action == "switch":
+            # Same project: reuse the in-place session switch path.
+            if thread_id and thread_id != self.thread_id:
+                self._slash.apply_session_switch(thread_id)
+        elif action == "switch_project":
+            self._restart_for_project(project_id, thread_id)
+        elif action == "new_session":
+            self._restart_for_project(project_id, None)
+
+    def _restart_for_project(self, project_id: str, thread_id: str | None) -> None:
+        """Exit the TUI with a switch request; the CLI restarts into the target."""
+        self.exit(("switch_project", project_id, thread_id or ""))
+
     def _open_git_explore(self, path: str | None = None) -> None:
         from synapse.ui.dialogs import GitExploreScreen
 
@@ -1494,13 +1558,13 @@ class CodingAgentApp(App[None]):
         """ESC: abort the in-flight agent loop so the user can start a new turn."""
         if isinstance(self.screen, ModalScreen):
             return
-        if not self._busy:
+        if not self._turn.busy:
             return
         # Idempotent: repeated ESC only re-asserts the cancel flag.
         if self._compacting_context:
             self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
             return
-        self._cancel_event.set()
+        self._turn.cancel("user")
         self._pause_goal_for_interrupt()
         self.set_activity("idle", "cancelling…", True)
         self.append_event("正在终止当前任务… (Esc)", "yellow")
@@ -1526,7 +1590,7 @@ class CodingAgentApp(App[None]):
         if isinstance(self.screen, ModalScreen):
             return
         # Backup path if a child widget swallows Escape before bindings fire.
-        if event.key == "escape" and self._busy:
+        if event.key == "escape" and self._turn.busy:
             self.action_cancel_run()
             event.stop()
             event.prevent_default()
@@ -1858,11 +1922,11 @@ class CodingAgentApp(App[None]):
     def handle_submit(self, event: Input.Submitted) -> None:
         self._turn.submit(event)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, group="agent-turn")
     def run_turn(self, text: str, attachments: list[Any] | None = None) -> None:
         self._turn.run_turn(text, attachments)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True, group="agent-turn")
     def run_resume(self, action: str, message: str | None = None) -> None:
         self._turn.run_resume(action, message)
 

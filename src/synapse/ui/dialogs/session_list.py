@@ -21,12 +21,18 @@ class SessionListDialog(DialogBase):
     _title_icon = "\u2261"  # ≡
 
     def __init__(
-        self, settings: Any, *, current_thread: str, mode: str = "switch"
+        self,
+        settings: Any,
+        *,
+        current_thread: str,
+        mode: str = "switch",
+        runtime_status: dict[str, str] | None = None,
     ) -> None:
         super().__init__()
         self._settings = settings
         self._current_thread = current_thread
         self._mode = mode  # "switch" | "delete" | "multi_delete"
+        self._runtime_status = runtime_status or {}
         self._checkable = mode == "multi_delete"
         if self._checkable:
             self._title_keys = (
@@ -63,11 +69,14 @@ class SessionListDialog(DialogBase):
         for s in self._sessions:
             title = (s.title or "").strip() or s.thread_id[:8]
             detail = f"{s.updated_at[:16] or '?'}"
+            status = self._runtime_status.get(s.thread_id)
+            meta = f"[{status}]" if status else ""
             items.append(
                 OptionItem(
                     key=s.thread_id,
                     label=title,
                     detail=detail,
+                    meta=meta,
                     selected=(s.thread_id == self._current_thread),
                 )
             )

@@ -258,6 +258,77 @@ async def _auto_record_memory(
     )
 
 
+def _resolve_launch_target(
+    *,
+    workspace: Path | None,
+    session: str | None,
+    project: str | None,
+    model: str | None,
+    require_approval: bool,
+    readonly: bool,
+    debug: bool,
+) -> tuple[dict, str | None, Path | None]:
+    """Resolve ``--session <project>:<thread>`` / ``--project <ref>`` to launch args.
+
+    Priority (P7): explicit global session > explicit project/workspace >
+    cwd is a registered project > plain workspace defaults.
+
+    Returns ``(overrides, thread_id, project_root)``; ``project_root`` is set
+    when a concrete project was chosen, otherwise None (cwd default).
+    """
+    overrides: dict = {"debug": debug}
+    overrides["model"] = model
+    overrides["workspace"] = workspace
+    if model is not None:
+        overrides["active_model"] = model
+    if require_approval is not None:
+        overrides["require_approval"] = require_approval
+    if readonly is not None:
+        overrides["readonly"] = readonly
+    thread_id: str | None = None
+
+    if session:
+        try:
+            from synapse.runtime.sessions import parse_global_id, resolve_session_ref
+
+            ref = parse_global_id(session)
+            catalog = ProjectCatalog(load_settings().resolved_catalog_path())
+            resolved = resolve_session_ref(session, catalog=catalog, verify=True)
+            info = catalog.get_project(project_id=resolved.project_id)
+            if info is None:
+                print_error(f"project not found: {resolved.project_id}")
+                raise typer.Exit(code=1)
+            overrides["workspace"] = info.workspace_path
+            thread_id = ref.thread_id
+        except Exception as exc:  # noqa: BLE001 - fall through to explicit project
+            if isinstance(exc, typer.Exit):
+                raise
+            print_error(f"cannot resolve --session {session!r}: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    if project and overrides.get("workspace") is None:
+        try:
+            catalog = ProjectCatalog(load_settings().resolved_catalog_path())
+            info = catalog.resolve_project(project)
+            if info is None:
+                print_error(f"project not found: {project}")
+                raise typer.Exit(code=1)
+            overrides["workspace"] = info.workspace_path
+        except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, typer.Exit):
+                raise
+            print_error(f"cannot resolve --project {project!r}: {exc}")
+            raise typer.Exit(code=1) from exc
+
+    if workspace is not None:
+        overrides["workspace"] = workspace
+
+    root: Path | None = None
+    if overrides.get("workspace") is not None:
+        root = Path(overrides["workspace"]).expanduser().resolve()
+    return overrides, thread_id, root
+
+
 def _launch_tui(
     *,
     workspace: Path | None,
@@ -266,20 +337,14 @@ def _launch_tui(
     readonly: bool,
     thread_id: str | None,
     debug: bool,
+    session: str | None = None,
+    project: str | None = None,
 ) -> None:
-    """Bootstrap settings and open the full-screen Textual TUI."""
-    try:
-        env_path = _bootstrap_env()
-        settings = _resolve_settings(
-            workspace=workspace,
-            model=model,
-            require_approval=require_approval,
-            debug=debug,
-            readonly=readonly,
-        )
-    except (OSError, ValueError) as exc:
-        _print_settings_error(exc)
-        raise typer.Exit(code=1) from exc
+    """Bootstrap settings and open the full-screen Textual TUI.
+
+    Loops when the TUI exits with a cross-project switch request so the new
+    project is launched in a fresh app (single-process boundary, ADR-010).
+    """
     try:
         from synapse.ui.tui import run_tui
     except ImportError as exc:  # pragma: no cover - dependency missing
@@ -287,17 +352,66 @@ def _launch_tui(
         print_info("Install with: uv add textual  (or uv sync)")
         raise typer.Exit(code=1) from exc
 
-    try:
-        run_tui(
-            settings=settings,
-            thread_id=thread_id,
-            env_path=env_path,
-            project_root=Path.cwd(),
-            cli_model=model,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _print_auth_error(settings, exc)
-        raise typer.Exit(code=1) from exc
+    overrides, resolved_thread, root = _resolve_launch_target(
+        workspace=workspace,
+        session=session,
+        project=project,
+        model=model,
+        require_approval=require_approval,
+        readonly=readonly,
+        debug=debug,
+    )
+    thread_id = thread_id or resolved_thread
+
+    switch_round = 0
+    while True:
+        try:
+            env_path = _bootstrap_env()
+            settings = _resolve_settings(**overrides)
+        except (OSError, ValueError) as exc:
+            _print_settings_error(exc)
+            raise typer.Exit(code=1) from exc
+
+        try:
+            result = run_tui(
+                settings=settings,
+                thread_id=thread_id,
+                env_path=env_path,
+                project_root=root,
+                cli_model=model,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _print_auth_error(settings, exc)
+            raise typer.Exit(code=1) from exc
+
+        # Cross-project switch from the drawer: restart into the target.
+        if (
+            isinstance(result, (tuple, list))
+            and len(result) >= 2
+            and result[0] == "switch_project"
+        ):
+            switch_round += 1
+            if switch_round > 8:
+                print_error("too many project switches; aborting")
+                raise typer.Exit(code=1)
+            project_id = str(result[1])
+            next_thread = str(result[2]) if len(result) > 2 and result[2] else None
+            try:
+                catalog = ProjectCatalog(load_settings().resolved_catalog_path())
+                info = catalog.get_project(project_id=project_id)
+                if info is None:
+                    print_error(f"project not found: {project_id}")
+                    raise typer.Exit(code=1)
+                overrides = {**overrides, "workspace": info.workspace_path}
+                root = Path(info.workspace_path).expanduser().resolve()
+                thread_id = next_thread
+                continue
+            except typer.Exit:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                print_error(f"project switch failed: {exc}")
+                raise typer.Exit(code=1) from exc
+        return
 
 
 @app.callback(invoke_without_command=True)
@@ -319,6 +433,14 @@ def _default_tui(
     ),
     thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
     debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Open a registered project by id prefix, name, or path"
+    ),
 ) -> None:
     """Full-screen Textual TUI - the default interface."""
     if ctx.invoked_subcommand is not None:
@@ -330,6 +452,8 @@ def _default_tui(
         readonly=readonly,
         thread_id=thread_id,
         debug=debug,
+        session=session,
+        project=project,
     )
 
 
@@ -351,6 +475,14 @@ def tui(
     ),
     thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
     debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Open a registered project by id prefix, name, or path"
+    ),
 ) -> None:
     """Launch the full-screen Textual TUI."""
     _launch_tui(
@@ -360,6 +492,8 @@ def tui(
         readonly=readonly,
         thread_id=thread_id,
         debug=debug,
+        session=session,
+        project=project,
     )
 
 
@@ -387,6 +521,14 @@ def _default_tui(
     ),
     thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
     debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Open a registered project by id prefix, name, or path"
+    ),
 ) -> None:
     """Full-screen Textual TUI - the default interface."""
     if ctx.invoked_subcommand is not None:
@@ -398,6 +540,8 @@ def _default_tui(
         readonly=readonly,
         thread_id=thread_id,
         debug=debug,
+        session=session,
+        project=project,
     )
 
 
@@ -419,6 +563,14 @@ def tui_cmd(
     ),
     thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
     debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Open a registered project by id prefix, name, or path"
+    ),
 ) -> None:
     """Full-screen Textual TUI - the default interface."""
     _launch_tui(
@@ -428,6 +580,8 @@ def tui_cmd(
         readonly=readonly,
         thread_id=thread_id,
         debug=debug,
+        session=session,
+        project=project,
     )
 
 
@@ -552,7 +706,7 @@ def run_cmd(
 
         agent = build_coding_agent(
             settings,
-            project_root=Path.cwd(),
+            project_root=settings.workspace,
             load_mcp=bool(settings.enable_mcp),
         )
     except Exception as exc:  # noqa: BLE001

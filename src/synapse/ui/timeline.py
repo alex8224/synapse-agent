@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from synapse.runtime.streaming.tool_model import ToolItem
+
 # Default preview budget (matches docs/tui-cursor-refactor.md).
 DEFAULT_PREVIEW_CHARS = 2000
 DEFAULT_PREVIEW_LINES = 40
@@ -39,21 +41,6 @@ _INTENT_KEYS = ("intent", "purpose", "reason")
 _TODO_TOOL_NAMES = frozenset({"write_todos", "todo_write", "todos"})
 _TODO_DONE = frozenset({"completed", "done", "complete", "finished"})
 _TODO_ACTIVE = frozenset({"in_progress", "in-progress", "running", "active", "doing"})
-
-
-@dataclass
-class ToolItem:
-    id: str
-    name: str
-    category: str
-    label: str
-    path: str | None = None
-    status: str = "running"
-    preview: str | None = None
-    error: bool = False
-    sub: bool = False
-    parent_id: str | None = None
-    call_id: str | None = None
 
 
 @dataclass

@@ -17,12 +17,80 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import inspect
 import threading
 import time
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+async def await_cancel_cleanup(exc: BaseException) -> None:
+    """Await cleanup tasks attached to a cancellation exception.
+
+    LangGraph's ``AsyncPregelLoop`` appends its async-exit task to
+    ``CancelledError.args`` when cancellation interrupts graph teardown.  If
+    the consumer swallows that exception without awaiting the attached task,
+    checkpoint and retry coroutines can survive the turn and are only noticed
+    as ``coroutine was never awaited`` warnings during process shutdown.
+    """
+
+    current = asyncio.current_task()
+    awaitables: list[Any] = []
+    seen: set[int] = set()
+
+    def collect(value: Any) -> None:
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        if isinstance(value, asyncio.Future) or inspect.isawaitable(value):
+            if value is not current:
+                awaitables.append(value)
+            return
+        if isinstance(value, BaseException):
+            for arg in value.args:
+                collect(arg)
+            return
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                collect(item)
+
+    collect(exc)
+    if awaitables:
+        await asyncio.gather(
+            *(asyncio.shield(awaitable) for awaitable in awaitables),
+            return_exceptions=True,
+        )
+
+
+async def _cancel_and_drain_loop_tasks() -> None:
+    """Cancel active loop tasks and let teardown tasks spawned by them finish."""
+
+    current = asyncio.current_task()
+    pending = {task for task in asyncio.all_tasks() if task is not current}
+    for task in pending:
+        task.cancel()
+    if pending:
+        results = await asyncio.gather(*pending, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                await await_cancel_cleanup(result)
+
+    # Cancellation handlers may create a separate async-exit task after the
+    # initial all_tasks() snapshot. Give those tasks a chance to finish before
+    # closing the event loop; cancelling them immediately recreates the leak.
+    trailing = {task for task in asyncio.all_tasks() if task is not current}
+    if trailing:
+        _done, still_pending = await asyncio.wait(trailing, timeout=3.0)
+        for task in still_pending:
+            task.cancel()
+        if still_pending:
+            results = await asyncio.gather(*still_pending, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    await await_cancel_cleanup(result)
 
 
 class AsyncRuntime:
@@ -68,11 +136,7 @@ class AsyncRuntime:
             loop.run_forever()
         finally:
             try:
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(_cancel_and_drain_loop_tasks())
             except Exception:  # noqa: BLE001
                 pass
             loop.close()

@@ -634,6 +634,77 @@ class McpSessionPool:
 _ACTIVE_POOL: McpSessionPool | None = None
 _POOL_LOCK = threading.Lock()
 
+# P6-06: per-project/config-digest pool registry for concurrent projects.
+_POOL_REGISTRY: McpPoolRegistry | None = None
+_POOL_REGISTRY_LOCK = threading.RLock()
+
+
+class McpPoolRegistry:
+    """Keyed MCP session pools: ``McpPoolKey(project_id, config_digest)``.
+
+    Lets concurrent projects own independent MCP connections instead of one
+    process-global pool whose reload closes another project's sessions.
+    """
+
+    def __init__(self) -> None:
+        self._pools: dict[str, McpSessionPool] = {}
+        self._lock = threading.RLock()
+
+    def acquire(
+        self,
+        key: str,
+        *,
+        servers: list[Any],
+        enabled: bool = True,
+    ) -> tuple[McpSessionPool, McpLoadResult]:
+        """Return an existing pool for ``key`` or open a new one."""
+        with self._lock:
+            existing = self._pools.get(key)
+            if existing is not None and not existing._closed:  # noqa: SLF001
+                return existing, McpLoadResult(
+                    tools=list(existing.tools),
+                    warnings=list(existing.warnings),
+                    servers=list(existing.server_names),
+                    tool_names=list(existing.tool_names),
+                    pool=existing,
+                )
+        pool = McpSessionPool()
+        result = pool.load(servers) if enabled and servers else McpLoadResult(
+            tools=[], warnings=[], servers=[], tool_names=[], pool=pool
+        )
+        with self._lock:
+            self._pools[key] = pool
+        return pool, result
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            pool = self._pools.pop(key, None)
+        if pool is not None:
+            pool.close()
+
+    def close_all(self) -> None:
+        with self._lock:
+            pools = list(self._pools.values())
+            self._pools.clear()
+        for pool in pools:
+            try:
+                pool.close()
+            except Exception:  # noqa: BLE001 - best-effort release
+                pass
+
+    def keys(self) -> list[str]:
+        with self._lock:
+            return sorted(self._pools)
+
+
+def get_mcp_pool_registry() -> McpPoolRegistry:
+    """Return the process-global keyed pool registry (lazy)."""
+    global _POOL_REGISTRY
+    with _POOL_REGISTRY_LOCK:
+        if _POOL_REGISTRY is None:
+            _POOL_REGISTRY = McpPoolRegistry()
+        return _POOL_REGISTRY
+
 
 def close_active_mcp_pool() -> None:
     global _ACTIVE_POOL
@@ -642,6 +713,12 @@ def close_active_mcp_pool() -> None:
         _ACTIVE_POOL = None
     if pool is not None:
         pool.close()
+
+
+def close_all_mcp_pools() -> None:
+    """Close the legacy global pool and every keyed project pool."""
+    close_active_mcp_pool()
+    get_mcp_pool_registry().close_all()
 
 
 def get_active_mcp_pool() -> McpSessionPool | None:
@@ -695,4 +772,4 @@ def load_mcp_tools(
     return result
 
 
-atexit.register(close_active_mcp_pool)
+atexit.register(close_all_mcp_pools)

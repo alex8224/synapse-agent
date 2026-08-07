@@ -40,8 +40,14 @@ def _format_goal(goal: Any, *, include_budget_report: bool = False) -> str:
     return "\n".join(lines)
 
 
-def build_goal_tools() -> list[Any]:
-    """构建三个 goal 工具（注入 coding agent）。"""
+def build_goal_tools(service: Any | None = None) -> list[Any]:
+    """构建三个 goal 工具（注入 coding agent）。
+
+    ``service`` 显式传入时使用项目实例（P6-05）；否则回退到进程级单例。
+    """
+
+    def _service() -> Any | None:
+        return service if service is not None else get_goal_service()
 
     @tool
     def get_goal(runtime: ToolRuntime) -> str:
@@ -49,7 +55,7 @@ def build_goal_tools() -> list[Any]:
 
         无目标时返回说明文本。用于检查是否存在正在执行的目标及其进度。
         """
-        service = get_goal_service()
+        service = _service()
         if service is None:
             return "goal service unavailable"
         goal = service.get(_thread_id(runtime))
@@ -72,7 +78,7 @@ def build_goal_tools() -> list[Any]:
             objective: 要开始推进的具体目标文本。
             token_budget: 可选的正整数 token 预算；仅在明确要求时设置。
         """
-        service = get_goal_service()
+        service = _service()
         if service is None:
             return "goal service unavailable"
         text = (objective or "").strip()
@@ -98,7 +104,7 @@ def build_goal_tools() -> list[Any]:
 
         完成带预算的目标后，向用户报告最终 token 用量。
         """
-        service = get_goal_service()
+        service = _service()
         if service is None:
             return "goal service unavailable"
         thread_id = _thread_id(runtime)

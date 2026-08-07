@@ -29,6 +29,17 @@ from synapse.runtime.context_compact import (
 )
 from synapse.runtime.pathing import summarize_tool_result
 from synapse.runtime.steer import is_steer_message
+from synapse.runtime.streaming import (
+    AgentEventSink,
+    InstrumentedStreamSink,
+    TurnTerminalPayload,
+)
+from synapse.runtime.streaming.adapters import sink_supports_tool_items
+from synapse.runtime.streaming.runtime import (
+    _is_sync_only_checkpointer_error,
+    _iter_stream_events,
+    checkpointer_supports_async,
+)
 from synapse.runtime.token_rate import TokenRateTracker
 
 # soft_wrap keeps long lines readable; force_terminal helps Windows color.
@@ -48,7 +59,7 @@ from synapse.ui.rendering import (
     render_math_in_text,
     render_mermaid_diagram,
 )
-from synapse.ui.sink import StreamSink, sink_supports_tool_items
+from synapse.ui.sink import StreamSink
 from synapse.ui.stream_events import (
     StreamResult,
     _chunk_text,
@@ -70,11 +81,6 @@ from synapse.ui.stream_events import (
 )
 from synapse.ui.stream_events import (
     aggregate_usage_from_messages as _aggregate_usage_from_messages,
-)
-from synapse.ui.stream_runtime import (
-    _is_sync_only_checkpointer_error,
-    _iter_stream_events,
-    checkpointer_supports_async,
 )
 from synapse.ui.timeline import (
     build_tool_item,
@@ -568,6 +574,7 @@ def stream_agent(
     max_concurrency: int = 8,
     subgraphs: bool = True,
     sink: StreamSink | None = None,
+    event_sink: AgentEventSink | None = None,
     cancel_event: threading.Event | None = None,
     show_reasoning_placeholders: bool = True,
 ) -> StreamResult:
@@ -575,7 +582,8 @@ def stream_agent(
 
     Args:
         payload: User message dict or LangGraph ``Command`` (HITL resume).
-        sink: Optional UI consumer. Defaults to Rich CLI sink.
+        sink: Optional rendering consumer. Defaults to Rich CLI sink.
+        event_sink: Optional UI-independent semantic event consumer.
         show_reasoning_placeholders: Render a synthetic thought when only reasoning
             token counts are available and the gateway hides the reasoning text.
     """
@@ -592,7 +600,6 @@ def stream_agent(
     # placeholder) and again with the completed tool_calls. Track which ids
     # already rendered their tool batch so we allow exactly one upgrade.
     calls_printed_ids: set[str] = set()
-    tool_calls = 0
     input_tokens = 0
     output_tokens = 0
     cache_tokens = 0
@@ -607,7 +614,12 @@ def stream_agent(
     _usage_seen: set[str] = set()  # dedupe usage from repeated messages
     rate_tracker = TokenRateTracker()
     rate_tracker.model_started()
-    sink = sink or RichStreamSink()
+    renderer = sink or RichStreamSink()
+    sink = InstrumentedStreamSink(
+        renderer,
+        thread_id=InstrumentedStreamSink.thread_id_from_config(config),
+        event_sink=event_sink,
+    )
     active_tools: list[str] = []
     use_tool_items = sink_supports_tool_items(sink)
     pending_tool_items: list[Any] = []
@@ -621,6 +633,8 @@ def stream_agent(
 
     def _note_usage(*, estimated: bool = False, force: bool = False) -> None:
         nonlocal last_live_rate_push
+        if not (input_tokens or output_tokens or cache_tokens):
+            return
         note = getattr(sink, "note_usage", None)
         if not callable(note):
             return
@@ -729,7 +743,7 @@ def stream_agent(
         except Exception:  # noqa: BLE001
             pass
 
-    set_retry_notifier(_retry_notify)
+    retry_notifier_token = set_retry_notifier(_retry_notify)
 
     def _note_compact() -> None:
         nonlocal compact_announced, compact_events
@@ -760,6 +774,7 @@ def stream_agent(
                 sink.streamed_answer = False
             except Exception:  # noqa: BLE001
                 pass
+        sink.accumulator.clear_leaked_answer()
 
     def _mark_cancelled() -> None:
         nonlocal cancelled
@@ -790,6 +805,7 @@ def stream_agent(
             except Exception:  # noqa: BLE001
                 pass
 
+    stream_error: BaseException | None = None
     try:
         for mode, chunk, ns in _iter_stream_events(
             agent,
@@ -1157,7 +1173,6 @@ def stream_agent(
                         current_parent_task_ids.clear()
                         for n in names:
                             active_tools.append(n)
-                            tool_calls += 1
                         sink.tool_calls_started(calls, parallel=len(calls) > 1)
                         if use_tool_items:
                             tool_group_seq += 1
@@ -1189,16 +1204,32 @@ def stream_agent(
                         sink.activity_update("model", "composing answer")
                     else:
                         sink.activity_update("model", "working")
+    except BaseException as exc:
+        stream_error = exc
+        raise
     finally:
-        clear_retry_notifier()
+        clear_retry_notifier(retry_notifier_token)
         sink.finalize_line()
         sink.activity_stop()
         # Seal any leftover open tool group (e.g. incomplete batch).
         finish_turn = getattr(sink, "turn_finished", None)
         if callable(finish_turn):
             finish_turn()
+        if stream_error is not None:
+            sink.accumulator.terminate(
+                TurnTerminalPayload(
+                    status="failed",
+                    error=f"{type(stream_error).__name__}: {stream_error}"[:2000],
+                    tool_calls=sink.accumulator.tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_tokens=cache_tokens,
+                    compact_events=compact_events,
+                    elapsed_s=time.time() - started,
+                )
+            )
 
-    # Prefer last AI message text; answer_buf holds already-rendered answers.
+    # Prefer last AI message text; runtime-owned accumulator is the fallback.
     complete = extract_last_ai_text(final)
     if not complete and not cancelled:
         # Stream updates may only have carried middleware jumps; recover from
@@ -1216,7 +1247,7 @@ def stream_agent(
                             final["messages"] = values.get("messages")
         except Exception:  # noqa: BLE001
             pass
-    buffered = "".join(sink.answer_buf).strip()
+    buffered = sink.accumulator.final_answer_text
     final_text = complete or buffered
 
     interrupted = False
@@ -1240,10 +1271,10 @@ def stream_agent(
     result = StreamResult(
         state=final,
         final_text=final_text if not interrupted else (final_text or ""),
-        tool_calls=tool_calls,
+        tool_calls=sink.accumulator.tool_calls,
         elapsed_s=time.time() - started,
-        streamed_answer=sink.streamed_answer,
-        reasoning_text="".join(sink.reasoning_buf).strip(),
+        streamed_answer=sink.accumulator.streamed_answer,
+        reasoning_text=sink.accumulator.reasoning_text,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_tokens=cache_tokens,
@@ -1289,4 +1320,23 @@ def stream_agent(
             )
             + token_info
         )
+    sink.accumulator.terminate(
+        TurnTerminalPayload(
+            status=(
+                "cancelled"
+                if cancelled
+                else "waiting_approval"
+                if interrupted
+                else "completed"
+            ),
+            final_text=result.final_text,
+            interrupted=interrupted,
+            tool_calls=result.tool_calls,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_tokens=result.cache_tokens,
+            compact_events=result.compact_events,
+            elapsed_s=result.elapsed_s,
+        )
+    )
     return result
