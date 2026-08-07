@@ -1174,6 +1174,7 @@ class CodingAgentApp(App[None]):
                 current_project_id=self._current_project_id(),
                 current_thread_id=self.thread_id,
                 runtime_status=runtime_status,
+                catalog_path=self.settings.resolved_catalog_path(),
             ),
             self._on_project_drawer_done,
         )

@@ -206,3 +206,14 @@ def test_dismiss_clears_controller_handle() -> None:
         assert bar._popover is not None
         bar.dismiss()
         assert bar._popover is None
+
+
+def test_request_open_drawer_posts_toggle_message() -> None:
+    bar = _make_topbar(_sample_files())
+    messages: list[object] = []
+    bar.post_message = lambda message: messages.append(message) or True  # type: ignore[method-assign]
+
+    bar.request_open_drawer()
+
+    assert len(messages) == 1
+    assert isinstance(messages[0], TopBar.ToggleProjectDrawer)

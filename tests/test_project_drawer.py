@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import App
+from textual.widgets import Tree
 
 from synapse.ui.drawer import ProjectDrawer
 
@@ -59,9 +60,7 @@ def _drawer(
     catalog = _FakeCatalog()
     for project_id, sessions in (extra_sessions or {}).items():
         catalog.sessions.setdefault(project_id, []).extend(sessions)
-    monkeypatch.setattr(
-        "synapse.projects.catalog.ProjectCatalog", lambda *a, **k: catalog
-    )
+    monkeypatch.setattr("synapse.projects.catalog.ProjectCatalog", lambda *a, **k: catalog)
 
     class _FakeSettings:
         def __init__(self, *a: Any, **k: Any) -> None:
@@ -70,11 +69,11 @@ def _drawer(
         def resolved_catalog_path(self) -> str:
             return ":memory:"
 
-    monkeypatch.setattr("synapse.config.Settings", _FakeSettings)
     return ProjectDrawer(
         current_project_id="p-1",
         current_thread_id="t-a1",
         runtime_status=runtime_status,
+        catalog_path=":memory:",
     )
 
 
@@ -160,9 +159,124 @@ def test_drawer_new_session_requests_restart(monkeypatch: Any) -> None:
     assert result == [("new_session", "p-1", "")]
 
 
+def test_drawer_tree_click_switches_session_and_project(monkeypatch: Any) -> None:
+    import asyncio
+
+    class Host(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            variables = super().get_css_variables()
+            variables.update(
+                {
+                    "theme-bg": "#1a1b2e",
+                    "theme-user": "#58a6ff",
+                    "theme-fg": "#c0caf5",
+                    "theme-top": "#1a1b2e",
+                    "theme-muted": "#565f89",
+                    "theme-bar": "#1f2335",
+                }
+            )
+            return variables
+
+        def on_mount(self) -> None:
+            self.push_screen(ProjectDrawer(current_project_id="p-1", current_thread_id="t-a1"))
+
+    async def run() -> None:
+        app = Host()
+        with monkeypatch.context() as patch:
+            patch.setattr("synapse.projects.catalog.ProjectCatalog", _FakeCatalog)
+            patch.setattr(
+                "synapse.config.Settings",
+                type(
+                    "FakeSettings",
+                    (),
+                    {
+                        "__init__": lambda self, *a, **k: None,
+                        "resolved_catalog_path": lambda self: ":memory:",
+                    },
+                ),
+            )
+            async with app.run_test(size=(100, 20)) as pilot:
+                await pilot.pause()
+                drawer = app.screen
+                assert isinstance(drawer, ProjectDrawer)
+                results: list[Any] = []
+                drawer.dismiss = lambda value: results.append(value)  # type: ignore[method-assign]
+
+                session_node = drawer._tree_nodes["session:p-1:t-a2"]
+                drawer.on_tree_node_selected(Tree.NodeSelected(session_node))
+                assert results == [("switch", "p-1", "t-a2")]
+
+                results.clear()
+                project_node = drawer._tree_nodes["project:p-2"]
+                drawer.on_tree_node_selected(Tree.NodeSelected(project_node))
+                assert results == [("switch_project", "p-2", "")]
+
+                tree = drawer.query_one("#drawer-tree")
+                tree.move_cursor(project_node)
+                tree.action_toggle_node()
+                assert project_node.is_expanded is True
+                tree.action_toggle_node()
+                assert project_node.is_expanded is False
+                await pilot.press("escape")
+
+    asyncio.run(run())
+
+
+def test_drawer_tree_scrolls_large_session_lists(monkeypatch: Any) -> None:
+    import asyncio
+
+    catalog = _FakeCatalog()
+    catalog.sessions["p-1"].extend(
+        _FakeSession(f"t-{i}", f"session {i}", "2026-01-01T10:00:00")
+        for i in range(40)
+    )
+
+    class Host(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            variables = super().get_css_variables()
+            variables.update(
+                {
+                    "theme-bg": "#1a1b2e",
+                    "theme-user": "#58a6ff",
+                    "theme-fg": "#c0caf5",
+                    "theme-top": "#1a1b2e",
+                    "theme-muted": "#565f89",
+                    "theme-bar": "#1f2335",
+                }
+            )
+            return variables
+
+        def on_mount(self) -> None:
+            self.push_screen(ProjectDrawer(current_project_id="p-1", current_thread_id="t-a1"))
+
+    async def run() -> None:
+        app = Host()
+        with monkeypatch.context() as patch:
+            patch.setattr("synapse.projects.catalog.ProjectCatalog", lambda *a, **k: catalog)
+            patch.setattr(
+                "synapse.config.Settings",
+                type(
+                    "FakeSettings",
+                    (),
+                    {
+                        "__init__": lambda self, *a, **k: None,
+                        "resolved_catalog_path": lambda self: ":memory:",
+                    },
+                ),
+            )
+            async with app.run_test(size=(100, 8)) as pilot:
+                await pilot.pause()
+                tree = app.screen.query_one("#drawer-tree")
+                assert tree.max_scroll_y > 0
+                tree.scroll_end(animate=False, immediate=True)
+                assert tree.scroll_y == tree.max_scroll_y
+                await pilot.press("escape")
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
-# Render smoke test: ProjectDrawer must mount and paint without crashing
-# (regression for the _render/_paint naming collision with Textual internals)
+# Render smoke test: ProjectDrawer must mount and build an interactive tree.
 # ---------------------------------------------------------------------------
 
 
@@ -211,9 +325,8 @@ def test_drawer_mounts_and_paints(monkeypatch: Any) -> None:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 assert isinstance(app.screen, ProjectDrawer)
-                # Body was painted with the fake catalog rows.
-                body = app.screen.query_one("#drawer-body")
-                assert body is not None
+                tree = app.screen.query_one("#drawer-tree")
+                assert tree.root.children
                 await pilot.press("escape")
 
     asyncio.run(run())

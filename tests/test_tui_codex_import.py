@@ -107,6 +107,53 @@ def test_codex_import_completion_switches_through_existing_session_path(monkeypa
     app.flash_status.assert_called_once()
 
 
+def test_project_drawer_same_project_session_switches_in_place(monkeypatch) -> None:
+    app = _make_app(monkeypatch)
+    app._slash.apply_session_switch = MagicMock()
+    app.exit = MagicMock()
+
+    app._on_project_drawer_done(("switch", "current-project", "other-thread"))
+
+    app._slash.apply_session_switch.assert_called_once_with("other-thread")
+    app.exit.assert_not_called()
+
+
+def test_project_drawer_other_project_session_restarts_with_target(monkeypatch) -> None:
+    app = _make_app(monkeypatch)
+    app.exit = MagicMock()
+
+    app._on_project_drawer_done(("switch_project", "other-project", "other-thread"))
+
+    app.exit.assert_called_once_with(("switch_project", "other-project", "other-thread"))
+
+
+def test_project_drawer_other_project_without_session_restarts_without_target(monkeypatch) -> None:
+    app = _make_app(monkeypatch)
+    app.exit = MagicMock()
+
+    app._on_project_drawer_done(("switch_project", "other-project", ""))
+
+    app.exit.assert_called_once_with(("switch_project", "other-project", ""))
+
+
+def test_open_project_drawer_passes_current_catalog_path(monkeypatch) -> None:
+    app = _make_app(monkeypatch)
+    monkeypatch.setattr(
+        type(app.settings),
+        "resolved_catalog_path",
+        lambda _settings: "catalog.sqlite",
+    )
+    app._current_project_id = MagicMock(return_value="current-project")
+    app._turn.runtime_status_map = MagicMock(return_value={"active-thread": "running"})
+
+    app._open_project_drawer()
+
+    drawer = app.push_screen.call_args.args[0]
+    assert drawer._catalog_path == "catalog.sqlite"
+    assert drawer._current_project_id == "current-project"
+    assert drawer._runtime_status == {"active-thread": "running"}
+
+
 def test_codex_slash_routes_to_picker_and_explicit_import_worker(monkeypatch) -> None:
     app = _make_app(monkeypatch)
     app._slash.open_codex_import_dialog = MagicMock()

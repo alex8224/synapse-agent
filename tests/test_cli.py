@@ -195,3 +195,55 @@ def test_resolve_launch_target_no_args_still_has_workspace_key(tmp_path):
     assert overrides["workspace"] is None
     assert thread_id is None
     assert root is None
+
+
+def test_launch_tui_restarts_for_drawer_project_and_session(monkeypatch, tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class _FakeSettings:
+        def resolved_catalog_path(self):
+            return tmp_path / "catalog.sqlite"
+
+    class _FakeProject:
+        workspace_path = str(tmp_path / "target")
+
+    class _FakeCatalog:
+        def __init__(self, path):
+            calls.append({"catalog_path": path})
+
+        def get_project(self, *, project_id):
+            calls.append({"project_id": project_id})
+            return _FakeProject()
+
+    results = iter(
+        [
+            ("switch_project", "project-2", "thread-2"),
+            None,
+        ]
+    )
+    tui_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr("synapse.cli._bootstrap_env", lambda: None)
+    monkeypatch.setattr("synapse.cli._resolve_settings", lambda **kwargs: _FakeSettings())
+    monkeypatch.setattr("synapse.cli.ProjectCatalog", _FakeCatalog)
+    monkeypatch.setattr("synapse.cli.load_settings", lambda **kwargs: _FakeSettings())
+    monkeypatch.setattr(
+        "synapse.ui.tui.run_tui",
+        lambda **kwargs: tui_calls.append(kwargs) or next(results),
+    )
+
+    _launch_tui(
+        workspace=tmp_path / "source",
+        model=None,
+        require_approval=False,
+        readonly=False,
+        thread_id="thread-1",
+        debug=False,
+    )
+
+    assert [call["project_root"] for call in tui_calls] == [
+        (tmp_path / "source").resolve(),
+        (tmp_path / "target").resolve(),
+    ]
+    assert [call["thread_id"] for call in tui_calls] == ["thread-1", "thread-2"]
+    assert {call.get("project_id") for call in calls if call.get("project_id")} == {"project-2"}
