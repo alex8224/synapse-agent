@@ -92,7 +92,12 @@ def test_headless_renderer_enables_structured_tool_item_events() -> None:
                                         "name": "read_file",
                                         "args": {"file_path": "/a.py"},
                                         "id": "call-1",
-                                    }
+                                    },
+                                    {
+                                        "name": "search_files",
+                                        "args": {"pattern": "TODO", "path": "/src"},
+                                        "id": "call-2",
+                                    },
                                 ],
                             )
                         ]
@@ -110,7 +115,14 @@ def test_headless_renderer_enables_structured_tool_item_events() -> None:
                                 content="ok",
                                 id="tool-result",
                                 tool_call_id="call-1",
-                            )
+                            ),
+                            SimpleNamespace(
+                                type="tool",
+                                name="search_files",
+                                content="match",
+                                id="search-result",
+                                tool_call_id="call-2",
+                            ),
                         ]
                     }
                 },
@@ -135,7 +147,14 @@ def test_headless_renderer_enables_structured_tool_item_events() -> None:
         assert TurnEventKind.TOOL_FINISHED in kinds
         assert TurnEventKind.TOOL_BATCH_FINISHED in kinds
         assert TurnEventKind.TOOL_RESULT not in kinds
-        assert result.tool_calls == 1
+        batch = next(
+            event for event in events.events if event.kind is TurnEventKind.TOOL_BATCH_STARTED
+        )
+        assert len(batch.payload.calls) == 2
+        assert kinds.count(TurnEventKind.TOOL_STARTED) == 2
+        assert kinds.count(TurnEventKind.TOOL_FINISHED) == 2
+        assert kinds.count(TurnEventKind.TOOL_BATCH_FINISHED) == 1
+        assert result.tool_calls == 2
     finally:
         runtime_loop.close()
 

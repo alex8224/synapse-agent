@@ -64,6 +64,7 @@ nav:
       - P7 全局控制面: agent-runtime-decoupling/phase-7-global-control-plane.md
       - P8 稳定性收口: agent-runtime-decoupling/phase-8-hardening.md
       - 迁移说明与余留风险: agent-runtime-decoupling/migration.md
+      - 审查问题修复计划: agent-runtime-decoupling/post-review-fix-plan.md
   - 子代理架构调研: subagent-architecture-survey.md
   - 模型配置: models.md
   - MCP Server: mcp.md

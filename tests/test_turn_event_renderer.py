@@ -106,6 +106,52 @@ def test_event_renderer_routes_legacy_tool_result_to_tool_group() -> None:
     assert "read" in str(headers[-1][1]).lower()
 
 
+def test_event_renderer_groups_multiple_items_from_one_batch() -> None:
+    from synapse.runtime.streaming import ToolItemPayload
+
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    calls = (
+        ToolCallPayload("call-1", "read_file", "{'file_path': '/a.py'}"),
+        ToolCallPayload("call-2", "search_files", "{'pattern': 'TODO'}"),
+    )
+    renderer.emit(
+        _event(1, TurnEventKind.TOOL_BATCH_STARTED, ToolBatchPayload(calls, parallel=True))
+    )
+    for sequence, (item_id, call_id, name, category, label) in enumerate(
+        (
+            ("g1-0", "call-1", "read_file", "read", "Read a.py"),
+            ("g1-1", "call-2", "search_files", "search", "Searched TODO"),
+        ),
+        start=2,
+    ):
+        renderer.emit(
+            _event(
+                sequence,
+                TurnEventKind.TOOL_STARTED,
+                ToolItemPayload(
+                    item_id=item_id,
+                    call_id=call_id,
+                    name=name,
+                    category=category,
+                    label=label,
+                    path=None,
+                    status="running",
+                    preview=None,
+                    error=False,
+                    sub=False,
+                    parent_id=None,
+                ),
+            )
+        )
+
+    group_headers = [call for call in host.calls if call[0] == "write_tool_group_header"]
+    item_rows = [call for call in host.calls if call[0] == "write_tool_item"]
+    assert len(group_headers) == 1
+    assert len(item_rows) == 2
+    assert any(call[0] == "update_tool_group_header" for call in host.calls)
+
+
 def test_generation_change_detaches_renderer() -> None:
     host = _Host()
     renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")

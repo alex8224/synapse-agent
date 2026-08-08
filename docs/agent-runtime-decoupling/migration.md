@@ -48,6 +48,9 @@ ProjectRegistry / ProjectCatalog (全局发现与投影)
 
 ## 3. 余留风险清单
 
+已核实且值得修复的运行时、线程归属和架构依赖问题，统一跟踪于
+[审查问题修复计划](post-review-fix-plan.md)。
+
 | ID | 风险 | 影响 | 缓解/后续 |
 |---|---|---|---|
 | R1 | 每会话独立 Agent graph 的内存增量 | 多会话并发时峰值内存上升 | P8 已实现 idle SessionRuntime/ProjectRuntime LRU 回收（`collect_idle`）；真实 provider 基线仍待集成性能阶段 |
