@@ -133,18 +133,25 @@ class RuntimeManager:
         if submit_lock.locked() or session.snapshot().active_turn_id is not None:
             raise RuntimeError("session already has an active turn")
         await submit_lock.acquire()
-        semaphore = self._get_semaphore()
-        session.mark_queued()
-        acquired = False
         try:
-            await semaphore.acquire()
-            acquired = True
-            session.mark_starting()
-            handle = await session.submit(message)
+            # Every step after lock acquisition is protected: a failure in
+            # semaphore resolution, queued marking, permit acquisition, or the
+            # session submit must release exactly what was acquired and never
+            # leak the per-session submit lock.
+            semaphore = self._get_semaphore()
+            session.mark_queued()
+            acquired = False
+            try:
+                await semaphore.acquire()
+                acquired = True
+                session.mark_starting()
+                handle = await session.submit(message)
+            except BaseException:
+                if acquired:
+                    semaphore.release()
+                session.clear_queued()
+                raise
         except BaseException:
-            if acquired:
-                semaphore.release()
-            session.clear_queued()
             submit_lock.release()
             raise
 

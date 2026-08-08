@@ -697,12 +697,29 @@ class SlashController:
         app.set_activity("switching", f"toggling MCP server {server_name}\u2026", True)
         app._apply_mcp_server_toggle_bg(server_name)
 
+    def _finish_mcp_worker(self, ok: Any, *, failed: str | None = None) -> None:
+        """UI-thread completion for MCP background workers (exactly once).
+
+        Clears the reloading flag and restores the idle activity together so
+        the UI never observes a half-finished state. ``failed`` carries a
+        pre-formatted user-facing error; ``ok`` is None on the exception path.
+        """
+        app = self._app
+        app._mcp_reloading = False
+        app.set_activity("idle", "", True)
+        if failed:
+            app.append_event(failed, "yellow")
+        else:
+            self.apply_ok_result(ok)
+
     def mcp_server_toggle_bg(self, server_name: str) -> None:
         from synapse.commands.slash_cmds import handle_slash
         from synapse.observability.startup_trace import duration
 
         app = self._app
         reload_started = time.perf_counter()
+        ok: Any = None
+        failed: str | None = None
         try:
             ok = handle_slash(
                 f"/mcp toggle {server_name}",
@@ -712,19 +729,18 @@ class SlashController:
                 project_root=app.project_root,
             )
         except Exception as exc:  # noqa: BLE001
+            failed = f"MCP server toggle failed: {exc}"
             duration("mcp.toggle", reload_started, success=False)
-            app.call_from_thread(
-                app.append_event, f"MCP server toggle failed: {exc}", "yellow"
+        else:
+            duration(
+                "mcp.toggle",
+                reload_started,
+                success=not bool(getattr(ok, "error", False)),
             )
-            app.call_from_thread(app.set_activity, "idle", "", True)
-            app._mcp_reloading = False
-            return
-        duration(
-            "mcp.toggle", reload_started, success=not bool(getattr(ok, "error", False))
-        )
-        app.call_from_thread(self.apply_ok_result, ok)
-        app.call_from_thread(app.set_activity, "idle", "", True)
-        app._mcp_reloading = False
+        finally:
+            # All UI-visible state (reloading flag + activity) is written on
+            # the UI thread through the finish helper, never from this worker.
+            app.call_from_thread(self._finish_mcp_worker, ok, failed=failed)
 
     def mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
         from synapse.commands.slash_cmds import handle_slash
@@ -734,50 +750,52 @@ class SlashController:
 
         app = self._app
         save_started = time.perf_counter()
-        # 1. Write include_tools to config file for each changed server.
-        for server_name, include_tools in to_save.items():
+        ok: Any = None
+        failed: str | None = None
+        try:
+            # 1. Write include_tools to config file for each changed server.
+            for server_name, include_tools in to_save.items():
+                try:
+                    _save_include_tools_to_config(
+                        app.settings,
+                        server_name,
+                        include_tools,
+                        app.project_root,
+                    )
+                except Exception:  # noqa: BLE001 - best-effort per-server write
+                    pass
+
+            # 2. Reload in-memory settings from the updated config files.
             try:
-                _save_include_tools_to_config(
-                    app.settings,
-                    server_name,
-                    include_tools,
-                    app.project_root,
+                fresh = load_mcp_server_configs(
+                    path=getattr(app.settings, "mcp_config_path", None),
+                    workspace=getattr(app.settings, "workspace", None),
                 )
-            except Exception:  # noqa: BLE001
+                import json
+
+                raw = {
+                    "servers": [
+                        {
+                            "name": s.name,
+                            "transport": s.transport,
+                            "command": s.command,
+                            "args": s.args,
+                            "env": s.env,
+                            "url": s.url,
+                            "headers": s.headers,
+                            "enabled": s.enabled,
+                            "tool_prefix": s.tool_prefix,
+                            "include_tools": s.include_tools,
+                            "exclude_tools": s.exclude_tools,
+                        }
+                        for s in fresh
+                    ]
+                }
+                app.settings.mcp_servers_json = json.dumps(raw)
+            except Exception:  # noqa: BLE001 - best-effort settings refresh
                 pass
 
-        # 2. Reload in-memory settings from the updated config files.
-        try:
-            fresh = load_mcp_server_configs(
-                path=getattr(app.settings, "mcp_config_path", None),
-                workspace=getattr(app.settings, "workspace", None),
-            )
-            import json
-
-            raw = {
-                "servers": [
-                    {
-                        "name": s.name,
-                        "transport": s.transport,
-                        "command": s.command,
-                        "args": s.args,
-                        "env": s.env,
-                        "url": s.url,
-                        "headers": s.headers,
-                        "enabled": s.enabled,
-                        "tool_prefix": s.tool_prefix,
-                        "include_tools": s.include_tools,
-                        "exclude_tools": s.exclude_tools,
-                    }
-                    for s in fresh
-                ]
-            }
-            app.settings.mcp_servers_json = json.dumps(raw)
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 3. Reload the agent with updated MCP tools.
-        try:
+            # 3. Reload the agent with updated MCP tools.
             ok = handle_slash(
                 "/mcp reload",
                 settings=app.settings,
@@ -786,19 +804,16 @@ class SlashController:
                 project_root=app.project_root,
             )
         except Exception as exc:  # noqa: BLE001
+            failed = f"MCP save/reload failed: {exc}"
             duration("mcp.save", save_started, success=False)
-            app.call_from_thread(
-                app.append_event, f"MCP save/reload failed: {exc}", "yellow"
+        else:
+            duration(
+                "mcp.save",
+                save_started,
+                success=not bool(getattr(ok, "error", False)),
             )
-            app.call_from_thread(app.set_activity, "idle", "", True)
-            app._mcp_reloading = False
-            return
-        duration(
-            "mcp.save", save_started, success=not bool(getattr(ok, "error", False))
-        )
-        app.call_from_thread(self.apply_ok_result, ok)
-        app.call_from_thread(app.set_activity, "idle", "", True)
-        app._mcp_reloading = False
+        finally:
+            app.call_from_thread(self._finish_mcp_worker, ok, failed=failed)
 
     def mcp_reload_bg(self) -> None:
         from synapse.commands.slash_cmds import handle_slash
@@ -806,6 +821,8 @@ class SlashController:
 
         app = self._app
         reload_started = time.perf_counter()
+        ok: Any = None
+        failed: str | None = None
         try:
             ok = handle_slash(
                 "/mcp reload",
@@ -815,19 +832,16 @@ class SlashController:
                 project_root=app.project_root,
             )
         except Exception as exc:  # noqa: BLE001
+            failed = f"MCP reload failed: {exc}"
             duration("mcp.reload", reload_started, success=False)
-            app.call_from_thread(
-                app.append_event, f"MCP reload failed: {exc}", "yellow"
+        else:
+            duration(
+                "mcp.reload",
+                reload_started,
+                success=not bool(getattr(ok, "error", False)),
             )
-            app.call_from_thread(app.set_activity, "idle", "", True)
-            app._mcp_reloading = False
-            return
-        duration(
-            "mcp.reload", reload_started, success=not bool(getattr(ok, "error", False))
-        )
-        app.call_from_thread(self.apply_ok_result, ok)
-        app.call_from_thread(app.set_activity, "idle", "", True)
-        app._mcp_reloading = False
+        finally:
+            app.call_from_thread(self._finish_mcp_worker, ok, failed=failed)
 
     def compact_context_bg(self, agent: Any, thread_id: str) -> None:
         """Execute the model-backed /compact command away from Textual's UI loop."""

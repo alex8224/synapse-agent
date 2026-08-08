@@ -75,6 +75,96 @@ def test_apply_tool_output_stats_reloads_once_when_dirty() -> None:
     assert scheduled == ["thread-1"]
 
 
+def test_metrics_changed_marks_dirty_when_refresh_pending() -> None:
+    """F4: pending refresh coalesces later signals into one follow-up refresh."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = True
+    app._tool_output_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.on_tool_output_metrics_changed("thread-1")
+    controller.on_tool_output_metrics_changed("thread-1")
+
+    assert app._tool_output_refresh_dirty is True
+    assert scheduled == []  # no duplicate worker while a refresh is pending
+
+
+def test_metrics_changed_schedules_refresh_when_idle() -> None:
+    """F4: no pending refresh -> exactly one worker is scheduled."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = False
+    app._tool_output_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.on_tool_output_metrics_changed("thread-1")
+
+    assert app._tool_output_refresh_pending is True
+    assert scheduled == ["thread-1"]
+
+
+def test_metrics_changed_falls_back_inline_on_ui_thread() -> None:
+    """F4: on the UI thread call_from_thread raises; handler runs inline."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = False
+    app._tool_output_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.on_tool_output_metrics_changed("thread-1")
+
+    assert app._tool_output_refresh_pending is True
+    assert scheduled == ["thread-1"]
+
+
+def test_metrics_changed_ignores_other_thread() -> None:
+    """F4: a stale session's signal must not touch the current chrome."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = False
+    app._tool_output_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.on_tool_output_metrics_changed("old-thread")
+
+    assert app._tool_output_refresh_pending is False
+    assert scheduled == []
+
+
+def test_apply_tool_output_stats_discards_stale_thread() -> None:
+    """F4: results from an old session never overwrite the current chrome."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.is_running = True
+    app._tool_output_refresh_pending = True
+    app._tool_output_refresh_dirty = False
+    app._tool_output_stats = {"transformed": 0}
+    app._tool_output_stats_thread_id = "thread-1"
+    scheduled: list[str] = []
+    app._refresh_tool_output_stats_bg = scheduled.append
+    controller = ChromeController(app)
+
+    controller.apply_tool_output_stats("old-thread", {"transformed": 999})
+
+    assert app._tool_output_stats == {"transformed": 0}
+    assert app._tool_output_stats_thread_id == "thread-1"
+    # A refresh for the current session was scheduled instead.
+    assert scheduled == ["thread-1"]
+
+
 def test_fetch_codex_reset_credits_bg_falls_back_inline_on_ui_thread() -> None:
     app = _App()
     controller = ChromeController(app)

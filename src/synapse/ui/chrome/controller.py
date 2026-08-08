@@ -340,17 +340,29 @@ class ChromeController:
         app._refresh_tool_output_stats_bg(app.thread_id)
 
     def on_tool_output_metrics_changed(self, thread_id: str) -> None:
-        """Coalesce metric writes; never aggregate SQLite rows on the UI thread."""
+        """Worker-side metrics signal: forward to the UI thread only.
+
+        ``_tool_output_refresh_pending`` / ``_tool_output_refresh_dirty`` are
+        owned by the Textual UI thread. This worker entry never reads or writes
+        them directly, which removes the cross-thread check-then-set race.
+        Falls back to the inline handler when the app is not running yet
+        (startup) or the call already happens on the UI thread.
+        """
+        app = self._app
+        try:
+            app.call_from_thread(self._on_tool_output_metrics_changed_ui, thread_id)
+        except Exception:  # noqa: BLE001
+            self._on_tool_output_metrics_changed_ui(thread_id)
+
+    def _on_tool_output_metrics_changed_ui(self, thread_id: str) -> None:
+        """UI-thread coalescing step: mark dirty or schedule a refresh."""
         app = self._app
         if thread_id != app.thread_id:
             return
         if app._tool_output_refresh_pending:
             app._tool_output_refresh_dirty = True
             return
-        try:
-            app.call_from_thread(self.reload_tool_output_stats)
-        except Exception:  # noqa: BLE001
-            pass
+        self.reload_tool_output_stats()
 
     def refresh_tool_output_stats_bg(self, thread_id: str, *, debounce: bool = True) -> None:
         """Worker body: aggregate metrics, then publish one immutable snapshot."""

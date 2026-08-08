@@ -309,6 +309,141 @@ class TestMcpPanelCallbacks:
         app._apply_mcp_server_toggle.assert_called_once_with("example-server")
 
 
+class TestMcpWorkerThreadOwnership:
+    """F5: MCP reloading flag/activity are only written on the UI thread."""
+
+    def _worker_app(self) -> MagicMock:
+        app = MagicMock()
+        app._mcp_reloading = True
+        app.call_from_thread.side_effect = lambda fn, *a, **k: fn(*a, **k)
+        return app
+
+    def _controller(self, app: MagicMock) -> Any:
+        from synapse.ui.dialogs.controller import SlashController
+
+        fake = object.__new__(SlashController)
+        fake._app = app
+        fake.apply_ok_result = MagicMock()
+        return fake
+
+    def test_reload_success_clears_flag_and_restores_activity(self, monkeypatch):
+        from types import SimpleNamespace
+
+        ok = SimpleNamespace(error=False)
+        monkeypatch.setattr(
+            "synapse.observability.startup_trace.duration", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "synapse.commands.slash_cmds.handle_slash", lambda *a, **k: ok
+        )
+        app = self._worker_app()
+        fake = self._controller(app)
+
+        fake.mcp_reload_bg()
+
+        assert app._mcp_reloading is False
+        app.set_activity.assert_any_call("idle", "", True)
+        fake.apply_ok_result.assert_called_once_with(ok)
+
+    def test_reload_exception_still_clears_flag(self, monkeypatch):
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            raise RuntimeError("reload boom")
+
+        monkeypatch.setattr(
+            "synapse.observability.startup_trace.duration", lambda *a, **k: None
+        )
+        monkeypatch.setattr("synapse.commands.slash_cmds.handle_slash", boom)
+        app = self._worker_app()
+        fake = self._controller(app)
+
+        fake.mcp_reload_bg()
+
+        assert app._mcp_reloading is False
+        app.set_activity.assert_any_call("idle", "", True)
+        fake.apply_ok_result.assert_not_called()
+        app.append_event.assert_called_once()
+        assert "reload boom" in app.append_event.call_args[0][0]
+
+    def test_toggle_failure_clears_flag_and_skips_result(self, monkeypatch):
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            raise RuntimeError("toggle boom")
+
+        monkeypatch.setattr(
+            "synapse.observability.startup_trace.duration", lambda *a, **k: None
+        )
+        monkeypatch.setattr("synapse.commands.slash_cmds.handle_slash", boom)
+        app = self._worker_app()
+        fake = self._controller(app)
+
+        fake.mcp_server_toggle_bg("demo")
+
+        assert app._mcp_reloading is False
+        fake.apply_ok_result.assert_not_called()
+        assert "toggle boom" in app.append_event.call_args[0][0]
+
+    def test_slash_error_path_clears_flag_and_applies_result(self, monkeypatch):
+        from types import SimpleNamespace
+
+        ok = SimpleNamespace(error=True)
+        monkeypatch.setattr(
+            "synapse.observability.startup_trace.duration", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "synapse.commands.slash_cmds.handle_slash", lambda *a, **k: ok
+        )
+        app = self._worker_app()
+        fake = self._controller(app)
+
+        fake.mcp_reload_bg()
+
+        assert app._mcp_reloading is False
+        fake.apply_ok_result.assert_called_once_with(ok)
+        app.append_event.assert_not_called()
+
+    def test_save_success_clears_flag(self, monkeypatch):
+        from types import SimpleNamespace
+
+        ok = SimpleNamespace(error=False)
+        monkeypatch.setattr(
+            "synapse.observability.startup_trace.duration", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "synapse.commands.slash_cmds.handle_slash", lambda *a, **k: ok
+        )
+        app = self._worker_app()
+        app.settings = SimpleNamespace(mcp_config_path=None, workspace=None)
+        fake = self._controller(app)
+
+        fake.mcp_save_bg({})
+
+        assert app._mcp_reloading is False
+        fake.apply_ok_result.assert_called_once_with(ok)
+
+    def test_worker_sources_do_not_write_reloading_flag(self) -> None:
+        """F5 source guard: workers only finish via the UI-thread helper."""
+        import inspect
+
+        from synapse.ui.dialogs.controller import SlashController
+
+        for name in ("mcp_server_toggle_bg", "mcp_save_bg", "mcp_reload_bg"):
+            source = inspect.getsource(getattr(SlashController, name))
+            assert "_mcp_reloading" not in source, f"{name} writes the UI flag directly"
+
+    def test_repeat_click_suppressed_while_reloading(self) -> None:
+        from synapse.ui.dialogs.controller import SlashController
+
+        app = MagicMock()
+        app._mcp_reloading = True
+        fake = object.__new__(SlashController)
+        fake._app = app
+
+        SlashController.apply_mcp_reload(fake)
+
+        app._apply_mcp_reload_bg.assert_not_called()
+
+
 class TestThemePickerInit:
     def test_initializes_with_list(self):
         from synapse.config import Settings

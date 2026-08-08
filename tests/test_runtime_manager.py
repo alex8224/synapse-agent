@@ -289,3 +289,102 @@ def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -
     # Prompt cache is keyed per thread.
     assert agent_a.prompt_cache_key() == "thread-a"
     assert agent_b.prompt_cache_key() == "thread-b"
+
+
+def test_submit_releases_lock_after_mark_queued_failure(monkeypatch: Any) -> None:
+    """F3: a failure between lock acquisition and queue marking must not leak
+    the per-session submit lock (otherwise the next submit deadlocks/errors)."""
+    from synapse.runtime.sessions.runtime import SessionRuntime
+
+    def boom(self: SessionRuntime) -> None:
+        del self
+        raise RuntimeError("queue failed")
+
+    async def run() -> None:
+        real_mark_queued = SessionRuntime.mark_queued
+        monkeypatch.setattr(SessionRuntime, "mark_queued", boom)
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        try:
+            try:
+                await manager.submit("a", UserTurn("first"))
+            except RuntimeError as exc:
+                assert "queue failed" in str(exc)
+            else:  # pragma: no cover
+                raise AssertionError("mark_queued failure should propagate")
+        finally:
+            monkeypatch.setattr(SessionRuntime, "mark_queued", real_mark_queued)
+        # Lock was released: the same session can submit again.
+        handle = await asyncio.wait_for(manager.submit("a", UserTurn("ok")), timeout=2)
+        factory.turns["a"].future.set_result(_result("a", "done"))
+        await asyncio.wrap_future(handle.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_submit_releases_lock_and_permit_after_mark_starting_failure(
+    monkeypatch: Any,
+) -> None:
+    """F3: mark_starting failure must release both the semaphore permit and
+    the submit lock so another session can still run."""
+    from synapse.runtime.sessions.runtime import SessionRuntime
+
+    def boom(self: SessionRuntime) -> None:
+        del self
+        raise RuntimeError("starting failed")
+
+    async def run() -> None:
+        real_mark_starting = SessionRuntime.mark_starting
+        monkeypatch.setattr(SessionRuntime, "mark_starting", boom)
+        factory = _SessionFactory()
+        manager = _manager(factory, limit=1)
+        try:
+            try:
+                await manager.submit("a", UserTurn("first"))
+            except RuntimeError as exc:
+                assert "starting failed" in str(exc)
+            else:  # pragma: no cover
+                raise AssertionError("mark_starting failure should propagate")
+        finally:
+            monkeypatch.setattr(SessionRuntime, "mark_starting", real_mark_starting)
+        # Permit + lock were released: session b can now acquire the slot.
+        handle = await asyncio.wait_for(manager.submit("b", UserTurn("ok")), timeout=2)
+        assert manager.snapshot("b").status is SessionStatus.RUNNING  # type: ignore[union-attr]
+        factory.turns["b"].future.set_result(_result("b", "done"))
+        await asyncio.wrap_future(handle.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_submit_cancel_during_semaphore_acquire_leaves_no_resources() -> None:
+    """F3: cancelling a queued submit must not leak the submit lock, the
+    semaphore permit, or the queued status."""
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory, limit=1)
+        handle_a = await manager.submit("a", UserTurn("A"))
+        task_b = asyncio.create_task(manager.submit("b", UserTurn("B")))
+        for _ in range(50):
+            snapshot = manager.snapshot("b")
+            if snapshot is not None and snapshot.status is SessionStatus.QUEUED:
+                break
+            await asyncio.sleep(0)
+        assert manager.snapshot("b").status is SessionStatus.QUEUED  # type: ignore[union-attr]
+        task_b.cancel()
+        try:
+            await task_b
+        except asyncio.CancelledError:
+            pass
+        # After A settles, B can be submitted again without a leaked lock/permit.
+        factory.turns["a"].future.set_result(_result("a", "done"))
+        await asyncio.wrap_future(handle_a.future)
+        await manager.get_session("a").wait_for_settlement(handle_a)  # type: ignore[union-attr]
+        handle_b = await asyncio.wait_for(manager.submit("b", UserTurn("B2")), timeout=2)
+        assert manager.snapshot("b").status is SessionStatus.RUNNING  # type: ignore[union-attr]
+        factory.turns["b"].future.set_result(_result("b", "done"))
+        await asyncio.wrap_future(handle_b.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
