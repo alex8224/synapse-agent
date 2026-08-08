@@ -398,3 +398,54 @@ def test_agent_loop_package_has_no_ui_or_textual_imports() -> None:
                 ):
                     violations.append(f"{path.name}:{node.lineno}:{name}")
     assert violations == []
+
+
+def test_runtime_package_has_no_ui_or_textual_imports() -> None:
+    """F6 guard: the whole runtime package must stay free of UI imports."""
+    root = Path(__file__).parents[1] / "src" / "synapse" / "runtime"
+    violations: list[str] = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name == "textual" or name.startswith("textual.") or name.startswith(
+                    "synapse.ui"
+                ):
+                    violations.append(f"{path.name}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_runtime_import_does_not_load_ui_or_textual() -> None:
+    """F6: importing the runtime packages must not pull textual/synapse.ui."""
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).parents[1]
+    code = (
+        "import sys;"
+        "import synapse.runtime.agent_loop.turn;"
+        "import synapse.runtime.streaming.runtime;"
+        "import synapse.runtime.streaming.parser;"
+        "import synapse.runtime.streaming.stream_events;"
+        "import synapse.runtime.timeline;"
+        "bad = [m for m in sys.modules if m == 'textual' or m.startswith('textual.') "
+        "or m == 'synapse.ui' or m.startswith('synapse.ui.')];"
+        "assert not bad, bad"
+    )
+    env = {**os.environ, "PYTHONPATH": str(root / "src")}
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=root,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr

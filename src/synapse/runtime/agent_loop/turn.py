@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import importlib
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -169,12 +168,18 @@ class AgentTurnRuntime:
 
     @staticmethod
     def _resolve_stream_runner(agent: Any) -> Callable[..., Any]:
-        """Resolve the P1 parser registered by app assembly or the agent."""
+        """Resolve the P1 parser registered by app assembly or the agent.
+
+        The default parser lives in the runtime package; the UI wrapper
+        (``synapse.ui.stream.stream_agent``) is only reachable through the
+        explicit ``stream_runner`` injection, never through a dynamic import.
+        """
         runner = getattr(agent, "_coding_stream_runner", None)
         if callable(runner):
             return runner
-        module_name = "synapse" + ".ui.stream"
-        return importlib.import_module(module_name).stream_agent
+        from synapse.runtime.streaming.parser import stream_agent
+
+        return stream_agent
 
     @staticmethod
     def _run_sync_once(
