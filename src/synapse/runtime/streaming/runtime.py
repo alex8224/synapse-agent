@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 from collections.abc import Iterator
@@ -12,6 +13,15 @@ from synapse.runtime.async_runtime import await_cancel_cleanup
 from synapse.runtime.streaming.events import normalize_stream_item
 
 _STREAM_QUEUE_MAXSIZE = 256
+
+logger = logging.getLogger(__name__)
+
+# Normal-path bound for graph/checkpointer cleanup after event production has
+# finished. Cleanup is not a provider failure: waiting past this bound only
+# logs a bounded diagnostic and lets the cleanup finish on its own thread/loop.
+# The cancelled path waits indefinitely so the turn never reports CANCELLED
+# while LangGraph is still writing checkpoint state in the background.
+_CLEANUP_WAIT_TIMEOUT = 30.0
 
 
 def checkpointer_supports_async(checkpointer: Any) -> bool:
@@ -215,13 +225,30 @@ def iter_stream_events(
 
         if worker_thread is not None:
             worker_thread.join(timeout=None if cancelled() else 1.5)
+            if not cancelled() and worker_thread.is_alive():
+                logger.warning(
+                    "stream cleanup thread still alive after %.1fs; "
+                    "turn events were already produced",
+                    _CLEANUP_WAIT_TIMEOUT,
+                )
         if bound_future is not None:
             try:
                 # A cancelled turn is not terminal until LangGraph has exited
                 # its executor/checkpointer contexts. Waiting here keeps the
                 # SessionRuntime in CANCELLING instead of reporting a false
                 # stop while the graph continues in the background.
-                bound_future.result(timeout=None if cancelled() else 1.5)
+                bound_future.result(timeout=None if cancelled() else _CLEANUP_WAIT_TIMEOUT)
+            except TimeoutError:
+                # Event production already finished (the consumer observed the
+                # queue sentinel or a done future). A slow graph/checkpointer
+                # cleanup is diagnostic only, never a provider failure: do not
+                # turn this into a FAILED turn.
+                logger.warning(
+                    "stream cleanup still running after %.1fs (cancelled=%s); "
+                    "turn events were already produced",
+                    _CLEANUP_WAIT_TIMEOUT,
+                    cancelled(),
+                )
             except Exception as exc:  # noqa: BLE001
                 if not errors and not cancelled():
                     errors.append(exc)

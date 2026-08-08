@@ -183,6 +183,50 @@ def test_renderer_ignores_wrong_turn_and_duplicate_sequence() -> None:
     assert answers[0][1] == ("once",)
 
 
+def test_renderer_logs_bounded_warning_on_render_failure(caplog: Any) -> None:
+    """F2: renderer failure logs locating fields without leaking the payload."""
+    import logging
+
+    class _BoomHost(_Host):
+        def commit_answer(self, text: str) -> None:
+            del text
+            raise RuntimeError("sink exploded")
+
+    host = _BoomHost()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    with caplog.at_level(logging.WARNING, logger="synapse.ui.turn.event_renderer"):
+        renderer.emit(
+            _event(7, TurnEventKind.ANSWER_COMPLETED, TextPayload("TOP-SECRET-BODY"))
+        )
+
+    assert renderer.closed is True
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages, "expected a renderer warning"
+    warning = messages[0]
+    assert "thread=thread" in warning
+    assert "turn=turn" in warning
+    assert "kind=ANSWER_COMPLETED" in warning
+    assert "seq=7" in warning
+    assert "error=RuntimeError" in warning
+    assert "TOP-SECRET-BODY" not in warning
+
+
+def test_renderer_keeps_ignoring_stale_events_without_warning(caplog: Any) -> None:
+    """F2: stale generation / duplicate sequence stay silent (no false alarms)."""
+    import logging
+
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    host.transcript_generation = 2
+
+    with caplog.at_level(logging.WARNING, logger="synapse.ui.turn.event_renderer"):
+        renderer.emit(_event(1, TurnEventKind.ANSWER_DELTA, TextPayload("stale")))
+        renderer.emit(_event(1, TurnEventKind.ANSWER_DELTA, TextPayload("dup")))
+
+    assert caplog.records == []
+
+
 def test_bridge_coalesces_high_frequency_deltas_and_one_wakeup() -> None:
     host = _Host()
     renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")

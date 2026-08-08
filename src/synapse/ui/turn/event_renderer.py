@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol, runtime_checkable
 
 from synapse.runtime.streaming import (
@@ -18,6 +19,8 @@ from synapse.runtime.streaming import (
     UsagePayload,
 )
 from synapse.ui.textual_stream_sink import TextualStreamHost, TextualStreamSink
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -61,7 +64,19 @@ class TextualTurnEventRenderer:
         self._last_sequence = event.sequence
         try:
             self._render(event)
-        except Exception:  # noqa: BLE001 - renderer cannot own Agent execution
+        except Exception as exc:  # noqa: BLE001 - renderer cannot own Agent execution
+            # Bounded diagnostic only: include locating fields (thread/turn/kind/
+            # sequence/exception type) but never the payload body, user text, tool
+            # output, or credentials. The renderer closes so the turn stays safe,
+            # and the Agent execution path is never failed by a UI hiccup.
+            logger.warning(
+                "turn event render failed: thread=%s turn=%s kind=%s seq=%s error=%s",
+                self._thread_id,
+                self._turn_id,
+                event.kind.name,
+                event.sequence,
+                type(exc).__name__,
+            )
             self._closed = True
 
     def _render(self, event: TurnEvent) -> None:

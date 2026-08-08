@@ -328,3 +328,171 @@ def test_retry_info_is_emitted_to_current_turn_sink() -> None:
     assert len(retry_events) == 1
     assert retry_events[0].thread_id == "retry-thread"
     assert events.events[-1].kind is TurnEventKind.TURN_COMPLETED
+
+
+class _SlowCloseStream:
+    """Async stream whose ``aclose`` blocks longer than the cleanup bound."""
+
+    def __init__(self, items: list[Any], close_delay: float) -> None:
+        self._items = list(items)
+        self._close_delay = close_delay
+
+    def __aiter__(self) -> _SlowCloseStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._items:
+            return self._items.pop(0)
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        await asyncio.sleep(self._close_delay)
+
+
+class _AsyncBoundAgent:
+    """Agent whose astream runs on a bound AsyncRuntime loop."""
+
+    def __init__(self, runtime: Any, *, close_delay: float = 0.0) -> None:
+        self._coding_async_runtime = runtime
+        self._close_delay = close_delay
+
+    def astream(self, payload: Any, config: Any = None, **kwargs: Any):
+        del payload, config, kwargs
+        return _SlowCloseStream(
+            [
+                (
+                    "messages",
+                    (_Chunk(type="ai", content="hi", id="m1"), {"langgraph_node": "model"}),
+                )
+            ],
+            self._close_delay,
+        )
+
+
+def test_slow_cleanup_does_not_fail_normal_completion() -> None:
+    """F1: graph cleanup longer than the old fixed 1.5s must not fail the turn."""
+    from synapse.runtime.async_runtime import AsyncRuntime
+
+    runtime_loop = AsyncRuntime(name="test-slow-cleanup")
+    try:
+        agent = _AsyncBoundAgent(runtime_loop, close_delay=2.0)
+        events = CollectingEventSink()
+        result = stream_agent(
+            agent,
+            {"messages": []},
+            {"configurable": {"thread_id": "slow-cleanup"}},
+            prefer_async=True,
+            sink=_NoopRenderer(),
+            event_sink=events,
+        )
+        assert result.final_text == "hi"
+        assert result.cancelled is False
+        assert events.events[-1].kind is TurnEventKind.TURN_COMPLETED
+    finally:
+        runtime_loop.close()
+
+
+def test_async_graph_error_still_propagates() -> None:
+    """F1: a real graph error on the bound loop keeps propagating to callers."""
+    import pytest
+
+    from synapse.runtime.async_runtime import AsyncRuntime
+
+    class _ErrorStream:
+        def __aiter__(self) -> _ErrorStream:
+            return self
+
+        async def __anext__(self) -> Any:
+            raise RuntimeError("provider async failed")
+
+        async def aclose(self) -> None:
+            return None
+
+    class _ErrorAgent:
+        def __init__(self, runtime: Any) -> None:
+            self._coding_async_runtime = runtime
+
+        def astream(self, payload: Any, config: Any = None, **kwargs: Any):
+            del payload, config, kwargs
+            return _ErrorStream()
+
+    runtime_loop = AsyncRuntime(name="test-async-error")
+    try:
+        events = CollectingEventSink()
+        with pytest.raises(RuntimeError, match="provider async failed"):
+            stream_agent(
+                _ErrorAgent(runtime_loop),
+                {"messages": []},
+                {"configurable": {"thread_id": "async-error"}},
+                prefer_async=True,
+                sink=_NoopRenderer(),
+                event_sink=events,
+            )
+        assert events.events[-1].kind is TurnEventKind.TURN_FAILED
+    finally:
+        runtime_loop.close()
+
+
+def test_cancel_waits_for_async_cleanup() -> None:
+    """F1: a cancelled turn is not terminal until graph cleanup has exited."""
+    import threading
+    import time
+
+    from synapse.runtime.async_runtime import AsyncRuntime
+
+    cleanup_done = threading.Event()
+
+    class _CancelWaitStream(_SlowCloseStream):
+        async def aclose(self) -> None:
+            try:
+                await asyncio.sleep(0.5)
+            finally:
+                cleanup_done.set()
+
+    class _CancelAgent:
+        def __init__(self, runtime: Any) -> None:
+            self._coding_async_runtime = runtime
+
+        def astream(self, payload: Any, config: Any = None, **kwargs: Any):
+            del payload, config, kwargs
+            return _CancelWaitStream(
+                [
+                    (
+                        "messages",
+                        (
+                            _Chunk(type="ai", content="partial", id="m1"),
+                            {"langgraph_node": "model"},
+                        ),
+                    )
+                ],
+                0.0,
+            )
+
+    cancel = threading.Event()
+
+    def _set_cancel() -> None:
+        time.sleep(0.1)
+        cancel.set()
+
+    runtime_loop = AsyncRuntime(name="test-cancel-wait")
+    try:
+        events = CollectingEventSink()
+        thread = threading.Thread(target=_set_cancel, daemon=True)
+        thread.start()
+        result = stream_agent(
+            _CancelAgent(runtime_loop),
+            {"messages": []},
+            {"configurable": {"thread_id": "cancel-wait"}},
+            prefer_async=True,
+            sink=_NoopRenderer(),
+            event_sink=events,
+            cancel_event=cancel,
+        )
+        thread.join(timeout=2)
+        assert result.cancelled is True
+        # stream_agent must not return while the checkpointer cleanup is still
+        # writing in the background.
+        assert cleanup_done.is_set()
+        assert events.events[-1].kind is TurnEventKind.TURN_CANCELLED
+    finally:
+        runtime_loop.close()
