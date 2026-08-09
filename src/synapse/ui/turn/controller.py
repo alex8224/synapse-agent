@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -150,7 +151,17 @@ class TurnController:
                     getattr(settings, "project_catalog_enabled", True)
                 ),
             )
-            persistence.persist(context, result)
+            runtime = self._sessions.get(context.thread_id)
+            broker_events = (
+                [
+                    envelope.event
+                    for envelope in runtime.broker.events_after(0)
+                    if envelope.turn_id == context.turn_id
+                ]
+                if runtime is not None
+                else None
+            )
+            persistence.persist(context, result, turn_events=broker_events)
 
         return persist_result
 
@@ -299,9 +310,15 @@ class TurnController:
         self,
         target: str | SessionRuntime,
         *,
-        after_sequence: int = 0,
+        after_sequence: int | None = None,
     ) -> SessionRuntime | None:
-        """Attach chrome to a session id/runtime and replay events after a cursor."""
+        """Attach chrome to a session id/runtime and replay events after a cursor.
+
+        ``None`` is the session-switch path: projected history has already
+        painted completed turns, so replay only the currently active turn.
+        Explicit cursors are used when a new turn starts to close the
+        start/attach race without repainting older broker history.
+        """
         self._detach_renderer()
         runtime = self._sessions.get(target) if isinstance(target, str) else target
         self._attached_thread_id = target if isinstance(target, str) else target.thread_id
@@ -311,6 +328,8 @@ class TurnController:
         context = runtime.active_context()
         if context is None:
             return runtime
+        if after_sequence is None:
+            after_sequence = self._active_turn_replay_cursor(runtime, context.turn_id)
         app = self._app
         renderer = TextualTurnEventRenderer(
             app._transcript,
@@ -319,24 +338,40 @@ class TurnController:
         )
         bridge = TextualTurnEventBridge(renderer, app._transcript.call_from_thread)
         # SessionRuntime subscriptions deliver SessionEventEnvelope objects;
-        # the renderer/bridge consumes the inner turn event only.  Passing the
-        # envelope directly makes the renderer fail on ``event.kind`` and it
-        # then closes itself, leaving the initial activity line permanently
-        # visible while the transcript stays empty.
+        # the renderer/bridge consumes TurnEvent objects. TurnEvent.sequence is
+        # local to one turn and resets to 1, while replay spans multiple turns;
+        # project the broker's session-wide sequence into the UI copy so old
+        # replay cannot suppress a newer turn's live events.
+        def ui_event(envelope: Any) -> Any:
+            event = envelope.event
+            if event.sequence == envelope.sequence:
+                return event
+            return replace(event, sequence=envelope.sequence)
+
         def forward(envelope: Any) -> None:
-            bridge.emit(envelope.event)
+            bridge.emit(ui_event(envelope))
 
         subscription = runtime.subscribe(forward, after_sequence=after_sequence)
-        # Replay retains broker history WITHOUT the live turn_id gate: after a
-        # switch-back the retained events may belong to a turn that rotated
-        # while the user was away, and the projected history alone would lose
-        # that content (thinking/tools). Ordering is still by sequence, and
-        # TURN_COMPLETED boundaries let the sink close blocks correctly.
+        # Replay bypasses the live turn_id gate. The chosen cursor bounds this
+        # to either the active turn (session switch) or the start/attach race
+        # (new turn), while the broker sequence keeps replay/live ordering
+        # monotonic across turn-local sequence resets.
         for envelope in subscription.replay:
-            bridge.replay(envelope.event)
+            bridge.replay(ui_event(envelope))
         self._event_bridge = bridge
         self._session_subscription = subscription
         return runtime
+
+    @staticmethod
+    def _active_turn_replay_cursor(runtime: SessionRuntime, turn_id: str) -> int:
+        """Return the broker cursor immediately before the active turn."""
+        cursor = runtime.snapshot().latest_sequence
+        events_after = getattr(runtime.broker, "events_after", None)
+        if not callable(events_after):
+            return cursor
+        envelopes = events_after(0)
+        active = [envelope.sequence for envelope in envelopes if envelope.turn_id == turn_id]
+        return max(0, min(active) - 1) if active else cursor
 
     def sync_foreground_status(self) -> None:
         """Project the attached runtime state onto foreground-only TUI chrome."""
@@ -601,6 +636,11 @@ class TurnController:
             max_concurrency=app.settings.max_concurrency,
         )
         runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+        # The broker retains events across turns. A new foreground turn only
+        # needs events published after this point (the start/attach race);
+        # replaying from zero redraws completed thinking/tools and lets their
+        # turn-local sequence numbers suppress the new turn's live events.
+        replay_cursor = runtime.snapshot().latest_sequence
         bridge: TextualTurnEventBridge | None = None
         try:
             def on_started(context: TurnContext) -> None:
@@ -610,7 +650,7 @@ class TurnController:
                     or app._transcript_generation != transcript_generation
                 ):
                     return
-                self.attach(runtime, after_sequence=0)
+                self.attach(runtime, after_sequence=replay_cursor)
                 bridge = self._event_bridge
 
             handle = runtime.start_threadsafe(
@@ -716,6 +756,7 @@ class TurnController:
                 max_concurrency=app.settings.max_concurrency,
             )
             runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+            replay_cursor = runtime.snapshot().latest_sequence
             bridge: TextualTurnEventBridge | None = None
 
             def on_started(context: TurnContext) -> None:
@@ -725,7 +766,7 @@ class TurnController:
                     or app._transcript_generation != transcript_generation
                 ):
                     return
-                self.attach(runtime, after_sequence=0)
+                self.attach(runtime, after_sequence=replay_cursor)
                 bridge = self._event_bridge
 
             handle = runtime.start_threadsafe(

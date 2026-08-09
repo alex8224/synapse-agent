@@ -910,3 +910,165 @@ def test_replay_terminal_event_does_not_close_renderer() -> None:
     )
     renderer.emit(live)
     assert renderer.last_sequence == 2, "live events dropped after replayed terminal"
+
+
+def test_attach_uses_broker_sequence_across_turn_replay() -> None:
+    """A long previous turn must not suppress a new turn's low local sequence."""
+    from synapse.runtime.sessions import SessionEventBroker
+    from synapse.runtime.streaming import TurnEvent, TurnEventKind
+
+    app = _FakeApp()
+    app._transcript = MagicMock()
+    app._transcript.transcript_generation = 0
+    app._transcript.call_from_thread = lambda callback, *args, **kwargs: callback(
+        *args, **kwargs
+    )
+    controller = TurnController(app)
+    broker = SessionEventBroker("t1")
+    broker.emit(
+        TurnEvent(
+            version=1,
+            thread_id="t1",
+            turn_id="old-turn",
+            sequence=10,
+            kind=TurnEventKind.INFO,
+            payload="old",
+        )
+    )
+
+    runtime = SimpleNamespace(
+        thread_id="t1",
+        broker=broker,
+        active_context=lambda: SimpleNamespace(thread_id="t1", turn_id="new-turn"),
+        snapshot=lambda: SimpleNamespace(latest_sequence=1),
+        subscribe=broker.subscribe,
+    )
+    controller.attach(runtime, after_sequence=0)
+    broker.emit(
+        TurnEvent(
+            version=1,
+            thread_id="t1",
+            turn_id="new-turn",
+            sequence=1,
+            kind=TurnEventKind.INFO,
+            payload="new",
+        )
+    )
+
+    assert controller._event_bridge is not None
+    assert controller._event_bridge._renderer.last_sequence == 2
+    controller._detach_renderer()
+
+
+def test_switch_attach_replays_only_active_turn_after_restored_history() -> None:
+    """Switch-back keeps projected completed turns and replays the active turn only."""
+    from synapse.runtime.sessions import SessionEventBroker
+    from synapse.runtime.streaming import TurnEvent, TurnEventKind
+
+    app = _FakeApp()
+    app._transcript = MagicMock()
+    app._transcript.transcript_generation = 0
+    app._transcript.call_from_thread = lambda callback, *args, **kwargs: callback(
+        *args, **kwargs
+    )
+    controller = TurnController(app)
+    broker = SessionEventBroker("t1")
+    for turn_id, text, sequence in (
+        ("old-turn", "old thought", 7),
+        ("active-turn", "active thought", 1),
+        ("active-turn", "active tool", 2),
+    ):
+        broker.emit(
+            TurnEvent(
+                version=1,
+                thread_id="t1",
+                turn_id=turn_id,
+                sequence=sequence,
+                kind=TurnEventKind.INFO,
+                payload=text,
+            )
+        )
+
+    runtime = SimpleNamespace(
+        thread_id="t1",
+        broker=broker,
+        active_context=lambda: SimpleNamespace(
+            thread_id="t1",
+            turn_id="active-turn",
+        ),
+        snapshot=lambda: SimpleNamespace(latest_sequence=3),
+        subscribe=broker.subscribe,
+    )
+    controller.attach(runtime)
+
+    assert app._transcript.append_meta.call_args_list == [
+        (("active thought",), {}),
+        (("active tool",), {}),
+    ]
+    assert controller._event_bridge is not None
+    assert controller._event_bridge._renderer.last_sequence == 3
+    controller._detach_renderer()
+
+
+def test_run_turn_replays_only_events_after_start_cursor() -> None:
+    """Starting a second turn must not redraw the session's completed events."""
+    from synapse.runtime.agent_loop import TurnHandle
+    from synapse.runtime.sessions import SessionStatus
+
+    app = _FakeApp()
+    app.settings = SimpleNamespace(max_concurrency=2, model="test")
+    app._agent_ready = threading.Event()
+    app._agent_ready.set()
+    app._agent_error = None
+    app._transcript_generation = 3
+    app._subagent_monitor = SimpleNamespace(monitor_id="monitor")
+    app._begin_turn_usage = lambda: None
+    app._current_project_id = lambda: "project"
+    controller = TurnController(app)
+    result = TurnResult(
+        turn_id="new-turn",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        streamed_answer=True,
+    )
+    future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+    future.set_result(result)
+
+    class _Runtime:
+        thread_id = "t1"
+        project_id = "project"
+        agent = app.agent
+
+        def snapshot(self) -> Any:
+            return SimpleNamespace(
+                latest_sequence=12,
+                status=SessionStatus.IDLE,
+                active_turn_id=None,
+            )
+
+        def start_threadsafe(self, message: Any, *, on_started: Any) -> TurnHandle:
+            del message
+            on_started(SimpleNamespace(thread_id="t1", turn_id="new-turn"))
+            return TurnHandle("new-turn", future, SimpleNamespace())
+
+        def wait_threadsafe(self, handle: TurnHandle) -> tuple[TurnResult, Any]:
+            del handle
+            return result, self.snapshot()
+
+    runtime = _Runtime()
+    controller._sessions["t1"] = runtime  # type: ignore[assignment]
+    controller._attached_thread_id = "t1"
+    controller._session_runtime = runtime  # type: ignore[assignment]
+    controller.attach = MagicMock(return_value=runtime)  # type: ignore[method-assign]
+    controller.apply_stream_result = MagicMock(return_value=False)  # type: ignore[method-assign]
+    controller._turn_finished = MagicMock()  # type: ignore[method-assign]
+
+    controller.run_turn(
+        "second",
+        thread_id="t1",
+        agent=app.agent,
+        transcript_generation=3,
+        monitor_id="monitor",
+    )
+
+    controller.attach.assert_called_once_with(runtime, after_sequence=12)

@@ -12,6 +12,7 @@ from synapse.runtime.sessions import SessionEventBroker, SessionRuntime, Session
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     TextPayload,
+    ToolFinishedPayload,
     ToolItemPayload,
     TurnEvent,
     TurnEventKind,
@@ -206,6 +207,80 @@ def test_active_context_and_wait_for_settlement() -> None:
         await session.close(cancel_active=False)
 
     asyncio.run(run())
+
+
+def test_session_persistence_falls_back_to_structured_turn_tool_events(tmp_path) -> None:
+    """A headless result without state messages still restores its tool timeline."""
+    from synapse.runtime.agent_loop import TurnContext, build_turn_request
+    from synapse.runtime.sessions.persistence import SessionPersistence
+    from synapse.sessions.transcript_projection import TranscriptProjection
+
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    settings = SimpleNamespace(max_concurrency=2)
+    context = TurnContext(
+        thread_id="thread",
+        agent=object(),
+        settings=settings,
+        request=build_turn_request(
+            text="inspect",
+            attachments=None,
+            settings=settings,
+            thread_id="thread",
+            monitor_id="monitor",
+        ),
+        turn_id="turn",
+    )
+    item = ToolItemPayload(
+        item_id="item-1",
+        call_id="call-1",
+        name="read_file",
+        category="read",
+        label="Read /a.py",
+        path="/a.py",
+        status="running",
+        preview=None,
+        error=False,
+        sub=False,
+        parent_id=None,
+    )
+    turn_events = [
+        _event(1, TurnEventKind.TOOL_STARTED, item),
+        _event(
+            2,
+            TurnEventKind.TOOL_FINISHED,
+            ToolFinishedPayload(
+                item_id="item-1",
+                status="ok",
+                preview="file content",
+                error=False,
+            ),
+        ),
+    ]
+    persistence = SessionPersistence(
+        transcript_projection=projection,
+        summary_store=SimpleNamespace(),
+        summary_mode="off",
+        catalog_enabled=False,
+    )
+
+    persistence.persist(
+        context,
+        TurnResult(
+            turn_id="turn",
+            thread_id="thread",
+            status=TurnStatus.COMPLETED,
+            reasoning_text="reasoning",
+            final_text="done",
+        ),
+        turn_events=turn_events,
+    )
+
+    page = projection.load_tail("thread", turns=1)
+    assert [event.kind for event in page.events] == ["user", "thought", "tools", "answer"]
+    tools = page.events[2]
+    assert tools.tool_calls[0]["name"] == "read_file"
+    assert tools.tool_results[0]["content"] == "file content"
+    projection.close()
 
 
 def test_close_threadsafe_cancels_and_closes_active_runtime() -> None:

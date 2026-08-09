@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
+from synapse.runtime.streaming import (
+    ToolFinishedPayload,
+    ToolItemPayload,
+    TurnEvent,
+    TurnEventKind,
+)
 from synapse.sessions.transcript import UiTranscriptEvent, fold_messages_for_ui
 from synapse.sessions.transcript_projection import TranscriptUsage
 
@@ -22,14 +28,20 @@ class SessionPersistence:
     summary_max_chars: int = 600
     catalog_enabled: bool = True
 
-    def persist(self, context: TurnContext, result: TurnResult) -> None:
+    def persist(
+        self,
+        context: TurnContext,
+        result: TurnResult,
+        *,
+        turn_events: list[TurnEvent] | None = None,
+    ) -> None:
         if context.request.resume or result.status not in {
             TurnStatus.COMPLETED,
             TurnStatus.WAITING_APPROVAL,
         }:
             return
         user_text = context.request.input
-        events = self._events(user_text, result)
+        events = self._events(user_text, result, turn_events=turn_events)
         usage = TranscriptUsage(
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
@@ -42,12 +54,22 @@ class SessionPersistence:
         self._project_catalog(context.thread_id)
 
     @staticmethod
-    def _events(user_text: str, result: TurnResult) -> list[UiTranscriptEvent]:
+    def _events(
+        user_text: str,
+        result: TurnResult,
+        *,
+        turn_events: list[TurnEvent] | None = None,
+    ) -> list[UiTranscriptEvent]:
         events = [UiTranscriptEvent(kind="user", text=user_text)] if user_text else []
         if result.reasoning_text:
             events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
         state_events = fold_messages_for_ui(list(result.state.get("messages") or []))
-        events.extend(event for event in state_events if event.kind == "tools")
+        tool_events = [event for event in state_events if event.kind == "tools"]
+        if not tool_events and turn_events:
+            tool_event = _tools_from_turn_events(turn_events)
+            if tool_event is not None:
+                tool_events.append(tool_event)
+        events.extend(tool_events)
         answer_text = result.final_text or _last_answer_text(state_events)
         if answer_text:
             events.append(UiTranscriptEvent(kind="answer", text=answer_text))
@@ -98,3 +120,40 @@ def _last_answer_text(events: list[UiTranscriptEvent]) -> str:
         if event.kind == "answer" and event.text:
             return event.text
     return ""
+
+
+def _tools_from_turn_events(events: list[TurnEvent]) -> UiTranscriptEvent | None:
+    """Build compact restorable tools when the final graph state omits messages."""
+    calls: dict[str, dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
+    for event in events:
+        payload = event.payload
+        if event.kind in {TurnEventKind.TOOL_STARTED, TurnEventKind.TOOL_UPDATED} and isinstance(
+            payload, ToolItemPayload
+        ):
+            item_id = payload.item_id or payload.call_id or f"tool-{len(calls) + 1}"
+            calls[item_id] = {
+                "id": item_id,
+                "name": payload.name,
+                "args": {"intent": payload.label},
+            }
+            results[item_id] = {
+                "id": item_id,
+                "name": payload.name,
+                "content": payload.preview or "",
+                "status": payload.status,
+            }
+        elif event.kind is TurnEventKind.TOOL_FINISHED and isinstance(
+            payload, ToolFinishedPayload
+        ):
+            result = results.get(payload.item_id)
+            if result is not None:
+                result["content"] = payload.preview or result["content"]
+                result["status"] = "error" if payload.error else payload.status
+    if not calls:
+        return None
+    return UiTranscriptEvent(
+        kind="tools",
+        tool_calls=list(calls.values()),
+        tool_results=list(results.values()),
+    )
