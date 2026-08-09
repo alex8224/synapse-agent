@@ -77,6 +77,20 @@ def _drawer(
     )
 
 
+def test_drawer_does_not_show_dates_in_session_labels(monkeypatch: Any) -> None:
+    drawer = _drawer(monkeypatch)
+    drawer._rows = drawer._load()
+
+    tree = Tree("root")
+    tree.show_root = False
+    drawer._tree_nodes = {}
+    drawer._populate_tree(tree)
+
+    label = drawer._tree_nodes["session:p-1:t-a1"].label.plain
+    assert "2026-01-02" not in label
+    assert "session one" in label
+
+
 def test_drawer_loads_projects_and_sessions(monkeypatch: Any) -> None:
     drawer = _drawer(monkeypatch)
     rows = drawer._load()
@@ -112,6 +126,20 @@ def test_drawer_truncates_long_session_titles(monkeypatch: Any) -> None:
     row = next(r for r in rows if r.key == "session:p-2:t-long")
     assert len(row.label) < len(long_title)
     assert row.label.endswith("…")
+
+
+def test_drawer_uses_readable_title_budgets(monkeypatch: Any) -> None:
+    from synapse.ui.drawer import _DIR_MAX_CELLS, _TITLE_MAX_CELLS
+
+    drawer = _drawer(monkeypatch)
+    assert _TITLE_MAX_CELLS == 24
+    assert _DIR_MAX_CELLS == 17
+    rows = drawer._load()
+    assert all(
+        len(row.label) <= _TITLE_MAX_CELLS
+        for row in rows
+        if row.key.startswith("session:")
+    )
 
 
 def test_drawer_shows_live_sessions_first_without_separate_main_panel(
@@ -405,6 +433,9 @@ def test_drawer_mounts_and_paints(monkeypatch: Any) -> None:
                 assert isinstance(app.screen, ProjectDrawer)
                 tree = app.screen.query_one("#drawer-tree")
                 assert tree.root.children
+                title = str(app.screen.query_one("#drawer-title").render())
+                assert title == "PROJECTS  /  SESSIONS"
+                assert "Space expand" in str(app.screen.query_one("#drawer-hint").render())
                 await pilot.press("escape")
 
     asyncio.run(run())
@@ -446,6 +477,12 @@ def test_drawer_collapses_old_sessions_behind_expand_leaf(monkeypatch: Any) -> N
     ]
     assert len(expand_items) == 1
     assert expand_items[0].project_id == "p-1"
+    expand_node = next(
+        node
+        for node in leaves
+        if isinstance(node.data, _TreeItem) and node.data.kind == "expand"
+    )
+    assert expand_node.label.plain == "+  Show 5 more sessions"
     # Most recent sessions come first (t-8..t-4 in the visible window).
     first_session = next(
         node

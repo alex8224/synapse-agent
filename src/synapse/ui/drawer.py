@@ -31,15 +31,17 @@ from textual.widgets import Static, Tree
 # Session titles are truncated manually so a long CJK word never reaches
 # Textual's word-wrap path and clips the row. The Tree itself owns indentation,
 # guides, selection, keyboard navigation, and scrolling.
-_TITLE_MAX_CELLS = 14
-_META_MAX_CELLS = 6
-_PROJECT_META_MAX_CELLS = 8
-_DIR_MAX_CELLS = 16
+# Labels are constrained to the drawer's smallest supported width.  Keeping
+# this budget separate from the tree's indentation means CJK titles and their
+# metadata do not push each other out of the visible area.
+_TITLE_MAX_CELLS = 24
+_PROJECT_META_MAX_CELLS = 5
+_DIR_MAX_CELLS = 17
 _MAX_DRAWER_SESSIONS = 1_000
 # Each project shows its most recent sessions first; older ones collapse
 # behind a single "expand" leaf until the user explicitly expands them.
 _MAX_VISIBLE_SESSIONS = 5
-_PROJECT_ICON = "\U0001F4C1"  # 📁 folder
+_PROJECT_ICON = "□"  # project directory
 _CURRENT_MARK = "\u25C6"  # ◆ current-thread marker (not ▶, which is the tree arrow)
 _STATUS_ICON = {
     "running": ("\u25CF", "green"),  # ●
@@ -155,6 +157,7 @@ class ProjectDrawer(ModalScreen[Any]):
         self._selected = 0
         self._projects: list[Any] = []
         self._expanded_projects: set[str] = set()
+        self._compact_viewport = False
 
     def _refresh_status_data(self) -> None:
         """Pull the latest live runtime status (thread and project views)."""
@@ -294,10 +297,10 @@ class ProjectDrawer(ModalScreen[Any]):
         scrollbar-size: 0 0;
     }
     ProjectDrawer > #drawer-window {
-        width: 26;
+        width: 31;
         height: 100%;
-        min-width: 24;
-        max-width: 34;
+        min-width: 28;
+        max-width: 38;
         /* Keep clear of the topbar (top) and the input area (bottom): the
            overlay must not block either. margin-top/bottom shrink the
            content region (Textual has no calc() here). */
@@ -307,12 +310,12 @@ class ProjectDrawer(ModalScreen[Any]):
            visible around the drawer, matching DialogBase/F4 behavior. */
         background: $theme-bg;
         border-right: solid $theme-user;
-        padding: 1 0;
+        padding: 0;
         layout: vertical;
     }
     ProjectDrawer #drawer-title {
         width: 1fr;
-        height: 2;
+        height: 1;
         padding: 0 2;
         color: $theme-fg;
         background: $theme-top;
@@ -324,11 +327,13 @@ class ProjectDrawer(ModalScreen[Any]):
         padding: 0 2;
         color: $theme-muted;
         background: $theme-top;
+        border-bottom: solid $theme-bar;
     }
     ProjectDrawer #drawer-tree {
         width: 1fr;
         height: 1fr;
-        padding: 1 1;
+        min-height: 1;
+        padding: 1 0;
         color: $theme-fg;
         background: transparent;
         scrollbar-size: 1 1;
@@ -340,15 +345,21 @@ class ProjectDrawer(ModalScreen[Any]):
         scrollbar-color-active: $theme-user;
     }
     ProjectDrawer #drawer-tree:focus > .tree--cursor {
-        background: $theme-bar;
+        background: $theme-user 24%;
         color: $theme-fg;
         text-style: bold;
     }
     ProjectDrawer #drawer-tree > .tree--cursor {
-        background: $theme-bar 75%;
+        background: $theme-bar;
     }
     ProjectDrawer #drawer-tree > .tree--highlight-line {
-        background: $theme-bar 45%;
+        background: $theme-user 12%;
+    }
+    ProjectDrawer #drawer-tree > .tree--guides {
+        color: $theme-muted 55%;
+    }
+    ProjectDrawer #drawer-tree > .tree--guides-selected {
+        color: $theme-user;
     }
     """
 
@@ -356,14 +367,15 @@ class ProjectDrawer(ModalScreen[Any]):
         from textual.containers import Vertical
 
         with Vertical(id="drawer-window"):
-            yield Static("≡  Projects / Sessions", id="drawer-title")
-            yield Static("Enter / click: open · Space / ▶: expand", id="drawer-hint")
+            yield Static("PROJECTS  /  SESSIONS", id="drawer-title")
+            yield Static("Enter open   Space expand   Esc close", id="drawer-hint")
             yield Tree("Projects", id="drawer-tree", data=None)
 
     def on_mount(self) -> None:
         tree = self.query_one("#drawer-tree", Tree)
         tree.show_root = False
         tree.auto_expand = False
+        self._compact_viewport = self.size.height < 23
         self._rebuild_tree(initial=True)
         tree.focus()
         if (
@@ -434,7 +446,7 @@ class ProjectDrawer(ModalScreen[Any]):
                 is_current = project_id == current_project
                 label = Text()
                 label.append(_PROJECT_ICON + " ", style="bold cyan" if is_current else "dim")
-                label.append(row.label, style="bold")
+                label.append(row.label, style="bold cyan" if is_current else "bold")
                 if row.meta:
                     label.append(f"  {row.meta}", style="dim")
                 node = tree.root.add(
@@ -448,13 +460,19 @@ class ProjectDrawer(ModalScreen[Any]):
         for project_id, project_node in project_nodes.items():
             sessions = sessions_by_project.get(project_id, [])
             sessions = self._sort_sessions(sessions)
+            # Preserve full history in short terminals, where scrolling is
+            # more useful than an extra expand row. The viewport is captured
+            # before the initial tree build, while unmounted builders retain
+            # normal collapsed behavior.
+            tree_is_compact = self._compact_viewport
             if (
                 project_id not in self._expanded_projects
+                and not tree_is_compact
                 and len(sessions) > _MAX_VISIBLE_SESSIONS
             ):
                 sessions = sessions[:_MAX_VISIBLE_SESSIONS]
                 hidden = len(sessions_by_project[project_id]) - _MAX_VISIBLE_SESSIONS
-                expand_label = Text(f"▸ 展开显示 ({hidden} more)", style="bold red")
+                expand_label = Text(f"+  Show {hidden} more sessions", style="bold cyan")
                 expand_node = project_node.add_leaf(
                     expand_label,
                     _TreeItem("expand", project_id),
@@ -488,7 +506,7 @@ class ProjectDrawer(ModalScreen[Any]):
     def _add_session_leaf(
         self, project_node: Any, project_id: str, row: _Row
     ) -> None:
-        """One session leaf: status icon + title + trailing date/meta."""
+        """One session leaf: status marker and the widest possible title."""
         _, _, thread_id = row.key.split(":", 2)
         status = self._status_for(project_id, thread_id)
         label = Text()
@@ -497,11 +515,10 @@ class ProjectDrawer(ModalScreen[Any]):
         icon, color = _STATUS_ICON.get(status, ("", ""))
         if icon:
             label.append(f"{icon} ", style=color)
-        label.append(row.label, style="bold" if thread_id == self._current_thread_id else None)
-        # Status is expressed by the leading icon; only idle/cold rows show a
-        # trailing date so the narrow drawer keeps titles readable.
-        if (status in {"", "idle"}) and row.updated_at:
-            label.append(f"  {row.updated_at[:10]}", style="dim")
+        label.append(
+            row.label,
+            style="bold cyan" if thread_id == self._current_thread_id else None,
+        )
         node = project_node.add_leaf(
             label,
             _TreeItem("session", project_id, thread_id),
