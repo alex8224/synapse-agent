@@ -16,6 +16,7 @@ dismisses with a switch request:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,16 +94,44 @@ class ProjectDrawer(ModalScreen[Any]):
         current_project_id: str,
         current_thread_id: str,
         runtime_status: dict[str, str] | None = None,
+        runtime_status_provider: Callable[[], dict[str, str]] | None = None,
+        runtime_status_by_project_provider: (
+            Callable[[], dict[str, dict[str, str]]] | None
+        ) = None,
         catalog_path: Path | str | None = None,
     ) -> None:
         super().__init__()
+        # ``Screen.DEFAULT_CSS`` may otherwise win the root background cascade
+        # on non-ANSI (solid) themes and paint an opaque full-screen layer that
+        # hides everything behind the drawer. Inline styles have the required
+        # priority (same fix as ThemeDesignerScreen); the drawer window itself
+        # stays opaque via ``#drawer-window``.
+        self.styles.background = "transparent"
         self._current_project_id = current_project_id
         self._current_thread_id = current_thread_id
         self._runtime_status = runtime_status or {}
+        self._runtime_status_provider = runtime_status_provider
+        self._runtime_status_by_project_provider = runtime_status_by_project_provider
+        self._runtime_status_by_project: dict[str, dict[str, str]] = {}
         self._catalog_path = catalog_path
         self._rows: list[_Row] = []
         self._selected = 0
         self._projects: list[Any] = []
+
+    def _refresh_status_data(self) -> None:
+        """Pull the latest live runtime status (thread and project views)."""
+        provider = self._runtime_status_provider
+        if provider is not None:
+            try:
+                self._runtime_status = dict(provider())
+            except Exception:  # noqa: BLE001 - drawer chrome is best-effort
+                pass
+        by_provider = self._runtime_status_by_project_provider
+        if by_provider is not None:
+            try:
+                self._runtime_status_by_project = dict(by_provider())
+            except Exception:  # noqa: BLE001 - drawer chrome is best-effort
+                pass
 
     # -- data ---------------------------------------------------------------
 
@@ -111,6 +140,7 @@ class ProjectDrawer(ModalScreen[Any]):
 
         catalog = None
         rows: list[_Row] = []
+        self._refresh_status_data()
         try:
             catalog_path = self._catalog_path
             if catalog_path is None:
@@ -148,6 +178,9 @@ class ProjectDrawer(ModalScreen[Any]):
                     )
                 )
                 sessions = self._sessions_for(catalog, project.project_id)
+                sessions = self._merge_live_sessions(
+                    sessions, project_id=project.project_id
+                )
                 for session in sessions:
                     thread_id = str(session.thread_id)
                     status = self._runtime_status.get(thread_id)
@@ -167,6 +200,34 @@ class ProjectDrawer(ModalScreen[Any]):
             close = getattr(catalog, "close", None)
             if callable(close):
                 close()
+
+    def _merge_live_sessions(
+        self, sessions: list[Any], *, project_id: str | None = None
+    ) -> list[Any]:
+        """Keep every in-memory runtime visible and sort active work first."""
+        scope = project_id or self._current_project_id
+        statuses = self._runtime_status_by_project.get(scope, self._runtime_status)
+        by_thread = {str(session.thread_id): session for session in sessions}
+        for thread_id in statuses:
+            if thread_id in by_thread:
+                continue
+            by_thread[thread_id] = type(
+                "LiveSession",
+                (),
+                {
+                    "thread_id": thread_id,
+                    "title": thread_id[:8],
+                    "updated_at": "",
+                },
+            )()
+        active = {"queued", "starting", "running", "cancelling", "waiting_approval"}
+        return sorted(
+            by_thread.values(),
+            key=lambda session: (
+                str(statuses.get(str(session.thread_id), "")) not in active,
+                str(session.thread_id) != self._current_thread_id,
+            ),
+        )
 
     @staticmethod
     def _sessions_for(catalog: Any, project_id: str) -> list[Any]:
@@ -267,6 +328,39 @@ class ProjectDrawer(ModalScreen[Any]):
             )
             if node is not None:
                 tree.move_cursor(node)
+        if (
+            self._runtime_status_provider is not None
+            or self._runtime_status_by_project_provider is not None
+        ):
+            self.set_interval(0.25, self._refresh_live_status)
+
+    def _refresh_live_status(self) -> None:
+        if (
+            self._runtime_status_provider is None
+            and self._runtime_status_by_project_provider is None
+        ):
+            return
+        before = (self._runtime_status, self._runtime_status_by_project)
+        self._refresh_status_data()
+        if (self._runtime_status, self._runtime_status_by_project) == before:
+            return
+        selected_key = ""
+        tree = self.query_one("#drawer-tree", Tree)
+        cursor = tree.cursor_node
+        item = cursor.data if cursor is not None else None
+        if isinstance(item, _TreeItem):
+            selected_key = (
+                f"session:{item.project_id}:{item.thread_id}"
+                if item.kind == "session"
+                else f"project:{item.project_id}"
+            )
+        self._rows = self._load()
+        tree.root.remove_children()
+        self._tree_nodes = {}
+        self._populate_tree(tree)
+        target = self._tree_nodes.get(selected_key)
+        if target is not None:
+            tree.move_cursor(target)
 
     def _populate_tree(self, tree: Tree[Any]) -> None:
         """Build the two-level project/session tree from the loaded rows."""

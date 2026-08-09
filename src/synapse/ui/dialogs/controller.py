@@ -172,27 +172,72 @@ class SlashController:
             # The goal store is already paused by handle_goal(). Cancel the
             # session-owned turn as the runtime half of the same operation.
             app._turn.cancel("goal_pause")
-        if effects.agent is not None:
-            app.agent = effects.agent
-            app._bind_steer_queue()
+        requested_agent = effects.agent
         if thread_changed:
             turn_controller = getattr(app, "_turn", None)
             if turn_controller is not None:
                 turn_controller.detach(previous_thread_id)
             app.thread_id = effects.thread_id
             if turn_controller is not None:
-                turn_controller.attach(app.thread_id)
+                runtime = turn_controller.attach(app.thread_id)
+                if runtime is not None:
+                    requested_agent = runtime.agent
+                elif requested_agent is None and app.agent is not None:
+                    try:
+                        requested_agent = self._build_session_agent(
+                            app.thread_id,
+                            app.agent,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - switch remains recoverable
+                        app.thread_id = previous_thread_id
+                        turn_controller.attach(previous_thread_id)
+                        app.append_event(f"switch failed: {exc}", "yellow")
+                        turn_controller.sync_foreground_status()
+                        return
+                    turn_controller.bind_agent(app.thread_id, requested_agent)
+                turn_controller.detach(app.thread_id)
+            if requested_agent is not None:
+                app.agent = requested_agent
+            bind_steer_queue = (
+                getattr(app, "_bind_steer_queue", None)
+                if hasattr(app, "_steer")
+                else None
+            )
+            if callable(bind_steer_queue):
+                bind_steer_queue()
             app._reset_session_token_chrome()
             app._reload_tool_output_stats()
             app._load_current_goal()
-        if effects.clear_transcript:
-            app._schedule_transcript_reset(
-                reload_transcript=effects.reload_transcript,
-                announce=effects.reload_transcript,
+        elif requested_agent is not None:
+            app.agent = requested_agent
+            bind_steer_queue = (
+                getattr(app, "_bind_steer_queue", None)
+                if hasattr(app, "_steer")
+                else None
             )
+            if callable(bind_steer_queue):
+                bind_steer_queue()
+        if effects.clear_transcript:
+            if thread_changed and turn_controller is not None:
+                app._schedule_transcript_reset(
+                    reload_transcript=effects.reload_transcript,
+                    announce=effects.reload_transcript,
+                    on_complete=lambda thread_id=app.thread_id: (
+                        self._attach_switched_runtime(thread_id)
+                    ),
+                )
+            else:
+                app._schedule_transcript_reset(
+                    reload_transcript=effects.reload_transcript,
+                    announce=effects.reload_transcript,
+                )
         elif effects.reload_transcript:
             app._restore_session_transcript(announce=True)
-        if effects.agent is not None or effects.settings_changed:
+            if thread_changed and turn_controller is not None:
+                self._attach_switched_runtime(app.thread_id)
+        elif thread_changed and turn_controller is not None:
+            self._attach_switched_runtime(app.thread_id)
+        if requested_agent is not None or effects.settings_changed:
             app.sub_title = model_status_label(app.settings)
             app._render_status()
         if effects.theme_name:
@@ -215,6 +260,45 @@ class SlashController:
         app._refresh_codex_usage(force=True)
         if effects.resume_action:
             self._resume_after_effects(effects.resume_action, effects.resume_message)
+
+    def _attach_switched_runtime(self, thread_id: str) -> None:
+        app = self._app
+        if app.thread_id != thread_id:
+            return
+        turn_controller = getattr(app, "_turn", None)
+        if turn_controller is None:
+            return
+        turn_controller.attach(thread_id)
+        turn_controller.sync_foreground_status()
+
+    def _build_session_agent(self, thread_id: str, template_agent: Any) -> Any:
+        """Compile one session-owned graph while reusing project resources."""
+        from synapse.runtime.sessions import (
+            ProjectSharedResources,
+            build_session_agent_factory,
+        )
+
+        app = self._app
+        try:
+            from synapse.integrations.mcp_client import get_active_mcp_pool
+
+            pool = get_active_mcp_pool()
+            mcp_tools = tuple(getattr(pool, "tools", None) or ()) if pool is not None else ()
+        except Exception:  # noqa: BLE001 - MCP is optional during session switching
+            mcp_tools = ()
+        factory = build_session_agent_factory(
+            settings=app.settings,
+            project_root=app.project_root,
+            template_agent=template_agent,
+            goal_service=getattr(template_agent, "_coding_goal_service", None),
+            project_id=app._current_project_id() or None,
+        )
+        resources = ProjectSharedResources(
+            model_client=getattr(template_agent, "_coding_model", None),
+            checkpointer=getattr(template_agent, "_coding_checkpointer", None),
+            mcp_tools=mcp_tools,
+        )
+        return factory(thread_id, resources)
 
     def _resume_after_effects(self, action: str, message: str | None) -> None:
         """Start a HITL resume after its slash result has updated host state."""

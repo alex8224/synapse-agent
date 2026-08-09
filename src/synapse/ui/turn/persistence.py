@@ -31,7 +31,7 @@ class TurnPersistenceController:
     def __init__(self, app: Any) -> None:
         self._app = app
 
-    def note_session_recap_turn(self) -> None:
+    def note_session_recap_turn(self, *, persist: bool = True) -> None:
         """Remember latest turn facts, then persist projections and summaries."""
         app = self._app
         transcript = getattr(app, "_transcript", None)
@@ -52,9 +52,10 @@ class TurnPersistenceController:
             )
         except Exception:  # noqa: BLE001 - recap is an optional UI enhancement
             pass
-        self.persist_transcript_turn(user_text=user_text)
-        self.persist_turn_summary(user_text=user_text)
-        self.project_session_into_catalog()
+        if persist:
+            self.persist_transcript_turn(user_text=user_text)
+            self.persist_turn_summary(user_text=user_text)
+            self.project_session_into_catalog()
 
     def persist_record(self, record: TurnPersistenceRecord) -> None:
         """Persist execution projections solely from one frozen runtime record."""
@@ -267,3 +268,7 @@ class TurnPersistenceController:
                 app._summary_store = SessionStore(app.settings.resolved_sessions_path())
                 app._session_store = app._summary_store
         return app._summary_store
+
+    def summary_store(self) -> Any:
+        """Return the shared store used by frozen runtime persistence."""
+        return self._summary_store()

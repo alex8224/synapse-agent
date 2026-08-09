@@ -208,6 +208,111 @@ def test_active_context_and_wait_for_settlement() -> None:
     asyncio.run(run())
 
 
+def test_close_threadsafe_cancels_and_closes_active_runtime() -> None:
+    import threading
+
+    controlled = _ControlledTurnRuntime()
+    session = _session(controlled)
+    handle = session.start_threadsafe(UserTurn("hello"))
+    assert controlled.token is not None
+
+    def complete_after_cancel() -> None:
+        assert controlled.token is not None
+        controlled.token.event.wait(timeout=0.1)
+        if not controlled.future.done():
+            controlled.future.set_result(
+                TurnResult(
+                    turn_id=handle.turn_id,
+                    thread_id="thread",
+                    status=TurnStatus.CANCELLED,
+                    cancel_reason="shutdown",
+                )
+            )
+
+    finisher = threading.Thread(target=complete_after_cancel, daemon=True)
+    finisher.start()
+    session.close_threadsafe(cancel_active=True, timeout=3)
+    finisher.join(timeout=1)
+
+    assert session.snapshot().status is SessionStatus.CLOSED
+
+
+def test_on_status_change_publishes_transitions() -> None:
+    """SessionRuntime notifies the observer on every status transition."""
+    controlled = _ControlledTurnRuntime()
+    transitions: list[SessionStatus] = []
+
+    async def run() -> None:
+        session = _session(controlled, persist_result=None)
+        session._on_status_change = lambda snapshot: transitions.append(snapshot.status)
+        handle = await session.submit(UserTurn("hello"))
+        assert transitions[-1] is SessionStatus.RUNNING
+        controlled.future.set_result(_result())
+        await asyncio.wrap_future(handle.future)
+        for _ in range(50):
+            if session.snapshot().status is SessionStatus.IDLE:
+                break
+            await asyncio.sleep(0)
+        assert transitions[-1] is SessionStatus.IDLE
+        await session.close(cancel_active=False)
+        assert transitions[-1] is SessionStatus.CLOSED
+
+    asyncio.run(run())
+
+
+def test_on_status_change_covers_cancel_and_queued() -> None:
+    """Cancel and manager-queue transitions also reach the observer."""
+    controlled = _ControlledTurnRuntime()
+    transitions: list[SessionStatus] = []
+
+    async def run() -> None:
+        session = _session(controlled)
+        session._on_status_change = lambda snapshot: transitions.append(snapshot.status)
+        session.mark_queued()
+        assert transitions[-1] is SessionStatus.QUEUED
+        session.mark_starting()
+        assert transitions[-1] is SessionStatus.STARTING
+        handle = await session.submit(UserTurn("hello"))
+        assert transitions[-1] is SessionStatus.RUNNING
+        session.cancel("user")
+        assert transitions[-1] is SessionStatus.CANCELLING
+        controlled.future.set_result(_result(TurnStatus.CANCELLED))
+        await asyncio.wrap_future(handle.future)
+        for _ in range(50):
+            if session.snapshot().status is SessionStatus.CANCELLED:
+                break
+            await asyncio.sleep(0)
+        assert transitions[-1] is SessionStatus.CANCELLED
+        await session.close(cancel_active=False)
+
+    asyncio.run(run())
+
+
+def test_on_status_change_failure_never_breaks_session() -> None:
+    """A raising observer is swallowed; execution and terminal state survive."""
+    controlled = _ControlledTurnRuntime()
+
+    async def run() -> None:
+        session = _session(controlled)
+
+        def boom(snapshot: Any) -> None:
+            del snapshot
+            raise RuntimeError("observer broke")
+
+        session._on_status_change = boom
+        handle = await session.submit(UserTurn("hello"))
+        controlled.future.set_result(_result())
+        await asyncio.wrap_future(handle.future)
+        for _ in range(50):
+            if session.snapshot().status is SessionStatus.IDLE:
+                break
+            await asyncio.sleep(0)
+        assert session.snapshot().status is SessionStatus.IDLE
+        await session.close(cancel_active=False)
+
+    asyncio.run(run())
+
+
 def test_session_completes_without_subscriber_and_persists() -> None:
     controlled = _ControlledTurnRuntime()
     persisted: list[tuple[Any, TurnResult]] = []

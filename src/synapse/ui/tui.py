@@ -513,6 +513,9 @@ class CodingAgentApp(App[None]):
 
     def on_unmount(self) -> None:
         clear_metrics_notifier()
+        turn = getattr(self, "_turn", None)
+        if turn is not None:
+            turn.shutdown()
         try:
             self._transcript_projection.close()
         except Exception:  # noqa: BLE001 - shutdown best effort
@@ -1174,13 +1177,27 @@ class CodingAgentApp(App[None]):
                 current_project_id=self._current_project_id(),
                 current_thread_id=self.thread_id,
                 runtime_status=runtime_status,
+                runtime_status_provider=(
+                    turn.runtime_status_map if turn is not None else None
+                ),
+                runtime_status_by_project_provider=(
+                    turn.runtime_status_by_project if turn is not None else None
+                ),
                 catalog_path=self.settings.resolved_catalog_path(),
             ),
             self._on_project_drawer_done,
         )
 
     def _current_project_id(self) -> str:
-        """Stable project id for the active workspace (best-effort)."""
+        """Stable project id for the active workspace (best-effort).
+
+        The catalog is the single authority for project ids (it is keyed by
+        workspace path and registered at startup). ``project.json`` is only a
+        cache: it must never diverge from the catalog id, otherwise the
+        project drawer would classify same-workspace sessions as cross-project
+        and restart the whole TUI (cancelling every running session) instead
+        of switching in place.
+        """
         try:
             from synapse.projects.catalog import ProjectCatalog
             from synapse.runtime.projects.identity import (
@@ -1188,13 +1205,28 @@ class CodingAgentApp(App[None]):
                 read_project_identity,
             )
 
+            catalog = ProjectCatalog(self.settings.resolved_catalog_path())
+            try:
+                info = catalog.get_project(workspace=self.project_root)
+                if info is not None:
+                    # Reconcile project.json so a later ensure_project_identity
+                    # can never mint a second id for the same workspace.
+                    try:
+                        ensure_project_identity(
+                            self.project_root,
+                            catalog_project_id=info.project_id,
+                        )
+                    except Exception:  # noqa: BLE001 - cache write is optional
+                        pass
+                    return info.project_id
+            finally:
+                try:
+                    catalog.close()
+                except Exception:  # noqa: BLE001 - best-effort close
+                    pass
             identity = read_project_identity(self.project_root)
             if identity is not None:
                 return str(identity["project_id"])
-            catalog = ProjectCatalog(self.settings.resolved_catalog_path())
-            info = catalog.get_project(workspace=self.project_root)
-            if info is not None:
-                return info.project_id
             return ensure_project_identity(self.project_root)
         except Exception:  # noqa: BLE001 - best-effort identity for the drawer
             return ""
@@ -1208,13 +1240,166 @@ class CodingAgentApp(App[None]):
             if thread_id and thread_id != self.thread_id:
                 self._slash.apply_session_switch(thread_id)
         elif action == "switch_project":
-            self._restart_for_project(project_id, thread_id)
+            # In-process project switch (P7): other projects' running
+            # sessions keep executing; the TUI never restarts.
+            self._switch_project(project_id, thread_id)
         elif action == "new_session":
-            self._restart_for_project(project_id, None)
+            self._switch_project(project_id, None)
 
     def _restart_for_project(self, project_id: str, thread_id: str | None) -> None:
-        """Exit the TUI with a switch request; the CLI restarts into the target."""
+        """Exit the TUI with a switch request; the CLI restarts into the target.
+
+        Kept for CLI/compat callers; the project drawer now switches in
+        process via :meth:`_switch_project`.
+        """
         self.exit(("switch_project", project_id, thread_id or ""))
+
+    def _switch_project(self, project_id: str, thread_id: str | None) -> None:
+        """Switch the active project in-process (P7).
+
+        Only the foreground rendering and the app's project context move to
+        the target project; every other project's running sessions keep
+        executing in their frozen runtimes.
+        """
+        from synapse.projects.catalog import ProjectCatalog
+        from synapse.sessions.store import allocate_thread_id
+
+        try:
+            catalog = ProjectCatalog(self.settings.resolved_catalog_path())
+            try:
+                info = catalog.get_project(project_id=project_id)
+            finally:
+                try:
+                    catalog.close()
+                except Exception:  # noqa: BLE001 - best-effort close
+                    pass
+        except Exception as exc:  # noqa: BLE001 - switch remains recoverable
+            self.append_event(f"switch failed: {exc}", "yellow")
+            return
+        if info is None:
+            self.append_event(f"project not found: {project_id}", "yellow")
+            return
+        workspace = Path(info.workspace_path or project_id)
+        target_thread = thread_id or allocate_thread_id()
+        turn = getattr(self, "_turn", None)
+        try:
+            project_settings = (
+                turn.settings_for(project_id, workspace) if turn is not None else None
+            )
+        except Exception as exc:  # noqa: BLE001 - switch remains recoverable
+            self.append_event(f"switch failed: {exc}", "yellow")
+            return
+        if project_settings is None:
+            from synapse.settings.schema import load_project_settings
+
+            project_settings = load_project_settings(workspace)
+        # Inherit the app's catalog override so project lookups keep resolving
+        # against the same user catalog after the switch.
+        try:
+            catalog_override = getattr(self.settings, "project_catalog_path", None)
+            if catalog_override is not None:
+                project_settings = project_settings.model_copy(
+                    update={"project_catalog_path": catalog_override}
+                )
+        except Exception:  # noqa: BLE001 - catalog override is best-effort
+            pass
+
+        # Detach foreground rendering; never cancel running sessions.
+        if turn is not None:
+            turn.detach()
+        # Swap the app's project context.
+        self.settings = project_settings
+        self.project_root = workspace
+        self.thread_id = target_thread
+        if turn is not None:
+            try:
+                self._transcript_projection = turn.projection_for(
+                    project_id, project_settings
+                )
+            except Exception:  # noqa: BLE001 - projection is best-effort
+                pass
+            try:
+                store = turn.store_for(project_id, project_settings)
+                self._session_store = store
+                self._summary_store = store
+            except Exception:  # noqa: BLE001 - store is best-effort
+                pass
+        # Git chrome follows the workspace.
+        try:
+            self._git_chrome = probe_git_branch_chrome(workspace)
+            self._git_branch = self._git_chrome.name if self._git_chrome else None
+        except Exception:  # noqa: BLE001 - best-effort chrome
+            pass
+        self._reset_session_token_chrome()
+        self._reload_tool_output_stats()
+        self._load_current_goal()
+
+        def on_ready() -> None:
+            if self.thread_id != target_thread:
+                return
+            if turn is not None:
+                turn.attach(target_thread)
+                turn.sync_foreground_status()
+
+        self._schedule_transcript_reset(
+            reload_transcript=True,
+            announce=True,
+            on_complete=on_ready,
+        )
+        self._reload_session_title()
+        self._refresh_topbar()
+        # Reuse a frozen agent graph when this project already has opened
+        # runtimes; otherwise build the project's agent off the UI thread.
+        # Rendering attachment always happens via the transcript-reset
+        # on_complete (or the agent-build ready callback) so it never paints
+        # onto the previous project's transcript.
+        frozen = turn.runtime_for_project(project_id) if turn is not None else None
+        if frozen is not None and frozen.agent is not None:
+            self.agent = frozen.agent
+            self._bind_steer_queue()
+        else:
+            self._build_project_agent_bg(project_id, project_settings, target_thread)
+
+    @work(thread=True, exclusive=True, group="project-agent")
+    def _build_project_agent_bg(
+        self, project_id: str, settings: Any, thread_id: str
+    ) -> None:
+        """Build the target project's agent graph for an in-process switch."""
+        from synapse.app.agent import build_coding_agent
+
+        turn = getattr(self, "_turn", None)
+        goal_service = (
+            turn.goal_service_for(project_id, settings) if turn is not None else None
+        )
+        try:
+            agent = build_coding_agent(
+                settings,
+                project_root=self.project_root,
+                load_mcp=False,
+                prompt_cache_key=lambda: thread_id,
+                goal_service=goal_service,
+            )
+        except Exception as exc:  # noqa: BLE001 - agent build failure stays recoverable
+            self.call_from_thread(
+                self.append_event, f"project agent failed: {exc}", "bold red"
+            )
+            return
+
+        def ready() -> None:
+            if self.thread_id != thread_id:
+                return
+            self.agent = agent
+            turn = getattr(self, "_turn", None)
+            if turn is not None:
+                turn.bind_agent(thread_id, agent)
+                turn.attach(thread_id)
+                turn.sync_foreground_status()
+            self._bind_steer_queue()
+            self._bind_goal_listener()
+            self._reload_session_title()
+            self._refresh_topbar()
+
+        self.call_from_thread(ready)
 
     def _open_git_explore(self, path: str | None = None) -> None:
         from synapse.ui.dialogs import GitExploreScreen
@@ -1628,10 +1813,12 @@ class CodingAgentApp(App[None]):
         *,
         reload_transcript: bool = False,
         announce: bool = False,
+        on_complete: Any | None = None,
     ) -> None:
         self._history.schedule_transcript_reset(
             reload_transcript=reload_transcript,
             announce=announce,
+            on_complete=on_complete,
         )
 
     def _restore_session_transcript(self, *, announce: bool = True) -> None:
@@ -1923,13 +2110,77 @@ class CodingAgentApp(App[None]):
     def handle_submit(self, event: Input.Submitted) -> None:
         self._turn.submit(event)
 
-    @work(thread=True, group="agent-turn")
     def run_turn(self, text: str, attachments: list[Any] | None = None) -> None:
-        self._turn.run_turn(text, attachments)
+        """Run one turn in a session-scoped thread worker.
 
-    @work(thread=True, group="agent-turn")
+        The worker group is keyed by the target session so turns in different
+        sessions can run concurrently (multiple live agent loops), while the
+        same session stays serialized (SessionRuntime also guards double
+        submission).
+        """
+
+        launch_context = getattr(self._turn, "launch_context", None)
+        if callable(launch_context):
+            thread_id, agent, generation, monitor_id = launch_context()
+        else:  # compatibility for lightweight hosts/extensions
+            thread_id = self.thread_id
+            agent = getattr(self, "agent", None)
+            generation = int(getattr(self, "_transcript_generation", 0))
+            monitor_id = str(
+                getattr(getattr(self, "_subagent_monitor", None), "monitor_id", "")
+            )
+
+        def _run() -> None:
+            if callable(launch_context):
+                self._turn.run_turn(
+                    text,
+                    attachments,
+                    thread_id=thread_id,
+                    agent=agent,
+                    transcript_generation=generation,
+                    monitor_id=monitor_id,
+                )
+            else:
+                self._turn.run_turn(text, attachments)
+
+        self.run_worker(
+            _run,
+            thread=True,
+            group=f"agent-turn:{thread_id}",
+            exclusive=True,
+        )
+
     def run_resume(self, action: str, message: str | None = None) -> None:
-        self._turn.run_resume(action, message)
+        launch_context = getattr(self._turn, "launch_context", None)
+        if callable(launch_context):
+            thread_id, agent, generation, monitor_id = launch_context()
+        else:  # compatibility for lightweight hosts/extensions
+            thread_id = self.thread_id
+            agent = getattr(self, "agent", None)
+            generation = int(getattr(self, "_transcript_generation", 0))
+            monitor_id = str(
+                getattr(getattr(self, "_subagent_monitor", None), "monitor_id", "")
+            )
+
+        def _run() -> None:
+            if callable(launch_context):
+                self._turn.run_resume(
+                    action,
+                    message,
+                    thread_id=thread_id,
+                    agent=agent,
+                    transcript_generation=generation,
+                    monitor_id=monitor_id,
+                )
+            else:
+                self._turn.run_resume(action, message)
+
+        self.run_worker(
+            _run,
+            thread=True,
+            group=f"agent-turn:{thread_id}",
+            exclusive=True,
+        )
 
     def _apply_stream_result(
         self,

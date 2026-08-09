@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from synapse.runtime.agent_loop import TurnContext, TurnResult
+from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.sessions.transcript import UiTranscriptEvent, fold_messages_for_ui
 from synapse.sessions.transcript_projection import TranscriptUsage
 
@@ -23,7 +23,10 @@ class SessionPersistence:
     catalog_enabled: bool = True
 
     def persist(self, context: TurnContext, result: TurnResult) -> None:
-        if context.request.resume:
+        if context.request.resume or result.status not in {
+            TurnStatus.COMPLETED,
+            TurnStatus.WAITING_APPROVAL,
+        }:
             return
         user_text = context.request.input
         events = self._events(user_text, result)
@@ -45,8 +48,9 @@ class SessionPersistence:
             events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
         state_events = fold_messages_for_ui(list(result.state.get("messages") or []))
         events.extend(event for event in state_events if event.kind == "tools")
-        if result.final_text:
-            events.append(UiTranscriptEvent(kind="answer", text=result.final_text))
+        answer_text = result.final_text or _last_answer_text(state_events)
+        if answer_text:
+            events.append(UiTranscriptEvent(kind="answer", text=answer_text))
         return events
 
     def _persist_summary(
@@ -67,7 +71,7 @@ class SessionPersistence:
             thread_id,
             user_text=user_text,
             tool_summary=tool_summary,
-            answer_text=result.final_text,
+            answer_text=result.final_text or _last_answer_text(events),
             max_chars=self.summary_max_chars,
         )
 
@@ -87,3 +91,10 @@ class SessionPersistence:
             created_at=info.created_at,
             tags=info.tags,
         )
+
+
+def _last_answer_text(events: list[UiTranscriptEvent]) -> str:
+    for event in reversed(events):
+        if event.kind == "answer" and event.text:
+            return event.text
+    return ""

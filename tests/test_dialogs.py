@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -1305,6 +1305,7 @@ class TestApplyOkResult:
             "flash_status",
             "apply_theme",
             "set_activity",
+            "_sync_prompt_placeholder",
             "query_one",
             "refresh",
             "refresh_css",
@@ -1328,14 +1329,85 @@ class TestApplyOkResult:
         app._apply_ok_result(ok)
         assert app.agent is new_agent
         assert app.thread_id == "new-thread"
-        app._schedule_transcript_reset.assert_called_once_with(
-            reload_transcript=False,
-            announce=False,
-        )
+        call = app._schedule_transcript_reset.call_args
+        assert call.kwargs["reload_transcript"] is False
+        assert call.kwargs["announce"] is False
+        assert callable(call.kwargs["on_complete"])
         app.action_clear_log.assert_not_called()
+
+    def test_thread_switch_reuses_running_session_agent(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        running_agent = object()
+        runtime = MagicMock(agent=running_agent)
+        app._turn.detach = MagicMock()
+        app._turn.attach = MagicMock(return_value=runtime)
+        app._turn.sync_foreground_status = MagicMock()
+        ok = MagicMock(
+            agent=None,
+            thread_id="running-thread",
+            settings_changed=False,
+            clear_log=True,
+            reload_transcript=True,
+            theme_name=None,
+            error=False,
+            notice=None,
+            lines=[],
+        )
+
+        app._apply_ok_result(ok)
+
+        assert app.agent is running_agent
+        assert app._turn.detach.call_args_list == [
+            call("old-thread"),
+            call("running-thread"),
+        ]
+        assert app._turn.attach.call_args_list == [call("running-thread")]
+        app._turn.sync_foreground_status.assert_not_called()
+        on_complete = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
+        on_complete()
+        assert app._turn.attach.call_args_list == [
+            call("running-thread"),
+            call("running-thread"),
+        ]
+        app._turn.sync_foreground_status.assert_called_once_with()
+
+    def test_thread_switch_builds_independent_agent_for_cold_session(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        old_agent = app.agent
+        new_agent = object()
+        app._turn.detach = MagicMock()
+        app._turn.attach = MagicMock(side_effect=[None, MagicMock(agent=new_agent)])
+        app._turn.bind_agent = MagicMock()
+        app._turn.sync_foreground_status = MagicMock()
+        app._slash._build_session_agent = MagicMock(return_value=new_agent)
+        ok = MagicMock(
+            agent=None,
+            thread_id="cold-thread",
+            settings_changed=False,
+            clear_log=True,
+            reload_transcript=True,
+            theme_name=None,
+            error=False,
+            notice=None,
+            lines=[],
+        )
+
+        app._apply_ok_result(ok)
+
+        app._slash._build_session_agent.assert_called_once_with("cold-thread", old_agent)
+        app._turn.bind_agent.assert_called_once_with("cold-thread", new_agent)
+        assert app.agent is new_agent
+        on_complete = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
+        on_complete()
+        assert app._turn.attach.call_args_list == [
+            call("cold-thread"),
+            call("cold-thread"),
+        ]
 
     def test_thread_switch_clears_once_then_reloads(self, monkeypatch):
         app = self._make_app(monkeypatch)
+        app._turn.attach = MagicMock(return_value=MagicMock(agent=app.agent))
+        app._turn.sync_foreground_status = MagicMock()
         ok = MagicMock(
             agent=None,
             thread_id="new-thread",
@@ -1350,10 +1422,10 @@ class TestApplyOkResult:
 
         app._apply_ok_result(ok)
 
-        app._schedule_transcript_reset.assert_called_once_with(
-            reload_transcript=True,
-            announce=True,
-        )
+        call = app._schedule_transcript_reset.call_args
+        assert call.kwargs["reload_transcript"] is True
+        assert call.kwargs["announce"] is True
+        assert callable(call.kwargs["on_complete"])
         app._restore_session_transcript.assert_not_called()
         app.action_clear_log.assert_not_called()
 
@@ -1378,6 +1450,39 @@ class TestApplyOkResult:
         call = app.run_worker.call_args
         assert call.kwargs == {"exclusive": True, "group": "session-transcript"}
         call.args[0].close()
+
+    def test_reset_completion_runs_only_for_current_generation(self, monkeypatch):
+        app = self._make_app(monkeypatch)
+        app._history.state.generation = 1
+        app._transcript_generation = 3
+        app.run_worker = MagicMock()
+        completed = MagicMock()
+
+        from synapse.ui.tui import CodingAgentApp
+
+        CodingAgentApp._schedule_transcript_reset(
+            app,
+            reload_transcript=True,
+            announce=True,
+            on_complete=completed,
+        )
+        coroutine = app.run_worker.call_args.args[0]
+        app._history.reset_transcript_async = AsyncMock()
+
+        asyncio.run(coroutine)
+        completed.assert_called_once_with()
+
+        completed.reset_mock()
+        CodingAgentApp._schedule_transcript_reset(
+            app,
+            reload_transcript=True,
+            announce=True,
+            on_complete=completed,
+        )
+        stale_coroutine = app.run_worker.call_args.args[0]
+        app._transcript_generation += 1
+        asyncio.run(stale_coroutine)
+        completed.assert_not_called()
 
     def test_applies_theme(self, monkeypatch):
         app = self._make_app(monkeypatch)

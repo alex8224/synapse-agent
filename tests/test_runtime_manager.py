@@ -291,6 +291,23 @@ def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -
     assert agent_b.prompt_cache_key() == "thread-b"
 
 
+def test_manager_injects_persistence_into_default_session_runtime() -> None:
+    def persist(context: Any, result: TurnResult) -> None:
+        del context, result
+
+    async def run() -> None:
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="test"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+            persist_result=persist,
+        )
+        session = await manager.open_session("a")
+        assert session._persist_result is persist
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_submit_releases_lock_after_mark_queued_failure(monkeypatch: Any) -> None:
     """F3: a failure between lock acquisition and queue marking must not leak
     the per-session submit lock (otherwise the next submit deadlocks/errors)."""

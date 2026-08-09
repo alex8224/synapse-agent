@@ -8,6 +8,8 @@ the controller can be exercised against a fake host surface.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from textual.widgets import Input
@@ -15,7 +17,12 @@ from textual.widgets import Input
 from synapse.content.multimodal import find_placeholders
 from synapse.runtime.agent_loop import AgentTurnRuntime, TurnContext, TurnStatus
 from synapse.runtime.agent_loop.request import build_resume_request, build_turn_request
-from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
+from synapse.runtime.sessions import (
+    SessionPersistence,
+    SessionRuntime,
+    SessionStatus,
+    UserTurn,
+)
 from synapse.runtime.steer import (
     SteerQueue,
     format_steer_message,
@@ -39,6 +46,113 @@ class TurnController:
         self._attached_thread_id: str | None = None
         self._event_bridge: TextualTurnEventBridge | None = None
         self._session_subscription: Any | None = None
+        # Per-project resources (P7): settings snapshots, transcript
+        # projections and session stores stay keyed by project_id so a
+        # background session keeps writing its own project's databases after
+        # the TUI switches to another project.
+        self._project_settings: dict[str, Any] = {}
+        self._project_projection: dict[str, Any] = {}
+        self._project_store: dict[str, Any] = {}
+        self._project_goal_service: dict[str, Any] = {}
+
+    def goal_service_for(self, project_id: str, settings: Any) -> Any:
+        """Return the project-owned GoalService (P7 per-project goal ledger).
+
+        The process-wide singleton is reused only when it already points at
+        this project's session database (the startup project); every other
+        project gets its own GoalService so goals never bleed across
+        workspaces.
+        """
+        cached = self._project_goal_service.get(project_id)
+        if cached is not None:
+            return cached
+        from synapse.goals.runtime import GoalService, get_goal_service
+        from synapse.goals.store import GoalStore
+
+        target = str(Path(settings.resolved_sessions_path()).resolve())
+        global_service = get_goal_service()
+        if global_service is not None:
+            try:
+                store_path = str(Path(global_service.store.path).resolve())
+            except Exception:  # noqa: BLE001 - probing is best-effort
+                store_path = ""
+            if store_path == target:
+                self._project_goal_service[project_id] = global_service
+                return global_service
+        service = GoalService(GoalStore(target))
+        self._project_goal_service[project_id] = service
+        return service
+
+    # -- per-project resources --------------------------------------------
+
+    def settings_for(self, project_id: str, workspace: Any) -> Any:
+        """Return an isolated per-project Settings snapshot (P6-04).
+
+        The first caller for a project resolves it from the workspace; later
+        callers reuse the frozen snapshot so concurrent projects never mutate
+        each other's environment.
+        """
+        cached = self._project_settings.get(project_id)
+        if cached is not None:
+            return cached
+        from synapse.settings.schema import load_project_settings
+
+        settings = load_project_settings(workspace)
+        self._project_settings[project_id] = settings
+        return settings
+
+    def projection_for(self, project_id: str, settings: Any) -> Any:
+        """Return the project-owned transcript projection instance."""
+        cached = self._project_projection.get(project_id)
+        if cached is not None:
+            return cached
+        from synapse.sessions.transcript_projection import (
+            TranscriptProjection,
+            default_transcript_projection_path,
+        )
+
+        projection = TranscriptProjection(
+            default_transcript_projection_path(settings.resolved_sessions_path())
+        )
+        self._project_projection[project_id] = projection
+        return projection
+
+    def store_for(self, project_id: str, settings: Any) -> Any:
+        """Return the project-owned session/summary store instance."""
+        cached = self._project_store.get(project_id)
+        if cached is not None:
+            return cached
+        from synapse.sessions.store import SessionStore
+
+        store = SessionStore(settings.resolved_sessions_path())
+        self._project_store[project_id] = store
+        return store
+
+    def _persist_result_for(
+        self, project_id: str, settings: Any
+    ) -> Callable[[Any, Any], Any]:
+        """Bind one turn's persistence to its frozen project resources."""
+        app = self._app
+        projection = self.projection_for(project_id, settings)
+        store = self.store_for(project_id, settings)
+
+        def persist_result(context: Any, result: Any) -> None:
+            persistence = SessionPersistence(
+                transcript_projection=projection,
+                summary_store=store,
+                project_catalog=getattr(app, "_project_catalog", None),
+                workspace=getattr(settings, "workspace", None),
+                summary_mode=str(getattr(settings, "session_summary_mode", "local")),
+                summary_max_chars=int(
+                    getattr(settings, "session_summary_max_chars", 600) or 600
+                ),
+                catalog_enabled=bool(
+                    getattr(settings, "project_catalog_enabled", True)
+                ),
+            )
+            persistence.persist(context, result)
+
+        return persist_result
 
     @property
     def session_runtime(self) -> SessionRuntime | None:
@@ -48,9 +162,24 @@ class TurnController:
     def busy(self) -> bool:
         runtime = getattr(self, "_session_runtime", None)
         if runtime is None:
+            # During a session/project switch the renderer is detached while
+            # the transcript resets; the target session may still be running.
+            # Fall back to the runtime for the current thread so a submission
+            # becomes a steer instead of a bogus "session already has an
+            # active turn" error.
+            sessions = getattr(self, "_sessions", None)
+            if sessions is not None:
+                runtime = sessions.get(getattr(self._app, "thread_id", None))
+        if runtime is None:
             state = getattr(self._app, "__dict__", {})
             return bool(state.get("_busy_projection", state.get("_busy", False)))
-        return runtime.snapshot().status in {SessionStatus.RUNNING, SessionStatus.CANCELLING}
+        return runtime.snapshot().status in {
+            SessionStatus.QUEUED,
+            SessionStatus.STARTING,
+            SessionStatus.RUNNING,
+            SessionStatus.CANCELLING,
+            SessionStatus.WAITING_APPROVAL,
+        }
 
     def sync_busy_projection(self) -> None:
         """Clear the legacy UI projection after SessionRuntime publishes terminal state."""
@@ -76,14 +205,34 @@ class TurnController:
         return runtime.steer(text) if runtime is not None else False
 
     def _persist_runtime_result(self, context: TurnContext, result: Any) -> None:
-        """Project a settled turn using its frozen identity, never current app routing."""
-        self._persistence.persist_runtime_result(context, result)
+        """Persist one turn solely from its frozen context and runtime result."""
+        app = self._app
+        settings = context.settings
+        store = self._persistence.summary_store()
+        persistence = SessionPersistence(
+            transcript_projection=app._transcript_projection,
+            summary_store=store,
+            project_catalog=getattr(app, "_project_catalog", None),
+            workspace=getattr(settings, "workspace", None),
+            summary_mode=str(getattr(settings, "session_summary_mode", "local")),
+            summary_max_chars=int(
+                getattr(settings, "session_summary_max_chars", 600) or 600
+            ),
+            catalog_enabled=bool(getattr(settings, "project_catalog_enabled", True)),
+        )
+        persistence.persist(context, result)
 
     def background_running_count(self) -> int:
         current = self._app.thread_id
         return sum(
             runtime.snapshot().status
-            in {SessionStatus.QUEUED, SessionStatus.STARTING, SessionStatus.RUNNING}
+            in {
+                SessionStatus.QUEUED,
+                SessionStatus.STARTING,
+                SessionStatus.RUNNING,
+                SessionStatus.CANCELLING,
+                SessionStatus.WAITING_APPROVAL,
+            }
             for thread_id, runtime in self._sessions.items()
             if thread_id != current
         )
@@ -96,6 +245,47 @@ class TurnController:
         """
         sessions = tuple(self._sessions.values())
         return {runtime.thread_id: runtime.snapshot().status.value for runtime in sessions}
+
+    def runtime_status_by_project(self) -> dict[str, dict[str, str]]:
+        """Map project_id -> {thread_id: status} for the project drawer."""
+        by_project: dict[str, dict[str, str]] = {}
+        for runtime in tuple(self._sessions.values()):
+            snapshot = runtime.snapshot()
+            by_project.setdefault(snapshot.project_id, {})[runtime.thread_id] = (
+                snapshot.status.value
+            )
+        return by_project
+
+    def runtime_for(self, thread_id: str) -> SessionRuntime | None:
+        """Return the process-local runtime for one session, if it has been opened."""
+        return self._sessions.get(thread_id)
+
+    def runtime_for_project(self, project_id: str) -> SessionRuntime | None:
+        """Return any opened runtime owned by one project (P7 switch reuse).
+
+        Used to reuse a frozen agent graph when switching back to a project
+        that still has live sessions, instead of rebuilding it.
+        """
+        for runtime in tuple(self._sessions.values()):
+            if runtime.project_id == project_id:
+                return runtime
+        return None
+
+    def shutdown(self) -> None:
+        """Detach UI observers and cancel every session-owned turn on app exit."""
+        self._detach_renderer()
+        sessions = tuple(self._sessions.values())
+        self._sessions.clear()
+        self._session_runtime = None
+        self._attached_thread_id = None
+        for runtime in sessions:
+            try:
+                runtime.close_threadsafe(cancel_active=True, timeout=5.0)
+            except Exception:  # noqa: BLE001 - app teardown is best-effort
+                try:
+                    runtime.cancel("shutdown")
+                except Exception:  # noqa: BLE001 - final teardown fallback
+                    pass
 
     def detach(self, thread_id: str | None = None) -> None:
         """Detach rendering only; never cancel the session-owned turn."""
@@ -143,26 +333,107 @@ class TurnController:
         self._session_subscription = subscription
         return runtime
 
-    def _session_for(self, *, thread_id: str, agent: Any) -> SessionRuntime:
+    def sync_foreground_status(self) -> None:
+        """Project the attached runtime state onto foreground-only TUI chrome."""
+        app = self._app
+        runtime = self._session_runtime
+        if runtime is None:
+            app.__dict__["_busy_projection"] = False
+            app.set_activity("idle", "ready", True)
+            app._sync_prompt_placeholder()
+            return
+        status = runtime.snapshot().status
+        busy = status in {
+            SessionStatus.QUEUED,
+            SessionStatus.STARTING,
+            SessionStatus.RUNNING,
+            SessionStatus.CANCELLING,
+            SessionStatus.WAITING_APPROVAL,
+        }
+        app.__dict__["_busy_projection"] = busy
+        if status is SessionStatus.CANCELLING:
+            app.set_activity("cancelling", "", True)
+        elif status is SessionStatus.WAITING_APPROVAL:
+            app.set_activity("waiting", "approval", True)
+        elif busy:
+            app.set_activity("thinking", "running", True)
+        else:
+            app.set_activity("idle", "ready", True)
+        app._sync_prompt_placeholder()
+
+    def bind_agent(self, thread_id: str, agent: Any) -> SessionRuntime | None:
+        """Bind a rebuilt graph to a cold/idle session without replacing live work."""
+        if agent is None:
+            return None
         runtime = self._sessions.get(thread_id)
-        if runtime is not None and runtime.thread_id == thread_id and runtime.agent is agent:
+        if runtime is not None and runtime.snapshot().active_turn_id is not None:
+            return runtime
+        if runtime is not None and runtime.agent is agent:
+            return runtime
+        if runtime is not None:
+            self._sessions.pop(thread_id, None)
+        return self._session_for(thread_id=thread_id, agent=agent)
+
+    def _session_for(
+        self,
+        *,
+        thread_id: str,
+        agent: Any,
+        project_id: str | None = None,
+        settings: Any | None = None,
+    ) -> SessionRuntime:
+        app = self._app
+        if project_id is None:
+            pid = getattr(app, "_current_project_id", None)
+            project_id = pid() if callable(pid) else (str(pid or ""))
+        if settings is None:
+            settings = app.settings
+        runtime = self._sessions.get(thread_id)
+        if (
+            runtime is not None
+            and runtime.project_id == project_id
+            and runtime.agent is agent
+        ):
             return runtime
         if runtime is not None and runtime.snapshot().active_turn_id is not None:
-            raise RuntimeError("cannot replace active SessionRuntime")
-        if runtime is None or runtime.thread_id != thread_id or runtime.agent is not agent:
+            # A background turn is still running (possibly from another
+            # project with a colliding thread id): never swap the runtime out.
+            # The frozen agent stays authoritative for that turn; the new
+            # binding is adopted on the next submission once the turn settles.
+            return runtime
+        if (
+            runtime is None
+            or runtime.project_id != project_id
+            or runtime.agent is not agent
+        ):
             runtime = SessionRuntime(
                 thread_id=thread_id,
+                project_id=project_id,
                 agent=agent,
-                settings=self._app.settings,
+                settings=settings,
                 turn_runtime=self._runtime,
-                persist_result=self._persist_runtime_result,
+                persist_result=self._persist_result_for(project_id, settings),
                 goal_service=getattr(agent, "_coding_goal_service", None),
+                on_status_change=self._on_session_status_changed,
             )
             self._sessions[thread_id] = runtime
         if self._attached_thread_id in {None, thread_id}:
             self._attached_thread_id = thread_id
             self._session_runtime = runtime
         return runtime
+
+    def _on_session_status_changed(self, snapshot: Any) -> None:
+        """Refresh session chrome from any runtime thread (best-effort)."""
+        try:
+            self._app.call_from_thread(self._on_session_status_ui, snapshot)
+        except Exception:  # noqa: BLE001 - chrome must never break a turn
+            pass
+
+    def _on_session_status_ui(self, snapshot: Any) -> None:
+        app = self._app
+        if snapshot.thread_id == self._attached_thread_id:
+            self.sync_foreground_status()
+        app._refresh_topbar()
 
     def _attach_renderer(self, runtime: SessionRuntime, context: TurnContext) -> None:
         del context
@@ -280,7 +551,16 @@ class TurnController:
 
     # -- run ---------------------------------------------------------------
 
-    def run_turn(self, text: str, attachments: list[Any] | None = None) -> None:
+    def run_turn(
+        self,
+        text: str,
+        attachments: list[Any] | None = None,
+        *,
+        thread_id: str | None = None,
+        agent: Any | None = None,
+        transcript_generation: int | None = None,
+        monitor_id: str | None = None,
+    ) -> None:
         """Run one agent turn off the UI thread (host wraps with @work)."""
         app = self._app
         if not app._agent_ready.wait(timeout=180):
@@ -291,9 +571,9 @@ class TurnController:
             )
             app.call_from_thread(app._turn_done)
             return
-        runtime = self._session_runtime
-        turn_agent = runtime.agent if runtime is not None and self.busy else app.agent
-        turn_thread_id = runtime.thread_id if runtime is not None and self.busy else app.thread_id
+        turn_thread_id = thread_id or app.thread_id
+        runtime = self._sessions.get(turn_thread_id)
+        turn_agent = agent or (runtime.agent if runtime is not None else app.agent)
         if app._agent_error or turn_agent is None:
             app.call_from_thread(
                 app.append_event,
@@ -303,29 +583,41 @@ class TurnController:
             app.call_from_thread(app._turn_done)
             return
 
-        app._begin_turn_usage()
-        transcript_generation = app._transcript_generation
+        if transcript_generation is None:
+            transcript_generation = app._transcript_generation
+        turn_monitor_id = monitor_id or app._subagent_monitor.monitor_id
+        app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         request = build_turn_request(
             text=text,
             attachments=attachments,
             settings=app.settings,
             thread_id=turn_thread_id,
-            monitor_id=app._subagent_monitor.monitor_id,
+            monitor_id=turn_monitor_id,
             max_concurrency=app.settings.max_concurrency,
         )
         runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+        bridge: TextualTurnEventBridge | None = None
         try:
+            def on_started(context: TurnContext) -> None:
+                nonlocal bridge
+                if (
+                    self._attached_thread_id != runtime.thread_id
+                    or app._transcript_generation != transcript_generation
+                ):
+                    return
+                self.attach(runtime, after_sequence=0)
+                bridge = self._event_bridge
+
             handle = runtime.start_threadsafe(
                 UserTurn(
                     text=text,
                     attachments=tuple(attachments or ()),
-                    monitor_id=app._subagent_monitor.monitor_id,
+                    monitor_id=turn_monitor_id,
                     request=request,
                 ),
-                on_started=lambda context: self._attach_renderer(runtime, context),
+                on_started=on_started,
             )
             result, _snapshot = runtime.wait_threadsafe(handle)
-            bridge = self._event_bridge
             if bridge is not None:
                 bridge.drain()
             if self.apply_stream_result(
@@ -347,10 +639,38 @@ class TurnController:
                 "bold red",
             )
         finally:
+            self._turn_finished(runtime, app)
+
+    def _turn_finished(self, runtime: SessionRuntime | None, app: Any) -> None:
+        """Turn-end chrome work for one session-owned worker.
+
+        Foreground (attached) sessions run the full UI teardown; a background
+        session finishing must not reset the active transcript (activity,
+        prompt focus, git chrome), so only topbar chrome is refreshed.
+        """
+        if runtime is None:
+            app.call_from_thread(app._turn_done)
+            return
+        is_foreground = (
+            self._attached_thread_id == runtime.thread_id
+            and self._session_runtime is runtime
+        )
+        if is_foreground:
             self._detach_renderer()
             app.call_from_thread(app._turn_done)
+            return
+        app.call_from_thread(self._app._refresh_topbar)
 
-    def run_resume(self, action: str, message: str | None = None) -> None:
+    def run_resume(
+        self,
+        action: str,
+        message: str | None = None,
+        *,
+        thread_id: str | None = None,
+        agent: Any | None = None,
+        transcript_generation: int | None = None,
+        monitor_id: str | None = None,
+    ) -> None:
         """Resume graph after /approve or /reject (host wraps with @work)."""
         from synapse.runtime.hitl import (
             build_decisions,
@@ -360,14 +680,17 @@ class TurnController:
         )
 
         app = self._app
-        runtime = self._session_runtime
-        turn_agent = runtime.agent if runtime is not None else app.agent
-        turn_thread_id = runtime.thread_id if runtime is not None else app.thread_id
+        turn_thread_id = thread_id or app.thread_id
+        runtime = self._sessions.get(turn_thread_id)
+        turn_agent = agent or (runtime.agent if runtime is not None else app.agent)
         if turn_agent is None:
             app.call_from_thread(app.append_event, "agent unavailable", "bold red")
             app.call_from_thread(app._turn_done)
             return
-        app._begin_turn_usage()
+        if transcript_generation is None:
+            transcript_generation = app._transcript_generation
+        turn_monitor_id = monitor_id or app._subagent_monitor.monitor_id
+        app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         config = {
             "configurable": {"thread_id": turn_thread_id},
             "max_concurrency": app.settings.max_concurrency,
@@ -384,29 +707,43 @@ class TurnController:
             request = build_resume_request(
                 payload=payload,
                 thread_id=turn_thread_id,
-                monitor_id=app._subagent_monitor.monitor_id,
+                monitor_id=turn_monitor_id,
                 max_concurrency=app.settings.max_concurrency,
             )
             runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+            bridge: TextualTurnEventBridge | None = None
+
+            def on_started(context: TurnContext) -> None:
+                nonlocal bridge
+                if (
+                    self._attached_thread_id != runtime.thread_id
+                    or app._transcript_generation != transcript_generation
+                ):
+                    return
+                self.attach(runtime, after_sequence=0)
+                bridge = self._event_bridge
+
             handle = runtime.start_threadsafe(
                 UserTurn(
                     text="",
-                    monitor_id=app._subagent_monitor.monitor_id,
+                    monitor_id=turn_monitor_id,
                     request=request,
                 ),
-                on_started=lambda context: self._attach_renderer(runtime, context),
+                on_started=on_started,
             )
             result, _snapshot = runtime.wait_threadsafe(handle)
-            bridge = self._event_bridge
             if bridge is not None:
                 bridge.drain()
-            if self.apply_stream_result(result, transcript_generation=None, resume=True):
+            if self.apply_stream_result(
+                result,
+                transcript_generation=transcript_generation,
+                resume=True,
+            ):
                 return
         except Exception as exc:  # noqa: BLE001
             app.call_from_thread(app.append_event, f"ERROR: {exc}", "bold red")
         finally:
-            self._detach_renderer()
-            app.call_from_thread(app._turn_done)
+            self._turn_finished(runtime, app)
 
     def apply_stream_result(
         self,
@@ -493,7 +830,21 @@ class TurnController:
     def capture_turn_context(self) -> None:
         """Ensure the current session freezes the agent and thread identity."""
         app = self._app
-        self._session_for(thread_id=app.thread_id, agent=app.agent)
+        if app.agent is not None:
+            self._session_for(thread_id=app.thread_id, agent=app.agent)
+
+    def launch_context(self) -> tuple[str, Any, int, str]:
+        """Freeze everything a queued Textual worker must not read from mutable app state."""
+        app = self._app
+        runtime = self._session_runtime
+        if runtime is None or runtime.thread_id != app.thread_id:
+            runtime = self._session_for(thread_id=app.thread_id, agent=app.agent)
+        return (
+            runtime.thread_id,
+            runtime.agent,
+            int(app._transcript_generation),
+            str(app._subagent_monitor.monitor_id),
+        )
 
     def clear_turn_context(self) -> None:
         """Compatibility no-op; SessionRuntime owns immutable turn context."""
@@ -541,13 +892,13 @@ class TurnController:
                 completed_queue.clear()
             self.clear_turn_context()
             app._bind_steer_queue()
-            self.note_session_recap_turn()
+            self.note_session_recap_turn(persist=False)
             return
         # SessionRuntime has already settled goal usage/state before this callback.
         if runtime is not None:
             app._current_goal = runtime.snapshot().goal
         # Capture snapshot before steer follow-up may start another busy turn.
-        self.note_session_recap_turn()
+        self.note_session_recap_turn(persist=False)
         if self.schedule_followup_steer(completed_queue):
             return
         self.clear_turn_context()
@@ -622,8 +973,8 @@ class TurnController:
 
     # -- recap / persistence ------------------------------------------------
 
-    def note_session_recap_turn(self) -> None:
-        self._persistence.note_session_recap_turn()
+    def note_session_recap_turn(self, *, persist: bool = True) -> None:
+        self._persistence.note_session_recap_turn(persist=persist)
 
     def persist_transcript_turn(self, *, user_text: str) -> None:
         self._persistence.persist_transcript_turn(user_text=user_text)

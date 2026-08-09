@@ -47,6 +47,8 @@ class RuntimeManager:
         session_factory: Callable[..., SessionRuntime] = SessionRuntime,
         async_runtime: AsyncRuntime | None = None,
         project_id: str | None = None,
+        persist_result: Callable[..., Any] | None = None,
+        on_status_change: Callable[[SessionSnapshot], None] | None = None,
     ) -> None:
         self.settings = settings
         self.agent_factory = agent_factory
@@ -54,6 +56,8 @@ class RuntimeManager:
         self.max_concurrent_sessions = max(1, int(max_concurrent_sessions))
         self.session_factory = session_factory
         self.project_id = project_id
+        self.persist_result = persist_result
+        self.on_status_change = on_status_change
         self._async_runtime = async_runtime or get_async_runtime()
         self._sessions: dict[str, SessionRuntime] = {}
         self._lock = threading.RLock()
@@ -99,11 +103,16 @@ class RuntimeManager:
                 return existing
             self._submit_locks.setdefault(thread_id, asyncio.Lock())
         agent = self.agent_factory(thread_id, self.shared_resources)
-        runtime = self.session_factory(
-            thread_id=thread_id,
-            agent=agent,
-            settings=self.settings,
-        )
+        runtime_kwargs = {
+            "thread_id": thread_id,
+            "agent": agent,
+            "settings": self.settings,
+        }
+        if self.persist_result is not None:
+            runtime_kwargs["persist_result"] = self.persist_result
+        if self.on_status_change is not None:
+            runtime_kwargs["on_status_change"] = self.on_status_change
+        runtime = self.session_factory(**runtime_kwargs)
         with self._lock:
             existing = self._sessions.setdefault(thread_id, runtime)
             return existing
@@ -290,7 +299,15 @@ def build_session_agent_factory(
         )
         model_cache = getattr(template_agent, "_coding_model_cache", None)
         model_registry = getattr(template_agent, "_coding_model_registry", None)
-        mcp_tools = list(resources.mcp_tools) or None
+        mcp_tools = list(resources.mcp_tools)
+        if not mcp_tools:
+            try:
+                from synapse.integrations.mcp_client import get_active_mcp_pool
+
+                pool = get_active_mcp_pool()
+                mcp_tools = list(getattr(pool, "tools", None) or ()) if pool is not None else []
+            except Exception:  # noqa: BLE001 - optional shared integration
+                mcp_tools = []
         return build_coding_agent(
             settings,
             project_root=project_root,
@@ -298,7 +315,7 @@ def build_session_agent_factory(
             model=model,
             model_registry=model_registry,
             model_cache=model_cache,
-            mcp_tools=mcp_tools,
+            mcp_tools=mcp_tools or None,
             load_mcp=False,
             backend=resources.backend_config,
             steer_queue=SteerQueue(),

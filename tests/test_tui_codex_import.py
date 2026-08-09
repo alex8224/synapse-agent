@@ -118,22 +118,26 @@ def test_project_drawer_same_project_session_switches_in_place(monkeypatch) -> N
     app.exit.assert_not_called()
 
 
-def test_project_drawer_other_project_session_restarts_with_target(monkeypatch) -> None:
+def test_project_drawer_other_project_session_switches_in_process(monkeypatch) -> None:
     app = _make_app(monkeypatch)
+    app._switch_project = MagicMock()
     app.exit = MagicMock()
 
     app._on_project_drawer_done(("switch_project", "other-project", "other-thread"))
 
-    app.exit.assert_called_once_with(("switch_project", "other-project", "other-thread"))
+    app._switch_project.assert_called_once_with("other-project", "other-thread")
+    app.exit.assert_not_called()
 
 
-def test_project_drawer_other_project_without_session_restarts_without_target(monkeypatch) -> None:
+def test_project_drawer_other_project_without_session_switches_in_process(monkeypatch) -> None:
     app = _make_app(monkeypatch)
+    app._switch_project = MagicMock()
     app.exit = MagicMock()
 
     app._on_project_drawer_done(("switch_project", "other-project", ""))
 
-    app.exit.assert_called_once_with(("switch_project", "other-project", ""))
+    app._switch_project.assert_called_once_with("other-project", "")
+    app.exit.assert_not_called()
 
 
 def test_open_project_drawer_passes_current_catalog_path(monkeypatch) -> None:

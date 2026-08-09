@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
+from langchain_core.messages import AIMessage
+
+from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
+from synapse.runtime.agent_loop.request import build_turn_request
 from synapse.runtime.steer import SteerQueue
+from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
 
 
@@ -282,3 +288,420 @@ def test_runtime_status_map_only_includes_memory_sessions() -> None:
     controller = TurnController(app)
     assert controller.runtime_status_map() == {}
     assert controller.background_running_count() == 0
+
+
+def test_shutdown_cancels_all_live_sessions_without_waiting() -> None:
+    app = _FakeApp()
+    controller = TurnController(app)
+    calls: list[tuple[str, bool, float | None]] = []
+
+    class _Runtime:
+        def __init__(self, thread_id: str) -> None:
+            self.thread_id = thread_id
+
+        def close_threadsafe(
+            self, *, cancel_active: bool, timeout: float | None
+        ) -> None:
+            calls.append((self.thread_id, cancel_active, timeout))
+
+    controller._sessions = {
+        "a": _Runtime("a"),  # type: ignore[dict-item]
+        "b": _Runtime("b"),  # type: ignore[dict-item]
+    }
+
+    controller.shutdown()
+
+    assert calls == [("a", True, 5.0), ("b", True, 5.0)]
+    assert controller.runtime_status_map() == {}
+    assert controller.session_runtime is None
+
+
+def test_runtime_result_persists_frozen_background_session(tmp_path) -> None:
+    settings = SimpleNamespace(
+        workspace=str(tmp_path),
+        max_concurrency=2,
+        session_summary_mode="off",
+        session_summary_max_chars=600,
+        project_catalog_enabled=False,
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+    )
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    app = _FakeApp()
+    app.settings = settings
+    app.thread_id = "foreground"
+    app._transcript_projection = projection
+    app._summary_store = SimpleNamespace()
+    app._session_store = None
+    app._project_catalog = None
+    controller = TurnController(app)
+    context = TurnContext(
+        thread_id="background",
+        agent=object(),
+        settings=settings,
+        request=build_turn_request(
+            text="background question",
+            attachments=None,
+            settings=settings,
+            thread_id="background",
+            monitor_id="m",
+            max_concurrency=2,
+        ),
+    )
+    result = TurnResult(
+        turn_id=context.turn_id,
+        thread_id="background",
+        status=TurnStatus.COMPLETED,
+        state={"messages": [AIMessage(content="background answer")]},
+        streamed_answer=True,
+        input_tokens=4,
+        output_tokens=5,
+    )
+
+    controller._persist_runtime_result(context, result)
+
+    assert projection.total_turns("background") == 1
+    assert projection.total_turns("foreground") == 0
+    page = projection.load_tail("background", turns=1)
+    assert [(event.kind, event.text) for event in page.events] == [
+        ("user", "background question"),
+        ("answer", "background answer"),
+    ]
+    projection.close()
+
+
+def test_turn_done_updates_recap_without_duplicate_projection() -> None:
+    app = _FakeApp()
+    app._sync_prompt_placeholder = lambda: None
+    app._on_steer_items_changed = lambda items: None
+    app._commit_live_tools_to_log = lambda: None
+    app.clear_stream = lambda: None
+    app.set_activity = lambda *args: None
+    app._refresh_git_chrome = lambda: None
+    app._clear_subagent_status = lambda: None
+    app.query_one = lambda *args: SimpleNamespace(focus=lambda: None)
+    app._bind_steer_queue = lambda: None
+    controller = TurnController(app)
+    controller._persistence.note_session_recap_turn = MagicMock()
+
+    controller.turn_done()
+
+    controller._persistence.note_session_recap_turn.assert_called_once_with(persist=False)
+
+
+def test_tui_unmount_shuts_down_turns_before_projection_close() -> None:
+    from synapse.ui.tui import CodingAgentApp
+
+    order: list[str] = []
+    app = object.__new__(CodingAgentApp)
+    app.__dict__["_turn"] = SimpleNamespace(shutdown=lambda: order.append("turn"))
+    app.__dict__["_transcript_projection"] = SimpleNamespace(
+        close=lambda: order.append("projection")
+    )
+    app.__dict__["_summary_store"] = None
+    app.__dict__["_session_store"] = None
+
+    CodingAgentApp.on_unmount(app)
+
+    assert order == ["turn", "projection"]
+
+
+def test_mounted_tui_switches_live_sessions_without_exit(monkeypatch, tmp_path) -> None:
+    import asyncio
+    import concurrent.futures
+    import threading
+
+    from synapse.config import Settings
+    from synapse.runtime.agent_loop import CancelToken, TurnHandle
+    from synapse.runtime.sessions import SessionRuntime, SessionStatus
+    from synapse.ui.tui import CodingAgentApp
+
+    class _ControlledRuntime:
+        def __init__(self) -> None:
+            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
+
+        def submit(self, context: Any, *, sink: Any, cancel_token: CancelToken) -> TurnHandle:
+            del sink
+            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+            self.futures[context.thread_id] = future
+            return TurnHandle(context.turn_id, future, cancel_token)
+
+    class _Runtime(SessionRuntime):
+        def close_threadsafe(
+            self, *, cancel_active: bool = True, timeout: float | None = None
+        ) -> None:
+            del cancel_active, timeout
+            handle = self.active_handle()
+            if handle is not None and not handle.done():
+                handle.cancel("shutdown")
+                future = controlled.futures.get(self.thread_id)
+                if future is not None and not future.done():
+                    future.set_result(
+                        TurnResult(
+                            turn_id=handle.turn_id,
+                            thread_id=self.thread_id,
+                            status=TurnStatus.CANCELLED,
+                        )
+                    )
+            self.broker.close()
+
+    monkeypatch.setattr(
+        "synapse.ui.tui.InputHistory.for_project",
+        lambda *args, **kwargs: MagicMock(),
+    )
+    settings = Settings(
+        _env_file=None,
+        theme="cursor-dark",
+        workspace=tmp_path,
+        checkpoint_path=tmp_path / "checkpoints.sqlite",
+        sessions_path=tmp_path / "sessions.sqlite",
+        project_catalog_path=tmp_path / "catalog.sqlite",
+        project_catalog_enabled=False,
+        session_summary_mode="off",
+        session_recap_enabled=False,
+    )
+    agent_a = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
+    agent_b = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
+    app = CodingAgentApp(
+        agent=agent_a,
+        settings=settings,
+        thread_id="a",
+        project_root=tmp_path,
+    )
+    controlled = _ControlledRuntime()
+    runtime_a = _Runtime(
+        thread_id="a", agent=agent_a, settings=settings, turn_runtime=controlled
+    )
+    runtime_b = _Runtime(
+        thread_id="b", agent=agent_b, settings=settings, turn_runtime=controlled
+    )
+    runtime_a._status = SessionStatus.RUNNING
+    runtime_b._status = SessionStatus.RUNNING
+    app._turn._sessions = {"a": runtime_a, "b": runtime_b}
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._turn.attach("a")
+
+            app._turn.detach("a")
+            app.thread_id = "b"
+            app.agent = agent_b
+            app._turn.attach("b")
+            app._turn.sync_foreground_status()
+            assert app.is_running
+            assert runtime_a.snapshot().status is SessionStatus.RUNNING
+            assert app._turn.background_running_count() == 1
+
+            app._turn.detach("b")
+            app.thread_id = "a"
+            app.agent = agent_a
+            app._turn.attach("a")
+            app._turn.sync_foreground_status()
+            assert app._turn.session_runtime is runtime_a
+            assert app.is_running
+            await pilot.press("ctrl+q")
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=10))
+
+    assert not any(
+        thread.is_alive() and thread.name.startswith("agent-turn:")
+        for thread in threading.enumerate()
+    )
+
+
+def test_run_turn_worker_uses_session_group() -> None:
+    """run_turn/run_resume must route work to a session-scoped worker.
+
+    Regression: ``run_worker`` (Textual 8.2.8) accepts no kwargs, so passing
+    turn args positionally hit its ``group`` slot and keyword args were
+    rejected outright; the closure form forwards args without colliding.
+    """
+    from synapse.ui.tui import CodingAgentApp
+
+    worker_calls: list[tuple[Any, dict[str, Any]]] = []
+    turn_calls: list[tuple[Any, ...]] = []
+    resume_calls: list[tuple[Any, ...]] = []
+    frozen_agent = object()
+
+    class _Turn:
+        def launch_context(self) -> tuple[str, Any, int, str]:
+            return "t-9", frozen_agent, 7, "monitor-1"
+
+        def run_turn(self, text: str, attachments: list[Any] | None = None, **kw: Any) -> None:
+            turn_calls.append((text, attachments, kw))
+
+        def run_resume(self, action: str, message: str | None = None, **kw: Any) -> None:
+            resume_calls.append((action, message, kw))
+
+    class _Host:
+        thread_id = "t-9"
+
+        def __init__(self) -> None:
+            self._turn = _Turn()
+
+        def run_worker(self, work: Any, **kwargs: Any) -> None:
+            worker_calls.append((work, kwargs))
+
+    host = _Host()
+    CodingAgentApp.run_turn(host, "hello", ["img"])
+    CodingAgentApp.run_resume(host, "approve", "ok")
+    host.thread_id = "switched-before-worker-start"
+
+    assert len(worker_calls) == 2
+    turn_work, turn_kw = worker_calls[0]
+    resume_work, resume_kw = worker_calls[1]
+    assert turn_kw["group"] == "agent-turn:t-9"
+    assert turn_kw["thread"] is True
+    assert turn_kw["exclusive"] is True
+    assert resume_kw["group"] == "agent-turn:t-9"
+    assert turn_work is not resume_work
+
+    # The closure must forward the turn arguments intact.
+    turn_work()
+    resume_work()
+    expected = {
+        "thread_id": "t-9",
+        "agent": frozen_agent,
+        "transcript_generation": 7,
+        "monitor_id": "monitor-1",
+    }
+    assert turn_calls == [("hello", ["img"], expected)]
+    assert resume_calls == [("approve", "ok", expected)]
+
+
+def test_run_turn_worker_runs_inside_textual() -> None:
+    """Real Textual ``run_worker`` smoke test for the closure form.
+
+    Guards against ``DOMNode.run_worker`` signature drift (positional
+    ``group`` collision, unexpected kwargs) by actually starting the
+    thread worker and waiting for the closure to run.
+    """
+    import asyncio
+
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from synapse.ui.tui import CodingAgentApp
+
+    async def run() -> None:
+        calls: list[tuple[Any, Any]] = []
+
+        class _Turn:
+            def run_turn(self, text: str, attachments: list[Any] | None = None) -> None:
+                calls.append((text, attachments))
+
+        class _Mini(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.thread_id = "t-42"
+                self._turn = _Turn()
+
+            def compose(self) -> ComposeResult:
+                yield Static("x")
+
+        app = _Mini()
+        async with app.run_test() as pilot:
+            CodingAgentApp.run_turn(app, "hello", ["a"])
+            for _ in range(100):
+                if calls:
+                    break
+                await pilot.pause()
+            assert calls == [("hello", ["a"])]
+
+    asyncio.run(run())
+
+
+def test_background_turn_finish_does_not_touch_foreground_ui() -> None:
+    """A background session's turn ending must not run the foreground UI
+    teardown (``_turn_done``); only topbar chrome is refreshed.
+
+    Integration-style: real ``SessionRuntime`` settlement drives the status
+    callback, then the run-turn worker's finally path (``_turn_finished``)
+    decides how much UI work runs.
+    """
+    import asyncio
+    import concurrent.futures
+
+    from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
+    from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
+
+    class _Controlled:
+        def __init__(self) -> None:
+            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
+
+        def submit(
+            self, context: Any, *, sink: Any, cancel_token: CancelToken
+        ) -> TurnHandle:
+            del sink
+            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+            self.futures[context.thread_id] = future
+            return TurnHandle(context.turn_id, future, cancel_token)
+
+    class _ChromeApp(_FakeApp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.turn_done_calls = 0
+            self.topbar_refreshes = 0
+
+        def _turn_done(self) -> None:
+            self.turn_done_calls += 1
+
+        def _refresh_topbar(self) -> None:
+            self.topbar_refreshes += 1
+
+    controlled = _Controlled()
+    app = _ChromeApp()
+    controller = TurnController(app)
+    runtime_a = SessionRuntime(
+        thread_id="a",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        turn_runtime=controlled,  # type: ignore[arg-type]
+        on_status_change=controller._on_session_status_changed,
+    )
+    runtime_b = SessionRuntime(
+        thread_id="b",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        turn_runtime=controlled,  # type: ignore[arg-type]
+        on_status_change=controller._on_session_status_changed,
+    )
+    controller._sessions["a"] = runtime_a
+    controller._sessions["b"] = runtime_b
+    app.thread_id = "b"
+    controller.attach("b")
+
+    async def run() -> None:
+        # Session "a" starts a turn while "b" is the attached foreground session.
+        handle_a = await runtime_a.submit(UserTurn("A"))
+        assert runtime_a.snapshot().status is SessionStatus.RUNNING
+        assert app.topbar_refreshes >= 1
+
+        # Background "a" completes; settlement flips it to IDLE and fires the
+        # status callback (topbar refresh), then the worker finally runs.
+        controlled.futures["a"].set_result(
+            TurnResult(
+                turn_id=handle_a.turn_id,
+                thread_id="a",
+                status=TurnStatus.COMPLETED,
+                final_text="A done",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        )
+        await asyncio.wrap_future(handle_a.future)
+        for _ in range(50):
+            if runtime_a.snapshot().status is SessionStatus.IDLE:
+                break
+            await asyncio.sleep(0)
+        controller._turn_finished(runtime_a, app)
+
+        assert app.turn_done_calls == 0, "background turn must not run _turn_done"
+        assert app.topbar_refreshes >= 3  # RUNNING + IDLE + _turn_finished
+        assert runtime_b.snapshot().status is SessionStatus.IDLE
+        assert controller._session_runtime is runtime_b  # attach untouched
+        await runtime_a.close(cancel_active=False)
+        await runtime_b.close(cancel_active=False)
+
+    asyncio.run(run())
+    controller._detach_renderer()

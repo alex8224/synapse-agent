@@ -174,6 +174,8 @@
 | 2026-08-07 | 最终全量验证 | `ruff check .` + `pytest -q` + `mkdocs build` | 全部通过 | 最终收口 |
 | 2026-08-07 | P7 UI 收尾 | 项目侧栏（topbar ≡ 打开）、`--session/--project` 启动参数、跨项目切换重启 | 新增 drawer + 解析测试 | 全量 1056 passed |
 | 2026-08-07 | P7 UI 修复 | drawer 渲染方法名冲突（`_render`→`_paint`）、CLI workspace 缺失/判定修复 | 渲染冒烟测试 + 回归测试 | 全量 1058 passed |
+| 2026-08-07 | 多会话并发修复 | SessionRuntime 状态回调、ProjectDrawer 实时展示运行 session、session 独立 graph/steer queue、worker 冻结 session 身份、transcript reset 后再 attach renderer、后台结果冻结持久化、退出关闭全部 runtime | 相关 session/TUI/stream/dialog/goal/transcript 测试 283 passed；mounted Textual 生命周期、Ruff 与 MkDocs 通过 | 全量 1114 passed、2 skipped；仅 2 个既有可选原生 tool-output transformer 断言失败 |
+| 2026-08-08 | P7 跨项目进程内切换 | drawer 跨项目切换不再退出重启：新增 `CodingAgentApp._switch_project`（catalog 查 workspace → `load_project_settings` 快照 → 进程内替换 settings/thread_id/project_root/stores/transcript projection → transcript reset 后 attach）；per-project settings/store/transcript projection/goal service 隔离（`TurnController.settings_for/projection_for/store_for/goal_service_for`，goal 复用全局单例仅当路径匹配）；SessionRuntime 增加 `project_id`；`_persist_runtime_result` 改为冻结项目资源闭包；修复 `_current_project_id` 的 catalog/project.json id 分叉误判（同项目 session 误走重启）；切换窗口期 busy 回退 `_sessions` 查询；`waiting_approval` 纳入后台计数/drawer/前台状态；切回有活跃 runtime 的项目复用冻结 agent | 新增 `test_project_switch.py`（进程内切换、原项目 runtime 保留、缺失项目容错）；更新 2 个旧 exit 断言测试 | 全量 1116 passed、2 skipped；仅 2 个既有可选原生 tool-output transformer 断言失败 |
 
 ## 设计变更记录
 

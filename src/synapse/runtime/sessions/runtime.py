@@ -59,6 +59,7 @@ class UserTurn:
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
+    project_id: str
     thread_id: str
     status: SessionStatus
     active_turn_id: str | None
@@ -69,7 +70,7 @@ class SessionSnapshot:
 
 
 class SessionRuntime:
-    """Own all mutable execution state for one thread_id."""
+    """Own all mutable execution state for one (project_id, thread_id)."""
 
     def __init__(
         self,
@@ -77,14 +78,17 @@ class SessionRuntime:
         thread_id: str,
         agent: Any,
         settings: Any,
+        project_id: str = "",
         turn_runtime: AgentTurnRuntime | None = None,
         broker: SessionEventBroker | None = None,
         persist_result: Callable[[TurnContext, TurnResult], Awaitable[None] | None] | None = None,
         goal_service: Any | None = None,
         goal_followup: Callable[[Any], Awaitable[UserTurn | None] | UserTurn | None] | None = None,
         workspace: Any | None = None,
+        on_status_change: Callable[[SessionSnapshot], None] | None = None,
     ) -> None:
         self.thread_id = thread_id
+        self.project_id = project_id
         self.agent = agent
         self.settings = settings
         self.workspace = (
@@ -104,6 +108,23 @@ class SessionRuntime:
         self._lock = threading.Lock()
         self._closed = False
         self._settle_tasks: set[asyncio.Task[None]] = set()
+        self._on_status_change = on_status_change
+
+    def _notify_status(self) -> None:
+        """Publish a status transition to the optional observer (lock-free).
+
+        Callers set ``self._status`` themselves; this only fires the callback
+        outside the lock so ``snapshot()`` (which re-acquires it) can never
+        deadlock. Observers are best-effort: a failing UI hook must not corrupt
+        session execution.
+        """
+        callback = self._on_status_change
+        if callback is None:
+            return
+        try:
+            callback(self.snapshot())
+        except Exception:  # noqa: BLE001 - observer boundary; never break the session
+            pass
 
     async def submit(self, message: UserTurn) -> TurnHandle:
         """Start one turn; the same session cannot run two turns concurrently."""
@@ -141,6 +162,7 @@ class SessionRuntime:
             self._active_handle = handle
             self._status = SessionStatus.RUNNING
             self._last_error = None
+        self._notify_status()
         return handle, context
 
     def _schedule_settlement(self, context: TurnContext, handle: TurnHandle) -> None:
@@ -199,17 +221,24 @@ class SessionRuntime:
             if self._active_handle is not None and not self._active_handle.done():
                 raise RuntimeError("session already has an active turn")
             self._status = SessionStatus.QUEUED
+        self._notify_status()
 
     def clear_queued(self) -> None:
         with self._lock:
             if self._status in {SessionStatus.QUEUED, SessionStatus.STARTING}:
                 self._status = SessionStatus.IDLE
+                changed = True
+            else:
+                changed = False
+        if changed:
+            self._notify_status()
 
     def mark_starting(self) -> None:
         with self._lock:
             if self._status is not SessionStatus.QUEUED:
                 raise RuntimeError("session must be queued before starting")
             self._status = SessionStatus.STARTING
+        self._notify_status()
 
     async def wait_for_settlement(self, handle: TurnHandle) -> SessionSnapshot:
         """Wait until result persistence and snapshot publication complete."""
@@ -242,6 +271,7 @@ class SessionRuntime:
             if handle is None or handle.done():
                 return False
             self._status = SessionStatus.CANCELLING
+        self._notify_status()
         return handle.cancel(reason)
 
     def snapshot(self) -> SessionSnapshot:
@@ -249,6 +279,7 @@ class SessionRuntime:
             handle = self._active_handle
             active_turn_id = handle.turn_id if handle is not None and not handle.done() else None
             return SessionSnapshot(
+                project_id=self.project_id,
                 thread_id=self.thread_id,
                 status=self._status,
                 active_turn_id=active_turn_id,
@@ -270,10 +301,11 @@ class SessionRuntime:
         with self._lock:
             self._closed = True
             handle = self._active_handle
-        if handle is not None and not handle.done():
-            if cancel_active:
+        if handle is not None:
+            if cancel_active and not handle.done():
                 handle.cancel("shutdown")
-            await asyncio.wrap_future(handle.future)
+            if not handle.done():
+                await asyncio.wrap_future(handle.future)
         tasks = tuple(self._settle_tasks)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -281,7 +313,20 @@ class SessionRuntime:
             self._status = SessionStatus.CLOSED
             self._active_handle = None
             self._active_context = None
+        self._notify_status()
         self.broker.close()
+
+    def close_threadsafe(
+        self,
+        *,
+        cancel_active: bool = True,
+        timeout: float | None = None,
+    ) -> None:
+        """Close this runtime from a Textual/UI thread and wait for settlement."""
+        future = self.turn_runtime.submit_coroutine(
+            self.close(cancel_active=cancel_active)
+        )
+        future.result(timeout=timeout)
 
     async def _settle(self, context: TurnContext, handle: TurnHandle) -> None:
         result = await asyncio.wrap_future(handle.future)
@@ -311,6 +356,7 @@ class SessionRuntime:
             self._usage = usage
             self._status = status
             self._last_error = persist_error or result.error_message
+        self._notify_status()
         await self._settle_goal(result)
 
     async def _settle_goal(self, result: TurnResult) -> None:

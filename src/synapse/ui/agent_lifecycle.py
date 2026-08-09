@@ -78,6 +78,9 @@ class AgentLifecycleController:
                 prompt_cache_key=lambda: app.thread_id,
             )
             app.agent = agent
+            turn = getattr(app, "_turn", None)
+            if turn is not None:
+                turn.bind_agent(app.thread_id, agent)
             self.state.agent_ready.set()
             duration("agent.ready", startup_started, phase="startup")
             app.call_from_thread(app._on_agent_ready, False)
@@ -121,10 +124,16 @@ class AgentLifecycleController:
                 )
                 if app.agent is current:
                     app.agent = current_with_mcp
+                    turn = getattr(app, "_turn", None)
+                    if turn is not None:
+                        turn.bind_agent(app.thread_id, current_with_mcp)
                     app.call_from_thread(app._bind_steer_queue)
                     app.call_from_thread(app._on_mcp_attached)
                 return
             app.agent = agent2
+            turn = getattr(app, "_turn", None)
+            if turn is not None:
+                turn.bind_agent(app.thread_id, agent2)
             app.call_from_thread(app._bind_steer_queue)
             if not app._busy:
                 app.call_from_thread(app._on_mcp_attached)

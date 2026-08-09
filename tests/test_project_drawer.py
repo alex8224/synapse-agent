@@ -114,6 +114,81 @@ def test_drawer_truncates_long_session_titles(monkeypatch: Any) -> None:
     assert row.label.endswith("…")
 
 
+def test_drawer_shows_live_sessions_first_without_separate_main_panel(
+    monkeypatch: Any,
+) -> None:
+    drawer = _drawer(
+        monkeypatch,
+        runtime_status={"t-a2": "running", "live-only": "queued"},
+    )
+
+    rows = drawer._load()
+    current_project_sessions = [
+        row for row in rows if row.key.startswith("session:p-1:")
+    ]
+
+    assert [row.key for row in current_project_sessions[:2]] == [
+        "session:p-1:t-a2",
+        "session:p-1:live-only",
+    ]
+    assert [row.meta for row in current_project_sessions[:2]] == [
+        "[running]",
+        "[queued]",
+    ]
+
+
+def test_open_drawer_refreshes_live_runtime_status(monkeypatch: Any) -> None:
+    import asyncio
+
+    status = {"t-a2": "running"}
+
+    class Host(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            variables = super().get_css_variables()
+            variables.update(
+                {
+                    "theme-bg": "#1a1b2e",
+                    "theme-user": "#58a6ff",
+                    "theme-fg": "#c0caf5",
+                    "theme-top": "#1a1b2e",
+                    "theme-muted": "#565f89",
+                    "theme-bar": "#1f2335",
+                }
+            )
+            return variables
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                ProjectDrawer(
+                    current_project_id="p-1",
+                    current_thread_id="t-a1",
+                    runtime_status_provider=lambda: status,
+                    catalog_path=":memory:",
+                )
+            )
+
+    async def run() -> None:
+        app = Host()
+        with monkeypatch.context() as patch:
+            patch.setattr("synapse.projects.catalog.ProjectCatalog", _FakeCatalog)
+            async with app.run_test(size=(100, 20)) as pilot:
+                await pilot.pause()
+                drawer = app.screen
+                assert isinstance(drawer, ProjectDrawer)
+                first = drawer._tree_nodes["session:p-1:t-a2"]
+                assert "[running]" in first.label.plain
+
+                status["t-a2"] = "idle"
+                drawer._refresh_live_status()
+                await pilot.pause()
+
+                refreshed = drawer._tree_nodes["session:p-1:t-a2"]
+                assert "[idle]" in refreshed.label.plain
+                await pilot.press("escape")
+
+    asyncio.run(run())
+
+
 def test_dir_label_last_segment() -> None:
     from synapse.ui.drawer import _dir_label
 

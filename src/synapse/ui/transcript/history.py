@@ -70,6 +70,22 @@ class TranscriptHistoryController:
             max_pages=5,
         )
 
+    async def _reset_then_complete(
+        self,
+        *,
+        reload_transcript: bool,
+        announce: bool,
+        generation: int,
+        on_complete: Any | None,
+    ) -> None:
+        await self.reset_transcript_async(
+            reload_transcript=reload_transcript,
+            announce=announce,
+            generation=generation,
+        )
+        if generation == self._app._transcript_generation and callable(on_complete):
+            on_complete()
+
     # -- reset / switch ---------------------------------------------------
 
     async def reset_transcript_async(
@@ -123,6 +139,7 @@ class TranscriptHistoryController:
         *,
         reload_transcript: bool = False,
         announce: bool = False,
+        on_complete: Any | None = None,
     ) -> None:
         """Serialize transcript replacement in one exclusive Textual worker."""
         app = self._app
@@ -132,10 +149,11 @@ class TranscriptHistoryController:
         app._transcript_generation += 1
         generation = app._transcript_generation
         app.run_worker(
-            self.reset_transcript_async(
+            self._reset_then_complete(
                 reload_transcript=reload_transcript,
                 announce=announce,
                 generation=generation,
+                on_complete=on_complete,
             ),
             exclusive=True,
             group="session-transcript",

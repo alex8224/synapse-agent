@@ -156,6 +156,23 @@ synapse sessions list --all-projects
 `summary` 字段（`sessions.summary` 列），供全局列表与搜索使用。
 摘要只含工具名与回答开头片段，不包含工具输出原文或密钥等敏感内容。
 
+## TUI 多会话并发与运行状态
+
+点击 topbar 左侧的 `≡ workspace` 打开既有项目/session 侧栏。当前项目中正在运行的
+session 会排在前面，并显示 `[running] / [starting] / [queued] / [cancelling]`；不会在
+主内容区额外占用一列。侧栏保持打开时，运行状态会自动刷新。
+
+- 在侧栏选择 session 等价于 `/switch`；切换只分离/挂接渲染，不取消后台 turn；
+- 后台 session 与前台 session 可并行执行，topbar 标题显示 `[N bg]` 后台运行数；
+- 再切回运行中的 session 时，会重新挂接其事件流并恢复前台 busy/cancel/steer 状态。
+
+使用要点：
+
+- 前台会话运行中提交输入会被引导为 steer（不开启新 turn）；要并发启动另一个 loop，
+  先从项目/session 侧栏切到目标 session 再提交。
+- 切走再切回仍处于运行中的会话是安全的：渲染重新挂接，运行中的 turn 不会被打断，
+  新模型绑定会在该 turn 结束后自动生效。
+
 ## 配置
 
 | 变量 | 默认值 | 说明 |
