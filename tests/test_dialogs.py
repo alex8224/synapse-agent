@@ -1133,6 +1133,7 @@ class TestDialogShortcuts:
             ("action_dialog_mcp", "_open_mcp_dialog", ()),
             ("action_dialog_safety", "_open_safety_dialog", ()),
             ("action_dialog_codex_import", "_open_codex_import_dialog", ()),
+            ("action_project_drawer", "_open_project_drawer", ()),
         ],
     )
     def test_function_key_action_opens_expected_dialog(
@@ -1145,6 +1146,13 @@ class TestDialogShortcuts:
         getattr(app, action)()
 
         opener.assert_called_once_with(*expected_args)
+
+    def test_f12_is_bound_to_project_drawer(self):
+        from synapse.ui.tui import CodingAgentApp
+
+        bindings = {binding.key: binding.action for binding in CodingAgentApp.BINDINGS}
+
+        assert bindings["f12"] == "project_drawer"
 
 
 class TestSlashRouting:

@@ -223,6 +223,7 @@ class CodingAgentApp(App[None]):
         Binding("f9", "dialog_subagents", "Subagents", show=False),
         Binding("f10", "dialog_sessions_delete", "Delete sessions", show=False),
         Binding("f11", "dialog_debug_inspector", "Debug Inspector", show=True),
+        Binding("f12", "project_drawer", "Projects", show=True),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -265,6 +266,9 @@ class CodingAgentApp(App[None]):
     def action_dialog_debug_inspector(self) -> None:
         """Start the inspector without blocking Textual's event loop."""
         self._start_debug_inspector()
+
+    def action_project_drawer(self) -> None:
+        self._open_project_drawer()
 
     @work(thread=True, exclusive=True, group="debug-inspector")
     def _start_debug_inspector(self) -> None:
