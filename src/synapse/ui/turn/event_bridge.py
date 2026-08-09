@@ -52,10 +52,24 @@ class TextualTurnEventBridge:
                 self._wake_pending = True
                 should_wake = True
         if should_wake:
-            try:
-                self._wake_ui(self.drain)
-            except Exception:  # noqa: BLE001 - detached UI cannot fail turn
-                self.close()
+            self._wake()
+
+    def _wake(self) -> None:
+        """Schedule one drain on the UI thread.
+
+        ``call_from_thread`` raises when invoked from the UI thread itself —
+        which happens when ``attach()`` replays broker history during a
+        session switch. In that case drain inline (we are already on the UI
+        thread and touching the DOM is safe) instead of closing the bridge,
+        otherwise every later live event of a still-running turn is dropped
+        and the transcript freezes while "thinking" keeps spinning.
+        """
+        try:
+            self._wake_ui(self.drain)
+        except RuntimeError:
+            self.drain()
+        except Exception:  # noqa: BLE001 - detached UI cannot fail turn
+            self.close()
 
     def drain(self) -> None:
         """Render one bounded batch on the Textual thread."""
@@ -76,10 +90,7 @@ class TextualTurnEventBridge:
             self.close()
             return
         if reschedule:
-            try:
-                self._wake_ui(self.drain)
-            except Exception:  # noqa: BLE001
-                self.close()
+            self._wake()
 
     def close(self) -> None:
         with self._lock:

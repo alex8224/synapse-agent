@@ -176,14 +176,17 @@ def test_open_drawer_refreshes_live_runtime_status(monkeypatch: Any) -> None:
                 drawer = app.screen
                 assert isinstance(drawer, ProjectDrawer)
                 first = drawer._tree_nodes["session:p-1:t-a2"]
-                assert "[running]" in first.label.plain
+                from synapse.ui.drawer import _STATUS_ICON
+
+                running_icon = _STATUS_ICON["running"][0]
+                assert running_icon in first.label.plain
 
                 status["t-a2"] = "idle"
                 drawer._refresh_live_status()
                 await pilot.pause()
 
                 refreshed = drawer._tree_nodes["session:p-1:t-a2"]
-                assert "[idle]" in refreshed.label.plain
+                assert _STATUS_ICON["idle"][0] in refreshed.label.plain
                 await pilot.press("escape")
 
     asyncio.run(run())
@@ -339,7 +342,7 @@ def test_drawer_tree_scrolls_large_session_lists(monkeypatch: Any) -> None:
                     },
                 ),
             )
-            async with app.run_test(size=(100, 8)) as pilot:
+            async with app.run_test(size=(100, 20)) as pilot:
                 await pilot.pause()
                 tree = app.screen.query_one("#drawer-tree")
                 assert tree.max_scroll_y > 0
@@ -402,6 +405,127 @@ def test_drawer_mounts_and_paints(monkeypatch: Any) -> None:
                 assert isinstance(app.screen, ProjectDrawer)
                 tree = app.screen.query_one("#drawer-tree")
                 assert tree.root.children
+                await pilot.press("escape")
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Collapse: a project shows at most 5 sessions; more hide behind an expand
+# leaf, and clicking it reveals everything (active sessions sort first).
+# ---------------------------------------------------------------------------
+
+
+def test_drawer_collapses_old_sessions_behind_expand_leaf(monkeypatch: Any) -> None:
+    from textual.widgets import Tree
+
+    from synapse.ui.drawer import _TreeItem
+
+    extra = {
+        "p-1": [
+            _FakeSession(f"t-{i}", f"session {i}", f"2026-01-{i:02d}T10:00:00")
+            for i in range(1, 9)
+        ]
+    }
+    drawer = _drawer(monkeypatch, extra_sessions=extra)
+    drawer._rows = drawer._load()
+
+    tree = Tree("root")
+    tree.show_root = False
+    drawer._tree_nodes = {}
+    drawer._populate_tree(tree)
+
+    project_node = drawer._tree_nodes["project:p-1"]
+    leaves = list(project_node.children)
+    # 5 visible sessions + 1 expand leaf (p-1 now has 10 sessions total).
+    assert len(leaves) == 6
+    expand_items = [
+        node.data
+        for node in leaves
+        if isinstance(node.data, _TreeItem) and node.data.kind == "expand"
+    ]
+    assert len(expand_items) == 1
+    assert expand_items[0].project_id == "p-1"
+    # Most recent sessions come first (t-8..t-4 in the visible window).
+    first_session = next(
+        node
+        for node in leaves
+        if isinstance(node.data, _TreeItem) and node.data.kind == "session"
+    )
+    assert first_session.data.thread_id == "t-8"
+
+    # Expanding the project reveals every session and drops the expand leaf.
+    drawer._expanded_projects.add("p-1")
+    drawer._tree_nodes = {}
+    drawer._populate_tree(tree)
+    leaves = list(drawer._tree_nodes["project:p-1"].children)
+    assert len(leaves) == 10
+    assert all(
+        isinstance(node.data, _TreeItem) and node.data.kind == "session"
+        for node in leaves
+    )
+
+
+def test_drawer_expand_leaf_selected_reveals_all(monkeypatch: Any) -> None:
+    import asyncio
+
+    from textual.widgets import Tree
+
+    catalog = _FakeCatalog()
+    catalog.sessions["p-1"].extend(
+        _FakeSession(f"t-{i}", f"session {i}", f"2026-01-{i:02d}T10:00:00")
+        for i in range(1, 9)
+    )
+
+    class Host(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            variables = super().get_css_variables()
+            variables.update(
+                {
+                    "theme-bg": "#1a1b2e",
+                    "theme-user": "#58a6ff",
+                    "theme-fg": "#c0caf5",
+                    "theme-top": "#1a1b2e",
+                    "theme-muted": "#565f89",
+                    "theme-bar": "#1f2335",
+                }
+            )
+            return variables
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                ProjectDrawer(current_project_id="p-1", current_thread_id="t-a1")
+            )
+
+    async def run() -> None:
+        app = Host()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "synapse.projects.catalog.ProjectCatalog", lambda *a, **k: catalog
+            )
+            patch.setattr(
+                "synapse.config.Settings",
+                type(
+                    "FakeSettings",
+                    (),
+                    {
+                        "__init__": lambda self, *a, **k: None,
+                        "resolved_catalog_path": lambda self: ":memory:",
+                    },
+                ),
+            )
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                drawer = app.screen
+                assert isinstance(drawer, ProjectDrawer)
+                # Collapsed: exactly one expand leaf under p-1.
+                expand_node = drawer._tree_nodes.get("expand:p-1")
+                assert expand_node is not None
+                drawer.on_tree_node_selected(Tree.NodeSelected(expand_node))
+                await pilot.pause()
+                # Expanded: p-1 exposes all 10 sessions, no expand leaf.
+                assert "expand:p-1" not in drawer._tree_nodes
+                assert len(drawer._tree_nodes["project:p-1"].children) == 10
                 await pilot.press("escape")
 
     asyncio.run(run())

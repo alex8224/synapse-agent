@@ -31,11 +31,26 @@ from textual.widgets import Static, Tree
 # Session titles are truncated manually so a long CJK word never reaches
 # Textual's word-wrap path and clips the row. The Tree itself owns indentation,
 # guides, selection, keyboard navigation, and scrolling.
-_TITLE_MAX_CELLS = 26
-_META_MAX_CELLS = 9
-_PROJECT_META_MAX_CELLS = 14
-_DIR_MAX_CELLS = 30
+_TITLE_MAX_CELLS = 14
+_META_MAX_CELLS = 6
+_PROJECT_META_MAX_CELLS = 8
+_DIR_MAX_CELLS = 16
 _MAX_DRAWER_SESSIONS = 1_000
+# Each project shows its most recent sessions first; older ones collapse
+# behind a single "expand" leaf until the user explicitly expands them.
+_MAX_VISIBLE_SESSIONS = 5
+_PROJECT_ICON = "\U0001F4C1"  # 📁 folder
+_CURRENT_MARK = "\u25C6"  # ◆ current-thread marker (not ▶, which is the tree arrow)
+_STATUS_ICON = {
+    "running": ("\u25CF", "green"),  # ●
+    "waiting_approval": ("\u25D0", "orange"),  # ◐
+    "queued": ("\u23F8", "orange"),  # ⏸
+    "starting": ("\u23F8", "orange"),  # ⏸
+    "cancelling": ("\u2715", "red"),  # ✕
+    "failed": ("\u2715", "red"),  # ✕
+    "idle": ("\u25CB", "dim"),  # ○
+}
+_ACTIVE_STATUS = {"queued", "starting", "running", "cancelling", "waiting_approval"}
 
 
 def _dir_label(workspace_path: str) -> str:
@@ -69,6 +84,7 @@ class _Row:
     detail: str = ""
     meta: str = ""
     indent: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,7 +102,28 @@ class ProjectDrawer(ModalScreen[Any]):
     BINDINGS = [
         Binding("escape", "close", "Close", show=False, priority=True),
         Binding("ctrl+n", "new_session", "New", show=False, priority=True),
+        Binding("j", "cursor_down", "Down", show=False, priority=True),
+        Binding("k", "cursor_up", "Up", show=False, priority=True),
+        Binding("home", "scroll_home", "Top", show=False, priority=True),
+        Binding("end", "scroll_end", "Bottom", show=False, priority=True),
+        Binding("g", "scroll_home", "Top", show=False, priority=True),
+        Binding("G", "scroll_end", "Bottom", show=False, priority=True),
     ]
+
+    def _tree_widget(self) -> Tree[Any]:
+        return self.query_one("#drawer-tree", Tree)
+
+    def action_cursor_down(self) -> None:
+        self._tree_widget().action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self._tree_widget().action_cursor_up()
+
+    def action_scroll_home(self) -> None:
+        self._tree_widget().action_scroll_home()
+
+    def action_scroll_end(self) -> None:
+        self._tree_widget().action_scroll_end()
 
     def __init__(
         self,
@@ -117,6 +154,7 @@ class ProjectDrawer(ModalScreen[Any]):
         self._rows: list[_Row] = []
         self._selected = 0
         self._projects: list[Any] = []
+        self._expanded_projects: set[str] = set()
 
     def _refresh_status_data(self) -> None:
         """Pull the latest live runtime status (thread and project views)."""
@@ -171,9 +209,7 @@ class ProjectDrawer(ModalScreen[Any]):
                             _DIR_MAX_CELLS,
                         ),
                         detail=project.workspace_path,
-                        meta=_truncate(
-                            f"{project.session_count} sessions", _PROJECT_META_MAX_CELLS
-                        ),
+                        meta=_truncate(str(project.session_count), _PROJECT_META_MAX_CELLS),
                         indent="",
                     )
                 )
@@ -183,7 +219,7 @@ class ProjectDrawer(ModalScreen[Any]):
                 )
                 for session in sessions:
                     thread_id = str(session.thread_id)
-                    status = self._runtime_status.get(thread_id)
+                    status = self._status_for(project.project_id, thread_id)
                     meta = f"[{status}]" if status else (session.updated_at[:10] or "")
                     title = (session.title or "").strip() or thread_id[:8]
                     rows.append(
@@ -191,8 +227,9 @@ class ProjectDrawer(ModalScreen[Any]):
                             key=f"session:{project.project_id}:{thread_id}",
                             label=_truncate(title, _TITLE_MAX_CELLS),
                             detail=thread_id,
-                            meta=_truncate(meta, _META_MAX_CELLS),
+                            meta=meta,
                             indent="    ",
+                            updated_at=str(session.updated_at or ""),
                         )
                     )
             return rows
@@ -206,7 +243,12 @@ class ProjectDrawer(ModalScreen[Any]):
     ) -> list[Any]:
         """Keep every in-memory runtime visible and sort active work first."""
         scope = project_id or self._current_project_id
-        statuses = self._runtime_status_by_project.get(scope, self._runtime_status)
+        if scope == self._current_project_id:
+            # Flat status map (single-project compatibility) only applies to
+            # the current project; other projects never inherit its threads.
+            statuses = self._runtime_status_by_project.get(scope, self._runtime_status)
+        else:
+            statuses = self._runtime_status_by_project.get(scope, {})
         by_thread = {str(session.thread_id): session for session in sessions}
         for thread_id in statuses:
             if thread_id in by_thread:
@@ -252,10 +294,15 @@ class ProjectDrawer(ModalScreen[Any]):
         scrollbar-size: 0 0;
     }
     ProjectDrawer > #drawer-window {
-        width: 52;
+        width: 26;
         height: 100%;
-        min-width: 40;
-        max-width: 64;
+        min-width: 24;
+        max-width: 34;
+        /* Keep clear of the topbar (top) and the input area (bottom): the
+           overlay must not block either. margin-top/bottom shrink the
+           content region (Textual has no calc() here). */
+        margin-top: 2;
+        margin-bottom: 3;
         /* Opaque window, transparent screen: the underlying TUI remains
            visible around the drawer, matching DialogBase/F4 behavior. */
         background: $theme-bg;
@@ -314,25 +361,46 @@ class ProjectDrawer(ModalScreen[Any]):
             yield Tree("Projects", id="drawer-tree", data=None)
 
     def on_mount(self) -> None:
-        self._rows = self._load()
         tree = self.query_one("#drawer-tree", Tree)
         tree.show_root = False
         tree.auto_expand = False
-        tree.root.remove_children()
-        self._tree_nodes: dict[str, Any] = {}
-        self._populate_tree(tree)
+        self._rebuild_tree(initial=True)
         tree.focus()
-        if self._current_thread_id:
-            node = self._tree_nodes.get(
-                f"session:{self._current_project_id}:{self._current_thread_id}"
-            )
-            if node is not None:
-                tree.move_cursor(node)
         if (
             self._runtime_status_provider is not None
             or self._runtime_status_by_project_provider is not None
         ):
             self.set_interval(0.25, self._refresh_live_status)
+
+    def _current_selected_key(self) -> str:
+        """Key of the cursor node, for restoring it after a rebuild."""
+        tree = self.query_one("#drawer-tree", Tree)
+        cursor = tree.cursor_node
+        item = cursor.data if cursor is not None else None
+        if not isinstance(item, _TreeItem):
+            return ""
+        if item.kind == "session":
+            return f"session:{item.project_id}:{item.thread_id}"
+        if item.kind == "expand":
+            return f"expand:{item.project_id}"
+        return f"project:{item.project_id}"
+
+    def _rebuild_tree(self, *, selected_key: str = "", initial: bool = False) -> None:
+        """Reload rows and repaint the tree, restoring the cursor when asked."""
+        tree = self.query_one("#drawer-tree", Tree)
+        target_key = selected_key or ("" if initial else self._current_selected_key())
+        if initial and self._current_thread_id:
+            target_key = (
+                f"session:{self._current_project_id}:{self._current_thread_id}"
+            )
+        self._rows = self._load()
+        tree.root.remove_children()
+        self._tree_nodes = {}
+        self._populate_tree(tree)
+        if target_key:
+            target = self._tree_nodes.get(target_key)
+            if target is not None:
+                tree.move_cursor(target)
 
     def _refresh_live_status(self) -> None:
         if (
@@ -344,26 +412,15 @@ class ProjectDrawer(ModalScreen[Any]):
         self._refresh_status_data()
         if (self._runtime_status, self._runtime_status_by_project) == before:
             return
-        selected_key = ""
-        tree = self.query_one("#drawer-tree", Tree)
-        cursor = tree.cursor_node
-        item = cursor.data if cursor is not None else None
-        if isinstance(item, _TreeItem):
-            selected_key = (
-                f"session:{item.project_id}:{item.thread_id}"
-                if item.kind == "session"
-                else f"project:{item.project_id}"
-            )
-        self._rows = self._load()
-        tree.root.remove_children()
-        self._tree_nodes = {}
-        self._populate_tree(tree)
-        target = self._tree_nodes.get(selected_key)
-        if target is not None:
-            tree.move_cursor(target)
+        self._rebuild_tree()
 
     def _populate_tree(self, tree: Tree[Any]) -> None:
-        """Build the two-level project/session tree from the loaded rows."""
+        """Build the two-level project/session tree from the loaded rows.
+
+        Sessions sort by (active, most recent); each project shows at most
+        ``_MAX_VISIBLE_SESSIONS`` rows and collapses the rest behind an
+        "expand" leaf until the user opts in (``_expanded_projects``).
+        """
         project_nodes: dict[str, Any] = {}
         sessions_by_project: dict[str, list[_Row]] = {}
         for row in self._rows:
@@ -374,39 +431,82 @@ class ProjectDrawer(ModalScreen[Any]):
         for row in self._rows:
             if row.key.startswith("project:"):
                 project_id = row.key.removeprefix("project:")
-                prefix = "● " if project_id == current_project else "○ "
+                is_current = project_id == current_project
                 label = Text()
-                label.append(prefix, style="bold cyan" if project_id == current_project else "dim")
+                label.append(_PROJECT_ICON + " ", style="bold cyan" if is_current else "dim")
                 label.append(row.label, style="bold")
                 if row.meta:
                     label.append(f"  {row.meta}", style="dim")
                 node = tree.root.add(
                     label,
                     _TreeItem("project", project_id),
-                    expand=project_id == current_project,
+                    expand=is_current,
                     allow_expand=bool(sessions_by_project.get(project_id)),
                 )
                 project_nodes[project_id] = node
                 self._tree_nodes[row.key] = node
-                continue
-            if not row.key.startswith("session:"):
-                continue
-            _, project_id, thread_id = row.key.split(":", 2)
-            project_node = project_nodes.get(project_id)
-            if project_node is None:
-                continue
-            label = Text()
-            label.append(_truncate(row.label, _TITLE_MAX_CELLS))
-            if row.meta:
-                label.append(f"  {row.meta}", style="dim")
-            node = project_node.add_leaf(
-                label,
-                _TreeItem("session", project_id, thread_id),
-            )
-            self._tree_nodes[row.key] = node
+        for project_id, project_node in project_nodes.items():
+            sessions = sessions_by_project.get(project_id, [])
+            sessions = self._sort_sessions(sessions)
+            if (
+                project_id not in self._expanded_projects
+                and len(sessions) > _MAX_VISIBLE_SESSIONS
+            ):
+                sessions = sessions[:_MAX_VISIBLE_SESSIONS]
+                hidden = len(sessions_by_project[project_id]) - _MAX_VISIBLE_SESSIONS
+                expand_label = Text(f"▸ 展开显示 ({hidden} more)", style="bold red")
+                expand_node = project_node.add_leaf(
+                    expand_label,
+                    _TreeItem("expand", project_id),
+                )
+                self._tree_nodes[f"expand:{project_id}"] = expand_node
+            for session_row in sessions:
+                self._add_session_leaf(project_node, project_id, session_row)
 
         if not project_nodes:
             tree.root.add_leaf("No projects registered yet", _TreeItem("empty", ""))
+
+    def _sort_sessions(self, sessions: list[_Row]) -> list[_Row]:
+        """Most recent first (stable), then re-promote active sessions."""
+        ordered = sorted(sessions, key=lambda r: r.updated_at or "", reverse=True)
+        # Stable partition: active rows float to the top without disturbing
+        # the recency order inside each bucket.
+        ordered.sort(key=lambda r: not self._row_active(r))
+        return ordered
+
+    def _status_for(self, project_id: str, thread_id: str) -> str:
+        """Runtime status for one session (project view first, flat fallback)."""
+        by_project = self._runtime_status_by_project.get(project_id, {})
+        if thread_id in by_project:
+            return by_project[thread_id]
+        return self._runtime_status.get(thread_id, "")
+
+    def _row_active(self, row: _Row) -> bool:
+        _, project_id, thread_id = row.key.split(":", 2)
+        return self._status_for(project_id, thread_id) in _ACTIVE_STATUS
+
+    def _add_session_leaf(
+        self, project_node: Any, project_id: str, row: _Row
+    ) -> None:
+        """One session leaf: status icon + title + trailing date/meta."""
+        _, _, thread_id = row.key.split(":", 2)
+        status = self._status_for(project_id, thread_id)
+        label = Text()
+        if thread_id == self._current_thread_id:
+            label.append(_CURRENT_MARK + " ", style="bold cyan")
+        icon, color = _STATUS_ICON.get(status, ("", ""))
+        if icon:
+            label.append(f"{icon} ", style=color)
+        label.append(row.label, style="bold" if thread_id == self._current_thread_id else None)
+        # Status is expressed by the leading icon; only idle/cold rows show a
+        # trailing date so the narrow drawer keeps titles readable.
+        if (status in {"", "idle"}) and row.updated_at:
+            label.append(f"  {row.updated_at[:10]}", style="dim")
+        node = project_node.add_leaf(
+            label,
+            _TreeItem("session", project_id, thread_id),
+        )
+        self._tree_nodes[row.key] = node
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[Any]) -> None:
         """Open a session or project when a tree node is clicked/entered."""
@@ -416,6 +516,19 @@ class ProjectDrawer(ModalScreen[Any]):
             return
         if item.kind == "session":
             self._dismiss_switch(item.project_id, item.thread_id)
+        elif item.kind == "expand":
+            self._expanded_projects.add(item.project_id)
+            # The expand leaf disappears once revealed; land the cursor on
+            # that project's first (most recent) session instead.
+            first_key = next(
+                (
+                    key
+                    for key in self._tree_nodes
+                    if key.startswith(f"session:{item.project_id}:")
+                ),
+                "",
+            )
+            self._rebuild_tree(selected_key=first_key)
         elif item.kind == "project":
             if item.project_id != self._current_project_id:
                 # Selecting another project is an explicit project switch;

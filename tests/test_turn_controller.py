@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import threading
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -705,3 +708,130 @@ def test_background_turn_finish_does_not_touch_foreground_ui() -> None:
 
     asyncio.run(run())
     controller._detach_renderer()
+
+
+def _make_app(monkeypatch, tmp_path):
+    from synapse.config import Settings
+    from synapse.runtime.agent_loop import TurnHandle
+    from synapse.runtime.sessions import SessionRuntime
+    from synapse.ui.tui import CodingAgentApp
+
+    monkeypatch.setattr(
+        "synapse.ui.tui.InputHistory.for_project",
+        lambda *a, **k: MagicMock(),
+    )
+    settings = Settings(
+        _env_file=None,
+        theme="cursor-dark",
+        workspace=tmp_path,
+        checkpoint_path=tmp_path / "checkpoints.sqlite",
+        sessions_path=tmp_path / "sessions.sqlite",
+        PROJECT_CATALOG_PATH=str(tmp_path / "catalog.sqlite"),
+        project_catalog_enabled=False,
+        session_summary_mode="off",
+        session_recap_enabled=False,
+    )
+    agent = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=None)
+    app = CodingAgentApp(agent=agent, settings=settings, thread_id="a", project_root=tmp_path)
+
+    class _Controlled:
+        def __init__(self):
+            self.futures = {}
+
+        def submit(self, context, *, sink, cancel_token):
+            future = concurrent.futures.Future()
+            self.futures[context.thread_id] = future
+            return TurnHandle(context.turn_id, future, cancel_token)
+
+        def submit_coroutine(self, coroutine):
+            future = concurrent.futures.Future()
+
+            def run():
+                try:
+                    future.set_result(asyncio.run(coroutine))
+                except BaseException as exc:  # noqa: BLE001 - test harness
+                    future.set_exception(exc)
+
+            threading.Thread(target=run, daemon=True).start()
+            return future
+
+    controlled = _Controlled()
+    runtime = SessionRuntime(
+        thread_id="a", agent=agent, settings=settings, turn_runtime=controlled
+    )
+    runtime_b = SessionRuntime(
+        thread_id="b", agent=agent, settings=settings, turn_runtime=controlled
+    )
+    app._turn._sessions = {"a": runtime, "b": runtime_b}
+    return app, runtime, runtime_b, controlled
+
+
+def test_switch_back_keeps_bridge_alive(monkeypatch, tmp_path) -> None:
+    from synapse.runtime.sessions import UserTurn
+    from synapse.runtime.streaming import TextPayload, TurnEvent, TurnEventKind
+
+    app, runtime, runtime_b, controlled = _make_app(monkeypatch, tmp_path)
+
+    async def exercise() -> None:
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # Start turn A (attach happens inside start_threadsafe -> worker thread).
+            handle = runtime.start_threadsafe(
+                UserTurn(text="hello", monitor_id="m"),
+                on_started=lambda ctx: app._turn.attach(runtime),
+            )
+            await pilot.pause()
+            bridge1 = app._turn._event_bridge
+            assert bridge1 is not None and not bridge1._closed
+            del bridge1
+
+            # Emit one event so the broker retains history to replay on re-attach.
+            runtime.broker.emit(
+                TurnEvent(
+                    version=1,
+                    thread_id="a",
+                    turn_id=handle.turn_id,
+                    sequence=1,
+                    kind=TurnEventKind.ANSWER_DELTA,
+                    payload=TextPayload("before-switch"),
+                )
+            )
+            await pilot.pause()
+
+            # Switch away (B) then back (A) — attach runs on the UI thread here,
+            # and its replay must not close the rebuilt bridge.
+            app._turn.detach("a")
+            app.thread_id = "b"
+            app._turn.attach("b")
+            app._turn.detach("b")
+            app.thread_id = "a"
+            app._turn.attach("a")
+            await pilot.pause()
+
+            bridge2 = app._turn._event_bridge
+            assert bridge2 is not None, "attach must rebuild a bridge"
+            assert not bridge2._closed, (
+                "bridge closed after switch-back; live events are dropped"
+            )
+
+            # Live event after switch-back must still be delivered to the
+            # renderer (this is the regression: it used to be dropped).
+            runtime.broker.emit(
+                TurnEvent(
+                    version=1,
+                    thread_id="a",
+                    turn_id=handle.turn_id,
+                    sequence=2,
+                    kind=TurnEventKind.ANSWER_DELTA,
+                    payload=TextPayload("live-after-switch"),
+                )
+            )
+            await pilot.pause()
+            assert not bridge2._closed
+            renderer = bridge2._renderer
+            assert renderer.last_sequence >= 2, (
+                "live event after switch-back never reached the renderer"
+            )
+            await pilot.press("ctrl+q")
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=15))

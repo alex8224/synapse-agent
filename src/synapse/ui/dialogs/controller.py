@@ -179,7 +179,12 @@ class SlashController:
                 turn_controller.detach(previous_thread_id)
             app.thread_id = effects.thread_id
             if turn_controller is not None:
-                runtime = turn_controller.attach(app.thread_id)
+                # Look up the frozen runtime only; do NOT attach here. A probe
+                # attach would replay the broker history onto the still-old
+                # transcript (dirty paint) and build/destroy a bridge for no
+                # reason. Rendering attach happens once, after the transcript
+                # reset completes.
+                runtime = turn_controller.runtime_for(app.thread_id)
                 if runtime is not None:
                     requested_agent = runtime.agent
                 elif requested_agent is None and app.agent is not None:

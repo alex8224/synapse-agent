@@ -1340,6 +1340,7 @@ class TestApplyOkResult:
         running_agent = object()
         runtime = MagicMock(agent=running_agent)
         app._turn.detach = MagicMock()
+        app._turn.runtime_for = MagicMock(return_value=runtime)
         app._turn.attach = MagicMock(return_value=runtime)
         app._turn.sync_foreground_status = MagicMock()
         ok = MagicMock(
@@ -1361,14 +1362,11 @@ class TestApplyOkResult:
             call("old-thread"),
             call("running-thread"),
         ]
-        assert app._turn.attach.call_args_list == [call("running-thread")]
+        app._turn.attach.assert_not_called()
         app._turn.sync_foreground_status.assert_not_called()
         on_complete = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
         on_complete()
-        assert app._turn.attach.call_args_list == [
-            call("running-thread"),
-            call("running-thread"),
-        ]
+        assert app._turn.attach.call_args_list == [call("running-thread")]
         app._turn.sync_foreground_status.assert_called_once_with()
 
     def test_thread_switch_builds_independent_agent_for_cold_session(self, monkeypatch):
@@ -1376,7 +1374,8 @@ class TestApplyOkResult:
         old_agent = app.agent
         new_agent = object()
         app._turn.detach = MagicMock()
-        app._turn.attach = MagicMock(side_effect=[None, MagicMock(agent=new_agent)])
+        app._turn.runtime_for = MagicMock(return_value=None)
+        app._turn.attach = MagicMock(return_value=MagicMock(agent=new_agent))
         app._turn.bind_agent = MagicMock()
         app._turn.sync_foreground_status = MagicMock()
         app._slash._build_session_agent = MagicMock(return_value=new_agent)
@@ -1399,13 +1398,11 @@ class TestApplyOkResult:
         assert app.agent is new_agent
         on_complete = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
         on_complete()
-        assert app._turn.attach.call_args_list == [
-            call("cold-thread"),
-            call("cold-thread"),
-        ]
+        assert app._turn.attach.call_args_list == [call("cold-thread")]
 
     def test_thread_switch_clears_once_then_reloads(self, monkeypatch):
         app = self._make_app(monkeypatch)
+        app._turn.runtime_for = MagicMock(return_value=MagicMock(agent=app.agent))
         app._turn.attach = MagicMock(return_value=MagicMock(agent=app.agent))
         app._turn.sync_foreground_status = MagicMock()
         ok = MagicMock(
