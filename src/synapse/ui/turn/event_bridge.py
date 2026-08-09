@@ -92,6 +92,18 @@ class TextualTurnEventBridge:
         if reschedule:
             self._wake()
 
+    def replay(self, event: TurnEvent) -> None:
+        """Render one replayed broker event inline (no turn_id gate).
+
+        Called from ``attach()`` on the UI thread while replaying retained
+        history after a session switch-back; see
+        ``TextualTurnEventRenderer.replay``.
+        """
+        with self._lock:
+            if self._closed:
+                return
+        self._renderer.replay(event)
+
     def close(self) -> None:
         with self._lock:
             self._closed = True

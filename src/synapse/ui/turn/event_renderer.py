@@ -79,6 +79,47 @@ class TextualTurnEventRenderer:
             )
             self._closed = True
 
+    def replay(self, event: TurnEvent) -> None:
+        """Render a replayed broker event without the live turn_id gate.
+
+        On a session switch-back the broker may hold events from a turn that
+        already finished (or rotated) while the user was away. Restoring only
+        the projected history loses that content; rendering the retained
+        events here — still ordered by sequence and bounded by
+        ``TURN_COMPLETED`` boundaries — keeps the switched-to view complete.
+        """
+        if self._closed or self._host.transcript_generation != self._generation:
+            self._closed = True
+            return
+        if event.thread_id != self._thread_id:
+            return
+        if event.sequence <= self._last_sequence:
+            return
+        # Terminal events belong to the projected history (restore paints the
+        # finished turn). Replaying them would close this renderer
+        # (``_render`` sets ``_closed`` on terminal kinds) and drop the live
+        # events of the next turn — exactly the regression this path avoids.
+        if event.kind in {
+            TurnEventKind.TURN_COMPLETED,
+            TurnEventKind.TURN_CANCELLED,
+            TurnEventKind.TURN_WAITING_APPROVAL,
+            TurnEventKind.TURN_FAILED,
+        }:
+            return
+        self._last_sequence = event.sequence
+        try:
+            self._render(event)
+        except Exception as exc:  # noqa: BLE001 - renderer cannot own Agent execution
+            logger.warning(
+                "turn event replay failed: thread=%s turn=%s kind=%s seq=%s error=%s",
+                self._thread_id,
+                self._turn_id,
+                event.kind.name,
+                event.sequence,
+                type(exc).__name__,
+            )
+            self._closed = True
+
     def _render(self, event: TurnEvent) -> None:
         kind = event.kind
         payload = event.payload

@@ -327,8 +327,13 @@ class TurnController:
             bridge.emit(envelope.event)
 
         subscription = runtime.subscribe(forward, after_sequence=after_sequence)
+        # Replay retains broker history WITHOUT the live turn_id gate: after a
+        # switch-back the retained events may belong to a turn that rotated
+        # while the user was away, and the projected history alone would lose
+        # that content (thinking/tools). Ordering is still by sequence, and
+        # TURN_COMPLETED boundaries let the sink close blocks correctly.
         for envelope in subscription.replay:
-            forward(envelope)
+            bridge.replay(envelope.event)
         self._event_bridge = bridge
         self._session_subscription = subscription
         return runtime

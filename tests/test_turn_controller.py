@@ -835,3 +835,78 @@ def test_switch_back_keeps_bridge_alive(monkeypatch, tmp_path) -> None:
             await pilot.press("ctrl+q")
 
     asyncio.run(asyncio.wait_for(exercise(), timeout=15))
+
+
+def test_renderer_replay_bypasses_turn_id_gate() -> None:
+    """Replay must render retained events even when the turn rotated.
+
+    ``emit`` filters by the bound turn id (live events); ``replay`` is the
+    switch-back path and must not lose content that belongs to a turn which
+    finished or rotated while the user was away.
+    """
+    from unittest.mock import MagicMock
+
+    from synapse.runtime.streaming import TurnEvent, TurnEventKind
+    from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
+
+    host = MagicMock()
+    host.transcript_generation = 0
+    renderer = TextualTurnEventRenderer(host, thread_id="a", turn_id="turn-2")
+    old_turn = TurnEvent(
+        version=1,
+        thread_id="a",
+        turn_id="turn-1",
+        sequence=1,
+        kind=TurnEventKind.INFO,
+        payload="retained content",
+    )
+    # Live path: a different turn id is dropped.
+    renderer.emit(old_turn)
+    assert renderer.last_sequence == 0
+    # Replay path: the same event is consumed (switch-back completeness).
+    renderer.replay(old_turn)
+    assert renderer.last_sequence == 1
+
+
+def test_replay_terminal_event_does_not_close_renderer() -> None:
+    """Replaying an old turn's terminal event must not kill live rendering.
+
+    ``_render`` closes the renderer on terminal kinds; replaying a finished
+    turn's ``TURN_COMPLETED`` would otherwise shut it down and drop the live
+    events of the next turn after a switch-back.
+    """
+    from unittest.mock import MagicMock
+
+    from synapse.runtime.streaming import (
+        TextPayload,
+        TurnEvent,
+        TurnEventKind,
+        TurnTerminalPayload,
+    )
+    from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
+
+    host = MagicMock()
+    host.transcript_generation = 0
+    renderer = TextualTurnEventRenderer(host, thread_id="a", turn_id="turn-2")
+
+    terminal = TurnEvent(
+        version=1,
+        thread_id="a",
+        turn_id="turn-1",
+        sequence=1,
+        kind=TurnEventKind.TURN_COMPLETED,
+        payload=TurnTerminalPayload(status="completed"),
+    )
+    renderer.replay(terminal)
+    assert not renderer._closed, "replayed terminal event must not close renderer"
+
+    live = TurnEvent(
+        version=1,
+        thread_id="a",
+        turn_id="turn-2",
+        sequence=2,
+        kind=TurnEventKind.ANSWER_DELTA,
+        payload=TextPayload("live after switch-back"),
+    )
+    renderer.emit(live)
+    assert renderer.last_sequence == 2, "live events dropped after replayed terminal"
