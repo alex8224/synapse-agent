@@ -472,7 +472,13 @@ class TurnController:
             app.set_activity("idle", "ready", True)
         app._sync_prompt_placeholder()
 
-    def bind_agent(self, thread_id: str, agent: Any) -> SessionRuntime | None:
+    def bind_agent(
+        self,
+        thread_id: str,
+        agent: Any,
+        *,
+        settings: Any | None = None,
+    ) -> SessionRuntime | None:
         """Bind a rebuilt graph to a cold/idle session without replacing live work."""
         if agent is None:
             return None
@@ -483,7 +489,7 @@ class TurnController:
             return runtime
         if runtime is not None:
             self._sessions.pop(thread_id, None)
-        return self._session_for(thread_id=thread_id, agent=agent)
+        return self._session_for(thread_id=thread_id, agent=agent, settings=settings)
 
     def _session_for(
         self,

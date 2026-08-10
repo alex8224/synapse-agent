@@ -287,51 +287,16 @@ def handle_fast(args: list[str], *, settings: Any) -> SlashResult:
 def _apply_thinking_inplace(settings: Any, agent: Any, model_name: str) -> bool:
     """Update thinking params on the live model without rebuilding the graph.
 
-    Constructs a fresh (cheap, no network) chat model with the new settings and
-    copies thinking-related attributes onto the live instance. Returns False
-    when in-place update is not possible so callers can fall back to rebuild.
+    Returns False so callers fall back to a full rebuild. In-place mutation
+    of a shared ChatModel instance is unsafe in a multi-session process: the
+    process-wide ``model_cache`` hands the same client to every agent with an
+    identical configuration key, so mutating ``reasoning_effort`` /
+    ``extra_body`` / ``thinking`` here would silently change another session's
+    effective model settings. A rebuild builds an independent client keyed by
+    the new thinking level.
     """
-    from synapse.models.registry import build_model_from_settings
-
-    live = getattr(agent, "_coding_model", None)
-    if live is None:
-        return False
-    try:
-        _, fresh = build_model_from_settings(settings, model_name=model_name)
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        if type(fresh) is not type(live):
-            return False
-        copied = False
-        for attr in ("reasoning_effort", "extra_body", "thinking", "model_kwargs"):
-            if not (hasattr(fresh, attr) and hasattr(live, attr)):
-                continue
-            try:
-                setattr(live, attr, getattr(fresh, attr))
-                copied = True
-            except Exception:  # noqa: BLE001
-                return False
-        if copied:
-            try:
-                from synapse.models.registry import model_cache_key
-
-                cache = getattr(agent, "_coding_model_cache", None)
-                if isinstance(cache, dict):
-                    stale = [key for key, value in cache.items() if value is live]
-                    for key in stale:
-                        cache.pop(key, None)
-                    cache[model_cache_key(settings, model_name=model_name)] = live
-            except Exception:  # noqa: BLE001
-                pass
-        return copied
-    finally:
-        try:
-            from synapse.integrations.http_clients import close_model_async_http_client
-
-            close_model_async_http_client(fresh)
-        except Exception:  # noqa: BLE001
-            pass
+    del settings, agent, model_name
+    return False
 
 
 def handle_slash(
@@ -380,6 +345,17 @@ def handle_slash(
         "/export",
     }:
         result = handle_session(cmd, args, settings=settings, agent=agent, thread_id=thread_id)
+        # Persist the outgoing session's model binding before leaving, so its
+        # model cannot be silently overwritten by another session's choice
+        # (settings.active_model is process-global).
+        if (
+            result.handled
+            and not result.error
+            and result.thread_id
+            and result.thread_id != thread_id
+            and cmd in {"/switch", "/session", "/new"}
+        ):
+            _persist_model_binding(settings, thread_id)
         # When switching sessions, restore that session's model binding.
         if (
             result.handled

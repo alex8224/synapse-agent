@@ -51,10 +51,47 @@ class ChromeController:
 
     # -- MCP status label ----------------------------------------------------
 
+    def _current_agent(self) -> Any | None:
+        """Return the active session's frozen agent when one exists."""
+        app = self._app
+        turn = getattr(app, "_turn", None)
+        if turn is not None:
+            try:
+                runtime = turn.runtime_for(app.thread_id)
+            except Exception:  # noqa: BLE001 - chrome probing is best-effort
+                runtime = None
+            if runtime is not None:
+                agent = getattr(runtime, "agent", None)
+                if agent is not None:
+                    return agent
+        return getattr(app, "agent", None)
+
     def mcp_snapshot(self) -> tuple[bool, list[str], list[str], list[str], bool]:
         from synapse.app.agent import build_coding_agent
 
-        enabled = bool(getattr(self._app.settings, "enable_mcp", True))
+        app = self._app
+        enabled = bool(getattr(app.settings, "enable_mcp", True))
+        # Prefer the current session's agent: the module-level last_mcp_* are
+        # process-global snapshots of the most recent build, and the live MCP
+        # pool may have been replaced by another session's reload. The frozen
+        # agent records the server/tool set it actually compiled in.
+        agent = self._current_agent()
+        if agent is not None:
+            attached = bool(getattr(agent, "_coding_mcp_attached", False))
+            servers = list(getattr(agent, "_coding_mcp_servers", []) or [])
+            tools = list(getattr(agent, "_coding_mcp_tool_names", []) or [])
+            if not attached:
+                # This session never attached MCP tools (deferred start or
+                # disabled); report it as off even if another session's pool
+                # is alive.
+                return enabled, [], [], [], True
+            if tools:
+                return enabled, servers, tools, [], False
+            # Attached flag set but no tool metadata (older agent build):
+            # fall back to the last-build snapshot rather than the live pool.
+            fallback_servers = list(getattr(build_coding_agent, "last_mcp_servers", []) or [])
+            fallback_tools = list(getattr(build_coding_agent, "last_mcp_tool_names", []) or [])
+            return enabled, fallback_servers, fallback_tools, [], False
         servers = list(getattr(build_coding_agent, "last_mcp_servers", []) or [])
         tools = list(getattr(build_coding_agent, "last_mcp_tool_names", []) or [])
         warnings = list(getattr(build_coding_agent, "last_mcp_warnings", []) or [])
@@ -72,6 +109,34 @@ class ChromeController:
         )
 
     # -- session title --------------------------------------------------------
+
+    def current_session_model_label(self) -> str:
+        """Model label for the active session, not the global settings.
+
+        The frozen session agent is the authoritative model source; falling
+        back to settings keeps chrome alive during startup and cold sessions.
+        """
+        app = self._app
+        agent = self._current_agent()
+        if agent is None:
+            return model_status_label(app.settings)
+        profile = str(getattr(agent, "_coding_model_profile", None) or "").strip()
+        if not profile:
+            return model_status_label(app.settings)
+        try:
+            from types import SimpleNamespace
+
+            from synapse.models.registry import format_model_status, registry_from_settings
+
+            prof = registry_from_settings(app.settings).get(profile)
+            view = SimpleNamespace(
+                model=str(getattr(prof, "model", None) or profile),
+                enable_thinking=getattr(app.settings, "enable_thinking", True),
+                reasoning_effort=getattr(app.settings, "reasoning_effort", None),
+            )
+            return format_model_status(view)
+        except Exception:  # noqa: BLE001 - chrome rendering is best-effort
+            return model_status_label(app.settings)
 
     def reload_session_title(self) -> None:
         """Load human title for the active thread into chrome state."""
@@ -537,7 +602,7 @@ class ChromeController:
                     "Tab complete · / · Alt+C copy · F2 model · F4 sessions · F9 agents"
                 ),
                 busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy · F9 agents",
-                model=lambda: model_status_label(app.settings),
+                model=self.current_session_model_label,
                 codex_usage=self.codex_usage_label,
                 mcp=self.mcp_label,
                 fast_mode=lambda: bool(

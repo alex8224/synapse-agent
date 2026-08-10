@@ -232,6 +232,15 @@ def build_coding_agent(
                 model = cached
     else:
         registry = model_registry or registry_from_settings(settings)
+        try:
+            # Reuse path (MCP attach / rebuild): record the configuration the
+            # reused client was built for so session factories can decide
+            # whether sharing it is still safe.
+            cache_key = model_cache_key(
+                settings, model_name=model_name or settings.active_model or None
+            )
+        except Exception:  # noqa: BLE001 - cache key is advisory only
+            cache_key = None
 
     selected_profile = registry.get(model_name or settings.active_model or registry.default)
     model_spec = selected_profile.model
@@ -357,6 +366,11 @@ def build_coding_agent(
 
     should_load_mcp = resolve_load_mcp(settings, load_mcp)
     mcp_deferred = bool(settings.enable_mcp) and not should_load_mcp and mcp_tools is None
+    # Immutable per-agent MCP metadata: chrome and diagnostics must read the
+    # tool set this agent actually compiled in, never the process-global pool
+    # (which another session's reload may have replaced).
+    _mcp_servers: list[str] = []
+    _mcp_tool_names: list[str] = []
 
     if mcp_tools is not None:
         tools.extend(mcp_tools)
@@ -368,6 +382,8 @@ def build_coding_agent(
             getattr(t, "name", str(t)) for t in mcp_tools
         ]
         build_coding_agent.last_mcp_deferred = False  # type: ignore[attr-defined]
+        _mcp_servers = list(build_coding_agent.last_mcp_servers or [])
+        _mcp_tool_names = list(build_coding_agent.last_mcp_tool_names or [])
     elif should_load_mcp:
         with span("mcp:config"):
             servers = load_mcp_server_configs(
@@ -391,6 +407,8 @@ def build_coding_agent(
             build_coding_agent.last_mcp_tool_names = list(  # type: ignore[attr-defined]
                 mcp_result.tool_names or [getattr(t, "name", str(t)) for t in mcp_result.tools]
             )
+            _mcp_servers = list(build_coding_agent.last_mcp_servers or [])
+            _mcp_tool_names = list(build_coding_agent.last_mcp_tool_names or [])
         else:
             build_coding_agent.last_mcp_warnings = []  # type: ignore[attr-defined]
             build_coding_agent.last_mcp_servers = []  # type: ignore[attr-defined]
@@ -502,10 +520,14 @@ def build_coding_agent(
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
     agent._coding_model_cache = model_cache  # type: ignore[attr-defined]
+    agent._coding_model_cache_key = cache_key  # type: ignore[attr-defined]
     agent._coding_async_only = bool(  # type: ignore[attr-defined]
         getattr(model, "_coding_async_only", False)
     )
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
+    agent._coding_mcp_servers = list(_mcp_servers)  # type: ignore[attr-defined]
+    agent._coding_mcp_tool_names = list(_mcp_tool_names)  # type: ignore[attr-defined]
+    agent._coding_mcp_scope_key = mcp_pool_key  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
     # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so
     # session-scoped cache keys survive model/MCP switches.

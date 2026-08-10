@@ -1958,17 +1958,41 @@ class CodingAgentApp(App[None]):
 
 
     @work(thread=True, exclusive=True, group="model-switch")
-    def _switch_model_bg(self, command: str, activity: str) -> None:
+    def _switch_model_bg(
+        self,
+        command: str,
+        activity: str,
+        origin_thread_id: str | None = None,
+        origin_agent: Any | None = None,
+        origin_settings: Any | None = None,
+    ) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
-        self._slash.switch_model_bg(command, activity)
+        self._slash.switch_model_bg(
+            command,
+            activity,
+            origin_thread_id=origin_thread_id,
+            origin_agent=origin_agent,
+            origin_settings=origin_settings,
+        )
 
     def _attach_mcp_after_switch(self) -> None:
         """Reattach MCP after a model switch (worker body in SlashController)."""
         self._slash.attach_mcp_after_switch()
 
     @work(thread=True, exclusive=True, group="model-switch-mcp")
-    def _attach_mcp_after_switch_bg(self, base_agent: Any) -> None:
-        self._slash.attach_mcp_after_switch_bg(base_agent)
+    def _attach_mcp_after_switch_bg(
+        self,
+        base_agent: Any,
+        origin_thread_id: str | None = None,
+        origin_agent: Any | None = None,
+        origin_settings: Any | None = None,
+    ) -> None:
+        self._slash.attach_mcp_after_switch_bg(
+            base_agent,
+            origin_thread_id=origin_thread_id,
+            origin_agent=origin_agent,
+            origin_settings=origin_settings,
+        )
 
 
 
@@ -1989,18 +2013,49 @@ class CodingAgentApp(App[None]):
         self._slash.mcp_server_toggle(server_name)
 
     @work(thread=True, exclusive=True, group="mcp-reload")
-    def _apply_mcp_server_toggle_bg(self, server_name: str) -> None:
-        self._slash.mcp_server_toggle_bg(server_name)
+    def _apply_mcp_server_toggle_bg(
+        self,
+        server_name: str,
+        origin_thread_id: str | None = None,
+        origin_agent: Any | None = None,
+        origin_settings: Any | None = None,
+    ) -> None:
+        self._slash.mcp_server_toggle_bg(
+            server_name,
+            origin_thread_id=origin_thread_id,
+            origin_agent=origin_agent,
+            origin_settings=origin_settings,
+        )
 
 
     @work(thread=True, exclusive=True, group="mcp-save")
-    def _apply_mcp_save_bg(self, to_save: dict[str, list[str] | None]) -> None:
-        self._slash.mcp_save_bg(to_save)
+    def _apply_mcp_save_bg(
+        self,
+        to_save: dict[str, list[str] | None],
+        origin_thread_id: str | None = None,
+        origin_agent: Any | None = None,
+        origin_settings: Any | None = None,
+    ) -> None:
+        self._slash.mcp_save_bg(
+            to_save,
+            origin_thread_id=origin_thread_id,
+            origin_agent=origin_agent,
+            origin_settings=origin_settings,
+        )
 
 
     @work(thread=True, exclusive=True, group="mcp-reload")
-    def _apply_mcp_reload_bg(self) -> None:
-        self._slash.mcp_reload_bg()
+    def _apply_mcp_reload_bg(
+        self,
+        origin_thread_id: str | None = None,
+        origin_agent: Any | None = None,
+        origin_settings: Any | None = None,
+    ) -> None:
+        self._slash.mcp_reload_bg(
+            origin_thread_id=origin_thread_id,
+            origin_agent=origin_agent,
+            origin_settings=origin_settings,
+        )
 
 
 

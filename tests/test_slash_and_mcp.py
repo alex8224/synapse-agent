@@ -87,6 +87,49 @@ def test_mcp_config_parses_stdio_and_remote(tmp_path: Path):
     assert servers[2].enabled is False
 
 
+def test_slash_switch_persists_outgoing_model_binding(tmp_path: Path):
+    """Leaving a session must persist its model before another session changes it.
+
+    Regression: settings.active_model is process-global; switching to a second
+    session and picking a different model used to leave the first session's
+    binding stale, so switching back restored the wrong model.
+    """
+    settings = _FakeSettings(tmp_path)
+    settings.active_model = "claude"
+    settings.model = "claude-sonnet-4"
+    agent = SimpleNamespace(
+        _coding_model_profile="claude",
+        _coding_checkpointer=None,
+        _coding_steer_queue=None,
+        _coding_model=None,
+        _coding_model_registry=None,
+        _coding_model_cache=None,
+        _coding_prompt_cache_key=None,
+        _coding_parallel_subagents=False,
+        _coding_mcp_attached=False,
+    )
+    store = SessionStore(settings.resolved_sessions_path())
+    store.ensure("other123", model="openai:demo")
+    store.close()
+
+    r = handle_slash(
+        "/switch other123",
+        settings=settings,
+        agent=agent,
+        thread_id="old123",
+        project_root=tmp_path,
+    )
+
+    assert r.handled and not r.error
+    assert r.thread_id == "other123"
+    store2 = SessionStore(settings.resolved_sessions_path())
+    try:
+        binding = store2.get_model_binding("old123")
+        assert binding.active_model == "claude"
+    finally:
+        store2.close()
+
+
 def test_slash_subagents_reports_disabled_mode(tmp_path: Path):
     settings = _FakeSettings(tmp_path)
     agent = SimpleNamespace(_coding_subagents=None, _coding_subagent_mode="disabled")
@@ -437,6 +480,49 @@ def test_mcp_pool_reuses_session_for_calls():
     assert pool.tool_names == []
 
 
+def test_legacy_mcp_tool_follows_reloaded_active_pool(monkeypatch):
+    """Tools compiled before reload must route to the replacement active pool."""
+    import synapse.integrations.mcp_client as mcp_client
+
+    old_pool = mcp_client.McpSessionPool()
+    new_pool = SimpleNamespace(
+        call_tool=lambda server, name, arguments: f"new:{server}:{name}:{arguments}"
+    )
+    old_pool._follow_active_pool = True
+    monkeypatch.setattr(mcp_client, "get_active_mcp_pool", lambda: new_pool)
+
+    class FakeSession:
+        async def list_tools(self):
+            return SimpleNamespace(
+                tools=[
+                    SimpleNamespace(
+                        name="ping",
+                        description="ping",
+                        inputSchema={"type": "object", "properties": {}},
+                    )
+                ]
+            )
+
+    async def fake_open(server):
+        live = mcp_client._LiveServer(
+            config=server,
+            session=FakeSession(),
+            transport_cm=SimpleNamespace(__aexit__=lambda *a, **k: None),
+            session_cm=SimpleNamespace(__aexit__=lambda *a, **k: None),
+        )
+        old_pool._servers[server.name] = live
+        return live, None
+
+    try:
+        with patch.object(old_pool, "_open_one", side_effect=fake_open):
+            result = old_pool.load(
+                [mcp_client.McpServerConfig(name="demo", command="x", enabled=True)]
+            )
+        assert result.tools[0].invoke({}) == "new:demo:ping:{}"
+    finally:
+        old_pool.close()
+
+
 def test_mcp_stdio_uses_devnull_when_stderr_descriptor_is_invalid(monkeypatch):
     import sys
 
@@ -668,53 +754,31 @@ def test_mcp_reload_forces_reconnect(tmp_path, monkeypatch):
     assert kw["mcp_tools"] is None
 
 
-def test_apply_thinking_inplace_copies_attrs(monkeypatch):
-    """In-place thinking update copies attrs from a fresh same-type model."""
-    import synapse.models.registry as reg_mod
+def test_apply_thinking_inplace_disabled_for_shared_clients(monkeypatch):
+    """Thinking changes must rebuild, never mutate a possibly-shared client.
+
+    The process-wide model cache hands the same ChatModel instance to every
+    agent with an identical configuration key. In-place mutation of
+    reasoning_effort / extra_body / thinking would therefore silently change
+    the effective settings of sibling sessions sharing the client.
+    """
     from synapse.commands.slash_cmds import _apply_thinking_inplace
 
     class FakeModel:
-        def __init__(self, effort, body):
-            self.reasoning_effort = effort
-            self.extra_body = body
+        reasoning_effort = "high"
+        extra_body = {"old": 1}
 
-    live = FakeModel("high", {"old": 1})
-    fresh = FakeModel("low", {"new": 2})
-    monkeypatch.setattr(
-        reg_mod, "build_model_from_settings", lambda s, model_name=None: (None, fresh)
-    )
-    monkeypatch.setattr(reg_mod, "model_cache_key", lambda s, model_name=None: "new-key")
-    cache = {"old-key": live, "other": object()}
-    agent = SimpleNamespace(_coding_model=live, _coding_model_cache=cache)
+    live = FakeModel()
+    agent = SimpleNamespace(_coding_model=live, _coding_model_cache={"k": live})
 
-    assert _apply_thinking_inplace(object(), agent, "demo") is True
-    assert live.reasoning_effort == "low"
-    assert live.extra_body == {"new": 2}
-    assert "old-key" not in cache
-    assert cache["new-key"] is live
-    assert "other" in cache
-
-
-def test_apply_thinking_inplace_fallbacks(monkeypatch):
-    """No live model or type mismatch -> False (caller rebuilds)."""
-    import synapse.models.registry as reg_mod
-    from synapse.commands.slash_cmds import _apply_thinking_inplace
-
-    # No live model.
-    assert _apply_thinking_inplace(object(), SimpleNamespace(), "demo") is False
-
-    # Type mismatch between live and freshly built model.
-    class A:
-        pass
-
-    class B:
-        pass
-
-    monkeypatch.setattr(
-        reg_mod, "build_model_from_settings", lambda s, model_name=None: (None, B())
-    )
-    agent = SimpleNamespace(_coding_model=A())
     assert _apply_thinking_inplace(object(), agent, "demo") is False
+    # The shared client must remain untouched.
+    assert live.reasoning_effort == "high"
+    assert live.extra_body == {"old": 1}
+    assert agent._coding_model_cache["k"] is live
+
+    # Even without a live model the call stays safe and requests a rebuild.
+    assert _apply_thinking_inplace(object(), SimpleNamespace(), "demo") is False
 
 
 def test_rebuild_agent_reuses_pool_when_attached_flag_false(tmp_path, monkeypatch):

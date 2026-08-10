@@ -195,3 +195,134 @@ def test_fetch_codex_usage_bg_uses_call_from_thread_off_ui_thread() -> None:
     controller.fetch_codex_usage_bg()
 
     assert app.calls == ["ready"]
+
+
+def test_mcp_snapshot_prefers_current_session_agent() -> None:
+    """MCP chrome must reflect the active session, not the last global build."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.agent = SimpleNamespace(_coding_mcp_attached=True)
+    app.settings = SimpleNamespace(enable_mcp=True)
+    app._turn = SimpleNamespace(
+        runtime_for=lambda thread_id: SimpleNamespace(
+            agent=SimpleNamespace(_coding_mcp_attached=False)
+        )
+        if thread_id == "thread-1"
+        else None
+    )
+
+    enabled, servers, tools, warnings, deferred = ChromeController(app).mcp_snapshot()
+
+    # The frozen session agent never attached MCP -> off, regardless of any
+    # global pool or last-build snapshot.
+    assert enabled is True
+    assert servers == [] and tools == [] and warnings == []
+    assert deferred is True
+
+
+def test_mcp_snapshot_uses_agent_metadata_for_attached_session() -> None:
+    """Attached sessions report the tool set they compiled in, not the pool."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.agent = None
+    app.settings = SimpleNamespace(enable_mcp=True)
+    app._turn = SimpleNamespace(
+        runtime_for=lambda thread_id: SimpleNamespace(
+            agent=SimpleNamespace(
+                _coding_mcp_attached=True,
+                _coding_mcp_servers=["git"],
+                _coding_mcp_tool_names=["git_status"],
+            )
+        )
+        if thread_id == "thread-1"
+        else None
+    )
+
+    enabled, servers, tools, warnings, deferred = ChromeController(app).mcp_snapshot()
+
+    assert enabled is True
+    assert servers == ["git"]
+    assert tools == ["git_status"]
+    assert warnings == []
+    assert deferred is False
+
+
+def test_mcp_snapshot_ignores_newer_pool_when_agent_built_with_older_tools() -> None:
+    """A reload in another session must not change this session's MCP label."""
+    app = _App()
+    app.thread_id = "thread-1"
+    app.agent = None
+    app.settings = SimpleNamespace(enable_mcp=True)
+    app._turn = SimpleNamespace(
+        runtime_for=lambda thread_id: SimpleNamespace(
+            agent=SimpleNamespace(
+                _coding_mcp_attached=True,
+                _coding_mcp_servers=["old-server"],
+                _coding_mcp_tool_names=["old_tool"],
+            )
+        )
+        if thread_id == "thread-1"
+        else None
+    )
+
+    enabled, servers, tools, warnings, deferred = ChromeController(app).mcp_snapshot()
+
+    assert enabled is True
+    assert servers == ["old-server"]
+    assert tools == ["old_tool"]
+    assert deferred is False
+
+
+def test_current_session_model_label_uses_frozen_agent_profile(
+    monkeypatch: Any,
+) -> None:
+    app = _App()
+    app.thread_id = "thread-1"
+    app.settings = SimpleNamespace(
+        active_model="gpt",
+        model="gpt-4.1",
+        enable_thinking=True,
+        reasoning_effort="high",
+        openai_base_url=None,
+    )
+    app._turn = SimpleNamespace(
+        runtime_for=lambda thread_id: SimpleNamespace(
+            agent=SimpleNamespace(_coding_model_profile="claude")
+        )
+        if thread_id == "thread-1"
+        else None
+    )
+    fake_profile = SimpleNamespace(
+        name="claude", model="claude-sonnet-4", enable_thinking=True, reasoning_effort="high"
+    )
+    fake_registry = SimpleNamespace(profiles={"claude": fake_profile})
+    fake_registry.get = lambda name: fake_profile if name == "claude" else (_ for _ in ()).throw(
+        KeyError(name)
+    )
+    monkeypatch.setattr(
+        "synapse.models.registry.registry_from_settings", lambda settings: fake_registry
+    )
+
+    label = ChromeController(app).current_session_model_label()
+
+    assert "claude-sonnet-4" in label
+    assert "high" in label
+
+
+def test_current_session_model_label_falls_back_to_settings_without_runtime() -> None:
+    app = _App()
+    app.thread_id = "thread-1"
+    app.agent = None
+    app._turn = SimpleNamespace(runtime_for=lambda thread_id: None)
+    app.settings = SimpleNamespace(
+        active_model="gpt",
+        model="gpt-4.1",
+        enable_thinking=True,
+        reasoning_effort="high",
+        openai_base_url=None,
+    )
+
+    label = ChromeController(app).current_session_model_label()
+
+    assert "gpt-4.1" in label
+    assert "high" in label

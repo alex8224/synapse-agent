@@ -378,6 +378,7 @@ class McpSessionPool:
         self._loop = _LoopThread()
         self._servers: dict[str, _LiveServer] = {}
         self._closed = False
+        self._follow_active_pool = False
         self.warnings: list[str] = []
         self.tool_names: list[str] = []
         self.tools: list[Any] = []
@@ -565,7 +566,16 @@ class McpSessionPool:
 
             def make_call(server_name: str = server.name):
                 def _call(name: str, arguments: dict[str, Any]) -> str:
-                    return self.call_tool(server_name, name, arguments)
+                    # Legacy process-level reload replaces and closes
+                    # ``_ACTIVE_POOL``. Agents compiled before the reload keep
+                    # their StructuredTool objects, so resolve the current
+                    # active pool at invocation time instead of retaining the
+                    # closed pool forever. Keyed project/session pools are not
+                    # installed as ``_ACTIVE_POOL`` and continue using their
+                    # own stable instance.
+                    active = get_active_mcp_pool() if self._follow_active_pool else None
+                    pool = active if active is not None and active is not self else self
+                    return pool.call_tool(server_name, name, arguments)
 
                 return _call
 
@@ -756,6 +766,7 @@ def load_mcp_tools(
             pass
 
     pool = McpSessionPool()
+    pool._follow_active_pool = True  # noqa: SLF001 - legacy active-pool proxy contract
     try:
         result = pool.load(servers)
     except Exception as exc:  # noqa: BLE001

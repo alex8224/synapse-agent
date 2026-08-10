@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 
@@ -1236,7 +1236,13 @@ class TestSlashRouting:
             synapse.commands.slash_cmds.handle_slash = orig
 
         assert result is True
-        app._switch_model_bg.assert_called_once_with("/model claude", "model claude")
+        app._switch_model_bg.assert_called_once_with(
+            "/model claude",
+            "model claude",
+            origin_thread_id="test-thread",
+            origin_agent=app.agent,
+            origin_settings=ANY,
+        )
         mock_hs.assert_not_called()
         app.push_screen.assert_not_called()
 

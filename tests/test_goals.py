@@ -698,6 +698,15 @@ def test_apply_ok_result_reloads_goal_after_thread_switch(tmp_path) -> None:
 
     fake = object.__new__(CodingAgentApp)
     fake.thread_id = "t1"
+    fake.settings = types.SimpleNamespace(
+        active_model=None,
+        model=None,
+        enable_thinking=True,
+        reasoning_effort=None,
+        openai_api_key=None,
+        anthropic_api_key=None,
+        openai_base_url=None,
+    )
     fake._current_goal = svc.get("t1")
     fake._bottombar = types.SimpleNamespace(refresh=lambda: None)
     fake.agent = types.SimpleNamespace(_coding_goal_service=svc)

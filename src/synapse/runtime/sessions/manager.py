@@ -298,8 +298,25 @@ def build_session_agent_factory(
 
     def factory(thread_id: str, resources: ProjectSharedResources) -> Any:
         from synapse.app.agent import build_coding_agent
+        from synapse.models.registry import model_cache_key
 
-        model = resources.model_client or getattr(template_agent, "_coding_model", None)
+        template_model = getattr(template_agent, "_coding_model", None)
+        template_key = getattr(template_agent, "_coding_model_cache_key", None)
+        # The target model is whatever settings resolves right now (session
+        # switches restore the per-thread binding first). Only reuse the
+        # template agent's model client when its full configuration key
+        # (profile + model + credentials + thinking + parallel mode) matches
+        # the target; otherwise a freshly built graph must use the settings
+        # model so one session's model/thinking choice can never leak into
+        # another session.
+        try:
+            target_key = model_cache_key(
+                settings, model_name=settings.active_model or None
+            )
+        except Exception:  # noqa: BLE001 - registry probing is best-effort
+            target_key = None
+        reuse_model = bool(template_key) and template_key == target_key
+        model = (resources.model_client or template_model) if reuse_model else None
         checkpointer = resources.checkpointer or getattr(
             template_agent, "_coding_checkpointer", None
         )

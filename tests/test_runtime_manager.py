@@ -291,6 +291,10 @@ def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -
         )
 
     monkeypatch.setattr("synapse.app.agent.build_coding_agent", fake_build)
+    monkeypatch.setattr(
+        "synapse.models.registry.model_cache_key",
+        lambda settings, model_name=None: f"key-{model_name or settings.active_model}",
+    )
 
     from synapse.runtime.sessions import (
         ProjectSharedResources,
@@ -301,11 +305,13 @@ def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -
     checkpointer = _FakeCheckpointer()
     template = SimpleNamespace(
         _coding_model=model,
+        _coding_model_profile="gpt",
+        _coding_model_cache_key="key-gpt",
         _coding_checkpointer=checkpointer,
         _coding_model_cache={"k": "v"},
         _coding_model_registry="registry",
     )
-    settings = SimpleNamespace(workspace="/ws")
+    settings = SimpleNamespace(workspace="/ws", active_model="gpt")
     factory = build_session_agent_factory(
         settings=settings,
         project_root="/ws",
@@ -336,6 +342,132 @@ def test_build_session_agent_factory_reuses_shared_resources(monkeypatch: Any) -
     # Prompt cache is keyed per thread.
     assert agent_a.prompt_cache_key() == "thread-a"
     assert agent_b.prompt_cache_key() == "thread-b"
+
+
+def test_build_session_agent_factory_isolates_model_when_config_differs(
+    monkeypatch: Any,
+) -> None:
+    """A new session must not inherit the previous session's model client.
+
+    Regression: switching sessions used to reuse the template agent's model
+    client when only the profile name matched. Same profile with a different
+    thinking level (or any other model configuration) must still build an
+    independent client; otherwise mutating thinking in one session silently
+    changes the shared client used by the other session.
+    """
+    calls: list[dict[str, Any]] = []
+
+    class _FakeModel:
+        pass
+
+    def fake_build(
+        settings: Any,
+        *,
+        project_root: Any = None,
+        model: Any = None,
+        **_: Any,
+    ) -> Any:
+        del project_root
+        calls.append({"model": model, "settings_active": getattr(settings, "active_model", None)})
+        return SimpleNamespace(steer_queue=None, prompt_cache_key=lambda: "t")
+
+    monkeypatch.setattr("synapse.app.agent.build_coding_agent", fake_build)
+
+    from synapse.runtime.sessions import (
+        ProjectSharedResources,
+        build_session_agent_factory,
+    )
+
+    model = _FakeModel()
+    template = SimpleNamespace(
+        _coding_model=model,
+        _coding_model_profile="claude",
+        _coding_model_cache_key="key-claude-high",
+        _coding_checkpointer=None,
+        _coding_model_cache=None,
+        _coding_model_registry=None,
+    )
+    settings = SimpleNamespace(workspace="/ws", active_model="gpt")
+    monkeypatch.setattr(
+        "synapse.models.registry.model_cache_key",
+        lambda settings, model_name=None: f"key-{model_name or settings.active_model}",
+    )
+    factory = build_session_agent_factory(
+        settings=settings,
+        project_root="/ws",
+        template_agent=template,
+    )
+    resources = ProjectSharedResources(model_client=model)
+
+    factory("thread-a", resources)
+
+    assert len(calls) == 1
+    # Model client must NOT be reused when the template configuration key
+    # differs from the settings target; build_coding_agent rebuilds from
+    # settings instead.
+    assert calls[0]["model"] is None
+    assert calls[0]["settings_active"] == "gpt"
+
+
+def test_build_session_agent_factory_isolates_same_profile_different_thinking(
+    monkeypatch: Any,
+) -> None:
+    """Same profile + different thinking must not share a mutable model client.
+
+    Regression: only the profile name was compared, so a session that switched
+    thinking level mutated the shared client of a sibling session using the
+    same profile.
+    """
+    calls: list[dict[str, Any]] = []
+
+    class _FakeModel:
+        pass
+
+    def fake_build(
+        settings: Any,
+        *,
+        project_root: Any = None,
+        model: Any = None,
+        **_: Any,
+    ) -> Any:
+        del project_root
+        calls.append({"model": model})
+        return SimpleNamespace(steer_queue=None, prompt_cache_key=lambda: "t")
+
+    monkeypatch.setattr("synapse.app.agent.build_coding_agent", fake_build)
+    monkeypatch.setattr(
+        "synapse.models.registry.model_cache_key",
+        lambda settings, model_name=None: (
+            f"key-{model_name or settings.active_model}-{settings.reasoning_effort}"
+        ),
+    )
+
+    from synapse.runtime.sessions import (
+        ProjectSharedResources,
+        build_session_agent_factory,
+    )
+
+    model = _FakeModel()
+    template = SimpleNamespace(
+        _coding_model=model,
+        _coding_model_profile="gpt",
+        _coding_model_cache_key="key-gpt-high",
+        _coding_checkpointer=None,
+        _coding_model_cache=None,
+        _coding_model_registry=None,
+    )
+    settings = SimpleNamespace(workspace="/ws", active_model="gpt", reasoning_effort="low")
+    factory = build_session_agent_factory(
+        settings=settings,
+        project_root="/ws",
+        template_agent=template,
+    )
+    resources = ProjectSharedResources(model_client=model)
+
+    factory("thread-a", resources)
+
+    assert len(calls) == 1
+    assert calls[0]["model"] is None
 
 
 def test_manager_injects_persistence_into_default_session_runtime() -> None:
