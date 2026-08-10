@@ -38,6 +38,9 @@ from synapse.ui.turn.event_bridge import TextualTurnEventBridge
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
 from synapse.ui.turn.persistence import TurnPersistenceController
 
+#: Maximum rows shown in the Ctrl+Tab recent-sessions switcher.
+MAX_RECENT_SESSION_ITEMS = 10
+
 
 class TurnController:
     """One graph run: from user submit through turn end and goal settlement."""
@@ -309,13 +312,14 @@ class TurnController:
         return by_project
 
     def active_session_items(self) -> tuple[ActiveSessionItem, ...]:
-        """Snapshot of in-process active sessions for the Ctrl+Tab switcher.
+        """Snapshot of the most recently touched sessions for the Ctrl+Tab switcher.
 
         Sources the canonical ``ProjectRegistry`` (which also owns cross-project
         background runtimes) with the legacy ``_sessions`` compatibility index
         as a fallback for early-startup sessions that were never registered.
-        Cold/idle/terminal sessions never appear, even when they are the
-        currently attached thread.
+        Every in-memory runtime counts (active or idle); rows are ordered by
+        ``last_activity_at`` and capped at ``MAX_RECENT_SESSION_ITEMS``. Active
+        statuses are still carried on each item so the dialog can style them.
         """
         runtimes: dict[str, SessionRuntime] = {}
         for runtime in self._project_registry.all_sessions():
@@ -327,8 +331,6 @@ class TurnController:
         items: list[ActiveSessionItem] = []
         for runtime in runtimes.values():
             snapshot = runtime.snapshot()
-            if snapshot.status not in ACTIVE_SESSION_STATUSES:
-                continue
             items.append(
                 ActiveSessionItem(
                     project_id=snapshot.project_id,
@@ -341,7 +343,7 @@ class TurnController:
                 )
             )
         items.sort(key=lambda item: item.last_activity_at, reverse=True)
-        return tuple(items)
+        return tuple(items[:MAX_RECENT_SESSION_ITEMS])
 
     def _active_session_title(self, runtime: SessionRuntime, snapshot: Any) -> str:
         """Best-effort row title: stored title, current turn input, then id."""

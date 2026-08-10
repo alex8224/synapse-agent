@@ -53,6 +53,8 @@ class OptionItem:
     checkable: bool = True  # whether this row shows checkbox
     show_bullet: bool = True  # whether to show ○/● (non-checkable) or ☑/☐ prefix
     indent: str = ""  # left-padding before bullet, e.g. "    " for tree indent
+    label_style: str = ""  # rich style applied to the label text ("", "bold", "dim", ...)
+    meta_style: str = ""  # rich style override for the meta hint; default "dim"
 
 
 # Window-like modal: title bar + list + keyboard-only footer.
@@ -167,7 +169,10 @@ class OptionRow(Static):
             row_prefix = f"{prefix}{bullet}  "
         head_cells = cell_len(row_prefix)
         label = _truncate_to_cells(item.label, max(0, _ROW_CONTENT_CELLS - head_cells))
-        row = Text(row_prefix + label)
+        label_text = Text(label)
+        if item.label_style:
+            label_text.stylize(item.label_style)
+        row = Text(row_prefix) + label_text
         if item.detail:
             detail_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
             detail = _truncate_to_cells(item.detail, detail_avail)
@@ -177,7 +182,7 @@ class OptionRow(Static):
             meta_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
             meta = _truncate_to_cells(item.meta, meta_avail)
             if meta:
-                row.append(f"  {meta}", style="dim")
+                row.append(f"  {meta}", style=item.meta_style or "dim")
         self.update(row)
 
     def set_hover(self, on: bool) -> None:

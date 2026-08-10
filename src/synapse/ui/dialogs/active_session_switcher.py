@@ -1,9 +1,11 @@
-"""Ctrl+Tab active-session switcher dialog.
+"""Ctrl+Tab recent-sessions switcher dialog.
 
 Unlike the F4 ``SessionListDialog`` (persistent history from ``SessionStore``),
-this dialog only lists sessions that are doing observable work in-process right
-now.  It receives an already-built view model from the host so it never touches
-runtime registries or databases itself.
+this dialog lists the most recently touched in-process sessions (active or
+idle), capped at 10 rows.  It receives an already-built view model from the
+host so it never touches runtime registries or databases itself.  Sessions
+still doing observable work are marked with a dedicated status icon and bold
+meta text; stale ones are muted.
 
 dismiss result:
   ("switch_active_session", project_id, thread_id)  → TUI switches in place
@@ -19,20 +21,26 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from synapse.runtime.sessions import SessionStatus
+from synapse.runtime.sessions import ACTIVE_SESSION_STATUSES, SessionStatus
 from synapse.ui.dialogs.base import DialogBase, OptionItem
 
 # Row key separator: project_id and thread_id are hex/opaque ids, but keep the
 # two halves unambiguous anyway.
 _KEY_SEP = "\u001f"
 
-#: Status marker + label reused across the dialog rows.
+#: Status marker + label reused across the dialog rows.  Active statuses get a
+#: filled/busy marker and are shown bold; terminal/stale statuses stay muted.
 _STATUS_VIEW: dict[SessionStatus, tuple[str, str]] = {
     SessionStatus.RUNNING: ("\u25cf", "running"),  # ●
     SessionStatus.WAITING_APPROVAL: ("\u25d0", "approval"),  # ◐
     SessionStatus.QUEUED: ("\u23f8", "queued"),  # ⏸
     SessionStatus.STARTING: ("\u23f8", "starting"),  # ⏸
     SessionStatus.CANCELLING: ("\u00d7", "cancelling"),  # ×
+    SessionStatus.IDLE: ("\u25cb", "idle"),  # ○
+    SessionStatus.COLD: ("\u25cb", "cold"),  # ○
+    SessionStatus.CANCELLED: ("\u00d7", "cancelled"),  # ×
+    SessionStatus.FAILED: ("\u25cb", "failed"),  # ○
+    SessionStatus.CLOSED: ("\u25cb", "closed"),  # ○
 }
 
 
@@ -50,7 +58,7 @@ class ActiveSessionItem:
 
 
 class ActiveSessionSwitcherDialog(DialogBase):
-    """Compact centered list of active sessions with Tab-cyclic navigation."""
+    """Compact centered list of recent sessions with Tab-cyclic navigation."""
 
     _title_icon = "\u25c6"  # ◆
 
@@ -67,7 +75,7 @@ class ActiveSessionSwitcherDialog(DialogBase):
 
     @property
     def title_text(self) -> str:
-        return "Active Sessions"
+        return "Recent Sessions"
 
     @property
     def _title_keys(self) -> str:
@@ -75,7 +83,7 @@ class ActiveSessionSwitcherDialog(DialogBase):
 
     def compose_body(self) -> ComposeResult:
         if not self._items:
-            yield Static("No active sessions")
+            yield Static("No recent sessions")
             return
 
     def on_mount(self) -> None:
@@ -93,6 +101,7 @@ class ActiveSessionSwitcherDialog(DialogBase):
     @staticmethod
     def _to_option(item: ActiveSessionItem) -> OptionItem:
         icon, label = _STATUS_VIEW.get(item.status, ("\u25cb", item.status.value))  # ○ fallback
+        active = item.status in ACTIVE_SESSION_STATUSES
         meta = f"{icon} {label}"
         if item.current:
             meta = f"{meta} \u00b7 current"
@@ -103,6 +112,10 @@ class ActiveSessionSwitcherDialog(DialogBase):
             detail=(item.project_label or "").strip(),
             meta=meta,
             selected=item.current,
+            # Active rows stand out (bold status, default label color); stale
+            # rows stay muted so recently-touched history reads at a glance.
+            meta_style="bold" if active else "dim",
+            label_style="" if active else "dim",
         )
 
     def action_next_item(self) -> None:

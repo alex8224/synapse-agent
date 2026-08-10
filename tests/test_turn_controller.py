@@ -1154,7 +1154,7 @@ class TestActiveSessionItems:
         app._current_project_id = lambda: "p1"
         return TurnController(app)
 
-    def test_returns_only_active_statuses(self) -> None:
+    def test_includes_recent_sessions_of_all_statuses(self) -> None:
         controller = self._controller()
         for tid, status in [
             ("a", SessionStatus.RUNNING),
@@ -1174,7 +1174,7 @@ class TestActiveSessionItems:
             )
 
         items = controller.active_session_items()
-        assert {item.thread_id for item in items} == {"a", "b", "c"}
+        assert {item.thread_id for item in items} == {"a", "b", "c", "d", "e", "f", "g"}
 
     def test_includes_cross_project_active_runtimes(self) -> None:
         controller = self._controller()
@@ -1209,6 +1209,25 @@ class TestActiveSessionItems:
 
         items = controller.active_session_items()
         assert [item.thread_id for item in items] == ["new", "mid", "old"]
+
+    def test_limits_to_most_recent_ten(self) -> None:
+        controller = self._controller()
+        # 12 sessions; activity 0..11 seconds ago (0 = newest).
+        for i in range(12):
+            controller._sessions[f"t{i:02d}"] = self._runtime(
+                controller,
+                thread_id=f"t{i:02d}",
+                project_id="p1",
+                status=SessionStatus.RUNNING,
+                activity=float(i),
+            )
+
+        items = controller.active_session_items()
+        assert len(items) == 10
+        # Newest 10 survive the cap: t00..t09, newest first.
+        assert [item.thread_id for item in items] == [
+            f"t{i:02d}" for i in range(10)
+        ]
 
     def test_title_falls_back_to_thread_id(self) -> None:
         controller = self._controller()
@@ -1272,15 +1291,8 @@ class TestActiveSessionItems:
         assert by_id["a"].project_id == "p1"
         assert by_id["b"].project_id == "p2"
 
-    def test_empty_when_no_active_sessions(self) -> None:
+    def test_empty_when_no_runtimes(self) -> None:
         controller = self._controller()
-        controller._sessions["idle"] = self._runtime(
-            controller,
-            thread_id="idle",
-            project_id="p1",
-            status=SessionStatus.IDLE,
-            activity=1.0,
-        )
         assert controller.active_session_items() == ()
 
     def test_current_flag_marks_attached_thread(self) -> None:

@@ -39,8 +39,8 @@ class SessionStatus(StrEnum):
 
 
 #: Statuses where the session is still doing observable work in-process.  Used
-#: by the Ctrl+Tab active-session switcher and background-activity chrome;
-#: cold/idle/terminal sessions never appear there even when they are the
+#: by background-activity chrome and to style rows in the Ctrl+Tab switcher;
+#: cold/idle/terminal sessions never count as "active" even when they are the
 #: currently attached thread.
 ACTIVE_SESSION_STATUSES: frozenset[SessionStatus] = frozenset(
     {

@@ -230,14 +230,14 @@ class CodingAgentApp(App[None]):
         Binding(
             "ctrl+tab",
             "active_session_switcher",
-            "Active sessions",
+            "Recent sessions",
             show=False,
             priority=True,
         ),
         Binding(
             "ctrl+o",
             "active_session_switcher",
-            "Active sessions",
+            "Recent sessions",
             show=False,
             priority=True,
         ),

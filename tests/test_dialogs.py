@@ -1577,6 +1577,7 @@ class TestActiveSessionSwitcherDialog:
         project_id: str = "p1",
         *,
         current: bool = False,
+        status: Any = None,
     ):
         from datetime import UTC, datetime
 
@@ -1588,7 +1589,7 @@ class TestActiveSessionSwitcherDialog:
             thread_id=thread_id,
             title=f"session {thread_id}",
             project_label="synapse",
-            status=SessionStatus.RUNNING,
+            status=status or SessionStatus.RUNNING,
             last_activity_at=datetime.now(UTC),
             current=current,
         )
@@ -1800,7 +1801,7 @@ class TestActiveSessionSwitcherDialog:
             async with app.run_test(size=(100, 30)) as pilot:
                 await app.push_screen(dialog, results.append)
                 await pilot.pause()
-                assert "No active sessions" in app.screen.query_one(Static).render().plain
+                assert "No recent sessions" in app.screen.query_one(Static).render().plain
                 await pilot.press("enter")
                 await pilot.pause()
                 assert isinstance(app.screen, ActiveSessionSwitcherDialog)
@@ -1810,6 +1811,36 @@ class TestActiveSessionSwitcherDialog:
 
         asyncio.run(exercise())
         assert results == [None]
+
+    def test_active_item_uses_bold_meta(self) -> None:
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        option = ActiveSessionSwitcherDialog._to_option(self._item("a"))
+        assert option.meta_style == "bold"
+        assert option.label_style == ""
+
+    def test_stale_item_uses_dim_style(self) -> None:
+        from synapse.runtime.sessions import SessionStatus
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        option = ActiveSessionSwitcherDialog._to_option(
+            self._item("a", status=SessionStatus.IDLE)
+        )
+        assert option.meta_style == "dim"
+        assert option.label_style == "dim"
+        assert "idle" in option.meta
+
+    def test_title_is_recent_sessions(self) -> None:
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog([self._item("a")])
+        assert dialog.title_text == "Recent Sessions"
 
     def test_current_row_is_marked(self):
         import asyncio
