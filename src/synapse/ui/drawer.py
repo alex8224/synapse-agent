@@ -401,7 +401,13 @@ class ProjectDrawer(ModalScreen[Any]):
             return f"expand:{item.project_id}"
         return f"project:{item.project_id}"
 
-    def _rebuild_tree(self, *, selected_key: str = "", initial: bool = False) -> None:
+    def _rebuild_tree(
+        self,
+        *,
+        selected_key: str = "",
+        initial: bool = False,
+        rows: list[_Row] | None = None,
+    ) -> None:
         """Reload rows and repaint the tree, restoring the cursor when asked."""
         tree = self.query_one("#drawer-tree", Tree)
         target_key = selected_key or ("" if initial else self._current_selected_key())
@@ -409,7 +415,7 @@ class ProjectDrawer(ModalScreen[Any]):
             target_key = (
                 f"session:{self._current_project_id}:{self._current_thread_id}"
             )
-        self._rows = self._load()
+        self._rows = self._load() if rows is None else rows
         tree.root.remove_children()
         self._tree_nodes = {}
         self._populate_tree(tree)
@@ -424,11 +430,15 @@ class ProjectDrawer(ModalScreen[Any]):
             and self._runtime_status_by_project_provider is None
         ):
             return
-        before = (self._runtime_status, self._runtime_status_by_project)
-        self._refresh_status_data()
-        if (self._runtime_status, self._runtime_status_by_project) == before:
+        # Rebuild on any visible change (runtime status, session titles,
+        # ordering), not just status transitions: a freshly created session
+        # gets its readable title bound after the drawer snapshot, and that
+        # update must surface without waiting for a coarse status change.
+        before = self._rows
+        rows = self._load()
+        if rows == before:
             return
-        self._rebuild_tree()
+        self._rebuild_tree(rows=rows)
 
     def _populate_tree(self, tree: Tree[Any]) -> None:
         """Build the two-level project/session tree from the loaded rows.

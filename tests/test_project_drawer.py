@@ -220,6 +220,73 @@ def test_open_drawer_refreshes_live_runtime_status(monkeypatch: Any) -> None:
     asyncio.run(run())
 
 
+def test_drawer_refreshes_readable_title_when_session_persists(
+    monkeypatch: Any,
+) -> None:
+    """A session created while the drawer is open gets its readable title
+    once the catalog persists it, even with no runtime status transition."""
+    import asyncio
+
+    status = {"t-new": "idle"}
+    catalog = _FakeCatalog()
+    # New session is in memory only; the catalog has not persisted it yet.
+    catalog.sessions["p-1"] = []
+
+    class Host(App[None]):
+        def get_css_variables(self) -> dict[str, str]:
+            variables = super().get_css_variables()
+            variables.update(
+                {
+                    "theme-bg": "#1a1b2e",
+                    "theme-user": "#58a6ff",
+                    "theme-fg": "#c0caf5",
+                    "theme-top": "#1a1b2e",
+                    "theme-muted": "#565f89",
+                    "theme-bar": "#1f2335",
+                }
+            )
+            return variables
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                ProjectDrawer(
+                    current_project_id="p-1",
+                    current_thread_id="t-a1",
+                    runtime_status_provider=lambda: status,
+                    catalog_path=":memory:",
+                )
+            )
+
+    async def run() -> None:
+        app = Host()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "synapse.projects.catalog.ProjectCatalog",
+                lambda *a, **k: catalog,
+            )
+            async with app.run_test(size=(100, 20)) as pilot:
+                await pilot.pause()
+                drawer = app.screen
+                assert isinstance(drawer, ProjectDrawer)
+                # Live fallback shows the bare thread id until persisted.
+                live = drawer._tree_nodes["session:p-1:t-new"]
+                assert "t-new" in live.label.plain
+                assert "可读标题" not in live.label.plain
+
+                # The catalog catches up; runtime status stays "idle".
+                catalog.sessions["p-1"] = [
+                    _FakeSession("t-new", "可读标题", "2026-01-05T10:00:00")
+                ]
+                drawer._refresh_live_status()
+                await pilot.pause()
+
+                updated = drawer._tree_nodes["session:p-1:t-new"]
+                assert "可读标题" in updated.label.plain
+                await pilot.press("escape")
+
+    asyncio.run(run())
+
+
 def test_dir_label_last_segment() -> None:
     from synapse.ui.drawer import _dir_label
 
