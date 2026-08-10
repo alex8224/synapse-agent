@@ -14,7 +14,12 @@ _ACTIVITY_KINDS = {TurnEventKind.ACTIVITY_STARTED, TurnEventKind.ACTIVITY_UPDATE
 
 
 class TextualTurnEventBridge:
-    """Coalesce preview events and schedule at most one pending UI wake-up."""
+    """Coalesce preview events and schedule at most one pending UI wake-up.
+
+    ``wake_ui`` is expected to enqueue the callback and return immediately.
+    A blocking dispatcher such as ``App.call_from_thread`` defeats the queue
+    coalescing and makes one UI callback run per runtime event.
+    """
 
     def __init__(
         self,
@@ -22,7 +27,7 @@ class TextualTurnEventBridge:
         wake_ui: Callable[[Callable[[], None]], object],
         *,
         max_events: int = 2048,
-        drain_batch: int = 256,
+        drain_batch: int = 64,
     ) -> None:
         self._renderer = renderer
         self._wake_ui = wake_ui
@@ -65,8 +70,16 @@ class TextualTurnEventBridge:
         and the transcript freezes while "thinking" keeps spinning.
         """
         try:
-            self._wake_ui(self.drain)
+            scheduled = self._wake_ui(self.drain)
+            # Textual ``call_after_refresh`` returns False when the message
+            # pump is closing. Do not leave the bridge permanently marked as
+            # pending in that case.
+            if scheduled is False:
+                self.close()
         except RuntimeError:
+            # Synchronous test/compatibility hosts may reject cross-thread
+            # scheduling; preserve their inline behavior. Production uses
+            # ``call_after_refresh`` and never enters this branch.
             self.drain()
         except Exception:  # noqa: BLE001 - detached UI cannot fail turn
             self.close()

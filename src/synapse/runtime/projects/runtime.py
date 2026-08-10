@@ -60,16 +60,57 @@ class ProjectRuntime:
                 default_transcript_projection_path,
             )
 
-            self.session_store = SessionStore(self.settings.resolved_sessions_path())
-            self.transcript_projection = TranscriptProjection(
-                default_transcript_projection_path(
-                    self.settings.resolved_sessions_path()
+            if self.session_store is None:
+                self.session_store = SessionStore(self.settings.resolved_sessions_path())
+            if self.transcript_projection is None:
+                self.transcript_projection = TranscriptProjection(
+                    default_transcript_projection_path(
+                        self.settings.resolved_sessions_path()
+                    )
                 )
-            )
             self._activated = True
 
     def ensure_activated(self) -> None:
         self.activate()
+
+    def register_session(self, runtime: Any) -> Any:
+        """Register one session under this project without replacing live work."""
+        thread_id = str(getattr(runtime, "thread_id", "") or "")
+        if not thread_id:
+            raise ValueError("project session is missing thread_id")
+        runtime_project_id = str(getattr(runtime, "project_id", "") or "")
+        if runtime_project_id and runtime_project_id != self.project_id:
+            raise ValueError(
+                f"session project {runtime_project_id!r} does not match "
+                f"runtime project {self.project_id!r}"
+            )
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("project runtime is closed")
+            existing = self.sessions.get(thread_id)
+            if existing is not None and existing is not runtime:
+                snapshot = getattr(existing, "snapshot", lambda: None)()
+                if snapshot is not None and getattr(snapshot, "active_turn_id", None):
+                    raise RuntimeError("cannot replace an active project session")
+            self.sessions[thread_id] = runtime
+        return runtime
+
+    def get_session(self, thread_id: str) -> Any | None:
+        """Return a session owned by this project."""
+        with self._lock:
+            return self.sessions.get(thread_id)
+
+    def remove_session(self, thread_id: str, runtime: Any | None = None) -> None:
+        """Remove a settled session from the project-owned registry."""
+        with self._lock:
+            current = self.sessions.get(thread_id)
+            if runtime is None or current is runtime:
+                self.sessions.pop(thread_id, None)
+
+    def session_items(self) -> tuple[tuple[str, Any], ...]:
+        """Return a stable snapshot for status and shutdown operations."""
+        with self._lock:
+            return tuple(self.sessions.items())
 
     def has_running_sessions(self) -> bool:
         with self._lock:
@@ -95,6 +136,12 @@ class ProjectRuntime:
             if self._closed:
                 return
             self._closed = True
+            manager = self.manager
+            self.manager = None
+            sessions = tuple(self.sessions.values())
+            self.sessions.clear()
+            self.checkpointer = None
+            self.goal_service = None
             if self.session_store is not None:
                 try:
                     self.session_store.close()
@@ -112,6 +159,21 @@ class ProjectRuntime:
                     pass
             self.session_store = None
             self.transcript_projection = None
+        # SessionRuntime owns turn cancellation. ProjectRuntime only performs
+        # this best-effort fallback for callers that close a project directly.
+        for session in sessions:
+            try:
+                close_threadsafe = getattr(session, "close_threadsafe", None)
+                if callable(close_threadsafe):
+                    close_threadsafe(cancel_active=True, timeout=5.0)
+            except Exception:  # noqa: BLE001 - project eviction must continue
+                pass
+        if manager is not None:
+            try:
+                future = manager._async_runtime.submit(manager.shutdown())  # noqa: SLF001
+                future.result(timeout=5.0)
+            except Exception:  # noqa: BLE001 - manager shutdown is best-effort
+                pass
 
 
 class ProjectRegistry:
@@ -132,6 +194,52 @@ class ProjectRegistry:
                 return existing
             self._projects[runtime.project_id] = runtime
             return runtime
+
+    def get_or_create(
+        self,
+        project_id: str,
+        workspace: Path,
+        settings: Any,
+    ) -> ProjectRuntime:
+        """Return one canonical runtime for a stable project id."""
+        with self._lock:
+            existing = self._projects.get(project_id)
+            if existing is not None:
+                if existing.workspace != workspace.resolve():
+                    raise ValueError(
+                        f"project {project_id!r} is already bound to "
+                        f"{existing.workspace}, not {workspace.resolve()}"
+                    )
+                return existing
+            runtime = ProjectRuntime(
+                project_id=project_id,
+                workspace=workspace.resolve(),
+                settings=settings,
+            )
+            self._projects[project_id] = runtime
+            return runtime
+
+    def project_for_session(self, thread_id: str) -> ProjectRuntime | None:
+        """Find a session across projects for compatibility routing."""
+        with self._lock:
+            projects = tuple(self._projects.values())
+        for project in projects:
+            if project.get_session(thread_id) is not None:
+                return project
+        return None
+
+    def all_sessions(self) -> tuple[Any, ...]:
+        with self._lock:
+            projects = tuple(self._projects.values())
+        return tuple(session for project in projects for _, session in project.session_items())
+
+    def close_all(self) -> None:
+        """Close every project runtime and release its owned resources."""
+        with self._lock:
+            projects = tuple(self._projects.values())
+            self._projects.clear()
+        for project in projects:
+            project.close()
 
     def drop(self, project_id: str) -> None:
         with self._lock:

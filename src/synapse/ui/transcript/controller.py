@@ -52,6 +52,10 @@ class TranscriptController:
         """Forward thread dispatch without exposing the full App to the sink."""
         return self._app.call_from_thread(callback, *args, **kwargs)
 
+    def call_after_refresh(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+        """Queue a UI callback without blocking the producing runtime thread."""
+        return self._app.call_after_refresh(callback, *args, **kwargs)
+
     def apply_turn_usage(self, **kwargs: Any) -> None:
         self._app.apply_turn_usage(**kwargs)
 

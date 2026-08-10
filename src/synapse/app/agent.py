@@ -9,11 +9,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from synapse.app.agent_md import build_agent_md_middleware
+from synapse.app.agent_assembly import (
+    MiddlewareContext,
+    build_agent_middleware,
+)
 from synapse.content.prompts import build_system_prompt
 
 # 长程目标（goal）子系统：工具 + 记账 middleware + 进程级服务
-from synapse.goals.middleware import build_goal_middleware
 from synapse.goals.runtime import get_goal_service, init_goal_service
 from synapse.goals.tools import build_goal_tools
 from synapse.integrations.describe_image import VisionModelConfig
@@ -22,7 +24,6 @@ from synapse.integrations.mcp_client import (
     load_mcp_server_configs,
     load_mcp_tools,
 )
-from synapse.integrations.vision_middleware import build_describe_image_middleware
 from synapse.models.registry import (
     build_model_from_settings,
     model_cache_key,
@@ -30,36 +31,13 @@ from synapse.models.registry import (
     registry_from_settings,
 )
 from synapse.runtime.backends import build_backend
-from synapse.runtime.filesystem_tool_prompt_middleware import (
-    build_filesystem_tool_prompt_middleware,
-)
 from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
-from synapse.runtime.middleware import (
-    build_compact_tool_descriptions,
-    build_intent_schema_middleware,
-    build_model_retry_middleware,
-    build_path_normalize_middleware,
-    build_strip_redundant_prompt_blocks,
-    build_task_namespace_middleware,
-    build_tool_error_recovery_middleware,
-    build_tool_exclusion_middleware,
-)
-from synapse.runtime.model_request_compression_middleware import (
-    build_model_request_compression_middleware,
-)
 from synapse.runtime.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
-from synapse.runtime.steer import SteerQueue, build_steer_middleware
+from synapse.runtime.steer import SteerQueue
 from synapse.runtime.subagents import build_default_subagents
-from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
-from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
-from synapse.runtime.tool_response_truncate_middleware import (
-    build_tool_response_truncate_middleware,
-)
 from synapse.settings import Settings
-from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
-from synapse.tool_output.transformers import load_transformer_plugins
 from synapse.tools import (
     build_describe_image_tools,
     build_filesystem_patch_tool,
@@ -457,7 +435,6 @@ def build_coding_agent(
         )
     )
 
-    output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
     goals_enabled = bool(getattr(settings, "enable_goals", True))
     if goals_enabled:
         try:
@@ -467,93 +444,25 @@ def build_coding_agent(
                 goals_enabled = True
         except Exception:  # noqa: BLE001 - goal 服务失败时降级为禁用
             goals_enabled = False
-    middleware: list[Any] = [
-        build_agent_md_middleware(project_root),
-        # DeepAgents injects generic guidance for ls/glob/grep before user
-        # middleware runs. Append the authoritative Synapse tool interface after it.
-        build_filesystem_tool_prompt_middleware(),
-        build_describe_image_middleware(
-            image_input=primary_image_input,
-            config=vision_config,
-        ),
-        build_model_retry_middleware(),
-        build_task_namespace_middleware(),
-        build_tool_exclusion_middleware(model_request_excluded_tools),
-        # 长程目标记账：每次模型调用边界结算 token/时间用量。
-        build_goal_middleware(enabled=goals_enabled, service=goal_service),
-    ]
-    transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
-    try:
-        output_pipeline = ToolOutputTransformPipeline(
-            transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
-            disabled_types=set(settings.tool_output_disabled_types),
-            use_native=settings.enable_native_tool_output_compression,
-        )
-    except Exception:  # noqa: BLE001
-        output_pipeline = ToolOutputTransformPipeline(
-            disabled_types=set(settings.tool_output_disabled_types),
-            use_native=settings.enable_native_tool_output_compression,
-        )
-    middleware.append(
-        build_tool_output_transform_middleware(
-            output_repository,
-            threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 512),
-            pipeline=output_pipeline,
-            enabled=transform_enabled,
-        )
-    )
-    if transform_enabled:
-        middleware.append(build_tool_output_usage_middleware(output_repository))
-    # Tool middleware compose in declaration order (first = outermost). Keep
-    # recovery inside archival so both normal and recovered error ToolMessages
-    # are durable before the graph checkpoints them.
-    middleware.append(build_tool_error_recovery_middleware())
-    middleware.extend(
-        [
-            build_path_normalize_middleware(root),
-            *build_intent_schema_middleware(),
-        ]
-    )
-    # Keep one queue across graph rebuilds so an active turn and the TUI never
-    # route guidance to different middleware instances.
     if steer_queue is None:
         steer_queue = SteerQueue()
-    middleware.append(build_steer_middleware(steer_queue))
-    if _dag_mw is not None:
-        middleware.append(_dag_mw)
-
-    # Strip redundant prompt blocks injected by deepagents built-in middleware
-    # (TodoList, Filesystem, Skills) that duplicate tool definitions.
-    middleware.append(build_strip_redundant_prompt_blocks())
-    # Replace verbose upstream tool descriptions with concise alternatives
-    # to reduce tool-schema token overhead (~4K -> ~200 chars per tool).
-    middleware.append(build_compact_tool_descriptions())
-    # Deterministic tool-RESPONSE truncation (off by default). Clips oversized
-    # ToolMessage content in messages outside a token-counted keep window while
-    # preserving tool-output:// references; request-only and cache-friendly.
-    # See tool_response_truncate_middleware.
-    middleware.append(build_tool_response_truncate_middleware(settings))
-    middleware.append(build_model_request_compression_middleware(output_repository))
-    # Must be innermost so no later middleware can reintroduce unsupported Codex
-    # roles or DeepSeek-specific request fields after this final adaptation.
-    if getattr(model, "_synapse_openai_oauth", False) is True:
-        from synapse.integrations.openai_oauth_middleware import (
-            build_openai_oauth_compat_middleware,
+    output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    middleware = build_agent_middleware(
+        MiddlewareContext(
+            settings=settings,
+            project_root=root,
+            model=model,
+            output_repository=output_repository,
+            primary_image_input=primary_image_input,
+            vision_config=vision_config,
+            model_request_excluded_tools=model_request_excluded_tools,
+            goal_enabled=goals_enabled,
+            goal_service=goal_service,
+            steer_queue=steer_queue,
+            dag_middleware=_dag_mw,
+            prompt_cache_key=prompt_cache_key,
         )
-
-        middleware.append(
-            build_openai_oauth_compat_middleware(
-                fast_mode=lambda: bool(getattr(settings, "openai_fast_mode", False)),
-                prompt_cache_key=prompt_cache_key,
-            )
-        )
-
-    # Debug capture middleware — innermost, records final provider-ready
-    # request/response pairs for the Debug Inspector (F11 / /debug).
-    from synapse.observability.llm_debug import get_debug_store
-    from synapse.runtime.debug_capture_middleware import build_debug_capture_middleware
-
-    middleware.append(build_debug_capture_middleware(get_debug_store()))
+    )
 
     if progress is not None:
         progress("compiling agent graph")

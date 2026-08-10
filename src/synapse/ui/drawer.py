@@ -382,7 +382,11 @@ class ProjectDrawer(ModalScreen[Any]):
             self._runtime_status_provider is not None
             or self._runtime_status_by_project_provider is not None
         ):
-            self.set_interval(0.25, self._refresh_live_status)
+            # Runtime status changes only on coarse session transitions. A
+            # 250 ms poll needlessly snapshots every runtime and may rebuild a
+            # large catalog tree four times per second while the modal owns
+            # keyboard/mouse focus.
+            self.set_interval(1.0, self._refresh_live_status)
 
     def _current_selected_key(self) -> str:
         """Key of the cursor node, for restoring it after a rebuild."""

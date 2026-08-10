@@ -244,6 +244,57 @@ def test_bridge_coalesces_high_frequency_deltas_and_one_wakeup() -> None:
     assert renderer.last_sequence == 100
 
 
+def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:
+    class _AsyncHost(_Host):
+        def __init__(self) -> None:
+            super().__init__()
+            self.callbacks: list[Any] = []
+            self.blocking_calls = 0
+
+        def call_after_refresh(self, callback: Any, *args: Any, **kwargs: Any) -> bool:
+            self.callbacks.append(lambda: callback(*args, **kwargs))
+            return True
+
+        def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+            del callback, args, kwargs
+            self.blocking_calls += 1
+            # Textual raises this when the sink is already executing on the UI
+            # thread; TextualStreamSink then applies the DOM update inline.
+            raise RuntimeError("already on UI thread")
+
+    host = _AsyncHost()
+    broker = SessionEventBroker("thread")
+    runtime = type(
+        "Runtime",
+        (),
+        {
+            "thread_id": "thread",
+            "broker": broker,
+            "active_context": lambda self: type(
+                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
+            )(),
+            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
+                callback, after_sequence=after_sequence
+            ),
+        },
+    )()
+    app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    controller = TurnController(app)
+    controller.attach(runtime, after_sequence=0)
+
+    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("hello", "m1")))
+
+    assert host.calls == []
+    assert len(host.callbacks) == 1
+    assert host.blocking_calls == 0
+    host.callbacks.pop()()
+    assert host.blocking_calls == 1
+    assert [call for call in host.calls if call[0] == "commit_answer"] == [
+        ("commit_answer", ("hello",), {})
+    ]
+    controller._detach_renderer()
+
+
 def test_bridge_keeps_terminal_and_stops_after_close() -> None:
     host = _Host()
     renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")

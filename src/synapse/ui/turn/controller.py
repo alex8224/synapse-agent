@@ -18,6 +18,7 @@ from textual.widgets import Input
 from synapse.content.multimodal import find_placeholders
 from synapse.runtime.agent_loop import AgentTurnRuntime, TurnContext, TurnStatus
 from synapse.runtime.agent_loop.request import build_resume_request, build_turn_request
+from synapse.runtime.projects import ProjectRegistry, ProjectRuntime
 from synapse.runtime.sessions import (
     SessionPersistence,
     SessionRuntime,
@@ -43,6 +44,10 @@ class TurnController:
         self._persistence = TurnPersistenceController(app)
         self._runtime = AgentTurnRuntime()
         self._session_runtime: SessionRuntime | None = None
+        # ProjectRegistry is the canonical owner of project-scoped resources.
+        # ``_sessions`` remains a thread-id compatibility index for dialogs and
+        # older integrations; new lookups go through the project registry.
+        self._project_registry = ProjectRegistry()
         self._sessions: dict[str, SessionRuntime] = {}
         self._attached_thread_id: str | None = None
         self._event_bridge: TextualTurnEventBridge | None = None
@@ -56,6 +61,41 @@ class TurnController:
         self._project_store: dict[str, Any] = {}
         self._project_goal_service: dict[str, Any] = {}
 
+    def project_runtime_for(
+        self,
+        project_id: str,
+        settings: Any,
+        *,
+        activate: bool = False,
+    ) -> ProjectRuntime:
+        """Return the canonical runtime for one project.
+
+        Project creation is cheap; local SQLite resources are opened only when
+        a caller explicitly requests activation. This keeps catalog browsing
+        independent from project database lifetimes.
+        """
+        workspace = Path(getattr(settings, "workspace", Path.cwd())).expanduser().resolve()
+        runtime = self._project_registry.get_or_create(project_id, workspace, settings)
+        if activate:
+            runtime.ensure_activated()
+        return runtime
+
+    def _current_project_runtime(self, *, activate: bool = False) -> ProjectRuntime | None:
+        project_id_fn = getattr(self._app, "_current_project_id", None)
+        project_id = project_id_fn() if callable(project_id_fn) else ""
+        if not project_id:
+            return None
+        return self.project_runtime_for(project_id, self._app.settings, activate=activate)
+
+    def _runtime_for_thread(self, thread_id: str) -> SessionRuntime | None:
+        """Resolve a session from the active project before legacy fallback."""
+        project = self._current_project_runtime()
+        if project is not None:
+            runtime = project.get_session(thread_id)
+            if runtime is not None:
+                return runtime
+        return self._sessions.get(thread_id)
+
     def goal_service_for(self, project_id: str, settings: Any) -> Any:
         """Return the project-owned GoalService (P7 per-project goal ledger).
 
@@ -64,9 +104,9 @@ class TurnController:
         project gets its own GoalService so goals never bleed across
         workspaces.
         """
-        cached = self._project_goal_service.get(project_id)
-        if cached is not None:
-            return cached
+        project = self.project_runtime_for(project_id, settings)
+        if project.goal_service is not None:
+            return project.goal_service
         from synapse.goals.runtime import GoalService, get_goal_service
         from synapse.goals.store import GoalStore
 
@@ -78,9 +118,11 @@ class TurnController:
             except Exception:  # noqa: BLE001 - probing is best-effort
                 store_path = ""
             if store_path == target:
+                project.goal_service = global_service
                 self._project_goal_service[project_id] = global_service
                 return global_service
         service = GoalService(GoalStore(target))
+        project.goal_service = service
         self._project_goal_service[project_id] = service
         return service
 
@@ -93,20 +135,21 @@ class TurnController:
         callers reuse the frozen snapshot so concurrent projects never mutate
         each other's environment.
         """
-        cached = self._project_settings.get(project_id)
-        if cached is not None:
-            return cached
+        existing = self._project_registry.get(project_id)
+        if existing is not None:
+            return existing.settings
         from synapse.settings.schema import load_project_settings
 
         settings = load_project_settings(workspace)
+        self.project_runtime_for(project_id, settings)
         self._project_settings[project_id] = settings
         return settings
 
     def projection_for(self, project_id: str, settings: Any) -> Any:
         """Return the project-owned transcript projection instance."""
-        cached = self._project_projection.get(project_id)
-        if cached is not None:
-            return cached
+        project = self.project_runtime_for(project_id, settings, activate=True)
+        if project.transcript_projection is not None:
+            return project.transcript_projection
         from synapse.sessions.transcript_projection import (
             TranscriptProjection,
             default_transcript_projection_path,
@@ -115,17 +158,19 @@ class TurnController:
         projection = TranscriptProjection(
             default_transcript_projection_path(settings.resolved_sessions_path())
         )
+        project.transcript_projection = projection
         self._project_projection[project_id] = projection
         return projection
 
     def store_for(self, project_id: str, settings: Any) -> Any:
         """Return the project-owned session/summary store instance."""
-        cached = self._project_store.get(project_id)
-        if cached is not None:
-            return cached
+        project = self.project_runtime_for(project_id, settings, activate=True)
+        if project.session_store is not None:
+            return project.session_store
         from synapse.sessions.store import SessionStore
 
         store = SessionStore(settings.resolved_sessions_path())
+        project.session_store = store
         self._project_store[project_id] = store
         return store
 
@@ -269,6 +314,9 @@ class TurnController:
 
     def runtime_for(self, thread_id: str) -> SessionRuntime | None:
         """Return the process-local runtime for one session, if it has been opened."""
+        project = self._project_registry.project_for_session(thread_id)
+        if project is not None:
+            return project.get_session(thread_id)
         return self._sessions.get(thread_id)
 
     def runtime_for_project(self, project_id: str) -> SessionRuntime | None:
@@ -277,6 +325,10 @@ class TurnController:
         Used to reuse a frozen agent graph when switching back to a project
         that still has live sessions, instead of rebuilding it.
         """
+        project = self._project_registry.get(project_id)
+        if project is not None:
+            for _, runtime in project.session_items():
+                return runtime
         for runtime in tuple(self._sessions.values()):
             if runtime.project_id == project_id:
                 return runtime
@@ -285,7 +337,9 @@ class TurnController:
     def shutdown(self) -> None:
         """Detach UI observers and cancel every session-owned turn on app exit."""
         self._detach_renderer()
-        sessions = tuple(self._sessions.values())
+        sessions = self._project_registry.all_sessions()
+        if not sessions:
+            sessions = tuple(self._sessions.values())
         self._sessions.clear()
         self._session_runtime = None
         self._attached_thread_id = None
@@ -297,6 +351,7 @@ class TurnController:
                     runtime.cancel("shutdown")
                 except Exception:  # noqa: BLE001 - final teardown fallback
                     pass
+        self._project_registry.close_all()
 
     def detach(self, thread_id: str | None = None) -> None:
         """Detach rendering only; never cancel the session-owned turn."""
@@ -320,7 +375,7 @@ class TurnController:
         start/attach race without repainting older broker history.
         """
         self._detach_renderer()
-        runtime = self._sessions.get(target) if isinstance(target, str) else target
+        runtime = self.runtime_for(target) if isinstance(target, str) else target
         self._attached_thread_id = target if isinstance(target, str) else target.thread_id
         self._session_runtime = runtime
         if runtime is None:
@@ -336,7 +391,19 @@ class TurnController:
             thread_id=context.thread_id,
             turn_id=context.turn_id,
         )
-        bridge = TextualTurnEventBridge(renderer, app._transcript.call_from_thread)
+        # ``call_from_thread`` waits for the callback to finish. Using it here
+        # makes every broker event synchronously round-trip through Textual,
+        # which starves input and mouse events during a token/tool stream.
+        # ``call_after_refresh`` posts a non-blocking UI callback; keep the
+        # old method only for lightweight compatibility hosts without it.
+        wake_ui = (
+            getattr(app._transcript, "call_after_refresh", None)
+            if callable(getattr(type(app._transcript), "call_after_refresh", None))
+            else None
+        )
+        if wake_ui is None:
+            wake_ui = app._transcript.call_from_thread
+        bridge = TextualTurnEventBridge(renderer, wake_ui)
         # SessionRuntime subscriptions deliver SessionEventEnvelope objects;
         # the renderer/bridge consumes TurnEvent objects. TurnEvent.sequence is
         # local to one turn and resets to 1, while replay spans multiple turns;
@@ -365,8 +432,11 @@ class TurnController:
     @staticmethod
     def _active_turn_replay_cursor(runtime: SessionRuntime, turn_id: str) -> int:
         """Return the broker cursor immediately before the active turn."""
-        cursor = runtime.snapshot().latest_sequence
-        events_after = getattr(runtime.broker, "events_after", None)
+        snapshot_fn = getattr(runtime, "snapshot", None)
+        snapshot = snapshot_fn() if callable(snapshot_fn) else None
+        cursor = int(getattr(snapshot, "latest_sequence", 0) or 0)
+        broker = getattr(runtime, "broker", None)
+        events_after = getattr(broker, "events_after", None)
         if not callable(events_after):
             return cursor
         envelopes = events_after(0)
@@ -405,7 +475,7 @@ class TurnController:
         """Bind a rebuilt graph to a cold/idle session without replacing live work."""
         if agent is None:
             return None
-        runtime = self._sessions.get(thread_id)
+        runtime = self.runtime_for(thread_id)
         if runtime is not None and runtime.snapshot().active_turn_id is not None:
             return runtime
         if runtime is not None and runtime.agent is agent:
@@ -428,7 +498,7 @@ class TurnController:
             project_id = pid() if callable(pid) else (str(pid or ""))
         if settings is None:
             settings = app.settings
-        runtime = self._sessions.get(thread_id)
+        runtime = self.runtime_for(thread_id)
         if (
             runtime is not None
             and runtime.project_id == project_id
@@ -456,6 +526,8 @@ class TurnController:
                 goal_service=getattr(agent, "_coding_goal_service", None),
                 on_status_change=self._on_session_status_changed,
             )
+            project = self.project_runtime_for(project_id, settings, activate=True)
+            project.register_session(runtime)
             self._sessions[thread_id] = runtime
         if self._attached_thread_id in {None, thread_id}:
             self._attached_thread_id = thread_id
@@ -612,7 +684,7 @@ class TurnController:
             app.call_from_thread(app._turn_done)
             return
         turn_thread_id = thread_id or app.thread_id
-        runtime = self._sessions.get(turn_thread_id)
+        runtime = self.runtime_for(turn_thread_id)
         turn_agent = agent or (runtime.agent if runtime is not None else app.agent)
         if app._agent_error or turn_agent is None:
             app.call_from_thread(
@@ -726,7 +798,7 @@ class TurnController:
 
         app = self._app
         turn_thread_id = thread_id or app.thread_id
-        runtime = self._sessions.get(turn_thread_id)
+        runtime = self.runtime_for(turn_thread_id)
         turn_agent = agent or (runtime.agent if runtime is not None else app.agent)
         if turn_agent is None:
             app.call_from_thread(app.append_event, "agent unavailable", "bold red")
