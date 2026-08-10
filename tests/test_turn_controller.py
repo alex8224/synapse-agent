@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.agent_loop.request import build_turn_request
-from synapse.runtime.sessions import SessionRuntime
+from synapse.runtime.sessions import SessionRuntime, SessionStatus
 from synapse.runtime.steer import SteerQueue
 from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
@@ -287,7 +287,7 @@ def test_switch_keeps_background_session_running() -> None:
     import concurrent.futures
 
     from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-    from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
+    from synapse.runtime.sessions import SessionRuntime, UserTurn
 
     class _Controlled:
         def __init__(self) -> None:
@@ -462,7 +462,7 @@ def test_mounted_tui_switches_live_sessions_without_exit(monkeypatch, tmp_path) 
 
     from synapse.config import Settings
     from synapse.runtime.agent_loop import CancelToken, TurnHandle
-    from synapse.runtime.sessions import SessionRuntime, SessionStatus
+    from synapse.runtime.sessions import SessionRuntime
     from synapse.ui.tui import CodingAgentApp
 
     class _ControlledRuntime:
@@ -672,7 +672,7 @@ def test_background_turn_finish_does_not_touch_foreground_ui() -> None:
     import concurrent.futures
 
     from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-    from synapse.runtime.sessions import SessionRuntime, SessionStatus, UserTurn
+    from synapse.runtime.sessions import SessionRuntime, UserTurn
 
     class _Controlled:
         def __init__(self) -> None:
@@ -1117,3 +1117,192 @@ def test_run_turn_replays_only_events_after_start_cursor() -> None:
     )
 
     controller.attach.assert_called_once_with(runtime, after_sequence=12)
+
+
+class TestActiveSessionItems:
+    """TurnController.active_session_items() snapshot for the Ctrl+Tab switcher."""
+
+    @staticmethod
+    def _runtime(
+        controller: TurnController,
+        *,
+        thread_id: str,
+        project_id: str,
+        status: SessionStatus,
+        activity: float,
+        workspace: str = "proj",
+    ) -> SessionRuntime:
+        from datetime import UTC, datetime, timedelta
+
+        runtime = SessionRuntime(
+            thread_id=thread_id,
+            project_id=project_id,
+            agent=SimpleNamespace(_coding_goal_service=None),
+            settings=SimpleNamespace(model="test", workspace="."),
+            turn_runtime=controller._runtime,
+            workspace=workspace,
+        )
+        # White-box: drive the snapshot status/activity directly; the public
+        # transitions need a live turn handle we do not want to spin here.
+        runtime._status = status  # type: ignore[attr-defined]
+        runtime._last_activity_at = datetime.now(UTC) - timedelta(seconds=activity)
+        return runtime
+
+    def _controller(self) -> TurnController:
+        app = _FakeApp()
+        app.settings = SimpleNamespace(model="test", workspace=".")
+        app._current_project_id = lambda: "p1"
+        return TurnController(app)
+
+    def test_returns_only_active_statuses(self) -> None:
+        controller = self._controller()
+        for tid, status in [
+            ("a", SessionStatus.RUNNING),
+            ("b", SessionStatus.QUEUED),
+            ("c", SessionStatus.WAITING_APPROVAL),
+            ("d", SessionStatus.IDLE),
+            ("e", SessionStatus.FAILED),
+            ("f", SessionStatus.CLOSED),
+            ("g", SessionStatus.CANCELLED),
+        ]:
+            controller._sessions[tid] = self._runtime(
+                controller,
+                thread_id=tid,
+                project_id="p1",
+                status=status,
+                activity=1.0,
+            )
+
+        items = controller.active_session_items()
+        assert {item.thread_id for item in items} == {"a", "b", "c"}
+
+    def test_includes_cross_project_active_runtimes(self) -> None:
+        controller = self._controller()
+        for project_id, tid in [("p1", "a"), ("p2", "b")]:
+            runtime = self._runtime(
+                controller,
+                thread_id=tid,
+                project_id=project_id,
+                status=SessionStatus.RUNNING,
+                activity=1.0,
+            )
+            project = controller.project_runtime_for(
+                project_id, SimpleNamespace(model="test", workspace=".")
+            )
+            project.register_session(runtime)
+
+        items = controller.active_session_items()
+        assert {item.project_id for item in items} == {"p1", "p2"}
+        assert {item.thread_id for item in items} == {"a", "b"}
+
+    def test_sorted_by_last_activity_desc(self) -> None:
+        controller = self._controller()
+        # 'old' updated 100s ago, 'new' updated 1s ago, 'mid' 50s ago.
+        for tid, activity in [("old", 100.0), ("new", 1.0), ("mid", 50.0)]:
+            controller._sessions[tid] = self._runtime(
+                controller,
+                thread_id=tid,
+                project_id="p1",
+                status=SessionStatus.RUNNING,
+                activity=activity,
+            )
+
+        items = controller.active_session_items()
+        assert [item.thread_id for item in items] == ["new", "mid", "old"]
+
+    def test_title_falls_back_to_thread_id(self) -> None:
+        controller = self._controller()
+        runtime = self._runtime(
+            controller,
+            thread_id="abcdef1234567890",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+        runtime.active_context = MagicMock(return_value=None)  # type: ignore[method-assign]
+        controller._sessions[runtime.thread_id] = runtime
+
+        items = controller.active_session_items()
+        assert items[0].title == "abcdef12"
+
+    def test_title_from_store(self) -> None:
+        from synapse.sessions.store import SessionInfo
+
+        controller = self._controller()
+        store = MagicMock()
+        store.get.return_value = SessionInfo(
+            thread_id="a",
+            title="  stored title  ",
+            model="test",
+            created_at="2026-08-01 09:00:00",
+            updated_at="2026-08-01 09:00:00",
+            tags=[],
+        )
+        controller._project_store["p1"] = store
+        controller._sessions["a"] = self._runtime(
+            controller,
+            thread_id="a",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+
+        items = controller.active_session_items()
+        assert items[0].title == "stored title"
+
+    def test_item_contains_project_id_and_current_flag(self) -> None:
+        controller = self._controller()
+        controller._sessions["a"] = self._runtime(
+            controller,
+            thread_id="a",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+        controller._sessions["b"] = self._runtime(
+            controller,
+            thread_id="b",
+            project_id="p2",
+            status=SessionStatus.RUNNING,
+            activity=2.0,
+        )
+
+        items = controller.active_session_items()
+        by_id = {item.thread_id: item for item in items}
+        assert by_id["a"].project_id == "p1"
+        assert by_id["b"].project_id == "p2"
+
+    def test_empty_when_no_active_sessions(self) -> None:
+        controller = self._controller()
+        controller._sessions["idle"] = self._runtime(
+            controller,
+            thread_id="idle",
+            project_id="p1",
+            status=SessionStatus.IDLE,
+            activity=1.0,
+        )
+        assert controller.active_session_items() == ()
+
+    def test_current_flag_marks_attached_thread(self) -> None:
+        controller = self._controller()
+        app = controller._app
+        app.thread_id = "b"
+        controller._sessions["a"] = self._runtime(
+            controller,
+            thread_id="a",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+        controller._sessions["b"] = self._runtime(
+            controller,
+            thread_id="b",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=2.0,
+        )
+
+        items = controller.active_session_items()
+        by_id = {item.thread_id: item for item in items}
+        assert by_id["a"].current is False
+        assert by_id["b"].current is True

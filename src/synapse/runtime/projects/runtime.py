@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from synapse.runtime.sessions import ACTIVE_SESSION_STATUSES
 from synapse.runtime.sessions.manager import RuntimeManager
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -123,8 +124,9 @@ class ProjectRuntime:
     def has_running_sessions(self) -> bool:
         with self._lock:
             sessions = tuple(self.sessions.values())
+        active_values = {s.value for s in ACTIVE_SESSION_STATUSES}
         return any(
-            snapshot.status.value in {"queued", "starting", "running", "cancelling"}
+            getattr(snapshot.status, "value", str(snapshot.status)) in active_values
             for snapshot in (s.snapshot() for s in sessions if hasattr(s, "snapshot"))
         )
 

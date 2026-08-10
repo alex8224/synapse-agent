@@ -20,6 +20,7 @@ from synapse.runtime.agent_loop import AgentTurnRuntime, TurnContext, TurnStatus
 from synapse.runtime.agent_loop.request import build_resume_request, build_turn_request
 from synapse.runtime.projects import ProjectRegistry, ProjectRuntime
 from synapse.runtime.sessions import (
+    ACTIVE_SESSION_STATUSES,
     SessionPersistence,
     SessionRuntime,
     SessionStatus,
@@ -31,6 +32,7 @@ from synapse.runtime.steer import (
     format_steer_message,
     get_agent_steer_queue,
 )
+from synapse.ui.dialogs.active_session_switcher import ActiveSessionItem
 from synapse.ui.stream import extract_last_ai_text
 from synapse.ui.turn.event_bridge import TextualTurnEventBridge
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
@@ -282,14 +284,7 @@ class TurnController:
     def background_running_count(self) -> int:
         current = self._app.thread_id
         return sum(
-            runtime.snapshot().status
-            in {
-                SessionStatus.QUEUED,
-                SessionStatus.STARTING,
-                SessionStatus.RUNNING,
-                SessionStatus.CANCELLING,
-                SessionStatus.WAITING_APPROVAL,
-            }
+            runtime.snapshot().status in ACTIVE_SESSION_STATUSES
             for thread_id, runtime in self._sessions.items()
             if thread_id != current
         )
@@ -312,6 +307,84 @@ class TurnController:
                 snapshot.status.value
             )
         return by_project
+
+    def active_session_items(self) -> tuple[ActiveSessionItem, ...]:
+        """Snapshot of in-process active sessions for the Ctrl+Tab switcher.
+
+        Sources the canonical ``ProjectRegistry`` (which also owns cross-project
+        background runtimes) with the legacy ``_sessions`` compatibility index
+        as a fallback for early-startup sessions that were never registered.
+        Cold/idle/terminal sessions never appear, even when they are the
+        currently attached thread.
+        """
+        runtimes: dict[str, SessionRuntime] = {}
+        for runtime in self._project_registry.all_sessions():
+            runtimes[runtime.thread_id] = runtime
+        for runtime in tuple(self._sessions.values()):
+            runtimes.setdefault(runtime.thread_id, runtime)
+
+        current = self._app.thread_id
+        items: list[ActiveSessionItem] = []
+        for runtime in runtimes.values():
+            snapshot = runtime.snapshot()
+            if snapshot.status not in ACTIVE_SESSION_STATUSES:
+                continue
+            items.append(
+                ActiveSessionItem(
+                    project_id=snapshot.project_id,
+                    thread_id=snapshot.thread_id,
+                    title=self._active_session_title(runtime, snapshot),
+                    project_label=self._project_label(runtime),
+                    status=snapshot.status,
+                    last_activity_at=snapshot.last_activity_at,
+                    current=snapshot.thread_id == current,
+                )
+            )
+        items.sort(key=lambda item: item.last_activity_at, reverse=True)
+        return tuple(items)
+
+    def _active_session_title(self, runtime: SessionRuntime, snapshot: Any) -> str:
+        """Best-effort row title: stored title, current turn input, then id."""
+        stored = self._stored_session_title(runtime)
+        if stored:
+            return stored
+        try:
+            context = runtime.active_context()
+            text = getattr(getattr(context, "request", None), "input", None)
+            first = next(
+                (ln.strip() for ln in str(text or "").splitlines() if ln.strip()), ""
+            )
+            if first:
+                return first[:120]
+        except Exception:  # noqa: BLE001 - input probe is best-effort
+            pass
+        return snapshot.thread_id[:8]
+
+    def _stored_session_title(self, runtime: SessionRuntime) -> str:
+        """Look up the persisted title for one session (bounded, best-effort)."""
+        try:
+            store = self._project_store.get(runtime.project_id)
+            if store is None:
+                store = self.store_for(runtime.project_id, runtime.settings)
+            info = store.get(runtime.thread_id)
+            title = (getattr(info, "title", "") or "").strip() if info is not None else ""
+            return title[:120]
+        except Exception:  # noqa: BLE001 - title lookup is best-effort
+            return ""
+
+    @staticmethod
+    def _project_label(runtime: SessionRuntime) -> str:
+        """Derive a short project label from the runtime workspace."""
+        workspace = getattr(runtime, "workspace", None)
+        if workspace is not None:
+            try:
+                name = Path(str(workspace)).name
+                if name:
+                    return name
+            except Exception:  # noqa: BLE001 - label is best-effort
+                pass
+        project_id = getattr(runtime, "project_id", "") or ""
+        return project_id[:8] if project_id else ""
 
     def runtime_for(self, thread_id: str) -> SessionRuntime | None:
         """Return the process-local runtime for one session, if it has been opened."""
@@ -454,13 +527,7 @@ class TurnController:
             app._sync_prompt_placeholder()
             return
         status = runtime.snapshot().status
-        busy = status in {
-            SessionStatus.QUEUED,
-            SessionStatus.STARTING,
-            SessionStatus.RUNNING,
-            SessionStatus.CANCELLING,
-            SessionStatus.WAITING_APPROVAL,
-        }
+        busy = status in ACTIVE_SESSION_STATUSES
         app.__dict__["_busy_projection"] = busy
         if status is SessionStatus.CANCELLING:
             app.set_activity("cancelling", "", True)

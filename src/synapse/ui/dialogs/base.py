@@ -310,6 +310,22 @@ class DialogBody(VerticalScroll):
             self._sync_hover()
             self.scroll_to_widget(self._rows[self._selected_idx], animate=False)
 
+    def move_down_cyclic(self) -> None:
+        """Move to the next row, wrapping from the last row to the first."""
+        if not self._rows:
+            return
+        self._selected_idx = (self._selected_idx + 1) % len(self._rows)
+        self._sync_hover()
+        self.scroll_to_widget(self._rows[self._selected_idx], animate=False)
+
+    def move_up_cyclic(self) -> None:
+        """Move to the previous row, wrapping from the first row to the last."""
+        if not self._rows:
+            return
+        self._selected_idx = (self._selected_idx - 1) % len(self._rows)
+        self._sync_hover()
+        self.scroll_to_widget(self._rows[self._selected_idx], animate=False)
+
     def on_click(self, event: Click) -> None:
         """Select an option row when it is clicked."""
         if isinstance(event.widget, OptionRow):

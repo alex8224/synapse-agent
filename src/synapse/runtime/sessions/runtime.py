@@ -7,6 +7,7 @@ import threading
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -35,6 +36,26 @@ class SessionStatus(StrEnum):
     WAITING_APPROVAL = "waiting_approval"
     FAILED = "failed"
     CLOSED = "closed"
+
+
+#: Statuses where the session is still doing observable work in-process.  Used
+#: by the Ctrl+Tab active-session switcher and background-activity chrome;
+#: cold/idle/terminal sessions never appear there even when they are the
+#: currently attached thread.
+ACTIVE_SESSION_STATUSES: frozenset[SessionStatus] = frozenset(
+    {
+        SessionStatus.QUEUED,
+        SessionStatus.STARTING,
+        SessionStatus.RUNNING,
+        SessionStatus.CANCELLING,
+        SessionStatus.WAITING_APPROVAL,
+    }
+)
+
+
+def _utcnow() -> datetime:
+    """Monotonic-ish UTC wall clock for activity ordering."""
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +97,7 @@ class SessionSnapshot:
     usage: SessionUsage
     goal: Any | None = None
     last_error: str | None = None
+    last_activity_at: datetime = field(default_factory=_utcnow)
 
 
 class SessionRuntime:
@@ -116,6 +138,7 @@ class SessionRuntime:
         self._usage = SessionUsage()
         self._last_error: str | None = None
         self._goal: Any | None = None
+        self._last_activity_at = _utcnow()
         self._lock = threading.Lock()
         self._closed = False
         self._settle_tasks: set[asyncio.Task[None]] = set()
@@ -211,6 +234,7 @@ class SessionRuntime:
                 self._latest_handle = handle
                 self._status = SessionStatus.RUNNING
                 self._last_error = None
+                self._last_activity_at = _utcnow()
         except BaseException:
             if context is not None:
                 abort = getattr(self._goal_service, "on_turn_abort", None)
@@ -223,6 +247,7 @@ class SessionRuntime:
                 if reservation is not None and self._reservation == reservation:
                     self._reservation = None
                     self._status = SessionStatus.IDLE
+                    self._last_activity_at = _utcnow()
                     notify_failed_start = True
             if notify_failed_start:
                 self._notify_status()
@@ -284,6 +309,7 @@ class SessionRuntime:
             reservation = TurnReservation(thread_id=self.thread_id, token=uuid.uuid4().hex)
             self._reservation = reservation
             self._status = SessionStatus.STARTING
+            self._last_activity_at = _utcnow()
         self._notify_status()
         return reservation
 
@@ -294,6 +320,7 @@ class SessionRuntime:
                 return False
             self._reservation = None
             self._status = SessionStatus.IDLE
+            self._last_activity_at = _utcnow()
         self._notify_status()
         return True
 
@@ -336,12 +363,14 @@ class SessionRuntime:
             if self._active_handle is not None and not self._active_handle.done():
                 raise RuntimeError("session already has an active turn")
             self._status = SessionStatus.QUEUED
+            self._last_activity_at = _utcnow()
         self._notify_status()
 
     def clear_queued(self) -> None:
         with self._lock:
             if self._status in {SessionStatus.QUEUED, SessionStatus.STARTING}:
                 self._status = SessionStatus.IDLE
+                self._last_activity_at = _utcnow()
                 changed = True
             else:
                 changed = False
@@ -353,6 +382,7 @@ class SessionRuntime:
             if self._status is not SessionStatus.QUEUED:
                 raise RuntimeError("session must be queued before starting")
             self._status = SessionStatus.STARTING
+            self._last_activity_at = _utcnow()
         self._notify_status()
 
     async def wait_for_settlement(self, handle: TurnHandle) -> SessionSnapshot:
@@ -389,6 +419,7 @@ class SessionRuntime:
             if handle.done():
                 return False
             self._status = SessionStatus.CANCELLING
+            self._last_activity_at = _utcnow()
         self._notify_status()
         return handle.cancel(reason)
 
@@ -410,6 +441,7 @@ class SessionRuntime:
                 usage=self._usage,
                 goal=self._goal,
                 last_error=self._last_error,
+                last_activity_at=self._last_activity_at,
             )
 
     def subscribe(
@@ -435,6 +467,7 @@ class SessionRuntime:
             await asyncio.gather(*tasks, return_exceptions=True)
         with self._lock:
             self._status = SessionStatus.CLOSED
+            self._last_activity_at = _utcnow()
             self._active_handle = None
             self._latest_handle = None
             self._active_context = None
@@ -498,6 +531,7 @@ class SessionRuntime:
             )
             if publish_terminal:
                 self._status = status
+                self._last_activity_at = _utcnow()
         if publish_terminal:
             self._notify_status()
 

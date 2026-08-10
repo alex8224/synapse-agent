@@ -224,6 +224,23 @@ class CodingAgentApp(App[None]):
         Binding("f10", "dialog_sessions_delete", "Delete sessions", show=False),
         Binding("f11", "dialog_debug_inspector", "Debug Inspector", show=True),
         Binding("f12", "project_drawer", "Projects", show=True),
+        # Active-session switcher: priority so the prompt Input never eats it.
+        # ctrl+tab is the primary key; ctrl+o is a terminal-safe fallback
+        # because several terminals never forward ctrl+tab to the app.
+        Binding(
+            "ctrl+tab",
+            "active_session_switcher",
+            "Active sessions",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+o",
+            "active_session_switcher",
+            "Active sessions",
+            show=False,
+            priority=True,
+        ),
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -269,6 +286,10 @@ class CodingAgentApp(App[None]):
 
     def action_project_drawer(self) -> None:
         self._open_project_drawer()
+
+    def action_active_session_switcher(self) -> None:
+        """Open the Ctrl+Tab active-session switcher."""
+        self._open_active_session_switcher()
 
     @work(thread=True, exclusive=True, group="debug-inspector")
     def _start_debug_inspector(self) -> None:
@@ -1163,6 +1184,30 @@ class CodingAgentApp(App[None]):
         """Workspace chrome (``≡``) click → open the project/session drawer."""
         event.stop()
         self._open_project_drawer()
+
+    def _open_active_session_switcher(self) -> None:
+        from synapse.ui.dialogs import ActiveSessionSwitcherDialog
+
+        turn = getattr(self, "_turn", None)
+        items = turn.active_session_items() if turn is not None else ()
+        self.push_screen(
+            ActiveSessionSwitcherDialog(list(items)),
+            self._on_active_session_switcher_done,
+        )
+
+    def _on_active_session_switcher_done(self, result: object) -> None:
+        if result is None:
+            return
+        action, project_id, thread_id = result
+        if action != "switch_active_session" or not thread_id:
+            return
+        # Selecting the current session just closes the dialog.
+        if thread_id == self.thread_id:
+            return
+        if project_id == self._current_project_id():
+            self._slash.apply_session_switch(thread_id)
+        else:
+            self._switch_project(project_id, thread_id)
 
     def _open_project_drawer(self) -> None:
         from synapse.ui.drawer import ProjectDrawer

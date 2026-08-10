@@ -18,6 +18,7 @@ from synapse.runtime.sessions.ref import (
     resolve_session_ref,
 )
 from synapse.runtime.sessions.runtime import (
+    ACTIVE_SESSION_STATUSES,
     SessionRuntime,
     SessionSnapshot,
     SessionStatus,
@@ -27,6 +28,7 @@ from synapse.runtime.sessions.runtime import (
 )
 
 __all__ = [
+    "ACTIVE_SESSION_STATUSES",
     "ProjectSharedResources",
     "RuntimeManager",
     "SessionEventBroker",

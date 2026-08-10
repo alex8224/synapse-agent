@@ -1566,3 +1566,270 @@ class TestApplyOkResult:
         app._apply_ok_result(ok)
         assert app.agent is not None
         assert app.thread_id == "old-thread"
+
+
+class TestActiveSessionSwitcherDialog:
+    """Ctrl+Tab active-session switcher: bindings, cyclic navigation, result."""
+
+    @staticmethod
+    def _item(
+        thread_id: str,
+        project_id: str = "p1",
+        *,
+        current: bool = False,
+    ):
+        from datetime import UTC, datetime
+
+        from synapse.runtime.sessions import SessionStatus
+        from synapse.ui.dialogs.active_session_switcher import ActiveSessionItem
+
+        return ActiveSessionItem(
+            project_id=project_id,
+            thread_id=thread_id,
+            title=f"session {thread_id}",
+            project_label="synapse",
+            status=SessionStatus.RUNNING,
+            last_activity_at=datetime.now(UTC),
+            current=current,
+        )
+
+    @staticmethod
+    def _host_app():
+        from textual.app import App
+
+        from synapse.ui.theme import get_theme
+
+        class HostApp(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+        return HostApp()
+
+    def test_bindings_include_tab_navigation(self):
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        keys = {b.key for b in ActiveSessionSwitcherDialog.BINDINGS}
+        assert "tab" in keys
+        assert "ctrl+tab" in keys
+        assert "shift+tab" in keys
+        assert "enter" in keys
+        assert "escape" in keys
+
+    def test_initial_selection_first_item_when_current_absent(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a"), self._item("b"), self._item("c")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("a")
+
+        asyncio.run(exercise())
+
+    def test_initial_selection_lands_after_current(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [
+                self._item("a"),
+                self._item("b", current=True),
+                self._item("c"),
+            ]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("c")
+
+        asyncio.run(exercise())
+
+    def test_initial_selection_wraps_after_last_current(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [
+                self._item("a"),
+                self._item("b"),
+                self._item("c", current=True),
+            ]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("a")
+
+        asyncio.run(exercise())
+
+    def test_tab_wraps_to_first_item(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a"), self._item("b"), self._item("c")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                await pilot.press("tab")
+                await pilot.press("tab")
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("c")
+                await pilot.press("tab")
+                assert body.selected_key.endswith("a")
+
+        asyncio.run(exercise())
+
+    def test_ctrl_tab_also_moves_to_next_item(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a"), self._item("b")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                await pilot.press("ctrl+tab")
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("b")
+                await pilot.press("ctrl+tab")
+                assert body.selected_key.endswith("a")
+
+        asyncio.run(exercise())
+
+    def test_shift_tab_wraps_to_last_item(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a"), self._item("b"), self._item("c")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                await pilot.press("shift+tab")
+                body = app.screen.query_one("#dialog-body")
+                assert body.selected_key.endswith("c")
+
+        asyncio.run(exercise())
+
+    def test_enter_dismisses_with_project_and_thread(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        results: list[object] = []
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a", project_id="p9"), self._item("b")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog, results.append)
+                await pilot.pause()
+                await pilot.press("tab")  # move onto b
+                await pilot.press("enter")
+                await pilot.pause()
+
+        asyncio.run(exercise())
+        assert results == [("switch_active_session", "p1", "b")]
+
+    def test_empty_list_enter_is_noop_and_escape_closes(self):
+        import asyncio
+
+        from textual.widgets import Static
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        results: list[object] = []
+        dialog = ActiveSessionSwitcherDialog([])
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog, results.append)
+                await pilot.pause()
+                assert "No active sessions" in app.screen.query_one(Static).render().plain
+                await pilot.press("enter")
+                await pilot.pause()
+                assert isinstance(app.screen, ActiveSessionSwitcherDialog)
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not isinstance(app.screen, ActiveSessionSwitcherDialog)
+
+        asyncio.run(exercise())
+        assert results == [None]
+
+    def test_current_row_is_marked(self):
+        import asyncio
+
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+
+        dialog = ActiveSessionSwitcherDialog(
+            [self._item("a", current=True), self._item("b")]
+        )
+
+        async def exercise() -> None:
+            app = self._host_app()
+            async with app.run_test(size=(100, 30)) as pilot:
+                await app.push_screen(dialog)
+                await pilot.pause()
+                body = app.screen.query_one("#dialog-body")
+                assert any(
+                    "current" in row.render().plain for row in body._rows
+                )
+
+        asyncio.run(exercise())

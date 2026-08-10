@@ -1,5 +1,9 @@
 """Interactive dialog screens for slash commands."""
 
+from synapse.ui.dialogs.active_session_switcher import (
+    ActiveSessionItem,
+    ActiveSessionSwitcherDialog,
+)
 from synapse.ui.dialogs.base import DialogBase, OptionItem, dialog_css
 from synapse.ui.dialogs.codex_session_list import CodexSessionListDialog
 from synapse.ui.dialogs.compression_diagnostics import CompressionDiagnosticsDialog
@@ -12,6 +16,8 @@ from synapse.ui.dialogs.subagent_monitor import SubagentMonitorDialog
 from synapse.ui.dialogs.theme_picker import ThemePickerDialog
 
 __all__ = [
+    "ActiveSessionItem",
+    "ActiveSessionSwitcherDialog",
     "CodexSessionListDialog",
     "CompressionDiagnosticsDialog",
     "DialogBase",
