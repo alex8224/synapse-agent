@@ -34,8 +34,8 @@ from synapse.content.multimodal import (
     ImageBank,
 )
 from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
+from synapse.runtime.sessions import TurnReservation
 from synapse.runtime.steer import SteerQueue
-from synapse.sessions.session_recap import SessionRecapController
 from synapse.sessions.transcript_projection import (
     TranscriptProjection,
     TranscriptUsage,
@@ -362,13 +362,6 @@ class CodingAgentApp(App[None]):
         self._slash = SlashController(self)
         # Invalidates callbacks queued by a stream sink from an older session.
         self._transcript_generation = 0
-        self._session_recap = SessionRecapController(
-            enabled=bool(getattr(settings, "session_recap_enabled", True)),
-            idle_seconds=float(
-                getattr(settings, "session_recap_idle_seconds", 180.0) or 180.0
-            ),
-            min_turns=int(getattr(settings, "session_recap_min_turns", 3) or 3),
-        )
         # Global project catalog (projection) and per-turn summary persistence.
         self._project_catalog: Any = None
         self._summary_store: Any = None
@@ -1560,8 +1553,6 @@ class CodingAgentApp(App[None]):
             # Auto-open subagent monitor when DAG planning registers tasks
             # during an active turn — shows live status immediately.
             self._maybe_auto_open_subagent_monitor()
-        else:
-            self._maybe_show_session_recap()
         # Keep Thought "Thinking… Xs" / final seal clock honest between tokens.
         live = self._transcript.state.live_stream_block
         if isinstance(live, ThoughtBlock) and live.live:
@@ -1745,42 +1736,51 @@ class CodingAgentApp(App[None]):
         self._transcript.append_event(message, style)
 
     def action_cancel_run(self) -> None:
-        """ESC: abort the in-flight agent loop so the user can start a new turn."""
+        """ESC: cancel the turn and pause its goal continuation loop."""
         if isinstance(self.screen, ModalScreen):
             return
-        if not self._turn.busy:
-            return
-        # Idempotent: repeated ESC only re-asserts the cancel flag.
+        turn_busy = self._turn.busy
+        projection_busy = self._busy
         if self._compacting_context:
             self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
             return
-        self._turn.cancel("user")
-        self._pause_goal_for_interrupt()
+        goal_paused = self._pause_goal_for_interrupt()
+        if not turn_busy and not projection_busy and not goal_paused:
+            return
+        # Idempotent: repeated ESC only re-asserts the cancel flag.
+        # This event also fences a goal/steer follow-up already posted through
+        # call_after_refresh but not started yet. Set it before cancelling the
+        # active handle so turn settlement cannot win the scheduling race.
+        self._cancel_event.set()
+        if turn_busy:
+            self._turn.cancel("user")
         self.set_activity("idle", "cancelling…", True)
-        self.append_event("正在终止当前任务… (Esc)", "yellow")
+        message = "正在终止当前任务… (Esc)" if turn_busy else "已暂停当前 goal。"
+        self.append_event(message, "yellow")
 
-    def _pause_goal_for_interrupt(self) -> None:
+    def _pause_goal_for_interrupt(self) -> bool:
         """Pause the current active goal when Esc interrupts a turn."""
         service = getattr(self.agent, "_coding_goal_service", None)
         thread_id = self.thread_id
         if service is None or not thread_id:
-            return
+            return False
         try:
             from synapse.goals.model import ThreadGoalStatus
 
             goal = service.get(thread_id)
             if goal is None or goal.status != ThreadGoalStatus.ACTIVE:
-                return
-            service.pause_goal(thread_id)
+                return False
+            paused, _ = service.pause_goal(thread_id)
+            return paused is not None and paused.status == ThreadGoalStatus.PAUSED
         except Exception:  # noqa: BLE001 - cancellation must remain reliable
-            pass
+            return False
 
     def on_key(self, event: Key) -> None:
         # When a modal dialog is open, let it handle keys exclusively.
         if isinstance(self.screen, ModalScreen):
             return
         # Backup path if a child widget swallows Escape before bindings fire.
-        if event.key == "escape" and self._turn.busy:
+        if event.key == "escape" and self._busy:
             self.action_cancel_run()
             event.stop()
             event.prevent_default()
@@ -1795,7 +1795,6 @@ class CodingAgentApp(App[None]):
         self._subagent_status_text = ""
         # Drop paginated-history state together with the DOM.
         self._history.state.reset()
-        self._session_recap.reset()
 
     # -- transcript history controller forwarding -------------------------
 
@@ -2114,7 +2113,13 @@ class CodingAgentApp(App[None]):
     def handle_submit(self, event: Input.Submitted) -> None:
         self._turn.submit(event)
 
-    def run_turn(self, text: str, attachments: list[Any] | None = None) -> None:
+    def run_turn(
+        self,
+        text: str,
+        attachments: list[Any] | None = None,
+        *,
+        reservation: TurnReservation | None = None,
+    ) -> None:
         """Run one turn in a session-scoped thread worker.
 
         The worker group is keyed by the target session so turns in different
@@ -2136,16 +2141,19 @@ class CodingAgentApp(App[None]):
 
         def _run() -> None:
             if callable(launch_context):
-                self._turn.run_turn(
-                    text,
-                    attachments,
-                    thread_id=thread_id,
-                    agent=agent,
-                    transcript_generation=generation,
-                    monitor_id=monitor_id,
-                )
-            else:
+                kwargs = {
+                    "thread_id": thread_id,
+                    "agent": agent,
+                    "transcript_generation": generation,
+                    "monitor_id": monitor_id,
+                }
+                if reservation is not None:
+                    kwargs["reservation"] = reservation
+                self._turn.run_turn(text, attachments, **kwargs)
+            elif reservation is None:
                 self._turn.run_turn(text, attachments)
+            else:
+                self._turn.run_turn(text, attachments, reservation=reservation)
 
         self.run_worker(
             _run,
@@ -2216,9 +2224,6 @@ class CodingAgentApp(App[None]):
             self.__dict__["_turn"] = controller
         return controller.maybe_continue_goal(queue)
 
-    def _note_session_recap_turn(self) -> None:
-        self._turn.note_session_recap_turn()
-
     def _persist_transcript_turn(self, *, user_text: str) -> None:
         self._turn.persist_transcript_turn(user_text=user_text)
 
@@ -2227,12 +2232,6 @@ class CodingAgentApp(App[None]):
 
     def _project_session_into_catalog(self) -> None:
         self._turn.project_session_into_catalog()
-
-    def _prompt_has_draft(self) -> bool:
-        return self._turn.prompt_has_draft()
-
-    def _maybe_show_session_recap(self) -> None:
-        self._turn.maybe_show_session_recap()
 
     def _schedule_followup_steer(self, queue: SteerQueue | None) -> bool:
         controller = getattr(self, "_turn", None)

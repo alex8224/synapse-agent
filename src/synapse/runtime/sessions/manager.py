@@ -131,7 +131,7 @@ class RuntimeManager:
             if existing is not None:
                 if existing is runtime:
                     return existing
-                if existing.snapshot().active_turn_id is not None:
+                if existing.claimed():
                     raise RuntimeError("cannot replace an active session")
             self._sessions[runtime.thread_id] = runtime
             return runtime
@@ -139,9 +139,13 @@ class RuntimeManager:
     async def submit(self, thread_id: str, message: UserTurn) -> TurnHandle:
         session = await self.open_session(thread_id)
         submit_lock = self._submit_locks[thread_id]
-        if submit_lock.locked() or session.snapshot().active_turn_id is not None:
+        if submit_lock.locked():
             raise RuntimeError("session already has an active turn")
         await submit_lock.acquire()
+        reservation = session.reserve_turn()
+        if reservation is None:
+            submit_lock.release()
+            raise RuntimeError("session already has an active turn")
         try:
             # Every step after lock acquisition is protected: a failure in
             # semaphore resolution, queued marking, permit acquisition, or the
@@ -154,13 +158,16 @@ class RuntimeManager:
                 await semaphore.acquire()
                 acquired = True
                 session.mark_starting()
-                handle = await session.submit(message)
+                handle = await session.submit(message, reservation=reservation)
             except BaseException:
                 if acquired:
                     semaphore.release()
+                session.release_turn(reservation)
                 session.clear_queued()
                 raise
         except BaseException:
+            session.release_turn(reservation)
+            session.clear_queued()
             submit_lock.release()
             raise
 
@@ -210,8 +217,7 @@ class RuntimeManager:
             session = self._sessions.get(thread_id)
         if session is None:
             return False
-        snapshot = session.snapshot()
-        if snapshot.active_turn_id is not None and not cancel_active:
+        if session.claimed() and not cancel_active:
             raise RuntimeError("cannot close a session with an active turn")
         await session.close(cancel_active=cancel_active)
         with self._lock:

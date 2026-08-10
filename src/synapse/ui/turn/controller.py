@@ -23,6 +23,7 @@ from synapse.runtime.sessions import (
     SessionPersistence,
     SessionRuntime,
     SessionStatus,
+    TurnReservation,
     UserTurn,
 )
 from synapse.runtime.steer import (
@@ -476,7 +477,7 @@ class TurnController:
         if agent is None:
             return None
         runtime = self.runtime_for(thread_id)
-        if runtime is not None and runtime.snapshot().active_turn_id is not None:
+        if runtime is not None and runtime.claimed():
             return runtime
         if runtime is not None and runtime.agent is agent:
             return runtime
@@ -505,11 +506,12 @@ class TurnController:
             and runtime.agent is agent
         ):
             return runtime
-        if runtime is not None and runtime.snapshot().active_turn_id is not None:
-            # A background turn is still running (possibly from another
-            # project with a colliding thread id): never swap the runtime out.
-            # The frozen agent stays authoritative for that turn; the new
-            # binding is adopted on the next submission once the turn settles.
+        if runtime is not None and runtime.claimed():
+            # A reservation, background turn, or settlement still owns this
+            # session: never swap the runtime out. In particular, goal
+            # follow-up reserves before capture_turn_context; replacing that
+            # STARTING runtime invalidates the reservation before its worker
+            # can consume it.
             return runtime
         if (
             runtime is None
@@ -608,6 +610,20 @@ class TurnController:
                 return
             app.append_event("still running previous turn…", "yellow")
             return
+        turn_agent = getattr(app, "agent", None)
+        if turn_agent is None:
+            app.append_event("agent unavailable: not built", "bold red")
+            return
+        runtime = self._session_for(thread_id=app.thread_id, agent=turn_agent)
+        reservation = runtime.reserve_turn()
+        if reservation is None:
+            # A turn may have been claimed after the busy projection above.
+            # Route genuine mid-turn input as steer; never schedule a competing
+            # worker for the same session.
+            if runtime.steer(text):
+                return
+            app.append_event("still running previous turn…", "yellow")
+            return
         try:
             from synapse.sessions.store import SessionStore
 
@@ -630,6 +646,7 @@ class TurnController:
         resolved_ids = {a.id for a in attachments}
         not_found = [f"[image#{pid}]" for pid in ids if pid not in resolved_ids]
         if not_found:
+            runtime.release_turn(reservation)
             # Keep bank + restore prompt; do not send a half-image turn.
             app.append_event(
                 f"missing images: {' '.join(not_found)} (not sent)",
@@ -659,7 +676,7 @@ class TurnController:
             get_debug_store().begin_turn()
         except Exception:  # noqa: BLE001
             pass
-        app.run_turn(text, turn_images or None)
+        app.run_turn(text, turn_images or None, reservation=reservation)
 
     # -- run ---------------------------------------------------------------
 
@@ -672,10 +689,15 @@ class TurnController:
         agent: Any | None = None,
         transcript_generation: int | None = None,
         monitor_id: str | None = None,
+        reservation: TurnReservation | None = None,
     ) -> None:
         """Run one agent turn off the UI thread (host wraps with @work)."""
         app = self._app
         if not app._agent_ready.wait(timeout=180):
+            if reservation is not None:
+                runtime = self.runtime_for(thread_id or app.thread_id)
+                if runtime is not None:
+                    runtime.release_turn(reservation)
             app.call_from_thread(
                 app.append_event,
                 "agent start timeout (180s)",
@@ -687,6 +709,8 @@ class TurnController:
         runtime = self.runtime_for(turn_thread_id)
         turn_agent = agent or (runtime.agent if runtime is not None else app.agent)
         if app._agent_error or turn_agent is None:
+            if reservation is not None and runtime is not None:
+                runtime.release_turn(reservation)
             app.call_from_thread(
                 app.append_event,
                 f"agent unavailable: {app._agent_error or 'not built'}",
@@ -708,6 +732,9 @@ class TurnController:
             max_concurrency=app.settings.max_concurrency,
         )
         runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
+        if reservation is None:
+            reserve = getattr(runtime, "reserve_turn", None)
+            reservation = reserve() if callable(reserve) else None
         # The broker retains events across turns. A new foreground turn only
         # needs events published after this point (the start/attach race);
         # replaying from zero redraws completed thinking/tools and lets their
@@ -725,15 +752,20 @@ class TurnController:
                 self.attach(runtime, after_sequence=replay_cursor)
                 bridge = self._event_bridge
 
-            handle = runtime.start_threadsafe(
-                UserTurn(
-                    text=text,
-                    attachments=tuple(attachments or ()),
-                    monitor_id=turn_monitor_id,
-                    request=request,
-                ),
-                on_started=on_started,
+            turn = UserTurn(
+                text=text,
+                attachments=tuple(attachments or ()),
+                monitor_id=turn_monitor_id,
+                request=request,
             )
+            if reservation is None:
+                handle = runtime.start_threadsafe(turn, on_started=on_started)
+            else:
+                handle = runtime.start_threadsafe(
+                    turn,
+                    on_started=on_started,
+                    reservation=reservation,
+                )
             result, _snapshot = runtime.wait_threadsafe(handle)
             if bridge is not None:
                 bridge.drain()
@@ -1010,13 +1042,10 @@ class TurnController:
                 completed_queue.clear()
             self.clear_turn_context()
             app._bind_steer_queue()
-            self.note_session_recap_turn(persist=False)
             return
         # SessionRuntime has already settled goal usage/state before this callback.
         if runtime is not None:
             app._current_goal = runtime.snapshot().goal
-        # Capture snapshot before steer follow-up may start another busy turn.
-        self.note_session_recap_turn(persist=False)
         if self.schedule_followup_steer(completed_queue):
             return
         self.clear_turn_context()
@@ -1089,10 +1118,7 @@ class TurnController:
             return False
         return True
 
-    # -- recap / persistence ------------------------------------------------
-
-    def note_session_recap_turn(self, *, persist: bool = True) -> None:
-        self._persistence.note_session_recap_turn(persist=persist)
+    # -- persistence --------------------------------------------------------
 
     def persist_transcript_turn(self, *, user_text: str) -> None:
         self._persistence.persist_transcript_turn(user_text=user_text)
@@ -1103,25 +1129,31 @@ class TurnController:
     def project_session_into_catalog(self) -> None:
         self._persistence.project_session_into_catalog()
 
-    def prompt_has_draft(self) -> bool:
-        return self._persistence.prompt_has_draft()
-
-    def maybe_show_session_recap(self) -> None:
-        self._persistence.maybe_show_session_recap()
-
     # -- follow-up steer ------------------------------------------------------
 
     def schedule_followup_steer(self, queue: SteerQueue | None) -> bool:
         app = self._app
         if queue is None or queue.peek_count() <= 0:
             return False
+        pending = getattr(self, "_pending_followup_queues", None)
+        if pending is None:
+            pending = set()
+            self._pending_followup_queues = pending
+        queue_key = id(queue)
+        if queue_key in pending:
+            return True
+        pending.add(queue_key)
         scheduled_cancel_event = app._cancel_event
+        # Publish the pending follow-up as UI-busy before posting its callback.
+        # ESC uses this projection to cancel the continuation even though the
+        # previous SessionRuntime turn has already settled to IDLE.
         app._busy = True
         app._sync_prompt_placeholder()
         if app.call_after_refresh(
             self.start_followup_steer, queue, scheduled_cancel_event
         ):
             return True
+        pending.discard(queue_key)
         app._busy = False
         app._sync_prompt_placeholder()
         return False
@@ -1132,11 +1164,31 @@ class TurnController:
         scheduled_cancel_event: threading.Event | None = None,
     ) -> None:
         app = self._app
+        pending = getattr(self, "_pending_followup_queues", None)
+        if pending is not None:
+            pending.discard(id(queue))
         cancel_event = scheduled_cancel_event or app._cancel_event
         if cancel_event.is_set():
             app._skip_steer_followup = True
             app._turn_done()
             return
+        # The active goal may have been paused/cleared after this callback was
+        # scheduled. Never let a stale goal continuation start a new turn.
+        from synapse.goals.steering import GOAL_STEER_PREFIX
+
+        goal_items = [
+            item
+            for item in queue.peek_items()
+            if str(item).strip().startswith(GOAL_STEER_PREFIX)
+        ]
+        if goal_items:
+            service = getattr(app.agent, "_coding_goal_service", None)
+            goal = service.get(app.thread_id) if service is not None else None
+            if goal is None or str(getattr(goal, "status", "")) != "active":
+                queue.clear()
+                app._skip_steer_followup = True
+                app._turn_done()
+                return
         if queue.peek_count() <= 0:
             app._busy = False
             app._sync_prompt_placeholder()
@@ -1150,10 +1202,27 @@ class TurnController:
         app = self._app
         q = queue or get_agent_steer_queue(app.agent)
         if q is None or q.peek_count() <= 0:
+            app._busy = False
+            app._sync_prompt_placeholder()
             return
         items = q.drain()
         content = format_steer_message(items)
         if not content:
+            app._busy = False
+            app._sync_prompt_placeholder()
+            return
+        runtime = self.runtime_for(app.thread_id)
+        turn_agent = runtime.agent if runtime is not None else app.agent
+        if runtime is None:
+            runtime = self._session_for(thread_id=app.thread_id, agent=turn_agent)
+        reservation = runtime.reserve_turn()
+        if reservation is None:
+            # Settlement is not complete yet. Restore the drained guidance so
+            # the single follow-up scheduler can retry after the owner settles.
+            for item in items:
+                q.push(item)
+            app._busy = True
+            app._sync_prompt_placeholder()
             return
         # Silent follow-up: model gets content; no transcript/status steer copy.
         self.capture_turn_context()
@@ -1162,4 +1231,4 @@ class TurnController:
         app.clear_stream()
         app.set_activity("thinking", "", True)
         app._sync_prompt_placeholder()
-        app.run_turn(content, None)
+        app.run_turn(content, None, reservation=reservation)

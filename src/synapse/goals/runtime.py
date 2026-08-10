@@ -91,9 +91,11 @@ class GoalRuntime:
 
     def finish_turn(self, turn_id: str) -> None:
         with self._lock:
-            if self._turn is not None and self._turn.turn_id == turn_id:
+            if self._turn is None:
+                self._wall_clock_started_at = None
+            elif self._turn.turn_id == turn_id:
                 self._turn = None
-            self._wall_clock_started_at = None
+                self._wall_clock_started_at = None
 
     def finish_active_turn(self) -> None:
         with self._lock:
@@ -184,14 +186,32 @@ class GoalRuntime:
     def stop_for_error(self, usage_limit: bool) -> ThreadGoal | None:
         """回合终局错误：usage 超限 -> usage_limited，其他 -> blocked。"""
         status = ThreadGoalStatus.USAGE_LIMITED if usage_limit else ThreadGoalStatus.BLOCKED
-        goal = self._store.update(self.thread_id, status=status)
+        current = self._store.get(self.thread_id)
+        if current is None:
+            return None
+        goal = self._store.update(
+            self.thread_id,
+            status=status,
+            expected_goal_id=current.goal_id,
+            expected_status=ThreadGoalStatus.ACTIVE,
+        )
         self.clear_active_goal()
-        return goal
+        return goal or self._store.get(self.thread_id)
 
     def pause(self) -> ThreadGoal | None:
-        goal = self._store.update(self.thread_id, status=ThreadGoalStatus.PAUSED)
+        current = self._store.get(self.thread_id)
+        if current is None:
+            return None
+        if current.status != ThreadGoalStatus.ACTIVE:
+            return current
+        goal = self._store.update(
+            self.thread_id,
+            status=ThreadGoalStatus.PAUSED,
+            expected_goal_id=current.goal_id,
+            expected_status=ThreadGoalStatus.ACTIVE,
+        )
         self.clear_active_goal()
-        return goal
+        return goal or self._store.get(self.thread_id)
 
     def resume(self) -> ThreadGoal | None:
         goal = self._store.get(self.thread_id)
@@ -365,12 +385,27 @@ class GoalService:
         return goal, None
 
     def mark_status(
-        self, thread_id: str | None, status: ThreadGoalStatus
+        self,
+        thread_id: str | None,
+        status: ThreadGoalStatus,
+        *,
+        expected_goal_id: str | None = None,
     ) -> tuple[ThreadGoal | None, str | None]:
         """系统侧状态推进（budget_limited 等），供工具完成时调用。"""
         if not thread_id:
             return None, "missing thread id"
-        goal = self.store.update(str(thread_id), status=status)
+        current = self.store.get(str(thread_id))
+        if current is None:
+            return None, "no goal is currently set"
+        if expected_goal_id is not None and current.goal_id != expected_goal_id:
+            return current, None
+        goal = self.store.update(
+            str(thread_id),
+            status=status,
+            expected_goal_id=current.goal_id,
+        )
+        if goal is None:
+            goal = self.store.get(str(thread_id))
         if goal is None:
             return None, "no goal is currently set"
         if status in {
@@ -427,6 +462,12 @@ class GoalService:
             return
         self.runtime(str(thread_id)).start_turn(turn_id, token_usage)
 
+    def on_turn_abort(self, thread_id: str | None, turn_id: str) -> None:
+        """启动提交失败：丢弃尚未执行且未产生用量的回合状态。"""
+        if not thread_id:
+            return
+        self.runtime(str(thread_id)).finish_turn(turn_id)
+
     def on_token_usage(
         self,
         thread_id: str | None,
@@ -457,11 +498,16 @@ class GoalService:
         thread_id: str | None,
         *,
         usage_limit_error: bool = False,
+        turn_id: str | None = None,
     ) -> ThreadGoal | None:
         """回合结束：最终结算；终局错误时推进状态。返回当前 goal。"""
         if not thread_id:
             return None
         rt = self.runtime(str(thread_id))
+        if turn_id is not None and rt.current_turn_id() not in {None, turn_id}:
+            # A newer turn already claimed this thread. Late settlement from the
+            # previous handle must not account or clear the newer turn's state.
+            return self.store.get(str(thread_id))
         if usage_limit_error:
             goal = rt.stop_for_error(usage_limit=True)
         else:
@@ -469,7 +515,14 @@ class GoalService:
                 goal, _ = rt.account_progress()
             except Exception:  # noqa: BLE001
                 goal = self.store.get(str(thread_id))
-        rt.finish_active_turn()
+            if goal is None:
+                # Paused/completed goals reject active-only accounting, but the
+                # caller still needs the durable state for its settled snapshot.
+                goal = self.store.get(str(thread_id))
+        if turn_id is None:
+            rt.finish_active_turn()
+        else:
+            rt.finish_turn(turn_id)
         if goal is not None:
             self.notify(str(thread_id), goal)
         return goal

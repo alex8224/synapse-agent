@@ -172,6 +172,27 @@ class TestGoalService:
         assert goal is not None
         assert goal.status == ThreadGoalStatus.ACTIVE
 
+    def test_late_turn_end_does_not_clear_newer_turn(self, service):
+        service.set_goal("t1", "objective")
+        service.on_turn_start("t1", "old")
+        service.on_turn_start("t1", "new")
+
+        goal = service.on_turn_end("t1", turn_id="old")
+
+        assert goal is not None
+        assert goal.status == ThreadGoalStatus.ACTIVE
+        assert service.runtime("t1").current_turn_id() == "new"
+
+    def test_late_turn_abort_does_not_clear_newer_turn(self, service):
+        service.set_goal("t1", "objective")
+        service.on_turn_start("t1", "old")
+        service.on_turn_start("t1", "new")
+
+        service.on_turn_abort("t1", "old")
+
+        assert service.runtime("t1").current_turn_id() == "new"
+        assert service.runtime("t1")._wall_clock_started_at is not None  # noqa: SLF001
+
     def test_clear_goal(self, service):
         service.set_goal("t1", "objective")
         goal, error = service.clear_goal("t1")
@@ -221,6 +242,43 @@ class TestGoalService:
         goal = service.on_turn_end("t1", usage_limit_error=True)
         assert goal is not None
         assert goal.status == ThreadGoalStatus.USAGE_LIMITED
+
+    def test_on_turn_end_returns_paused_goal_snapshot(self, service):
+        service.set_goal("t1", "objective")
+        service.pause_goal("t1")
+
+        goal = service.on_turn_end("t1")
+
+        assert goal is not None
+        assert goal.status == ThreadGoalStatus.PAUSED
+
+    def test_mark_status_accepts_explicit_terminal_update_from_paused_goal(self, service):
+        service.set_goal("t1", "objective")
+        service.pause_goal("t1")
+
+        goal, error = service.mark_status("t1", ThreadGoalStatus.COMPLETE)
+
+        assert error is None
+        assert goal is not None
+        assert goal.status == ThreadGoalStatus.COMPLETE
+
+    def test_mark_status_ignores_stale_goal_id(self, service):
+        first, _ = service.set_goal("t1", "first")
+        assert first is not None
+        service.mark_status("t1", ThreadGoalStatus.COMPLETE)
+        second, _ = service.set_goal("t1", "second")
+        assert second is not None
+
+        goal, error = service.mark_status(
+            "t1",
+            ThreadGoalStatus.BLOCKED,
+            expected_goal_id=first.goal_id,
+        )
+
+        assert error is None
+        assert goal is not None
+        assert goal.goal_id == second.goal_id
+        assert goal.status == ThreadGoalStatus.ACTIVE
 
     def test_listener_notified(self, service):
         events: list[tuple[str, ThreadGoal | None]] = []
@@ -691,7 +749,6 @@ def test_turn_done_cancel_consumes_cancel_event(tmp_path) -> None:
     fake.query_one = lambda *args, **kwargs: SimpleNamespace(focus=lambda: None)
     fake._clear_turn_context = lambda: None
     fake._bind_steer_queue = lambda: None
-    fake._note_session_recap_turn = lambda: None
 
     fake._turn_done = types.MethodType(CodingAgentApp._turn_done, fake)
     fake._turn_done()
@@ -744,6 +801,127 @@ def test_scheduled_followup_keeps_cancel_event_from_scheduling_time() -> None:
 
     assert calls == ["turn_done"]
     assert fake._skip_steer_followup is True
+
+
+def test_schedule_followup_deduplicates_same_queue() -> None:
+    """goal listener 与 turn_done 同时调度时，同一队列只能有一个延迟回调。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.turn.controller import TurnController
+
+    queue = SteerQueue()
+    queue.push("[goal continuation]\ncontinue")
+    scheduled: list[tuple[object, ...]] = []
+    app = SimpleNamespace(
+        _cancel_event=threading.Event(),
+        _busy=False,
+        _sync_prompt_placeholder=lambda: None,
+        call_after_refresh=lambda *args: scheduled.append(args) or True,
+    )
+    controller = object.__new__(TurnController)
+    controller._app = app
+    controller.schedule_followup_steer = types.MethodType(
+        TurnController.schedule_followup_steer, controller
+    )
+
+    assert controller.schedule_followup_steer(queue) is True
+    assert controller.schedule_followup_steer(queue) is True
+
+    assert len(scheduled) == 1
+
+
+def test_esc_cancels_pending_goal_followup_while_runtime_is_idle(tmp_path) -> None:
+    """前一回合已 IDLE、goal followup 尚未启动时，ESC 仍应暂停整个 goal。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.tui import CodingAgentApp
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+    queue = SteerQueue()
+    queue.push("[goal continuation]\ncontinue")
+    events: list[str] = []
+
+    fake = SimpleNamespace(
+        agent=SimpleNamespace(_coding_goal_service=svc),
+        thread_id="t1",
+        _turn=SimpleNamespace(busy=False, cancel=lambda reason: False),
+        _busy=True,  # call_after_refresh 中待启动的 followup
+        _compacting_context=False,
+        _cancel_event=threading.Event(),
+        screen=object(),
+        set_activity=lambda *args, **kwargs: None,
+        append_event=lambda message, style: events.append(message),
+    )
+    fake._pause_goal_for_interrupt = types.MethodType(
+        CodingAgentApp._pause_goal_for_interrupt, fake
+    )
+    fake.action_cancel_run = types.MethodType(CodingAgentApp.action_cancel_run, fake)
+
+    fake.action_cancel_run()
+
+    goal = svc.get("t1")
+    assert goal is not None and goal.status == ThreadGoalStatus.PAUSED
+    assert fake._cancel_event.is_set()
+    assert events == ["已暂停当前 goal。"]
+
+
+def test_start_followup_drops_goal_continuation_paused_after_scheduling(tmp_path) -> None:
+    """goal 在调度后被暂停时，延迟回调不能再拉起新 turn。"""
+    import types
+    from types import SimpleNamespace
+
+    from synapse.runtime.steer import SteerQueue
+    from synapse.ui.turn.controller import TurnController
+
+    svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
+    svc.set_goal("t1", "objective")
+    queue = SteerQueue()
+    queue.push("[goal continuation]\ncontinue")
+    svc.pause_goal("t1")
+    calls: list[str] = []
+
+    fake_app = SimpleNamespace(
+        agent=SimpleNamespace(_coding_goal_service=svc),
+        thread_id="t1",
+        _cancel_event=threading.Event(),
+        _skip_steer_followup=False,
+        _turn_done=lambda: calls.append("turn_done"),
+    )
+    controller = object.__new__(TurnController)
+    controller._app = fake_app
+    controller.start_followup_steer = types.MethodType(
+        TurnController.start_followup_steer, controller
+    )
+
+    controller.start_followup_steer(queue)
+
+    assert calls == ["turn_done"]
+    assert queue.peek_count() == 0
+    assert fake_app._skip_steer_followup is True
+
+
+def test_pause_does_not_overwrite_concurrent_complete(service, monkeypatch) -> None:
+    """ESC pause 与 update_goal complete 竞态时，终态不能被改回 paused。"""
+    service.set_goal("t1", "objective")
+    runtime = service.runtime("t1")
+    original_update = service.store.update
+
+    def racing_update(thread_id: str, **kwargs):  # noqa: ANN003
+        if kwargs.get("expected_status") == ThreadGoalStatus.ACTIVE:
+            original_update(thread_id, status=ThreadGoalStatus.COMPLETE)
+        return original_update(thread_id, **kwargs)
+
+    monkeypatch.setattr(service.store, "update", racing_update)
+
+    goal = runtime.pause()
+
+    assert goal is not None
+    assert goal.status == ThreadGoalStatus.COMPLETE
 
 
 def test_goal_resume_after_esc_pause_schedules_continuation(tmp_path) -> None:

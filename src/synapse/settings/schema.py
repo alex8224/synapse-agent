@@ -355,14 +355,6 @@ class Settings(BaseSettings):
     tool_details_expanded: bool = Field(
         default=True, validation_alias="AGENT_TOOL_DETAILS_EXPANDED"
     )
-    # TUI session recap: after idle following a completed turn, show one-line summary.
-    session_recap_enabled: bool = Field(default=True, validation_alias="AGENT_SESSION_RECAP")
-    session_recap_idle_seconds: float = Field(
-        default=180.0, validation_alias="AGENT_SESSION_RECAP_IDLE_SECONDS"
-    )
-    session_recap_min_turns: int = Field(
-        default=3, validation_alias="AGENT_SESSION_RECAP_MIN_TURNS"
-    )
     # TUI transcript restore: number of recent visible turns rendered initially.
     # Older turns are loaded when the user scrolls to the top.
     history_tail_turns: int = Field(

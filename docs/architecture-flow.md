@@ -413,10 +413,6 @@ ModelBinding(active_model, model, thinking)
 
 ESC 硬停后: 检测未完成 tool_calls → 生成 `ToolMessage("[cancelled by user]")` → update_state 注入 → 追加终止 AIMessage
 
-### 8.4 SessionRecap 空闲摘要
-
-idle > 180s + turn_count >= 3 → 单行摘要: `"任务 {user}；工具 {tools}；进展 {answer}"`
-
 ---
 
 ## 九、工具系统
@@ -479,7 +475,7 @@ load_settings(**overrides):
 | 工具输出 | enable_tool_output_transform(True), threshold_bytes(512) | -- |
 | 子代理 | enable_subagents(True), parallel_subagents(False), max_parallel(6) | -- |
 | MCP | enable_mcp(True), mcp_eager(False) | -- |
-| UI | theme("cursor-dark"), session_recap_enabled(True) | -- |
+| UI | theme("cursor-dark"), history_tail_turns(20) | -- |
 | 记忆/RAG | enable_memory(False), enable_rag(False) | -- |
 
 ---

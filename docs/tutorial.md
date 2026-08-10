@@ -257,7 +257,6 @@ synapse-agent/                       # 项目根目录
 │   ├── llm_openai_websocket.py      # WebSocket 连接支持
 │   ├── mcp_client.py                # MCP 客户端
 │   ├── sessions.py                  # 会话元数据管理
-│   ├── session_recap.py             # 会话摘要恢复
 │   ├── safety.py                    # 安全配置
 │   ├── fs_permissions.py            # 文件系统权限
 │   ├── hitl.py                      # 人工审批（Human-In-The-Loop）
@@ -327,7 +326,6 @@ synapse-agent/                       # 项目根目录
 │   ├── test_subagent_status.py      # 子 Agent 状态测试
 │   ├── test_dag_parallel.py         # DAG 并行测试
 │   ├── test_stream_ui.py            # 流式 UI 测试
-│   ├── test_session_recap.py        # 会话摘要测试
 │   ├── ...                          # 还有 40+ 测试文件
 │   └── fixtures/                    # 测试 fixtures
 │
@@ -1049,13 +1047,9 @@ class SessionInfo:
 synapse tui --thread-id 550e8400-e29b-41d4-a716-446655440000
 ```
 
-恢复时，`session_recap.py` 会向 Agent 注入一个"前情提要"：
-
-```
-[SYSTEM] Resuming session '修复登录 bug' from 2025-01-15.
-Previous summary: 用户报告登录页面返回 500 错误，
-我们发现是数据库连接池配置问题，已经修改了 settings.py。
-```
+恢复时，Agent 使用同一个 `thread_id` 读取 LangGraph checkpoint；TUI 同时从
+transcript projection 加载最近的可见回合，因此模型上下文与界面历史都能延续。
+更早的界面历史会在向上滚动时分页加载。
 
 ### 9.4 上下文自动压缩
 

@@ -131,6 +131,53 @@ def test_same_session_rejects_second_submit_while_first_is_active() -> None:
     asyncio.run(run())
 
 
+def test_reserved_session_cannot_be_replaced_before_worker_start() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        session = await manager.open_session("a")
+        reservation = session.reserve_turn()
+        assert reservation is not None
+        replacement = factory(
+            thread_id="a",
+            agent=object(),
+            settings=SimpleNamespace(max_concurrency=2, model="test"),
+        )
+
+        try:
+            manager.register_session(replacement)
+        except RuntimeError as exc:
+            assert "active session" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("reserved session replacement should fail")
+
+        assert session.release_turn(reservation) is True
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_reserved_session_cannot_be_closed_without_cancel() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory)
+        session = await manager.open_session("a")
+        reservation = session.reserve_turn()
+        assert reservation is not None
+
+        try:
+            await manager.close_session("a")
+        except RuntimeError as exc:
+            assert "active turn" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("reserved session close should fail")
+
+        assert session.release_turn(reservation) is True
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_cancel_one_session_does_not_cancel_other() -> None:
     async def run() -> None:
         factory = _SessionFactory()

@@ -121,10 +121,11 @@ class GoalStore:
         status: ThreadGoalStatus | None = None,
         token_budget: int | None | object = ...,
         expected_goal_id: str | None = None,
+        expected_status: ThreadGoalStatus | None = None,
     ) -> ThreadGoal | None:
         """部分更新。token_budget 默认（``...``）表示不修改；传 None 表示清空。
 
-        expected_goal_id 用于并发防护：不匹配时返回 None（不更新）。
+        expected_goal_id / expected_status 用于并发防护：不匹配时返回 None。
         """
         fields: list[str] = []
         values: list[Any] = []
@@ -146,6 +147,9 @@ class GoalStore:
         if expected_goal_id is not None:
             where += " AND goal_id = ?"
             values.append(expected_goal_id)
+        if expected_status is not None:
+            where += " AND status = ?"
+            values.append(expected_status.value)
 
         with self._lock:
             row = self._conn.execute(

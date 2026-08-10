@@ -27,7 +27,6 @@ def _make_app(monkeypatch, tmp_path: Path, catalog_path: Path):
         PROJECT_CATALOG_PATH=str(catalog_path),
         project_catalog_enabled=True,
         session_summary_mode="off",
-        session_recap_enabled=False,
     )
     agent = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=None)
     app = CodingAgentApp(

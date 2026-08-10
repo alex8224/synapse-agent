@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.agent_loop.request import build_turn_request
+from synapse.runtime.sessions import SessionRuntime
 from synapse.runtime.steer import SteerQueue
 from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
@@ -44,6 +45,71 @@ class _FakeApp:
 
     def apply_turn_usage(self, **kwargs: Any) -> None:
         self.calls.append(("apply_turn_usage", (), kwargs))
+
+
+def test_submit_reserves_session_before_scheduling_worker() -> None:
+    app = _FakeApp()
+    app.settings = SimpleNamespace(model="test", workspace=".")
+    app._prewarm_cancel_event = threading.Event()
+    app._prompt = SimpleNamespace(
+        add_history=lambda text: None,
+        expand_paste=lambda text: (text, text),
+    )
+    app._image_bank = SimpleNamespace(items={}, clear=lambda: None)
+    app._handle_slash = lambda text: False
+    app._reload_session_title = lambda: None
+    app._refresh_topbar = lambda: None
+    app.append_user = lambda *args, **kwargs: None
+    app._transcript = SimpleNamespace(reset_for_turn=lambda: None)
+    app._subagent_monitor = SimpleNamespace(reset=lambda: None)
+    app._subagent_monitor_auto_opened = False
+    app._clear_subagent_status = lambda: None
+    app.clear_stream = lambda: None
+    app.set_activity = lambda *args: None
+    app._sync_prompt_placeholder = lambda: None
+    app._current_project_id = lambda: "project"
+    scheduled: list[Any] = []
+    app.run_turn = lambda text, attachments, **kwargs: scheduled.append(
+        (text, attachments, kwargs)
+    )
+    controller = TurnController(app)
+    runtime = MagicMock()
+    reservation = object()
+    runtime.reserve_turn.return_value = reservation
+    controller._session_for = MagicMock(return_value=runtime)  # type: ignore[method-assign]
+    event = SimpleNamespace(value="hello", input=SimpleNamespace(value="hello"))
+
+    controller.submit(event)
+
+    runtime.reserve_turn.assert_called_once_with()
+    assert scheduled == [("hello", None, {"reservation": reservation})]
+
+
+def test_session_for_keeps_reserved_runtime_when_agent_binding_differs() -> None:
+    """goal follow-up reservation 不能被 capture_turn_context 的 agent 重绑定丢弃。"""
+    app = _FakeApp()
+    app.settings = SimpleNamespace(model="test", workspace=".")
+    app._current_project_id = lambda: "project"
+    controller = TurnController(app)
+    frozen_agent = object()
+    runtime = SessionRuntime(
+        thread_id="t1",
+        project_id="project",
+        agent=frozen_agent,
+        settings=app.settings,
+        turn_runtime=controller._runtime,
+    )
+    reservation = runtime.reserve_turn()
+    assert reservation is not None
+    controller._sessions["t1"] = runtime
+    controller._session_runtime = runtime
+    controller._attached_thread_id = "t1"
+    controller.runtime_for = MagicMock(return_value=runtime)  # type: ignore[method-assign]
+
+    selected = controller._session_for(thread_id="t1", agent=object())
+
+    assert selected is runtime
+    assert selected.release_turn(reservation) is True
 
 
 def test_apply_stream_result_cancelled_returns_early() -> None:
@@ -372,25 +438,6 @@ def test_runtime_result_persists_frozen_background_session(tmp_path) -> None:
     projection.close()
 
 
-def test_turn_done_updates_recap_without_duplicate_projection() -> None:
-    app = _FakeApp()
-    app._sync_prompt_placeholder = lambda: None
-    app._on_steer_items_changed = lambda items: None
-    app._commit_live_tools_to_log = lambda: None
-    app.clear_stream = lambda: None
-    app.set_activity = lambda *args: None
-    app._refresh_git_chrome = lambda: None
-    app._clear_subagent_status = lambda: None
-    app.query_one = lambda *args: SimpleNamespace(focus=lambda: None)
-    app._bind_steer_queue = lambda: None
-    controller = TurnController(app)
-    controller._persistence.note_session_recap_turn = MagicMock()
-
-    controller.turn_done()
-
-    controller._persistence.note_session_recap_turn.assert_called_once_with(persist=False)
-
-
 def test_tui_unmount_shuts_down_turns_before_projection_close() -> None:
     from synapse.ui.tui import CodingAgentApp
 
@@ -460,7 +507,6 @@ def test_mounted_tui_switches_live_sessions_without_exit(monkeypatch, tmp_path) 
         project_catalog_path=tmp_path / "catalog.sqlite",
         project_catalog_enabled=False,
         session_summary_mode="off",
-        session_recap_enabled=False,
     )
     agent_a = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
     agent_b = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
@@ -729,7 +775,6 @@ def _make_app(monkeypatch, tmp_path):
         PROJECT_CATALOG_PATH=str(tmp_path / "catalog.sqlite"),
         project_catalog_enabled=False,
         session_summary_mode="off",
-        session_recap_enabled=False,
     )
     agent = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=None)
     app = CodingAgentApp(agent=agent, settings=settings, thread_id="a", project_root=tmp_path)

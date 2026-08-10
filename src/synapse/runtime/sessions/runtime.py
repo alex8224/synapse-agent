@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -58,6 +59,14 @@ class UserTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnReservation:
+    """Exclusive right to start the next turn for one session."""
+
+    thread_id: str
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
 class SessionSnapshot:
     project_id: str
     thread_id: str
@@ -101,13 +110,16 @@ class SessionRuntime:
         self._goal_followup = goal_followup
         self._status = SessionStatus.IDLE
         self._active_handle: TurnHandle | None = None
+        self._latest_handle: TurnHandle | None = None
         self._active_context: TurnContext | None = None
+        self._reservation: TurnReservation | None = None
         self._usage = SessionUsage()
         self._last_error: str | None = None
         self._goal: Any | None = None
         self._lock = threading.Lock()
         self._closed = False
         self._settle_tasks: set[asyncio.Task[None]] = set()
+        self._settling_handles: set[TurnHandle] = set()
         self._on_status_change = on_status_change
 
     def _notify_status(self) -> None:
@@ -126,49 +138,111 @@ class SessionRuntime:
         except Exception:  # noqa: BLE001 - observer boundary; never break the session
             pass
 
-    async def submit(self, message: UserTurn) -> TurnHandle:
+    async def submit(
+        self,
+        message: UserTurn,
+        *,
+        reservation: TurnReservation | None = None,
+    ) -> TurnHandle:
         """Start one turn; the same session cannot run two turns concurrently."""
-        handle, context = self.start(message)
+        handle, context = self.start(message, reservation=reservation)
         self._schedule_settlement(context, handle)
         return handle
 
-    def start(self, message: UserTurn) -> tuple[TurnHandle, TurnContext]:
+    def start(
+        self,
+        message: UserTurn,
+        *,
+        reservation: TurnReservation | None = None,
+        _settling_owner: TurnHandle | None = None,
+    ) -> tuple[TurnHandle, TurnContext]:
         """Synchronously claim and schedule a turn for compatibility adapters."""
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("session runtime is closed")
-            if self._active_handle is not None and not self._active_handle.done():
-                raise RuntimeError("session already has an active turn")
-            request = message.request or build_turn_request(
-                text=message.text,
-                attachments=message.attachments,
-                settings=self.settings,
-                thread_id=self.thread_id,
-                monitor_id=message.monitor_id,
-                max_concurrency=int(getattr(self.settings, "max_concurrency", 4)),
-                config_overrides=message.config_overrides,
-            )
-            if request.thread_id != self.thread_id:
-                raise ValueError("UserTurn request thread_id does not match SessionRuntime")
-            context = TurnContext(
-                thread_id=self.thread_id,
-                agent=self.agent,
-                settings=self.settings,
-                request=request,
-            )
-            token = message.cancel_token or CancelToken()
-            handle = self.turn_runtime.submit(context, sink=self.broker, cancel_token=token)
-            self._active_context = context
-            self._active_handle = handle
-            self._status = SessionStatus.RUNNING
-            self._last_error = None
+        notify_failed_start = False
+        context: TurnContext | None = None
+        try:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("session runtime is closed")
+                if self._active_handle is not None and not self._active_handle.done():
+                    raise RuntimeError("session already has an active turn")
+                allowed_settlement = (
+                    _settling_owner is not None
+                    and _settling_owner in self._settling_handles
+                )
+                if self._settling_handles and not allowed_settlement:
+                    raise RuntimeError("session is still settling the previous turn")
+                if reservation is not None and reservation.thread_id != self.thread_id:
+                    raise ValueError("turn reservation thread_id does not match SessionRuntime")
+                owns_reservation = (
+                    self._reservation is not None and reservation == self._reservation
+                )
+                if self._reservation is not None and not owns_reservation:
+                    raise RuntimeError("session already has a reserved turn")
+                if self._reservation is None and reservation is not None:
+                    raise RuntimeError("turn reservation is no longer valid")
+                request = message.request or build_turn_request(
+                    text=message.text,
+                    attachments=message.attachments,
+                    settings=self.settings,
+                    thread_id=self.thread_id,
+                    monitor_id=message.monitor_id,
+                    max_concurrency=int(getattr(self.settings, "max_concurrency", 4)),
+                    config_overrides=message.config_overrides,
+                )
+                if request.thread_id != self.thread_id:
+                    raise ValueError("UserTurn request thread_id does not match SessionRuntime")
+                context = TurnContext(
+                    thread_id=self.thread_id,
+                    agent=self.agent,
+                    settings=self.settings,
+                    request=request,
+                )
+                token = message.cancel_token or CancelToken()
+                if self._goal_service is not None:
+                    try:
+                        self._goal_service.on_turn_start(self.thread_id, context.turn_id)
+                    except Exception:  # noqa: BLE001 - accounting cannot block execution
+                        pass
+                handle = self.turn_runtime.submit(context, sink=self.broker, cancel_token=token)
+                if owns_reservation:
+                    self._reservation = None
+                self._active_context = context
+                self._active_handle = handle
+                self._latest_handle = handle
+                self._status = SessionStatus.RUNNING
+                self._last_error = None
+        except BaseException:
+            if context is not None:
+                abort = getattr(self._goal_service, "on_turn_abort", None)
+                if callable(abort):
+                    try:
+                        abort(self.thread_id, context.turn_id)
+                    except Exception:  # noqa: BLE001 - preserve the original start failure
+                        pass
+            with self._lock:
+                if reservation is not None and self._reservation == reservation:
+                    self._reservation = None
+                    self._status = SessionStatus.IDLE
+                    notify_failed_start = True
+            if notify_failed_start:
+                self._notify_status()
+            raise
         self._notify_status()
         return handle, context
 
     def _schedule_settlement(self, context: TurnContext, handle: TurnHandle) -> None:
+        with self._lock:
+            self._settling_handles.add(handle)
         task = asyncio.create_task(self._settle(context, handle))
-        self._settle_tasks.add(task)
-        task.add_done_callback(self._settle_tasks.discard)
+        with self._lock:
+            self._settle_tasks.add(task)
+
+        def settled(done: asyncio.Task[None]) -> None:
+            with self._lock:
+                self._settle_tasks.discard(done)
+                self._settling_handles.discard(handle)
+
+        task.add_done_callback(settled)
 
     def submit_threadsafe(self, message: UserTurn) -> TurnHandle:
         """Submit from a non-Agent-loop thread and return the session-owned handle."""
@@ -180,17 +254,48 @@ class SessionRuntime:
         message: UserTurn,
         *,
         on_started: Callable[[TurnContext], None] | None = None,
+        reservation: TurnReservation | None = None,
     ) -> TurnHandle:
         """Attach observers before execution can publish its first event."""
 
         async def start() -> TurnHandle:
-            handle, context = self.start(message)
-            if on_started is not None:
-                on_started(context)
+            handle, context = self.start(message, reservation=reservation)
             self._schedule_settlement(context, handle)
+            if on_started is not None:
+                try:
+                    on_started(context)
+                except Exception:  # noqa: BLE001 - renderer attachment is best-effort
+                    pass
             return handle
 
         return self.turn_runtime.submit_coroutine(start()).result()
+
+    def reserve_turn(self) -> TurnReservation | None:
+        """Atomically reserve the next turn before scheduling external work."""
+        with self._lock:
+            if self._closed:
+                return None
+            if self._reservation is not None:
+                return None
+            if self._settling_handles:
+                return None
+            if self._active_handle is not None and not self._active_handle.done():
+                return None
+            reservation = TurnReservation(thread_id=self.thread_id, token=uuid.uuid4().hex)
+            self._reservation = reservation
+            self._status = SessionStatus.STARTING
+        self._notify_status()
+        return reservation
+
+    def release_turn(self, reservation: TurnReservation) -> bool:
+        """Release an unconsumed reservation when worker scheduling is cancelled."""
+        with self._lock:
+            if self._reservation != reservation:
+                return False
+            self._reservation = None
+            self._status = SessionStatus.IDLE
+        self._notify_status()
+        return True
 
     def wait_threadsafe(
         self,
@@ -212,6 +317,16 @@ class SessionRuntime:
         """Return immutable active context for renderer attachment."""
         with self._lock:
             return self._active_context
+
+    def claimed(self) -> bool:
+        """Return whether a reservation, live turn, or settlement owns the session."""
+        with self._lock:
+            handle = self._active_handle
+            return bool(
+                self._reservation is not None
+                or self._settling_handles
+                or (handle is not None and not handle.done())
+            )
 
     def mark_queued(self) -> None:
         """Expose manager semaphore waiting without pretending to run."""
@@ -246,7 +361,8 @@ class SessionRuntime:
         while True:
             with self._lock:
                 active = self._active_handle is handle
-            if not active:
+                settling = handle in self._settling_handles
+            if not active and not settling:
                 return self.snapshot()
             await asyncio.sleep(0)
 
@@ -268,7 +384,9 @@ class SessionRuntime:
     def cancel(self, reason: str = "user") -> bool:
         with self._lock:
             handle = self._active_handle
-            if handle is None or handle.done():
+            if handle is None:
+                return False
+            if handle.done():
                 return False
             self._status = SessionStatus.CANCELLING
         self._notify_status()
@@ -277,7 +395,12 @@ class SessionRuntime:
     def snapshot(self) -> SessionSnapshot:
         with self._lock:
             handle = self._active_handle
-            active_turn_id = handle.turn_id if handle is not None and not handle.done() else None
+            active_turn_id = (
+                handle.turn_id
+                if handle is not None
+                and (not handle.done() or handle in self._settling_handles)
+                else None
+            )
             return SessionSnapshot(
                 project_id=self.project_id,
                 thread_id=self.thread_id,
@@ -300,6 +423,7 @@ class SessionRuntime:
     async def close(self, *, cancel_active: bool = True) -> None:
         with self._lock:
             self._closed = True
+            self._reservation = None
             handle = self._active_handle
         if handle is not None:
             if cancel_active and not handle.done():
@@ -312,6 +436,7 @@ class SessionRuntime:
         with self._lock:
             self._status = SessionStatus.CLOSED
             self._active_handle = None
+            self._latest_handle = None
             self._active_context = None
         self._notify_status()
         self.broker.close()
@@ -354,17 +479,34 @@ class SessionRuntime:
                 self._active_handle = None
                 self._active_context = None
             self._usage = usage
-            self._status = status
             self._last_error = persist_error or result.error_message
-        self._notify_status()
-        await self._settle_goal(result)
+        try:
+            await self._settle_goal(result, handle)
+        except Exception as exc:  # noqa: BLE001 - follow-up failure must still settle this turn
+            with self._lock:
+                self._last_error = self._last_error or f"{type(exc).__name__}: {exc}"[:2000]
+        with self._lock:
+            # Cancellation may have set CANCELLING while persistence/goal
+            # settlement was running. A goal follow-up may also have transferred
+            # ownership to a newer handle; never overwrite that RUNNING state
+            # with the predecessor's terminal status.
+            publish_terminal = (
+                not self._closed
+                and self._latest_handle is handle
+                and self._active_handle is None
+                and self._reservation is None
+            )
+            if publish_terminal:
+                self._status = status
+        if publish_terminal:
+            self._notify_status()
 
-    async def _settle_goal(self, result: TurnResult) -> None:
+    async def _settle_goal(self, result: TurnResult, handle: TurnHandle) -> None:
         service = self._goal_service
         if service is None:
             return
         try:
-            goal = service.on_turn_end(self.thread_id)
+            goal = service.on_turn_end(self.thread_id, turn_id=result.turn_id)
         except Exception as exc:  # noqa: BLE001 - goal diagnostics must not corrupt turn
             with self._lock:
                 self._last_error = self._last_error or f"{type(exc).__name__}: {exc}"[:2000]
@@ -383,4 +525,5 @@ class SessionRuntime:
         pending = self._goal_followup(goal)
         followup = await pending if asyncio.iscoroutine(pending) else pending
         if followup is not None:
-            await self.submit(followup)
+            followup_handle, context = self.start(followup, _settling_owner=handle)
+            self._schedule_settlement(context, followup_handle)

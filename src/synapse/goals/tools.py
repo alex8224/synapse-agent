@@ -109,10 +109,17 @@ def build_goal_tools(service: Any | None = None) -> list[Any]:
             return "goal service unavailable"
         thread_id = _thread_id(runtime)
         service.on_tool_finish(thread_id)
+        current = service.get(thread_id)
+        if current is None:
+            return "failed to update goal: no goal is currently set"
         new_status = (
             ThreadGoalStatus.COMPLETE if status == "complete" else ThreadGoalStatus.BLOCKED
         )
-        goal, error = service.mark_status(thread_id, new_status)
+        goal, error = service.mark_status(
+            thread_id,
+            new_status,
+            expected_goal_id=current.goal_id,
+        )
         if error:
             return f"failed to update goal: {error}"
         assert goal is not None

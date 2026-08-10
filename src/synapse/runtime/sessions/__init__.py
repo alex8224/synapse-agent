@@ -22,6 +22,7 @@ from synapse.runtime.sessions.runtime import (
     SessionSnapshot,
     SessionStatus,
     SessionUsage,
+    TurnReservation,
     UserTurn,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "SessionStatus",
     "SessionSubscription",
     "SessionUsage",
+    "TurnReservation",
     "UserTurn",
     "build_session_agent_factory",
     "parse_global_id",

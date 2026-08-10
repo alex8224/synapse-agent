@@ -209,6 +209,136 @@ def test_active_context_and_wait_for_settlement() -> None:
     asyncio.run(run())
 
 
+def test_turn_reservation_claims_session_before_worker_start() -> None:
+    controlled = _ControlledTurnRuntime()
+    session = _session(controlled)
+    reservation = session.reserve_turn()
+
+    assert reservation is not None
+    assert session.snapshot().status is SessionStatus.STARTING
+    assert session.snapshot().active_turn_id is None
+    assert session.claimed() is True
+    assert session.reserve_turn() is None
+
+    try:
+        session.start(UserTurn("competing"))
+    except RuntimeError as exc:
+        assert "reserved turn" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("unreserved worker must not consume another owner's claim")
+
+    handle, _context = session.start(UserTurn("owner"), reservation=reservation)
+    assert session.snapshot().status is SessionStatus.RUNNING
+    controlled.future.set_result(_result())
+    assert handle.result().status is TurnStatus.COMPLETED
+
+
+def test_released_turn_reservation_allows_new_owner() -> None:
+    session = _session(_ControlledTurnRuntime())
+    first = session.reserve_turn()
+
+    assert first is not None
+    assert session.release_turn(first) is True
+    assert session.snapshot().status is SessionStatus.IDLE
+    assert session.claimed() is False
+    second = session.reserve_turn()
+    assert second is not None
+    assert second != first
+
+
+def test_reservation_is_released_when_turn_submit_fails() -> None:
+    class _FailingTurnRuntime(_ControlledTurnRuntime):
+        def submit(
+            self,
+            context: Any,
+            *,
+            sink: Any,
+            cancel_token: CancelToken,
+        ) -> TurnHandle:
+            del context, sink, cancel_token
+            raise RuntimeError("submit failed")
+
+    session = _session(_FailingTurnRuntime())
+    reservation = session.reserve_turn()
+    assert reservation is not None
+
+    try:
+        session.start(UserTurn("hello"), reservation=reservation)
+    except RuntimeError as exc:
+        assert str(exc) == "submit failed"
+    else:  # pragma: no cover
+        raise AssertionError("turn submit failure should propagate")
+
+    assert session.snapshot().status is SessionStatus.IDLE
+    assert session.claimed() is False
+    assert session.reserve_turn() is not None
+
+
+def test_failed_turn_submit_aborts_goal_accounting_state() -> None:
+    class _FailingTurnRuntime(_ControlledTurnRuntime):
+        def submit(
+            self,
+            context: Any,
+            *,
+            sink: Any,
+            cancel_token: CancelToken,
+        ) -> TurnHandle:
+            del context, sink, cancel_token
+            raise RuntimeError("submit failed")
+
+    class _GoalService:
+        def __init__(self) -> None:
+            self.active_turn_id: str | None = None
+
+        def on_turn_start(self, thread_id: str, turn_id: str) -> None:
+            assert thread_id == "thread"
+            self.active_turn_id = turn_id
+
+        def on_turn_abort(self, thread_id: str, turn_id: str) -> None:
+            assert thread_id == "thread"
+            assert turn_id == self.active_turn_id
+            self.active_turn_id = None
+
+    goals = _GoalService()
+    session = _session(_FailingTurnRuntime(), goal_service=goals)
+    reservation = session.reserve_turn()
+    assert reservation is not None
+
+    try:
+        session.start(UserTurn("hello"), reservation=reservation)
+    except RuntimeError:
+        pass
+
+    assert goals.active_turn_id is None
+
+
+def test_reservation_rejected_until_previous_turn_finishes_settlement() -> None:
+    controlled = _ControlledTurnRuntime()
+    persist_started = asyncio.Event()
+    release_persist = asyncio.Event()
+
+    async def persist(context: Any, result: TurnResult) -> None:
+        del context, result
+        persist_started.set()
+        await release_persist.wait()
+
+    async def run() -> None:
+        session = _session(controlled, persist_result=persist)
+        handle = await session.submit(UserTurn("hello"))
+        controlled.future.set_result(_result())
+        await persist_started.wait()
+
+        assert session.claimed() is True
+        assert session.reserve_turn() is None
+
+        release_persist.set()
+        await session.wait_for_settlement(handle)
+        assert session.reserve_turn() is not None
+        await session.close(cancel_active=False)
+
+    asyncio.run(run())
+
+
 def test_session_persistence_falls_back_to_structured_turn_tool_events(tmp_path) -> None:
     """A headless result without state messages still restores its tool timeline."""
     from synapse.runtime.agent_loop import TurnContext, build_turn_request
@@ -449,8 +579,13 @@ def test_active_context_and_wait_for_settlement_include_persistence() -> None:
 
 def test_goal_followup_starts_without_subscriber() -> None:
     class _GoalService:
-        def on_turn_end(self, thread_id: str) -> Any:
+        def on_turn_start(self, thread_id: str, turn_id: str) -> None:
             assert thread_id == "thread"
+            assert turn_id
+
+        def on_turn_end(self, thread_id: str, *, turn_id: str | None = None) -> Any:
+            assert thread_id == "thread"
+            assert turn_id
             return SimpleNamespace(status="active")
 
     class _MultiTurnRuntime:
@@ -490,8 +625,97 @@ def test_goal_followup_starts_without_subscriber() -> None:
                 break
             await asyncio.sleep(0)
         assert len(controlled.handles) == 2
+        second = controlled.handles[1]
+        snapshot = session.snapshot()
+        assert snapshot.status is SessionStatus.RUNNING
+        assert snapshot.active_turn_id == second.turn_id
         controlled.handles[1].future.set_result(_result())
-        await asyncio.wrap_future(controlled.handles[1].future)
+        await session.wait_for_settlement(second)
+        await session.close(cancel_active=False)
+
+    asyncio.run(run())
+
+
+def test_goal_followup_submit_failure_still_publishes_terminal_state() -> None:
+    class _GoalService:
+        def on_turn_start(self, thread_id: str, turn_id: str) -> None:
+            assert thread_id == "thread"
+            assert turn_id
+
+        def on_turn_abort(self, thread_id: str, turn_id: str) -> None:
+            assert thread_id == "thread"
+            assert turn_id
+
+        def on_turn_end(self, thread_id: str, *, turn_id: str | None = None) -> Any:
+            assert thread_id == "thread"
+            assert turn_id
+            return SimpleNamespace(status="active")
+
+    class _FailingFollowupRuntime(_ControlledTurnRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submits = 0
+
+        def submit(
+            self,
+            context: Any,
+            *,
+            sink: Any,
+            cancel_token: CancelToken,
+        ) -> TurnHandle:
+            self.submits += 1
+            if self.submits > 1:
+                raise RuntimeError("follow-up submit failed")
+            return super().submit(context, sink=sink, cancel_token=cancel_token)
+
+    async def run() -> None:
+        controlled = _FailingFollowupRuntime()
+        session = _session(
+            controlled,
+            goal_service=_GoalService(),
+            goal_followup=lambda goal: UserTurn("continue"),
+        )
+        handle = await session.submit(UserTurn("start"))
+        controlled.future.set_result(_result())
+
+        snapshot = await session.wait_for_settlement(handle)
+
+        assert snapshot.status is SessionStatus.IDLE
+        assert snapshot.active_turn_id is None
+        assert snapshot.last_error == "RuntimeError: follow-up submit failed"
+        assert session.claimed() is False
+        await session.close(cancel_active=False)
+
+    asyncio.run(run())
+
+
+def test_wait_for_settlement_includes_goal_settlement() -> None:
+    class _GoalService:
+        def __init__(self) -> None:
+            self.settled = False
+
+        def on_turn_start(self, thread_id: str, turn_id: str) -> None:
+            assert thread_id == "thread"
+            assert turn_id
+
+        def on_turn_end(self, thread_id: str, *, turn_id: str | None = None) -> Any:
+            assert thread_id == "thread"
+            assert turn_id
+            self.settled = True
+            return SimpleNamespace(status="paused")
+
+    async def run() -> None:
+        controlled = _ControlledTurnRuntime()
+        goals = _GoalService()
+        session = _session(controlled, goal_service=goals)
+        handle = await session.submit(UserTurn("hello"))
+        controlled.future.set_result(_result())
+
+        snapshot = await session.wait_for_settlement(handle)
+
+        assert goals.settled is True
+        assert snapshot.goal is not None
+        assert snapshot.goal.status == "paused"
         await session.close(cancel_active=False)
 
     asyncio.run(run())

@@ -209,8 +209,8 @@
 │ 补丁 (DeepSeek etc)  │              │ │ SummarizationMW      │ │
 │                      │              │ │ +手动compact工具    │ │
 │ llm_openai_websocket │              │ │                      │ │
-│ ResponsesWebSocket   │              │ │ session_recap.py     │ │
-│ ChatOpenAI子类       │              │ │ 空闲180s→进度摘要   │ │
+│ ResponsesWebSocket   │              │ │ 本地会话摘要        │ │
+│ ChatOpenAI子类       │              │ │ 按回合持久化        │ │
 │ 持久WS连接          │              │ │                      │ │
 └──────────────────────┘ └──────────────┘ └──────────────────────┘
 
@@ -411,7 +411,6 @@ cli.py
 | `codex_history.py` | `CodexHistoryProjector` | Codex 历史投影 |
 | `codex_import.py` | `CodexImportService`, `CodexImportLedger` | Codex 导入 |
 | `context_compact.py` | `force_compact_via_agent` | 上下文压缩 |
-| `session_recap.py` | `SessionRecapController` | 空闲回顾 |
 | `transcript.py` | `load_thread_messages`, `fold_messages_for_ui` | 转录/回放 |
 | `memory/auto_recorder.py` | `AutoRecorder` | 自动提取教训 |
 | `memory/long_term.py` | `LongTermMemory` | 长期记忆存储 |
@@ -916,39 +915,6 @@ repair_thread_after_cancel(agent, config) → list[str] (日志)
    "checkpoint ready for next turn"]
 ```
 
-### SessionRecapController — 空闲自动摘要
-
-```
-SessionRecapController (纯数据+逻辑, 无定时器)
-│
-├─ 配置:
-│   enabled: bool = True
-│   idle_seconds: float = 180.0    ← 空闲 3 分钟
-│   min_turns: int = 3              ← 至少 3 轮
-│
-├─ 每轮完成后:
-│   note_turn_done(now, user_text, tool_summary, answer_text, turn_count)
-│   → 存储 last_snapshot (user/tools/answer 摘要)
-│   → 更新 last_turn_done_at 时间戳
-│
-├─ TUI 空闲定时器触发:
-│   try_fire(now, busy?, draft?) → str | None
-│   │
-│   ├─ 检查 enabled
-│   ├─ 检查 turn_count >= min_turns (默认 3)
-│   ├─ 检查 now - last_turn_done_at >= idle_seconds (默认 180s)
-│   ├─ 检查 needs_fresh_turn (展示后需新一轮才能再次触发)
-│   ├─ 检查 !busy && !draft_nonempty
-│   │
-│   └─ 通过 → build_recap_line(snapshot) → 单行文本:
-│       格式: "recap: 任务 {user}；工具 {tools}；进展 {text}"
-│       > MAX_LINE_CHARS (120) 则截断
-│
-└─ 状态:
-    reset() → 清空所有状态 (切换 session 时调用)
-    needs_fresh_turn → 展示后置 True，新一轮 note_turn_done 时重置
-```
-
 ### 启动流程 — step by step
 
 ```
@@ -989,8 +955,7 @@ SessionRecapController (纯数据+逻辑, 无定时器)
     ├─ Middleware 链处理
     ├─ 流式输出 → StreamSink 渲染
     ├─ Checkpointer 自动持久化
-    ├─ SessionStore.touch() 更新元数据
-    └─ SessionRecapController.note_turn_done() 更新 recap 快照
+    └─ SessionStore.touch() 更新元数据
 ```
 
 ### 子 Agent DAG 调度流程

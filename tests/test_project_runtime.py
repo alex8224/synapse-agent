@@ -172,6 +172,38 @@ def test_project_runtime_has_running_sessions_blocks_collect(tmp_path: Path) -> 
     runtime.close()
 
 
+def test_project_runtime_does_not_replace_claimed_session(tmp_path: Path) -> None:
+    settings = SimpleNamespace(resolved_sessions_path=lambda: str(tmp_path / "s.sqlite"))
+    project = ProjectRuntime(project_id="p1", workspace=tmp_path, settings=settings)
+    existing = SimpleNamespace(thread_id="t1", project_id="p1", claimed=lambda: True)
+    replacement = SimpleNamespace(thread_id="t1", project_id="p1", claimed=lambda: False)
+    project.register_session(existing)
+
+    with pytest.raises(RuntimeError, match="active project session"):
+        project.register_session(replacement)
+
+    assert project.get_session("t1") is existing
+
+
+def test_project_runtime_falls_back_to_active_snapshot_for_legacy_session(
+    tmp_path: Path,
+) -> None:
+    settings = SimpleNamespace(resolved_sessions_path=lambda: str(tmp_path / "s.sqlite"))
+    project = ProjectRuntime(project_id="p1", workspace=tmp_path, settings=settings)
+    existing = SimpleNamespace(
+        thread_id="t1",
+        project_id="p1",
+        snapshot=lambda: SimpleNamespace(active_turn_id="turn-1"),
+    )
+    replacement = SimpleNamespace(thread_id="t1", project_id="p1", claimed=lambda: False)
+    project.register_session(existing)
+
+    with pytest.raises(RuntimeError, match="active project session"):
+        project.register_session(replacement)
+
+    assert project.get_session("t1") is existing
+
+
 def test_project_registry_deduplicates(tmp_path: Path) -> None:
     registry = ProjectRegistry()
     settings = SimpleNamespace(resolved_sessions_path=lambda: str(tmp_path / "s.sqlite"))
@@ -436,6 +468,3 @@ def test_catalog_resolve_and_remove_session_projection(tmp_path: Path) -> None:
     )
     assert catalog.resolve_session(f"{project.project_id}:t-abc") is None
     catalog.close()
-
-
-

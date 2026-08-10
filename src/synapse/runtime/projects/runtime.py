@@ -89,8 +89,16 @@ class ProjectRuntime:
                 raise RuntimeError("project runtime is closed")
             existing = self.sessions.get(thread_id)
             if existing is not None and existing is not runtime:
-                snapshot = getattr(existing, "snapshot", lambda: None)()
-                if snapshot is not None and getattr(snapshot, "active_turn_id", None):
+                claimed = getattr(existing, "claimed", None)
+                if callable(claimed):
+                    active = bool(claimed())
+                else:
+                    snapshot = getattr(existing, "snapshot", lambda: None)()
+                    active = bool(
+                        snapshot is not None
+                        and getattr(snapshot, "active_turn_id", None)
+                    )
+                if active:
                     raise RuntimeError("cannot replace an active project session")
             self.sessions[thread_id] = runtime
         return runtime
