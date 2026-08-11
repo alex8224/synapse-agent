@@ -69,8 +69,15 @@ class ActiveSessionSwitcherDialog(DialogBase):
         Binding("shift+tab", "prev_item", "Previous", show=False, priority=True),
     ]
 
-    def __init__(self, items: list[ActiveSessionItem] | tuple[ActiveSessionItem, ...]) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        items: list[ActiveSessionItem] | tuple[ActiveSessionItem, ...],
+        *,
+        width: int = 110,
+    ) -> None:
+        # Wider window than the default dialogs so a row can show the session
+        # title, project label and status without truncating the title.
+        super().__init__(width=width)
         self._items = list(items)
 
     @property

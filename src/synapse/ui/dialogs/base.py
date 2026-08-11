@@ -14,13 +14,24 @@ from textual.events import Click
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-# Dialog window is fixed at width 66 (see dialog_css): border(2) + body
-# padding(2) + row padding(2) leaves ~60 content cells per row.
-# We truncate text manually so a very long word (e.g. a CJK session title with
-# no spaces) never reaches Textual's word-wrap path: otherwise the overlong
-# word wraps to line 2 and `height: 1; overflow: hidden` clips it, leaving the
-# row looking like "●" with an empty title.
+# Default dialog window is width 66 (see dialog_css): border(2) + body
+# padding(2) + row padding(2) leaves ~60 content cells per row.  Dialogs can
+# request a wider window via ``DialogBase(width=...)``; the row content budget
+# scales with it.  We truncate text manually so a very long word (e.g. a CJK
+# session title with no spaces) never reaches Textual's word-wrap path:
+# otherwise the overlong word wraps to line 2 and `height: 1; overflow: hidden`
+# clips it, leaving the row looking like "●" with an empty title.
+_WINDOW_BORDER_CELLS = 2
+_BODY_PADDING_CELLS = 2
+_ROW_PADDING_CELLS = 2
 _ROW_CONTENT_CELLS = 60
+
+
+def _content_cells_for(width: int) -> int:
+    """Usable per-row cells for a dialog window of ``width`` columns."""
+    return max(
+        10, width - _WINDOW_BORDER_CELLS - _BODY_PADDING_CELLS - _ROW_PADDING_CELLS
+    )
 
 
 def _truncate_to_cells(text: str, max_cells: int) -> str:
@@ -149,11 +160,13 @@ class OptionRow(Static):
         *,
         mark: str = "  ",
         checkable: bool = False,
+        content_cells: int = _ROW_CONTENT_CELLS,
     ) -> None:
         super().__init__(Text(""))
         self.item = item
         self._mark = mark
         self._checkable = checkable  # effective checkable (global & per-item combined)
+        self._content_cells = content_cells
         self._update_content()
 
     def _update_content(self) -> None:
@@ -168,18 +181,20 @@ class OptionRow(Static):
             bullet = "\u25cf" if item.selected else "\u25cb"  # ● / ○
             row_prefix = f"{prefix}{bullet}  "
         head_cells = cell_len(row_prefix)
-        label = _truncate_to_cells(item.label, max(0, _ROW_CONTENT_CELLS - head_cells))
+        label = _truncate_to_cells(
+            item.label, max(0, self._content_cells - head_cells)
+        )
         label_text = Text(label)
         if item.label_style:
             label_text.stylize(item.label_style)
         row = Text(row_prefix) + label_text
         if item.detail:
-            detail_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
+            detail_avail = max(0, self._content_cells - cell_len(row.plain) - 2)
             detail = _truncate_to_cells(item.detail, detail_avail)
             if detail:
                 row.append(f"  {detail}", style="dim")
         if item.meta:
-            meta_avail = max(0, _ROW_CONTENT_CELLS - cell_len(row.plain) - 2)
+            meta_avail = max(0, self._content_cells - cell_len(row.plain) - 2)
             meta = _truncate_to_cells(item.meta, meta_avail)
             if meta:
                 row.append(f"  {meta}", style=item.meta_style or "dim")
@@ -215,13 +230,19 @@ class SectionHeader(Static):
 class DialogBody(VerticalScroll):
     """Scrollable option-list container (scrollbar chrome hidden)."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        content_cells: int = _ROW_CONTENT_CELLS,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._rows: list[OptionRow] = []
         self._selected_idx: int = 0
         self._option_keys: list[str] = []
         self._checkable: bool = False
         self.on_row_click: Any | None = None  # callable(key) on click
+        self.content_cells = content_cells
 
     def set_options(
         self, items: list[OptionItem], *, mark: str = "  ", checkable: bool = False
@@ -245,7 +266,9 @@ class DialogBody(VerticalScroll):
         """Append selectable options while preserving existing navigation state."""
         for item in items:
             effective = self._checkable and item.checkable
-            row = OptionRow(item, mark=mark, checkable=effective)
+            row = OptionRow(
+                item, mark=mark, checkable=effective, content_cells=self.content_cells
+            )
             self._rows.append(row)
             self._option_keys.append(item.key)
             self.mount(row)
@@ -379,8 +402,9 @@ class DialogBase(ModalScreen[Any]):
     _window_max_height: int = 28
     _body_max_height: int = 22
 
-    def __init__(self) -> None:
+    def __init__(self, *, width: int = 66) -> None:
         super().__init__()
+        self._width = width
         # ``Screen.DEFAULT_CSS`` may otherwise win the root background cascade
         # on non-ANSI themes and paint an opaque full-screen layer. Inline
         # styles have the required priority while the dialog window itself
@@ -401,23 +425,27 @@ class DialogBase(ModalScreen[Any]):
         return
 
     def on_mount(self) -> None:
+        # Scale the window width to the configured size, capped by the screen
+        # so a wide dialog never overflows a narrow terminal.
+        screen_w = self.screen.size.width
+        win_width = min(self._width, max(40, screen_w - 2))
+        win = self.query_one("#dialog-window")
+        win.styles.width = win_width
+        body = self.query_one("#dialog-body", DialogBody)
+        body.content_cells = _content_cells_for(win_width)
         # Cap window height to the screen: keep the configured maximum on big
         # terminals but shrink on small ones (leave 2 rows of margin) so the
         # modal screen itself never starts scrolling.
         screen_h = self.screen.size.height
-        win = self.query_one("#dialog-window")
         win_max = min(self._window_max_height, max(6, screen_h - 2))
         win.styles.max_height = win_max
-        self.query_one("#dialog-body", DialogBody).styles.max_height = max(
-            3, min(self._body_max_height, win_max - 2)
-        )
+        body.styles.max_height = max(3, min(self._body_max_height, win_max - 2))
         # Title lives on the window border (always visible, high contrast).
         icon = (self._title_icon or "").strip()
         title = (self.title_text or "Dialog").strip()
         win.border_title = f"{icon} {title}".strip() if icon else title
         win.border_subtitle = self._title_keys
         # Keep keyboard input inside the modal list.
-        body = self.query_one("#dialog-body", DialogBody)
         body.on_row_click = self._on_selected
         self.set_focus(body)
 

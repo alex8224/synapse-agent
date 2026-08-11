@@ -1152,7 +1152,13 @@ class TestActiveSessionItems:
         app = _FakeApp()
         app.settings = SimpleNamespace(model="test", workspace=".")
         app._current_project_id = lambda: "p1"
-        return TurnController(app)
+        controller = TurnController(app)
+        # Isolate the persisted-store probe: no real SQLite in unit tests.
+        store = MagicMock()
+        store.list_nonempty.return_value = []
+        store.get.return_value = None
+        controller._project_store["p1"] = store
+        return controller
 
     def test_includes_recent_sessions_of_all_statuses(self) -> None:
         controller = self._controller()
@@ -1294,6 +1300,58 @@ class TestActiveSessionItems:
     def test_empty_when_no_runtimes(self) -> None:
         controller = self._controller()
         assert controller.active_session_items() == ()
+
+    def test_merges_persisted_cold_sessions(self) -> None:
+        from synapse.sessions.store import SessionInfo
+
+        controller = self._controller()
+        # One live runtime (5s ago) in the current project.
+        controller._sessions["live"] = self._runtime(
+            controller,
+            thread_id="live",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=5.0,
+        )
+        # Cold history: one new session, plus a duplicate of the live one.
+        store = controller._project_store["p1"]
+        store.list_nonempty.return_value = [
+            SessionInfo(
+                thread_id="cold-a",
+                title="  cold title  ",
+                model=None,
+                created_at="2025-01-01T00:00:00+00:00",
+                updated_at="2025-01-01T00:00:01+00:00",
+                tags=[],
+            ),
+            SessionInfo(
+                thread_id="live",
+                title="dup",
+                model=None,
+                created_at="2025-01-01T00:00:00+00:00",
+                updated_at="2025-01-01T00:00:02+00:00",
+                tags=[],
+            ),
+        ]
+
+        items = controller.active_session_items()
+        by_id = {item.thread_id: item for item in items}
+        # Duplicate resolved to the live runtime (only one row).
+        assert set(by_id) == {"live", "cold-a"}
+        assert by_id["cold-a"].status == SessionStatus.COLD
+        assert by_id["cold-a"].title == "cold title"
+        assert by_id["cold-a"].project_id == "p1"
+        assert by_id["cold-a"].current is False
+        # Cold row (persisted 2025) sorts after the live one (now - 5s).
+        assert [item.thread_id for item in items] == ["live", "cold-a"]
+
+    def test_cold_store_failure_yields_no_extra_rows(self) -> None:
+        controller = self._controller()
+        store = controller._project_store["p1"]
+        store.list_nonempty.side_effect = RuntimeError("db locked")
+
+        assert controller.active_session_items() == ()
+
 
     def test_current_flag_marks_attached_thread(self) -> None:
         controller = self._controller()

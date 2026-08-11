@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,14 @@ from synapse.ui.turn.persistence import TurnPersistenceController
 
 #: Maximum rows shown in the Ctrl+Tab recent-sessions switcher.
 MAX_RECENT_SESSION_ITEMS = 10
+
+
+def _parse_stored_timestamp(value: str) -> datetime | None:
+    """Parse a persisted ``updated_at`` ISO string into an aware datetime."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 class TurnController:
@@ -312,14 +321,22 @@ class TurnController:
         return by_project
 
     def active_session_items(self) -> tuple[ActiveSessionItem, ...]:
-        """Snapshot of the most recently touched sessions for the Ctrl+Tab switcher.
+        """Snapshot of the 10 most recently touched sessions for the switcher.
 
-        Sources the canonical ``ProjectRegistry`` (which also owns cross-project
-        background runtimes) with the legacy ``_sessions`` compatibility index
-        as a fallback for early-startup sessions that were never registered.
+        Two sources are merged:
+
+        - in-process runtimes: the canonical ``ProjectRegistry`` (cross-project
+          background sessions) plus the legacy ``_sessions`` compatibility
+          index for early-startup sessions never registered there;
+        - the current project's persisted session store: cold history that has
+          no runtime in this process (e.g. sessions from before a restart), so
+          the switcher lists genuinely recent sessions, not only live ones.
+
         Every in-memory runtime counts (active or idle); rows are ordered by
-        ``last_activity_at`` and capped at ``MAX_RECENT_SESSION_ITEMS``. Active
-        statuses are still carried on each item so the dialog can style them.
+        last activity (runtime ``last_activity_at`` for live sessions,
+        persisted ``updated_at`` for cold ones) and capped at
+        ``MAX_RECENT_SESSION_ITEMS``. Active statuses are still carried on each
+        item so the dialog can style them.
         """
         runtimes: dict[str, SessionRuntime] = {}
         for runtime in self._project_registry.all_sessions():
@@ -342,8 +359,59 @@ class TurnController:
                     current=snapshot.thread_id == current,
                 )
             )
+        items.extend(self._stored_recent_items(current))
         items.sort(key=lambda item: item.last_activity_at, reverse=True)
         return tuple(items[:MAX_RECENT_SESSION_ITEMS])
+
+    def _stored_recent_items(self, current: str) -> list[ActiveSessionItem]:
+        """Cold rows from the current project's persisted session store.
+
+        Sessions that already have an in-process runtime are skipped (their
+        live snapshot wins); the rest are marked ``COLD`` and ordered by their
+        persisted ``updated_at``. Best-effort: any store error yields no rows.
+        """
+        project_id_fn = getattr(self._app, "_current_project_id", None)
+        project_id = project_id_fn() if callable(project_id_fn) else ""
+        if not project_id:
+            return []
+        try:
+            store = self._project_store.get(project_id)
+            if store is None:
+                store = self.store_for(project_id, self._app.settings)
+            infos = store.list_nonempty(limit=MAX_RECENT_SESSION_ITEMS * 3)
+        except Exception:  # noqa: BLE001 - store probe is best-effort
+            return []
+        items: list[ActiveSessionItem] = []
+        for info in infos:
+            if self.runtime_for(info.thread_id) is not None:
+                continue
+            updated = _parse_stored_timestamp(info.updated_at)
+            if updated is None:
+                continue
+            title = (info.title or "").strip() or info.thread_id[:8]
+            items.append(
+                ActiveSessionItem(
+                    project_id=project_id,
+                    thread_id=info.thread_id,
+                    title=title[:120],
+                    project_label=self._project_label_for_id(project_id),
+                    status=SessionStatus.COLD,
+                    last_activity_at=updated,
+                    current=False,
+                )
+            )
+        return items
+
+    def _project_label_for_id(self, project_id: str) -> str:
+        """Short project label for a project we have no runtime for."""
+        settings = self._project_settings.get(project_id)
+        if settings is not None:
+            workspace = getattr(settings, "workspace", None)
+            if workspace:
+                name = Path(str(workspace)).name
+                if name:
+                    return name
+        return project_id[:8] if project_id else ""
 
     def _active_session_title(self, runtime: SessionRuntime, snapshot: Any) -> str:
         """Best-effort row title: stored title, current turn input, then id."""

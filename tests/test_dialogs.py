@@ -1864,3 +1864,17 @@ class TestActiveSessionSwitcherDialog:
                 )
 
         asyncio.run(exercise())
+
+    def test_window_is_wider_than_default_dialog(self) -> None:
+        from synapse.ui.dialogs.active_session_switcher import (
+            ActiveSessionSwitcherDialog,
+        )
+        from synapse.ui.dialogs.base import DialogBase, _content_cells_for
+
+        dialog = ActiveSessionSwitcherDialog([self._item("a")])
+        assert dialog._width == 110
+        # Roomy per-row budget: title + project detail + status meta all fit.
+        assert _content_cells_for(dialog._width) >= 100
+        # Default dialogs keep their narrow window.
+        assert DialogBase()._width == 66
+        assert _content_cells_for(66) == 60
