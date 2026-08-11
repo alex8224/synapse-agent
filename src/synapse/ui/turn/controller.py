@@ -480,22 +480,29 @@ class TurnController:
 
     def shutdown(self) -> None:
         """Detach UI observers and cancel every session-owned turn on app exit."""
-        self._detach_renderer()
-        sessions = self._project_registry.all_sessions()
-        if not sessions:
-            sessions = tuple(self._sessions.values())
-        self._sessions.clear()
-        self._session_runtime = None
-        self._attached_thread_id = None
-        for runtime in sessions:
-            try:
-                runtime.close_threadsafe(cancel_active=True, timeout=5.0)
-            except Exception:  # noqa: BLE001 - app teardown is best-effort
+        from synapse.observability.exit_trace import mark, span
+
+        with span("turn.shutdown"):
+            self._detach_renderer()
+            sessions = self._project_registry.all_sessions()
+            if not sessions:
+                sessions = tuple(self._sessions.values())
+            self._sessions.clear()
+            self._session_runtime = None
+            self._attached_thread_id = None
+            for runtime in sessions:
+                thread_id = getattr(runtime, "thread_id", "?")
                 try:
-                    runtime.cancel("shutdown")
-                except Exception:  # noqa: BLE001 - final teardown fallback
-                    pass
-        self._project_registry.close_all()
+                    with span(f"turn.shutdown.session:{thread_id}"):
+                        runtime.close_threadsafe(cancel_active=True, timeout=5.0)
+                except Exception:  # noqa: BLE001 - app teardown is best-effort
+                    try:
+                        runtime.cancel("shutdown")
+                    except Exception:  # noqa: BLE001 - final teardown fallback
+                        pass
+            with span("turn.shutdown.project_registry.close_all"):
+                self._project_registry.close_all()
+            mark("turn.shutdown.done")
 
     def detach(self, thread_id: str | None = None) -> None:
         """Detach rendering only; never cancel the session-owned turn."""
@@ -680,9 +687,16 @@ class TurnController:
         return runtime
 
     def _on_session_status_changed(self, snapshot: Any) -> None:
-        """Refresh session chrome from any runtime thread (best-effort)."""
+        """Refresh session chrome from any runtime thread (best-effort).
+
+        Uses ``call_after_refresh`` (non-blocking, thread-safe) instead of
+        ``call_from_thread``: the callback can run on the Agent runtime loop
+        (e.g. inside ``SessionRuntime.close`` during app exit), and a
+        synchronous cross-thread call would deadlock against the UI thread
+        while it waits for the session close to settle.
+        """
         try:
-            self._app.call_from_thread(self._on_session_status_ui, snapshot)
+            self._app.call_after_refresh(self._on_session_status_ui, snapshot)
         except Exception:  # noqa: BLE001 - chrome must never break a turn
             pass
 

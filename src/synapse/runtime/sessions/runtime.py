@@ -457,14 +457,18 @@ class SessionRuntime:
             self._closed = True
             self._reservation = None
             handle = self._active_handle
+        from synapse.observability.exit_trace import span
+
         if handle is not None:
-            if cancel_active and not handle.done():
-                handle.cancel("shutdown")
-            if not handle.done():
-                await asyncio.wrap_future(handle.future)
-        tasks = tuple(self._settle_tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            with span(f"session.close.wait_turn:{self.thread_id}"):
+                if cancel_active and not handle.done():
+                    handle.cancel("shutdown")
+                if not handle.done():
+                    await asyncio.wrap_future(handle.future)
+        with span(f"session.close.settle_tasks:{self.thread_id}"):
+            tasks = tuple(self._settle_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
         with self._lock:
             self._status = SessionStatus.CLOSED
             self._last_activity_at = _utcnow()
@@ -472,7 +476,8 @@ class SessionRuntime:
             self._latest_handle = None
             self._active_context = None
         self._notify_status()
-        self.broker.close()
+        with span(f"session.close.broker:{self.thread_id}"):
+            self.broker.close()
 
     def close_threadsafe(
         self,
@@ -481,10 +486,17 @@ class SessionRuntime:
         timeout: float | None = None,
     ) -> None:
         """Close this runtime from a Textual/UI thread and wait for settlement."""
-        future = self.turn_runtime.submit_coroutine(
-            self.close(cancel_active=cancel_active)
-        )
-        future.result(timeout=timeout)
+        if self._closed:
+            # Idempotent: a previous close (or an in-flight async close() that
+            # already set the flag) must not block the caller for `timeout`.
+            return
+        from synapse.observability.exit_trace import span
+
+        with span(f"session.close_threadsafe:{self.thread_id}"):
+            future = self.turn_runtime.submit_coroutine(
+                self.close(cancel_active=cancel_active)
+            )
+            future.result(timeout=timeout)
 
     async def _settle(self, context: TurnContext, handle: TurnHandle) -> None:
         result = await asyncio.wrap_future(handle.future)

@@ -142,48 +142,53 @@ class ProjectRuntime:
             )
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            manager = self.manager
-            self.manager = None
-            sessions = tuple(self.sessions.values())
-            self.sessions.clear()
-            self.checkpointer = None
-            self.goal_service = None
-            if self.session_store is not None:
+        from synapse.observability.exit_trace import span
+
+        with span(f"project.close:{self.project_id}"):
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                manager = self.manager
+                self.manager = None
+                sessions = tuple(self.sessions.values())
+                self.sessions.clear()
+                self.checkpointer = None
+                self.goal_service = None
+                if self.session_store is not None:
+                    try:
+                        self.session_store.close()
+                    except Exception:  # noqa: BLE001 - best-effort resource release
+                        pass
+                if self.transcript_projection is not None:
+                    try:
+                        self.transcript_projection.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if self.mcp_scope is not None:
+                    try:
+                        self.mcp_scope.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self.session_store = None
+                self.transcript_projection = None
+            # SessionRuntime owns turn cancellation. ProjectRuntime only performs
+            # this best-effort fallback for callers that close a project directly.
+            for session in sessions:
                 try:
-                    self.session_store.close()
-                except Exception:  # noqa: BLE001 - best-effort resource release
+                    close_threadsafe = getattr(session, "close_threadsafe", None)
+                    if callable(close_threadsafe):
+                        with span(f"project.close.session:{getattr(session, 'thread_id', '?')}"):
+                            close_threadsafe(cancel_active=True, timeout=5.0)
+                except Exception:  # noqa: BLE001 - project eviction must continue
                     pass
-            if self.transcript_projection is not None:
+            if manager is not None:
                 try:
-                    self.transcript_projection.close()
-                except Exception:  # noqa: BLE001
+                    with span("project.close.manager.shutdown"):
+                        future = manager._async_runtime.submit(manager.shutdown())  # noqa: SLF001
+                        future.result(timeout=5.0)
+                except Exception:  # noqa: BLE001 - manager shutdown is best-effort
                     pass
-            if self.mcp_scope is not None:
-                try:
-                    self.mcp_scope.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            self.session_store = None
-            self.transcript_projection = None
-        # SessionRuntime owns turn cancellation. ProjectRuntime only performs
-        # this best-effort fallback for callers that close a project directly.
-        for session in sessions:
-            try:
-                close_threadsafe = getattr(session, "close_threadsafe", None)
-                if callable(close_threadsafe):
-                    close_threadsafe(cancel_active=True, timeout=5.0)
-            except Exception:  # noqa: BLE001 - project eviction must continue
-                pass
-        if manager is not None:
-            try:
-                future = manager._async_runtime.submit(manager.shutdown())  # noqa: SLF001
-                future.result(timeout=5.0)
-            except Exception:  # noqa: BLE001 - manager shutdown is best-effort
-                pass
 
 
 class ProjectRegistry:

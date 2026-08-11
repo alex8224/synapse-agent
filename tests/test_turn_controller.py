@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -30,6 +31,12 @@ class _FakeApp:
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> None:
         self.calls.append((callback, args, kwargs))
         callback(*args, **kwargs)
+
+    def call_after_refresh(self, callback: Any, *args: Any, **kwargs: Any) -> bool:
+        """Non-blocking UI scheduling used by the session status observer."""
+        self.calls.append((callback, args, kwargs))
+        callback(*args, **kwargs)
+        return True
 
     def _call_for_transcript(
         self, generation: int, callback: Any, *args: Any, **kwargs: Any
@@ -1376,3 +1383,42 @@ class TestActiveSessionItems:
         by_id = {item.thread_id: item for item in items}
         assert by_id["a"].current is False
         assert by_id["b"].current is True
+
+
+def test_close_threadsafe_does_not_deadlock_on_busy_ui() -> None:
+    """Regression: session close must never block the Agent loop on UI work.
+
+    During app exit the UI thread blocks inside ``close_threadsafe`` while the
+    Agent runtime loop runs ``close()``. The session status observer therefore
+    must not synchronously wait for the UI thread (Textual ``call_from_thread``
+    semantics) or the two threads deadlock until the close timeout fires.
+    """
+    from synapse.runtime.async_runtime import reset_async_runtime_for_tests
+
+    class _BusyUiApp(_FakeApp):
+        def __init__(self) -> None:
+            super().__init__()
+            # 未设置 = UI 线程忙（正阻塞在 close_threadsafe 的 future.result）。
+            self.ui_released = threading.Event()
+
+        def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> None:
+            # Textual semantics: block until the UI thread can run the callback.
+            self.ui_released.wait(timeout=None)
+            callback(*args, **kwargs)
+
+    reset_async_runtime_for_tests()
+    app = _BusyUiApp()
+    controller = TurnController(app)
+    session = SessionRuntime(
+        thread_id="deadlock",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        on_status_change=controller._on_session_status_changed,
+    )
+    started = time.perf_counter()
+    # UI thread is "busy" (on_unmount); close must finish well under the 5s timeout.
+    session.close_threadsafe(cancel_active=True, timeout=5.0)
+    elapsed = time.perf_counter() - started
+    app.ui_released.set()
+    assert elapsed < 2.0, f"close blocked on UI observer for {elapsed:.2f}s"
+    assert session.snapshot().status is SessionStatus.CLOSED

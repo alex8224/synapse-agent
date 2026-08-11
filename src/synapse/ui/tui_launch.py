@@ -97,7 +97,11 @@ def run_tui(
         except Exception:  # noqa: BLE001 - catalog is best-effort
             catalog = None
     try:
-        return app.run()
+        result = app.run()
+        from synapse.observability.exit_trace import mark
+
+        mark("textual.run.returned")
+        return result
     finally:
         if catalog is not None and run_id is not None:
             try:
@@ -105,3 +109,6 @@ def run_tui(
             except Exception:  # noqa: BLE001 - best-effort
                 pass
             catalog.close()
+        from synapse.observability.exit_trace import dump
+
+        dump()

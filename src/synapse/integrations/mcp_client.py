@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -392,6 +393,10 @@ class McpSessionPool:
     def close(self) -> None:
         if self._closed:
             return
+        from synapse.observability.exit_trace import duration
+
+        started = time.perf_counter()
+        server_count = len(self._servers)
         self._closed = True
         # Drop tool references first so any agent still holding them fails
         # cleanly instead of hitting a stopped event loop.
@@ -403,6 +408,7 @@ class McpSessionPool:
             logger.warning("MCP pool close failed: %s", exc)
         finally:
             self._loop.stop()
+        duration("mcp.pool.close", started, servers=server_count)
 
     async def _aclose_all(self) -> None:
         for live in list(self._servers.values()):
@@ -727,8 +733,12 @@ def close_active_mcp_pool() -> None:
 
 def close_all_mcp_pools() -> None:
     """Close the legacy global pool and every keyed project pool."""
+    from synapse.observability.exit_trace import duration
+
+    started = time.perf_counter()
     close_active_mcp_pool()
     get_mcp_pool_registry().close_all()
+    duration("mcp.pools.close_all", started)
 
 
 def get_active_mcp_pool() -> McpSessionPool | None:

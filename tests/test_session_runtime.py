@@ -442,6 +442,24 @@ def test_close_threadsafe_cancels_and_closes_active_runtime() -> None:
     assert session.snapshot().status is SessionStatus.CLOSED
 
 
+def test_close_threadsafe_is_idempotent() -> None:
+    """A second close must short-circuit instead of re-submitting and waiting.
+
+    During app exit the same session can be closed once by the turn controller
+    and again by its project runtime; the second call must not burn another
+    timeout waiting on the runtime loop.
+    """
+    import time
+
+    controlled = _ControlledTurnRuntime()
+    session = _session(controlled)
+    session.close_threadsafe(cancel_active=True, timeout=3)
+    started = time.perf_counter()
+    session.close_threadsafe(cancel_active=True, timeout=3)
+    assert time.perf_counter() - started < 1.0
+    assert session.snapshot().status is SessionStatus.CLOSED
+
+
 def test_on_status_change_publishes_transitions() -> None:
     """SessionRuntime notifies the observer on every status transition."""
     controlled = _ControlledTurnRuntime()

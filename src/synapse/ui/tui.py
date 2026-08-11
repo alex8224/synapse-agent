@@ -530,26 +530,48 @@ class CodingAgentApp(App[None]):
             self.call_from_thread(callback, *args, **kwargs)
 
     def on_unmount(self) -> None:
-        clear_metrics_notifier()
-        turn = getattr(self, "_turn", None)
-        if turn is not None:
-            turn.shutdown()
-        try:
-            self._transcript_projection.close()
-        except Exception:  # noqa: BLE001 - shutdown best effort
-            pass
-        summary_store = getattr(self, "_summary_store", None)
-        if summary_store is not None:
+        from synapse.observability.exit_trace import span
+
+        with span("on_unmount"):
+            clear_metrics_notifier()
+            turn = getattr(self, "_turn", None)
+            if turn is not None:
+                with span("on_unmount.turn.shutdown"):
+                    turn.shutdown()
             try:
-                summary_store.close()
+                with span("on_unmount.transcript_projection.close"):
+                    self._transcript_projection.close()
             except Exception:  # noqa: BLE001 - shutdown best effort
                 pass
-        session_store = getattr(self, "_session_store", None)
-        if session_store is not None and session_store is not summary_store:
-            try:
-                session_store.close()
-            except Exception:  # noqa: BLE001 - shutdown best effort
-                pass
+            summary_store = getattr(self, "_summary_store", None)
+            if summary_store is not None:
+                try:
+                    with span("on_unmount.summary_store.close"):
+                        summary_store.close()
+                except Exception:  # noqa: BLE001 - shutdown best effort
+                    pass
+            session_store = getattr(self, "_session_store", None)
+            if session_store is not None and session_store is not summary_store:
+                try:
+                    with span("on_unmount.session_store.close"):
+                        session_store.close()
+                except Exception:  # noqa: BLE001 - shutdown best effort
+                    pass
+        from synapse.observability.exit_trace import mark
+
+        mark("on_unmount.done")
+
+    def exit(
+        self,
+        result: Any = None,
+        return_code: int = 0,
+        message: Any = None,
+    ) -> None:
+        """Start the exit timing trace, then delegate to Textual's exit."""
+        from synapse.observability.exit_trace import begin
+
+        begin()
+        super().exit(result=result, return_code=return_code, message=message)
 
     def on_mount(self) -> None:
         # Apply configured theme before first paint of chrome widgets.

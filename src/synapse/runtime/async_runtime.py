@@ -217,6 +217,12 @@ class AsyncRuntime:
             duration("runtime.close", started, connections=connection_count)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from synapse.observability.exit_trace import duration as exit_duration
+
+            exit_duration("async_runtime.close", started, connections=connection_count)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _RUNTIME = AsyncRuntime()
