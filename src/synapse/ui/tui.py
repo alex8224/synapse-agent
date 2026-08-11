@@ -1155,6 +1155,20 @@ class CodingAgentApp(App[None]):
             pass
 
     def on_click(self, event: Click) -> None:
+        # textual-image's sixel widget composes an internal ``_ImageSixelImpl``.
+        # Real mouse clicks target that child rather than the outer widget that
+        # carries our attachment metadata, so resolve the image through ancestors.
+        from synapse.ui.image_viewer import find_transcript_image_attachment
+
+        control = getattr(event, "control", None) or getattr(event, "widget", None)
+        attachment = find_transcript_image_attachment(control)
+        if attachment is not None:
+            event.stop()
+            from synapse.ui.image_viewer import ImageViewerScreen
+
+            self.push_screen(ImageViewerScreen(attachment))
+            return
+
         # Outside click closes the branch changes popover.
         try:
             bar = self.query_one("#topbar", TopBar)
@@ -1162,7 +1176,6 @@ class CodingAgentApp(App[None]):
             return
         if not bar.is_popover_open():
             return
-        control = getattr(event, "control", None) or getattr(event, "widget", None)
         if bar.dismiss_if_outside(control):
             event.stop()
 

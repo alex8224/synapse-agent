@@ -286,6 +286,8 @@ class TranscriptController:
                 att, max_cols=max_cols, max_rows=TRANSCRIPT_MAX_ROWS
             )
             if widget is not None:
+                widget.add_class("transcript-image")
+                widget.image_attachment = att
                 widgets.append(widget)
         return widgets
 

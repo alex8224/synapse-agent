@@ -142,6 +142,105 @@ def test_preview_hidden_when_empty() -> None:
     asyncio.run(run())
 
 
+def test_image_viewer_sizes_image_within_70pct_viewport() -> None:
+    """The viewer modal renders the image at most 70% of the viewport."""
+    import asyncio
+
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from synapse.ui.image_render import set_renderer
+    from synapse.ui.image_viewer import VIEWER_FRACTION, ImageViewerScreen
+
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+    async def run() -> None:
+        set_renderer("sixel")
+        app = Host()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.push_screen(ImageViewerScreen(_attachment(width=1600, height=200)))
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, ImageViewerScreen)
+            from textual_image.widget import SixelImage
+
+            widgets = list(app.screen.query(SixelImage))
+            assert widgets
+            size = widgets[0].size
+            assert size.width <= app.size.width * VIEWER_FRACTION + 1
+            assert size.height <= app.size.height * VIEWER_FRACTION + 1
+            # wide image: width-bounded, aspect kept (1600x200 -> ~8:1)
+            ratio = (size.width * 10) / (size.height * 20)
+            assert abs(ratio - 8.0) < 1.5
+            # Esc closes the viewer
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ImageViewerScreen)
+
+    asyncio.run(run())
+
+
+def test_click_transcript_image_opens_viewer() -> None:
+    """Clicking a transcript image pushes the viewer modal."""
+    import asyncio
+
+    from textual.app import App, ComposeResult
+    from textual.containers import VerticalScroll
+    from textual.events import Click
+
+    from synapse.ui.image_render import set_renderer
+    from synapse.ui.image_viewer import ImageViewerScreen
+    from synapse.ui.transcript.controller import TranscriptController
+    from synapse.ui.user_turn_block import UserTurnBlock
+
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield VerticalScroll(id="log")
+
+        def on_mount(self) -> None:
+            self._transcript = TranscriptController(self)
+            self.settings = type("S", (), {"history_tail_turns": 20})()
+
+        def on_click(self, event: Click) -> None:
+            from synapse.ui.image_viewer import find_transcript_image_attachment
+
+            control = getattr(event, "control", None) or getattr(event, "widget", None)
+            attachment = find_transcript_image_attachment(control)
+            if attachment is None:
+                return
+            event.stop()
+            self.push_screen(ImageViewerScreen(attachment))
+
+    async def run() -> None:
+        set_renderer("sixel")
+        app = Host()
+        async with app.run_test(size=(120, 40)) as pilot:
+            att = _attachment(width=400, height=200)
+            app._transcript.append_user(
+                "[image#1] hi", images=[att], full_text="[image#1] hi"
+            )
+            await pilot.pause()
+            block = app.query_one(UserTurnBlock)
+            block.collapsed = False
+            block._sync_image_widgets()
+            await pilot.pause()
+
+            widget = app.query_one(".transcript-image")
+            assert widget.image_attachment is att
+            assert widget.children
+            # Sixel clicks target its private composed child, not the outer
+            # widget carrying the transcript-image class and attachment.
+            assert type(widget.children[0]).__name__ == "_ImageSixelImpl"
+            assert await pilot.click(widget.children[0], offset=(1, 1)) is True
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, ImageViewerScreen)
+
+    asyncio.run(run())
+
+
 # -- UserTurnBlock image rendering -------------------------------------
 
 def test_user_turn_block_constructs_with_images_collapsed() -> None:
@@ -208,9 +307,10 @@ def test_renderer_needs_extra_row_only_for_sixel(monkeypatch) -> None:
     assert ir.renderer_needs_extra_row() is False
 
 
-def test_attachment_cell_size() -> None:
+def test_attachment_cell_size(monkeypatch) -> None:
     import synapse.ui.image_render as ir
 
+    monkeypatch.setattr(ir, "_ACTIVE_OVERRIDE", "auto")
     cell = ir.attachment_cell_size(_attachment(width=200, height=100), max_cols=60, max_rows=6)
     # 200x100 fits 20x5 cells at 10x20 px/cell; unicode renderer has no extra row.
     assert cell == (20, 5)
