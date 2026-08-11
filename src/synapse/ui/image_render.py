@@ -140,18 +140,38 @@ def make_image_widget(
         # The widget treats raw bytes as a file path; decode to a PIL image.
         img = PILImage.open(io.BytesIO(data))
         img.load()
-        widget = widget_cls(img)
-        cell = attachment_cell_size(att, max_cols=max_cols, max_rows=max_rows)
-        if cell is not None:
-            # Pin both dimensions (not "auto"): the widget's ImageSize derives
-            # pixel output from these cell values, and "auto" would stretch to
-            # the container width and distort the aspect ratio.
-            cols, rows = cell
-            extra = 1 if renderer_needs_extra_row() else 0
-            widget.styles.width = cols
-            widget.styles.height = rows + extra
-        return widget
+        return make_pil_image_widget(img, max_cols=max_cols, max_rows=max_rows)
     except Exception:  # noqa: BLE001 - corrupt/unsupported image payload
+        return None
+
+
+def make_pil_image_widget(
+    image: Any,
+    *,
+    max_cols: int = PREVIEW_MAX_COLS,
+    max_rows: int = PREVIEW_MAX_ROWS,
+) -> Any | None:
+    """Create a protocol-aware Textual widget from a decoded PIL image."""
+    widget_cls = resolve_widget_cls()
+    size = getattr(image, "size", None)
+    if widget_cls is None or not size or len(size) != 2:
+        return None
+    try:
+        width, height = int(size[0]), int(size[1])
+        extra = 1 if renderer_needs_extra_row() else 0
+        cols, rows = fit_cell_size(
+            width,
+            height,
+            max_cols=max_cols,
+            max_rows=max_rows,
+            extra_rows=extra,
+        )
+        widget = widget_cls(image)
+        # Pin both dimensions: auto sizing stretches to the container width.
+        widget.styles.width = cols
+        widget.styles.height = rows + extra
+        return widget
+    except Exception:  # noqa: BLE001 - backend may reject an image mode/payload
         return None
 
 
@@ -324,6 +344,7 @@ __all__ = [
     "attachment_cell_size",
     "attachment_renderable",
     "fit_cell_size",
+    "make_pil_image_widget",
     "renderer_diagnostic",
     "renderer_needs_extra_row",
     "set_renderer",

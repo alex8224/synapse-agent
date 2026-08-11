@@ -159,7 +159,9 @@ class SlashController:
                 app.append_event(f"image renderer -> {applied}", "dim")
                 app.refresh_image_preview()
             else:
-                app.append_event(renderer_diagnostic(), "dim")
+                from synapse.ui.math_image import math_diagnostic
+
+                app.append_event(f"{renderer_diagnostic()} | {math_diagnostic()}", "dim")
             return True
 
         prev_thread = app.thread_id

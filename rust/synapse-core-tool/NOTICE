@@ -41,3 +41,15 @@ NumPy (optional dependency)
 Copyright (c) 2005-2024, NumPy Developers
 Licensed under the BSD 3-Clause License
 https://github.com/numpy/numpy
+
+RaTeX
+-----
+Copyright RaTeX contributors
+Licensed under the MIT License
+https://github.com/erweixin/RaTeX
+
+KaTeX fonts
+-----------
+Copyright KaTeX contributors
+Licensed under the SIL Open Font License, Version 1.1
+https://github.com/KaTeX/KaTeX

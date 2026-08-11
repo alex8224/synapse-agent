@@ -9,6 +9,7 @@ from typing import Any
 from rich.console import Group
 from rich.padding import Padding
 from rich.text import Text
+from textual.app import ComposeResult
 from textual.events import Click
 from textual.widgets import Static
 
@@ -176,7 +177,7 @@ class ThoughtBlock(SelectableStatic):
 
 
 class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live plain-text tail, then Markdown seal."""
+    """Assistant answer row; live text, then Markdown plus display-math images."""
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -200,6 +201,10 @@ class AnswerBlock(SelectableStatic):
         super().__init__()
         self._render_block()
 
+    def compose(self) -> ComposeResult:
+        if not self.live:
+            yield from self._sealed_widgets()
+
     def update_live(self, body: str) -> None:
         self.live = True
         self.body = body or ""
@@ -213,6 +218,43 @@ class AnswerBlock(SelectableStatic):
     def selectable_text(self) -> str:
         return self.body or ""
 
+    def _sealed_widgets(self) -> list[Any]:
+        body = self.body or ""
+        if not body.strip() or len(body) > self._markdown_max_chars:
+            return []
+        try:
+            from synapse.ui.math_image import (
+                MathFallbackBlock,
+                make_math_widget,
+                split_block_math,
+            )
+
+            segments = split_block_math(body)
+            if not any(segment.kind == "math" for segment in segments):
+                return []
+            fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
+            widgets: list[Any] = []
+            for segment in segments:
+                if segment.kind == "markdown":
+                    if segment.source.strip():
+                        widgets.append(Static(render_markdown(segment.source)))
+                    continue
+                widget = make_math_widget(segment.source, color=fg)
+                widgets.append(widget or MathFallbackBlock(segment.source))
+            return widgets
+        except Exception:  # noqa: BLE001 - composite rendering is optional
+            return []
+
+    def _sync_sealed_widgets(self, widgets: list[Any]) -> None:
+        if not self.is_attached:
+            return
+        try:
+            self.remove_children()
+            if widgets:
+                self.mount(*widgets)
+        except Exception:  # noqa: BLE001 - widget may be detaching during session switch
+            pass
+
     def _render_block(self) -> None:
         body = self.body or ""
         fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
@@ -222,7 +264,14 @@ class AnswerBlock(SelectableStatic):
             return
         if not body.strip():
             self.update(Text(""))
+            self._sync_sealed_widgets([])
             return
+        widgets = self._sealed_widgets()
+        if widgets:
+            self.update(Text(""))
+            self._sync_sealed_widgets(widgets)
+            return
+        self._sync_sealed_widgets([])
         if len(body) > self._markdown_max_chars:
             renderable: Any = Text(body, style=fg)
         else:

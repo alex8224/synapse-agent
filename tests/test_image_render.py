@@ -12,6 +12,7 @@ from synapse.ui.image_render import (
     PREVIEW_MAX_ROWS,
     attachment_renderable,
     fit_cell_size,
+    make_pil_image_widget,
 )
 
 
@@ -357,6 +358,17 @@ def test_make_image_widget_invalid_payload_returns_none() -> None:
 
     bad = Attachment(id=9, name="bad.png", mime="image/png", data=b"junk", source="file")
     assert ir.make_image_widget(bad) is None
+
+
+def test_make_pil_image_widget_preserves_aspect_ratio() -> None:
+    import synapse.ui.image_render as ir
+
+    ir.set_renderer("halfcell")
+    image = PILImage.new("RGBA", (400, 100), (255, 255, 255, 255))
+    widget = make_pil_image_widget(image, max_cols=40, max_rows=12)
+    assert widget is not None
+    assert widget.styles.width.value == 40
+    assert widget.styles.height.value == 5
 
 
 def test_transcript_paste_submit_flow_renders_image_widget() -> None:

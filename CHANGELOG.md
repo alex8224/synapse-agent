@@ -7,6 +7,31 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.28
+
+### 新增功能
+
+- TUI 支持终端内 LaTeX 数学公式渲染：transcript 中 display math（`$$...$$`）块经原生 RaTeX 内核渲染为 PNG 图片展示，支持前景/背景色、字号、padding 与 device pixel ratio，无需 Node.js、浏览器或系统 TeX。
+- TUI 图片渲染增强：粘贴图片可在终端内预览（textual-image），transcript 显示图片，点击图片可在模态窗口中放大查看。
+- 会话切换器：Ctrl+Tab 快速切换最近 10 个会话并高亮当前项，冷历史合并进 recents。
+- 项目抽屉（project drawer）绑定 F12 并支持交互，可读性与渲染稳定性改进。
+- 跨项目进程内切换与多会话并发支持（runtime 与 TUI 解耦重构）。
+
+### 修复
+
+- 修复退出死锁，新增退出耗时诊断。
+- 修复会话切换后 turn 轮换内容丢失、replay 终态关闭、断链渲染冻结等问题。
+- 修复事件渲染阻塞输入的问题。
+- 隔离各会话的 model 与 MCP 状态，避免跨会话切换串扰。
+- 修复 goal follow-up 轮次的 reservation/settlement 竞态。
+
+### 工程改进
+
+- runtime 与 TUI 解耦：stream parser 移出 UI 包，工具事件结构化输出并保留工具 item 生命周期。
+- synapse-core-tool 原生扩展新增 `render_math_png`（RaTeX 内核 + 嵌入 KaTeX 字体）。
+
+---
+
 ## v0.1.27
 
 ### 新增功能
