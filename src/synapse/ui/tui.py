@@ -32,6 +32,7 @@ import synapse.ui.tui_styles as _styles
 from synapse.content.input_history import InputHistory
 from synapse.content.multimodal import (
     ImageBank,
+    find_placeholders,
 )
 from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
 from synapse.runtime.sessions import TurnReservation
@@ -77,6 +78,7 @@ from synapse.ui.formatters import (
 from synapse.ui.formatters import (
     stream_tail_preview as _stream_tail_preview,
 )
+from synapse.ui.image_preview import ImagePreview
 from synapse.ui.prompt_controller import PromptController
 from synapse.ui.selectable_static import SelectableStatic as _SelectableStatic
 from synapse.ui.selectable_static import (
@@ -460,6 +462,7 @@ class CodingAgentApp(App[None]):
             yield SubagentStatusBar("", id="subagent-status")
             yield Static("", id="status")
             yield Static("", id="complete-hint")
+            yield ImagePreview(id="image-preview")
             yield Input(
                 placeholder=f"{_MARK_INPUT}  Build anything  (/ for commands, Tab complete)",
                 id="prompt",
@@ -1708,6 +1711,27 @@ class CodingAgentApp(App[None]):
     ) -> None:
         self._transcript.append_user(text, images, full_text=full_text)
 
+    def refresh_image_preview(self) -> None:
+        """Re-render the pending-image preview from the current prompt placeholders.
+
+        Only attachments whose ``[image#N]`` placeholder is still present in the
+        prompt are shown; removing a placeholder hides the image immediately.
+        """
+        bank = getattr(self, "_image_bank", None)
+        if bank is None:
+            return
+        try:
+            preview = self.query_one("#image-preview", ImagePreview)
+        except Exception:  # noqa: BLE001 - widget not mounted yet
+            return
+        try:
+            prompt = self.query_one("#prompt", Input)
+            ids = set(find_placeholders(prompt.value))
+        except Exception:  # noqa: BLE001
+            ids = set()
+        attachments = [bank.items[i] for i in sorted(ids) if i in bank.items]
+        preview.show_attachments(attachments)
+
     def _refresh_turn_rail(self) -> None:
         self._transcript._refresh_turn_rail()
 
@@ -1856,6 +1880,7 @@ class CodingAgentApp(App[None]):
         """Release all Python-side references to the current transcript."""
         self._transcript.reset_all()
         self._image_bank.clear()
+        self.refresh_image_preview()
         self._prompt.clear_paste_replacements()
         self._subagent_monitor.reset()
         self._subagent_monitor_auto_opened = False

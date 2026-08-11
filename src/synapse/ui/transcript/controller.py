@@ -243,18 +243,51 @@ class TranscriptController:
         history_state = getattr(getattr(self._app, "_history", None), "state", None)
         total_turns = int(getattr(history_state, "total_turns", 0) or 0)
         turn_index = max(total_turns + 1, len(st.user_turns) + 1)
+        image_widgets = self._make_image_widgets(imgs)
         block = UserTurnBlock(
             text or "",
             stamp=_stamp(),
             turn_index=turn_index,
             image_count=len(imgs),
+            image_widgets=image_widgets,
             full_text=full_text,
         )
         st.user_turns.append(block)
         self._mount_block(block)
+        for widget in image_widgets:
+            widget.display = False  # hidden until the block is expanded
+            try:
+                timeline = self._app.query_one("#log", VerticalScroll)
+                timeline.mount(widget)
+            except Exception:  # noqa: BLE001 - timeline not ready
+                pass
         self._refresh_turn_rail()
         st.in_tool_rail = False
         st.pending_answer_divider = False
+
+    def _make_image_widgets(self, imgs: list[Any]) -> list[Any]:
+        """Build hidden Textual image widgets for the given attachments."""
+        if not imgs:
+            return []
+        from synapse.ui.image_render import (
+            TRANSCRIPT_MAX_ROWS,
+            make_image_widget,
+        )
+
+        max_cols = 60
+        try:
+            timeline = self._app.query_one("#log", VerticalScroll)
+            max_cols = max(20, int(getattr(timeline.size, "width", 60) or 60) - 2)
+        except Exception:  # noqa: BLE001 - timeline not ready yet
+            pass
+        widgets = []
+        for att in imgs:
+            widget = make_image_widget(
+                att, max_cols=max_cols, max_rows=TRANSCRIPT_MAX_ROWS
+            )
+            if widget is not None:
+                widgets.append(widget)
+        return widgets
 
     def _trim_live_turn_pages(self) -> None:
         """Unmount completed live turns beyond the configured visible window."""
@@ -266,6 +299,8 @@ class TranscriptController:
             self._drop_page_references(page)
             for block in page:
                 try:
+                    if isinstance(block, UserTurnBlock):
+                        block.cleanup_images()
                     block.remove()
                 except Exception:  # noqa: BLE001 - block may already be detached
                     pass

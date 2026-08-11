@@ -1336,6 +1336,11 @@ TextualStreamSink  # 把事件翻译成 UI 更新
 | `Ctrl+C` | 取消当前 Agent 运行 |
 | `Ctrl+L` | 清屏 |
 | `↑/↓` | 浏览输入历史 |
+| `Alt+V` | 粘贴剪贴板内容（文本或图片） |
+
+> 图片支持：按 `Alt+V` 粘贴图片后，输入框上方会显示图片预览（`[image#N]` 占位符对应一张图），删除占位符即移除该图；发送后图片会出现在对话时间线中，点击用户消息可展开/收起图片。
+>
+> 渲染协议：启动时自动探测终端能力（Sixel / Kitty TGP / 半块字符 / Unicode 降级），TUI 会为图片预留正确的布局高度，像素协议（Sixel）在支持的终端（如 Windows Terminal）可直接显示。TUI 内输入 `/image` 可查看当前生效的渲染器与终端探测结果；`/image halfcell`、`/image sixel` 等可手动切换，或启动前设置环境变量 `SYNAPSE_IMAGE_RENDERER`。
 
 ---
 

@@ -28,6 +28,9 @@ class PromptState:
     complete_applied: str | None = None
     complete_candidates: list[str] = field(default_factory=list)
     paste_replacements: dict[str, str] = field(default_factory=dict)
+    # Last rendered set of [image#N] ids in the prompt, to avoid re-rendering
+    # the preview on every keystroke.
+    last_preview_ids: set[int] = field(default_factory=set)
 
 
 class PromptController:
@@ -475,3 +478,20 @@ class PromptController:
                 st.complete_active_idx = 0
                 st.complete_base_value = ""
         self.set_complete_hint(value)
+        self._sync_image_preview(value)
+
+    def _sync_image_preview(self, value: str) -> None:
+        """Re-render the pending-image preview when the placeholder set changes."""
+        bank = self._image_bank
+        if not bank.items:
+            return
+        from synapse.content.multimodal import find_placeholders
+
+        ids = set(find_placeholders(value))
+        if ids == self.state.last_preview_ids:
+            return
+        self.state.last_preview_ids = ids
+        try:
+            self._app.refresh_image_preview()
+        except Exception:  # noqa: BLE001 - app/widget not ready
+            pass

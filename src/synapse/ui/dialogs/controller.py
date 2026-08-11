@@ -151,6 +151,16 @@ class SlashController:
         if cmd == "/select":
             app.action_open_selectable_view()
             return True
+        if cmd == "/image":
+            from synapse.ui.image_render import RENDERER_NAMES, renderer_diagnostic, set_renderer
+
+            if len(parts) >= 2 and parts[1].casefold() in RENDERER_NAMES:
+                applied = set_renderer(parts[1])
+                app.append_event(f"image renderer -> {applied}", "dim")
+                app.refresh_image_preview()
+            else:
+                app.append_event(renderer_diagnostic(), "dim")
+            return True
 
         prev_thread = app.thread_id
         prev_settings = self._settings_snapshot(app.settings)

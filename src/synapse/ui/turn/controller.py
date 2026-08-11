@@ -760,6 +760,7 @@ class TurnController:
         app._prompt.add_history(text)
         if app._handle_slash(text):
             app._image_bank.clear()
+            app.refresh_image_preview()
             return
         if self.busy:
             # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
@@ -815,6 +816,7 @@ class TurnController:
             return
 
         app._image_bank.clear()
+        app.refresh_image_preview()
 
         app.append_user(display, images=turn_images or None, full_text=text)
         self.capture_turn_context()

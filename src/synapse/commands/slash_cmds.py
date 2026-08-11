@@ -123,6 +123,7 @@ HELP_TEXT = """## Slash Commands
 | `/skills` | List skills |
 | `/memory` | List memory files |
 | `/subagents` | List sub-agents |
+| `/image [auto\|tgp\|sixel\|halfcell\|unicode]` | Image renderer diagnostic / switch |
 """
 
 

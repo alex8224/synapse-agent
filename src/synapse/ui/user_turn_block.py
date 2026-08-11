@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from rich.console import Group
 from rich.text import Text
@@ -61,6 +62,7 @@ class UserTurnBlock(SelectableStatic):
         stamp: str | None = None,
         turn_index: int | None = None,
         image_count: int = 0,
+        image_widgets: list[Any] | None = None,
         full_text: str | None = None,
     ) -> None:
         super().__init__()
@@ -72,6 +74,11 @@ class UserTurnBlock(SelectableStatic):
         self.stamp = stamp or _stamp()
         self.turn_index = turn_index
         self.image_count = int(image_count or 0)
+        # Textual image widgets rendered next to this block (siblings in the
+        # timeline); shown only in the expanded state. The widgets themselves
+        # are mounted by the transcript controller so they survive the crop
+        # pipeline (see ``make_image_widget``).
+        self.image_widgets = list(image_widgets or [])
         self.collapsed = True
         self._truncated = False
         self._render_block()
@@ -141,7 +148,9 @@ class UserTurnBlock(SelectableStatic):
                 if truncated:
                     hint_label += " · click to expand"
             else:
-                hint_label = "click to expand" if truncated else None
+                hint_label = (
+                    "click to expand" if (truncated or self.image_widgets) else None
+                )
         else:
             lines, truncated = wrap_user_turn_text(
                 render_text, width=body_width, max_lines=None
@@ -152,7 +161,9 @@ class UserTurnBlock(SelectableStatic):
                 if self._truncated:
                     hint_label += " · click to collapse"
             else:
-                hint_label = "click to collapse" if self._truncated else None
+                hint_label = (
+                    "click to collapse" if (self._truncated or self.image_widgets) else None
+                )
 
         bg = f"on {bar}"
         rows: list[Text] = []
@@ -209,14 +220,33 @@ class UserTurnBlock(SelectableStatic):
         _, truncated = wrap_user_turn_text(
             render_text, width=full_width, max_lines=_USER_PREVIEW_MAX_LINES
         )
-        if not truncated:
+        if not truncated and not self.image_widgets:
             return
         self.collapsed = not self.collapsed
         if self.collapsed:
             self.remove_class("-expanded")
         else:
             self.add_class("-expanded")
+        self._sync_image_widgets()
         self._render_block()
+
+    def _sync_image_widgets(self) -> None:
+        """Show/hide the sibling image widgets to match the expand state."""
+        show = not self.collapsed
+        for widget in self.image_widgets:
+            try:
+                widget.display = show
+            except Exception:  # noqa: BLE001 - widget may be detached
+                pass
+
+    def cleanup_images(self) -> None:
+        """Remove sibling image widgets (used when the turn page is pruned)."""
+        for widget in self.image_widgets:
+            try:
+                widget.remove()
+            except Exception:  # noqa: BLE001 - widget may already be detached
+                pass
+        self.image_widgets.clear()
 
 
 __all__ = ["UserTurnBlock"]

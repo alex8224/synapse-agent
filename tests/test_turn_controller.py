@@ -53,6 +53,9 @@ class _FakeApp:
     def apply_turn_usage(self, **kwargs: Any) -> None:
         self.calls.append(("apply_turn_usage", (), kwargs))
 
+    def refresh_image_preview(self) -> None:
+        """No-op: image preview is not exercised by turn controller tests."""
+
 
 def test_submit_reserves_session_before_scheduling_worker() -> None:
     app = _FakeApp()
