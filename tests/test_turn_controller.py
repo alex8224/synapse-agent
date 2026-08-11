@@ -1388,6 +1388,209 @@ class TestActiveSessionItems:
         assert by_id["b"].current is True
 
 
+def _status_snapshot(thread_id: str, status: SessionStatus, last_error: str = "") -> Any:
+    """Minimal SessionSnapshot stand-in for status-observer tests."""
+    return SimpleNamespace(thread_id=thread_id, status=status, last_error=last_error)
+
+
+class _NotifyApp(_FakeApp):
+    """Fake host that records flash_status calls like the real TUI."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flashes: list[tuple[str, str]] = []
+        self.toasts: list[tuple[str, str]] = []
+
+    def flash_status(self, message: str, style: str = "dim", **kwargs: Any) -> None:
+        del kwargs
+        self.flashes.append((message, style))
+
+    def notify(self, message: str, *, severity: str = "information", timeout: Any = 8) -> None:
+        del timeout
+        self.toasts.append((message, severity))
+
+
+class TestBackgroundDoneNotices:
+    """Foreground session sees a notice when a background session settles."""
+
+    @staticmethod
+    def _controller(app: _NotifyApp) -> TurnController:
+        app.thread_id = "foreground"
+        app._refresh_topbar = lambda: None
+        controller = TurnController(app)
+        controller._attached_thread_id = "foreground"
+        return controller
+
+    def test_background_done_flashes_notice(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING)
+        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.IDLE))
+
+        assert len(app.flashes) == 1
+        message, style = app.flashes[0]
+        assert message.startswith("Background session done: ")
+        assert "bg" in message
+        assert style == "green"
+
+    def test_foreground_done_does_not_flash(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("foreground", SessionStatus.RUNNING)
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("foreground", SessionStatus.IDLE)
+        )
+
+        assert app.flashes == []
+
+    def test_idle_without_prior_active_does_not_flash(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        # First snapshot for this session is already terminal (cold/attach race).
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.IDLE))
+
+        assert app.flashes == []
+
+    def test_background_failed_flashes_error(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING)
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.FAILED, "boom: out of budget")
+        )
+
+        assert len(app.flashes) == 1
+        message, style = app.flashes[0]
+        assert message.startswith("Background session failed: ")
+        assert "boom: out of budget" in message
+        assert style == "yellow"
+
+    def test_background_cancelled_flashes_notice(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING)
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.CANCELLED)
+        )
+
+        assert len(app.flashes) == 1
+        message, style = app.flashes[0]
+        assert message.startswith("Background session cancelled: ")
+        assert style == "dim"
+
+    def test_ongoing_active_transitions_do_not_flash(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.QUEUED)
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING)
+        )
+
+        assert app.flashes == []
+
+    def test_no_flash_when_host_lacks_flash_status(self) -> None:
+        app = _FakeApp()
+        app.thread_id = "foreground"
+        app._refresh_topbar = lambda: None
+        controller = TurnController(app)
+        controller._attached_thread_id = "foreground"
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING)
+        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.IDLE))
+
+        # Best-effort: no flash_status surface, no exception.
+        assert controller._pending_done_notices == []
+
+
+def test_background_done_flashes_through_real_settlement() -> None:
+    """End-to-end: a real background ``SessionRuntime`` settlement must flash.
+
+    Uses the actual status callback wiring (``on_status_change``) and the real
+    ``_settle`` path, not hand-built snapshots, so it guards the whole
+    RUNNING→IDLE transition from the runtime thread into the UI thread.
+    """
+    import asyncio
+    import concurrent.futures
+
+    from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
+    from synapse.runtime.sessions import SessionRuntime, UserTurn
+
+    class _Controlled:
+        def __init__(self) -> None:
+            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
+
+        def submit(
+            self, context: Any, *, sink: Any, cancel_token: CancelToken
+        ) -> TurnHandle:
+            del sink
+            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
+            self.futures[context.thread_id] = future
+            return TurnHandle(context.turn_id, future, cancel_token)
+
+    app = _NotifyApp()
+    app.thread_id = "foreground"
+    app._refresh_topbar = lambda: None
+    controller = TurnController(app)
+    controller._attached_thread_id = "foreground"
+    controlled = _Controlled()
+    runtime = SessionRuntime(
+        thread_id="bg",
+        agent=object(),
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        turn_runtime=controlled,  # type: ignore[arg-type]
+        on_status_change=controller._on_session_status_changed,
+    )
+    controller._sessions["bg"] = runtime
+
+    async def run() -> None:
+        handle = await runtime.submit(UserTurn("bg work"))
+        assert runtime.snapshot().status is SessionStatus.RUNNING
+        app.flashes.clear()  # startup transition must not have flashed
+
+        controlled.futures["bg"].set_result(
+            TurnResult(
+                turn_id=handle.turn_id,
+                thread_id="bg",
+                status=TurnStatus.COMPLETED,
+                final_text="ok",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        )
+        await asyncio.wrap_future(handle.future)
+        for _ in range(50):
+            if runtime.snapshot().status is SessionStatus.IDLE:
+                break
+            await asyncio.sleep(0)
+        await runtime.close(cancel_active=False)
+
+    asyncio.run(run())
+
+    assert len(app.flashes) == 1
+    assert app.flashes[0][0].startswith("Background session done: ")
+    assert len(app.toasts) == 1
+    assert app.toasts[0][0].startswith("Background session done: ")
+    assert app.toasts[0][1] == "success"
+
+
 def test_close_threadsafe_does_not_deadlock_on_busy_ui() -> None:
     """Regression: session close must never block the Agent loop on UI work.
 

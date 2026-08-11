@@ -43,6 +43,18 @@ from synapse.ui.turn.persistence import TurnPersistenceController
 MAX_RECENT_SESSION_ITEMS = 10
 
 
+#: Statuses that mean a turn actually finished.  ``WAITING_APPROVAL`` is
+#: intentionally excluded: the turn is blocked on user input, not done.
+#: Used to notify the foreground session when a background session settles.
+_BACKGROUND_DONE_STATUSES: frozenset[SessionStatus] = frozenset(
+    {
+        SessionStatus.IDLE,
+        SessionStatus.FAILED,
+        SessionStatus.CANCELLED,
+    }
+)
+
+
 def _parse_stored_timestamp(value: str) -> datetime | None:
     """Parse a persisted ``updated_at`` ISO string into an aware datetime."""
     try:
@@ -75,6 +87,11 @@ class TurnController:
         self._project_projection: dict[str, Any] = {}
         self._project_store: dict[str, Any] = {}
         self._project_goal_service: dict[str, Any] = {}
+        # Cross-session completion notices: last seen status per thread (written
+        # from runtime threads in order) and notices queued for the UI thread.
+        self._last_known_status: dict[str, SessionStatus] = {}
+        self._pending_done_notices: list[Any] = []
+        self._status_track_lock = threading.Lock()
 
     def project_runtime_for(
         self,
@@ -490,6 +507,9 @@ class TurnController:
             self._sessions.clear()
             self._session_runtime = None
             self._attached_thread_id = None
+            with self._status_track_lock:
+                self._last_known_status.clear()
+                self._pending_done_notices.clear()
             for runtime in sessions:
                 thread_id = getattr(runtime, "thread_id", "?")
                 try:
@@ -695,6 +715,7 @@ class TurnController:
         synchronous cross-thread call would deadlock against the UI thread
         while it waits for the session close to settle.
         """
+        self._track_session_status(snapshot)
         try:
             self._app.call_after_refresh(self._on_session_status_ui, snapshot)
         except Exception:  # noqa: BLE001 - chrome must never break a turn
@@ -704,7 +725,100 @@ class TurnController:
         app = self._app
         if snapshot.thread_id == self._attached_thread_id:
             self.sync_foreground_status()
+        self._drain_done_notices()
         app._refresh_topbar()
+
+    def _track_session_status(self, snapshot: Any) -> None:
+        """Record active→terminal transitions for background-session notices.
+
+        Runs on the runtime thread where status updates arrive in order, so the
+        transition check is race-free.  Only the resulting notice is forwarded;
+        flash/UI calls stay on the Textual thread in ``_drain_done_notices``.
+        """
+        status = self._status_of(snapshot)
+        if status is None:
+            return
+        thread_id = str(getattr(snapshot, "thread_id", "") or "")
+        if not thread_id:
+            return
+        foreground = self._attached_thread_id or getattr(self._app, "thread_id", None)
+        with self._status_track_lock:
+            previous = self._last_known_status.get(thread_id)
+            self._last_known_status[thread_id] = status
+            if (
+                status in _BACKGROUND_DONE_STATUSES
+                and previous in ACTIVE_SESSION_STATUSES
+                and thread_id != foreground
+            ):
+                self._pending_done_notices.append(snapshot)
+
+    def _drain_done_notices(self) -> None:
+        """Emit queued background-session completion notices on the UI thread."""
+        with self._status_track_lock:
+            notices = list(self._pending_done_notices)
+            self._pending_done_notices.clear()
+        for snapshot in notices:
+            try:
+                self._notify_background_done(snapshot)
+            except Exception:  # noqa: BLE001 - one broken notice must not drop the rest
+                pass
+
+    def _notify_background_done(self, snapshot: Any) -> None:
+        """Flash a short status notice for one settled background session."""
+        status = self._status_of(snapshot)
+        if status is None:
+            return
+        app = self._app
+        flash = getattr(app, "flash_status", None)
+        if not callable(flash):
+            return
+        title = self._background_session_label(snapshot)
+        if status is SessionStatus.IDLE:
+            message = f"Background session done: {title}"
+            flash(message, "green")
+            self._toast(message, "success")
+        elif status is SessionStatus.FAILED:
+            error = str(getattr(snapshot, "last_error", "") or "")[:80].strip()
+            suffix = f" - {error}" if error else ""
+            message = f"Background session failed: {title}{suffix}"
+            flash(message, "yellow")
+            self._toast(message, "error")
+        else:  # CANCELLED
+            message = f"Background session cancelled: {title}"
+            flash(message, "dim")
+            self._toast(message, "warning")
+
+    def _toast(self, message: str, severity: str) -> None:
+        """Best-effort Textual toast; skipped on hosts without ``notify``."""
+        notify = getattr(self._app, "notify", None)
+        if not callable(notify):
+            return
+        try:
+            notify(message, severity=severity, timeout=6)
+        except Exception:  # noqa: BLE001 - toast is best-effort
+            pass
+
+    def _background_session_label(self, snapshot: Any) -> str:
+        """Best-effort title for a background session in a completion notice."""
+        thread_id = str(getattr(snapshot, "thread_id", "") or "")
+        try:
+            runtime = self.runtime_for(thread_id)
+            if runtime is not None:
+                return self._active_session_title(runtime, snapshot)
+        except Exception:  # noqa: BLE001 - label is best-effort
+            pass
+        return thread_id[:8] if thread_id else "?"
+
+    @staticmethod
+    def _status_of(snapshot: Any) -> SessionStatus | None:
+        """Normalize a snapshot status to ``SessionStatus`` or None."""
+        raw = getattr(snapshot, "status", None)
+        if isinstance(raw, SessionStatus):
+            return raw
+        try:
+            return SessionStatus(str(raw or ""))
+        except (TypeError, ValueError):
+            return None
 
     def _attach_renderer(self, runtime: SessionRuntime, context: TurnContext) -> None:
         del context

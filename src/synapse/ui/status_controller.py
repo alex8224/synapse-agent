@@ -116,6 +116,8 @@ class StatusController:
             return _styles._C_ERROR
         if "yellow" in key or "warn" in key or "orange" in key:
             return _styles._C_ORANGE
+        if "green" in key or "ok" in key or "success" in key:
+            return _styles._C_GREEN
         return _styles._C_DIM
 
     # -- render ------------------------------------------------------------
