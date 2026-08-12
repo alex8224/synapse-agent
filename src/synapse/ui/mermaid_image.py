@@ -38,6 +38,16 @@ class MermaidSegment:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class MermaidImageAttachment:
+    """Synthetic image attachment consumed by the shared image viewer."""
+
+    data: bytes
+    mime: str = "image/png"
+    name: str = "mermaid-diagram.png"
+    source: str = "mermaid"
+
+
 def split_mermaid_fences(
     text: str, *, max_fences: int = _MAX_MERMAID_FENCES_PER_ANSWER
 ) -> list[MermaidSegment]:
@@ -88,6 +98,10 @@ def make_mermaid_widget(source: str) -> Any | None:
         )
         if widget is not None:
             widget.add_class("mermaid-image")
+            # Reuse the transcript image click contract: CodingAgentApp walks
+            # ancestors for this class/metadata and opens ImageViewerScreen.
+            widget.add_class("transcript-image")
+            widget.image_attachment = MermaidImageAttachment(data=png)
             # Keep consecutive diagrams visually distinct without doubling the
             # gap above and below every image.
             widget.styles.margin = (0, 0, 1, 0)
@@ -114,6 +128,7 @@ def mermaid_diagnostic() -> str:
 
 
 __all__ = [
+    "MermaidImageAttachment",
     "MermaidSegment",
     "make_mermaid_widget",
     "mermaid_diagnostic",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from PIL import Image as PILImage
 
 from synapse.content.multimodal import Attachment
@@ -13,7 +14,17 @@ from synapse.ui.image_render import (
     attachment_renderable,
     fit_cell_size,
     make_pil_image_widget,
+    set_renderer,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_image_renderer():
+    """Keep process-global renderer overrides isolated between tests."""
+    try:
+        yield
+    finally:
+        set_renderer("auto")
 
 
 def _png_bytes(width: int = 64, height: int = 32) -> bytes:

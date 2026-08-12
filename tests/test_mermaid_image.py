@@ -329,16 +329,25 @@ def test_make_mermaid_widget_none_on_render_failure():
 
 
 def test_make_mermaid_widget_builds_widget():
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, call
 
     fake = MagicMock()
+    png = _png_bytes()
     with patch("synapse.ui.mermaid_image.active_renderer_name", return_value="tgp"):
-        with patch.object(mi, "render_mermaid_png", return_value=_png_bytes()):
+        with patch.object(mi, "render_mermaid_png", return_value=png):
             with patch(
                 "synapse.ui.mermaid_image.make_pil_image_widget", return_value=fake
             ) as make_widget:
                 assert mi.make_mermaid_widget("graph LR") is fake
-                fake.add_class.assert_called_once_with("mermaid-image")
+                assert fake.add_class.call_args_list == [
+                    call("mermaid-image"),
+                    call("transcript-image"),
+                ]
+                attachment = fake.image_attachment
+                assert isinstance(attachment, mi.MermaidImageAttachment)
+                assert attachment.data == png
+                assert attachment.mime == "image/png"
+                assert attachment.source == "mermaid"
                 _, kwargs = make_widget.call_args
                 assert kwargs["max_cols"] == mi._MERMAID_MAX_COLS
                 assert kwargs["max_rows"] == mi._MERMAID_MAX_ROWS
@@ -411,3 +420,49 @@ def test_answer_block_uses_mermaid_widget_when_available():
         widgets = block._sealed_widgets()
     assert widgets
     assert fake_widget in widgets
+
+
+def test_click_mermaid_image_opens_shared_viewer():
+    """Mermaid image widgets reuse the transcript image viewer click contract."""
+    import asyncio
+
+    from textual.app import App, ComposeResult
+    from textual.events import Click
+
+    from synapse.ui.image_render import set_renderer
+    from synapse.ui.image_viewer import ImageViewerScreen
+    from synapse.ui.transcript_blocks import AnswerBlock
+
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield AnswerBlock("```mermaid\ngraph LR\n A --> B\n```")
+
+        def on_click(self, event: Click) -> None:
+            from synapse.ui.image_viewer import find_transcript_image_attachment
+
+            control = getattr(event, "control", None) or getattr(event, "widget", None)
+            attachment = find_transcript_image_attachment(control)
+            if attachment is None:
+                return
+            event.stop()
+            self.push_screen(ImageViewerScreen(attachment))
+
+    async def run() -> None:
+        set_renderer("sixel")
+        app = Host()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            widget = app.query_one(".mermaid-image")
+            assert widget.has_class("transcript-image")
+            assert isinstance(widget.image_attachment, mi.MermaidImageAttachment)
+            assert widget.image_attachment.data.startswith(b"\x89PNG")
+            target = widget.children[0] if widget.children else widget
+            assert await pilot.click(target, offset=(1, 1)) is True
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, ImageViewerScreen)
+
+    try:
+        asyncio.run(run())
+    finally:
+        set_renderer("auto")
