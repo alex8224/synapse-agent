@@ -142,3 +142,19 @@ def deepseek_thinking_kwargs(
         "reasoning_effort": reasoning_effort,
         "extra_body": {"thinking": {"type": "enabled"}},
     }
+
+
+def prewarm_openai_compat() -> None:
+    """Import the heavy ``langchain_openai`` tree as early as possible.
+
+    The first :func:`enable_openai_compat_reasoning_patch` call pays a
+    multi-second cost while ``langchain_openai`` (openai SDK, pydantic models,
+    httpx clients) is imported.  Starting this from a daemon thread at TUI
+    launch overlaps that import with textual/UI startup, so the deferred agent
+    build no longer stalls on it.  Idempotent and safe to call from any thread.
+    """
+    try:
+        enable_openai_compat_reasoning_patch()
+        enable_responses_reasoning_patch()
+    except Exception:  # noqa: BLE001 - best-effort prewarm
+        pass

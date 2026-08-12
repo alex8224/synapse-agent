@@ -6,7 +6,6 @@ from typing import Any
 
 from textual.app import ComposeResult
 
-from synapse.models.registry import registry_from_settings, settings_thinking_label
 from synapse.ui.dialogs.base import (
     DialogBase,
     OptionItem,
@@ -27,6 +26,10 @@ class ModelPickerDialog(DialogBase):
 
     def __init__(self, settings: Any) -> None:
         super().__init__()
+        # Deferred: synapse.models.registry pulls in langchain.chat_models
+        # (~1.3s); the picker is only opened on demand via /model.
+        from synapse.models.registry import registry_from_settings, settings_thinking_label
+
         self._settings = settings
         try:
             reg = registry_from_settings(settings)

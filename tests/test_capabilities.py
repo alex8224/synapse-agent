@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import synapse.models.registry as registry_module
 from synapse.config import load_settings
 from synapse.integrations.mcp_client import load_mcp_server_configs
+from synapse.models.profile import ModelProfile
 from synapse.models_registry import (
     apply_thinking_to_settings,
     build_model_from_settings,
@@ -27,6 +29,21 @@ from synapse.sessions import (
     format_session_table,
     resolve_startup_binding,
 )
+
+
+def test_build_chat_model_resolves_lazy_factory_inside_registry(monkeypatch):
+    """The internal factory call must not bypass module ``__getattr__``."""
+    fake_model = MagicMock(name="chat-model")
+    fake_factory = MagicMock(name="init-chat-model", return_value=fake_model)
+    monkeypatch.setattr(registry_module, "_init_chat_model", fake_factory)
+    monkeypatch.delitem(registry_module.__dict__, "init_chat_model", raising=False)
+    registry = registry_module.ModelRegistry(
+        profiles={"test": ModelProfile(name="test", model="test:demo")},
+        default="test",
+    )
+
+    assert registry.build_chat_model() is fake_model
+    fake_factory.assert_called_once_with("test:demo")
 
 
 def test_registry_legacy_single_model(tmp_path: Path, monkeypatch):

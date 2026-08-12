@@ -120,7 +120,7 @@ class TestOptionItem:
 class TestModelPickerInit:
     def test_no_registry_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "synapse.ui.dialogs.model_picker.registry_from_settings",
+            "synapse.models.registry.registry_from_settings",
             MagicMock(side_effect=RuntimeError("no reg")),
         )
         from synapse.config import Settings
@@ -863,7 +863,7 @@ class TestModelPickerMount:
                 return MagicMock(model="provider:model-a")
 
         monkeypatch.setattr(
-            "synapse.ui.dialogs.model_picker.registry_from_settings",
+            "synapse.models.registry.registry_from_settings",
             lambda _settings: FakeRegistry(),
         )
         monkeypatch.setattr(DialogBase, "on_mount", lambda _self: None)

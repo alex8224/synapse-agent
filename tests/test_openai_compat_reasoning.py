@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from synapse.integrations.llm_openai_compat import (
     enable_openai_compat_reasoning_patch,
     enable_responses_reasoning_patch,
+    prewarm_openai_compat,
 )
 
 
@@ -21,6 +22,17 @@ def test_reasoning_content_delta_is_preserved():
         AIMessageChunk,
     )
     assert chunk.additional_kwargs.get("reasoning_content") == "think-step"
+
+
+def test_prewarm_is_idempotent_and_applies_patches(monkeypatch):
+    from synapse.integrations import llm_openai_compat
+
+    monkeypatch.setattr(llm_openai_compat, "_PATCHED", False)
+    monkeypatch.setattr(llm_openai_compat, "_PATCHED_RESPONSES", False)
+    prewarm_openai_compat()
+    prewarm_openai_compat()  # second call must be a no-op
+    assert llm_openai_compat._PATCHED is True
+    assert llm_openai_compat._PATCHED_RESPONSES is True
 
 
 def test_reasoning_content_roundtrip_to_dict():

@@ -17,7 +17,6 @@ from synapse.content.prompts import build_system_prompt
 
 # 长程目标（goal）子系统：工具 + 记账 middleware + 进程级服务
 from synapse.goals.runtime import get_goal_service, init_goal_service
-from synapse.goals.tools import build_goal_tools
 from synapse.integrations.describe_image import VisionModelConfig
 from synapse.integrations.mcp_client import (
     get_active_mcp_pool,
@@ -177,10 +176,13 @@ def build_coding_agent(
     from deepagents import create_deep_agent
 
     from synapse.observability.startup_trace import dump as dump_startup_trace
-    from synapse.observability.startup_trace import duration, mark, reset, span
+    from synapse.observability.startup_trace import duration, ensure_started, mark, span
 
     build_started = time.perf_counter()
-    reset()
+    # Seed t0 only when this trace has no stages yet; rebuilds (MCP attach,
+    # model switch) must append to the existing startup report instead of
+    # wiping the first build's model/backend stages.
+    ensure_started()
     mark("build_coding_agent:start")
     _apply_observability(settings)
 
@@ -333,6 +335,8 @@ def build_coding_agent(
     # 长程目标工具（get_goal / create_goal / update_goal）+ 进程级服务
     if getattr(settings, "enable_goals", True):
         try:
+            from synapse.goals.tools import build_goal_tools
+
             tools.extend(build_goal_tools(service=goal_service))
         except Exception:  # noqa: BLE001 - goal 工具失败不阻断 agent 构建
             pass

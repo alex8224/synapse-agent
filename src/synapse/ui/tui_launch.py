@@ -6,6 +6,7 @@ composition, Textual lifecycle, and public re-exports.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,38 +22,41 @@ def run_tui(
     """Launch the Textual app; agent build is deferred off the UI thread by default."""
     # Delayed import: tui_launch is imported by tui.py for the public
     # ``run_tui`` re-export, so CodingAgentApp must resolve lazily.
+    from synapse.observability.startup_trace import mark, span
     from synapse.ui.tui import CodingAgentApp
 
     try:
         from synapse.ui.theme import bootstrap_theme
 
-        bootstrap_theme(getattr(settings, "theme", None), workspace=settings.workspace)
+        with span("tui:theme"):
+            bootstrap_theme(getattr(settings, "theme", None), workspace=settings.workspace)
     except Exception:  # noqa: BLE001
         pass
     root = project_root or Path.cwd()
     tid = thread_id or "pending"
     try:
-        from synapse.sessions.store import (
-            SessionStore,
-            apply_binding_to_settings,
-            binding_from_settings,
-            pick_startup_thread_id,
-            resolve_startup_binding,
-        )
+        with span("tui:session"):
+            from synapse.sessions.store import (
+                SessionStore,
+                apply_binding_to_settings,
+                binding_from_settings,
+                pick_startup_thread_id,
+                resolve_startup_binding,
+            )
 
-        store = SessionStore(settings.resolved_sessions_path())
-        try:
-            store.prune_empty(except_ids=set())
-        except Exception:  # noqa: BLE001
-            pass
-        tid, resumed = pick_startup_thread_id(store, thread_id, resume_last=True)
-        binding = resolve_startup_binding(
-            store, thread_id=tid if resumed else None, cli_model=cli_model
-        )
-        if binding is not None:
-            apply_binding_to_settings(settings, binding)
-        bind = binding_from_settings(settings)
-        store.set_last_model_binding(bind)
+            store = SessionStore(settings.resolved_sessions_path())
+            try:
+                store.prune_empty(except_ids=set())
+            except Exception:  # noqa: BLE001
+                pass
+            tid, resumed = pick_startup_thread_id(store, thread_id, resume_last=True)
+            binding = resolve_startup_binding(
+                store, thread_id=tid if resumed else None, cli_model=cli_model
+            )
+            if binding is not None:
+                apply_binding_to_settings(settings, binding)
+            bind = binding_from_settings(settings)
+            store.set_last_model_binding(bind)
     except Exception:  # noqa: BLE001
         from synapse.sessions.store import allocate_thread_id
 
@@ -73,36 +77,59 @@ def run_tui(
         if settings.enable_mcp and not getattr(agent, "_coding_mcp_attached", True):
             agent = attach_mcp_to_agent(settings, agent, project_root=root)
 
-    app = CodingAgentApp(
-        agent=agent,
-        settings=settings,
-        thread_id=tid,
-        env_path=env_path,
-        project_root=root,
-        defer_agent_build=defer,
-    )
+    with span("tui:app"):
+        app = CodingAgentApp(
+            agent=agent,
+            settings=settings,
+            thread_id=tid,
+            env_path=env_path,
+            project_root=root,
+            defer_agent_build=defer,
+        )
 
     # Global project catalog: register + reconcile projections, record a run.
     catalog = None
     run_id: str | None = None
+    catalog_thread: threading.Thread | None = None
     if bool(getattr(settings, "project_catalog_enabled", True)):
-        try:
-            from synapse.projects.catalog import ProjectCatalog
+        # Catalog sync is best-effort and not needed for the first UI frame;
+        # run it on a worker thread so project registration / session
+        # projection (hundreds of ms with many sessions) does not delay
+        # ``app.run()``.  ProjectCatalog opens its database with
+        # ``check_same_thread=False``, so the worker may create it and the
+        # main thread may close it after the join below.
+        def _catalog_worker() -> None:
+            nonlocal catalog, run_id
+            try:
+                with span("tui:catalog"):
+                    from synapse.projects.catalog import ProjectCatalog
 
-            catalog = ProjectCatalog(settings.resolved_catalog_path())
-            catalog.register_project(settings.workspace)
-            catalog.sync_project(settings)
-            run_id = catalog.record_run(settings.workspace, mode="tui", thread_id=tid)
-            app.attach_project_catalog(catalog)
-        except Exception:  # noqa: BLE001 - catalog is best-effort
-            catalog = None
+                    cat = ProjectCatalog(settings.resolved_catalog_path())
+                    cat.register_project(settings.workspace)
+                    cat.sync_project(settings)
+                    rid = cat.record_run(settings.workspace, mode="tui", thread_id=tid)
+                catalog = cat
+                run_id = rid
+                app.attach_project_catalog(cat)
+            except Exception:  # noqa: BLE001 - catalog is best-effort
+                catalog = None
+
+        catalog_thread = threading.Thread(
+            target=_catalog_worker, name="catalog-sync", daemon=True
+        )
+        catalog_thread.start()
     try:
+        mark("tui:run.start")
         result = app.run()
-        from synapse.observability.exit_trace import mark
+        from synapse.observability.exit_trace import mark as exit_mark
+        from synapse.observability.startup_trace import mark as startup_mark
 
-        mark("textual.run.returned")
+        exit_mark("textual.run.returned")
+        startup_mark("tui:run.returned")
         return result
     finally:
+        if catalog_thread is not None:
+            catalog_thread.join(timeout=3.0)
         if catalog is not None and run_id is not None:
             try:
                 catalog.finish_run(run_id)

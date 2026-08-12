@@ -9,7 +9,8 @@
 - TUI：bottombar 状态指示器 + 回合结束自动继续
 """
 
-from synapse.goals.middleware import build_goal_middleware
+from typing import Any
+
 from synapse.goals.model import (
     MAX_GOAL_OBJECTIVE_CHARS,
     ThreadGoal,
@@ -27,7 +28,26 @@ from synapse.goals.runtime import (
     reset_goal_service,
 )
 from synapse.goals.store import GoalStore, GoalStoreError
-from synapse.goals.tools import build_goal_tools
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily resolve the two heavy builders.
+
+    ``synapse.goals.middleware`` imports ``langchain.agents`` (~1.7s) and
+    ``synapse.goals.tools`` imports ``langchain.tools`` (~1.7s); both are
+    only needed when an agent is actually assembled.  Keeping them out of
+    the package import keeps the TUI startup path (bottombar goal indicator
+    → ``commands.goal`` → ``goals``) free of that cost.
+    """
+    if name == "build_goal_middleware":
+        from synapse.goals.middleware import build_goal_middleware
+
+        return build_goal_middleware
+    if name == "build_goal_tools":
+        from synapse.goals.tools import build_goal_tools
+
+        return build_goal_tools
+    raise AttributeError(name)
 
 __all__ = [
     "GoalListener",

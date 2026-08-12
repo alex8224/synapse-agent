@@ -345,29 +345,36 @@ def _launch_tui(
     Loops when the TUI exits with a cross-project switch request so the new
     project is launched in a fresh app (single-process boundary, ADR-010).
     """
+    _start_model_client_prewarm()
+    from synapse.observability.startup_trace import span
+
     try:
-        from synapse.ui.tui import run_tui
+        with span("cli:import.tui"):
+            from synapse.ui.tui import run_tui
     except ImportError as exc:  # pragma: no cover - dependency missing
         print_error(f"textual is required for TUI mode: {exc}")
         print_info("Install with: uv add textual  (or uv sync)")
         raise typer.Exit(code=1) from exc
 
-    overrides, resolved_thread, root = _resolve_launch_target(
-        workspace=workspace,
-        session=session,
-        project=project,
-        model=model,
-        require_approval=require_approval,
-        readonly=readonly,
-        debug=debug,
-    )
+    with span("cli:launch_target"):
+        overrides, resolved_thread, root = _resolve_launch_target(
+            workspace=workspace,
+            session=session,
+            project=project,
+            model=model,
+            require_approval=require_approval,
+            readonly=readonly,
+            debug=debug,
+        )
     thread_id = thread_id or resolved_thread
 
     switch_round = 0
     while True:
         try:
-            env_path = _bootstrap_env()
-            settings = _resolve_settings(**overrides)
+            with span("cli:env"):
+                env_path = _bootstrap_env()
+            with span("cli:settings"):
+                settings = _resolve_settings(**overrides)
         except (OSError, ValueError) as exc:
             _print_settings_error(exc)
             raise typer.Exit(code=1) from exc
@@ -412,6 +419,38 @@ def _launch_tui(
                 print_error(f"project switch failed: {exc}")
                 raise typer.Exit(code=1) from exc
         return
+
+
+def _start_model_client_prewarm() -> None:
+    """Warm the heavy ``langchain_openai`` import tree on a daemon thread.
+
+    The deferred agent build pays a multi-second first-import cost inside
+    ``enable_openai_compat_reasoning_patch`` (see
+    ``synapse.integrations.llm_openai_compat.prewarm_openai_compat``).
+
+    The thread starts after a short delay: CPython threads serialize Python
+    bytecode under the GIL, so an immediate prewarm would fight the main
+    thread's textual import and slow the first UI frame by ~1.4s.  Delaying
+    keeps TUI startup fast while still overlapping most of the import with
+    app construction, project-catalog sync, and UI idle time.
+    ``AGENT_STARTUP_PREWARM_DELAY`` (seconds) tunes the trade-off.
+    """
+    import threading
+    import time
+
+    delay = float(os.environ.get("AGENT_STARTUP_PREWARM_DELAY", "2.0"))
+
+    def _run() -> None:
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            from synapse.integrations.llm_openai_compat import prewarm_openai_compat
+
+            prewarm_openai_compat()
+        except Exception:  # noqa: BLE001 - best-effort, never break startup
+            pass
+
+    threading.Thread(target=_run, name="model-client-prewarm", daemon=True).start()
 
 
 @app.callback(invoke_without_command=True)

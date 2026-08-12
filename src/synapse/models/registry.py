@@ -35,8 +35,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from langchain.chat_models import init_chat_model
-
 from synapse.integrations.llm_openai_compat import (
     deepseek_thinking_kwargs,
     enable_openai_compat_reasoning_patch,
@@ -76,6 +74,37 @@ is_thinking_token = _is_thinking_token
 model_provider = _model_provider
 model_supports_image_input = _model_supports_image_input
 settings_thinking_label = _settings_thinking_label
+
+_init_chat_model: Any | None = None
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily resolve :data:`init_chat_model`.
+
+    ``langchain.chat_models`` costs ~1.3s to import and is only needed when a
+    model client is actually built, so it is kept out of the module import
+    (the TUI startup path pulls in this module via the /model picker).
+    """
+    global _init_chat_model
+    if name == "init_chat_model":
+        if _init_chat_model is None:
+            from langchain.chat_models import init_chat_model
+
+            _init_chat_model = init_chat_model
+        return _init_chat_model
+    raise AttributeError(name)
+
+
+def _resolve_init_chat_model() -> Callable[..., Any]:
+    """Return the lazily imported model factory for internal call sites.
+
+    Module-level ``__getattr__`` only serves attribute access from outside the
+    module. Bare global-name lookup inside this module bypasses it, so resolve
+    the factory explicitly before building a model client.
+    """
+    if factory := globals().get("init_chat_model"):
+        return factory
+    return __getattr__("init_chat_model")
 
 
 @dataclass
@@ -350,7 +379,7 @@ class ModelRegistry:
                         **kwargs,
                     )
                 else:
-                    chat_model = init_chat_model(model_name, **kwargs)
+                    chat_model = _resolve_init_chat_model()(model_name, **kwargs)
         except Exception:
             if model_name.startswith("openai:"):
                 from synapse.runtime.async_runtime import get_async_runtime

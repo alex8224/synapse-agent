@@ -15,7 +15,8 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         入口层 (CLI)                                 │
 │                                                                     │
-│  synapse = "synapse.cli:main"          __main__.py                  │
+│  synapse = "synapse.entry:main"         __main__.py                  │
+│  entry.py: 启动 startup trace → 导入 cli → cli.main()               │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Typer app (cli.py)                                         │  │
 │  │  ├─ _bootstrap_env()    加载 .env + system_prompt.md         │  │

@@ -42,7 +42,7 @@ Issues = "https://github.com/alex8224/synapse-agent/issues"
 Changelog = "https://github.com/alex8224/synapse-agent/blob/main/CHANGELOG.md"
 
 [project.scripts]
-synapse = "synapse.cli:main"
+synapse = "synapse.entry:main"
 synapse-web = "synapse.web:main"
 
 [project.optional-dependencies]
