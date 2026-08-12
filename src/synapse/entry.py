@@ -20,3 +20,7 @@ def main() -> None:
 
     mark("cli:imported")
     cli_main()
+
+
+if __name__ == "__main__":
+    main()

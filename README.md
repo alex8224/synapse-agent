@@ -55,11 +55,13 @@ floating project drawer: it lists every registered project, groups their
 sessions, marks live runtime status, and lets you switch sessions in place or
 jump to another project (the TUI restarts into that project).
 
-Press `Ctrl+Tab` for a lighter active-session switcher: it lists only sessions
-that are doing work right now (across projects), lets you `Tab` / `Shift+Tab`
-through them and `Enter` to switch — the old session keeps running in the
-background and is never cancelled.  Some terminals never forward `Ctrl+Tab` to
-the app; `Ctrl+O` is a drop-in alternative.
+Press `Ctrl+Tab` for a global recent-sessions switcher: it lists the most
+recently changed sessions across every registered project (from the user-layer
+catalog), marks each one's live runtime status — `running` / `queued` /
+`idle` / `cold`, etc. — lets you `Tab` / `Shift+Tab` through them and `Enter`
+to switch.  The old session keeps running in the background and is never
+cancelled.  Some terminals never forward `Ctrl+Tab` to the app; `Ctrl+O` is a
+drop-in alternative.
 
 <details>
 <summary><b>Or run from source</b></summary>

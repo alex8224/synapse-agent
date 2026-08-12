@@ -1363,6 +1363,117 @@ class TestActiveSessionItems:
 
         assert controller.active_session_items() == ()
 
+    def test_global_catalog_cold_sessions_across_projects(self) -> None:
+        from synapse.projects.catalog import CatalogSession
+
+        controller = self._controller()
+        controller._app._project_catalog = SimpleNamespace(
+            list_sessions=lambda *, limit=200: [
+                CatalogSession(
+                    project_id="pa", project_name="proj-a",
+                    workspace_path="/ws/a", thread_id="ca",
+                    title="cold a", model=None, summary=None,
+                    updated_at="2025-01-01T00:00:03+00:00",
+                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                ),
+                CatalogSession(
+                    project_id="pb", project_name="proj-b",
+                    workspace_path="/ws/b", thread_id="cb",
+                    title="cold b", model=None, summary=None,
+                    updated_at="2025-01-01T00:00:01+00:00",
+                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                ),
+            ]
+        )
+
+        items = controller.active_session_items()
+        by_id = {item.thread_id: item for item in items}
+        assert set(by_id) == {"ca", "cb"}
+        assert by_id["ca"].status == SessionStatus.COLD
+        assert by_id["ca"].project_id == "pa"
+        assert by_id["ca"].project_label == "proj-a"
+        assert by_id["ca"].title == "cold a"
+        assert by_id["ca"].current is False
+        # Sorted by persisted updated_at, newest first.
+        assert [item.thread_id for item in items] == ["ca", "cb"]
+
+    def test_runtime_status_overrides_catalog_row(self) -> None:
+        from synapse.projects.catalog import CatalogSession
+
+        controller = self._controller()
+        controller._sessions["live"] = self._runtime(
+            controller,
+            thread_id="live",
+            project_id="pa",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+            workspace="proj-a",
+        )
+        controller._app._project_catalog = SimpleNamespace(
+            list_sessions=lambda *, limit=200: [
+                CatalogSession(
+                    project_id="pa", project_name="proj-a",
+                    workspace_path="/ws/a", thread_id="live",
+                    title="catalog title", model=None, summary=None,
+                    updated_at="2025-01-01T00:00:00+00:00",
+                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                ),
+                CatalogSession(
+                    project_id="pb", project_name="proj-b",
+                    workspace_path="/ws/b", thread_id="cold",
+                    title="cold b", model=None, summary=None,
+                    updated_at="2025-01-01T00:00:01+00:00",
+                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                ),
+            ]
+        )
+
+        items = controller.active_session_items()
+        by_id = {item.thread_id: item for item in items}
+        # Runtime snapshot status wins over the catalog projection.
+        assert by_id["live"].status == SessionStatus.RUNNING
+        assert by_id["cold"].status == SessionStatus.COLD
+        # Live runtime (now - 1s) sorts before the cold 2025 row.
+        assert [item.thread_id for item in items] == ["live", "cold"]
+
+    def test_runtime_not_in_catalog_is_appended(self) -> None:
+        controller = self._controller()
+        controller._sessions["active"] = self._runtime(
+            controller,
+            thread_id="active",
+            project_id="pa",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+        # Catalog has no projection yet (active turn not persisted).
+        controller._app._project_catalog = SimpleNamespace(
+            list_sessions=lambda *, limit=200: []
+        )
+
+        items = controller.active_session_items()
+        assert [item.thread_id for item in items] == ["active"]
+        assert items[0].status == SessionStatus.RUNNING
+
+    def test_catalog_failure_falls_back_to_legacy(self) -> None:
+        def _boom(**kwargs: Any) -> list[Any]:
+            del kwargs
+            raise RuntimeError("db locked")
+
+        controller = self._controller()
+        controller._sessions["a"] = self._runtime(
+            controller,
+            thread_id="a",
+            project_id="p1",
+            status=SessionStatus.RUNNING,
+            activity=1.0,
+        )
+        controller._app._project_catalog = SimpleNamespace(list_sessions=_boom)
+
+        # Legacy fallback: live runtime survives, no exception leaks.
+        items = controller.active_session_items()
+        assert [item.thread_id for item in items] == ["a"]
+        assert items[0].status == SessionStatus.RUNNING
+
 
     def test_current_flag_marks_attached_thread(self) -> None:
         controller = self._controller()

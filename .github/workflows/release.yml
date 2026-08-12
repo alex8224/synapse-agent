@@ -63,14 +63,17 @@ jobs:
           - name: windows
             os: windows-latest
             artifact: executable-windows
+            binname: synapse-windows-x64.exe
           # macOS executables target Apple Silicon only; Intel macOS is unsupported
           # (matches the native-core-tool wheels matrix).
           - name: macos
             os: macos-latest
             artifact: executable-macos
+            binname: synapse-macos-arm64
           - name: linux
             os: ubuntu-latest
             artifact: executable-linux
+            binname: synapse-linux-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -100,15 +103,22 @@ jobs:
             --collect-all texicode `
             src/synapse/entry.py
 
+      - name: Rename executable for artifact
+        shell: pwsh
+        run: |
+          $ext = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          Rename-Item "dist/synapse$ext" "dist/${{ matrix.binname }}"
+          Write-Host "Renamed to ${{ matrix.binname }}"
+
       - name: Fix executable permission (Unix)
         if: runner.os != 'Windows'
-        run: chmod +x dist/synapse
+        run: chmod +x "dist/${{ matrix.binname }}"
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/synapse*
+          path: dist/${{ matrix.binname }}
           if-no-files-found: error
 
   release:

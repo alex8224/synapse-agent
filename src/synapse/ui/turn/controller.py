@@ -354,44 +354,143 @@ class TurnController:
         return by_project
 
     def active_session_items(self) -> tuple[ActiveSessionItem, ...]:
-        """Snapshot of the 10 most recently touched sessions for the switcher.
+        """Snapshot of the 10 most recently changed sessions, globally.
 
-        Two sources are merged:
+        Primary source is the user-layer ``ProjectCatalog`` projection: it
+        lists every registered project's sessions ordered by ``updated_at``
+        (cross-project), so the switcher is a *global* recent-changes list
+        rather than current-project history.  Each row is then annotated with
+        its live runtime status:
 
-        - in-process runtimes: the canonical ``ProjectRegistry`` (cross-project
-          background sessions) plus the legacy ``_sessions`` compatibility
-          index for early-startup sessions never registered there;
-        - the current project's persisted session store: cold history that has
-          no runtime in this process (e.g. sessions from before a restart), so
-          the switcher lists genuinely recent sessions, not only live ones.
+        - a session with an in-process runtime uses the runtime snapshot's
+          real status and ``last_activity_at`` (running / queued / idle / …);
+        - a session with no runtime in this process is marked ``COLD`` and
+          ordered by its persisted ``updated_at``.
 
-        Every in-memory runtime counts (active or idle); rows are ordered by
-        last activity (runtime ``last_activity_at`` for live sessions,
-        persisted ``updated_at`` for cold ones) and capped at
-        ``MAX_RECENT_SESSION_ITEMS``. Active statuses are still carried on each
-        item so the dialog can style them.
+        Runtimes that the catalog has not projected yet (e.g. an active turn
+        that has not persisted) are appended so working sessions never vanish
+        from the list.  When the catalog is unavailable (disabled or not yet
+        ready) this degrades to the legacy view: cross-project in-process
+        runtimes plus the current project's persisted cold history.  Rows are
+        capped at ``MAX_RECENT_SESSION_ITEMS``.
         """
+        runtimes = self._runtime_index()
+        current = self._app.thread_id
+        catalog = getattr(self._app, "_project_catalog", None)
+        if catalog is not None:
+            try:
+                sessions = catalog.list_sessions(
+                    limit=MAX_RECENT_SESSION_ITEMS * 3
+                )
+            except Exception:  # noqa: BLE001 - catalog is best-effort
+                sessions = None
+            if sessions is not None:
+                return self._merge_global_items(sessions, runtimes, current)
+        return self._legacy_recent_items(runtimes, current)
+
+    def _runtime_index(self) -> dict[str, SessionRuntime]:
+        """thread_id -> runtime across projects; the registry wins on clashes."""
         runtimes: dict[str, SessionRuntime] = {}
         for runtime in self._project_registry.all_sessions():
             runtimes[runtime.thread_id] = runtime
         for runtime in tuple(self._sessions.values()):
             runtimes.setdefault(runtime.thread_id, runtime)
+        return runtimes
 
-        current = self._app.thread_id
+    def _merge_global_items(
+        self,
+        sessions: list[Any],
+        runtimes: dict[str, SessionRuntime],
+        current: str,
+    ) -> tuple[ActiveSessionItem, ...]:
+        """Merge global catalog rows with live runtimes into one ordered list."""
+        items: list[ActiveSessionItem] = []
+        covered: set[tuple[str, str]] = set()
+        for cs in sessions:
+            runtime = self._runtime_for_session(cs, runtimes)
+            if runtime is not None:
+                snapshot = runtime.snapshot()
+                title = self._active_session_title(runtime, snapshot)
+                if title == snapshot.thread_id[:8] and (cs.title or "").strip():
+                    # Prefer the catalog title over the bare id fallback.
+                    title = (cs.title or "").strip()[:120]
+                items.append(
+                    ActiveSessionItem(
+                        project_id=cs.project_id,
+                        thread_id=cs.thread_id,
+                        title=title,
+                        project_label=cs.project_name or self._project_label(runtime),
+                        status=snapshot.status,
+                        last_activity_at=snapshot.last_activity_at,
+                        current=cs.thread_id == current,
+                    )
+                )
+            else:
+                updated = _parse_stored_timestamp(cs.updated_at)
+                if updated is None:
+                    continue
+                items.append(
+                    ActiveSessionItem(
+                        project_id=cs.project_id,
+                        thread_id=cs.thread_id,
+                        title=(cs.title or "").strip()[:120] or cs.thread_id[:8],
+                        project_label=cs.project_name or cs.project_id[:8],
+                        status=SessionStatus.COLD,
+                        last_activity_at=updated,
+                        current=False,
+                    )
+                )
+            covered.add((cs.project_id, cs.thread_id))
+        # Append runtimes the catalog has not projected yet (active, unpersisted).
+        for runtime in runtimes.values():
+            snapshot = runtime.snapshot()
+            key = (snapshot.project_id, snapshot.thread_id)
+            if key in covered:
+                continue
+            items.append(self._item_from_runtime(runtime, snapshot, current))
+        items.sort(key=lambda item: item.last_activity_at, reverse=True)
+        return tuple(items[:MAX_RECENT_SESSION_ITEMS])
+
+    @staticmethod
+    def _runtime_for_session(cs: Any, runtimes: dict[str, SessionRuntime]) -> SessionRuntime | None:
+        """Exact ``(project_id, thread_id)`` match, then unique thread fallback."""
+        matches = [r for r in runtimes.values() if r.thread_id == cs.thread_id]
+        for runtime in matches:
+            if str(getattr(runtime, "project_id", "") or "") == cs.project_id:
+                return runtime
+        return matches[0] if len(matches) == 1 else None
+
+    def _item_from_runtime(
+        self,
+        runtime: SessionRuntime,
+        snapshot: Any,
+        current: str,
+    ) -> ActiveSessionItem:
+        """Build a switcher row straight from one live runtime snapshot."""
+        return ActiveSessionItem(
+            project_id=snapshot.project_id,
+            thread_id=snapshot.thread_id,
+            title=self._active_session_title(runtime, snapshot),
+            project_label=self._project_label(runtime),
+            status=snapshot.status,
+            last_activity_at=snapshot.last_activity_at,
+            current=snapshot.thread_id == current,
+        )
+
+    def _legacy_recent_items(
+        self,
+        runtimes: dict[str, SessionRuntime],
+        current: str,
+    ) -> tuple[ActiveSessionItem, ...]:
+        """Fallback when the global catalog is unavailable.
+
+        Cross-project in-process runtimes plus the current project's persisted
+        cold history (the pre-catalog behavior).
+        """
         items: list[ActiveSessionItem] = []
         for runtime in runtimes.values():
             snapshot = runtime.snapshot()
-            items.append(
-                ActiveSessionItem(
-                    project_id=snapshot.project_id,
-                    thread_id=snapshot.thread_id,
-                    title=self._active_session_title(runtime, snapshot),
-                    project_label=self._project_label(runtime),
-                    status=snapshot.status,
-                    last_activity_at=snapshot.last_activity_at,
-                    current=snapshot.thread_id == current,
-                )
-            )
+            items.append(self._item_from_runtime(runtime, snapshot, current))
         items.extend(self._stored_recent_items(current))
         items.sort(key=lambda item: item.last_activity_at, reverse=True)
         return tuple(items[:MAX_RECENT_SESSION_ITEMS])

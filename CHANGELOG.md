@@ -8,6 +8,19 @@ All entries are written in English.
 
 ---
 
+## v0.1.31
+
+### New Features
+
+- The `Ctrl+O` / `Ctrl+Tab` recent-sessions switcher now lists the most recently changed sessions across every registered project (from the user-layer catalog) instead of current-project history only, and marks each row's live runtime status (`running` / `queued` / `idle` / `cold`, etc.). Sessions without an in-process runtime are shown as cold history, and the list degrades gracefully to the legacy view when the catalog is unavailable.
+
+### Bug Fixes
+
+- Fixed the standalone Windows executable exiting immediately after launch: the PyInstaller entry script only defined `main()` without invoking it, so the packaged binary ran the top-level code and quit. `synapse.entry` now has an `if __name__ == "__main__"` guard and the packaged executable runs the CLI correctly.
+- Fixed the release executable assets: the Linux and macOS binaries shared the same filename (`synapse`) and overwrote each other when merged into the release. Each platform is now uploaded under a distinct name: `synapse-windows-x64.exe`, `synapse-macos-arm64`, and `synapse-linux-x64`.
+
+---
+
 ## v0.1.30
 
 ### New Features
