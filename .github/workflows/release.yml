@@ -46,10 +46,102 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Upload changelog body
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-body
+          path: release_body.md
+          if-no-files-found: error
+
+  build-executables:
+    name: executable (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            artifact: executable-windows
+          # macOS executables target Apple Silicon only; Intel macOS is unsupported
+          # (matches the native-core-tool wheels matrix).
+          - name: macos
+            os: macos-latest
+            artifact: executable-macos
+          - name: linux
+            os: ubuntu-latest
+            artifact: executable-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (builds local synapse-core-tool)
+        run: uv sync --frozen
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Package executable with PyInstaller
+        shell: pwsh
+        run: |
+          uv run pyinstaller --noconfirm --clean --onefile --name synapse `
+            --paths src `
+            --collect-all textual `
+            --collect-all textual_serve `
+            --collect-all textual_image `
+            --collect-all termaid `
+            --collect-all texicode `
+            src/synapse/entry.py
+
+      - name: Fix executable permission (Unix)
+        if: runner.os != 'Windows'
+        run: chmod +x dist/synapse
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/synapse*
+          if-no-files-found: error
+
+  release:
+    needs: [build, build-executables]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist
+
+      - name: Download executable artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: executable-*
+          merge-multiple: true
+          path: executables
+
+      - name: Download changelog body
+        uses: actions/download-artifact@v4
+        with:
+          name: release-body
+          path: .
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*
+            executables/*
           body_path: release_body.md
 
   publish-pypi:

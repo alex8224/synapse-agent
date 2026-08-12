@@ -8,6 +8,20 @@ All entries are written in English.
 
 ---
 
+## v0.1.30
+
+### New Features
+
+- TUI startup timing trace: the startup report now covers the full CLI module-tree import (typer, settings, stream modules) that previously fell outside the trace, making startup bottlenecks visible.
+- Faster TUI startup: the model registry prewarm is optimized so the interface appears sooner.
+
+### Engineering
+
+- Release workflow now builds standalone single-file executables for Windows, Linux, and macOS (PyInstaller) and attaches them to the GitHub Release; the GitHub Release creation was moved to a dedicated job that waits for both the Python distributions and the executables, while PyPI publishing stays independent.
+- Translated AGENTS.md and CHANGELOG.md to English; updated the README homepage demo media with an animated GIF and an mp4 fallback source.
+
+---
+
 ## v0.1.29
 
 ### New Features
