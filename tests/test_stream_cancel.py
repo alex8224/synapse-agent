@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Any
 
+from synapse.runtime.agent_loop import CancelToken
 from synapse.ui.stream import stream_agent
 
 
@@ -117,6 +118,30 @@ def test_stream_agent_respects_cancel_event():
     assert result.cancelled is True
     assert elapsed < 2.0  # would take ~2.5s if not cancelled
     assert any("cancel" in m.lower() for m in sink.infos)
+
+
+def test_stream_agent_preserves_lifecycle_cancel_reason():
+    agent = _SlowAgent(chunks=50, delay=0.05)
+    sink = _Sink()
+    token = CancelToken()
+
+    def _cancel_soon() -> None:
+        assert agent.started.wait(timeout=2.0)
+        token.cancel("shutdown")
+
+    threading.Thread(target=_cancel_soon, daemon=True).start()
+    result = stream_agent(
+        agent,
+        {"messages": [{"role": "user", "content": "x"}]},
+        {"configurable": {"thread_id": "cancel-reason-test"}},
+        token_stream=False,
+        prefer_async=True,
+        sink=sink,
+        cancel_event=token.event,
+    )
+
+    assert result.cancelled is True
+    assert result.cancel_reason == "shutdown"
 
 
 class _CleanupOnCancelAgent:

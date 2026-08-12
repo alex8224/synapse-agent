@@ -244,7 +244,11 @@ class AgentTurnRuntime:
             last_ttft_s=result.last_ttft_s,
             last_rate_basis=result.last_rate_basis,
             compact_events=result.compact_events,
-            cancel_reason=token.reason if status is TurnStatus.CANCELLED else None,
+            cancel_reason=(
+                token.reason or result.cancel_reason
+                if status is TurnStatus.CANCELLED
+                else None
+            ),
         )
 
 

@@ -117,3 +117,39 @@ def test_repair_seals_open_tool_calls_and_keeps_prior_context():
     assert out["messages"]
     assert any(getattr(m, "content", None) == "continue please" for m in out["messages"])
     assert any(getattr(m, "content", None) == "old answer" for m in out["messages"])
+
+
+def test_lifecycle_cancel_repairs_checkpoint_without_visible_user_cancel_note():
+    app = _build_app()
+    cfg = {"configurable": {"thread_id": "repair-shutdown"}}
+    app.update_state(
+        cfg,
+        {
+            "messages": [
+                HumanMessage(content="internal turn"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "c1",
+                            "name": "echo",
+                            "args": {"x": "1"},
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+            ]
+        },
+        as_node="model",
+    )
+
+    repair_thread_after_cancel(app, cfg, reason="shutdown")
+
+    messages = app.get_state(cfg).values["messages"]
+    contents = [str(getattr(message, "content", "")) for message in messages]
+    assert all("用户终止" not in content for content in contents)
+    assert all("cancelled by user" not in content for content in contents)
+    boundary = messages[-1]
+    assert getattr(boundary, "content", None) == ""
+    assert boundary.additional_kwargs["synapse_cancel_boundary"] is True
+    assert boundary.additional_kwargs["synapse_cancel_reason"] == "shutdown"

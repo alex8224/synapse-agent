@@ -2,16 +2,13 @@
 
 Collects stage timings across the exit chain (Ctrl+C / ``/exit`` → Textual
 ``on_unmount`` → session/project teardown → ``asyncio.run`` executor join →
-atexit MCP/async-runtime close) and prints a report to **stderr** once the
-terminal has been restored, so the user can see exactly which stage is slow.
-
-Timing only starts when :func:`begin` is called (i.e. a real exit was
-requested); modules imported during tests never emit lines on their own.
+atexit MCP/async-runtime close).  The instrumentation (``begin``/``mark``/
+``span``) is kept, but the collected report is **no longer printed to stderr**:
+``duration`` and ``dump`` are no-ops kept only for call-site compatibility.
 """
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -75,38 +72,19 @@ class ExitTrace:
                 self.marks.append((name, since, step))
 
     def duration(self, name: str, started: float, **fields: Any) -> None:
-        """Emit one independent line for a late (atexit-phase) stage.
+        """No-op: exit stages are no longer reported to stderr.
 
-        Only prints after :meth:`begin` so plain test processes stay quiet.
-        ``started`` must be a ``time.perf_counter()`` value captured when the
-        stage began.
+        Kept so existing call sites (atexit MCP / async-runtime close) stay
+        untouched while the shutdown trace stays silent.
         """
-        with self._lock:
-            if not self._started:
-                return
-        elapsed = (time.perf_counter() - started) * 1000
-        suffix = " ".join(f"{key}={value}" for key, value in fields.items())
-        detail = f" {suffix}" if suffix else ""
-        print(
-            f"[exit-trace] thread={threading.current_thread().name} "
-            f"stage={name} elapsed_ms={elapsed:.1f}{detail}",
-            file=sys.stderr,
-        )
+        del name, started, fields
 
     def dump(self, *, header: str = "exit-trace") -> None:
-        """Print the accumulated stage report (call after the terminal is up)."""
-        with self._lock:
-            if not self._started or not self.marks or self.t0 is None:
-                return
-            marks = list(self.marks)
-            total = (time.perf_counter() - self.t0) * 1000
-        print(f"[{header}] total={total:.1f}ms stages={len(marks)}", file=sys.stderr)
-        for name, since, step in sorted(marks, key=lambda x: x[1]):
-            print(f"  +{step:8.1f}ms  @{since:8.1f}ms  {name}", file=sys.stderr)
-        top = sorted(marks, key=lambda x: x[2], reverse=True)[:10]
-        print(f"[{header}] top stages:", file=sys.stderr)
-        for name, _since, step in top:
-            print(f"  {step:8.1f}ms  {name}", file=sys.stderr)
+        """No-op: the accumulated stage report is no longer printed.
+
+        Kept for call-site compatibility (``tui_launch`` teardown).
+        """
+        del header
 
 
 EXIT_TRACE = ExitTrace()

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from synapse.runtime.cancellation import mark_cancel_event
+
 if TYPE_CHECKING:
     from synapse.runtime.agent_loop.request import TurnRequest
 
@@ -50,6 +52,10 @@ class CancelToken:
             if self._event.is_set():
                 return False
             self._reason = str(reason or "user")
+            # ``stream_agent`` accepts a plain threading.Event for compatibility.
+            # Attach the origin before setting it so the parser can distinguish
+            # user ESC from lifecycle/goal cancellation without changing that API.
+            mark_cancel_event(self._event, self._reason)
             self._event.set()
             return True
 

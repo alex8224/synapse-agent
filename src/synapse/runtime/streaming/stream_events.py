@@ -215,7 +215,8 @@ class StreamResult:
     last_output_tokens_per_second: float | None = None
     last_ttft_s: float | None = None
     last_rate_basis: str = "end_to_end"
-    cancelled: bool = False  # user abort (ESC / cancel_event)
+    cancelled: bool = False  # turn aborted through cancel_event
+    cancel_reason: str | None = None  # user / goal_pause / shutdown / unknown
     interrupted: bool = False  # graph paused for HITL approval
     compact_events: int = 0  # context-compaction summaries hidden from UI
 def _chunk_text(msg_chunk: Any) -> str:

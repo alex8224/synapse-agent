@@ -74,6 +74,31 @@ def test_headless_run_completes_without_sink() -> None:
         runtime_loop.close()
 
 
+def test_cancel_reason_survives_event_compatibility_boundary() -> None:
+    started = threading.Event()
+    observed: list[str | None] = []
+
+    def runner(*args: Any, cancel_event: threading.Event, **kwargs: Any) -> StreamResult:
+        del args, kwargs
+        started.set()
+        assert cancel_event.wait(timeout=2)
+        observed.append(getattr(cancel_event, "_synapse_cancel_reason", None))
+        return _completed_result(cancelled=True, cancel_reason=observed[-1], final_text="")
+
+    runtime_loop = AsyncRuntime(name="test-turn-cancel-reason")
+    try:
+        runtime = AgentTurnRuntime(runtime_loop, stream_runner=runner)
+        handle = runtime.submit(_context(turn_id="cancel-reason-turn"))
+        assert started.wait(timeout=2)
+        assert handle.cancel("shutdown") is True
+
+        result = handle.result(timeout=3)
+        assert observed == ["shutdown"]
+        assert result.cancel_reason == "shutdown"
+    finally:
+        runtime_loop.close()
+
+
 def test_headless_renderer_enables_structured_tool_item_events() -> None:
     class _ToolAgent:
         def stream(self, payload: Any, config: Any = None, **kwargs: Any):

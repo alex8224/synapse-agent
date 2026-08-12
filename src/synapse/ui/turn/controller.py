@@ -54,6 +54,22 @@ _BACKGROUND_DONE_STATUSES: frozenset[SessionStatus] = frozenset(
     }
 )
 
+#: Max preview length for a background-session answer inside a toast.  The
+#: toast is deliberately compact; the full result remains in that session's
+#: transcript.
+_ANSWER_SUMMARY_CHARS = 160
+
+#: Keep the toast heading short enough to leave useful room for the result.
+_NOTICE_TITLE_CHARS = 72
+
+
+def _summarize_text(text: str, limit: int = _ANSWER_SUMMARY_CHARS) -> str:
+    """Collapse whitespace and bound a one-line text preview."""
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
 
 def _parse_stored_timestamp(value: str) -> datetime | None:
     """Parse a persisted ``updated_at`` ISO string into an aware datetime."""
@@ -90,7 +106,7 @@ class TurnController:
         # Cross-session completion notices: last seen status per thread (written
         # from runtime threads in order) and notices queued for the UI thread.
         self._last_known_status: dict[str, SessionStatus] = {}
-        self._pending_done_notices: list[Any] = []
+        self._pending_done_notices: list[tuple[Any, str, str]] = []
         self._status_track_lock = threading.Lock()
 
     def project_runtime_for(
@@ -750,21 +766,35 @@ class TurnController:
                 and previous in ACTIVE_SESSION_STATUSES
                 and thread_id != foreground
             ):
-                self._pending_done_notices.append(snapshot)
+                # Capture the last user request and final-answer preview on the
+                # runtime thread right after persistence wrote them, so the UI
+                # thread never blocks on a projection read while draining.
+                summary = self._answer_summary(snapshot)
+                title = self._last_turn_input(snapshot) or self._background_session_label(snapshot)
+                self._pending_done_notices.append((snapshot, title, summary))
 
     def _drain_done_notices(self) -> None:
         """Emit queued background-session completion notices on the UI thread."""
         with self._status_track_lock:
             notices = list(self._pending_done_notices)
             self._pending_done_notices.clear()
-        for snapshot in notices:
+        for snapshot, title, summary in notices:
             try:
-                self._notify_background_done(snapshot)
+                self._notify_background_done(snapshot, title, summary)
             except Exception:  # noqa: BLE001 - one broken notice must not drop the rest
                 pass
 
-    def _notify_background_done(self, snapshot: Any) -> None:
-        """Flash a short status notice for one settled background session."""
+    def _notify_background_done(
+        self, snapshot: Any, title: str, summary: str = ""
+    ) -> None:
+        """Notify the foreground UI that a background session settled.
+
+        The flash stays a short one-liner. The toast uses a stable state heading,
+        then shows the final request and a compact result preview in its body.
+        This avoids a long prompt becoming the toast heading and preserves the
+        state when several notices are visible. Both request and summary are
+        captured on the runtime thread; their absence never fails the notice.
+        """
         status = self._status_of(snapshot)
         if status is None:
             return
@@ -772,29 +802,124 @@ class TurnController:
         flash = getattr(app, "flash_status", None)
         if not callable(flash):
             return
-        title = self._background_session_label(snapshot)
         if status is SessionStatus.IDLE:
-            message = f"Background session done: {title}"
-            flash(message, "green")
-            self._toast(message, "success")
+            notice_title, flash_style, severity = (
+                "Background session done",
+                "green",
+                "success",
+            )
+            detail = ""
         elif status is SessionStatus.FAILED:
-            error = str(getattr(snapshot, "last_error", "") or "")[:80].strip()
-            suffix = f" - {error}" if error else ""
-            message = f"Background session failed: {title}{suffix}"
-            flash(message, "yellow")
-            self._toast(message, "error")
+            notice_title, flash_style, severity = (
+                "Background session failed",
+                "yellow",
+                "error",
+            )
+            detail = str(getattr(snapshot, "last_error", "") or "")[:80].strip()
         else:  # CANCELLED
-            message = f"Background session cancelled: {title}"
-            flash(message, "dim")
-            self._toast(message, "warning")
+            notice_title, flash_style, severity = (
+                "Background session cancelled",
+                "dim",
+                "warning",
+            )
+            detail = ""
 
-    def _toast(self, message: str, severity: str) -> None:
+        flash_message = f"{notice_title}: {title}"
+        if detail:
+            flash_message += f" - {detail}"
+        flash(flash_message, flash_style)
+
+        # Toast: a stable heading and labelled, bounded fields make long user
+        # requests / Markdown answers scannable without turning into a modal.
+        parts = [f"Request: {title}"]
+        if detail:
+            parts.append(f"Error: {_summarize_text(detail, limit=80)}")
+        if summary:
+            parts.append(f"Result: {summary}")
+        self._toast("\n".join(parts), severity, title=notice_title)
+
+    def _answer_summary(self, snapshot: Any) -> str:
+        """Best-effort single-line preview of the session's final answer.
+
+        Runs on the runtime thread after ``SessionPersistence`` appended the
+        settled turn, so the newest answer event is already durable.  Any
+        missing projection/thread yields an empty summary.
+        """
+        thread_id = str(getattr(snapshot, "thread_id", "") or "")
+        if not thread_id:
+            return ""
+        try:
+            projection = self._projection_for_snapshot(snapshot)
+            if projection is None:
+                return ""
+            page = projection.load_tail(thread_id, turns=3)
+            for event in reversed(page.events):
+                if (
+                    getattr(event, "kind", "") == "answer"
+                    and str(getattr(event, "text", "") or "").strip()
+                ):
+                    return _summarize_text(event.text)
+        except Exception:  # noqa: BLE001 - summary is best-effort
+            pass
+        return ""
+
+    def _last_turn_input(self, snapshot: Any) -> str:
+        """Best-effort text of the session's last user request (from projection).
+
+        The notice title shows what the user actually asked in the final turn
+        rather than the stored session title (which reflects the first turn).
+        """
+        thread_id = str(getattr(snapshot, "thread_id", "") or "")
+        if not thread_id:
+            return ""
+        try:
+            projection = self._projection_for_snapshot(snapshot)
+            if projection is None:
+                return ""
+            page = projection.load_tail(thread_id, turns=3)
+            for event in reversed(page.events):
+                if (
+                    getattr(event, "kind", "") == "user"
+                    and str(getattr(event, "text", "") or "").strip()
+                ):
+                    return _summarize_text(event.text, limit=_NOTICE_TITLE_CHARS)
+        except Exception:  # noqa: BLE001 - title is best-effort
+            pass
+        return ""
+
+    def _projection_for_snapshot(self, snapshot: Any) -> Any:
+        """Resolve the project's transcript projection for a status snapshot.
+
+        ``_project_projection`` is only populated by ``projection_for`` when it
+        creates a new instance; ``ProjectRuntime.activate`` already installs
+        ``transcript_projection`` on the project, so the per-controller cache is
+        typically empty for real projects.  Fall back to the project registry
+        before giving up.
+        """
+        project_id = str(getattr(snapshot, "project_id", "") or "")
+        if not project_id:
+            return None
+        cached = self._project_projection.get(project_id)
+        if cached is not None:
+            return cached
+        project = self._project_registry.get(project_id)
+        if project is not None:
+            return getattr(project, "transcript_projection", None)
+        return None
+
+    def _toast(self, message: str, severity: str, *, title: str = "") -> None:
         """Best-effort Textual toast; skipped on hosts without ``notify``."""
         notify = getattr(self._app, "notify", None)
         if not callable(notify):
             return
         try:
-            notify(message, severity=severity, timeout=6)
+            notify(message, severity=severity, timeout=8, title=title)
+        except TypeError:
+            # Older hosts without a ``title`` argument: retry once without it.
+            try:
+                notify(message, severity=severity, timeout=8)
+            except Exception:  # noqa: BLE001 - toast is best-effort
+                pass
         except Exception:  # noqa: BLE001 - toast is best-effort
             pass
 

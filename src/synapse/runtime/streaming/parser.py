@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from synapse.runtime.cancellation import cancel_reason_from_event
 from synapse.runtime.context_compact import (
     is_context_compact_text,
     is_lc_summarization_message,
@@ -808,6 +809,7 @@ def stream_agent(
         except Exception:  # noqa: BLE001
             interrupted = False
 
+    cancel_reason = cancel_reason_from_event(cancel_event) if cancelled else None
     result = StreamResult(
         state=final,
         final_text=final_text if not interrupted else (final_text or ""),
@@ -826,6 +828,7 @@ def stream_agent(
         last_ttft_s=last_ttft_s,
         last_rate_basis=last_rate_basis,
         cancelled=cancelled,
+        cancel_reason=cancel_reason,
         interrupted=interrupted,
         compact_events=compact_events,
     )
@@ -834,7 +837,7 @@ def stream_agent(
         try:
             from synapse.sessions.cancel_repair import repair_thread_after_cancel
 
-            repair_thread_after_cancel(agent, run_config)
+            repair_thread_after_cancel(agent, run_config, reason=cancel_reason)
         except Exception:  # noqa: BLE001
             pass
     elif interrupted:

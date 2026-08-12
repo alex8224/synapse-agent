@@ -95,6 +95,34 @@ APP_CSS = """
         background: $theme-bg;
         color: $theme-fg;
     }
+    /* Background-session completion notices. Keep them compact so a Markdown
+       answer preview never obscures the transcript or prompt. */
+    Toast {
+        width: 52;
+        max-width: 44%;
+        margin-top: 1;
+        margin-right: 1;
+        padding: 1 2;
+        background: $theme-bar;
+        color: $theme-fg;
+        border-left: thick $theme-green;
+    }
+    Toast .toast--title {
+        color: $theme-green;
+        text-style: bold;
+    }
+    Toast.-warning {
+        border-left: thick $theme-orange;
+    }
+    Toast.-warning .toast--title {
+        color: $theme-orange;
+    }
+    Toast.-error {
+        border-left: thick $theme-error;
+    }
+    Toast.-error .toast--title {
+        color: $theme-error;
+    }
     #topbar {
         height: 1;
         /* Outer pad is theme-driven ($theme-top-pad-x); default 0 = edge-to-edge. */

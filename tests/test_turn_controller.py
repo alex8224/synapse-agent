@@ -16,6 +16,7 @@ from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.agent_loop.request import build_turn_request
 from synapse.runtime.sessions import SessionRuntime, SessionStatus
 from synapse.runtime.steer import SteerQueue
+from synapse.sessions.transcript import UiTranscriptEvent
 from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
 
@@ -1388,9 +1389,16 @@ class TestActiveSessionItems:
         assert by_id["b"].current is True
 
 
-def _status_snapshot(thread_id: str, status: SessionStatus, last_error: str = "") -> Any:
+def _status_snapshot(
+    thread_id: str, status: SessionStatus, last_error: str = "", project_id: str = ""
+) -> Any:
     """Minimal SessionSnapshot stand-in for status-observer tests."""
-    return SimpleNamespace(thread_id=thread_id, status=status, last_error=last_error)
+    return SimpleNamespace(
+        thread_id=thread_id,
+        status=status,
+        last_error=last_error,
+        project_id=project_id,
+    )
 
 
 class _NotifyApp(_FakeApp):
@@ -1399,15 +1407,22 @@ class _NotifyApp(_FakeApp):
     def __init__(self) -> None:
         super().__init__()
         self.flashes: list[tuple[str, str]] = []
-        self.toasts: list[tuple[str, str]] = []
+        self.toasts: list[tuple[str, str, str]] = []
 
     def flash_status(self, message: str, style: str = "dim", **kwargs: Any) -> None:
         del kwargs
         self.flashes.append((message, style))
 
-    def notify(self, message: str, *, severity: str = "information", timeout: Any = 8) -> None:
+    def notify(
+        self,
+        message: str,
+        *,
+        severity: str = "information",
+        timeout: Any = 8,
+        title: str = "",
+    ) -> None:
         del timeout
-        self.toasts.append((message, severity))
+        self.toasts.append((message, severity, title))
 
 
 class TestBackgroundDoneNotices:
@@ -1519,6 +1534,179 @@ class TestBackgroundDoneNotices:
         # Best-effort: no flash_status surface, no exception.
         assert controller._pending_done_notices == []
 
+    def test_done_toast_includes_answer_summary(self, tmp_path) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+        projection = TranscriptProjection(tmp_path / "projection.sqlite")
+        projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="fix the flaky test"),
+                UiTranscriptEvent(kind="answer", text="The retry loop now waits 2s."),
+            ],
+        )
+        controller._project_projection["project"] = projection
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.IDLE, project_id="project")
+        )
+
+        assert len(app.toasts) == 1
+        message, severity, title = app.toasts[0]
+        assert severity == "success"
+        # Toast heading is stable; the body labels the request and result.
+        assert title == "Background session done"
+        assert message == "Request: fix the flaky test\nResult: The retry loop now waits 2s."
+        # Flash stays a short single line with the state phrase.
+        assert app.flashes[0][0] == "Background session done: fix the flaky test"
+
+    def test_failed_toast_keeps_error_and_summary(self, tmp_path) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+        projection = TranscriptProjection(tmp_path / "projection.sqlite")
+        projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="deploy"),
+                UiTranscriptEvent(kind="answer", text="Deploy aborted after lint."),
+            ],
+        )
+        controller._project_projection["project"] = projection
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.FAILED, "boom: no budget", project_id="project")
+        )
+
+        message, severity, title = app.toasts[0]
+        assert severity == "error"
+        assert title == "Background session failed"
+        assert message == (
+            "Request: deploy\nError: boom: no budget\nResult: Deploy aborted after lint."
+        )
+        assert "boom: no budget" in app.flashes[0][0]
+
+    def test_toast_without_projection_is_title_only(self) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.CANCELLED, project_id="project")
+        )
+
+        message, severity, title = app.toasts[0]
+        assert severity == "warning"
+        assert title == "Background session cancelled"
+        assert message == "Request: bg"
+
+    def test_title_uses_last_user_request_not_first(self, tmp_path) -> None:
+        """A multi-turn session titles the notice with its final request."""
+        app = _NotifyApp()
+        controller = self._controller(app)
+        projection = TranscriptProjection(tmp_path / "projection.sqlite")
+        projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="hi"),
+                UiTranscriptEvent(kind="answer", text="Hello!"),
+            ],
+        )
+        projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="now fix the bug"),
+                UiTranscriptEvent(kind="answer", text="Fixed in src/app.py."),
+            ],
+        )
+        controller._project_projection["project"] = projection
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.IDLE, project_id="project")
+        )
+
+        message, _, title = app.toasts[0]
+        assert title == "Background session done"
+        assert message == "Request: now fix the bug\nResult: Fixed in src/app.py."
+        assert app.flashes[0][0] == "Background session done: now fix the bug"
+
+    def test_toast_bounds_long_request_and_result(self, tmp_path) -> None:
+        app = _NotifyApp()
+        controller = self._controller(app)
+        projection = TranscriptProjection(tmp_path / "projection.sqlite")
+        projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="q" * 100),
+                UiTranscriptEvent(kind="answer", text="a" * 300),
+            ],
+        )
+        controller._project_projection["project"] = projection
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.IDLE, project_id="project")
+        )
+
+        message, _, title = app.toasts[0]
+        assert title == "Background session done"
+        request, result = message.split("\n")
+        assert request == f"Request: {'q' * 71}…"
+        assert result == f"Result: {'a' * 159}…"
+
+    def test_projection_fallback_reads_project_registry(self, tmp_path) -> None:
+        """The real activate() path never populates ``_project_projection``;
+        the summary/title lookup must fall back to the project registry."""
+        app = _NotifyApp()
+        controller = self._controller(app)
+        settings = SimpleNamespace(
+            workspace=str(tmp_path),
+            resolved_sessions_path=lambda: str(tmp_path / "sessions.sqlite"),
+        )
+        project = controller.project_runtime_for("project", settings, activate=True)
+        assert project.transcript_projection is not None
+        project.transcript_projection.append_turn(
+            "bg",
+            [
+                UiTranscriptEvent(kind="user", text="hi"),
+                UiTranscriptEvent(kind="answer", text="hello there"),
+            ],
+        )
+        assert controller._project_projection == {}
+
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.RUNNING, project_id="project")
+        )
+        controller._on_session_status_changed(
+            _status_snapshot("bg", SessionStatus.IDLE, project_id="project")
+        )
+
+        message, _, title = app.toasts[0]
+        assert title == "Background session done"
+        assert message == "Request: hi\nResult: hello there"
+
+
+def test_summarize_text_collapses_and_truncates() -> None:
+    from synapse.ui.turn.controller import _summarize_text
+
+    assert _summarize_text("a\n\n  b  c  ") == "a b c"
+    long = "x" * 300
+    out = _summarize_text(long)
+    assert len(out) == 160
+    assert out.endswith("…")
+
 
 def test_background_done_flashes_through_real_settlement() -> None:
     """End-to-end: a real background ``SessionRuntime`` settlement must flash.
@@ -1587,8 +1775,10 @@ def test_background_done_flashes_through_real_settlement() -> None:
     assert len(app.flashes) == 1
     assert app.flashes[0][0].startswith("Background session done: ")
     assert len(app.toasts) == 1
-    assert app.toasts[0][0].startswith("Background session done: ")
+    # No projection -> no result preview; retain the fallback request label.
+    assert app.toasts[0][0] == "Request: bg"
     assert app.toasts[0][1] == "success"
+    assert app.toasts[0][2] == "Background session done"
 
 
 def test_close_threadsafe_does_not_deadlock_on_busy_ui() -> None:

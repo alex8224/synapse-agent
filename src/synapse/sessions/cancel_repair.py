@@ -1,4 +1,4 @@
-"""Keep multi-turn context continuous after user cancel (ESC).
+"""Keep multi-turn context continuous after a turn is cancelled.
 
 Hard-stopping astream can leave the LangGraph checkpoint with:
 - AIMessage.tool_calls without matching ToolMessage
@@ -93,7 +93,16 @@ def _answered_tool_ids(messages: list[Any]) -> set[str]:
     return done
 
 
-def _pending_tool_seals(messages: list[Any]) -> list[Any]:
+def _is_user_cancel(reason: str | None) -> bool:
+    """Treat unannotated legacy cancel events as user cancellation."""
+    return reason in {None, "user"}
+
+
+def _cancelled_tool_content(reason: str | None) -> str:
+    return "[cancelled by user]" if _is_user_cancel(reason) else "[cancelled]"
+
+
+def _pending_tool_seals(messages: list[Any], *, reason: str | None) -> list[Any]:
     from langchain_core.messages import ToolMessage
 
     answered = _answered_tool_ids(messages)
@@ -105,7 +114,7 @@ def _pending_tool_seals(messages: list[Any]) -> list[Any]:
                 continue
             seals.append(
                 ToolMessage(
-                    content="[cancelled by user]",
+                    content=_cancelled_tool_content(reason),
                     tool_call_id=cid,
                     name=_tool_call_name(call),
                     status="error",
@@ -120,6 +129,9 @@ def _needs_cancel_note(messages: list[Any]) -> bool:
         return False
     last = messages[-1]
     content = str(getattr(last, "content", "") or "")
+    additional_kwargs = getattr(last, "additional_kwargs", None) or {}
+    if additional_kwargs.get("synapse_cancel_boundary"):
+        return False
     low = content.casefold()
     if _is_ai_msg(last) and not (getattr(last, "tool_calls", None) or []):
         if "cancelled" in low or "终止" in content:
@@ -133,7 +145,12 @@ def _needs_cancel_note(messages: list[Any]) -> bool:
     return True
 
 
-def repair_thread_after_cancel(agent: Any, config: dict[str, Any]) -> list[str]:
+def repair_thread_after_cancel(
+    agent: Any,
+    config: dict[str, Any],
+    *,
+    reason: str | None = None,
+) -> list[str]:
     """Seal a cancelled turn so the same thread_id remains continuous.
 
     Returns short status notes for logs/UI (never raises).
@@ -158,7 +175,7 @@ def repair_thread_after_cancel(agent: Any, config: dict[str, Any]) -> list[str]:
     next_nodes = tuple(str(x) for x in (getattr(snap, "next", None) or ()))
 
     try:
-        seals = _pending_tool_seals(messages)
+        seals = _pending_tool_seals(messages, reason=reason)
         if seals:
             tools_node = _pick_tools_node(nodes, next_nodes)
             if tools_node:
@@ -175,7 +192,17 @@ def repair_thread_after_cancel(agent: Any, config: dict[str, Any]) -> list[str]:
         if _needs_cancel_note(messages):
             from langchain_core.messages import AIMessage
 
-            note = AIMessage(content="[本轮已由用户终止，上下文已保留]")
+            # Lifecycle cancellation still needs a graph boundary, but must not
+            # surface as a fabricated user action in the transcript.
+            note = AIMessage(
+                content=(
+                    "[本轮已由用户终止，上下文已保留]" if _is_user_cancel(reason) else ""
+                ),
+                additional_kwargs={
+                    "synapse_cancel_boundary": True,
+                    "synapse_cancel_reason": reason or "legacy_user",
+                },
+            )
             model_node = _pick_model_node(nodes, next_nodes)
             if model_node and next_nodes:
                 try:
