@@ -1262,6 +1262,19 @@ wheels = [
 ]
 
 [[package]]
+name = "mmdr"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/6a/bf25083c9e7be29c2375cd36310ac4938cfa0bc0de63ff6adfb0e5c5692f/mmdr-0.3.0.tar.gz", hash = "sha256:3ba4b1df1e17eda4e7368ae2c73ca497f92e55427d5d81763a55bde2f45575b5", size = 42798, upload-time = "2026-07-05T22:46:40.136Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/dc/ad3550870b1744907119d3cf7b228c65682e984eb3fd9a7ed373de3e3678/mmdr-0.3.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:89c1444c880a99272ce9f17cc14a833b5f52521ac714ca05a3bbab52e7b17ac9", size = 7869249, upload-time = "2026-07-05T22:46:32.691Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/43/37d531b10cd30f3482db42ba58756e500b667f4cf807941c65b19a2129e0/mmdr-0.3.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:5630a2c285152c47cc7b7728ceff2affbc340a2b976b2a5712fab35d3e992a0f", size = 7331094, upload-time = "2026-07-05T22:46:34.412Z" },
+    { url = "https://files.pythonhosted.org/packages/64/9b/59f973e8eae4c0eb429101763267359ab63831488e9700a9123c8b0703c9/mmdr-0.3.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2ad2e69e4db0635e50d0356844f9be336ffca0825a22ef0ffde4f34fafab9945", size = 7583523, upload-time = "2026-07-05T22:46:35.682Z" },
+    { url = "https://files.pythonhosted.org/packages/61/66/960cdcf458a09bca124ff9f2752ff4fc81625cb87dfad729e0c5aed2d6c2/mmdr-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:47d715530d8b9ad3886aee9bd13284eec3ee72671f86bba85e661fc914d30753", size = 8213916, upload-time = "2026-07-05T22:46:37.213Z" },
+    { url = "https://files.pythonhosted.org/packages/97/81/4b7151db826730c0ae7a29c857baf6de5c6f3df4b24326813a31dc5df683/mmdr-0.3.0-cp39-abi3-win_amd64.whl", hash = "sha256:5c987ee3809a9583c2f2e72f0a7d632bca43fb2cfa321420ef0bd5bfd8a8aaa0", size = 8352377, upload-time = "2026-07-05T22:46:38.84Z" },
+]
+
+[[package]]
 name = "multidict"
 version = "6.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2325,6 +2338,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "mcp" },
+    { name = "mmdr" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "rich" },
@@ -2369,6 +2383,7 @@ requires-dist = [
     { name = "mcp", specifier = "==1.28.1" },
     { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.6.1" },
     { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=9.7.7" },
+    { name = "mmdr", specifier = "==0.3.0" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "python-dotenv", specifier = "==1.2.2" },

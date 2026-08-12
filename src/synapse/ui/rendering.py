@@ -1,9 +1,10 @@
 """Rich Markdown, LaTeX, and Mermaid rendering helpers."""
 from __future__ import annotations
 
+import io
 import re
 import threading
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -223,11 +224,188 @@ def render_mermaid_diagram(source: str) -> Text | None:
     return rendered
 
 
-class _MermaidCodeBlock(_CodeBlock):
-    """Code fence that draws mermaid via termaid ``render_rich`` (Rich Text).
+# ---------------------------------------------------------------------------
+# Mermaid -> PNG via optional native mmdr (PyO3 extension)
+# ---------------------------------------------------------------------------
 
-    Non-mermaid fences keep Rich's default Syntax highlighting.
-    On termaid failure / timeout / oversize input, falls back to the source fence.
+# mmdr is a compiled extension distributed as abi3 wheels; the main program
+# must keep working when it is not installed, mirroring the RaTeX
+# ``synapse_core_tool`` convention (ImportError -> ASCII/termaid fallback).
+_mmdr_module = None
+try:
+    import mmdr as _mmdr_module  # noqa: F401 - optional native dependency
+except Exception:  # noqa: BLE001 - degrade to termaid / source-fence fallback
+    _mmdr_module = None
+
+_MERMAID_PNG_MAX_SOURCE_CHARS = 12_000
+# source -> PNG bytes, or None meaning "known bad / too heavy"
+_mermaid_png_cache: dict[str, bytes | None] = {}
+
+
+def mmdr_available() -> bool:
+    """True when the optional native mmdr extension is importable."""
+    return _mmdr_module is not None
+
+
+_MERMAID_SVG_WHITE_BG_RE = re.compile(r"background-color:\s*white", re.IGNORECASE)
+
+# journey 图的每个步骤文字输出两层重叠的 <text>:
+# 主层 + fallback 层重叠后在 resvg 中产生半透明"双影"。
+# 移除主层，保留自带深色 fill 的 fallback 层。
+_JOURNEY_MAIN_TASK_TEXT_RE = re.compile(
+    r'<text[^>]*class="task"[^>]*>.*?</text>', re.DOTALL
+)
+
+
+_MERMAID_ROLE_RE = re.compile(r'aria-roledescription="([^"]+)"', re.IGNORECASE)
+
+
+def _mermaid_role(svg: str) -> str | None:
+    """Return Mermaid's accessible diagram role from one rendered SVG."""
+    match = _MERMAID_ROLE_RE.search(svg)
+    return match.group(1).casefold() if match else None
+
+
+def _mermaid_recolor_svg(svg: str, background: str | None) -> str:
+    """Keep mmdr's native light palette and repair known SVG artifacts.
+
+    ``merman`` currently emits a complete light-theme SVG for every supported
+    diagram type: white canvas, fixed dark text/axes, and often translucent
+    shapes. Replacing only the canvas with a dark color or ANSI transparency
+    breaks contrast and blend semantics. Always keep an opaque white surface;
+    ``background`` remains in the signature for compatibility with tests and
+    older callers but is intentionally ignored.
+    """
+    svg = _MERMAID_SVG_WHITE_BG_RE.sub(
+        "background-color:white",
+        svg,
+        count=1,
+    )
+    if _mermaid_role(svg) == "journey":
+        svg = _JOURNEY_MAIN_TASK_TEXT_RE.sub("", svg)
+    return svg
+
+
+def _mermaid_raster_background(svg: str, background: str | None) -> str | None:
+    """Opaque white underlay matching mmdr's native light SVG palette."""
+    return "#ffffff"
+
+
+def _render_mmdr_png(diagram: Any) -> bytes:
+    """Rasterize an mmdr Diagram on its native opaque light surface."""
+    background = "#ffffff"
+    svg = _mermaid_recolor_svg(diagram.svg(), background)
+    raster_background = _mermaid_raster_background(svg, background)
+    return bytes(_mmdr_module.svg_to_png(svg, None, None, raster_background))
+
+
+def _render_mmdr_png_cached(text: str) -> bytes | None:
+    """Render one source string through mmdr; isolate the native failure boundary."""
+    try:
+        diagram = _mmdr_module.render(text)
+        png = _render_mmdr_png(diagram)
+        return png or None
+    except Exception:  # noqa: BLE001 - parse / layout failures all fall back
+        return None
+
+
+def _cached_mermaid_png(text: str) -> bytes | None:
+    """Read/render/write the PNG cache without repeating known failures."""
+    cache_key = text
+    cached = _mermaid_png_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    if cache_key in _mermaid_png_cache:
+        return None
+    # Mark in-flight as failed first so concurrent re-entries do not stampede.
+    _mermaid_png_cache[cache_key] = None
+    png = _render_mmdr_png_cached(text)
+    if png:
+        _mermaid_png_cache[cache_key] = png
+    return png
+
+
+def render_mermaid_png(source: str) -> bytes | None:
+    """Render one mermaid diagram to PNG via the optional native mmdr backend.
+
+    The native merman palette is preserved on an opaque white canvas so dark
+    and ANSI terminals cannot alter transparent/blended diagram colors. Returns
+    ``None`` when mmdr is absent or rendering fails; callers fall back to the
+    termaid ASCII renderer, then to the source fence.
+    """
+    text = (source or "").strip()
+    if not text or _mmdr_module is None:
+        return None
+    if len(text) > _MERMAID_PNG_MAX_SOURCE_CHARS:
+        return None
+    return _cached_mermaid_png(text)
+
+
+
+def _inside_textual_app() -> bool:
+    """True when the current thread is inside a running Textual app."""
+    try:
+        from textual.app import App
+
+        return App._running_app is not None
+    except Exception:  # noqa: BLE001 - unknown environment treats as plain console
+        return False
+
+
+_CLI_MERMAID_MAX_COLS = 100
+_CLI_MERMAID_MAX_ROWS = 40
+
+
+def _render_mermaid_image(source: str) -> Any | None:
+    """Best-effort pixel-protocol image for plain Rich consoles (non-Textual).
+
+    Only true pixel protocols (sixel / kitty TGP) are used; half-cell and
+    unicode renderers fall through to the termaid ASCII diagram instead.
+    """
+    if _mmdr_module is None:
+        return None
+    try:
+        from PIL import Image as PILImage
+
+        from synapse.ui.image_render import (
+            _resolve_renderer,
+            fit_cell_size,
+            renderer_needs_extra_row,
+        )
+        from synapse.ui.mermaid_image import mermaid_pixel_renderer_active
+
+        if not mermaid_pixel_renderer_active():
+            return None
+        png = render_mermaid_png(source)
+        if not png:
+            return None
+        image = PILImage.open(io.BytesIO(png))
+        image.load()
+        renderer_cls = _resolve_renderer()
+        if renderer_cls is None:
+            return None
+        width, height = image.size
+        cols, rows = fit_cell_size(
+            width,
+            height,
+            max_cols=_CLI_MERMAID_MAX_COLS,
+            max_rows=_CLI_MERMAID_MAX_ROWS,
+            extra_rows=1 if renderer_needs_extra_row() else 0,
+        )
+        return renderer_cls(image, width=cols, height=rows)
+    except Exception:  # noqa: BLE001 - any image-path failure falls back to ASCII
+        return None
+
+
+class _MermaidCodeBlock(_CodeBlock):
+    """Code fence that draws mermaid diagrams.
+
+    Priority in plain (non-Textual) Rich consoles: mmdr PNG via the active
+    pixel protocol (sixel / kitty TGP) -> termaid Rich Text -> source fence.
+    Inside Textual the Rich pipeline strips pixel-protocol control sequences,
+    so the widget path (``synapse.ui.mermaid_image``) handles images there and
+    this block always renders termaid ASCII. Half-cell / unicode renderers are
+    never used for mermaid: block characters are illegible for graphs.
     """
 
     def __rich_console__(
@@ -237,6 +415,11 @@ class _MermaidCodeBlock(_CodeBlock):
         if lexer in _MERMAID_LANGS:
             source = str(self.text).strip()
             if source:
+                if not _inside_textual_app():
+                    image = _render_mermaid_image(source)
+                    if image is not None:
+                        yield image
+                        return
                 rendered = render_mermaid_diagram(source)
                 if rendered is not None:
                     yield rendered

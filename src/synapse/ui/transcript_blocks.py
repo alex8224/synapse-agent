@@ -177,7 +177,7 @@ class ThoughtBlock(SelectableStatic):
 
 
 class AnswerBlock(SelectableStatic):
-    """Assistant answer row; live text, then Markdown plus display-math images."""
+    """Assistant answer row; live text, then Markdown plus math/mermaid images."""
 
     DEFAULT_CSS = """
     AnswerBlock {
@@ -228,20 +228,30 @@ class AnswerBlock(SelectableStatic):
                 make_math_widget,
                 split_block_math,
             )
+            from synapse.ui.mermaid_image import make_mermaid_widget, split_mermaid_fences
 
-            segments = split_block_math(body)
-            if not any(segment.kind == "math" for segment in segments):
-                return []
             fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
             widgets: list[Any] = []
-            for segment in segments:
-                if segment.kind == "markdown":
-                    if segment.source.strip():
-                        widgets.append(Static(render_markdown(segment.source)))
+            enriched = False
+            for segment in split_mermaid_fences(body):
+                if segment.kind == "mermaid":
+                    enriched = True
+                    widget = make_mermaid_widget(segment.source)
+                    if widget is None:
+                        # termaid ASCII (or the source fence) via the code-block path.
+                        widget = Static(
+                            render_markdown(f"```mermaid\n{segment.source}\n```")
+                        )
+                    widgets.append(widget)
                     continue
-                widget = make_math_widget(segment.source, color=fg)
-                widgets.append(widget or MathFallbackBlock(segment.source))
-            return widgets
+                for sub in split_block_math(segment.source):
+                    if sub.kind == "math":
+                        enriched = True
+                        widget = make_math_widget(sub.source, color=fg)
+                        widgets.append(widget or MathFallbackBlock(sub.source))
+                    elif sub.source.strip():
+                        widgets.append(Static(render_markdown(sub.source)))
+            return widgets if enriched else []
         except Exception:  # noqa: BLE001 - composite rendering is optional
             return []
 

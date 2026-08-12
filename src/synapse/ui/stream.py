@@ -54,6 +54,7 @@ from synapse.ui.rendering import (
     _FullTableElement,
     _MermaidCodeBlock,
     console,
+    mmdr_available,
     print_banner,
     print_error,
     print_final,
@@ -63,6 +64,7 @@ from synapse.ui.rendering import (
     render_markdown,
     render_math_in_text,
     render_mermaid_diagram,
+    render_mermaid_png,
 )
 from synapse.ui.sink import StreamSink
 
@@ -88,9 +90,11 @@ __all__ = [
     "print_info",
     "print_markdown",
     "print_user",
+    "mmdr_available",
     "render_markdown",
     "render_math_in_text",
     "render_mermaid_diagram",
+    "render_mermaid_png",
     "stream_agent",
 ]
 
