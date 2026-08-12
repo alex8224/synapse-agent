@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "synapse-core-tool"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chardetng",
  "encoding_rs",

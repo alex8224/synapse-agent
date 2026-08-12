@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "synapse-core-tool"
-version = "0.1.1"
+version = "0.1.2"
 description = "Native filesystem tools for Synapse"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
