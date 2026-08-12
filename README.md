@@ -21,7 +21,13 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-![Synapse TUI](assets/tui-preview.png)
+<p align="center">
+  <video controls muted loop poster="assets/tui-preview.png" width="720">
+    <source src="https://synapse-agent.best/demo.webm" type="video/webm">
+    <source src="https://synapse-agent.best/demo.mp4" type="video/mp4">
+    <a href="https://synapse-agent.best/demo.webm">Watch the demo video</a>
+  </video>
+</p>
 
 Synapse is a terminal-first coding-agent runtime. Unlike a one-shot "run this and reply" prompt, it is designed for sessions that last more than a few turns: a responsive TUI that keeps the timeline, tool calls, and context usage visible; token-aware handling of tool output; and persistent goals that keep the agent working until the work is actually done.
 
