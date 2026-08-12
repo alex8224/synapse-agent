@@ -90,7 +90,12 @@ class ImageViewerScreen(ModalScreen[None]):
 
     def on_click(self, event: Click) -> None:
         del event
-        self.dismiss()
+        # The click that opened this modal can continue propagating after the
+        # app pushes us onto the stack. Only dismiss a viewer that is still
+        # the active screen; otherwise pop_screen() could remove the default
+        # screen and raise ScreenStackError.
+        if self.is_active:
+            self.dismiss()
 
 
 __all__ = [

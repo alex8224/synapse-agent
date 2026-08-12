@@ -7,6 +7,26 @@ The release workflow automatically extracts the matching section as release note
 
 ---
 
+## v0.1.29
+
+### 新增功能
+
+- TUI 图片查看器：点击 transcript 中的图片可在模态窗口中放大查看，修复点击事件在模态栈切换时的误关闭问题。
+- TUI Mermaid 渲染优化：Mermaid 图片在后台线程渲染，渲染期间显示占位提示，避免原生渲染阻塞事件循环。
+- 后台会话结束时通知前台会话；跨事件边界携带取消原因。
+
+### 修复
+
+- 修复图片查看器点击关闭时可能移除默认 screen 并抛出 ScreenStackError 的问题。
+- 修复会话切换时 Mermaid 占位渲染的竞态，渲染结果仅在仍处于当前世代且已挂载时替换。
+
+### 工程改进
+
+- synapse-core-tool 原生扩展发布 0.1.2（修复 pyproject.toml 版本未同步导致的 PyPI 上传失败）。
+- 新增 `make_mermaid_widget_from_png`，将 PNG 渲染与 widget 构建解耦，明确 UI 线程边界。
+
+---
+
 ## v0.1.28
 
 ### 新增功能

@@ -399,7 +399,7 @@ def test_answer_block_mermaid_falls_back_to_static():
     block.body = "```mermaid\ngraph LR\n  A --> B\n```"
     block._fg_color = None
     block._markdown_max_chars = 24_000
-    with patch.object(mi, "make_mermaid_widget", return_value=None):
+    with patch.object(mi, "mermaid_pixel_renderer_active", return_value=False):
         with patch(
             "synapse.ui.transcript_blocks.render_markdown", return_value=Text("")
         ):
@@ -411,15 +411,28 @@ def test_answer_block_mermaid_falls_back_to_static():
 def test_answer_block_uses_mermaid_widget_when_available():
     from synapse.ui.transcript_blocks import AnswerBlock
 
-    fake_widget = Static("")
     block = object.__new__(AnswerBlock)
     block.body = "intro\n```mermaid\ngraph LR\n  A --> B\n```"
     block._fg_color = None
     block._markdown_max_chars = 24_000
-    with patch.object(mi, "make_mermaid_widget", return_value=fake_widget):
-        widgets = block._sealed_widgets()
+    with patch.object(mi, "mermaid_pixel_renderer_active", return_value=True):
+        with patch("synapse.ui.rendering.mmdr_available", return_value=True):
+            widgets = block._sealed_widgets()
     assert widgets
-    assert fake_widget in widgets
+    assert widgets[-1].__class__.__name__ == "_MermaidRenderPlaceholder"
+
+
+def test_answer_block_mermaid_fallback_is_not_submitted_to_png_worker():
+    from synapse.ui.transcript_blocks import AnswerBlock
+
+    block = object.__new__(AnswerBlock)
+    block.body = "```mermaid\ngraph LR\n  A --> B\n```"
+    block._fg_color = None
+    block._markdown_max_chars = 24_000
+    with patch.object(mi, "mermaid_pixel_renderer_active", return_value=False):
+        widgets = block._sealed_widgets()
+    assert len(widgets) == 1
+    assert isinstance(widgets[0], Static)
 
 
 def test_click_mermaid_image_opens_shared_viewer():
@@ -451,8 +464,12 @@ def test_click_mermaid_image_opens_shared_viewer():
         set_renderer("sixel")
         app = Host()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            for _ in range(40):
+                await pilot.pause(delay=0.05)
+                if app.query(".mermaid-image"):
+                    break
             widget = app.query_one(".mermaid-image")
+            await pilot.pause()
             assert widget.has_class("transcript-image")
             assert isinstance(widget.image_attachment, mi.MermaidImageAttachment)
             assert widget.image_attachment.data.startswith(b"\x89PNG")

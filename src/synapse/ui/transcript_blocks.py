@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from rich.console import Group
@@ -23,6 +24,18 @@ _DEFAULT_DIM = "#9aa0a6"
 _DEFAULT_FG = "#e8eaed"
 _DEFAULT_THOUGHT_MARK = "◆"
 _DEFAULT_MARKDOWN_MAX_CHARS = 24_000
+_MERMAID_RENDER_WORKERS = 2
+_mermaid_render_executor = ThreadPoolExecutor(
+    max_workers=_MERMAID_RENDER_WORKERS,
+    thread_name_prefix="synapse-mermaid-png",
+)
+
+
+def _render_mermaid_png(source: str) -> bytes | None:
+    """Run only native Mermaid PNG rendering in a background worker."""
+    from synapse.ui.rendering import render_mermaid_png
+
+    return render_mermaid_png(source)
 
 
 def _resolve_color(color: _Color | None, fallback: str, theme_attribute: str) -> str:
@@ -198,6 +211,7 @@ class AnswerBlock(SelectableStatic):
         self.live = bool(live)
         self._fg_color = fg_color
         self._markdown_max_chars = max(1, int(markdown_max_chars))
+        self._mermaid_render_generation = 0
         super().__init__()
         self._render_block()
 
@@ -228,7 +242,11 @@ class AnswerBlock(SelectableStatic):
                 make_math_widget,
                 split_block_math,
             )
-            from synapse.ui.mermaid_image import make_mermaid_widget, split_mermaid_fences
+            from synapse.ui.mermaid_image import (
+                mermaid_pixel_renderer_active,
+                split_mermaid_fences,
+            )
+            from synapse.ui.rendering import mmdr_available
 
             fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
             widgets: list[Any] = []
@@ -236,8 +254,9 @@ class AnswerBlock(SelectableStatic):
             for segment in split_mermaid_fences(body):
                 if segment.kind == "mermaid":
                     enriched = True
-                    widget = make_mermaid_widget(segment.source)
-                    if widget is None:
+                    if mermaid_pixel_renderer_active() and mmdr_available():
+                        widget = _MermaidRenderPlaceholder(segment.source)
+                    else:
                         # termaid ASCII (or the source fence) via the code-block path.
                         widget = Static(
                             render_markdown(f"```mermaid\n{segment.source}\n```")
@@ -262,10 +281,72 @@ class AnswerBlock(SelectableStatic):
             self.remove_children()
             if widgets:
                 self.mount(*widgets)
+                self.call_after_refresh(self._start_mermaid_renders)
         except Exception:  # noqa: BLE001 - widget may be detaching during session switch
             pass
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._start_mermaid_renders)
+
+    def _start_mermaid_renders(self) -> None:
+        """Submit unrendered Mermaid placeholders without blocking Textual's loop."""
+        if not self.is_attached:
+            return
+        generation = self._mermaid_render_generation
+        for placeholder in self.query(_MermaidRenderPlaceholder):
+            if placeholder.render_started:
+                continue
+            placeholder.render_started = True
+            future = _mermaid_render_executor.submit(
+                _render_mermaid_png, placeholder.source
+            )
+            future.add_done_callback(
+                lambda completed, target=placeholder, expected=generation: (
+                    self._deliver_mermaid_png(completed, target, expected)
+                )
+            )
+
+    def _deliver_mermaid_png(
+        self,
+        future: Future[bytes | None],
+        placeholder: _MermaidRenderPlaceholder,
+        generation: int,
+    ) -> None:
+        """Schedule a completed background render back onto Textual's UI thread."""
+        try:
+            png = future.result()
+            self.app.call_from_thread(
+                self._replace_mermaid_placeholder, placeholder, png, generation
+            )
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            pass
+
+    def _replace_mermaid_placeholder(
+        self,
+        placeholder: _MermaidRenderPlaceholder,
+        png: bytes | None,
+        generation: int,
+    ) -> None:
+        """Replace a still-current placeholder after its background render completes."""
+        if (
+            generation != self._mermaid_render_generation
+            or not self.is_attached
+            or not placeholder.is_attached
+        ):
+            return
+        from synapse.ui.mermaid_image import make_mermaid_widget_from_png
+
+        widget = make_mermaid_widget_from_png(png) if png else None
+        if widget is None:
+            widget = Static(render_markdown(f"```mermaid\n{placeholder.source}\n```"))
+        try:
+            self.mount(widget, before=placeholder)
+            placeholder.remove()
+        except Exception:  # noqa: BLE001 - transcript may detach during session switch
+            pass
+
     def _render_block(self) -> None:
+        self._mermaid_render_generation += 1
         body = self.body or ""
         fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
         if self.live:
@@ -287,6 +368,15 @@ class AnswerBlock(SelectableStatic):
         else:
             renderable = render_markdown(body)
         self.update(Group(renderable, Text("")))
+
+
+class _MermaidRenderPlaceholder(Static):
+    """Lightweight UI-thread placeholder while mmdr renders on a worker."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.render_started = False
+        super().__init__(Text("Rendering Mermaid diagram...", style="dim italic"))
 
 
 class _MarkdownBlock(Static):

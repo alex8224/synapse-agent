@@ -86,6 +86,16 @@ def make_mermaid_widget(source: str) -> Any | None:
     png = render_mermaid_png(source)
     if not png:
         return None
+    return make_mermaid_widget_from_png(png)
+
+
+def make_mermaid_widget_from_png(png: bytes) -> Any | None:
+    """Build an image widget from already-rendered Mermaid PNG bytes.
+
+    Rendering may happen in a background worker, but Textual widgets must be
+    created on the UI thread. Keeping that boundary explicit prevents native
+    mmdr work from blocking the event loop.
+    """
     try:
         from PIL import Image as PILImage
 
@@ -131,6 +141,7 @@ __all__ = [
     "MermaidImageAttachment",
     "MermaidSegment",
     "make_mermaid_widget",
+    "make_mermaid_widget_from_png",
     "mermaid_diagnostic",
     "mermaid_pixel_renderer_active",
     "split_mermaid_fences",

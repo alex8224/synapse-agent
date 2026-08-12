@@ -2326,7 +2326,7 @@ wheels = [
 
 [[package]]
 name = "synapse-cli-agent"
-version = "0.1.28"
+version = "0.1.29"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -2412,7 +2412,7 @@ dev = [
 
 [[package]]
 name = "synapse-core-tool"
-version = "0.1.0"
+version = "0.1.2"
 source = { directory = "rust/synapse-core-tool" }
 
 [[package]]
