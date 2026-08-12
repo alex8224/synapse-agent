@@ -23,6 +23,8 @@ class AgentLifecycleState:
     mcp_attaching: bool = False
     prewarm_cancel_event: threading.Event = field(default_factory=threading.Event)
     prewarm_started: bool = False
+    model_prewarm_started: bool = False
+    model_prewarm_done: threading.Event = field(default_factory=threading.Event)
 
 
 class AgentLifecycleController:
@@ -61,10 +63,16 @@ class AgentLifecycleController:
     def build_agent(self) -> None:
         """Build phase one, then attach MCP in the same worker."""
         from synapse.app.agent import attach_mcp_to_agent, build_coding_agent
-        from synapse.observability.startup_trace import duration
+        from synapse.observability.startup_trace import duration, global_mark
 
         app = self._app
         startup_started = time.perf_counter()
+        global_mark("agent:build.start")
+
+        # OpenAI/LangChain imports are CPU/GIL-heavy. Do not let this worker
+        # import the same tree concurrently with the first-frame prewarm.
+        if self.state.model_prewarm_started:
+            self.state.model_prewarm_done.wait(timeout=10.0)
 
         def report_progress(detail: str) -> None:
             app.call_from_thread(app.set_activity, "starting", detail, False)
@@ -83,10 +91,12 @@ class AgentLifecycleController:
                 turn.bind_agent(app.thread_id, agent)
             self.state.agent_ready.set()
             duration("agent.ready", startup_started, phase="startup")
+            global_mark("agent:phase1-ready")
             app.call_from_thread(app._on_agent_ready, False)
         except Exception as exc:  # noqa: BLE001
             self.state.agent_error = str(exc)
             self.state.agent_ready.set()
+            global_mark("agent:failed")
             app.call_from_thread(
                 app.append_event,
                 f"agent start failed: {exc}",
@@ -143,6 +153,7 @@ class AgentLifecycleController:
                     "MCP tools attached (will apply next turn)",
                     "dim",
                 )
+            global_mark("agent:mcp-ready")
         except Exception as exc:  # noqa: BLE001
             app.call_from_thread(
                 app.append_event,
@@ -168,9 +179,45 @@ class AgentLifecycleController:
         app._bind_goal_listener()
         app._load_current_goal()
         app._restore_session_transcript(announce=True)
+        from synapse.observability.startup_trace import global_mark
+
+        global_mark("agent:interactive-ready")
         # Do not prewarm before MCP has finalized the tool schema.
         if not bool(getattr(app.settings, "enable_mcp", True)):
             self.maybe_start_prewarm()
+
+    def start_model_prewarm(self) -> None:
+        """Start provider-import prewarm only after the first UI refresh.
+
+        Importing LangChain/OpenAI integrations is CPU/GIL-heavy. Starting it
+        from the CLI before Textual mounts the app can delay the first frame by
+        several seconds, even though the work runs on a daemon thread. At this
+        point the UI is already visible, so the best-effort work cannot make a
+        blank terminal longer.
+        """
+        if self.state.model_prewarm_started:
+            return
+        self.state.model_prewarm_started = True
+
+        def _worker() -> None:
+            try:
+                import os
+
+                # The first frame has already completed before this worker
+                # starts, so the old grace delay only delays model readiness.
+                # Keep the variable as an explicit escape hatch for slow hosts.
+                delay = float(os.environ.get("AGENT_STARTUP_PREWARM_DELAY", "0"))
+                if delay > 0:
+                    time.sleep(delay)
+                from synapse.integrations.llm_openai_compat import prewarm_openai_compat
+
+                prewarm_openai_compat()
+            except Exception:  # noqa: BLE001 - best-effort, never break startup
+                pass
+            finally:
+                self.state.model_prewarm_done.set()
+
+        threading.Thread(target=_worker, name="model-client-prewarm", daemon=True).start()
 
     def maybe_start_prewarm(self) -> None:
         """Start one optional provider prewarm after the agent is final."""
@@ -224,3 +271,6 @@ class AgentLifecycleController:
             app.append_event(f"mcp: {warning}", "yellow")
         app.set_activity("idle", "ready", True)
         self.maybe_start_prewarm()
+        from synapse.observability.startup_trace import global_mark
+
+        global_mark("agent:interactive-mcp-ready")

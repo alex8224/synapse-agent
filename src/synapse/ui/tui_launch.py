@@ -22,7 +22,7 @@ def run_tui(
     """Launch the Textual app; agent build is deferred off the UI thread by default."""
     # Delayed import: tui_launch is imported by tui.py for the public
     # ``run_tui`` re-export, so CodingAgentApp must resolve lazily.
-    from synapse.observability.startup_trace import mark, span
+    from synapse.observability.startup_trace import global_mark, span
     from synapse.ui.tui import CodingAgentApp
 
     try:
@@ -86,6 +86,7 @@ def run_tui(
             project_root=root,
             defer_agent_build=defer,
         )
+    global_mark("tui:app-created")
 
     # Global project catalog: register + reconcile projections, record a run.
     catalog = None
@@ -119,13 +120,12 @@ def run_tui(
         )
         catalog_thread.start()
     try:
-        mark("tui:run.start")
+        global_mark("tui:run.start")
         result = app.run()
         from synapse.observability.exit_trace import mark as exit_mark
-        from synapse.observability.startup_trace import mark as startup_mark
 
         exit_mark("textual.run.returned")
-        startup_mark("tui:run.returned")
+        global_mark("tui:run.returned")
         return result
     finally:
         if catalog_thread is not None:

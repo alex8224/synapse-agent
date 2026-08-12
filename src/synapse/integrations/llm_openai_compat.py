@@ -145,16 +145,32 @@ def deepseek_thinking_kwargs(
 
 
 def prewarm_openai_compat() -> None:
-    """Import the heavy ``langchain_openai`` tree as early as possible.
+    """Import the model factory and heavy ``langchain_openai`` tree early.
 
     The first :func:`enable_openai_compat_reasoning_patch` call pays a
     multi-second cost while ``langchain_openai`` (openai SDK, pydantic models,
-    httpx clients) is imported.  Starting this from a daemon thread at TUI
-    launch overlaps that import with textual/UI startup, so the deferred agent
-    build no longer stalls on it.  Idempotent and safe to call from any thread.
+    httpx clients) is imported.  The registry also lazily imports
+    ``langchain.chat_models.init_chat_model``; warm both paths so the deferred
+    agent build does not pay a second import tree.  Calling the factory without
+    a model only creates a configurable placeholder and performs no network
+    request.  Idempotent and safe to call from any thread.
     """
     try:
+        from synapse.observability.startup_trace import global_mark
+
+        global_mark("prewarm:start")
+    except Exception:  # noqa: BLE001 - diagnostics must never affect prewarm
+        global_mark = None
+    try:
+        from langchain.chat_models import init_chat_model
+
+        init_chat_model()
+        if global_mark is not None:
+            global_mark("prewarm:init_chat_model")
         enable_openai_compat_reasoning_patch()
         enable_responses_reasoning_patch()
+        if global_mark is not None:
+            global_mark("prewarm:complete")
     except Exception:  # noqa: BLE001 - best-effort prewarm
-        pass
+        if global_mark is not None:
+            global_mark("prewarm:failed")

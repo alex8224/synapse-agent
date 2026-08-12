@@ -577,6 +577,9 @@ class CodingAgentApp(App[None]):
         super().exit(result=result, return_code=return_code, message=message)
 
     def on_mount(self) -> None:
+        from synapse.observability.startup_trace import global_mark
+
+        global_mark("tui:on_mount")
         # Apply configured theme before first paint of chrome widgets.
         try:
             self.apply_theme(
@@ -601,12 +604,27 @@ class CodingAgentApp(App[None]):
         log.show_vertical_scrollbar = False
         log.show_horizontal_scrollbar = False
         self.query_one("#prompt", Input).focus()
+        global_mark("prompt:focused")
+        self.call_after_refresh(self._mark_first_frame)
         if self._lifecycle.should_build_on_mount():
             self.set_activity("starting", "loading agent…", True)
             self.append_event("starting agent in background…", "dim")
-            self._bg_build_agent()
+            # Start after the first refresh so the model prewarm can run first
+            # instead of racing the agent worker during heavy imports.
+            self.call_after_refresh(self._start_agent_build)
         else:
             self.call_after_refresh(self._restore_session_transcript)
+
+    def _mark_first_frame(self) -> None:
+        """Record the first completed Textual refresh on the process timeline."""
+        from synapse.observability.startup_trace import global_mark
+
+        global_mark("tui:first-frame")
+        self._lifecycle.start_model_prewarm()
+
+    def _start_agent_build(self) -> None:
+        """Start the deferred agent worker after the first frame callback."""
+        self._bg_build_agent()
 
     @work(thread=True, exclusive=True, group="startup")
     def _bg_build_agent(self) -> None:

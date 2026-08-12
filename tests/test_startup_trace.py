@@ -113,6 +113,24 @@ def test_worker_thread_trace_is_registered() -> None:
     )
 
 
+def test_global_mark_uses_process_trace_from_worker(monkeypatch) -> None:
+    """Cross-thread milestones share the main process-relative clock."""
+    monkeypatch.setattr(startup_trace.TRACE, "enabled", True)
+    startup_trace.TRACE.reset()
+
+    def work() -> None:
+        startup_trace.global_mark("worker-global-stage")
+
+    thread = threading.Thread(target=work, name="global-worker")
+    thread.start()
+    thread.join()
+
+    assert [name for name, _since, _step in startup_trace.TRACE.marks] == [
+        "trace-enabled",
+        "worker-global-stage",
+    ]
+
+
 def test_reset_clears_marks_and_dump_state() -> None:
     trace = StartupTrace(enabled=True)
     trace.mark("a")

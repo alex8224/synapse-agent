@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -97,3 +98,40 @@ def test_prewarm_can_be_cancelled_before_worker_starts() -> None:
     # checks that a second start is suppressed.
     controller.maybe_start_prewarm()
     assert prewarm.call_count <= 1
+
+
+def test_build_agent_waits_for_model_prewarm() -> None:
+    host = _Host()
+    controller = AgentLifecycleController(host, agent=None, defer_agent_build=True)
+    controller.state.model_prewarm_started = True
+    release = threading.Event()
+    controller.state.model_prewarm_done = release
+    build_started = threading.Event()
+    agent = object()
+
+    def build(*args, **kwargs):
+        build_started.set()
+        return agent
+
+    with patch("synapse.app.agent.build_coding_agent", side_effect=build):
+        worker = threading.Thread(target=controller.build_agent)
+        worker.start()
+        assert not build_started.wait(timeout=0.05)
+        release.set()
+        worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert host.agent is agent
+
+
+def test_model_prewarm_releases_build_wait_after_failure(monkeypatch) -> None:
+    host = _Host()
+    controller = AgentLifecycleController(host, agent=object(), defer_agent_build=False)
+    monkeypatch.setenv("AGENT_STARTUP_PREWARM_DELAY", "0")
+
+    with patch(
+        "synapse.integrations.llm_openai_compat.prewarm_openai_compat",
+        side_effect=RuntimeError("prewarm failed"),
+    ):
+        controller.start_model_prewarm()
+        assert controller.state.model_prewarm_done.wait(timeout=1.0)

@@ -121,6 +121,7 @@ TRACE = StartupTrace()
 _LOCAL = threading.local()
 _THREAD_TRACES: list[StartupTrace] = []
 _THREAD_TRACES_LOCK = threading.Lock()
+_GLOBAL_MARK_LOCK = threading.Lock()
 
 
 def _current_trace() -> StartupTrace:
@@ -137,6 +138,21 @@ def _current_trace() -> StartupTrace:
 
 def reset() -> None:
     _current_trace().reset()
+
+
+def global_mark(name: str) -> None:
+    """Record a milestone on the process-wide trace from any thread.
+
+    Worker traces intentionally have their own relative clock for detailed
+    profiling.  User-visible startup milestones need one shared clock, so
+    this helper appends them to the main trace while serializing cross-thread
+    writes.
+    """
+    if not TRACE.enabled:
+        return
+    with _GLOBAL_MARK_LOCK:
+        TRACE.ensure_started()
+        TRACE.mark(name)
 
 
 def mark(name: str) -> None:
