@@ -107,7 +107,9 @@ jobs:
         shell: pwsh
         run: |
           $ext = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
-          Rename-Item "dist/synapse$ext" "dist/${{ matrix.binname }}"
+          # Rename-Item refuses a destination that contains a path separator
+          # (pwsh treats it as a device path); Move-Item -LiteralPath is safe.
+          Move-Item -LiteralPath "dist/synapse$ext" -Destination "dist/${{ matrix.binname }}"
           Write-Host "Renamed to ${{ matrix.binname }}"
 
       - name: Fix executable permission (Unix)
