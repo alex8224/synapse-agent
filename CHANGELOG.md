@@ -1,556 +1,540 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project are documented in this file.
 
 Each release section starts with `## v{version}` and ends before the next `## ` heading.
 The release workflow automatically extracts the matching section as release notes.
+All entries are written in English.
 
 ---
 
 ## v0.1.29
 
-### 新增功能
+### New Features
 
-- TUI 图片查看器：点击 transcript 中的图片可在模态窗口中放大查看，修复点击事件在模态栈切换时的误关闭问题。
-- TUI Mermaid 渲染优化：Mermaid 图片在后台线程渲染，渲染期间显示占位提示，避免原生渲染阻塞事件循环。
-- 后台会话结束时通知前台会话；跨事件边界携带取消原因。
+- TUI image viewer: clicking an image in the transcript opens it enlarged in a modal window; fixed accidental dismissal when the click races with modal stack switches.
+- TUI Mermaid rendering optimization: Mermaid images are rendered on a background thread with a placeholder shown meanwhile, preventing native rendering from blocking the event loop.
+- Notify the foreground session when background sessions finish; carry the cancellation reason across event boundaries.
 
-### 修复
+### Bug Fixes
 
-- 修复图片查看器点击关闭时可能移除默认 screen 并抛出 ScreenStackError 的问题。
-- 修复会话切换时 Mermaid 占位渲染的竞态，渲染结果仅在仍处于当前世代且已挂载时替换。
+- Fixed the image viewer click-to-dismiss possibly removing the default screen and raising ScreenStackError.
+- Fixed a race in Mermaid placeholder rendering during session switches; results are swapped in only when still current and mounted.
 
-### 工程改进
+### Engineering
 
-- synapse-core-tool 原生扩展发布 0.1.2（修复 pyproject.toml 版本未同步导致的 PyPI 上传失败）。
-- 新增 `make_mermaid_widget_from_png`，将 PNG 渲染与 widget 构建解耦，明确 UI 线程边界。
+- Published synapse-core-tool native extension 0.1.2 (fixed the PyPI upload failure caused by an unsynced pyproject.toml version).
+- Added `make_mermaid_widget_from_png` to decouple PNG rendering from widget construction and make the UI-thread boundary explicit.
 
 ---
 
 ## v0.1.28
 
-### 新增功能
+### New Features
 
-- TUI 支持终端内 LaTeX 数学公式渲染：transcript 中 display math（`$$...$$`）块经原生 RaTeX 内核渲染为 PNG 图片展示，支持前景/背景色、字号、padding 与 device pixel ratio，无需 Node.js、浏览器或系统 TeX。
-- TUI 图片渲染增强：粘贴图片可在终端内预览（textual-image），transcript 显示图片，点击图片可在模态窗口中放大查看。
-- 会话切换器：Ctrl+Tab 快速切换最近 10 个会话并高亮当前项，冷历史合并进 recents。
-- 项目抽屉（project drawer）绑定 F12 并支持交互，可读性与渲染稳定性改进。
-- 跨项目进程内切换与多会话并发支持（runtime 与 TUI 解耦重构）。
+- TUI in-terminal LaTeX math rendering: display math (`$$...$$`) blocks in the transcript are rendered to PNG images via the native RaTeX kernel, with configurable foreground/background colors, font size, padding, and device pixel ratio; no Node.js, browser, or system TeX required.
+- TUI image rendering enhancements: pasted images can be previewed in the terminal (textual-image), transcript images are shown, and clicking an image opens it enlarged in a modal window.
+- Session switcher: Ctrl+Tab quickly switches among the 10 most recent sessions with the current item highlighted; cold history is merged into recents.
+- Project drawer bound to F12 with interaction support; readability and rendering stability improvements.
+- Cross-project in-process switching and concurrent multi-session support (runtime/TUI decoupling refactor).
 
-### 修复
+### Bug Fixes
 
-- 修复退出死锁，新增退出耗时诊断。
-- 修复会话切换后 turn 轮换内容丢失、replay 终态关闭、断链渲染冻结等问题。
-- 修复事件渲染阻塞输入的问题。
-- 隔离各会话的 model 与 MCP 状态，避免跨会话切换串扰。
-- 修复 goal follow-up 轮次的 reservation/settlement 竞态。
+- Fixed the exit deadlock and added exit-time diagnostics.
+- Fixed turn rotation content loss after session switches, replay terminal-state closure, and broken-link rendering freezes.
+- Fixed event rendering blocking input.
+- Isolated per-session model and MCP state to avoid cross-session interference.
+- Fixed the reservation/settlement race in goal follow-up turns.
 
-### 工程改进
+### Engineering
 
-- runtime 与 TUI 解耦：stream parser 移出 UI 包，工具事件结构化输出并保留工具 item 生命周期。
-- synapse-core-tool 原生扩展新增 `render_math_png`（RaTeX 内核 + 嵌入 KaTeX 字体）。
+- Runtime/TUI decoupling: the stream parser moved out of the UI package; tool events are emitted structurally with tool item lifecycle preserved.
+- Added `render_math_png` to the synapse-core-tool native extension (RaTeX kernel + embedded KaTeX fonts).
 
 ---
 
 ## v0.1.27
 
-### 新增功能
+### New Features
 
-- TUI topbar 实时显示 token 输出速率与首 token 时间（TTFT）。
-- README 重设计并拆分中英文版本，`docs/sessions.md` 同步补充会话说明。
+- TUI topbar shows token output rate and time-to-first-token (TTFT) in real time.
+- README redesigned and split into Chinese and English versions; `docs/sessions.md` updated with session docs.
 
-### 修复
+### Bug Fixes
 
-- 修复 TUI 控制器拆分后 Esc 取消与 goal 状态未保留的问题（跨控制器保留 goal 取消状态、Esc 时暂停 active goal）。
-- 修复 TUI 旧版 transcript projections 迁移在主线程阻塞的问题，改为在子进程中执行。
-- 修复对话框 modal 屏幕出现第二个滚动条、git changes popover 滚动条重复的问题。
+- Fixed Esc cancellation and goal state not being preserved after the TUI controller split (goal cancel state kept across controllers; active goal paused on Esc).
+- Fixed legacy transcript projections migration blocking the main thread; now runs in a subprocess.
+- Fixed a second scrollbar appearing in dialog modal screens and duplicate scrollbars in the git changes popover.
 
-### 工程改进
+### Engineering
 
-- `tui.py` 拆分为领域控制器（ChromeController、TranscriptController、SlashController、PromptController、TurnController），完成控制器抽取并修复 Codex usage 线程模型。
-- 限制 TUI session 与工具输出内存占用，降低长会话资源消耗。
+- Split `tui.py` into domain controllers (ChromeController, TranscriptController, SlashController, PromptController, TurnController); completed the controller extraction and fixed the Codex usage threading model.
+- Limited TUI session and tool output memory usage to reduce long-session resource consumption.
 
 ---
 
 ## v0.1.26
 
-### 新增功能
+### New Features
 
-- 恢复 `synapse run` 单次执行命令：headless 跑完一个任务后退出，支持 `-w/--workspace`、`-m/--model`、`--readonly`、`--thread-id`、`--debug`、`--stream/--no-stream`；适配 async-only 模型客户端（`ainvoke`）。
-- `build_coding_agent` 新增 `backend=` 与 `system_prompt=` 注入参数，支持评测 harness 将 agent 桥接到远程/容器后端并覆盖默认编码提示。
-- TUI 会话转录改为分页渲染（compact projection），长对话浏览性能提升。
-- 新增堆转储导出（`observability/heap_dump.py`），便于排查长会话内存问题。
+- Restored the `synapse run` one-shot command: headless mode runs a single task then exits, with `-w/--workspace`, `-m/--model`, `--readonly`, `--thread-id`, `--debug`, and `--stream/--no-stream` flags; adapted for async-only model clients (`ainvoke`).
+- `build_coding_agent` gained `backend=` and `system_prompt=` injection parameters, letting evaluation harnesses bridge the agent to remote/container backends and override the default coding prompt.
+- TUI session transcripts now use paginated rendering (compact projection) for better long-conversation browsing performance.
+- Added heap dump export (`observability/heap_dump.py`) for diagnosing long-session memory issues.
 
-### 修复
+### Bug Fixes
 
-- 修复 TUI 切换会话时未释放上一会话资源（stream sink / rail widgets）的问题。
-- 修复 `enable_goals=False` 时 goal 记账 disabled middleware 构造崩溃（`goal_middleware_disabled() takes no arguments`）。
+- Fixed TUI session switches not releasing the previous session's resources (stream sink / rail widgets).
+- Fixed the goal accounting disabled middleware constructor crash with `enable_goals=False` (`goal_middleware_disabled() takes no arguments`).
 
-### 工程改进
+### Engineering
 
-- Git Explore 对话框与 turn rail 相关组件同步更新，补充对应单测（transcript projection、heap dump、selection、dialogs 等）。
+- Git Explore dialog and turn rail components updated with matching unit tests (transcript projection, heap dump, selection, dialogs, etc.).
 
 ---
 
 ## v0.1.25
 
-### 新增功能
+### New Features
 
-- `synapse-web` 新增 `--public-url` 参数：指定 `textual-serve` 生成的页面 WebSocket 与静态资源地址，支持 nginx/TLS 反向代理场景（`https://` 自动推导 `wss://`）。
+- `synapse-web` gained a `--public-url` argument: specifies the WebSocket and static asset URLs of the page generated by `textual-serve`, supporting nginx/TLS reverse proxy setups (`https://` auto-derives `wss://`).
 
-### 修复
+### Bug Fixes
 
-- 修复容器经 nginx 反向代理后页面内 WebSocket/静态资源地址使用 `http://<host>:<port>` 导致浏览器无法连接的问题。
+- Fixed the browser being unable to connect when WebSocket/static asset URLs inside the page used `http://<host>:<port>` behind an nginx reverse proxy.
 
-### 工程改进
+### Engineering
 
-- Docker 部署文档补充容器仅绑定回环端口 + nginx 443 反代的配置示例。
+- Docker deployment docs added a config example for binding the container to the loopback interface plus an nginx 443 reverse proxy.
 
 ---
 
 ## v0.1.24
 
-### 新增功能
+### New Features
 
-- 新增 `synapse-web` 控制台入口（`synapse.web:main`）：无需源码即可通过安装的 wheel 启动 Web TUI，支持 `--host`、`--port`、`--workspace` 参数。
-- 新增 `Dockerfile.web` 最小镜像：基于 `python:3.12-slim`，无 Rust 工具链，运行时依赖全部通过预编译 wheel 安装；支持 `pypi`（从 PyPI 安装发布版本）与 `local`（安装构建上下文中的本地 wheel）两种构建模式。
-- 新增 `.dockerignore` 与 Docker 部署文档（`docs/docker-web.md`），包含远程机器构建、运行、端口映射与 `/workspace` 数据持久化说明。
+- Added the `synapse-web` console entry point (`synapse.web:main`): start the Web TUI from an installed wheel without source code; supports `--host`, `--port`, and `--workspace`.
+- Added the minimal `Dockerfile.web` image: based on `python:3.12-slim`, no Rust toolchain, all runtime deps installed from prebuilt wheels; supports `pypi` (install the published version from PyPI) and `local` (install the local wheel in the build context) build modes.
+- Added `.dockerignore` and Docker deployment docs (`docs/docker-web.md`) covering remote-machine builds, running, port mapping, and `/workspace` data persistence.
 
-### 工程改进
+### Engineering
 
-- `scripts/serve_web.py` 改为 `synapse.web` 的兼容薄包装。
-- 文档导航新增 Docker Web TUI 页面。
+- `scripts/serve_web.py` became a thin compatibility wrapper around `synapse.web`.
+- Docs navigation gained a Docker Web TUI page.
 
 ---
 
 ## v0.1.23
 
-### 新增功能
+### New Features
 
-- Rich Markdown 渲染接入 Synapse 主题系统：内置主题提供完整 Markdown 样式映射，支持标题、段落、强调、行内代码、引用、链接、列表和表格等元素跟随主题配色。
-- `themes.json` 支持通过独立的 `markdown` 字段覆盖 Markdown 元素的 Rich style，并支持主题继承与分层配置。
-- 运行时切换主题会重绘已显示的答案、思考内容和独立 Markdown 块；主题设计器保存主题时保留 Markdown 样式配置。
+- Rich Markdown rendering integrated with the Synapse theme system: built-in themes provide a full Markdown style mapping, so headings, paragraphs, emphasis, inline code, quotes, links, lists, and tables follow theme colors.
+- `themes.json` supports overriding Rich styles for Markdown elements via a dedicated `markdown` field, with theme inheritance and layered config.
+- Switching themes at runtime redraws displayed answers, thoughts, and standalone Markdown blocks; the theme designer preserves Markdown style config when saving.
 
-### 修复
+### Bug Fixes
 
-- 修复 Rich Markdown 使用内置默认颜色、导致 Markdown 内容无法跟随 Synapse 主题切换的问题。
-- 修复主题设计器保存已有主题时可能丢失手写 Markdown 样式覆盖的问题。
+- Fixed Rich Markdown using built-in default colors so Markdown content did not follow Synapse theme switches.
+- Fixed the theme designer possibly dropping hand-written Markdown style overrides when saving an existing theme.
 
-### 工程改进
+### Engineering
 
-- 增加 Markdown 主题解析、Rich 样式注入、主题继承、运行时重绘和内置主题完整性测试。
-- 补充 Markdown 主题配置文档，并保留代码块使用 `code_theme` 控制语法高亮的边界说明。
+- Added tests for Markdown theme parsing, Rich style injection, theme inheritance, runtime redraw, and built-in theme completeness.
+- Added Markdown theme config docs, keeping the note that code blocks use `code_theme` for syntax highlighting.
 
 ---
 
 ## v0.1.22
 
-### 新增功能
+### New Features
 
-- TUI 恢复会话时改为分页加载：启动只渲染最近 `AGENT_HISTORY_TAIL_TURNS` 轮（默认 20），滚动到 transcript 顶部时异步加载更早历史并保持滚动位置，避免超长会话导致启动卡顿。
-- 新增 `AGENT_HISTORY_TAIL_TURNS` 设置，控制 TUI 启动时初始渲染的最近可见会话轮数（支持环境变量与分层 `settings.json`）。
+- TUI session restoration now loads paginated history: startup renders only the most recent `AGENT_HISTORY_TAIL_TURNS` turns (default 20); scrolling to the transcript top asynchronously loads older history while preserving scroll position, avoiding startup lag on very long sessions.
+- Added the `AGENT_HISTORY_TAIL_TURNS` setting controlling how many recent visible turns the TUI renders at startup (environment variable and layered `settings.json` supported).
 
-### 修复
+### Bug Fixes
 
-- 修复历史分页异步加载的请求代际竞争：切换/重新加载会话后，旧分页 worker 的回调不再清除当前请求的加载状态或插入过期数据。
+- Fixed the request-generation race in asynchronous history pagination: after switching/reloading sessions, stale pagination worker callbacks no longer clear the current request's loading state or insert outdated data.
 
-### 工程改进
+### Engineering
 
-- 直接依赖版本固定到 `uv.lock` 对应版本。
+- Pinned direct dependency versions to the corresponding `uv.lock` versions.
 
 ---
 
 ## v0.1.21
 
-### 新增功能
+### New Features
 
-- 会话工具 `list_sessions` 重构为 `search_session`：新增本地增量全文索引（`SessionSearchIndex`），除标题/摘要/模型外支持会话消息全文双路命中；`query` 为空时列出最近会话，支持 `limit`/`offset` 分页与摘要。
-- `read_session` 支持 `include_tools`（默认去掉工具消息，输出体积最多缩小 13 倍）与 `offset`/`limit` 轮次分页。
-- 新增原生 `patch` 工具，`read_file`/`edit_file`/`patch` 全部路由到 `synapse-core-tool` 编码保持的原生实现。
-- 新增 `AGENT_EXPAND_THINKING` 设置，控制 reasoning 块的展开/收起。
+- Refactored the session tool `list_sessions` into `search_session`: added a local incremental full-text index (`SessionSearchIndex`) matching session message bodies as well as title/summary/model; an empty `query` lists recent sessions with `limit`/`offset` pagination and summaries.
+- `read_session` supports `include_tools` (tool messages dropped by default, output size reduced by up to 13x) and `offset`/`limit` turn pagination.
+- Added the native `patch` tool; `read_file`/`edit_file`/`patch` all route to the encoding-preserving native implementations in `synapse-core-tool`.
+- Added the `AGENT_EXPAND_THINKING` setting controlling expansion/collapse of reasoning blocks.
 
-### 修复
+### Bug Fixes
 
-- 修复 `load_messages_from_checkpointer` 只读最新 checkpoint 导致新版 SqliteSaver（delta 存储）下读不到消息：改为 delta 重建优先、旧逻辑兜底。
-- 修复 `search_session` 索引库并发写锁竞争（`database is locked`）：WAL + busy_timeout + 同步降级容错。
-- 修复 JSON 类型检测晚于 LOG、无法识别括号风格日志的问题。
-- 修复长对话框行标签被裁剪的问题。
+- Fixed `load_messages_from_checkpointer` reading only the latest checkpoint so messages were missing under the newer SqliteSaver (delta storage): delta reconstruction first, old logic as fallback.
+- Fixed concurrent write-lock contention in the `search_session` index (`database is locked`): WAL + busy_timeout + degraded sync fallback.
+- Fixed JSON type detection running after LOG and failing to recognize bracket-style logs.
+- Fixed long dialog line labels being truncated.
 
-### 工程改进
+### Engineering
 
-- 文件系统核心由 `synapse-search-core` 迁移并更名为 `synapse-core-tool`（新增原生 read/edit/patch），CI workflow 同步迁移为 `native-core-tool-wheels.yml`。
-- 隐藏 DeepAgents 内置 `ls`/`glob`/`grep`，新增 prompt 中间件注入权威文件工具指引。
-- 主 TUI 欢迎 logo 动画时机调整。
-- 清理 `list_sessions` 旧名残留（docstring、错误提示、prompts、文档）。
+- Migrated and renamed the filesystem core from `synapse-search-core` to `synapse-core-tool` (added native read/edit/patch); the CI workflow migrated to `native-core-tool-wheels.yml`.
+- Hid DeepAgents built-in `ls`/`glob`/`grep` and added a prompt middleware injecting authoritative file-tool guidance.
+- Adjusted the main TUI welcome logo animation timing.
+- Cleaned up `list_sessions` legacy name remnants (docstrings, error messages, prompts, docs).
 
 ---
 
 ## v0.1.20
 
-### 新增功能
+### New Features
 
-- LLM Debug Inspector 支持采集并展示原始 HTTP 请求与响应 payload，便于排查模型传输问题。
-- 主 TUI 内联展示子 Agent 运行状态，并根据任务复杂度动态选择 DAG 并行执行路径。
-- 系统提示固定注入当前 shell 语法规则，减少 PowerShell、Bash 与 cmd 命令混用。
+- LLM Debug Inspector can capture and show raw HTTP request/response payloads for diagnosing model transport issues.
+- The main TUI displays sub-agent run status inline and dynamically picks the DAG parallel execution path based on task complexity.
+- System prompts now always inject the current shell syntax rules to reduce PowerShell/Bash/cmd mixing.
 
-### 修复
+### Bug Fixes
 
-- 完善 `search_files` 的 ripgrep-compatible pattern 示例、参数边界和 `glob` include-only 语义；当 native include-glob 异常返回空结果时，使用同一 Rust core 枚举候选并降级搜索，避免合法 `*.py` / `**/*.py` 过滤导致漏报。
-- 修复 Responses API、Anthropic thinking block 等多种 reasoning 内容提取与流式显示问题，并避免 reasoning 后重复输出答案。
-- 为 HTTP 客户端启用 SOCKS 代理支持，修复相关代理配置不可用问题。
-- 未配置 Codex OAuth profile 时隐藏用量标签，并修正重置弹窗样式。
+- Improved `search_files` ripgrep-compatible pattern examples, parameter bounds, and `glob` include-only semantics; when the native include-glob unexpectedly returns empty results, the same Rust core enumerates candidates and degrades the search, avoiding false negatives from valid `*.py` / `**/*.py` filters.
+- Fixed reasoning content extraction and streaming display across Responses API, Anthropic thinking blocks, and more, and avoided duplicating the answer after reasoning.
+- Enabled SOCKS proxy support for the HTTP client and fixed related proxy config unavailability.
 
-### 工程改进
+### Engineering
 
-- 增加 `search_files` StructuredTool 到 Rust native core 的完整 glob 回归测试，并校验对外正则示例可由实际 matcher 编译。
-- 更新 Agent 装配、流式 UI、HTTP transport、提示注入和子 Agent 状态相关测试。
+- Added full glob regression tests for the `search_files` StructuredTool against the Rust native core, and verified that documented regex examples compile with the actual matcher.
+- Updated tests for agent assembly, streaming UI, HTTP transport, prompt injection, and sub-agent state.
 
 ---
 
 ## v0.1.19
 
-### 新增功能
+### New Features
 
-- Codex OAuth 用量底部栏组件：展示 5h/1d 用量窗口、重置剩余时间和账号到期时间；低于 50% 时红色显示。
-- Codex 速率限制重置能力：直接通过 HTTP 请求 wham/rate-limit-reset-credits 读取可用重置次数与到期详情，支持在弹窗中一键消费重置。
-- /codex reset、/codex credits 命令打开重置详情弹窗；底部栏 Codex 区域支持 hover 高亮与点击。
-- 启动时配置错误友好提示：models.json、settings.json 或内联 JSON 环境变量格式错误时输出简洁错误与修复提示，不再抛出完整 traceback。
+- Codex OAuth usage bottom-bar component: shows the 5h/1d usage window, reset remaining time, and account expiry; turns red below 50%.
+- Codex rate-limit reset capability: reads available reset count and expiry details directly via HTTP from wham/rate-limit-reset-credits, with one-click consumption in a dialog.
+- `/codex reset` and `/codex credits` open the reset details dialog; the bottom-bar Codex area supports hover highlight and clicks.
+- Friendly config-error messages at startup: malformed models.json, settings.json, or inline JSON env vars print a concise error with fix hints instead of a full traceback.
 
-### 修复
+### Bug Fixes
 
-- /compact 改为后台 worker 执行，避免模型摘要阻塞 TUI；执行期间禁止取消，防止压缩状态损坏。
-- 兼容 LangChain 1.3 编译图闭包中的 SummarizationMiddleware 定位。
+- `/compact` now runs on a background worker so model summarization does not block the TUI; cancellation is disabled during the run to prevent corrupted compression state.
+- Compatible with SummarizationMiddleware lookup in LangChain 1.3 compiled graph closures.
 
 ---
 
 ## v0.1.18
 
-### 新功能
+### New Features
 
-- 新增 LLM Debug Inspector（`F11`），实时监控模型通信、工具调用和 token 消耗。
-- Inspector 支持采集开关、跟随最新、按类型筛选（异常/工具/慢调用）、回合折叠和调用详情查看。
-- Inspector 概览栏显示失败率（基于工具级错误检测），工具标签页展示失败工具及原因。
+- Added the LLM Debug Inspector (`F11`) monitoring model communication, tool calls, and token consumption in real time.
+- The Inspector supports capture toggling, follow-latest, type filtering (errors/tools/slow calls), turn folding, and call detail views.
+- The Inspector overview bar shows the failure rate (based on tool-level error detection); the tools tab lists failed tools and reasons.
 
-### 修复
+### Bug Fixes
 
-- TUI：`F10` 恢复删除 session 弹框入口；修复鼠标选中与点击复制的冲突，拖选后自动复制。
+- TUI: `F10` restores the delete-session dialog entry; fixed the mouse selection vs. click-copy conflict, auto-copy after drag selection.
 
-### 工程改进
+### Engineering
 
-- `DebugCaptureRecord` 增加工具级错误检测（LangChain `ToolMessage.status` + 内容模式）。
-- `_tool_pairs` 返回 `error` 字段，区分 "等待中"（result null）与 "真失败"（有错误内容）。
-- Inspector 前端：失败率仅统计真正失败的工具，"待响应"不计入。
+- `DebugCaptureRecord` gained tool-level error detection (LangChain `ToolMessage.status` + content patterns).
+- `_tool_pairs` returns an `error` field distinguishing "pending" (result null) from "real failure" (error content present).
+- The Inspector frontend counts only truly failed tools in the failure rate; "awaiting response" is excluded.
 
 ---
 
 ## v0.1.17
 
-### 新功能
+### New Features
 
-- `find_files` / `search_files` 工具新增 `context_lines`、`case_insensitive`、`head_limit`、`offset` 参数。
-- `search_files` 支持忽略大小写（`case_insensitive`，由 `synapse-search-core` 原生引擎实现）。
-- 支持分页查询（`head_limit` + `offset`），Agent 可按需翻页而非一次性获取全部结果。
+- `find_files` / `search_files` gained `context_lines`, `case_insensitive`, `head_limit`, and `offset` parameters.
+- `search_files` supports case-insensitive matching (`case_insensitive`, implemented by the native `synapse-search-core` engine).
+- Pagination (`head_limit` + `offset`) supported, so agents can page through results instead of fetching everything at once.
 
-### 工程改进
+### Engineering
 
-- 工具的 Pydantic schema 不再定义 `intent` 字段，改由 `build_intent_schema_middleware` 中间件统一管理。
-- 新增 Synapse 自有文件搜索工具 `find_files` / `search_files`，排除 deepagents 内置 `ls`/`glob`/`grep` 工具。
-- 系统提示词中的 `glob`/`grep` 工具名修正为 `find_files` / `search_files`。
-- `synapse-search-core` 升级至 0.1.1（新增 `case_insensitive` 参数）。
+- Tool Pydantic schemas no longer define the `intent` field; it is managed uniformly by the `build_intent_schema_middleware` middleware.
+- Added Synapse's own file search tools `find_files` / `search_files`, excluding the deepagents built-in `ls`/`glob`/`grep` tools.
+- Fixed the `glob`/`grep` tool names in system prompts to `find_files` / `search_files`.
+- Upgraded `synapse-search-core` to 0.1.1 (added the `case_insensitive` parameter).
 
 ---
 
 ## v0.1.16
 
-### 新功能
+### New Features
 
-- 新增必需的 `synapse-search-core` 原生搜索核心，使用 Rust ripgrep crates 提供正则 `grep` 和 `glob`。
-- `grep`/`glob` 改为使用内置原生引擎，不再依赖宿主机 `rg` 或 DeepAgents Python 搜索回退。
-- 原生搜索 wheel 发布到 PyPI，支持 Windows x86_64、Linux x86_64/aarch64 和 macOS Apple Silicon arm64。
+- Added the required `synapse-search-core` native search core, using Rust ripgrep crates for regex `grep` and `glob`.
+- `grep`/`glob` now use the built-in native engine instead of relying on host `rg` or the DeepAgents Python search fallback.
+- Native search wheels published to PyPI for Windows x86_64, Linux x86_64/aarch64, and macOS Apple Silicon arm64.
 
-### 工程改进
+### Engineering
 
-- 保留 Python 后端的工作区路径授权、虚拟路径映射和 `deny_paths` 过滤。
-- 增加原生搜索 wheel 构建与 PyPI Trusted Publishing 工作流，以及对应的后端回归测试和分发文档。
+- Kept the Python backend's workspace path authorization, virtual path mapping, and `deny_paths` filtering.
+- Added the native search wheel build and PyPI Trusted Publishing workflow, plus backend regression tests and distribution docs.
 
 ---
 
 ## v0.1.15
 
-### 工程改进
+### Engineering
 
-- 拆分 TUI transcript、工具组、待办清单、用户消息和 turn rail widget，缩小 `tui.py` 的职责范围。
-- 保留 `synapse.ui.tui` 的既有组件、格式化函数和 timeline 符号兼容导出。
-- 保持动态主题、流式展示、文本选择、复制与 turn rail 交互行为，并覆盖相关 TUI 回归测试。
+- Split the TUI transcript, tool group, todo list, user message, and turn rail widgets, narrowing `tui.py`'s responsibilities.
+- Preserved existing component, formatting function, and timeline symbol compatibility exports in `synapse.ui.tui`.
+- Kept dynamic themes, streaming display, text selection, copy, and turn rail interactions, with TUI regression tests.
 
 ---
 
 ## v0.1.14
 
-### 工程改进
+### Engineering
 
-- PyPI 项目页增加主页、源代码仓库、问题追踪和变更日志链接。
+- PyPI project page gained homepage, source repository, issue tracker, and changelog links.
 
 ---
 
 ## v0.1.13
 
-### 新功能
+### New Features
 
-- 支持通过 PyPI Trusted Publisher 自动发布 `synapse-cli-agent` 分发包。
+- Supports publishing `synapse-cli-agent` distributions automatically via PyPI Trusted Publisher.
 
-### 工程改进
+### Engineering
 
-- 安装文档增加无需克隆仓库的 PyPI 安装方式；`uv` 可自动管理所需 Python 版本。
+- Install docs added a PyPI installation path without cloning the repo; `uv` can manage the required Python version automatically.
 
 ---
 
 ## v0.1.2
 
-### 修复
+### Bug Fixes
 
-- 修复 `synapse-tool-compress-core` manylinux2014 wheel 中 tree-sitter 的 `le16toh` / `be16toh` 未解析符号，确保原生扩展可导入。
+- Fixed unresolved `le16toh` / `be16toh` symbols from tree-sitter in the `synapse-tool-compress-core` manylinux2014 wheel so the native extension imports.
 
-### 工程改进
+### Engineering
 
-- 原生 wheel 构建固定 manylinux2014 兼容目标，并增加安装导入冒烟测试。
-- 同步 Rust crate 与 Python wheel 的发布版本为 `0.1.2`。
+- Pinned the native wheel build to the manylinux2014 compatibility target and added an install/import smoke test.
+- Synced the Rust crate and Python wheel release versions to `0.1.2`.
 
 ---
 
 ## v0.1.11
 
-### 新功能
+### New Features
 
-- F5 MCP Tools 面板支持按 `d` 临时切换当前选中 MCP server 的启用状态，并自动重建 agent；该状态不写入 `mcp.json`
-- 工具输出路径压缩增加更清晰的统计与诊断展示，优化压缩处理路径
+- The F5 MCP Tools panel supports toggling the selected MCP server's enabled state with `d` and rebuilds the agent automatically; the state is not written to `mcp.json`.
+- Tool output path compression gained clearer statistics and diagnostics, and the compression pipeline was optimized.
 
-### 修复
+### Bug Fixes
 
-- 修复会话切换与删除快捷键的职责冲突
+- Fixed the responsibility conflict between session-switch and delete shortcuts.
 
-### 工程改进
+### Engineering
 
-- 扩充 `AGENTS.md` 的仓库结构、架构约束、测试和发布协作规范
+- Expanded `AGENTS.md` with repo structure, architecture constraints, testing, and release collaboration conventions.
 
 ---
 
 ## v0.1.10
 
-### 工程改进
+### Engineering
 
-- 重组应用、命令、运行时、内容与会话等核心领域模块，收紧模块职责与依赖边界
-- 拆分工具输出管道为模型、仓储、检测和变换层，保留既有公共 API
-- 将 slash 命令按压缩、会话、MCP、模型和主题职责拆分，保留统一分发入口
-- 拆分流处理为渲染、事件归一化与运行时迭代层，兼容现有 CLI 和 TUI 调用路径
-- 提取 TUI turn rail 和用户 turn 格式化逻辑，降低主应用模块复杂度
-- 拆分模型配置解析、Profile 与 settings/能力辅助逻辑，保持 provider 工厂和 mock 契约稳定
+- Reorganized core domain modules (app, commands, runtime, content, sessions) to tighten responsibility and dependency boundaries.
+- Split the tool output pipeline into model, repository, detection, and transformation layers, keeping existing public APIs.
+- Split slash commands by compression, session, MCP, model, and theme responsibility, keeping a unified dispatch entry.
+- Split stream processing into rendering, event normalization, and runtime iteration layers, compatible with existing CLI and TUI call paths.
+- Extracted TUI turn rail and user-turn formatting logic to reduce main app module complexity.
+- Split model config parsing, Profile, and settings/capability helpers while keeping provider factories and mock contracts stable.
 
 ---
 
 ## v0.1.9
 
-### 新功能
+### New Features
 
-- 紧凑工具描述中间件：替换上游冗长的工具 schema 描述（~4K chars → ~200 chars），减少 token 开销
-- Cache-aware 压缩控制面：实时追踪 provider 缓存命中/写入，区分缓存输入与新输入
-- 压缩诊断面板：profile-driven 内容分解与优化机会排序（TUI `Ctrl+D`）
-- 请求账本（interaction ledger）：turn 级与 model-call 级关联追踪
-- Topbar 实时压缩指示器：显示活跃 zone 与压缩状态
-- `/tool-output` slash 命令：查看工具输出变换统计
-- GitSummaryTransformer：识别 `git status`/`git diff --stat` 输出并智能摘要
+- Compact tool description middleware: replaces verbose upstream tool schema descriptions (~4K chars → ~200 chars) to reduce token overhead.
+- Cache-aware compression control plane: tracks provider cache hits/writes in real time, distinguishing cached input from new input.
+- Compression diagnostics panel: profile-driven content breakdown and optimization opportunity ranking (TUI `Ctrl+D`).
+- Interaction ledger: turn-level and model-call-level association tracking.
+- Topbar real-time compression indicator: shows the active zone and compression state.
+- `/tool-output` slash command to view tool output transformation statistics.
+- GitSummaryTransformer: recognizes `git status`/`git diff --stat` output and summarizes it intelligently.
 
-### 修复
+### Bug Fixes
 
-- 避免 search 内容检测误判为 critical-line 回退
-- 修复 Alt+C 复制崩溃
+- Avoided search content detection being misjudged as a critical-line fallback.
+- Fixed the Alt+C copy crash.
 
-### 工程改进
+### Engineering
 
-- 默认路径从 `.coding-agent` 迁移至 `.synapse`（checkpoint / sessions / memory）
-- 工具输出压缩阈值降至 512 bytes
-- CI native compression wheel 发布到 GitHub Release（替代 PyPI）
+- Migrated the default path from `.coding-agent` to `.synapse` (checkpoint / sessions / memory).
+- Lowered the tool output compression threshold to 512 bytes.
+- CI publishes native compression wheels to GitHub Release (instead of PyPI).
 
 ---
 
 ## v0.1.8
 
-### 新功能
+### New Features
 
-- 工具输出变换管道：大型工具结果自动归档到 JSONL journal，替换为边界预览 + `tool-result://` 引用，避免撑爆 LLM 上下文
-- Rust 原生压缩核心 (`synapse-tool-compress-core`)：智能摘要引擎 SmartCrusher，支持 code/diff/log/search 专用压缩器，BM25 相关性排序，adaptive sizer
-- CLI `--diagnose-tool-output` 诊断标志：查看每次工具输出的变换统计
-- F4 多选删除 session + F5 MCP 分组折叠 + 多选 UI 统一
+- Tool output transformation pipeline: large tool results are archived to a JSONL journal and replaced with a boundary preview + `tool-result://` reference, avoiding LLM context blow-up.
+- Rust native compression core (`synapse-tool-compress-core`): smart summarization engine SmartCrusher with code/diff/log/search-specific compressors, BM25 relevance ranking, and an adaptive sizer.
+- CLI `--diagnose-tool-output` flag to view per-tool-output transformation statistics.
+- F4 multi-select delete sessions + F5 MCP group folding + unified multi-select UI.
 
-### 修复
+### Bug Fixes
 
-- MCP deferred 状态不再错误显示为 "mcp err"
+- MCP deferred state no longer incorrectly displays as "mcp err".
 
-### 工程改进
+### Engineering
 
-- `tool_results.py` 重构为 `tool_output.py` + `tool_output_middleware.py`，职责更清晰
-- 新增 `tool_output_eval.py` 评估框架
-- CI 新增 native-compression-wheels workflow 用于构建 Rust wheel
+- Refactored `tool_results.py` into `tool_output.py` + `tool_output_middleware.py` with clearer responsibilities.
+- Added the `tool_output_eval.py` evaluation framework.
+- CI added the native-compression-wheels workflow for building Rust wheels.
 
 ---
 
 ## v0.1.7
 
-### 新功能
+### New Features
 
-- 斜杠命令 TUI 输出升级为 Markdown 渲染，会话/MCP/主题等数据使用 Rich 表格展示
-- AgentMdMiddleware：将 `AGENTS.md` 静态注入 system prompt，与 memory 解耦
-- MCP per-tool 过滤：支持 UI 勾选工具并持久化到配置
+- Slash command TUI output upgraded to Markdown rendering; session/MCP/theme data shown with Rich tables.
+- AgentMdMiddleware: statically injects `AGENTS.md` into the system prompt, decoupled from memory.
+- MCP per-tool filtering: tools can be toggled in the UI and persisted to config.
 
-### 修复
+### Bug Fixes
 
-- 全新 session 输入斜杠命令不会在 TUI 显示内容（welcome 页面遮挡 `#log`）
-- shell 默认值平台感知：非 Windows 用 `bash` 替代 `pwsh`
-- prompt_border 校验 Textual 白名单，新增 `panel` 样式支持
+- Slash commands typed in a fresh session no longer fail to show in the TUI (the welcome page covered `#log`).
+- Shell default is platform-aware: non-Windows uses `bash` instead of `pwsh`.
+- `prompt_border` validated against the Textual whitelist; added `panel` style support.
 
-### 工程改进
+### Engineering
 
-- 添加 MkDocs + GitHub Pages 文档站点
-- subagents 和 memory 默认关闭，精简冗余 middleware prompt 块
-- UI：steer 更名为 queue，简化 bottombar mode 标签
+- Added the MkDocs + GitHub Pages docs site.
+- Subagents and memory disabled by default; pruned redundant middleware prompt blocks.
+- UI: `steer` renamed to `queue`; simplified the bottombar mode label.
 
 ---
 
 ## v0.1.6
 
-### 新功能
+### New Features
 
-- 支持 OpenAI Responses API WebSocket 传输，降低延迟
-- Welcome 页面动画重构：左到右打字光标出现 + 斜扫逐点删除循环
-- Braille Logo 点阵逐点显隐动画，仅用 muted/fg 两种主题色无中间杂色
-- 打字光标效果：新字符短暂高亮 accent 后降为 fg
-- `prompt_border` 字段支持主题自定义输入框边框样式（tall/heavy/dashed/dotted/double/round/solid）
-- 后端 glob/grep 工具自动跳过 `.gitignore` 匹配路径
+- OpenAI Responses API WebSocket transport for lower latency.
+- Welcome page animation rework: left-to-right type cursor + sweeping dot-by-dot delete loop.
+- Braille logo dot-matrix show/hide animation using only muted/fg theme colors, no intermediate colors.
+- Type cursor effect: new characters briefly highlight in accent then fade to fg.
+- `prompt_border` field supports theme-defined input border styles (tall/heavy/dashed/dotted/double/round/solid).
+- Backend glob/grep tools automatically skip paths matched by `.gitignore`.
 
-### 修复
+### Bug Fixes
 
-- WebSocket：握手前刷新异步 API key，避免网关 401
-- WebSocket：关闭 ping timeout，防止推理期间误断连
-- WebSocket：过滤 Chat Completions 专用 `thinking` 字段
-- TUI：主题设计器 backdrop 完全透明
-- TUI：修复 `_open_theme_designer` 缺失回调
-- TUI：移除 `_save_theme` 重复 `apply_theme` 调用，避免 UI 卡死
-- TUI：git changes popover 重新挂载避免 DuplicateIds 异常
-- SteerQueue：修复可重入死锁和 graph 重建后队列丢失
-- 修复子 agent 工具调用的时间线渲染
-- 修复 alt-v 多行粘贴被截断
+- WebSocket: refreshes the async API key before the handshake to avoid gateway 401s.
+- WebSocket: disables ping timeout to prevent disconnects during inference.
+- WebSocket: filters the Chat Completions-only `thinking` field.
+- TUI: theme designer backdrop fully transparent.
+- TUI: fixed the missing `_open_theme_designer` callback.
+- TUI: removed duplicate `apply_theme` calls in `_save_theme` to avoid UI freezes.
+- TUI: git changes popover remounts to avoid DuplicateIds errors.
+- SteerQueue: fixed reentrant deadlock and queue loss after graph rebuilds.
+- Fixed sub-agent tool call timeline rendering.
+- Fixed alt-v multi-line paste being truncated.
 
-### 性能
+### Performance
 
-- 纯异步 model clients，消除同步 OpenAI 客户端的阻塞
-- 加速模型切换和 shutdown 流程
+- Fully async model clients, removing synchronous OpenAI client blocking.
+- Faster model switching and shutdown flows.
 
-### 工程
+### Engineering
 
-- 移除 cancel-seal 诊断日志输出
-- SteerQueue 在活跃 turn 期间保持可见
-- 简化 agent 工具表面，减少不必要的工具暴露
-- 上调模型瞬时故障重试上限
+- Removed cancel-seal diagnostic log output.
+- SteerQueue stays visible during active turns.
+- Simplified the agent tool surface, reducing unnecessary tool exposure.
+- Raised the transient model failure retry cap.
 
 ---
 
 ## v0.1.5
 
-### 新功能
+### New Features
 
-- 新增独立识图服务：非多模态主模型可通过 `vision_model` 配置独立图片识别服务，自动将图片转为文字描述后交给主模型处理
-- 支持 `models.json` / `settings.json` 中配置 `vision_model`，可自由更换任意 OpenAI-compatible 识图服务（Qwen-VL 等）
-- 识图服务支持独立 `think` 开关（不影响主模型思考模式）、`allow_remote_urls` 安全策略、超时重试和 fallback 模型
-- 自动推断主模型是否原生支持图片输入（按 provider/model 名匹配），支持 `image_input` 显式覆盖
+- Added a standalone image recognition service: non-multimodal main models can use a dedicated `vision_model` to turn images into text descriptions before handing them to the main model.
+- `vision_model` configurable in `models.json` / `settings.json`; any OpenAI-compatible vision service can be used (Qwen-VL etc.).
+- The vision service supports an independent `think` toggle (does not affect the main model's thinking mode), an `allow_remote_urls` security policy, timeout retries, and fallback models.
+- Auto-infers whether the main model natively supports image input (by provider/model name), with explicit `image_input` override support.
 
-### 修复
+### Bug Fixes
 
-- 修复 mermaid / git-explore 调用卡死问题
-- 修复 Windows 下 git 输出编码导致的乱码问题
+- Fixed mermaid / git-explore call freezes.
+- Fixed garbled git output encoding on Windows.
 
-### 工程
+### Engineering
 
-- 新增 `vision_middleware`、`describe_image` 模块
-- 新增识图服务测试和 API 检查脚本
+- Added the `vision_middleware` and `describe_image` modules.
+- Added vision service tests and an API check script.
 
 ---
 
 ## v0.1.4
 
-### 新功能
+### New Features
 
-- 新增 Codex session 的只读发现、预览和导入，支持 CLI 与 TUI picker
-- 导入使用终态 checkpoint seeding 与 ledger，支持幂等重用和崩溃恢复
+- Added read-only discovery, preview, and import of Codex sessions, with CLI and TUI pickers.
+- Import uses terminal-state checkpoint seeding with a ledger, supporting idempotent reuse and crash recovery.
 
-### 修复
+### Bug Fixes
 
-- 修复 state DB 过期、空 thread、Windows 扩展路径、长 metadata header 导致 Codex 历史缺失的问题
-- 支持 `subagent.thread_spawn` 子代理会话，并按首条用户消息生成 picker 与导入标题
-- 对可恢复的模型服务 5xx 故障增加退避重试，并向 TUI 显示重试状态
+- Fixed missing Codex history caused by state DB expiry, empty threads, Windows extended paths, and long metadata headers.
+- Supports `subagent.thread_spawn` sub-agent sessions, generating picker and import titles from the first user message.
+- Added backoff retries for recoverable model 5xx failures, with retry state shown in the TUI.
 
-### 工程
+### Engineering
 
-- 扩充 Codex discovery、import、TUI 和 retry 回归覆盖
+- Expanded Codex discovery, import, TUI, and retry regression coverage.
 
 ---
 
 ## v0.1.3
 
-### 修复
+### Bug Fixes
 
-- 修复 49 个 ruff lint 错误（E501 超长行、UP042 StrEnum、F401/F811 未使用导入、I001 导入排序）
+- Fixed 49 ruff lint errors (E501 long lines, UP042 StrEnum, F401/F811 unused imports, I001 import sorting).
 
-### 工程
+### Engineering
 
-- CI 仅对 PR 触发，避免 push tag 时与 Release workflow 重复构建
+- CI now triggers only on PRs to avoid duplicate builds with the Release workflow on tag pushes.
 
 ---
 
 ## v0.1.2
 
-### 修复
+### Bug Fixes
 
-- Release workflow 中 CHANGELOG 提取脚本误将 shell 变量当 Python 变量，改用 `os.environ` 读取
+- Fixed the Release workflow CHANGELOG extraction script mistaking a shell variable for a Python variable; now reads via `os.environ`.
 
 ---
 
 ## v0.1.1
 
-### 工程
+### Engineering
 
-- 新增 `CHANGELOG.md`，发布说明从此文件对应版本段落自动提取
-- 修复 `release.ps1`：打 tag 时同步推送分支提交，避免 tag 到了代码没跟上
-- 更新 `AGENTS.md` 发布流程：AI 自动分析变更、写入 changelog 条目
+- Added `CHANGELOG.md`; release notes are now extracted automatically from the matching version section.
+- Fixed `release.ps1` to push the branch commit when tagging, so the tag never lands without the code.
+- Updated the `AGENTS.md` release flow: AI analyzes changes and writes changelog entries.
 
 ---
 
 ## v0.1.0
 
-初版发布。基于 LangChain Deep Agents 的本地 AI 编码 Agent。
+Initial release. A local AI coding agent built on LangChain Deep Agents.
 
-### 新功能
+### New Features
 
-- 自主编码闭环：读改代码、执行命令、运行测试、Git 操作
-- 子代理协作：内置 researcher / tester / reviewer，任务自动拆解并行执行
-- MCP 协议支持，接入外部工具生态
-- 多模型切换：OpenAI / Anthropic / DeepSeek / 任意 OpenAI-compatible 网关
-- TUI 终端界面（Textual）：斜杠命令补全、实时流式输出、快捷键
-- CLI 命令行：`run` / `chat` / `tui` / `sessions` / `models` / `mcp` / `version`
-- 分层配置：用户全局 + 项目本地，密钥写入 models.json
-- Skills 系统：Agent Skills 可复用能力单元
-- 会话管理：SQLite checkpointer，支持导出
-- TUI 文本选择与复制、mermaid 渲染、Git Explore
-- 自适应顶栏与底栏，模型/MCP 状态显示
-
-### 修复
-
-- Windows subprocess timeout 管道卡死问题
-- TeXicode 解析错误污染最终回答
-- Textual DiffView 卸载后样式缓存泄漏
-- stream_chunk_timeout 默认关闭，避免长思考被掐断
-
-### 工程
-
-- uv 依赖管理，Python 3.12+
-- GitHub Actions：CI（lint + test）和 Release（自动构建 wheel）
-- 一键发布脚本 `scripts/release.ps1`
+- Autonomous coding loop: read/edit code, run commands, run tests, Git operations.
+- Sub-agent collaboration: built-in researcher / tester / reviewer with automatic task decomposition and parallel execution.
+- MCP protocol support, integrating the external tool ecosystem.
+- Multi-model switching: OpenAI / Anthropic / DeepSeek / any OpenAI-compatible gateway.
+- TUI terminal interface (Textual): slash command completion, real-time streaming, shortcuts.
+- CLI commands: `run` / `chat` / `tui` / `sessions` / `models` / `mcp` / `version`.
+- Layered config: user-global + project-local, secrets written to models.json.
+- Skills system: reusable capability units for Agent Skills.
