@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="https://synapse-agent.best/demo.mp4">
-    <img src="assets/tui-preview.png" alt="Synapse TUI demo — click to watch the video" width="720">
+    <img src="assets/demo.gif" alt="Synapse TUI demo — click to watch the full video" width="720">
   </a>
 </p>
 
