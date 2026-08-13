@@ -37,8 +37,8 @@
 | `logout` | SDK registry `logout` | capability-gated | P7 | not_target |
 | `session/fork` | `fork_session` | unstable in SDK 0.12.0 | P4 review | implemented |
 | `mcp/message` | `ext_method`/registry | capability/transport-dependent | P5 review | not_target |
-| `providers/list` | no high-level Agent method | unstable | P7 review | not_target |
-| `providers/set` | no high-level Agent method | unstable | P7 review | not_target |
+| `providers/list` | `list_providers`（server 路由补注册） | unstable | P7 review | implemented |
+| `providers/set` | `set_provider`（server 路由补注册） | unstable | P7 review | implemented |
 | `providers/disable` | no high-level Agent method | unstable | P7 review | not_target |
 | `nes/start` | no high-level Agent method | unstable | P7 review | not_target |
 | `nes/suggest` | no high-level Agent method | unstable | P7 review | not_target |
@@ -59,7 +59,7 @@
 |---|---|---|---|
 | 基础 Agent | `agentCapabilities` | P1 | verified |
 | Session load | `loadSession` | P4 | verified |
-| Prompt image | `promptCapabilities.image` | P2 | not_target |
+| Prompt image | `promptCapabilities.image` | P2 | implemented |
 | Prompt audio | `promptCapabilities.audio` | P7 review | not_target |
 | Embedded context | `promptCapabilities.embeddedContext` | P2 | not_target |
 | MCP HTTP | `mcpCapabilities.http` | P5 | implemented |
@@ -72,6 +72,7 @@
 | Session resume | `sessionCapabilities.resume` | P4 | verified |
 | Session close | `sessionCapabilities.close` | P4 | verified |
 | Authentication | `auth` / `authMethods` | P7 | not_target |
+| Providers | `providers` | P7 review | implemented |
 | Config options | session config option fields | P7 | implemented |
 | NES | `nes` | P7 review | not_target |
 | Position encoding | `positionEncoding` | P7 review | not_target |

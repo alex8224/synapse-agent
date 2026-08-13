@@ -1,6 +1,6 @@
 # P7：配置、命令、Usage、Metadata 与认证
 
-> 状态：Complete（本地可验证范围）；config、mode、thinking/approval、usage、title、available commands、`_meta` 不污染和能力真值已有实现与专项证据。auth/elicitation/NES/document 明确 not_target。  
+> 状态：Complete（本地可验证范围）；config、mode、thinking/approval、usage、title、available commands、providers（模型选择）、`_meta` 不污染和能力真值已有实现与专项证据。auth/logout、elicitation/NES/document 明确 not_target。  
 > 前置条件：P6 门禁通过。  
 > 后续阶段：P8 合规与发布收口。
 
@@ -19,9 +19,12 @@
 - 稳定 elicitation 和其他 Client 交互能力。
 - `_meta` trace context 和受控 Synapse 扩展。
 
-当前限制：ACP v1 适配层不声明 auth/logout、providers、elicitation、NES、document
+当前限制：ACP v1 适配层不声明 auth/logout、elicitation、NES、document
 等没有安全产品语义或完整测试证据的能力；无法可靠计算的 context/cost 不发送。
-`thinking` 仅允许 `off`、`balanced`、`high`，并映射到 session-local `Settings`，不会修改其他 session。
+`thinking` 直接映射 Synapse 全部级别 `off`、`minimal`、`low`、`medium`、`high`、`max`，
+并应用到 session-local `Settings`，不会修改其他 session。
+`providers/list` 暴露 `models.json` 的 profile（仅 `apiType`/`baseUrl`，不泄露 `api_key`），
+`providers/set` 选择模型并重建会话。
 
 ## 3. 命令策略
 

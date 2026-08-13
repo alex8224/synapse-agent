@@ -166,6 +166,7 @@
 | 2026-08-12 | P8 | `uv run --no-sync pytest tests/test_acp_p4_lifecycle.py tests/test_acp_p1_transport.py -q` | 通过 | 14 passed；catalog 回放有界保留、未知 notification 静默忽略、Windows subprocess stdio |
 | 2026-08-12 | P8 | `uv run --no-sync pytest -q` | 未通过 | 1434 passed/3 skipped/3 failed；3 个失败为原生 tool-output 压缩核心未安装（`synapse-tool-compress-core`），非 ACP |
 | 2026-08-12 | P8 | `uv build` | 通过 | sdist/wheel 构建成功；`synapse-acp` 入口指向 `synapse.acp.server:main` |
+| 2026-08-12 | Zed 实测 | `uv run --no-sync ruff check src/synapse/acp tests/test_acp_p*.py; uv run --no-sync pytest tests/ -q -k "acp"` | 通过 | Ruff 通过；86 tests passed；工具 id 稳定、thinking 直通、providers list/set |
 
 ## 阻塞记录
 
@@ -186,6 +187,10 @@
 | 2026-08-12 | P8 收口 | ACP 回放历史每 session 保留最近 2000 条，超限裁剪 | 满足 P8-04 有界回放，防止长会话历史无限增长 | P4/P8 |
 | 2026-08-12 | P8 收口 | JSON-RPC batch 数组不纳入 ACP 适配（ndjson 单条 message framing） | 官方 SDK 按单条 message 处理，batch 非合法 framing | P8 |
 | 2026-08-12 | Zed 实测 | 工具生命周期改用稳定 `item_id` 贯穿 start/update/finish，跳过 TOOL_BATCH_STARTED 重复投影 | Zed 实测 `Tool call not found`：start 用 LangChain `call_id`、finish 用 `item_id` 导致 ID 不一致 | P2/P8 |
+| 2026-08-12 | Zed 实测 | thinking 直接映射 Synapse 全部级别 `off/minimal/low/medium/high/max`，去除 balanced 折算 | 用户要求不丢精度、由用户自选 | P7 |
+| 2026-08-12 | Zed 实测 | 实现 `providers/list` + `providers/set`，映射 `models.json` profile，`model` 进入 session config | Zed 模型选择器依赖 providers，此前 not_target 导致无模型可选 | P7 |
+| 2026-08-12 | Zed 实测 | 统一声明 `promptCapabilities.image=true` 并 `allow_image=True`，不支持图片由模型拒绝 | 用户要求启用图片输入，不做模型能力前置判断 | P2 |
+| 2026-08-12 | Zed 实测 | 增加 `model` 作为 session config select 选项（映射 `models.json` profile） | Zed 1.14.2 不调用 `providers/list`，模型选择需经 config options 暴露 | P7 |
 
 ## 台账更新流程
 

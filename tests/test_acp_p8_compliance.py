@@ -134,13 +134,15 @@ def test_initialize_declares_only_implemented_capabilities(tmp_path: Path) -> No
 
         # Not advertised: rich media, auth, acp-backed MCP, unstable extras.
         assert caps.load_session is True
-        assert caps.prompt_capabilities.image is False
+        assert caps.prompt_capabilities.image is True
         assert caps.prompt_capabilities.audio is False
         assert caps.prompt_capabilities.embedded_context is False
         assert response.auth_methods == []
         assert caps.mcp_capabilities.http is True
         assert caps.mcp_capabilities.sse is True
         assert caps.mcp_capabilities.acp is False
+        # Providers (model selection) are advertised and implemented.
+        assert caps.providers is not None
         # Session capabilities advertised are exactly the implemented set.
         assert caps.session_capabilities.list is not None
         assert caps.session_capabilities.delete is not None

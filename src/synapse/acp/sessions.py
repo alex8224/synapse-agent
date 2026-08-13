@@ -102,6 +102,9 @@ class ACPSessionRegistry:
     def get(self, session_id: str) -> ACPManagedSession | None:
         return self._sessions.get(session_id)
 
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(self._sessions)
+
     def require(self, session_id: str) -> ACPManagedSession:
         managed = self.get(session_id)
         if managed is None:
@@ -219,6 +222,8 @@ def _apply_session_config(settings: Any, config: dict[str, Any] | None) -> Any:
     updates: dict[str, Any] = {}
     if "approval" in values:
         updates["require_approval"] = bool(values["approval"])
+    if "model" in values:
+        updates["active_model"] = str(values["model"]).strip()
     if "thinking" in values:
         thinking = str(values["thinking"]).strip().casefold()
         if thinking == "off":

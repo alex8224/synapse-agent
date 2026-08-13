@@ -9,7 +9,7 @@ import sys
 
 from acp.agent.connection import AgentSideConnection
 from acp.agent.router import AGENT_METHODS, normalize_result
-from acp.schema import DeleteSessionRequest
+from acp.schema import DeleteSessionRequest, ListProvidersRequest, SetProviderRequest
 
 from synapse.acp.agent import SynapseACPAgent
 
@@ -48,6 +48,24 @@ def build_agent_connection(
             "session_delete",
             adapt_result=normalize_result,
             unstable=True,
+        )
+    providers_list = AGENT_METHODS["providers_list"]
+    if providers_list not in routes:
+        router.route_request(
+            providers_list,
+            ListProvidersRequest,
+            agent,
+            "list_providers",
+            adapt_result=normalize_result,
+        )
+    providers_set = AGENT_METHODS["providers_set"]
+    if providers_set not in routes:
+        router.route_request(
+            providers_set,
+            SetProviderRequest,
+            agent,
+            "set_provider",
+            adapt_result=normalize_result,
         )
     return connection
 

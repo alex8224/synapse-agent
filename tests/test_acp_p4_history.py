@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -162,7 +163,8 @@ def test_mode_and_config_are_session_local_and_persisted(tmp_path: Path) -> None
         session = await agent.new_session(str(tmp_path))
         await agent.set_session_mode(session.session_id, "default")
         result = await agent.set_config_option("approval", session.session_id, True)
-        assert result.config_options[0].current_value is True
+        approval = next(item for item in result.config_options if item.id == "approval")
+        assert approval.current_value is True
         assert catalog.get(session.session_id).config == {"approval": True}
         await agent.shutdown()
 
@@ -186,9 +188,61 @@ def test_extension_meta_kwargs_are_accepted_but_not_persisted(tmp_path: Path) ->
         result = await agent.set_config_option(
             "approval", session.session_id, True, trace_id="abc123", span_id="x"
         )
-        assert result.config_options[0].current_value is True
+        approval = next(item for item in result.config_options if item.id == "approval")
+        assert approval.current_value is True
         # Extension fields must not pollute persisted standard objects.
         assert catalog.get(session.session_id).config == {"approval": True}
+        await agent.shutdown()
+
+    asyncio.run(run())
+
+
+def test_providers_list_and_set_select_session_model(tmp_path: Path) -> None:
+    async def run() -> None:
+        def settings_factory(cwd: Path) -> Any:
+            class Settings:
+                workspace = cwd
+                models_config_path = tmp_path / "missing.json"
+                models_json = json.dumps(
+                    {
+                        "default": "a",
+                        "models": {
+                            "a": {
+                                "model": "openai:gpt-4o",
+                                "base_url": "https://example.invalid/v1",
+                            },
+                            "b": {"model": "anthropic:claude-sonnet"},
+                        },
+                    }
+                )
+                active_model = None
+                model = None
+
+            return Settings()
+
+        catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
+
+        async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
+            runtime = _Runtime()
+            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+
+        agent = SynapseACPAgent(
+            registry=ACPSessionRegistry(factory),
+            catalog=catalog,
+            settings_factory=settings_factory,
+        )
+        await agent.initialize(1)
+        session = await agent.new_session(str(tmp_path))
+
+        providers = await agent.list_providers()
+        assert [item.provider_id for item in providers.providers] == ["a", "b"]
+        assert providers.providers[0].current.base_url == "https://example.invalid/v1"
+
+        with pytest.raises(acp.RequestError, match="Invalid params"):
+            await agent.set_provider("missing")
+
+        await agent.set_provider("b")
+        assert catalog.get(session.session_id).config == {"model": "b"}
         await agent.shutdown()
 
     asyncio.run(run())

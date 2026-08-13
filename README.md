@@ -148,12 +148,14 @@ is `synapse-acp` (or the absolute path to that executable). The adapter accepts
 absolute `cwd` values and session-scoped MCP servers. MCP credentials are used
 only for the live session and are not written to the ACP catalog or transcript.
 
-The published capability set currently covers text prompts, permission/HITL,
-session load/list/close/delete/resume, session-local mode/config, HTTP/SSE MCP
-configuration, and capability-gated Client filesystem/terminal tools. Image,
-audio, embedded-context, authentication/logout, provider management,
-elicitation, NES, and document-sync capabilities are not advertised until
-their runtime semantics and interoperability tests exist.
+The published capability set currently covers text prompts, image prompts,
+permission/HITL, session load/list/close/delete/resume, session-local
+mode/config, HTTP/SSE MCP configuration, model selection via
+`providers/list`/`providers/set`, and capability-gated Client filesystem/
+terminal tools. Thinking level maps directly to Synapse levels (`off`,
+`minimal`, `low`, `medium`, `high`, `max`). Audio, embedded-context,
+authentication/logout, elicitation, NES, and document-sync capabilities are
+not advertised until their runtime semantics and interoperability tests exist.
 
 Troubleshooting:
 

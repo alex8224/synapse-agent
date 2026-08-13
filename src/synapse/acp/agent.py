@@ -21,18 +21,22 @@ from acp.schema import (
     ForkSessionResponse,
     Implementation,
     InitializeResponse,
+    ListProvidersResponse,
     ListSessionsResponse,
     LoadSessionResponse,
     NewSessionResponse,
     PermissionOption,
     PromptCapabilities,
     PromptResponse,
+    ProviderCurrentConfig,
+    ProviderInfo,
     SessionCapabilities,
     SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionMode,
     SessionModeState,
+    SetProviderResponse,
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     ToolCallUpdate,
@@ -96,6 +100,9 @@ class SynapseACPAgent:
         self._mcp_pool_keys: set[str] = set()
         self._agent_name = agent_name
         self._agent_version = agent_version
+        self._settings_factory = settings_factory
+        self._last_cwd: Path | None = None
+        self._active_model: str | None = None
         self.permissions = PermissionCoordinator()
         self._prompt_tasks: dict[str, asyncio.Task[Any]] = {}
         self._prompt_cancelled: set[str] = set()
@@ -161,7 +168,7 @@ class SynapseACPAgent:
             agent_capabilities=AgentCapabilities(
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(
-                    image=False,
+                    image=True,
                     audio=False,
                     embedded_context=False,
                 ),
@@ -174,6 +181,7 @@ class SynapseACPAgent:
                     resume={},
                     close={},
                 ),
+                providers=acp.schema.ProvidersCapabilities(),
             ),
             auth_methods=[],
             agent_info=Implementation(name=self._agent_name, version=self._agent_version),
@@ -187,6 +195,76 @@ class SynapseACPAgent:
             {"methodId": f"authentication method is not available: {method_id}"}
         )
 
+    async def list_providers(self, **kwargs: Any) -> ListProvidersResponse:
+        """Expose configured model profiles as ACP providers (no secrets)."""
+        del kwargs
+        self._require_initialized()
+        registry = self._model_registry()
+        providers: list[ProviderInfo] = []
+        for name in registry.list_names():
+            profile = registry.get(name)
+            api_type = self._provider_api_type(profile)
+            providers.append(
+                ProviderInfo(
+                    provider_id=name,
+                    supported=[api_type],
+                    required=name == registry.default,
+                    current=ProviderCurrentConfig(
+                        api_type=api_type,
+                        base_url=str(profile.base_url or ""),
+                    ),
+                )
+            )
+        return ListProvidersResponse(providers=providers)
+
+    async def set_provider(
+        self,
+        provider_id: str,
+        api_type: Any = None,
+        base_url: str = "",
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> SetProviderResponse:
+        """Select one configured model profile for all active sessions."""
+        del api_type, base_url, headers, kwargs
+        self._require_initialized()
+        registry = self._model_registry()
+        if provider_id not in registry.profiles:
+            raise acp.RequestError.invalid_params(
+                {"providerId": f"unknown model profile: {provider_id}"}
+            )
+        self._active_model = provider_id
+        for session_id in self.sessions.session_ids():
+            stored = self.catalog.get(session_id)
+            managed = self.sessions.get(session_id)
+            if stored is None or managed is None:
+                continue
+            config = {**(stored.config or {}), "model": provider_id}
+            updated = self.catalog.replace_config(session_id, config)
+            if updated is not None:
+                await self._rebuild_session_runtime(managed, updated)
+        return SetProviderResponse()
+
+    def _model_registry(self, cwd: Path | None = None) -> Any:
+        from synapse.models.registry import registry_from_settings
+
+        return registry_from_settings(self._session_settings(cwd))
+
+    def _session_settings(self, cwd: Path | None = None) -> Any:
+        from synapse.settings import load_settings
+
+        target = cwd or self._last_cwd or Path.cwd()
+        factory = self._settings_factory
+        if factory is None:
+            return load_settings(workspace=target)
+        return factory(target)
+
+    @staticmethod
+    def _provider_api_type(profile: Any) -> str:
+        from synapse.models.helpers import model_provider
+
+        return model_provider(profile.model) or "openai"
+
     async def new_session(
         self,
         cwd: str,
@@ -197,6 +275,7 @@ class SynapseACPAgent:
         del kwargs
         self._require_initialized()
         root = self._absolute_path(cwd)
+        self._last_cwd = root
         try:
             mcp_configs = mcp_server_configs_from_acp(mcp_servers)
         except ACPMCPError as exc:
@@ -251,6 +330,7 @@ class SynapseACPAgent:
         except ACPMCPError as exc:
             raise acp.RequestError.invalid_params({"mcpServers": str(exc)}) from exc
         stored = self._stored_session(session_id, cwd=cwd)
+        self._last_cwd = stored.cwd
         if stored.mcp_required and not mcp_configs:
             raise acp.RequestError.invalid_params(
                 {"mcpServers": "stored session requires MCP configuration on load"}
@@ -376,6 +456,7 @@ class SynapseACPAgent:
                 {"details": "checkpoint backend does not support session fork"}
             )
         root = self._absolute_path(cwd)
+        self._last_cwd = root
         additional = self._validate_additional_directories(additional_directories)
         stored = self.catalog.fork(
             source.session_id,
@@ -440,10 +521,12 @@ class SynapseACPAgent:
         del kwargs
         self._require_initialized()
         before = self._stored_session(session_id)
-        if config_id not in {"thinking", "approval"}:
+        if config_id not in {"model", "thinking", "approval"}:
             raise acp.RequestError.invalid_params({"configId": "unknown session option"})
         if config_id == "approval" and not isinstance(value, bool):
             raise acp.RequestError.invalid_params({"value": "approval must be boolean"})
+        if config_id == "model" and not isinstance(value, str):
+            raise acp.RequestError.invalid_params({"value": "model must be string"})
         if config_id == "thinking" and not isinstance(value, str):
             raise acp.RequestError.invalid_params({"value": "thinking must be string"})
         if config_id == "thinking" and value not in {
@@ -457,6 +540,12 @@ class SynapseACPAgent:
             raise acp.RequestError.invalid_params(
                 {"value": "thinking must be one of: off, minimal, low, medium, high, max"}
             )
+        if config_id == "model":
+            registry = self._model_registry(before.cwd)
+            if value not in registry.profiles:
+                raise acp.RequestError.invalid_params(
+                    {"value": f"unknown model profile: {value}"}
+                )
         managed = self.sessions.get(session_id)
         snapshot = getattr(managed.runtime, "snapshot", None) if managed is not None else None
         if callable(snapshot) and snapshot().active_turn_id is not None:
@@ -505,7 +594,7 @@ class SynapseACPAgent:
         self._require_initialized()
         managed = self._require_session(session_id)
         try:
-            content = decode_prompt_content(prompt)
+            content = decode_prompt_content(prompt, allow_image=True)
         except ACPContentError as exc:
             raise acp.RequestError.invalid_params({"prompt": str(exc)}) from exc
         text = render_resource_links(content)
@@ -848,12 +937,10 @@ class SynapseACPAgent:
             updated_at=stored.updated_at,
         )
 
-    @classmethod
-    def _session_state_response(cls, stored: ACPStoredSession) -> LoadSessionResponse:
-        del cls
+    def _session_state_response(self, stored: ACPStoredSession) -> LoadSessionResponse:
         return LoadSessionResponse(
-            modes=SynapseACPAgent._mode_state(stored),
-            config_options=SynapseACPAgent._config_options(stored),
+            modes=self._mode_state(stored),
+            config_options=self._config_options(stored),
         )
 
     @staticmethod
@@ -863,17 +950,38 @@ class SynapseACPAgent:
             available_modes=[SessionMode(id="default", name="Default")],
         )
 
-    @staticmethod
-    def _config_options(stored: ACPStoredSession) -> list[Any]:
+    def _config_options(self, stored: ACPStoredSession) -> list[Any]:
         config = stored.config or {}
         thinking = str(config.get("thinking", "high"))
-        return [
+        options: list[Any] = []
+        try:
+            registry = self._model_registry(stored.cwd)
+            names = registry.list_names()
+        except Exception:
+            names = []
+        if names:
+            current_model = str(config.get("model") or registry.default or "")
+            options.append(
+                SessionConfigOptionSelect(
+                    type="select",
+                    id="model",
+                    name="Model",
+                    current_value=current_model,
+                    options=[
+                        SessionConfigSelectOption(value=name, name=name)
+                        for name in names
+                    ],
+                )
+            )
+        options.append(
             SessionConfigOptionBoolean(
                 type="boolean",
                 id="approval",
                 name="Approval",
                 current_value=bool(config.get("approval", False)),
-            ),
+            )
+        )
+        options.append(
             SessionConfigOptionSelect(
                 type="select",
                 id="thinking",
@@ -887,8 +995,9 @@ class SynapseACPAgent:
                     SessionConfigSelectOption(value="high", name="High"),
                     SessionConfigSelectOption(value="max", name="Max"),
                 ],
-            ),
-        ]
+            )
+        )
+        return options
 
     @staticmethod
     def _available_commands_update() -> AvailableCommandsUpdate:

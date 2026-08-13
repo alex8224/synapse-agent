@@ -154,7 +154,7 @@ def test_initialize_advertises_verified_p4_session_capabilities() -> None:
         assert response.protocol_version == 1
         assert response.agent_capabilities is not None
         assert response.agent_capabilities.load_session is True
-        assert response.agent_capabilities.prompt_capabilities.image is False
+        assert response.agent_capabilities.prompt_capabilities.image is True
         assert response.agent_capabilities.session_capabilities is not None
         assert response.agent_capabilities.session_capabilities.list is not None
 
