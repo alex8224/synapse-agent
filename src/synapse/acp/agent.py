@@ -101,6 +101,7 @@ class SynapseACPAgent:
         self._agent_name = agent_name
         self._agent_version = agent_version
         self._settings_factory = settings_factory
+        self._settings_cache: dict[Path, Any] = {}
         self._last_cwd: Path | None = None
         self._active_model: str | None = None
         self.permissions = PermissionCoordinator()
@@ -254,16 +255,42 @@ class SynapseACPAgent:
         from synapse.settings import load_settings
 
         target = cwd or self._last_cwd or Path.cwd()
+        cached = self._settings_cache.get(target)
+        if cached is not None:
+            return cached
         factory = self._settings_factory
-        if factory is None:
-            return load_settings(workspace=target)
-        return factory(target)
+        settings = factory(target) if factory is not None else load_settings(workspace=target)
+        self._settings_cache[target] = settings
+        return settings
 
     @staticmethod
     def _provider_api_type(profile: Any) -> str:
         from synapse.models.helpers import model_provider
 
         return model_provider(profile.model) or "openai"
+
+    def _tui_store(self, cwd: Path) -> Any:
+        """Open the TUI/CLI session store for one project workspace."""
+        from synapse.sessions.store import SessionStore
+
+        settings = self._session_settings(cwd)
+        return SessionStore(settings.resolved_sessions_path())
+
+    def _sync_tui_session(self, stored: ACPStoredSession) -> None:
+        """Best-effort write-through of one ACP session into the TUI store."""
+        try:
+            config = stored.config or {}
+            model = str(config.get("model") or "").strip() or None
+            thinking = str(config.get("thinking") or "").strip() or None
+            with self._tui_store(stored.cwd) as store:
+                store.ensure(
+                    stored.thread_id,
+                    title=stored.title,
+                    active_model=model,
+                    thinking=thinking,
+                )
+        except Exception:
+            logger.debug("failed to sync ACP session into TUI store", exc_info=True)
 
     async def new_session(
         self,
@@ -303,6 +330,7 @@ class SynapseACPAgent:
             await self.sessions.close(stored.session_id, cancel_active=True)
             raise
         self._mcp_pool_keys.add(f"acp:{stored.session_id}")
+        self._sync_tui_session(stored)
         await self._emit_session_update(
             stored.session_id,
             self._available_commands_update(),
@@ -389,10 +417,39 @@ class SynapseACPAgent:
         self._require_initialized()
         root = self._absolute_path(cwd) if cwd else None
         items, next_cursor = self.catalog.list_page(cwd=root, cursor=cursor)
+        sessions = [self._to_acp_session_info(item) for item in items]
+        if cursor is None and root is not None:
+            sessions = self._merge_tui_sessions(root, sessions)
         return ListSessionsResponse(
-            sessions=[self._to_acp_session_info(item) for item in items],
+            sessions=sessions,
             next_cursor=next_cursor,
         )
+
+    def _merge_tui_sessions(
+        self, root: Path, sessions: list[ACPSessionInfo]
+    ) -> list[ACPSessionInfo]:
+        """Merge project TUI sessions into the first list page (dedup by id)."""
+        try:
+            with self._tui_store(root) as store:
+                known = {item.session_id for item in sessions}
+                merged = list(sessions)
+                for info in store.list(limit=200):
+                    if info.thread_id in known:
+                        continue
+                    known.add(info.thread_id)
+                    merged.append(
+                        ACPSessionInfo(
+                            session_id=info.thread_id,
+                            cwd=str(root),
+                            additional_directories=[],
+                            title=info.title,
+                            updated_at=info.updated_at,
+                        )
+                    )
+        except Exception:
+            logger.debug("failed to merge TUI sessions", exc_info=True)
+            return sessions
+        return sorted(merged, key=lambda item: item.updated_at or "", reverse=True)
 
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
         del kwargs
@@ -407,7 +464,7 @@ class SynapseACPAgent:
     async def delete_session(self, session_id: str, **kwargs: Any) -> Any:
         del kwargs
         self._require_initialized()
-        self._stored_session(session_id)
+        stored = self._stored_session(session_id)
         managed = self.sessions.get(session_id)
         await self.permissions.clear_session(session_id)
         await self._close_client_services(session_id)
@@ -417,6 +474,11 @@ class SynapseACPAgent:
             await self._delete_checkpoint_thread(managed)
         if not self.catalog.delete(session_id):
             raise acp.RequestError.resource_not_found(session_id)
+        try:
+            with self._tui_store(stored.cwd) as store:
+                store.delete(stored.thread_id)
+        except Exception:
+            logger.debug("failed to delete ACP session from TUI store", exc_info=True)
         from acp.schema import DeleteSessionResponse
 
         return DeleteSessionResponse()
@@ -906,11 +968,37 @@ class SynapseACPAgent:
 
     def _stored_session(self, session_id: str, *, cwd: str | None = None) -> ACPStoredSession:
         stored = self.catalog.get(session_id)
+        if stored is None and cwd is not None:
+            stored = self._adopt_tui_session(session_id, cwd)
         if stored is None:
             raise acp.RequestError.resource_not_found(session_id)
         if cwd is not None and self._absolute_path(cwd) != stored.cwd:
             raise acp.RequestError.invalid_params({"cwd": "does not match stored session"})
         return stored
+
+    def _adopt_tui_session(self, session_id: str, cwd: str) -> ACPStoredSession | None:
+        """Adopt a TUI/CLI session into the ACP catalog by its thread id."""
+        try:
+            with self._tui_store(self._absolute_path(cwd)) as store:
+                info = store.get(session_id)
+        except Exception:
+            logger.debug("failed to adopt TUI session", exc_info=True)
+            return None
+        if info is None:
+            return None
+        config: dict[str, Any] = {}
+        if info.active_model:
+            config["model"] = info.active_model
+        if info.thinking:
+            config["thinking"] = info.thinking
+        return self.catalog.create(
+            cwd=self._absolute_path(cwd),
+            session_id=info.thread_id,
+            title=info.title,
+            mode_id="default",
+            config=config,
+            mcp_required=False,
+        )
 
     def _validate_additional_directories(
         self, values: list[str] | None

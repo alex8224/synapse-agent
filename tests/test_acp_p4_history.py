@@ -280,3 +280,66 @@ def test_failed_config_rebuild_rolls_back_and_restores_session(tmp_path: Path) -
         await agent.shutdown()
 
     asyncio.run(run())
+
+
+def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
+    async def run() -> None:
+        from synapse.sessions.store import SessionStore
+
+        tui_db = tmp_path / "tui-sessions.sqlite"
+
+        def settings_factory(cwd: Path) -> Any:
+            class Settings:
+                workspace = cwd
+                models_config_path = tmp_path / "missing.json"
+                models_json = json.dumps(
+                    {"default": "a", "models": {"a": {"model": "openai:gpt-4o"}}}
+                )
+                active_model = None
+                model = None
+
+                def resolved_sessions_path(self) -> Path:
+                    return tui_db
+
+            return Settings()
+
+        with SessionStore(tui_db) as store:
+            store.ensure("tui-thread-1", title="TUI session")
+
+        catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
+
+        async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
+            runtime = _Runtime()
+            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+
+        agent = SynapseACPAgent(
+            registry=ACPSessionRegistry(factory),
+            catalog=catalog,
+            settings_factory=settings_factory,
+        )
+        await agent.initialize(1)
+
+        # new_session writes through to the shared TUI store.
+        session = await agent.new_session(str(tmp_path))
+        with SessionStore(tui_db) as store:
+            assert store.get(session.session_id) is not None
+
+        # list_sessions merges pre-existing TUI sessions.
+        listed = await agent.list_sessions(cwd=str(tmp_path))
+        listed_ids = [item.session_id for item in listed.sessions]
+        assert "tui-thread-1" in listed_ids
+        assert session.session_id in listed_ids
+
+        # load adopts a TUI session into the ACP catalog.
+        loaded = await agent.load_session(str(tmp_path), "tui-thread-1")
+        assert loaded is not None
+        assert catalog.get("tui-thread-1") is not None
+
+        # delete removes from both stores.
+        await agent.delete_session("tui-thread-1")
+        assert catalog.get("tui-thread-1") is None
+        with SessionStore(tui_db) as store:
+            assert store.get("tui-thread-1") is None
+        await agent.shutdown()
+
+    asyncio.run(run())

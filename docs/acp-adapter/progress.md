@@ -192,6 +192,7 @@
 | 2026-08-12 | Zed 实测 | 统一声明 `promptCapabilities.image=true` 并 `allow_image=True`，不支持图片由模型拒绝 | 用户要求启用图片输入，不做模型能力前置判断 | P2 |
 | 2026-08-12 | Zed 实测 | 增加 `model` 作为 session config select 选项（映射 `models.json` profile） | Zed 1.14.2 不调用 `providers/list`，模型选择需经 config options 暴露 | P7 |
 | 2026-08-12 | Zed 实测 | 工厂始终加载项目 `mcp.json` 并与 Client MCP 合并，pool key 无条件追踪 | TUI 的 `mcp.json` 服务器此前只在 Client 也传 MCP 时才加载 | P5 |
+| 2026-08-12 | 会话统一 | ACP 桥接项目级 TUI `SessionStore`：new 写穿、list 合并、load 采纳、delete 同步 | 用户要求 TUI 与 Zed 使用同一套 session，而非独立两套 | P4 |
 
 ## 台账更新流程
 
