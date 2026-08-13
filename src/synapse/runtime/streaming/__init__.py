@@ -5,6 +5,10 @@ from synapse.runtime.streaming.adapters import InstrumentedStreamSink
 from synapse.runtime.streaming.events import (
     EVENT_VERSION,
     ActivityPayload,
+    DiffPayload,
+    PlanEntryPayload,
+    PlanPayload,
+    PlanRemovedPayload,
     TextPayload,
     ToolBatchFinishedPayload,
     ToolBatchPayload,
@@ -34,6 +38,10 @@ from synapse.runtime.streaming.tool_model import ToolItem
 __all__ = [
     "EVENT_VERSION",
     "ActivityPayload",
+    "DiffPayload",
+    "PlanEntryPayload",
+    "PlanPayload",
+    "PlanRemovedPayload",
     "AgentEventSink",
     "CallbackEventSink",
     "CollectingEventSink",

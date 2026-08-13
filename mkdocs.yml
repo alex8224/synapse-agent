@@ -65,6 +65,20 @@ nav:
       - P8 稳定性收口: agent-runtime-decoupling/phase-8-hardening.md
       - 迁移说明与余留风险: agent-runtime-decoupling/migration.md
       - 审查问题修复计划: agent-runtime-decoupling/post-review-fix-plan.md
+  - ACP 完整语义适配计划:
+      - 总体方案: acp-adapter/index.md
+      - 实施进度: acp-adapter/progress.md
+      - 架构决策: acp-adapter/decisions.md
+      - 能力矩阵: acp-adapter/capability-matrix.md
+      - P0 协议基线: acp-adapter/phase-0-protocol-baseline.md
+      - P1 核心传输: acp-adapter/phase-1-core-transport.md
+      - P2 Prompt 语义: acp-adapter/phase-2-prompt-semantics.md
+      - P3 Permission 与 HITL: acp-adapter/phase-3-permissions.md
+      - P4 会话生命周期: acp-adapter/phase-4-session-lifecycle.md
+      - P5 会话级 MCP: acp-adapter/phase-5-session-mcp.md
+      - P6 Client 反向服务: acp-adapter/phase-6-client-services.md
+      - P7 高级能力: acp-adapter/phase-7-advanced-capabilities.md
+      - P8 合规与发布: acp-adapter/phase-8-compliance.md
   - 子代理架构调研: subagent-architecture-survey.md
   - 模型配置: models.md
   - MCP Server: mcp.md

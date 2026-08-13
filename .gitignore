@@ -49,3 +49,6 @@ landing/
 # OS
 Thumbs.db
 .DS_Store.tmp/
+
+# Local release executables (build artifacts, not committed)
+synapse-*.exe

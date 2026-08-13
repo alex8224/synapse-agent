@@ -129,6 +129,44 @@ Type `/help` in the TUI for the full reference. The essentials:
 | `/safety <profile>` | Switch safety profiles |
 | `/approve` · `/reject` | Human-in-the-loop decisions |
 
+## ACP v1 adapter
+
+The package also installs the standalone `synapse-acp` stdio entry point. It
+uses the locked `agent-client-protocol==0.12.0` dependency and keeps stdout
+reserved for ACP JSON-RPC; diagnostics go to stderr.
+
+```bash
+# Run from an installed package
+synapse-acp
+
+# Run from a source checkout
+uv run synapse-acp
+```
+
+For a client such as Zed, configure the ACP agent as a subprocess whose command
+is `synapse-acp` (or the absolute path to that executable). The adapter accepts
+absolute `cwd` values and session-scoped MCP servers. MCP credentials are used
+only for the live session and are not written to the ACP catalog or transcript.
+
+The published capability set currently covers text prompts, permission/HITL,
+session load/list/close/delete/resume, session-local mode/config, HTTP/SSE MCP
+configuration, and capability-gated Client filesystem/terminal tools. Image,
+audio, embedded-context, authentication/logout, provider management,
+elicitation, NES, and document-sync capabilities are not advertised until
+their runtime semantics and interoperability tests exist.
+
+Troubleshooting:
+
+- stdout is reserved for ACP JSON-RPC; any log line on stdout breaks the
+  protocol. Logs and startup traces go to stderr.
+- `cwd` and `additionalDirectories` must be absolute paths; relative paths are
+  rejected with an ACP error.
+- Session metadata lives in `~/.synapse/acp-sessions.sqlite`; MCP credentials
+  and headers are never persisted there.
+- If a client reports "Method not found", verify it negotiates the same ACP
+  protocol version and does not rely on `not_target` methods (auth, providers,
+  elicitation, NES, document sync).
+
 ## Pick a model
 
 Synapse works with any OpenAI-compatible endpoint. Configure profiles in `~/.synapse/models.json` (or `<workspace>/.synapse/models.json`):
@@ -161,6 +199,7 @@ For a zero-config Codex experience, use the OAuth profile — see [Models](docs/
 | [Skills](docs/skills.md) | Bundled skills and the Agent Skills format |
 | [Permissions](docs/permissions.md) | Read-only mode and approval flows |
 | [Install](docs/install.md) | All installation methods |
+| [ACP adapter](docs/acp-adapter/index.md) | ACP v1 setup, capability matrix, limitations, and verification status |
 
 ## Repository layout
 

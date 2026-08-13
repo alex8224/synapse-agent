@@ -7,6 +7,10 @@ from typing import Any
 from synapse.runtime.streaming.accumulator import TurnAccumulator
 from synapse.runtime.streaming.events import (
     ActivityPayload,
+    DiffPayload,
+    PlanEntryPayload,
+    PlanPayload,
+    PlanRemovedPayload,
     TextPayload,
     ToolBatchFinishedPayload,
     ToolBatchPayload,
@@ -209,10 +213,17 @@ class InstrumentedStreamSink:
         )
         self._forward("tool_calls_started", calls, parallel=parallel)
 
-    def tool_result(self, name: str, status: str, *, sub: bool = False) -> None:
+    def tool_result(
+        self,
+        name: str,
+        status: str,
+        *,
+        sub: bool = False,
+        call_id: str | None = None,
+    ) -> None:
         self.accumulator.emit(
             TurnEventKind.TOOL_RESULT,
-            ToolResultPayload(name=name, status=status, sub=sub),
+            ToolResultPayload(name=name, status=status, sub=sub, call_id=call_id),
         )
         self._forward("tool_result", name, status, sub=sub)
 
@@ -232,10 +243,58 @@ class InstrumentedStreamSink:
             ttft_s=kwargs.get("ttft_s"),
             rate_basis=str(kwargs.get("rate_basis") or "end_to_end"),
             rate_estimated=bool(kwargs.get("rate_estimated", False)),
+            context_size=(
+                int(kwargs["context_size"])
+                if kwargs.get("context_size") is not None
+                else None
+            ),
         )
         self.accumulator.note_usage(usage)
         self.accumulator.emit(TurnEventKind.USAGE_UPDATED, usage)
         self._forward("note_usage", **kwargs)
+
+    def plan_updated(
+        self,
+        plan_id: str,
+        entries: list[dict[str, str]] | tuple[PlanEntryPayload, ...],
+    ) -> None:
+        normalized = tuple(
+            entry
+            if isinstance(entry, PlanEntryPayload)
+            else PlanEntryPayload(
+                content=str(entry.get("content") or ""),
+                priority=str(entry.get("priority") or "medium"),
+                status=str(entry.get("status") or "pending"),
+            )
+            for entry in entries
+        )
+        self.accumulator.emit(
+            TurnEventKind.PLAN_UPDATED,
+            PlanPayload(plan_id=str(plan_id), entries=normalized),
+        )
+
+    def plan_removed(self, plan_id: str) -> None:
+        self.accumulator.emit(
+            TurnEventKind.PLAN_REMOVED,
+            PlanRemovedPayload(plan_id=str(plan_id)),
+        )
+
+    def diff_updated(
+        self,
+        call_id: str,
+        path: str,
+        new_text: str,
+        old_text: str | None = None,
+    ) -> None:
+        self.accumulator.emit(
+            TurnEventKind.DIFF_UPDATED,
+            DiffPayload(
+                call_id=str(call_id),
+                path=str(path),
+                new_text=str(new_text),
+                old_text=old_text,
+            ),
+        )
 
     def _tool_item_started(self, item: Any) -> None:
         self.accumulator.emit(TurnEventKind.TOOL_STARTED, tool_item_payload(item))

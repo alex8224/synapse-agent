@@ -26,6 +26,9 @@ class TurnEventKind(StrEnum):
     TOOL_FINISHED = "tool_finished"
     TOOL_RESULT = "tool_result"
     TOOL_BATCH_FINISHED = "tool_batch_finished"
+    PLAN_UPDATED = "plan_updated"
+    PLAN_REMOVED = "plan_removed"
+    DIFF_UPDATED = "diff_updated"
     USAGE_UPDATED = "usage_updated"
     INFO = "info"
     TURN_COMPLETED = "turn_completed"
@@ -106,6 +109,33 @@ class ToolResultPayload:
     name: str
     status: str
     sub: bool = False
+    call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanEntryPayload:
+    content: str
+    priority: str = "medium"
+    status: str = "pending"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanPayload:
+    plan_id: str
+    entries: tuple[PlanEntryPayload, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlanRemovedPayload:
+    plan_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiffPayload:
+    call_id: str
+    path: str
+    new_text: str
+    old_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +166,7 @@ class UsagePayload:
     ttft_s: float | None = None
     rate_basis: str = "end_to_end"
     rate_estimated: bool = False
+    context_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
