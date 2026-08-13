@@ -144,16 +144,14 @@ def make_runtime_session_factory(
         settings = await asyncio.to_thread(settings_factory, descriptor.cwd)
         settings = _apply_session_config(settings, descriptor.config)
 
-        mcp_configs: list[Any] = []
-        if descriptor.mcp_servers:
-            from synapse.acp.mcp import mcp_server_configs_from_acp, merge_mcp_server_configs
-            from synapse.integrations.mcp_client import load_mcp_server_configs
+        from synapse.acp.mcp import mcp_server_configs_from_acp, merge_mcp_server_configs
+        from synapse.integrations.mcp_client import load_mcp_server_configs
 
-            client_configs = mcp_server_configs_from_acp(descriptor.mcp_servers)
-            project_configs = await asyncio.to_thread(
-                load_mcp_server_configs, workspace=descriptor.cwd
-            )
-            mcp_configs = merge_mcp_server_configs(project_configs, client_configs)
+        client_configs = mcp_server_configs_from_acp(descriptor.mcp_servers)
+        project_configs = await asyncio.to_thread(
+            load_mcp_server_configs, workspace=descriptor.cwd
+        )
+        mcp_configs: list[Any] = merge_mcp_server_configs(project_configs, client_configs)
 
         mcp_pool_key = f"acp:{descriptor.session_id}"
 

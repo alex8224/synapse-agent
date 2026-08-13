@@ -302,8 +302,7 @@ class SynapseACPAgent:
             self._release_mcp_pool(stored.session_id)
             await self.sessions.close(stored.session_id, cancel_active=True)
             raise
-        if mcp_configs:
-            self._mcp_pool_keys.add(f"acp:{stored.session_id}")
+        self._mcp_pool_keys.add(f"acp:{stored.session_id}")
         await self._emit_session_update(
             stored.session_id,
             self._available_commands_update(),
@@ -354,8 +353,7 @@ class SynapseACPAgent:
             await self._close_client_services(stored.session_id)
             self._release_mcp_pool(stored.session_id)
             raise
-        if mcp_configs:
-            self._mcp_pool_keys.add(f"acp:{stored.session_id}")
+        self._mcp_pool_keys.add(f"acp:{stored.session_id}")
         if _replay_history:
             await self._replay_session_updates(session_id)
         return self._session_state_response(stored)
@@ -490,8 +488,7 @@ class SynapseACPAgent:
             self.catalog.delete(stored.session_id)
             await self.sessions.close(stored.session_id, cancel_active=True)
             raise
-        if mcp_configs:
-            self._mcp_pool_keys.add(f"acp:{stored.session_id}")
+        self._mcp_pool_keys.add(f"acp:{stored.session_id}")
         return ForkSessionResponse(
             session_id=stored.session_id,
             modes=self._mode_state(stored),
