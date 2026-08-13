@@ -284,9 +284,14 @@ def test_failed_config_rebuild_rolls_back_and_restores_session(tmp_path: Path) -
 
 def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
     async def run() -> None:
+        from acp.helpers import text_block
+
+        from synapse.projects.catalog import ProjectCatalog
+        from synapse.runtime.agent_loop import TurnResult, TurnStatus
         from synapse.sessions.store import SessionStore
 
         tui_db = tmp_path / "tui-sessions.sqlite"
+        project_catalog_db = tmp_path / "project-catalog.sqlite"
 
         def settings_factory(cwd: Path) -> Any:
             class Settings:
@@ -301,6 +306,9 @@ def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
                 def resolved_sessions_path(self) -> Path:
                     return tui_db
 
+                def resolved_catalog_path(self) -> Path:
+                    return project_catalog_db
+
             return Settings()
 
         with SessionStore(tui_db) as store:
@@ -308,9 +316,45 @@ def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
 
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
+        class Runtime(_Runtime):
+            def __init__(self) -> None:
+                self.callbacks: list[Any] = []
+
+            def subscribe(self, callback: Any, *, after_sequence: int = 0) -> Any:
+                del after_sequence
+                self.callbacks.append(callback)
+
+                class Subscription:
+                    def close(self) -> None:
+                        return None
+
+                return Subscription()
+
+        class Manager(_Manager):
+            async def submit(self, thread_id: str, message: Any) -> Any:
+                del message
+                future = asyncio.get_running_loop().create_future()
+                future.set_result(
+                    TurnResult(
+                        turn_id="turn-1",
+                        thread_id=thread_id,
+                        status=TurnStatus.COMPLETED,
+                    )
+                )
+
+                class Handle:
+                    def __init__(self, value: Any) -> None:
+                        self.future = value
+
+                return Handle(future)
+
+            def cancel(self, thread_id: str, reason: str) -> bool:
+                del thread_id, reason
+                return True
+
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            runtime = Runtime()
+            return ACPManagedSession(descriptor, Manager(runtime), runtime)  # type: ignore[arg-type]
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -323,12 +367,50 @@ def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
         session = await agent.new_session(str(tmp_path))
         with SessionStore(tui_db) as store:
             assert store.get(session.session_id) is not None
+            assert session.session_id not in {
+                item.thread_id for item in store.list_nonempty()
+            }
+
+        # The first Zed prompt replaces the placeholder title, making the
+        # session visible in the TUI's list_nonempty() dialog.
+        await agent.prompt(session.session_id, [text_block("Zed first message")])
+        with SessionStore(tui_db) as store:
+            visible = store.list_nonempty()
+            bridged = next(item for item in visible if item.thread_id == session.session_id)
+            assert bridged.title == "Zed first message"
+
+        # A session created by the older bridge has a catalog title but only a
+        # placeholder in the TUI store. Listing repairs it without a new prompt.
+        legacy = catalog.create(cwd=tmp_path, title="Legacy Zed session")
+        with SessionStore(tui_db) as store:
+            store.ensure(legacy.thread_id)
+            assert legacy.thread_id not in {
+                item.thread_id for item in store.list_nonempty()
+            }
 
         # list_sessions merges pre-existing TUI sessions.
         listed = await agent.list_sessions(cwd=str(tmp_path))
         listed_ids = [item.session_id for item in listed.sessions]
         assert "tui-thread-1" in listed_ids
         assert session.session_id in listed_ids
+        with SessionStore(tui_db) as store:
+            repaired = store.get(legacy.thread_id)
+            assert repaired is not None
+            assert repaired.title == "Legacy Zed session"
+
+        # Zed's global history request omits cwd. It must still include TUI
+        # sessions through the bounded user-level project projection.
+        project_catalog = ProjectCatalog(project_catalog_db)
+        try:
+            project_catalog.upsert_session(
+                tmp_path,
+                thread_id="global-tui-thread",
+                title="Global TUI session",
+            )
+        finally:
+            project_catalog.close()
+        global_listed = await agent.list_sessions()
+        assert "global-tui-thread" in [item.session_id for item in global_listed.sessions]
 
         # load adopts a TUI session into the ACP catalog.
         loaded = await agent.load_session(str(tmp_path), "tui-thread-1")

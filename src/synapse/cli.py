@@ -591,6 +591,28 @@ def tui_cmd(
     )
 
 
+@app.command("transcript-migration-worker", hidden=True)
+def transcript_migration_worker(
+    checkpoint_path: Path = typer.Option(
+        ..., "--checkpoint-path", help="Legacy checkpoint SQLite file"
+    ),
+    projection_path: Path = typer.Option(
+        ..., "--projection-path", help="Transcript projection SQLite file"
+    ),
+    thread_id: str = typer.Option(..., "--thread-id", help="Thread id to migrate"),
+) -> None:
+    """Internal: build one legacy transcript projection in a disposable process."""
+    from synapse.sessions.transcript_migration import run_transcript_migration_worker
+
+    raise typer.Exit(
+        code=run_transcript_migration_worker(
+            checkpoint_path=checkpoint_path,
+            projection_path=projection_path,
+            thread_id=thread_id,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # One-shot run command (headless, for scripts / evals)
 # ---------------------------------------------------------------------------

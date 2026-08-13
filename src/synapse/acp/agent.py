@@ -279,13 +279,38 @@ class SynapseACPAgent:
     def _sync_tui_session(self, stored: ACPStoredSession) -> None:
         """Best-effort write-through of one ACP session into the TUI store."""
         try:
+            from synapse.sessions.store import is_default_session_title
+
             config = stored.config or {}
             model = str(config.get("model") or "").strip() or None
             thinking = str(config.get("thinking") or "").strip() or None
             with self._tui_store(stored.cwd) as store:
-                store.ensure(
+                existing = store.get(stored.thread_id)
+                if existing is None:
+                    store.ensure(
+                        stored.thread_id,
+                        title=stored.title,
+                        active_model=model,
+                        thinking=thinking,
+                    )
+                    return
+                title_hint = (
+                    stored.title
+                    if stored.title
+                    and is_default_session_title(existing.title, existing.thread_id)
+                    else None
+                )
+                model_changed = model is not None and existing.active_model != model
+                thinking_changed = thinking is not None and existing.thinking != thinking
+                if (
+                    title_hint is None
+                    and not model_changed
+                    and not thinking_changed
+                ):
+                    return
+                store.touch(
                     stored.thread_id,
-                    title=stored.title,
+                    title_hint=title_hint,
                     active_model=model,
                     thinking=thinking,
                 )
@@ -417,9 +442,17 @@ class SynapseACPAgent:
         self._require_initialized()
         root = self._absolute_path(cwd) if cwd else None
         items, next_cursor = self.catalog.list_page(cwd=root, cursor=cursor)
+        if cursor is None:
+            # Repair sessions created before the TUI bridge existed. This is
+            # idempotent and avoids changing timestamps when metadata matches.
+            for item in items:
+                self._sync_tui_session(item)
         sessions = [self._to_acp_session_info(item) for item in items]
-        if cursor is None and root is not None:
-            sessions = self._merge_tui_sessions(root, sessions)
+        if cursor is None:
+            if root is not None:
+                sessions = self._merge_tui_sessions(root, sessions)
+            else:
+                sessions = self._merge_global_tui_sessions(sessions)
         return ListSessionsResponse(
             sessions=sessions,
             next_cursor=next_cursor,
@@ -449,6 +482,42 @@ class SynapseACPAgent:
         except Exception:
             logger.debug("failed to merge TUI sessions", exc_info=True)
             return sessions
+        return sorted(merged, key=lambda item: item.updated_at or "", reverse=True)
+
+    def _merge_global_tui_sessions(
+        self, sessions: list[ACPSessionInfo]
+    ) -> list[ACPSessionInfo]:
+        """Merge the bounded global TUI projection when ACP omits ``cwd``."""
+        project_catalog = None
+        try:
+            from synapse.projects.catalog import ProjectCatalog
+            from synapse.sessions.store import is_default_session_title
+
+            settings = self._session_settings()
+            project_catalog = ProjectCatalog(settings.resolved_catalog_path())
+            known = {item.session_id for item in sessions}
+            merged = list(sessions)
+            for info in project_catalog.list_sessions(limit=200):
+                if info.thread_id in known or is_default_session_title(
+                    info.title, info.thread_id
+                ):
+                    continue
+                known.add(info.thread_id)
+                merged.append(
+                    ACPSessionInfo(
+                        session_id=info.thread_id,
+                        cwd=info.workspace_path,
+                        additional_directories=[],
+                        title=info.title,
+                        updated_at=info.updated_at,
+                    )
+                )
+        except Exception:
+            logger.debug("failed to merge global TUI sessions", exc_info=True)
+            return sessions
+        finally:
+            if project_catalog is not None:
+                project_catalog.close()
         return sorted(merged, key=lambda item: item.updated_at or "", reverse=True)
 
     async def close_session(self, session_id: str, **kwargs: Any) -> CloseSessionResponse:
@@ -663,6 +732,7 @@ class SynapseACPAgent:
         if stored is not None and stored.title is None:
             titled = self.catalog.touch(session_id, title=text)
             if titled is not None:
+                self._sync_tui_session(titled)
                 from acp.schema import SessionInfoUpdate
 
                 await self._emit_session_update(

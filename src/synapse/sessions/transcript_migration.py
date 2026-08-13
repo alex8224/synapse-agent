@@ -37,18 +37,33 @@ def migrate_transcript_projection(
     projection = Path(projection_path).expanduser().resolve()
     if not checkpoint.is_file():
         return TranscriptMigrationResult(False, f"checkpoint database not found: {checkpoint}")
-    command = [
-        sys.executable,
-        "-m",
-        "synapse.sessions.transcript_migration",
-        "--worker",
-        "--checkpoint-path",
-        str(checkpoint),
-        "--projection-path",
-        str(projection),
-        "--thread-id",
-        str(thread_id),
-    ]
+    if getattr(sys, "frozen", False):
+        # A PyInstaller binary is the Typer CLI, not a Python interpreter:
+        # ``-m`` becomes ``--model`` and ``--worker`` is rejected. Route
+        # through a hidden CLI subcommand that runs the same worker body.
+        command = [
+            sys.executable,
+            "transcript-migration-worker",
+            "--checkpoint-path",
+            str(checkpoint),
+            "--projection-path",
+            str(projection),
+            "--thread-id",
+            str(thread_id),
+        ]
+    else:
+        command = [
+            sys.executable,
+            "-m",
+            "synapse.sessions.transcript_migration",
+            "--worker",
+            "--checkpoint-path",
+            str(checkpoint),
+            "--projection-path",
+            str(projection),
+            "--thread-id",
+            str(thread_id),
+        ]
     creationflags = 0
     if os.name == "nt":
         creationflags = subprocess.CREATE_NO_WINDOW
@@ -111,21 +126,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_transcript_migration_worker(
+    *,
+    checkpoint_path: Path,
+    projection_path: Path,
+    thread_id: str,
+) -> int:
+    """Run the worker and return a process exit code.
+
+    Shared by the ``-m`` module CLI and the packaged Typer CLI so source and
+    frozen installs execute the identical worker body.
+    """
+    try:
+        return _run_worker(
+            checkpoint_path=checkpoint_path,
+            projection_path=projection_path,
+            thread_id=thread_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - worker boundary reports a compact error
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if not args.worker:
         return 2
     if args.checkpoint_path is None or args.projection_path is None or not args.thread_id:
         return 2
-    try:
-        return _run_worker(
-            checkpoint_path=args.checkpoint_path,
-            projection_path=args.projection_path,
-            thread_id=str(args.thread_id),
-        )
-    except Exception as exc:  # noqa: BLE001 - worker boundary reports a compact error
-        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
+    return run_transcript_migration_worker(
+        checkpoint_path=args.checkpoint_path,
+        projection_path=args.projection_path,
+        thread_id=str(args.thread_id),
+    )
 
 
 if __name__ == "__main__":

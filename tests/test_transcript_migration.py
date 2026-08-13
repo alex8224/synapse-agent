@@ -131,3 +131,41 @@ def test_migration_does_not_pass_full_messages_to_parent(monkeypatch, tmp_path: 
         "synapse.sessions.transcript_migration",
     ]
     assert "legacy-thread" in captured["command"]
+
+
+def test_frozen_binary_uses_hidden_cli_subcommand(monkeypatch, tmp_path: Path) -> None:
+    """Packaged binaries are the Typer CLI, not a Python interpreter.
+
+    ``-m`` would be parsed as ``--model`` and ``--worker`` rejected, so the
+    frozen path must route through the hidden ``transcript-migration-worker``
+    subcommand instead.
+    """
+    import sys
+
+    checkpoint = tmp_path / "checkpoints.sqlite"
+    checkpoint.touch()
+    captured = {}
+
+    def run(command, **kwargs):  # noqa: ANN001, ARG001
+        captured["command"] = command
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "synapse-windows-x64.exe")
+    monkeypatch.setattr(subprocess, "run", run)
+
+    result = migrate_transcript_projection(
+        checkpoint_path=checkpoint,
+        projection_path=tmp_path / "transcript.sqlite",
+        thread_id="legacy-thread",
+    )
+
+    assert result.success is True
+    assert captured["command"][:2] == [
+        "synapse-windows-x64.exe",
+        "transcript-migration-worker",
+    ]
+    assert "--checkpoint-path" in captured["command"]
+    assert "--projection-path" in captured["command"]
+    assert "--thread-id" in captured["command"]
+    assert "legacy-thread" in captured["command"]

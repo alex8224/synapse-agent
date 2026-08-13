@@ -8,6 +8,28 @@ All entries are written in English.
 
 ---
 
+## v0.1.32
+
+### New Features
+
+- Added the ACP v1 adapter: a full agent collaboration protocol server exposing session lifecycle, permissions, content/prompt handling, per-session MCP servers, client services, and streaming plan/diff events. See `docs/acp-adapter/` for the capability matrix and phase documentation.
+- ACP provider management and model selection: clients can manage providers, select the active model per session, and send image prompts.
+- ACP sessions are bridged to the project-level TUI session store, so TUI and ACP clients share the same per-project recent-session history.
+- The herdr integration now reports agent lifecycle state (startup, turn, shutdown) to the herdr backend.
+
+### Bug Fixes
+
+- Fixed ACP ignoring the project's `mcp.json`: project MCP servers are now always merged with MCP servers supplied by the client.
+- Fixed placeholder-titled sessions staying invisible in the TUI recent-sessions view: listing ACP sessions now repairs sessions created before the TUI bridge existed, and Zed's global history request (without `cwd`) includes TUI sessions through the user-level project projection.
+- Fixed the transcript projection migration worker failing under the packaged Windows executable: frozen builds now route through a hidden `transcript-migration-worker` CLI subcommand instead of `python -m ... --worker`.
+
+### Engineering
+
+- Extracted the shared `run_transcript_migration_worker` worker body so source installs and frozen binaries execute identical migration logic.
+- Extended ACP bridge and migration tests to cover placeholder-title repair, global history merging, and the frozen worker command path.
+
+---
+
 ## v0.1.31
 
 ### New Features
