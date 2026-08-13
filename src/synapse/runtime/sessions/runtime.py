@@ -100,6 +100,22 @@ class SessionSnapshot:
     last_activity_at: datetime = field(default_factory=_utcnow)
 
 
+def _attach_herdr_status_observer(
+    callback: Callable[[SessionSnapshot], None] | None,
+) -> Callable[[SessionSnapshot], None] | None:
+    """Optionally mirror status transitions into herdr when running in a pane.
+
+    The herdr integration is a soft dependency: outside a herdr pane the import
+    is the only cost and the original callback is returned unchanged.  Any
+    failure here must never break session execution.
+    """
+    try:
+        from synapse.integrations.herdr import attach_status_observer
+    except Exception:  # noqa: BLE001 - optional integration cannot fail sessions
+        return callback
+    return attach_status_observer(callback)  # type: ignore[return-value]
+
+
 class SessionRuntime:
     """Own all mutable execution state for one (project_id, thread_id)."""
 
@@ -143,7 +159,7 @@ class SessionRuntime:
         self._closed = False
         self._settle_tasks: set[asyncio.Task[None]] = set()
         self._settling_handles: set[TurnHandle] = set()
-        self._on_status_change = on_status_change
+        self._on_status_change = _attach_herdr_status_observer(on_status_change)
 
     def _notify_status(self) -> None:
         """Publish a status transition to the optional observer (lock-free).
