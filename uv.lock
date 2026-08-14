@@ -2426,7 +2426,7 @@ dev = [
 
 [[package]]
 name = "synapse-core-tool"
-version = "0.1.2"
+version = "0.1.3"
 source = { directory = "rust/synapse-core-tool" }
 
 [[package]]
