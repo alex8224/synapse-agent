@@ -24,6 +24,8 @@ def test_tool_category_mapping():
     assert tool_category("read_file") == "read"
     assert tool_category("ls") == "list"
     assert tool_category("grep") == "search"
+    assert tool_category("search_files") == "search"
+    assert tool_category("find_files") == "glob"
     assert tool_category("execute") == "run"
 
 
@@ -38,6 +40,14 @@ def test_item_label_search_and_run():
         or item_label("grep", {"pattern": "StreamSink"}) == "Searched StreamSink"
     )
     assert item_label("execute", {"command": "pytest -q"}).startswith("Run ")
+
+
+def test_item_label_synapse_search_fallback():
+    assert item_label("search_files", {"pattern": "TODO|FIXME"}) == "Searched TODO|FIXME"
+    assert item_label("find_files", {"pattern": "**/*.py"}) == "Matched **/*.py"
+    # No intent + no pattern still degrades to a phrase, not the bare tool name.
+    assert item_label("search_files", {"path": "/src"}) == "Searched pattern"
+    assert item_label("find_files", {"path": "/src"}) == "Matched src"
 
 
 def test_item_label_prefers_intent():

@@ -67,9 +67,9 @@ def tool_category(name: str) -> str:
         return "edit"
     if n in {"ls", "list_dir", "list_directory"}:
         return "list"
-    if n in {"glob", "find"}:
+    if n in {"glob", "find", "find_files"}:
         return "glob"
-    if n in {"grep", "search", "rg"}:
+    if n in {"grep", "search", "rg", "search_files"}:
         return "search"
     if n in {"execute", "run", "shell", "bash"}:
         return "run"
@@ -401,7 +401,8 @@ def item_label(name: str, args: Any = None) -> str:
         target = base or (path or "dir")
         return f"Listed {target}"
     if cat == "glob":
-        return f"Matched {base or path or 'glob'}"
+        pat = extract_pattern(args)
+        return f"Matched {pat}" if pat else f"Matched {base or path or 'glob'}"
     if cat == "search":
         pat = extract_pattern(args)
         return f"Searched {pat}" if pat else "Searched pattern"
