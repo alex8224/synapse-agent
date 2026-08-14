@@ -8,23 +8,22 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
-from synapse.integrations.describe_image import (
-    VisionModelClient,
-    VisionModelConfig,
-    rewrite_messages,
-    rewrite_messages_sync,
-)
+from synapse.integrations.describe_image import VisionModelConfig, rewrite_messages_sync
 
 
 class DescribeImageMiddleware(AgentMiddleware):
-    """Convert image content to text unless the primary model supports images."""
+    """Prevent legacy raw images from reaching a text-only model.
+
+    New turns are normalized before entering Agent state. This middleware is a
+    compatibility safety boundary only and must never perform network I/O.
+    """
 
     state_schema = AgentState
     tools: list[Any] = []
 
     def __init__(self, *, image_input: bool, config: VisionModelConfig | None):
         self.image_input = bool(image_input)
-        self.client = VisionModelClient(config) if config is not None else None
+        del config
 
     @property
     def name(self) -> str:
@@ -37,7 +36,7 @@ class DescribeImageMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         if self.image_input:
             return handler(request)
-        messages = rewrite_messages_sync(request.messages, self.client)
+        messages = rewrite_messages_sync(request.messages, None)
         if messages == request.messages:
             return handler(request)
         return handler(request.override(messages=messages))
@@ -49,7 +48,7 @@ class DescribeImageMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         if self.image_input:
             return await handler(request)
-        messages = await rewrite_messages(request.messages, self.client)
+        messages = rewrite_messages_sync(request.messages, None)
         if messages == request.messages:
             return await handler(request)
         return await handler(request.override(messages=messages))

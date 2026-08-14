@@ -523,6 +523,8 @@ def build_coding_agent(
     )
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
+    agent._coding_primary_image_input = primary_image_input  # type: ignore[attr-defined]
+    agent._coding_vision_config = vision_config  # type: ignore[attr-defined]
     agent._coding_model_cache = model_cache  # type: ignore[attr-defined]
     agent._coding_model_cache_key = cache_key  # type: ignore[attr-defined]
     agent._coding_async_only = bool(  # type: ignore[attr-defined]

@@ -100,32 +100,20 @@ class VisionModelError(RuntimeError):
 @dataclass
 class VisionModelClient:
     config: VisionModelConfig
-    _cache: dict[str, str] = field(default_factory=dict)
+    _http_client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     async def describe_data_url(self, data_url: str, *, extra_prompt: str | None = None) -> str:
         raw = _parse_data_url(data_url, self.config.max_input_bytes)
         if raw is None:
             raise VisionModelError("invalid image data")
-        cache_key = _cache_key(data_url, extra_prompt)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-        description = await self._call(data_url, extra_prompt=extra_prompt)
-        self._cache[cache_key] = description
-        return description
+        return await self._call(data_url, extra_prompt=extra_prompt)
 
     async def describe_url(self, url: str, *, extra_prompt: str | None = None) -> str:
         if not self.config.allow_remote_urls:
             raise VisionModelError("remote image URLs are disabled")
         if not (url.startswith("http://") or url.startswith("https://")):
             raise VisionModelError("unsupported image URL")
-        cache_key = _cache_key(url, extra_prompt)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-        description = await self._call(url, extra_prompt=extra_prompt)
-        self._cache[cache_key] = description
-        return description
+        return await self._call(url, extra_prompt=extra_prompt)
 
     async def _call(self, image_url: str, *, extra_prompt: str | None) -> str:
         prompt = self.config.prompt
@@ -144,6 +132,18 @@ class VisionModelClient:
                     if not _retryable(exc) or attempt + 1 >= self.config.max_retries:
                         break
         raise VisionModelError("vision service request failed") from last_error
+
+    async def open(self) -> None:
+        """Create the optional per-turn HTTP client for connection reuse."""
+        if getattr(self, "_http_client", None) is None:
+            self._http_client = httpx.AsyncClient(timeout=self.config.timeout_secs)
+
+    async def close(self) -> None:
+        """Close the per-turn HTTP client, if one was opened."""
+        client = getattr(self, "_http_client", None)
+        self._http_client = None
+        if client is not None:
+            await client.aclose()
 
     async def _request(self, model: str, image_url: str, prompt: str) -> str:
         if not self.config.api_key:
@@ -168,7 +168,11 @@ class VisionModelClient:
         if self.config.think:
             body["thinking"] = {"type": "enabled"}
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
-        async with httpx.AsyncClient(timeout=self.config.timeout_secs) as client:
+        client = getattr(self, "_http_client", None)
+        if client is None:
+            async with httpx.AsyncClient(timeout=self.config.timeout_secs) as client:
+                response = await client.post(url, headers=headers, json=body)
+        else:
             response = await client.post(url, headers=headers, json=body)
         if response.status_code >= 400:
             _logger.warning(
@@ -197,7 +201,7 @@ class VisionModelClient:
 def rewrite_messages_sync(messages: list[Any], client: VisionModelClient | None) -> list[Any]:
     """Synchronous fallback used by ``invoke``/``stream`` paths."""
     if client is None:
-        return _rewrite_without_vision(messages)
+        return _rewrite_without_vision_sync(messages)
     return _run_coroutine_sync(rewrite_messages(messages, client))
 
 
@@ -228,27 +232,111 @@ def _run_coroutine_sync(coro: Any) -> Any:
 async def rewrite_messages(messages: list[Any], client: VisionModelClient | None) -> list[Any]:
     """Replace image blocks with text while keeping message types intact."""
     rewritten: list[Any] = []
+    description_cache: dict[str, str] = {}
     for message in messages:
-        content = getattr(message, "content", None)
+        content = _message_content(message)
         if not isinstance(content, list):
             rewritten.append(message)
             continue
         new_content: list[Any] = []
         changed = False
         for block in content:
-            replacement = await _describe_block(block, client)
+            source_key = _image_block_key(block)
+            if source_key is not None and source_key in description_cache:
+                replacement = description_cache[source_key]
+            else:
+                replacement = await _describe_block(block, client)
+                if source_key is not None and replacement is not None:
+                    description_cache[source_key] = replacement
             if replacement is None:
                 new_content.append(block)
             else:
                 new_content.append({"type": "text", "text": replacement})
                 changed = True
         if changed:
-            try:
-                message = message.model_copy(update={"content": new_content})
-            except AttributeError:
-                message = message.copy(update={"content": new_content})
+            message = _message_with_content(message, new_content)
         rewritten.append(message)
     return rewritten
+
+
+def normalize_payload_for_text_model_sync(
+    payload: Any,
+    *,
+    image_input: bool,
+    config: VisionModelConfig | None,
+) -> Any:
+    """Normalize one new model payload before it reaches Agent state.
+
+    This function is intentionally synchronous because ``AgentTurnRuntime``
+    invokes it inside its bounded worker thread. It only receives the current
+    turn payload, never the checkpointer history, so a description is not
+    rediscovered on every model call.
+    """
+    if image_input or not isinstance(payload, dict):
+        return payload
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return payload
+    if not any(_message_has_image(message) for message in messages):
+        return payload
+    if config is None:
+        rewritten = _rewrite_without_vision_sync(messages)
+    else:
+        client = VisionModelClient(config)
+        rewritten = _run_coroutine_sync(_normalize_with_client(messages, client))
+    normalized = dict(payload)
+    normalized["messages"] = rewritten
+    return normalized
+
+
+async def _normalize_with_client(
+    messages: list[Any], client: VisionModelClient
+) -> list[Any]:
+    await client.open()
+    try:
+        return await rewrite_messages(messages, client)
+    finally:
+        await client.close()
+
+
+def _message_content(message: Any) -> Any:
+    if isinstance(message, dict):
+        return message.get("content")
+    return getattr(message, "content", None)
+
+
+def _message_has_image(message: Any) -> bool:
+    content = _message_content(message)
+    return isinstance(content, list) and any(_is_image_block(block) for block in content)
+
+
+def _image_block_key(block: Any) -> str | None:
+    """Return a per-turn key for an image block without retaining image bytes."""
+    if not _is_image_block(block):
+        return None
+    block_type = str(block.get("type") or "").casefold()
+    if block_type == "image_url":
+        image_url = block.get("image_url")
+        source = image_url.get("url") if isinstance(image_url, dict) else image_url
+        return _image_dedupe_key(str(source), None) if isinstance(source, str) and source else None
+    source = block.get("source")
+    if isinstance(source, dict):
+        value = source.get("data")
+        if isinstance(value, str) and value:
+            return _image_dedupe_key(value, str(source.get("media_type") or ""))
+    value = block.get("base64")
+    return _image_dedupe_key(str(value), str(block.get("mime_type") or "")) if value else None
+
+
+def _message_with_content(message: Any, content: list[Any]) -> Any:
+    if isinstance(message, dict):
+        updated = dict(message)
+        updated["content"] = content
+        return updated
+    try:
+        return message.model_copy(update={"content": content})
+    except AttributeError:
+        return message.copy(update={"content": content})
 
 
 async def _describe_block(block: Any, client: VisionModelClient | None) -> str | None:
@@ -289,9 +377,30 @@ async def _describe_block(block: Any, client: VisionModelClient | None) -> str |
         return _unavailable()
 
 
-def _rewrite_without_vision(messages: list[Any]) -> list[Any]:
-    """Remove raw image blocks when no vision service is configured."""
-    return _run_coroutine_sync(rewrite_messages(messages, None))
+def _rewrite_without_vision_sync(messages: list[Any]) -> list[Any]:
+    """Remove raw image blocks without creating an event-loop worker."""
+    rewritten: list[Any] = []
+    for message in messages:
+        content = _message_content(message)
+        if not isinstance(content, list):
+            rewritten.append(message)
+            continue
+        new_content: list[Any] = []
+        changed = False
+        for block in content:
+            if _is_image_block(block):
+                new_content.append({"type": "text", "text": _unavailable()})
+                changed = True
+            else:
+                new_content.append(block)
+        rewritten.append(_message_with_content(message, new_content) if changed else message)
+    return rewritten
+
+
+def _is_image_block(block: Any) -> bool:
+    if not isinstance(block, dict):
+        return False
+    return str(block.get("type") or "").casefold() in {"image", "image_url", "input_image"}
 
 
 def _render_description(description: str) -> str:
@@ -334,7 +443,7 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _cache_key(source: str, extra_prompt: str | None) -> str:
+def _image_dedupe_key(source: str, extra_prompt: str | None) -> str:
     return hashlib.sha256(f"{source}\n{extra_prompt or ''}".encode()).hexdigest()
 
 

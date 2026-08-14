@@ -192,9 +192,18 @@ class AgentTurnRuntime:
         settings = context.settings
         safe_sink = _SafeEventSink(sink) if sink is not None else None
         try:
+            from synapse.integrations.describe_image import (
+                normalize_payload_for_text_model_sync,
+            )
+
+            payload = normalize_payload_for_text_model_sync(
+                context.request.payload,
+                image_input=bool(getattr(context.agent, "_coding_primary_image_input", False)),
+                config=getattr(context.agent, "_coding_vision_config", None),
+            )
             result = stream_runner(
                 context.agent,
-                context.request.payload,
+                payload,
                 context.request.mutable_config(),
                 token_stream=bool(getattr(settings, "token_stream", True)),
                 prefer_async=True,

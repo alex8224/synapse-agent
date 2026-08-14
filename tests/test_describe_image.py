@@ -11,6 +11,7 @@ from synapse.integrations.describe_image import (
     VisionModelClient,
     VisionModelConfig,
     VisionModelError,
+    normalize_payload_for_text_model_sync,
     rewrite_messages,
 )
 from synapse.models_registry import (
@@ -251,3 +252,66 @@ def test_sync_middleware_rewrite_works_inside_running_event_loop():
 
     asyncio.run(run())
     assert result[0][0].content[0]["text"].startswith("[image unavailable")
+
+
+def test_turn_normalization_describes_only_current_payload_once():
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect"},
+                    {"type": "image_url", "image_url": {"url": PNG_DATA_URL}},
+                    {"type": "image_url", "image_url": {"url": PNG_DATA_URL}},
+                ],
+            }
+        ]
+    }
+    config = VisionModelConfig(model="selected-vl")
+    with patch.object(
+        VisionModelClient,
+        "describe_data_url",
+        new=AsyncMock(return_value="one description"),
+    ) as describe:
+        normalized = normalize_payload_for_text_model_sync(
+            payload,
+            image_input=False,
+            config=config,
+        )
+
+    content = normalized["messages"][0]["content"]
+    assert [block["text"] for block in content if block.get("type") == "text"] == [
+        "inspect",
+        "[image]\none description\n[/image]",
+        "[image]\none description\n[/image]",
+    ]
+    assert describe.await_count == 1
+    assert payload["messages"][0]["content"][1]["type"] == "image_url"
+
+
+def test_turn_normalization_skips_images_for_native_model():
+    payload = {"messages": [{"role": "user", "content": [{"type": "image_url"}]}]}
+    assert (
+        normalize_payload_for_text_model_sync(
+            payload,
+            image_input=True,
+            config=VisionModelConfig(model="selected-vl"),
+        )
+        is payload
+    )
+
+
+def test_middleware_text_path_never_calls_vision_client():
+    from synapse.integrations.vision_middleware import build_describe_image_middleware
+
+    middleware = build_describe_image_middleware(
+        image_input=False,
+        config=VisionModelConfig(model="selected-vl"),
+    )
+    request = SimpleNamespace(
+        messages=[HumanMessage(content=[{"type": "image_url", "image_url": {"url": PNG_DATA_URL}}])]
+    )
+    request.override = lambda **kwargs: SimpleNamespace(messages=kwargs["messages"])
+    with patch.object(VisionModelClient, "describe_data_url", new=AsyncMock()) as describe:
+        middleware.wrap_model_call(request, lambda value: value.messages)
+    describe.assert_not_awaited()

@@ -74,6 +74,66 @@ def test_headless_run_completes_without_sink() -> None:
         runtime_loop.close()
 
 
+def test_runtime_normalizes_new_image_before_stream_runner() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from synapse.integrations.describe_image import VisionModelClient, VisionModelConfig
+
+    seen: list[Any] = []
+
+    def runner(agent: Any, payload: Any, *args: Any, **kwargs: Any) -> StreamResult:
+        del agent, args, kwargs
+        seen.append(payload)
+        return _completed_result()
+
+    base = _context(turn_id="image-turn")
+    image_payload = TurnRequest(
+        payload={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}
+                    ],
+                }
+            ]
+        },
+        config={"configurable": {"thread_id": base.thread_id}, "max_concurrency": 2},
+        thread_id=base.thread_id,
+    )
+    agent = SimpleNamespace(
+        _coding_primary_image_input=False,
+        _coding_vision_config=VisionModelConfig(model="selected-vl"),
+    )
+    context = TurnContext(
+        thread_id=base.thread_id,
+        turn_id=base.turn_id,
+        agent=agent,
+        settings=base.settings,
+        request=image_payload,
+    )
+    with patch.object(
+        VisionModelClient,
+        "describe_data_url",
+        new=AsyncMock(return_value="described"),
+    ) as describe, patch.object(VisionModelClient, "open", new=AsyncMock()), patch.object(
+        VisionModelClient, "close", new=AsyncMock()
+    ):
+        runtime_loop = AsyncRuntime(name="test-turn-image-normalization")
+        try:
+            result = AgentTurnRuntime(runtime_loop, stream_runner=runner).run(
+                context, timeout=3
+            )
+        finally:
+            runtime_loop.close()
+
+    assert result.status is TurnStatus.COMPLETED
+    assert seen[0]["messages"][0]["content"] == [
+        {"type": "text", "text": "[image]\ndescribed\n[/image]"}
+    ]
+    describe.assert_awaited_once()
+
+
 def test_cancel_reason_survives_event_compatibility_boundary() -> None:
     started = threading.Event()
     observed: list[str | None] = []
