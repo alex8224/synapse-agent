@@ -76,6 +76,9 @@ class _ItemSink:
     def tool_group_closed(self, group_id: str) -> None:
         self.events.append(("tool_group_closed", group_id))
 
+    def subagent_phase(self, parent_id: str, phase: str | None) -> None:
+        self.events.append(("subagent_phase", parent_id, phase))
+
     def info(self, message: str) -> None:
         self.events.append(("info", message))
 
@@ -427,6 +430,409 @@ def test_stream_agent_scopes_nested_tools_to_concurrent_parent_tasks():
     assert [event[1] for event in finished_parents] == ["g1-1", "g1-0"]
 
 
+class _RealNamespaceConcurrentAgent:
+    """Two subagents whose observed namespaces are ``tools:<uuid>``.
+
+    Mirrors the real LangGraph stream shape: the injected ``task_call:<id>``
+    checkpoint marker never reaches the event namespace, so attribution has to
+    fall back to binding each distinct namespace in first-appearance order.
+    """
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                },
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent B"},
+                                    "id": "task-b",
+                                },
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        for ns, call_id, intent in (
+            (("tools:uuid-a",), "read-a", "read for A"),
+            (("tools:uuid-b",), "read-b", "read for B"),
+        ):
+            yield (
+                ns,
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            _Chunk(
+                                type="ai",
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {"file_path": "/x", "intent": intent},
+                                        "id": call_id,
+                                    }
+                                ],
+                                id=f"nested-{call_id}",
+                            )
+                        ]
+                    }
+                },
+            )
+        for ns, call_id in (
+            (("tools:uuid-a",), "read-a"),
+            (("tools:uuid-b",), "read-b"),
+        ):
+            yield (
+                ns,
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="read_file",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+        for call_id in ("task-a", "task-b"):
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="task",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+
+
+def test_stream_agent_binds_real_uuid_namespaces_to_parent_tasks():
+    sink = _ItemSink()
+    stream_agent(
+        _RealNamespaceConcurrentAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    started = [event for event in sink.events if event[0] == "tool_item_started"]
+    parents = [event for event in started if event[3] == "task"]
+    nested = [event for event in started if event[3] == "read_file"]
+    assert [event[1] for event in parents] == ["g1-0", "g1-1"]
+    assert [event[4] for event in nested] == ["g1-0", "g1-1"]
+    assert nested[0][1] != nested[1][1]
+
+
+class _MultiSegmentNamespaceAgent:
+    """One subagent's model/tools events arrive under distinct namespace segments."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                },
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent B"},
+                                    "id": "task-b",
+                                },
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        for scope, call_id in (("tools:uuid-a", "read-a"), ("tools:uuid-b", "read-b")):
+            yield (
+                (scope, "model"),
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            _Chunk(
+                                type="ai",
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {"file_path": "/x", "intent": call_id},
+                                        "id": call_id,
+                                    }
+                                ],
+                                id=f"nested-{call_id}",
+                            )
+                        ]
+                    }
+                },
+            )
+        for scope, call_id in (("tools:uuid-a", "read-a"), ("tools:uuid-b", "read-b")):
+            yield (
+                (scope, "tools"),
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="read_file",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+        for call_id in ("task-a", "task-b"):
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            _Chunk(
+                                type="tool",
+                                name="task",
+                                content=f"done {call_id}",
+                                id=f"result-{call_id}",
+                                tool_call_id=call_id,
+                            )
+                        ]
+                    }
+                },
+            )
+
+
+def test_stream_agent_normalizes_multisegment_namespace_to_one_parent():
+    sink = _ItemSink()
+    stream_agent(
+        _MultiSegmentNamespaceAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    started = [event for event in sink.events if event[0] == "tool_item_started"]
+    nested = [event for event in started if event[3] == "read_file"]
+    assert [event[4] for event in nested] == ["g1-0", "g1-1"]
+
+
+class _SubagentStageAgent:
+    """One subagent that reasons, then answers, without nested tool calls."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                }
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            ("tools:uuid-a", "model"),
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            additional_kwargs={"reasoning_content": "thinking hard"},
+                            id="nested-reason",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            ("tools:uuid-a", "model"),
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="final answer",
+                            id="nested-answer",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "messages": [
+                        _Chunk(
+                            type="tool",
+                            name="task",
+                            content="done task-a",
+                            id="result-task-a",
+                            tool_call_id="task-a",
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_forwards_subagent_stage_without_payload():
+    sink = _ItemSink()
+    stream_agent(
+        _SubagentStageAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    phases = [event for event in sink.events if event[0] == "subagent_phase"]
+    assert [event[1:] for event in phases] == [
+        ("g1-0", "thinking"),
+        ("g1-0", "answering"),
+    ]
+
+
+class _SubagentStreamStageAgent:
+    """Drive the stage from nested message-mode token chunks."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "agent A"},
+                                    "id": "task-a",
+                                }
+                            ],
+                            id="parent-calls",
+                        )
+                    ]
+                }
+            },
+        )
+        chunks = (
+            _Chunk(type="ai", content="", additional_kwargs={"reasoning_content": "think"}),
+            _Chunk(type="ai", content="ans"),
+            _Chunk(
+                type="ai",
+                content="",
+                tool_call_chunks=[{"name": "read_file", "id": "read-1"}],
+            ),
+        )
+        for chunk in chunks:
+            yield (
+                ("tools:uuid-a",),
+                "messages",
+                (chunk, {"langgraph_node": "model"}),
+            )
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "messages": [
+                        _Chunk(
+                            type="tool",
+                            name="task",
+                            content="done",
+                            id="result-task-a",
+                            tool_call_id="task-a",
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_drives_subagent_stage_from_token_stream():
+    sink = _ItemSink()
+    stream_agent(
+        _SubagentStreamStageAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=True,
+        sink=sink,
+    )
+
+    phases = [event for event in sink.events if event[0] == "subagent_phase"]
+    assert [event[1:] for event in phases] == [
+        ("g1-0", "thinking"),
+        ("g1-0", "answering"),
+        ("g1-0", None),
+    ]
+
+
 class _UnattributedSubagentAgent:
     """Emit nested traffic without the task namespace metadata."""
 
@@ -498,7 +904,7 @@ class _UnattributedSubagentAgent:
         )
 
 
-def test_stream_agent_does_not_render_unattributed_nested_tools():
+def test_stream_agent_attributes_unscoped_nested_tool_to_remaining_running_task():
     sink = _ItemSink()
     stream_agent(
         _UnattributedSubagentAgent(),
@@ -511,7 +917,10 @@ def test_stream_agent_does_not_render_unattributed_nested_tools():
     )
 
     started = [event for event in sink.events if event[0] == "tool_item_started"]
-    assert [event[3] for event in started] == ["task", "task"]
+    assert [event[3] for event in started] == ["task", "task", "read_file"]
+    # task-a already finished, so the nested call belongs to task-b (g1-1).
+    nested = [event for event in started if event[3] == "read_file"]
+    assert nested[0][4] == "g1-1"
 
 
 class _SingleUnattributedSubagentAgent:

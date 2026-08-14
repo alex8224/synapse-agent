@@ -450,3 +450,191 @@ def test_tool_group_block_batch_flush_renders_once(monkeypatch: Any) -> None:
     block.flush()
     assert renders == 1
     assert len(block.items) == 2
+
+
+def _tool_item(
+    item_id: str,
+    *,
+    status: str = "done",
+    error: bool = False,
+    sub: bool = False,
+    parent_id: str | None = None,
+    name: str = "read_file",
+    category: str = "read",
+) -> Any:
+    from synapse.ui.timeline import ToolItem
+
+    return ToolItem(
+        id=item_id,
+        name=name,
+        category=category,
+        label=f"{name} {item_id}",
+        path=None,
+        status=status,
+        preview=None,
+        error=error,
+        sub=sub,
+        parent_id=parent_id,
+        call_id=item_id,
+    )
+
+
+def _group_parent_ids(groups: Any) -> list[str]:
+    return [parent.id for parent, _ in groups]
+
+
+def test_tool_group_block_overflow_keeps_newest_and_live_visible() -> None:
+    """Overflow folds oldest completed rows, never the running/latest ones."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    for i in range(1, 14):
+        block.add_item(_tool_item(f"n{i}"), render=False)
+    block.add_item(_tool_item("running", status="running"), render=False)
+
+    groups = block._grouped_items()
+    visible, overflow = block._select_visible_groups(groups)
+    ids = _group_parent_ids(visible)
+
+    assert "running" in ids, "the in-flight row must stay visible"
+    assert "n1" not in ids and "n2" not in ids, "oldest completed rows should fold"
+    assert "n13" in ids, "newest completed rows should remain"
+    assert len(visible) == 12
+    assert overflow == 2
+
+
+def test_tool_group_block_overflow_keeps_error_visible() -> None:
+    """An old errored row is never folded away by newer completed rows."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    block.add_item(_tool_item("e1"), render=False)
+    block.add_item(_tool_item("boom", error=True), render=False)
+    for i in range(2, 14):
+        block.add_item(_tool_item(f"n{i}"), render=False)
+    block.add_item(_tool_item("running", status="running"), render=False)
+
+    groups = block._grouped_items()
+    visible, overflow = block._select_visible_groups(groups)
+    ids = _group_parent_ids(visible)
+
+    assert "boom" in ids, "errored row must stay visible"
+    assert "running" in ids
+    assert overflow == 3
+
+
+def test_tool_group_block_groups_sub_items_by_parent() -> None:
+    """Interleaved subagent calls stay attached to their own parent row."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    block.add_item(_tool_item("taskA", name="task", category="task"), render=False)
+    block.add_item(
+        _tool_item("a1", sub=True, parent_id="taskA", name="read_file"),
+        render=False,
+    )
+    block.add_item(_tool_item("taskB", name="task", category="task"), render=False)
+    block.add_item(
+        _tool_item("b1", sub=True, parent_id="taskB", name="search_files"),
+        render=False,
+    )
+    block.add_item(
+        _tool_item("a2", sub=True, parent_id="taskA", name="read_file"),
+        render=False,
+    )
+
+    groups = block._grouped_items()
+    assert [(p.id, [s.id for s in subs]) for p, subs in groups] == [
+        ("taskA", ["a1", "a2"]),
+        ("taskB", ["b1"]),
+    ]
+
+
+def test_tool_group_block_drops_orphan_sub_items() -> None:
+    """A sub-item with an unknown parent is never misattributed."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    block.add_item(_tool_item("taskA", name="task", category="task"), render=False)
+    block.add_item(
+        _tool_item("orphan", sub=True, parent_id="ghost", name="read_file"),
+        render=False,
+    )
+    block.add_item(_tool_item("taskB", name="task", category="task"), render=False)
+
+    groups = block._grouped_items()
+    assert [(p.id, [s.id for s in subs]) for p, subs in groups] == [
+        ("taskA", []),
+        ("taskB", []),
+    ]
+
+
+def test_tool_group_block_shows_recent_three_subs_per_parent() -> None:
+    """Each subagent shows only its three most recent nested calls."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    subs = [
+        _tool_item(f"s{i}", sub=True, parent_id="taskA", name="read_file")
+        for i in range(1, 6)
+    ]
+
+    visible, overflow = block._visible_subs(subs)
+    assert [s.id for s in visible] == ["s3", "s4", "s5"]
+    assert overflow == 2
+
+
+def test_tool_group_block_keeps_live_subs_visible() -> None:
+    """Running/errored nested calls are never folded into the earlier line."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    subs = [
+        _tool_item("s1", sub=True, parent_id="taskA", status="running"),
+        _tool_item("s2", sub=True, parent_id="taskA", error=True, status="done"),
+        _tool_item("s3", sub=True, parent_id="taskA"),
+        _tool_item("s4", sub=True, parent_id="taskA"),
+        _tool_item("s5", sub=True, parent_id="taskA"),
+    ]
+
+    visible, overflow = block._visible_subs(subs)
+    ids = [s.id for s in visible]
+    assert "s1" in ids and "s2" in ids, "live nested calls must stay visible"
+    assert len(visible) == 3
+    assert overflow == 2
+
+
+def _rendered_lines(block: Any) -> list[str]:
+    cache = getattr(block, "_layout_cache", None)
+    if cache is not None:
+        cache.clear()
+    visual = block._render()
+    group = getattr(visual, "_renderable", visual)
+    renderables = getattr(group, "renderables", None) or ()
+    return [str(getattr(r, "plain", r)) for r in renderables]
+
+
+def test_tool_group_block_renders_subagent_phase() -> None:
+    """A running subagent row shows a transient thinking/answering stage."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    block.add_item(
+        _tool_item("taskA", name="task", category="task", status="running"),
+        render=False,
+    )
+
+    block.set_subagent_phase("taskA", "thinking", render=False)
+    block._render_block()
+    assert any("推理中" in line for line in _rendered_lines(block))
+
+    block.set_subagent_phase("taskA", "answering", render=False)
+    block._render_block()
+    lines = _rendered_lines(block)
+    assert any("回答中" in line for line in lines)
+    assert not any("推理中" in line for line in lines)
+
+    block.set_subagent_phase("taskA", None, render=False)
+    block._render_block()
+    lines = _rendered_lines(block)
+    assert not any("推理中" in line or "回答中" in line for line in lines)

@@ -40,6 +40,12 @@ def _tool_exclusion_middleware(excluded: set[str], *, allow_execute: bool = Fals
 
 
 _READONLY_TOOL_NAMES = {"write_file", "edit_file", "patch"}
+# deepagents built-in search tools; the inherited ``find_files``/``search_files``
+# replace them, so hide the duplicates from model requests.
+_BUILTIN_SEARCH_TOOL_NAMES = {"ls", "glob", "grep"}
+# Only these main-agent tools are inherited by subagents. Everything else
+# (session/goal/mcp/vision tools) stays out of the read-only subagent context.
+_INHERIT_TOOL_NAMES = {"find_files", "search_files"}
 
 
 _PARALLEL_HINT = (
@@ -62,6 +68,7 @@ def build_default_subagents(
     tool_output_disabled_types: list[str] | None = None,
     tool_output_transform_plugins: list[str] | None = None,
     enable_native_tool_output_compression: bool = True,
+    inherit_tools: list[Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -119,7 +126,8 @@ def build_default_subagents(
         reviewer["model"] = reviewer_model
     # Reviewer may run read-only shell (git diff, pytest -q) but not write.
     reviewer["middleware"] = _tool_exclusion_middleware(
-        _READONLY_TOOL_NAMES if isolate_tools else set(), allow_execute=True
+        (_READONLY_TOOL_NAMES if isolate_tools else set()) | _BUILTIN_SEARCH_TOOL_NAMES,
+        allow_execute=True,
     )
 
     researcher: dict[str, Any] = {
@@ -142,7 +150,7 @@ def build_default_subagents(
         researcher["model"] = researcher_model
     # Researcher is read-only and cannot run shell commands when isolated.
     researcher["middleware"] = _tool_exclusion_middleware(
-        _READONLY_TOOL_NAMES if isolate_tools else set(),
+        (_READONLY_TOOL_NAMES if isolate_tools else set()) | _BUILTIN_SEARCH_TOOL_NAMES,
         allow_execute=not isolate_tools,
     )
 
@@ -171,11 +179,25 @@ def build_default_subagents(
             build_tool_error_recovery_middleware(),
         ]
         result_reader = build_tool_result_reader_tool(tool_output_db_path)
+    inherited = [
+        tool
+        for tool in (inherit_tools or [])
+        if getattr(tool, "name", getattr(tool, "__name__", "")) in _INHERIT_TOOL_NAMES
+    ]
     for spec in (researcher, tester, reviewer):
         existing = list(spec.get("middleware") or [])
         spec["middleware"] = result_middleware + _intent_middleware() + existing
+        # Preserve tool inheritance. Specs without an explicit ``tools`` key
+        # inherit the allow-listed main-agent tools; explicit (possibly empty)
+        # lists stay as-is (tester uses ``[]`` to stay on built-ins).
+        # ``result_reader`` is appended, never substituted.
+        own_tools = spec.get("tools")
+        if own_tools is None and inherit_tools is None:
+            continue
+        base = list(own_tools) if own_tools is not None else list(inherited)
         if result_reader is not None:
-            spec["tools"] = [*list(spec.get("tools") or []), result_reader]
+            base.append(result_reader)
+        spec["tools"] = base
 
     return [researcher, tester, reviewer]
 

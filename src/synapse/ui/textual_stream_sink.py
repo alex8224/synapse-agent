@@ -462,6 +462,10 @@ class TextualStreamSink:
         summary = summarize_categories(self._legacy_names, running=True)
         self._call("set_activity", "tools", summary, False)
 
+    def subagent_phase(self, parent_id: str, phase: str | None) -> None:
+        """Forward a transient subagent stage to the transcript host."""
+        self._call("subagent_phase", parent_id, phase)
+
     def tool_item_started(self, item: ToolItem) -> None:
         if not self._group_open:
             self._group_open = True

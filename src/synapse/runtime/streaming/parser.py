@@ -171,6 +171,11 @@ def stream_agent(
     sub_scope_seq: dict[tuple[str, ...], int] = {}
     parent_task_items: dict[str, str] = {}
     current_parent_task_ids: set[str] = set()
+    # Most stream adapters surface the subagent namespace as ``tools:<uuid>``
+    # without the injected ``task_call:<id>`` marker. Bind each distinct
+    # namespace to the oldest still-running, not-yet-bound parent task.
+    ns_to_parent_id: dict[tuple[str, ...], str] = {}
+    bound_parent_ids: set[str] = set()
 
     def _note_usage(*, estimated: bool = False, force: bool = False) -> None:
         nonlocal last_live_rate_push
@@ -233,10 +238,37 @@ def stream_agent(
         if call_id:
             return parent_task_items.get(call_id)
 
-        # Some stream adapters omit the injected checkpoint namespace. Only a
-        # batch that launched exactly one parent task is safe to infer. Once a
-        # batch was concurrent, late events must never be reassigned to the last
-        # remaining task.
+        # Some stream adapters omit the injected checkpoint namespace. The
+        # observed namespace is ``tools:<uuid>`` per subagent run, so bind the
+        # first appearance of each distinct namespace to the oldest running,
+        # not-yet-bound parent task. This keeps concurrent subagents attached
+        # to their own row instead of the first or last one.
+        #
+        # Normalize to the subagent scope (first namespace segment) so a
+        # subagent's ``model`` and ``tools`` node events share one binding even
+        # when the adapter emits them as distinct namespace segments.
+        key = _sub_scope(namespace)
+        if key:
+            bound = ns_to_parent_id.get(key)
+            if bound is not None:
+                if any(
+                    it.id == bound and it.status == "running" for it in pending_tool_items
+                ):
+                    return bound
+                # Stale mapping: the parent finished. Rebind on the next call.
+                ns_to_parent_id.pop(key, None)
+            for item in pending_tool_items:
+                if (
+                    item.name == "task"
+                    and not item.sub
+                    and item.status == "running"
+                    and item.id not in bound_parent_ids
+                ):
+                    bound_parent_ids.add(item.id)
+                    ns_to_parent_id[key] = item.id
+                    return item.id
+
+        # Legacy inference: only safe when a single task is in flight.
         task_items = [
             item for item in pending_tool_items if item.name == "task" and not item.sub
         ]
@@ -418,7 +450,20 @@ def stream_agent(
                     continue
 
                 if in_sub:
-                    # Nested token stream is high-frequency; keep sticky intent.
+                    # Drive the per-subagent stage from the nested token stream.
+                    # The reasoning/answer payload itself is never surfaced.
+                    sub_reasoning = _extract_reasoning(msg_chunk)
+                    sub_text = _chunk_text(msg_chunk)
+                    sub_tool_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
+                    if sub_tool_chunks or sub_text or sub_reasoning:
+                        parent_id = _sub_parent_id(ns)
+                        if parent_id is not None:
+                            if sub_tool_chunks:
+                                sink.subagent_phase(parent_id, None)
+                            elif sub_text:
+                                sink.subagent_phase(parent_id, "answering")
+                            elif sub_reasoning:
+                                sink.subagent_phase(parent_id, "thinking")
                     continue
 
                 reasoning_delta = _extract_reasoning(msg_chunk)
@@ -649,10 +694,10 @@ def stream_agent(
                         continue
 
                     if in_sub:
+                        parent_id = _sub_parent_id(ns)
                         if calls:
                             scope = _sub_scope(ns)
                             labels = sub_tool_labels.setdefault(scope, {})
-                            parent_id = _sub_parent_id(ns)
                             for call in calls:
                                 label = human_tool_label(call)
                                 cid = _tool_call_id(call)
@@ -684,7 +729,17 @@ def stream_agent(
                                     item.parent_id = parent_id
                                     pending_tool_items.append(item)
                                     sink.tool_item_started(item)
-                        # Nested free-text: keep last tool intent sticky.
+                            # Tool execution replaces the thinking/answering stage.
+                            if parent_id is not None:
+                                sink.subagent_phase(parent_id, None)
+                        elif parent_id is not None:
+                            # Free-text stage: surface only the stage, never the
+                            # reasoning/answer payload itself. Hidden-reasoning
+                            # gateways still report a reasoning token count.
+                            if text:
+                                sink.subagent_phase(parent_id, "answering")
+                            elif reasoning or _reasoning_token_count(msg):
+                                sink.subagent_phase(parent_id, "thinking")
                         continue
 
                     r_tokens = _reasoning_token_count(msg)

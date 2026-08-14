@@ -162,6 +162,14 @@ class InstrumentedStreamSink:
         self.accumulator.emit(TurnEventKind.ACTIVITY_STOPPED, ActivityPayload(phase="idle"))
         self._forward("activity_stop")
 
+    def subagent_phase(self, parent_id: str, phase: str | None) -> None:
+        """Forward a transient subagent stage to the renderer.
+
+        Live-only UI state: intentionally not emitted as a semantic event, so
+        it never replays into history or the transcript log.
+        """
+        self._forward("subagent_phase", parent_id, phase)
+
     def write_reasoning(self, text: str) -> None:
         self.accumulator.reasoning_delta(text)
         self.accumulator.emit(TurnEventKind.REASONING_DELTA, TextPayload(text=text))

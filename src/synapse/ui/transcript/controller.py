@@ -565,6 +565,12 @@ class TranscriptController:
         self.state.last_tool_summary = summary
         self._render_live_tools()
 
+    def subagent_phase(self, parent_id: str, phase: str | None) -> None:
+        """Update a subagent row's transient thinking/answering stage."""
+        block = self.state.live_tool_block
+        if block is not None:
+            block.set_subagent_phase(parent_id, phase)
+
     def write_tool_item(self, item: ToolItem) -> None:
         st = self.state
         if st.live_tool_block is None:

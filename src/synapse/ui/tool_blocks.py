@@ -133,17 +133,21 @@ class TodoChecklist(Static):
 class ToolGroupBlock(SelectableStatic):
     """A timeline tool group with in-place collapse and preview updates."""
 
+    # Top-level tool rows kept before folding the oldest completed ones.
     _MAX_EXPANDED_ROWS = 12
+    # Nested calls shown per subagent; older calls fold into "... and N earlier".
+    _MAX_SUB_ROWS = 3
     _HEADER_INDENT = "  "
     _ITEM_INDENT = "   "
     _SUB_ITEM_INDENT = "      "
-    _MORE_INDENT = "   "
     _TODO_INDENT = "    "
+    _PHASE_LABELS = {"thinking": "推理中", "answering": "回答中"}
 
     def __init__(self, summary: str = "tools") -> None:
         self.summary = summary or "tools"
         self.items: list[ToolItem] = []
         self.collapsed = False
+        self._phases: dict[str, str] = {}
         super().__init__()
         self._render_block()
 
@@ -154,6 +158,88 @@ class ToolGroupBlock(SelectableStatic):
         if running is None:
             running = any(item.status == "running" for item in self.items)
         self.summary = summarize_items(self.items, running=running)
+
+    def _grouped_items(self) -> list[tuple[ToolItem, list[ToolItem]]]:
+        """Return ordered ``(parent, sub_items)`` groups.
+
+        Sub-items are attached to their ``parent_id`` owner rather than their
+        flat list position, so concurrent subagents never bleed into each
+        other. Orphan sub-items (unknown parent) are dropped instead of being
+        misattributed to the first or last group.
+        """
+        subs_by_parent: dict[str, list[ToolItem]] = {}
+        for item in self.items:
+            if item.sub and item.parent_id:
+                subs_by_parent.setdefault(item.parent_id, []).append(item)
+        groups: list[tuple[ToolItem, list[ToolItem]]] = []
+        for item in self.items:
+            if item.sub:
+                continue
+            groups.append((item, subs_by_parent.get(item.id, [])))
+        return groups
+
+    def _select_visible_groups(
+        self, groups: list[tuple[ToolItem, list[ToolItem]]]
+    ) -> tuple[list[tuple[ToolItem, list[ToolItem]]], int]:
+        """Keep live activity visible when the group overflows.
+
+        Fold the *oldest completed* top-level rows into the "... and N
+        earlier" line instead of hiding the newest ones. Running and errored
+        rows (including any still-running nested call) are kept up to the cap,
+        preferring the newest live rows.
+        """
+
+        def live(group: tuple[ToolItem, list[ToolItem]]) -> bool:
+            parent, subs = group
+            return bool(
+                parent.error
+                or parent.status == "running"
+                or any(s.error or s.status == "running" for s in subs)
+            )
+
+        cap = self._MAX_EXPANDED_ROWS
+        if len(groups) <= cap:
+            return groups, 0
+
+        order = {id(parent): i for i, (parent, _) in enumerate(groups)}
+        live_groups = [g for g in groups if live(g)]
+        done_groups = [g for g in groups if not live(g)]
+
+        visible = list(live_groups)
+        if len(visible) > cap:
+            visible = visible[-cap:]
+        else:
+            room = cap - len(visible)
+            if room > 0 and done_groups:
+                visible = visible + done_groups[-room:]
+
+        visible.sort(key=lambda g: order[id(g[0])])
+        return visible, len(groups) - len(visible)
+
+    def _visible_subs(self, subs: list[ToolItem]) -> tuple[list[ToolItem], int]:
+        """Keep live nested calls visible, then the newest completed ones.
+
+        Mirrors the top-level policy: running/errored sub-calls are never
+        folded into "... and N earlier"; the remaining slots go to the most
+        recent completed calls.
+        """
+        if len(subs) <= self._MAX_SUB_ROWS:
+            return list(subs), 0
+
+        order = {id(sub): i for i, sub in enumerate(subs)}
+        live = [sub for sub in subs if sub.error or sub.status == "running"]
+        done = [sub for sub in subs if not sub.error and sub.status != "running"]
+
+        visible = list(live)
+        if len(visible) > self._MAX_SUB_ROWS:
+            visible = visible[-self._MAX_SUB_ROWS :]
+        else:
+            room = self._MAX_SUB_ROWS - len(visible)
+            if room > 0 and done:
+                visible = visible + done[-room:]
+
+        visible.sort(key=lambda sub: order[id(sub)])
+        return visible, len(subs) - len(visible)
 
     def _render_block(self) -> None:
         fg = _theme_color("fg", _DEFAULT_FG)
@@ -166,12 +252,14 @@ class ToolGroupBlock(SelectableStatic):
             Text(f"{self._HEADER_INDENT}{mark}  {self.summary}", style=f"{fg} on {bar}")
         ]
         if not self.collapsed:
-            visible = self.items
-            overflow = 0
-            if len(self.items) > self._MAX_EXPANDED_ROWS:
-                visible = self.items[: self._MAX_EXPANDED_ROWS]
-                overflow = len(self.items) - self._MAX_EXPANDED_ROWS
-            for item in visible:
+            groups = self._grouped_items()
+            visible_groups, overflow = self._select_visible_groups(groups)
+            if overflow:
+                lines.append(
+                    Text(f"{self._ITEM_INDENT}… and {overflow} earlier", style=muted)
+                )
+
+            def render_item(item: ToolItem, indent: str) -> None:
                 if item.error:
                     style = "red"
                     bullet = "✗"
@@ -182,7 +270,6 @@ class ToolGroupBlock(SelectableStatic):
                     style = green
                     bullet = "✓"
                 label = item.label or item.name
-                indent = self._SUB_ITEM_INDENT if item.sub else self._ITEM_INDENT
                 if " " in label and item.category in {"read", "edit", "list"}:
                     head, tail = label.split(" ", 1)
                     row = Text(f"{indent}{bullet}  {head} ", style=style)
@@ -192,10 +279,32 @@ class ToolGroupBlock(SelectableStatic):
                     lines.append(Text(f"{indent}{bullet}  {label}", style=style))
                 if is_todo_tool(item.name) or str(item.label or "").startswith("Todos "):
                     lines.extend(
-                        render_todo_checklist_from_preview(item.preview, indent=self._TODO_INDENT)
+                        render_todo_checklist_from_preview(
+                            item.preview, indent=self._TODO_INDENT
+                        )
                     )
-            if overflow:
-                lines.append(Text(f"{self._MORE_INDENT}… and {overflow} more", style=muted))
+
+            for parent, subs in visible_groups:
+                render_item(parent, self._ITEM_INDENT)
+                phase = self._phases.get(parent.id)
+                if phase and parent.status == "running":
+                    label = self._PHASE_LABELS.get(phase, phase)
+                    lines.append(
+                        Text(
+                            f"{self._SUB_ITEM_INDENT}◈ {label}…",
+                            style=f"italic {muted}",
+                        )
+                    )
+                visible_subs, sub_overflow = self._visible_subs(subs)
+                if sub_overflow:
+                    lines.append(
+                        Text(
+                            f"{self._SUB_ITEM_INDENT}… and {sub_overflow} earlier",
+                            style=muted,
+                        )
+                    )
+                for sub in visible_subs:
+                    render_item(sub, self._SUB_ITEM_INDENT)
         lines.append(Text(""))
         self.update(Group(*lines))
 
@@ -204,6 +313,26 @@ class ToolGroupBlock(SelectableStatic):
             self._sync_summary_from_items()
         else:
             self.summary = summary or "tools"
+        if render:
+            self._render_block()
+
+    def set_subagent_phase(
+        self, parent_id: str, phase: str | None, *, render: bool = True
+    ) -> None:
+        """Set or clear a subagent row's transient thinking/answering stage.
+
+        No-op when the stage is unchanged so high-frequency token streams only
+        trigger a re-render on actual transitions.
+        """
+        current = self._phases.get(parent_id)
+        if phase is None:
+            if parent_id not in self._phases:
+                return
+            self._phases.pop(parent_id, None)
+        else:
+            if current == phase:
+                return
+            self._phases[parent_id] = phase
         if render:
             self._render_block()
 
@@ -301,10 +430,18 @@ class ToolGroupBlock(SelectableStatic):
         mark = "▸" if self.collapsed else "▾"
         lines = [f"{mark}  {self.summary}"]
         if not self.collapsed:
-            for item in self.items:
-                label = item.label or item.name
-                status = "err" if item.error else item.status
-                lines.append(f"  {label} [{status}]")
+            visible_groups, overflow = self._select_visible_groups(self._grouped_items())
+            if overflow:
+                lines.append(f"  … and {overflow} earlier")
+            for parent, subs in visible_groups:
+                parent_status = "err" if parent.error else (parent.status or "done")
+                lines.append(f"  {parent.label or parent.name} [{parent_status}]")
+                visible_subs, sub_overflow = self._visible_subs(subs)
+                if sub_overflow:
+                    lines.append(f"    … and {sub_overflow} earlier")
+                for sub in visible_subs:
+                    sub_status = "err" if sub.error else (sub.status or "done")
+                    lines.append(f"    {sub.label or sub.name} [{sub_status}]")
         return "\n".join(lines)
 
     def on_enter(self, event: Enter) -> None:

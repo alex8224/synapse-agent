@@ -269,18 +269,6 @@ def build_coding_agent(
         memory_paths = [p for p in memory_paths if Path(p).exists() and Path(p).name != "AGENTS.md"]
     skills_paths = settings.resolved_skills_paths(project_root)
 
-    with span("subagents"):
-        subagents = build_default_subagents(
-            enabled=settings.enable_subagents,
-            tester_model=settings.subagent_tester_model,
-            reviewer_model=settings.subagent_reviewer_model,
-            isolate_tools=True,
-            tool_output_db_path=settings.resolved_tool_output_db_path(),
-            tool_output_transform_threshold_bytes=settings.tool_output_transform_threshold_bytes,
-            tool_output_disabled_types=settings.tool_output_disabled_types,
-            tool_output_transform_plugins=settings.tool_output_transform_plugins,
-            enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
-        )
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
         readonly=settings.readonly,
@@ -427,6 +415,20 @@ def build_coding_agent(
             config=vision_config,
         )
     )
+
+    with span("subagents"):
+        subagents = build_default_subagents(
+            enabled=settings.enable_subagents,
+            tester_model=settings.subagent_tester_model,
+            reviewer_model=settings.subagent_reviewer_model,
+            isolate_tools=True,
+            tool_output_db_path=settings.resolved_tool_output_db_path(),
+            tool_output_transform_threshold_bytes=settings.tool_output_transform_threshold_bytes,
+            tool_output_disabled_types=settings.tool_output_disabled_types,
+            tool_output_transform_plugins=settings.tool_output_transform_plugins,
+            enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
+            inherit_tools=tools,
+        )
 
     goals_enabled = bool(getattr(settings, "enable_goals", True))
     if goals_enabled:
