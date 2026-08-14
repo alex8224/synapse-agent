@@ -13,6 +13,36 @@ use pyo3::types::{PyDict, PyList};
 const MAX_CONTEXT_LINES: usize = 10;
 const MAX_MATCH_TEXT_CHARS: usize = 4_000;
 
+/// Directory names pruned from every search walk, matching the model-facing
+/// contract that `glob`/`grep` automatically exclude build artifacts and
+/// caches. These are enforced here instead of relying on `.gitignore`, which
+/// can be incomplete (and can never exclude `.git` itself).
+const EXCLUDED_DIR_NAMES: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    ".jj",
+    "node_modules",
+    ".node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+];
+
+/// Returns true when an entry should be pruned from the walk.
+fn is_excluded(entry: &ignore::DirEntry) -> bool {
+    // Keep the walk root; only prune nested entries below it.
+    if entry.depth() == 0 {
+        return false;
+    }
+    let name = entry.file_name().to_str().unwrap_or("");
+    if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+        return EXCLUDED_DIR_NAMES.contains(&name);
+    }
+    // Files: skip compiled Python bytecode explicitly listed in the contract.
+    name.ends_with(".pyc")
+}
+
 #[derive(Debug)]
 struct SearchError(String);
 
@@ -41,6 +71,7 @@ fn build_walker(base_path: &Path) -> ignore::Walk {
         .git_exclude(true)
         .ignore(true)
         .follow_links(false)
+        .filter_entry(|entry| !is_excluded(entry))
         .build()
 }
 
@@ -190,6 +221,13 @@ pub(crate) fn grep(
         }
         if total_matches > max_results || matches.len() > max_results {
             truncated = true;
+        }
+        // Stop walking once we have collected enough matches. Without this the
+        // walker keeps searching every remaining file just to count matches,
+        // which dominates cost on large trees with a common pattern.
+        if matches.len() >= max_results {
+            truncated = true;
+            break;
         }
     }
 
