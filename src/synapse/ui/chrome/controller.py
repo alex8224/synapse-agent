@@ -126,9 +126,12 @@ class ChromeController:
         try:
             from types import SimpleNamespace
 
-            from synapse.models.registry import format_model_status, registry_from_settings
+            from synapse.models.registry import format_model_status
 
-            prof = registry_from_settings(app.settings).get(profile)
+            registry = getattr(agent, "_coding_model_registry", None)
+            if registry is None:
+                return model_status_label(app.settings)
+            prof = registry.get(profile)
             view = SimpleNamespace(
                 model=str(getattr(prof, "model", None) or profile),
                 enable_thinking=getattr(app.settings, "enable_thinking", True),
@@ -479,22 +482,52 @@ class ChromeController:
         )
 
     def refresh_git_chrome(self) -> None:
-        """Re-probe local git status for the topbar (cheap, local-only)."""
+        """UI-thread entry: coalesce and schedule an off-thread git probe.
+
+        ``git`` subprocess probes are cheap individually but run up to four
+        times in a row (rev-parse / status / rev-list / shortstat), each with
+        a sub-second timeout. Running them on Textual's event loop stalls the
+        UI; this entry only marks state and defers to the worker.
+        """
+        app = self._app
+        if app._git_chrome_refresh_pending:
+            app._git_chrome_refresh_dirty = True
+            return
+        app._git_chrome_refresh_pending = True
+        app._refresh_git_chrome_bg()
+
+    def refresh_git_chrome_bg(self) -> None:
+        """Worker body: probe git outside Textual's event loop, then apply."""
         app = self._app
         try:
             ws = Path(getattr(app.settings, "workspace", Path.cwd()) or Path.cwd())
-            app._git_chrome = probe_git_branch_chrome(ws)
-            app._git_branch = app._git_chrome.name if app._git_chrome else None
-        except Exception:  # noqa: BLE001
-            pass
+            info = probe_git_branch_chrome(ws)
+        except Exception:  # noqa: BLE001 - chrome probing is best-effort
+            info = None
+        try:
+            app.call_from_thread(self.apply_git_chrome, info)
+        except RuntimeError:
+            # Synchronous test hosts reject cross-thread scheduling.
+            self.apply_git_chrome(info)
+
+    def apply_git_chrome(self, info: Any) -> None:
+        """UI-thread apply step for a completed git probe."""
+        app = self._app
+        app._git_chrome_refresh_pending = False
+        dirty = bool(app._git_chrome_refresh_dirty)
+        app._git_chrome_refresh_dirty = False
+        app._git_chrome = info
+        app._git_branch = info.name if info is not None else None
         try:
             bar = app.query_one("#topbar", TopBar)
             bar.invalidate_files_cache()
-            if not (app._git_chrome and app._git_chrome.dirty):
+            if not (info and info.dirty):
                 bar.dismiss()
         except Exception:  # noqa: BLE001
             pass
         app._refresh_topbar()
+        if dirty:
+            self.refresh_git_chrome()
 
     # -- install default components -------------------------------------------
 
@@ -752,11 +785,28 @@ class ChromeController:
 
     def codex_usage_label(self) -> str | Text:
         """Render cached Codex usage; never block the UI render path."""
+        if not self.has_codex_oauth_profile():
+            return ""
         return self._app._codex.label
 
     def has_codex_oauth_profile(self) -> bool:
-        """Return whether the currently selected profile uses Codex OAuth."""
-        return self._app._codex.has_oauth_profile()
+        """Return whether the selected profile uses Codex OAuth.
+
+        Reuses the session agent's registry and caches the verdict on the
+        Codex service so the label path never touches the filesystem.
+        """
+        agent = self._current_agent()
+        registry = getattr(agent, "_coding_model_registry", None)
+        if registry is None:
+            self._app._codex.oauth_profile = False
+            return False
+        try:
+            selected = getattr(agent, "_coding_model_profile", None) or registry.default
+            value = registry.get(selected).auth == "openai_oauth"
+        except Exception:  # noqa: BLE001
+            value = False
+        self._app._codex.oauth_profile = value
+        return value
 
     def bottombar_thread_label(self) -> str:
         """Short thread id for the bottombar right slot."""
@@ -876,8 +926,9 @@ class ChromeController:
     def refresh_codex_usage(self, *, force: bool = False) -> None:
         """Start a background usage fetch when an OAuth profile is active."""
         app = self._app
+        oauth = self.has_codex_oauth_profile()
         if not app._codex.should_refresh(force=force):
-            if not app._codex.has_oauth_profile():
+            if not oauth:
                 app._codex.invalidate()
                 app._refresh_bottombar()
             return

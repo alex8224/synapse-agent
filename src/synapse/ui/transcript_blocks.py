@@ -24,10 +24,21 @@ _DEFAULT_DIM = "#9aa0a6"
 _DEFAULT_FG = "#e8eaed"
 _DEFAULT_THOUGHT_MARK = "◆"
 _DEFAULT_MARKDOWN_MAX_CHARS = 24_000
+# Below this length Markdown parsing is cheap enough to stay synchronous and
+# keep first paint immediate; longer attached answers render on a worker.
+_MARKDOWN_ASYNC_MIN_CHARS = 3_000
 _MERMAID_RENDER_WORKERS = 2
 _mermaid_render_executor = ThreadPoolExecutor(
     max_workers=_MERMAID_RENDER_WORKERS,
     thread_name_prefix="synapse-mermaid-png",
+)
+# Rich Markdown parsing + LaTeX preprocessing is CPU-bound and runs on every
+# sealed answer. A small dedicated pool keeps that work off the Textual event
+# loop; the renderable itself is pure Python data and can cross threads.
+_MARKDOWN_RENDER_WORKERS = 2
+_markdown_render_executor = ThreadPoolExecutor(
+    max_workers=_MARKDOWN_RENDER_WORKERS,
+    thread_name_prefix="synapse-markdown",
 )
 
 
@@ -36,6 +47,11 @@ def _render_mermaid_png(source: str) -> bytes | None:
     from synapse.ui.rendering import render_mermaid_png
 
     return render_mermaid_png(source)
+
+
+def _render_markdown_renderable(body: str) -> Any:
+    """Build a Rich Markdown renderable in a background worker."""
+    return render_markdown(body)
 
 
 def _resolve_color(color: _Color | None, fallback: str, theme_attribute: str) -> str:
@@ -212,6 +228,7 @@ class AnswerBlock(SelectableStatic):
         self._fg_color = fg_color
         self._markdown_max_chars = max(1, int(markdown_max_chars))
         self._mermaid_render_generation = 0
+        self._markdown_render_generation = 0
         super().__init__()
         self._render_block()
 
@@ -249,11 +266,25 @@ class AnswerBlock(SelectableStatic):
             from synapse.ui.rendering import mmdr_available
 
             fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
-            widgets: list[Any] = []
-            enriched = False
+            # Cheap preflight: only build child widgets when the body actually
+            # contains mermaid or block math. Plain Markdown answers return []
+            # here without rendering and are handled by the background markdown
+            # path instead — the old code rendered the full body and discarded
+            # the result for every plain answer, doubling the seal cost.
+            has_enriched = False
             for segment in split_mermaid_fences(body):
                 if segment.kind == "mermaid":
-                    enriched = True
+                    has_enriched = True
+                    break
+                if any(sub.kind == "math" for sub in split_block_math(segment.source)):
+                    has_enriched = True
+                    break
+            if not has_enriched:
+                return []
+
+            widgets: list[Any] = []
+            for segment in split_mermaid_fences(body):
+                if segment.kind == "mermaid":
                     if mermaid_pixel_renderer_active() and mmdr_available():
                         widget = _MermaidRenderPlaceholder(segment.source)
                     else:
@@ -265,12 +296,11 @@ class AnswerBlock(SelectableStatic):
                     continue
                 for sub in split_block_math(segment.source):
                     if sub.kind == "math":
-                        enriched = True
                         widget = make_math_widget(sub.source, color=fg)
                         widgets.append(widget or MathFallbackBlock(sub.source))
                     elif sub.source.strip():
                         widgets.append(Static(render_markdown(sub.source)))
-            return widgets if enriched else []
+            return widgets
         except Exception:  # noqa: BLE001 - composite rendering is optional
             return []
 
@@ -364,9 +394,48 @@ class AnswerBlock(SelectableStatic):
             return
         self._sync_sealed_widgets([])
         if len(body) > self._markdown_max_chars:
-            renderable: Any = Text(body, style=fg)
+            self.update(Group(Text(body, style=fg), Text("")))
+            return
+        # Only long, already-attached answers defer Markdown parsing + LaTeX
+        # preprocessing off the Textual event loop. Short bodies and off-screen
+        # construction stay synchronous so first paint is immediate.
+        if self.is_attached and len(body) >= _MARKDOWN_ASYNC_MIN_CHARS:
+            self._schedule_markdown_render(body)
         else:
-            renderable = render_markdown(body)
+            self.update(Group(render_markdown(body), Text("")))
+
+    def _schedule_markdown_render(self, body: str) -> None:
+        """Submit one Markdown render to the worker pool and wire the callback."""
+        self._markdown_render_generation += 1
+        generation = self._markdown_render_generation
+        self.update(Group(Text(""), Text("")))
+        try:
+            future = _markdown_render_executor.submit(_render_markdown_renderable, body)
+        except Exception:  # noqa: BLE001 - executor shutdown fallback
+            self.update(Group(render_markdown(body), Text("")))
+            return
+        future.add_done_callback(
+            lambda completed, expected=generation: (
+                self._deliver_markdown(completed, expected)
+            )
+        )
+
+    def _deliver_markdown(self, future: Future[Any], generation: int) -> None:
+        """Schedule a completed background markdown render back onto the UI thread."""
+        try:
+            renderable = future.result()
+            self.app.call_from_thread(self._apply_markdown, renderable, generation)
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            pass
+
+    def _apply_markdown(self, renderable: Any, generation: int) -> None:
+        """Replace the placeholder once the still-current render finishes."""
+        if (
+            generation != self._markdown_render_generation
+            or not self.is_attached
+            or self.live
+        ):
+            return
         self.update(Group(renderable, Text("")))
 
 

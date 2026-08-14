@@ -273,9 +273,7 @@ def test_mcp_snapshot_ignores_newer_pool_when_agent_built_with_older_tools() -> 
     assert deferred is False
 
 
-def test_current_session_model_label_uses_frozen_agent_profile(
-    monkeypatch: Any,
-) -> None:
+def test_current_session_model_label_uses_frozen_agent_profile() -> None:
     app = _App()
     app.thread_id = "thread-1"
     app.settings = SimpleNamespace(
@@ -285,13 +283,6 @@ def test_current_session_model_label_uses_frozen_agent_profile(
         reasoning_effort="high",
         openai_base_url=None,
     )
-    app._turn = SimpleNamespace(
-        runtime_for=lambda thread_id: SimpleNamespace(
-            agent=SimpleNamespace(_coding_model_profile="claude")
-        )
-        if thread_id == "thread-1"
-        else None
-    )
     fake_profile = SimpleNamespace(
         name="claude", model="claude-sonnet-4", enable_thinking=True, reasoning_effort="high"
     )
@@ -299,8 +290,15 @@ def test_current_session_model_label_uses_frozen_agent_profile(
     fake_registry.get = lambda name: fake_profile if name == "claude" else (_ for _ in ()).throw(
         KeyError(name)
     )
-    monkeypatch.setattr(
-        "synapse.models.registry.registry_from_settings", lambda settings: fake_registry
+    app._turn = SimpleNamespace(
+        runtime_for=lambda thread_id: SimpleNamespace(
+            agent=SimpleNamespace(
+                _coding_model_profile="claude",
+                _coding_model_registry=fake_registry,
+            )
+        )
+        if thread_id == "thread-1"
+        else None
     )
 
     label = ChromeController(app).current_session_model_label()
@@ -326,3 +324,63 @@ def test_current_session_model_label_falls_back_to_settings_without_runtime() ->
 
     assert "gpt-4.1" in label
     assert "high" in label
+
+
+def test_refresh_git_chrome_schedules_worker_without_probing_inline() -> None:
+    """The git subprocess probe must run off-thread, never inline on submit/turn end."""
+    app = _App()
+    app._git_chrome_refresh_pending = False
+    app._git_chrome_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_git_chrome_bg = lambda: scheduled.append("probe")
+    controller = ChromeController(app)
+
+    controller.refresh_git_chrome()
+
+    assert app._git_chrome_refresh_pending is True
+    assert scheduled == ["probe"]
+
+
+def test_refresh_git_chrome_coalesces_when_pending() -> None:
+    """Repeated requests while a probe is in flight coalesce into one follow-up."""
+    app = _App()
+    app._git_chrome_refresh_pending = True
+    app._git_chrome_refresh_dirty = False
+    scheduled: list[str] = []
+    app._refresh_git_chrome_bg = lambda: scheduled.append("probe")
+    controller = ChromeController(app)
+
+    controller.refresh_git_chrome()
+    controller.refresh_git_chrome()
+
+    assert app._git_chrome_refresh_dirty is True
+    assert scheduled == []
+
+
+def test_apply_git_chrome_updates_state_and_reloads_when_dirty() -> None:
+    """The applied snapshot refreshes the topbar and re-runs when marked dirty."""
+    app = _App()
+    app._git_chrome_refresh_pending = True
+    app._git_chrome_refresh_dirty = True
+    app._git_chrome = None
+    app._git_branch = None
+    app._refresh_topbar = lambda: app.calls.append("topbar")
+    bar = SimpleNamespace(
+        invalidate_files_cache=lambda: None,
+        dismiss=lambda: None,
+    )
+    app.query_one = lambda selector, widget_cls: bar
+    scheduled: list[str] = []
+    app._refresh_git_chrome_bg = lambda: scheduled.append("probe")
+    controller = ChromeController(app)
+
+    info = SimpleNamespace(name="main", dirty=True)
+    controller.apply_git_chrome(info)
+
+    assert app._git_chrome is info
+    assert app._git_branch == "main"
+    # The dirty flag is consumed; it re-schedules one follow-up probe, which
+    # re-arms the pending flag for that next worker.
+    assert app._git_chrome_refresh_dirty is False
+    assert app.calls == ["topbar"]
+    assert scheduled == ["probe"]

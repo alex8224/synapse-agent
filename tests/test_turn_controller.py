@@ -27,6 +27,7 @@ class _FakeApp:
         self._skip_steer_followup = False
         self._busy = False
         self.thread_id = "t1"
+        self._transcript_generation = 0
         self.agent = SimpleNamespace(_coding_goal_service=None)
 
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> None:
@@ -44,6 +45,12 @@ class _FakeApp:
     ) -> None:
         self.calls.append((callback, args, kwargs))
         callback(*args, **kwargs)
+
+    def _touch_session_bg(
+        self, thread_id: str, title_hint: str, model: str, generation: int
+    ) -> None:
+        """No-op host worker; the session store is not exercised in these tests."""
+        self.calls.append(("_touch_session_bg", (thread_id, title_hint, model, generation), {}))
 
     def append_event(self, message: str, style: str = "dim") -> None:
         self.calls.append(("append_event", (message, style), {}))

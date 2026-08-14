@@ -407,6 +407,11 @@ class CodingAgentApp(App[None]):
         ws = Path(getattr(settings, "workspace", Path.cwd()) or Path.cwd())
         self._git_chrome: GitBranchChrome | None = probe_git_branch_chrome(ws)
         self._git_branch = self._git_chrome.name if self._git_chrome else None
+        # Coalescing flags owned by the Textual UI thread: a refresh request
+        # received while a background probe is in flight marks the state dirty
+        # instead of starting a second worker.
+        self._git_chrome_refresh_pending = False
+        self._git_chrome_refresh_dirty = False
         hist_root = Path(project_root or ws)
         self._prompt = PromptController(
             self,
@@ -769,6 +774,42 @@ class CodingAgentApp(App[None]):
 
     def _refresh_git_chrome(self) -> None:
         self._chrome.refresh_git_chrome()
+
+    @work(thread=True, exclusive=True, group="git-chrome")
+    def _refresh_git_chrome_bg(self) -> None:
+        self._chrome.refresh_git_chrome_bg()
+
+    @work(thread=True, exclusive=True, group="session-touch")
+    def _touch_session_bg(
+        self,
+        thread_id: str,
+        title_hint: str,
+        model: str,
+        generation: int,
+    ) -> None:
+        """Persist the session touch off the UI thread, then apply its title."""
+        try:
+            from synapse.sessions.store import SessionStore
+
+            store = getattr(self, "_session_store", None)
+            if store is None:
+                store = SessionStore(self.settings.resolved_sessions_path())
+                self._session_store = store
+            info = store.touch(thread_id, title_hint=title_hint, model=model)
+            title = (info.title or "").strip() if info is not None else None
+        except Exception:  # noqa: BLE001 - session touch is best-effort
+            title = None
+        self._call_for_transcript(
+            generation, self._apply_session_touch, thread_id, title
+        )
+
+    def _apply_session_touch(self, thread_id: str, title: str | None) -> None:
+        """UI-thread apply step for a completed background session touch."""
+        if thread_id != self.thread_id:
+            return
+        if title:
+            self._session_title = title
+        self._refresh_topbar()
 
     def _install_default_topbar(self) -> None:
         self._chrome.install_default_topbar()

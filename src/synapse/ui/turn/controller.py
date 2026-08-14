@@ -1122,22 +1122,14 @@ class TurnController:
                 return
             app.append_event("still running previous turn…", "yellow")
             return
-        try:
-            from synapse.sessions.store import SessionStore
-
-            store = getattr(app, "_session_store", None)
-            if store is None:
-                store = SessionStore(app.settings.resolved_sessions_path())
-                app._session_store = store
-            store.touch(
-                app.thread_id,
-                title_hint=text,
-                model=str(app.settings.model),
-            )
-            app._reload_session_title()
-            app._refresh_topbar()
-        except Exception:  # noqa: BLE001
-            pass
+        # Persist the session touch and reload its title off the UI thread;
+        # the title is applied through a generation-guarded callback.
+        app._touch_session_bg(
+            app.thread_id,
+            title_hint=text,
+            model=str(app.settings.model),
+            generation=int(app._transcript_generation),
+        )
 
         # Snapshot image bank BEFORE clear so run_turn retains data.
         turn_images = list(attachments)

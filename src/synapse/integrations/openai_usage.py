@@ -330,6 +330,9 @@ class CodexUsageService:
         self.consuming = False
         self._last_refresh = 0.0
         self._settings = settings
+        # Cached OAuth verdict, synced by the chrome controller from the
+        # session agent's registry; the render path never reads the filesystem.
+        self.oauth_profile = False
 
     # -- helpers called from the TUI UI thread --------------------------------
 
@@ -350,18 +353,12 @@ class CodexUsageService:
         )
 
     def has_oauth_profile(self) -> bool:
-        """Return True when the active model profile uses Codex OAuth."""
-        settings = self._settings
-        if settings is None:
-            return False
-        try:
-            from synapse.models.registry import registry_from_settings
+        """Return whether the active profile uses Codex OAuth.
 
-            registry = registry_from_settings(settings)
-            selected = getattr(settings, "active_model", None) or registry.default
-            return registry.get(selected).auth == "openai_oauth"
-        except Exception:  # noqa: BLE001
-            return False
+        Cached by the chrome controller from the session agent's registry;
+        never touches the filesystem on the render path.
+        """
+        return self.oauth_profile
 
     def invalidate(self) -> None:
         """Clear all state (non-OAuth model selected)."""
