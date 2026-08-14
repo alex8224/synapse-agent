@@ -58,6 +58,10 @@ class TextualStreamHost(Protocol):
 
     def sync_subagent_monitor_block(self, *, force: bool = False) -> None: ...
 
+    def begin_tool_batch(self) -> None: ...
+
+    def end_tool_batch(self) -> None: ...
+
 
 _WS_RE = re.compile(r"\s+")
 _STREAM_INTERVAL_SMALL = 0.12

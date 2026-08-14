@@ -40,6 +40,7 @@ class TranscriptController:
     def __init__(self, app: Any) -> None:
         self._app = app
         self.state = TranscriptState()
+        self._tool_batch_mode = False
 
     # -- TextualStreamHost ------------------------------------------------
 
@@ -66,6 +67,23 @@ class TranscriptController:
 
     def _refresh_git_chrome(self) -> None:
         self._app._refresh_git_chrome()
+
+    def begin_tool_batch(self) -> None:
+        """Accumulate live tool-block writes without rendering.
+
+        The replay path calls this before rendering a bounded batch so that
+        every ``ToolGroupBlock`` mutation inside the batch updates data only;
+        ``end_tool_batch`` then flushes the block once instead of rebuilding it
+        per tool event.
+        """
+        self._tool_batch_mode = True
+
+    def end_tool_batch(self) -> None:
+        """Flush the accumulated tool block once and leave batch mode."""
+        self._tool_batch_mode = False
+        block = self.state.live_tool_block
+        if block is not None:
+            block.flush()
 
     def should_suppress_dag_task_tool_group(self, calls: list[Any]) -> bool:
         """Suppress the parent ``task`` tool group when the subagent monitor
@@ -534,7 +552,8 @@ class TranscriptController:
     def _render_live_tools(self) -> None:
         if self.state.live_tool_block is not None:
             self.state.live_tool_block.set_summary(
-                self.state.live_tool_summary or "tools"
+                self.state.live_tool_summary or "tools",
+                render=not self._tool_batch_mode,
             )
 
     def _tool_details_expanded(self) -> bool:
@@ -567,8 +586,12 @@ class TranscriptController:
             st.tool_blocks.append(block)
             self._mount_block(block)
         else:
-            st.live_tool_block.set_summary(summary)
-            st.live_tool_block.set_collapsed(collapsed)
+            st.live_tool_block.set_summary(
+                summary, render=not self._tool_batch_mode
+            )
+            st.live_tool_block.set_collapsed(
+                collapsed, render=not self._tool_batch_mode
+            )
         st.live_tool_summary = summary
         st.last_tool_summary = summary
 
@@ -582,13 +605,14 @@ class TranscriptController:
         if st.live_tool_block is None:
             self.write_tool_group_header("tools", collapsed=False)
         assert st.live_tool_block is not None
+        render = not self._tool_batch_mode
         # Keep live groups expanded while tools are still arriving/running,
         # even when auto-collapse-after-finish is enabled.
         if any(it.status == "running" for it in [*st.live_tool_block.items, item]):
-            st.live_tool_block.set_collapsed(False)
+            st.live_tool_block.set_collapsed(False, render=render)
         elif self._tool_details_expanded():
-            st.live_tool_block.set_collapsed(False)
-        st.live_tool_block.add_item(item)
+            st.live_tool_block.set_collapsed(False, render=render)
+        st.live_tool_block.add_item(item, render=render)
         # Prefer the block's self-derived summary (always matches items).
         st.live_tool_summary = st.live_tool_block.summary
         st.last_tool_summary = st.live_tool_block.summary
@@ -619,6 +643,7 @@ class TranscriptController:
             path=path,
             name=name,
             category=category,
+            render=not self._tool_batch_mode,
         )
         st.live_tool_summary = st.live_tool_block.summary
         st.last_tool_summary = st.live_tool_block.summary

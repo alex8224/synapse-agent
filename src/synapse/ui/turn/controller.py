@@ -705,14 +705,16 @@ class TurnController:
             bridge.emit(ui_event(envelope))
 
         subscription = runtime.subscribe(forward, after_sequence=after_sequence)
+        self._event_bridge = bridge
+        self._session_subscription = subscription
         # Replay bypasses the live turn_id gate. The chosen cursor bounds this
         # to either the active turn (session switch) or the start/attach race
         # (new turn), while the broker sequence keeps replay/live ordering
-        # monotonic across turn-local sequence resets.
-        for envelope in subscription.replay:
-            bridge.replay(ui_event(envelope))
-        self._event_bridge = bridge
-        self._session_subscription = subscription
+        # monotonic across turn-local sequence resets. Events are enqueued for
+        # batched, yielding rendering instead of a synchronous UI-thread loop.
+        replay_events = [ui_event(envelope) for envelope in subscription.replay]
+        if replay_events:
+            bridge.replay_batch(replay_events)
         return runtime
 
     @staticmethod

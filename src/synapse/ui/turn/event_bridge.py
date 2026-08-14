@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from synapse.runtime.streaming import TextPayload, TurnEvent, TurnEventKind
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
@@ -34,6 +34,7 @@ class TextualTurnEventBridge:
         self._max_events = max(16, int(max_events))
         self._drain_batch = max(1, int(drain_batch))
         self._queue: deque[TurnEvent] = deque()
+        self._replay_queue: deque[TurnEvent] = deque()
         self._lock = threading.Lock()
         self._wake_pending = False
         self._closed = False
@@ -41,7 +42,7 @@ class TextualTurnEventBridge:
     @property
     def pending_count(self) -> int:
         with self._lock:
-            return len(self._queue)
+            return len(self._queue) + len(self._replay_queue)
 
     def emit(self, event: TurnEvent) -> None:
         should_wake = False
@@ -85,19 +86,35 @@ class TextualTurnEventBridge:
             self.close()
 
     def drain(self) -> None:
-        """Render one bounded batch on the Textual thread."""
-        batch: list[TurnEvent] = []
+        """Render one bounded batch on the Textual thread.
+
+        Replayed history is drained before live events to preserve ordering,
+        and goes through the renderer's batch hooks so tool writes are
+        accumulated and flushed once per batch instead of once per event.
+        """
+        replay_batch: list[TurnEvent] = []
+        live_batch: list[TurnEvent] = []
         reschedule = False
         with self._lock:
             if self._closed:
                 return
-            for _ in range(min(self._drain_batch, len(self._queue))):
-                batch.append(self._queue.popleft())
+            for _ in range(min(self._drain_batch, len(self._replay_queue))):
+                replay_batch.append(self._replay_queue.popleft())
+            if not replay_batch:
+                for _ in range(min(self._drain_batch, len(self._queue))):
+                    live_batch.append(self._queue.popleft())
             self._wake_pending = False
-            if self._queue:
+            if self._replay_queue or self._queue:
                 self._wake_pending = True
                 reschedule = True
-        for event in batch:
+        if replay_batch:
+            self._renderer.begin_batch()
+            try:
+                for event in replay_batch:
+                    self._renderer.replay(event)
+            finally:
+                self._renderer.end_batch()
+        for event in live_batch:
             self._renderer.emit(event)
         if self._renderer.closed:
             self.close()
@@ -106,16 +123,28 @@ class TextualTurnEventBridge:
             self._wake()
 
     def replay(self, event: TurnEvent) -> None:
-        """Render one replayed broker event inline (no turn_id gate).
+        """Enqueue one replayed broker event for batched rendering.
 
         Called from ``attach()`` on the UI thread while replaying retained
-        history after a session switch-back; see
-        ``TextualTurnEventRenderer.replay``.
+        history after a session switch-back; rendering is deferred to
+        ``drain()`` so large replays are bounded and yield to the event loop
+        instead of synchronously blocking the UI.
         """
+        self.replay_batch((event,))
+
+    def replay_batch(self, events: Iterable[TurnEvent]) -> None:
+        """Enqueue retained broker events ahead of live events."""
+        should_wake = False
         with self._lock:
             if self._closed:
                 return
-        self._renderer.replay(event)
+            for event in events:
+                self._replay_queue.append(event)
+            if not self._wake_pending:
+                self._wake_pending = True
+                should_wake = True
+        if should_wake:
+            self._wake()
 
     def close(self) -> None:
         with self._lock:

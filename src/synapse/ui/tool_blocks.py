@@ -199,14 +199,15 @@ class ToolGroupBlock(SelectableStatic):
         lines.append(Text(""))
         self.update(Group(*lines))
 
-    def set_summary(self, summary: str) -> None:
+    def set_summary(self, summary: str, *, render: bool = True) -> None:
         if self.items:
             self._sync_summary_from_items()
         else:
             self.summary = summary or "tools"
-        self._render_block()
+        if render:
+            self._render_block()
 
-    def add_item(self, item: ToolItem) -> None:
+    def add_item(self, item: ToolItem, *, render: bool = True) -> None:
         for existing in self.items:
             if existing.id == item.id:
                 existing.name = item.name
@@ -220,7 +221,8 @@ class ToolGroupBlock(SelectableStatic):
                 existing.parent_id = item.parent_id
                 existing.call_id = item.call_id
                 self._sync_summary_from_items()
-                self._render_block()
+                if render:
+                    self._render_block()
                 return
         if item.sub and not item.parent_id:
             return
@@ -237,7 +239,8 @@ class ToolGroupBlock(SelectableStatic):
         else:
             self.items.append(item)
         self._sync_summary_from_items()
-        self._render_block()
+        if render:
+            self._render_block()
 
     def update_item(
         self,
@@ -250,6 +253,7 @@ class ToolGroupBlock(SelectableStatic):
         status: str | None = None,
         preview: str | None = None,
         error: bool | None = None,
+        render: bool = True,
     ) -> None:
         for item in self.items:
             if item.id != item_id:
@@ -269,14 +273,24 @@ class ToolGroupBlock(SelectableStatic):
             if error is not None:
                 item.error = error
             self._sync_summary_from_items()
-            self._render_block()
+            if render:
+                self._render_block()
             return
 
     def update_preview(self, item_id: str, preview: str, *, error: bool = False) -> None:
         self.update_item(item_id, preview=preview, error=error)
 
-    def set_collapsed(self, collapsed: bool) -> None:
+    def set_collapsed(self, collapsed: bool, *, render: bool = True) -> None:
         self.collapsed = bool(collapsed)
+        if render:
+            self._render_block()
+
+    def flush(self) -> None:
+        """Render pending item/summary/collapsed mutations in one pass.
+
+        Used by the replay batch path, where ``render=False`` accumulates tool
+        writes and a single ``flush`` seals the final state.
+        """
         self._render_block()
 
     def toggle(self) -> None:

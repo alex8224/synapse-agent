@@ -52,6 +52,18 @@ class TextualTurnEventRenderer:
     def close(self) -> None:
         self._closed = True
 
+    def begin_batch(self) -> None:
+        """Start a replayed batch: host tool writes accumulate without rendering."""
+        begin = getattr(self._host, "begin_tool_batch", None)
+        if callable(begin):
+            begin()
+
+    def end_batch(self) -> None:
+        """Finish a replayed batch: flush the accumulated tool block once."""
+        end = getattr(self._host, "end_tool_batch", None)
+        if callable(end):
+            end()
+
     def emit(self, event: TurnEvent) -> None:
         """Consume one ordered event; stale subscriptions become no-ops."""
         if self._closed or self._host.transcript_generation != self._generation:

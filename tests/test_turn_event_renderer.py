@@ -370,3 +370,89 @@ def test_turn_controller_replays_events_emitted_before_renderer_attach() -> None
     answers = [call for call in host.calls if call[0] == "commit_answer"]
     assert answers == [("commit_answer", ("early",), {})]
     controller._detach_renderer()
+
+
+def test_bridge_replay_batch_accumulates_tool_writes_per_batch() -> None:
+    """Replay drains tool events through one begin/end batch pair per batch."""
+    from synapse.runtime.streaming import ToolItemPayload
+
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    callbacks: list[Any] = []
+    bridge = TextualTurnEventBridge(renderer, callbacks.append)
+
+    def item(sequence: int, item_id: str, name: str, category: str, label: str) -> TurnEvent:
+        return _event(
+            sequence,
+            TurnEventKind.TOOL_STARTED,
+            ToolItemPayload(
+                item_id=item_id,
+                call_id=item_id,
+                name=name,
+                category=category,
+                label=label,
+                path=None,
+                status="running",
+                preview=None,
+                error=False,
+                sub=False,
+                parent_id=None,
+            ),
+        )
+
+    bridge.replay_batch(
+        [
+            item(1, "g1-0", "read_file", "read", "Read a.py"),
+            item(2, "g1-1", "search_files", "search", "Searched TODO"),
+        ]
+    )
+
+    assert len(callbacks) == 1
+    callbacks.pop()()
+
+    begin = [c for c in host.calls if c[0] == "begin_tool_batch"]
+    end = [c for c in host.calls if c[0] == "end_tool_batch"]
+    items = [c for c in host.calls if c[0] == "write_tool_item"]
+    assert len(begin) == 1
+    assert len(end) == 1
+    assert len(items) == 2
+
+
+def test_tool_group_block_batch_flush_renders_once(monkeypatch: Any) -> None:
+    """``render=False`` accumulates writes; ``flush`` renders once."""
+    from synapse.ui.timeline import ToolItem
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    renders = 0
+
+    def counting_render() -> None:
+        nonlocal renders
+        renders += 1
+
+    monkeypatch.setattr(block, "_render_block", counting_render)
+
+    def item(item_id: str, name: str, category: str, label: str) -> ToolItem:
+        return ToolItem(
+            id=item_id,
+            name=name,
+            category=category,
+            label=label,
+            path=None,
+            status="running",
+            preview=None,
+            error=False,
+            sub=False,
+            parent_id=None,
+            call_id=item_id,
+        )
+
+    block.add_item(item("a", "read_file", "read", "Read a.py"), render=False)
+    block.add_item(item("b", "search_files", "search", "Searched TODO"), render=False)
+    block.set_collapsed(False, render=False)
+    assert renders == 0
+
+    block.flush()
+    assert renders == 1
+    assert len(block.items) == 2
+
