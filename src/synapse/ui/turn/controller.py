@@ -1154,9 +1154,6 @@ class TurnController:
         self.capture_turn_context()
         app._skip_steer_followup = False
         app._transcript.reset_for_turn()
-        app._subagent_monitor.reset()
-        app._subagent_monitor_auto_opened = False
-        app._clear_subagent_status()
         app.clear_stream()
         app.set_activity("thinking", "starting", True)
         app._sync_prompt_placeholder()
@@ -1179,7 +1176,6 @@ class TurnController:
         thread_id: str | None = None,
         agent: Any | None = None,
         transcript_generation: int | None = None,
-        monitor_id: str | None = None,
         reservation: TurnReservation | None = None,
     ) -> None:
         """Run one agent turn off the UI thread (host wraps with @work)."""
@@ -1212,14 +1208,12 @@ class TurnController:
 
         if transcript_generation is None:
             transcript_generation = app._transcript_generation
-        turn_monitor_id = monitor_id or app._subagent_monitor.monitor_id
         app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         request = build_turn_request(
             text=text,
             attachments=attachments,
             settings=app.settings,
             thread_id=turn_thread_id,
-            monitor_id=turn_monitor_id,
             max_concurrency=app.settings.max_concurrency,
         )
         runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
@@ -1246,7 +1240,6 @@ class TurnController:
             turn = UserTurn(
                 text=text,
                 attachments=tuple(attachments or ()),
-                monitor_id=turn_monitor_id,
                 request=request,
             )
             if reservation is None:
@@ -1309,7 +1302,6 @@ class TurnController:
         thread_id: str | None = None,
         agent: Any | None = None,
         transcript_generation: int | None = None,
-        monitor_id: str | None = None,
     ) -> None:
         """Resume graph after /approve or /reject (host wraps with @work)."""
         from synapse.runtime.hitl import (
@@ -1329,7 +1321,6 @@ class TurnController:
             return
         if transcript_generation is None:
             transcript_generation = app._transcript_generation
-        turn_monitor_id = monitor_id or app._subagent_monitor.monitor_id
         app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         config = {
             "configurable": {"thread_id": turn_thread_id},
@@ -1347,7 +1338,6 @@ class TurnController:
             request = build_resume_request(
                 payload=payload,
                 thread_id=turn_thread_id,
-                monitor_id=turn_monitor_id,
                 max_concurrency=app.settings.max_concurrency,
             )
             runtime = self._session_for(thread_id=turn_thread_id, agent=turn_agent)
@@ -1367,7 +1357,6 @@ class TurnController:
             handle = runtime.start_threadsafe(
                 UserTurn(
                     text="",
-                    monitor_id=turn_monitor_id,
                     request=request,
                 ),
                 on_started=on_started,
@@ -1474,7 +1463,7 @@ class TurnController:
         if app.agent is not None:
             self._session_for(thread_id=app.thread_id, agent=app.agent)
 
-    def launch_context(self) -> tuple[str, Any, int, str]:
+    def launch_context(self) -> tuple[str, Any, int]:
         """Freeze everything a queued Textual worker must not read from mutable app state."""
         app = self._app
         runtime = self._session_runtime
@@ -1484,7 +1473,6 @@ class TurnController:
             runtime.thread_id,
             runtime.agent,
             int(app._transcript_generation),
-            str(app._subagent_monitor.monitor_id),
         )
 
     def clear_turn_context(self) -> None:

@@ -27,14 +27,13 @@ def test_build_turn_request_constructs_payload_and_config() -> None:
             attachments=None,
             settings=settings,
             thread_id="t1",
-            monitor_id="m1",
         )
 
     assert isinstance(req, TurnRequest)
     assert req.thread_id == "t1"
     assert req.payload == {"messages": [{"role": "user", "content": "composed-content"}]}
     assert req.config == {
-        "configurable": {"thread_id": "t1", "subagent_monitor_id": "m1"},
+        "configurable": {"thread_id": "t1"},
         "max_concurrency": 3,
     }
     provider.assert_called_once_with(settings)
@@ -54,7 +53,6 @@ def test_build_turn_request_keeps_plain_string_without_attachments() -> None:
             attachments=None,
             settings=SimpleNamespace(max_concurrency=2),
             thread_id="t",
-            monitor_id="m",
         )
 
     assert req.payload["messages"][0]["content"] == {"type": "text", "text": "plain"}
@@ -74,7 +72,6 @@ def test_build_turn_request_passes_attachments_through() -> None:
             attachments=attachments,
             settings=SimpleNamespace(max_concurrency=1),
             thread_id="t",
-            monitor_id="m",
         )
 
     compose.assert_called_once_with("t", attachments=attachments, provider="p")

@@ -108,10 +108,9 @@
 │  │  │ 9. IntentSchema (x2)         工具注入/剥离 intent 字段  │ │  │
 │  │  │ 10. SteerMiddleware           中程用户引导注入           │ │  │
 │  │  │ 11. CompactTool              compact_conversation 工具   │ │  │
-│  │  │ 12. DAGSubAgentMiddleware    DAG 并行子Agent 调度       │ │  │
-│  │  │ 13. StripRedundantPrompt      移除冗余 prompt blocks     │ │  │
-│  │  │ 14. CompactToolDescriptions   压缩冗长工具描述           │ │  │
-│  │  │ 15. ModelRequestCompression   诊断:token计数,stale替换   │ │  │
+│  │  │ 12. StripRedundantPrompt      移除冗余 prompt blocks     │ │  │
+│  │  │ 13. CompactToolDescriptions   压缩冗长工具描述           │ │  │
+│  │  │ 14. ModelRequestCompression   诊断:token计数,stale替换   │ │  │
 │  │  └─────────────────────────────────────────────────────────┘ │  │
 │  │                                                               │  │
 │  │  deepagents 内置中间件 (框架自动添加):                         │  │
@@ -122,7 +121,7 @@
 │  │  ├─ model:        BaseChatModel (来自 models_registry)       │  │
 │  │  ├─ backend:      CodingLocalShellBackend                     │  │
 │  │  ├─ tools:        [session_tools] + [MCP tools]               │  │
-│  │  ├─ subagents:    None (由 DAGSubAgentMiddleware 接管)        │  │
+│  │  ├─ subagents:    subagents (deepagents 原生委派)             │  │
 │  │  ├─ checkpointer: AsyncSqliteSaver / MemorySaver              │  │
 │  │  ├─ interrupt_on: None (dev-autopass 默认无HITL)               │  │
 │  │  └─ permissions:  FilesystemPermission (非shell模式)          │  │
@@ -130,19 +129,18 @@
 │                                                                     │
 │  ┌────────────────────  子Agent 系统  ──────────────────────────┐  │
 │  │                                                               │  │
-│  │  subagents.py          parallel_subagents.py                  │  │
-│  │  build_default_subagents() → 3 种规范:                        │  │
-│  │  ┌──────────┬──────────┬──────────┐                          │  │
-│  │  │researcher│  tester  │ reviewer │                          │  │
-│  │  │ 只读分析  │ 运行测试 │ 代码审查 │                          │  │
-│  │  │ 无execute│ execute  │ 无write  │                          │  │
-│  │  └──────────┴──────────┴──────────┘                          │  │
+│  │  subagents.py                                                    │  │
+│  │  build_default_subagents() → 3 种规范:                            │  │
+│  │  ┌──────────┬──────────┬──────────┐                              │  │
+│  │  │researcher│  tester  │ reviewer │                              │  │
+│  │  │ 只读分析  │ 运行测试 │ 代码审查 │                              │  │
+│  │  │ 无execute│ execute  │ 无write  │                              │  │
+│  │  └──────────┴──────────┴──────────┘                              │  │
 │  │                                                               │  │
-│  │  DAGSubAgentMiddleware                                        │  │
-│  │  ├─ _execute_dag()  解析 task() tool_calls                    │  │
-│  │  ├─ _topological_waves() 拓扑排序→波次分组                    │  │
-│  │  ├─ asyncio.gather(*batch) 波次内并行                        │  │
-│  │  └─ depends_on 声明依赖关系                                   │  │
+│  │  deepagents SubAgentMiddleware (原生)                          │  │
+│  │  ├─ task 工具 → ToolNode 阶段执行                                │  │
+│  │  ├─ 子 Agent 在独立子图上下文运行                                │  │
+│  │  └─ 结果仅返回最终文本给主 Agent                                │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌────────────────────  工具系统  ──────────────────────────────┐  │
@@ -265,7 +263,6 @@ cli.py
         ├── backends.py           ← CodingLocalShellBackend
         ├── middleware.py         ← 中间件工厂
         ├── subagents.py          ← 子Agent 规范
-        ├── parallel_subagents.py ← DAG 调度
         ├── mcp_client.py         ← MCP 集成
         ├── safety.py ── hitl.py ── fs_permissions.py
         ├── vision_middleware.py ── describe_image.py ── multimodal.py
@@ -299,7 +296,7 @@ cli.py
       ├─ vision: 图片→文字 (非视觉模型)
       ├─ retry:  429/5xx 重试
       ├─ steer:  注入用户引导
-      ├─ DAG:    发现 task() 调用 → 拓扑排序 → 波次并行子Agent
+      ├─ task:   发现 task() 调用 → SubAgentMiddleware 原生委派
       └─ compact: 自动压缩 (token阈值触发)
       │
       ▼
@@ -312,7 +309,7 @@ cli.py
       ├─ read_file/write_file/edit_file/glob/grep/execute
       │    └→ CodingLocalShellBackend (subprocess)
       ├─ task (子Agent)
-      │    └→ DAGSubAgentMiddleware (缓存结果)
+      │    └→ SubAgentMiddleware (原生子图执行)
       ├─ search_session/read_session
       │    └→ SessionStore (SQLite)
       ├─ MCP tools
@@ -361,12 +358,11 @@ cli.py
 | **工厂模式** | `build_coding_agent()`, `build_backend()`, `build_default_subagents()`, `build_session_tools()` |
 | **中间件链** | `AgentMiddleware.awrap_model_call` 链式拦截 (9 个中间件) |
 | **依赖注入** | `SessionStore` 闭包注入工具; 子Agent 中间件注入 Backend |
-| **拓扑排序+DAG** | `DAGSubAgentMiddleware._topological_waves()` 波次并行 |
-| **预编译缓存** | `compile_subagent_runnables()` 预编译子Agent图 |
+| **原生委派** | deepagents `SubAgentMiddleware` 子Agent独立子图执行 |
 | **3层覆盖配置** | 用户 `~/.synapse/` -> 便携包 -> 项目 `.synapse/` |
 | **幂等三态机** | `CodexImportLedger.claim()` (new/completed/recover) |
 | **自适应节流** | `_stream_interval()` 0.12s~0.40s 动态间隔 |
-| **退化保护** | TaskPlanner 快速启发式; MCP 连接断开自动移除; DAG 未启用时回退原生 |
+| **退化保护** | TaskPlanner 快速启发式; MCP 连接断开自动移除 |
 
 ---
 
@@ -381,7 +377,6 @@ cli.py
 | `backends.py` | `CodingLocalShellBackend`, `build_backend` | 本地 Shell 执行 |
 | `middleware.py` | `build_*_middleware` 工厂函数 | 中间件构造 |
 | `subagents.py` | `build_default_subagents` | 3 种子Agent 规范 |
-| `parallel_subagents.py` | `DAGSubAgentMiddleware` | DAG 拓扑调度 |
 | `tools/session_tools.py` | `build_session_tools` | 会话查阅工具 |
 | `mcp_client.py` | `McpSessionPool`, `load_mcp_tools` | MCP 协议集成 |
 | `planner/task_planner.py` | `TaskPlanner`, `TaskPlan` | 任务分解规划 |
@@ -463,7 +458,6 @@ TurnRail (Vertical, id="turn-rail", dock:right, overlay, width:34)
 | McpPanelDialog | `("mcp-toggle", name)` 或 `("mcp-reload", None)` | `r` 键重载 MCP 配置 |
 | SafetyPanelDialog | `("safety", key)` | 三选一 profile (dev-autopass/dev-approve/readonly) |
 | CodexSessionListDialog | `("codex-import", native_id)` | 扫描 Codex 目录，只列可导入会话 |
-| SubagentMonitorDialog | (只读) | 独占 ModalScreen，不走 DialogBase，显示 DAG 列表+详情 |
 | ThemeDesignerDialog | (直接写文件) | 独占 ModalScreen，HSV 选择器+JSON 预览+实时 CSS 刷新 |
 
 统一调用模式：`self.push_screen(SomeDialog(...), self._on_some_dialog_done)`，回调中解包 `(action, value)` 元组。
@@ -680,22 +674,6 @@ ledger.claim(source_id, digest, proposed_thread_id):
 
 **实现原理**: 7x5 像素位图 → Unicode Braille 字符（每个 Braille 格编码 4x2 点阵）。`_breathing_intensity()` 计算每个字符亮度：呼吸分量 `sin(2π*t/5.0)` + 涟漪分量（基于距离的正弦波）+ 渐入分量（从中心扩散，0.5s 完全显现）。定时器 12 FPS（~83ms），CSS class `#main.welcome` 控制显示/隐藏。
 
-### Subagent Monitor 状态机
-
-```
-SubagentMonitor (线程安全，RLock 保护)
-  ├─ start_task() → status="running" (revision += 1)
-  ├─ finish_task(error=False) → status="ok"
-  ├─ finish_task(error=True) → status="error"
-  └─ reset() → 清空所有 runs
-
-SubagentMonitorDialog (0.35s 轮询 snapshot，revision 去重)
-  ├─ 左侧列表: task_id / type / wave / depends_on / status
-  └─ 右侧详情: description + event 层级树
-```
-
-`SubagentMonitorCallback(BaseCallbackHandler)` 注入到子 Agent 的 callbacks 中：`on_llm_end` 捕获 tool_calls → `on_tool_start/end/error` 实时产生 events。通过全局 `_REGISTRY` + `monitor_from_config(config)` 查找 Monitor 实例。
-
 ---
 
 ## 补充架构流程细节
@@ -716,10 +694,9 @@ SubagentMonitorDialog (0.35s 轮询 snapshot，revision 去重)
  9. build_intent_schema_middleware()         # 注入/剥离 intent 字段 (双面中间件)
 10. build_steer_middleware()                 # 中运行用户引导 (SteerQueue)
 11. build_compact_tool_middleware()          # compact_conversation 工具 (SummarizationTool)
-12. [DAG 子 Agent 中间件]                    # 可选: ParallelSubagentMiddleware
-13. build_strip_redundant_prompt_blocks()    # 移除 deepagents 冗余 prompt (~720 tokens)
-14. build_compact_tool_descriptions()        # 精简工具描述 (~30K tokens)
-15. build_model_request_compression_middleware() # 请求级压缩诊断 + token 分桶
+12. build_strip_redundant_prompt_blocks()    # 移除 deepagents 冗余 prompt (~720 tokens)
+13. build_compact_tool_descriptions()        # 精简工具描述 (~30K tokens)
+14. build_model_request_compression_middleware() # 请求级压缩诊断 + token 分桶
 ```
 
 **执行语义**:
@@ -959,31 +936,25 @@ repair_thread_after_cancel(agent, config) → list[str] (日志)
     └─ SessionStore.touch() 更新元数据
 ```
 
-### 子 Agent DAG 调度流程
+### 子 Agent 委派流程
 
 ```
 用户输入: "分析 bug 并写测试和审查修复"
 │
-├─ decide_subagent_routing(text) → 启发式判断是否适合 DAG 并行
-│   (检查关键词: "并"/"同时"/"并行"/多个任务...)
+├─ build_coding_agent() 把 subagents 传给 create_deep_agent(subagents=...)
+│   (researcher / tester / reviewer, deepagents 原生 SubAgentMiddleware)
 │
-├─ 适合 → 注入 DAG 规划指令到 system prompt
+├─ 模型按需输出 task() tool_calls:
+│   task("researcher", "搜索 bug 原因")
+│   task("tester", "运行测试并诊断失败")
+│   task("reviewer", "审查修复")
 │
-├─ 模型输出多个 task() tool_calls, 含 depends_on 声明:
-│   task("researcher", "搜索 bug 原因", task_id="search")
-│   task("tester", "基于搜索结果写测试", depends_on=["search"], task_id="test")
-│   task("reviewer", "审查修复", depends_on=["test"], task_id="review")
+├─ SubAgentMiddleware 在 ToolNode 阶段执行:
+│   ├─ 每个子 Agent 在独立子图上下文运行
+│   ├─ 只读工具集由 tool-exclusion middleware 约束
+│   └─ 结果仅返回最终文本给主 Agent
 │
-├─ DAGSubAgentMiddleware 拦截 tool_calls:
-│   ├─ _parse_dag() → 提取 task_id / depends_on
-│   ├─ _topological_waves() → 拓扑排序:
-│   │   Wave 1: [search]          ← 无依赖
-│   │   Wave 2: [test]            ← 依赖 search
-│   │   Wave 3: [review]          ← 依赖 test
-│   └─ 波次内并行: asyncio.gather(*wave_tasks)
-│       波次间串行: 等待上一波完成
-│
-└─ 不适合 → 回退原生顺序执行 (depends_on 仍被遵守，只是不并行)
+└─ 主 Agent 汇总所有子 Agent 结果后继续推理
 ```
 
 ### SteerQueue — 中运行用户引导

@@ -804,7 +804,6 @@ class SynapseACPAgent:
                 resume = build_resume_request(
                     payload=build_resume_payload(decisions),
                     thread_id=managed.thread_id,
-                    monitor_id="",
                     max_concurrency=4,
                 )
                 task = asyncio.create_task(managed.submit(UserTurn(text="", request=resume)))

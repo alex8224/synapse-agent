@@ -73,7 +73,6 @@ class SessionUsage:
 class UserTurn:
     text: str
     attachments: Sequence[Any] = ()
-    monitor_id: str = ""
     config_overrides: dict[str, Any] = field(default_factory=dict)
     request: TurnRequest | None = None
     cancel_token: CancelToken | None = None
@@ -224,7 +223,6 @@ class SessionRuntime:
                     attachments=message.attachments,
                     settings=self.settings,
                     thread_id=self.thread_id,
-                    monitor_id=message.monitor_id,
                     max_concurrency=int(getattr(self.settings, "max_concurrency", 4)),
                     config_overrides=message.config_overrides,
                 )

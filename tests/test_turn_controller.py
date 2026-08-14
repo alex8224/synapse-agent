@@ -79,9 +79,6 @@ def test_submit_reserves_session_before_scheduling_worker() -> None:
     app._refresh_topbar = lambda: None
     app.append_user = lambda *args, **kwargs: None
     app._transcript = SimpleNamespace(reset_for_turn=lambda: None)
-    app._subagent_monitor = SimpleNamespace(reset=lambda: None)
-    app._subagent_monitor_auto_opened = False
-    app._clear_subagent_status = lambda: None
     app.clear_stream = lambda: None
     app.set_activity = lambda *args: None
     app._sync_prompt_placeholder = lambda: None
@@ -245,14 +242,12 @@ def test_build_turn_request_payload_and_config() -> None:
         attachments=None,
         settings=settings,
         thread_id="t-1",
-        monitor_id="m-9",
     )
 
     assert isinstance(req, TurnRequest)
     assert req.thread_id == "t-1"
     assert req.config["max_concurrency"] == 3
     assert req.config["configurable"]["thread_id"] == "t-1"
-    assert req.config["configurable"]["subagent_monitor_id"] == "m-9"
     messages = req.payload["messages"]
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "hello"
@@ -267,7 +262,6 @@ def test_build_turn_request_overrides_concurrency() -> None:
         attachments=None,
         settings=settings,
         thread_id="t",
-        monitor_id="m",
         max_concurrency=8,
     )
     assert req.config["max_concurrency"] == 8
@@ -430,7 +424,6 @@ def test_runtime_result_persists_frozen_background_session(tmp_path) -> None:
             attachments=None,
             settings=settings,
             thread_id="background",
-            monitor_id="m",
             max_concurrency=2,
         ),
     )
@@ -591,8 +584,8 @@ def test_run_turn_worker_uses_session_group() -> None:
     frozen_agent = object()
 
     class _Turn:
-        def launch_context(self) -> tuple[str, Any, int, str]:
-            return "t-9", frozen_agent, 7, "monitor-1"
+        def launch_context(self) -> tuple[str, Any, int]:
+            return "t-9", frozen_agent, 7
 
         def run_turn(self, text: str, attachments: list[Any] | None = None, **kw: Any) -> None:
             turn_calls.append((text, attachments, kw))
@@ -630,7 +623,6 @@ def test_run_turn_worker_uses_session_group() -> None:
         "thread_id": "t-9",
         "agent": frozen_agent,
         "transcript_generation": 7,
-        "monitor_id": "monitor-1",
     }
     assert turn_calls == [("hello", ["img"], expected)]
     assert resume_calls == [("approve", "ok", expected)]
@@ -840,7 +832,7 @@ def test_switch_back_keeps_bridge_alive(monkeypatch, tmp_path) -> None:
             await pilot.pause()
             # Start turn A (attach happens inside start_threadsafe -> worker thread).
             handle = runtime.start_threadsafe(
-                UserTurn(text="hello", monitor_id="m"),
+                UserTurn(text="hello"),
                 on_started=lambda ctx: app._turn.attach(runtime),
             )
             await pilot.pause()
@@ -1084,7 +1076,6 @@ def test_run_turn_replays_only_events_after_start_cursor() -> None:
     app._agent_ready.set()
     app._agent_error = None
     app._transcript_generation = 3
-    app._subagent_monitor = SimpleNamespace(monitor_id="monitor")
     app._begin_turn_usage = lambda: None
     app._current_project_id = lambda: "project"
     controller = TurnController(app)
@@ -1131,7 +1122,6 @@ def test_run_turn_replays_only_events_after_start_cursor() -> None:
         thread_id="t1",
         agent=app.agent,
         transcript_generation=3,
-        monitor_id="monitor",
     )
 
     controller.attach.assert_called_once_with(runtime, after_sequence=12)

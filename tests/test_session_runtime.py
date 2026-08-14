@@ -356,7 +356,6 @@ def test_session_persistence_falls_back_to_structured_turn_tool_events(tmp_path)
             attachments=None,
             settings=settings,
             thread_id="thread",
-            monitor_id="monitor",
         ),
         turn_id="turn",
     )
@@ -545,7 +544,7 @@ def test_session_completes_without_subscriber_and_persists() -> None:
             controlled,
             persist_result=lambda context, result: persisted.append((context, result)),
         )
-        handle = await session.submit(UserTurn("hello", monitor_id="monitor"))
+        handle = await session.submit(UserTurn("hello"))
         context = session.active_context()
         assert context is not None
         assert context.thread_id == "thread"

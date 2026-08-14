@@ -31,11 +31,6 @@ class _Host:
         return callback(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
-        if name in {"should_suppress_dag_task_tool_group"}:
-            return lambda calls: False
-        if name in {"sync_subagent_monitor_block"}:
-            return lambda **kwargs: None
-
         def record(*args: Any, **kwargs: Any) -> None:
             self.calls.append((name, args, kwargs))
 
@@ -455,4 +450,3 @@ def test_tool_group_block_batch_flush_renders_once(monkeypatch: Any) -> None:
     block.flush()
     assert renders == 1
     assert len(block.items) == 2
-

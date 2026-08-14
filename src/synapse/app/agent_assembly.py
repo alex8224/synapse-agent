@@ -59,8 +59,6 @@ class AgentResources:
     knowledge_base: Any | None = None
     long_term_memory: Any | None = None
     subagents: Any | None = None
-    dag_middleware: Any | None = None
-    use_dag_subagents: bool = False
     steer_queue: SteerQueue | None = None
     mcp_deferred: bool = False
     mcp_servers: list[str] = field(default_factory=list)
@@ -99,7 +97,6 @@ class MiddlewareContext:
     goal_enabled: bool
     goal_service: Any | None
     steer_queue: SteerQueue
-    dag_middleware: Any | None = None
     prompt_cache_key: Any | None = None
 
 
@@ -163,8 +160,6 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
             build_steer_middleware(context.steer_queue),
         ]
     )
-    if context.dag_middleware is not None:
-        middleware.append(context.dag_middleware)
     middleware.extend(
         [
             build_strip_redundant_prompt_blocks(),

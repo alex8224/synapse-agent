@@ -214,7 +214,7 @@ from deepagents import create_deep_agent
 │  ├─ Skills (SKILL.md)    → 过程性知识手册                            │
 │  ├─ RAG 知识库           → 项目文档语义搜索                          │
 │  ├─ 长期记忆 (LTM)       → SQLite + 向量嵌入，自动提取经验           │
-│  ├─ 子 Agent (researcher/tester/reviewer) → 并行 DAG 调度            │
+│  ├─ 子 Agent (researcher/tester/reviewer) → deepagents 原生委派      │
 │  ├─ MCP 工具             → 外部工具服务器注入                        │
 │  ├─ 会话管理             → sessions.sqlite + checkpoints.sqlite      │
 │  └─ Steer 引导           → 运行时用户中途注入指令                    │
@@ -251,7 +251,6 @@ synapse-agent/                       # 项目根目录
 │   ├── prompts.py                   # 系统提示词
 │   ├── middleware.py                # 中间件集合
 │   ├── subagents.py                 # 【核心】子 Agent 定义
-│   ├── parallel_subagents.py        # DAG 并行子 Agent 调度
 │   ├── models_registry.py           # 多模型注册表
 │   ├── llm_openai_compat.py         # OpenAI 兼容层扩展
 │   ├── llm_openai_websocket.py      # WebSocket 连接支持
@@ -324,7 +323,6 @@ synapse-agent/                       # 项目根目录
 │   ├── test_config.py               # 配置测试
 │   ├── test_agent_factory.py        # Agent 工厂测试
 │   ├── test_subagent_status.py      # 子 Agent 状态测试
-│   ├── test_dag_parallel.py         # DAG 并行测试
 │   ├── test_stream_ui.py            # 流式 UI 测试
 │   ├── ...                          # 还有 40+ 测试文件
 │   └── fixtures/                    # 测试 fixtures
@@ -550,7 +548,6 @@ class Settings(BaseSettings):
 
     # ===== 子 Agent =====
     enable_subagents: bool = True
-    parallel_subagents: bool = False        # DAG 并行调度（实验性）
 ```
 
 ### 5.4 多模型配置示例
@@ -653,11 +650,7 @@ def build_coding_agent(settings, *, project_root=None, ...):
     # 步骤7: 构建子 Agent（researcher / tester / reviewer）
     subagents = build_default_subagents(enabled=..., ...)
 
-    # 步骤8: 可选 DAG 并行调度中间件
-    if settings.parallel_subagents:
-        dag_mw = DAGSubAgentMiddleware(subagents=subagents, ...)
-
-    # 步骤9: 文件系统权限
+    # 步骤8: 文件系统权限
     permissions = build_filesystem_permissions(...)
 
     # 步骤10: 收集自定义工具
@@ -919,74 +912,16 @@ def build_default_subagents():
 
 此外，**所有子 Agent 都不能使用 `write_todos`**（只有主 Agent 能规划任务）。
 
-### 8.3 并行子 Agent 调度（DAG 模式，实验性）
+### 8.3 默认调度方式（deepagents 原生 SubAgentMiddleware）
 
-开启 `parallel_subagents: true` 后，可以声明子 Agent 之间的依赖关系：
+默认使用 deepagents 内建的 `SubAgentMiddleware`：`build_coding_agent()` 把 `subagents` 直接传给
+`create_deep_agent(subagents=...)`，由框架在 ToolNode 阶段串行执行 `task` 工具调用。每个子 Agent
+在独立子图（独立上下文）中运行，完成后只把最终文本返回主 Agent，实现上下文隔离。
 
-```python
-# 主 Agent 可以一次性委派多个子 Agent：
-task("researcher", "搜索认证相关代码", task_id="search")
-task("tester", "基于搜索结果写测试", depends_on=["search"], task_id="test")
-task("reviewer", "审查测试", depends_on=["test"], task_id="review")
+> 说明：仓库曾引入过一版自研 `DAGSubAgentMiddleware`（拓扑排序 + `asyncio.gather` 波次并行），
+> 但已回退。如需并行/依赖编排，应在该原生委派基础上以独立 workflow 层实现。
 
-# 执行顺序：
-# 波次1: search（无依赖，先执行）
-# 波次2: test（等 search 完成）
-# 波次3: review（等 test 完成）
-```
-
-实现原理在 `src/synapse/parallel_subagents.py`，通过拓扑排序 + `asyncio.gather` 实现同波次并行。
-
-### 8.4 DAG 调度原理详解
-
-Parallel Sub-Agent 系统的核心是 `DAGSubAgentMiddleware`，它**替换了** deepagents 原生的 `SubAgentMiddleware`。
-
-**第一步：拦截模型输出。** 当主 Agent 生成工具调用时，中间件的 `awrap_model_call` 钩子会检查：是否包含 `task` 工具调用？如果有，全部提取出来。
-
-**第二步：拓扑排序 + 波次分组。** 核心算法是 `_topological_waves`：
-
-```python
-# 输入：
-#   task("researcher", "...", task_id="search")
-#   task("tester", "...", depends_on=["search"], task_id="test")
-#   task("reviewer", "...", depends_on=["test"], task_id="review")
-
-# 输出（3 个波次）：
-#   Wave 1: [search]           ← 无依赖，立即并行
-#   Wave 2: [test]              ← 等 search 完成
-#   Wave 3: [review]            ← 等 test 完成
-```
-
-具体算法：每次从剩余任务中扫描，把所有"依赖都已满足"的任务挑出来作为当前波次。如果出现循环依赖导致死锁（还有任务但所有都阻塞），直接抛 `ValueError`。每波最多并行数由 `max_parallel` 控制（默认 6）。
-
-**第三步：asyncio.gather 真并行。** 同一波次内的任务通过 `asyncio.gather` 同时执行（不是串行），充分利用 I/O 等待时间。每个子 Agent 独立调用 `runnable.ainvoke(...)`，执行完成后结果缓存到 `_dag_cache` 字典。
-
-**第四步：依赖上下文注入。** `_enrich_description` 函数会**自动把上游依赖任务的输出注入到下游任务的描述中**：
-
-```
-## 依赖任务 [search] 的输出
-(researcher 返回的代码分析结果)
-
----
-
-## 你的任务
-基于以上搜索结果，为未覆盖的函数写测试...
-```
-
-这意味着下游子 Agent 无需重复读取文件，直接在上游分析结果基础上工作。
-
-**第五步：结果替换。** 当 ToolNode 处理 `task` 工具时，`awrap_tool_call` 钩子直接从缓存取出预计算结果，返回为 `ToolMessage`。主 Agent 收到这些 ToolMessage 后继续推理。
-
-#### 两种调度模式对比
-
-| 特性 | 原生 SubAgentMiddleware | DAGSubAgentMiddleware |
-|------|------------------------|----------------------|
-| 调度方式 | 逐个串行调用 task | 拓扑排序 + 波次并行 |
-| 依赖声明 | 不支持 | `depends_on` + `task_id` |
-| 执行时机 | ToolNode 阶段 | `awrap_model_call` 预执行 |
-| 开启方式 | 默认 | `parallel_subagents=True` |
-
-### 8.5 子 Agent 创建时的关键设计决策
+### 8.4 子 Agent 创建时的关键设计决策
 
 每个子 Agent 也是一个完整的 `CompiledStateGraph`（LangGraph 图），有自己的模型、系统提示词和工具集。创建时遵循以下原则：
 

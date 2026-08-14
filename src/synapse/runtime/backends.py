@@ -32,6 +32,7 @@ from synapse.settings import Settings
 DEFAULT_SHELL_EXECUTABLE = "pwsh" if sys.platform == "win32" else "bash"
 
 
+
 def _basename(path_or_name: str) -> str:
     return Path(path_or_name).name.lower()
 
@@ -312,38 +313,6 @@ class CodingLocalShellBackend(LocalShellBackend):
                 return None
         return str(resolved)
 
-    def _grep_glob_candidates(
-        self,
-        core_tool: Any,
-        base_path: Path,
-        pattern: str,
-        glob: str,
-        max_results: int,
-        context_lines: int,
-        case_insensitive: bool,
-    ) -> list[dict[str, Any]]:
-        """Retry an empty include-glob search against core-enumerated candidate files."""
-        candidates = core_tool.glob(str(base_path), glob.lstrip("/"))["matches"]
-        matches: list[dict[str, Any]] = []
-        for candidate in candidates:
-            if candidate.get("is_dir") or len(matches) >= max_results:
-                continue
-            relative_path = str(candidate["path"])
-            file_path = base_path / relative_path
-            remaining = max_results - len(matches)
-            payload = core_tool.grep(
-                str(file_path),
-                pattern,
-                max_results=remaining,
-                context_lines=context_lines,
-                case_insensitive=case_insensitive,
-            )
-            for item in payload["matches"]:
-                matches.append(
-                    {"path": relative_path, "line": item["line"], "text": item["text"]}
-                )
-        return matches
-
     def grep(
         self,
         pattern: str,
@@ -362,20 +331,12 @@ class CodingLocalShellBackend(LocalShellBackend):
             return GrepResult(matches=[])
         try:
             payload = synapse_core_tool.grep(
-                str(base_path), pattern, include_glob=glob, max_results=max_results,
+                str(base_path), pattern,
+                include_glob=glob.lstrip("/") if glob else None,
+                max_results=max_results,
                 context_lines=context_lines, case_insensitive=case_insensitive,
             )
             raw_matches = list(payload["matches"])
-            if glob and not raw_matches and base_path.is_dir():
-                raw_matches = self._grep_glob_candidates(
-                    synapse_core_tool,
-                    base_path,
-                    pattern,
-                    glob,
-                    max_results,
-                    context_lines,
-                    case_insensitive,
-                )
         except (OSError, RuntimeError, ValueError) as exc:
             return GrepResult(error=f"Error searching path '{path or '.'}': {exc}", matches=[])
         matches = []

@@ -148,7 +148,6 @@ def build_coding_agent(
     model_cache: dict[str, Any] | None = None,
     steer_queue: SteerQueue | None = None,
     progress: Callable[[str], None] | None = None,
-    force_parallel_subagents: bool | None = None,
     prompt_cache_key: Callable[[], str | None] | None = None,
     goal_service: Any | None = None,
     mcp_pool_key: str | None = None,
@@ -270,15 +269,9 @@ def build_coding_agent(
         memory_paths = [p for p in memory_paths if Path(p).exists() and Path(p).name != "AGENTS.md"]
     skills_paths = settings.resolved_skills_paths(project_root)
 
-    effective_parallel_subagents = (
-        bool(settings.parallel_subagents)
-        if force_parallel_subagents is None
-        else bool(force_parallel_subagents)
-    )
-    subagents_enabled = bool(effective_parallel_subagents)
     with span("subagents"):
         subagents = build_default_subagents(
-            enabled=subagents_enabled,
+            enabled=settings.enable_subagents,
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
             isolate_tools=True,
@@ -287,29 +280,7 @@ def build_coding_agent(
             tool_output_disabled_types=settings.tool_output_disabled_types,
             tool_output_transform_plugins=settings.tool_output_transform_plugins,
             enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
-            inherited_openai_oauth=getattr(model, "_synapse_openai_oauth", False) is True,
         )
-    # -- DAG 并行子 Agent 中间件（替代 deepagents 内置 SubAgentMiddleware） --
-    _dag_mw: Any = None
-    _use_dag_subagents = bool(
-        effective_parallel_subagents
-        and subagents
-    )
-    if _use_dag_subagents:
-        from synapse.parallel_subagents import DAGSubAgentMiddleware
-
-        # backend must be shared so DAG-compiled subagents get filesystem tools.
-        # Without it, researcher/tester compile as empty shells (no read_file/glob).
-        _dag_mw = DAGSubAgentMiddleware(
-            subagents=subagents,
-            default_model=model,
-            backend=backend,
-            max_parallel=getattr(settings, "max_parallel_subagents", 6),
-        )
-        if not getattr(_dag_mw, "_subagent_runnables", None):
-            _dag_mw = None
-            _use_dag_subagents = False
-            subagents = None
     permissions = build_filesystem_permissions(
         enabled=settings.enable_fs_permissions,
         readonly=settings.readonly,
@@ -481,7 +452,6 @@ def build_coding_agent(
             goal_enabled=goals_enabled,
             goal_service=goal_service,
             steer_queue=steer_queue,
-            dag_middleware=_dag_mw,
             prompt_cache_key=prompt_cache_key,
         )
     )
@@ -501,7 +471,7 @@ def build_coding_agent(
             middleware=middleware,
             memory=memory_paths or None,
             skills=skills_paths or None,
-            subagents=None,
+            subagents=subagents,
             permissions=permissions,
             interrupt_on=interrupt_on,
             checkpointer=saver,
@@ -517,10 +487,6 @@ def build_coding_agent(
         else (get_goal_service() if goals_enabled else None)
     )  # type: ignore[attr-defined]
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
-    agent._coding_parallel_subagents = bool(_use_dag_subagents)  # type: ignore[attr-defined]
-    agent._coding_subagent_mode = (  # type: ignore[attr-defined]
-        "parallel" if _use_dag_subagents else "disabled"
-    )
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
     agent._coding_primary_image_input = primary_image_input  # type: ignore[attr-defined]
@@ -572,7 +538,6 @@ def rebuild_coding_agent(
     model_name: str | None = None,
     load_mcp: bool | None = None,
     defer_mcp_reconnect: bool = False,
-    force_parallel_subagents: bool | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> Any:
     """Rebuild an agent graph while reusing expensive live resources."""
@@ -583,9 +548,6 @@ def rebuild_coding_agent(
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
     model_cache = getattr(agent, "_coding_model_cache", None)
     prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
-    if force_parallel_subagents is None and hasattr(agent, "_coding_parallel_subagents"):
-        force_parallel_subagents = bool(getattr(agent, "_coding_parallel_subagents", False))
-
     mcp_tools: list[Any] | None = None
     if load_mcp is not None:
         want_mcp = bool(load_mcp)
@@ -614,7 +576,6 @@ def rebuild_coding_agent(
         mcp_tools=mcp_tools,
         steer_queue=steer_queue,
         progress=progress,
-        force_parallel_subagents=force_parallel_subagents,
         prompt_cache_key=prompt_cache_key,
     )
 
@@ -636,7 +597,6 @@ def attach_mcp_to_agent(
     prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
     pool = get_active_mcp_pool()
     pool_tools = list(getattr(pool, "tools", None) or []) if pool is not None else None
-    current_parallel = bool(getattr(agent, "_coding_parallel_subagents", False))
     return build_coding_agent(
         settings,
         project_root=project_root,
@@ -647,7 +607,6 @@ def attach_mcp_to_agent(
         mcp_tools=pool_tools,
         load_mcp=pool is None,
         steer_queue=steer_queue,
-        force_parallel_subagents=current_parallel,
         prompt_cache_key=prompt_cache_key,
     )
 

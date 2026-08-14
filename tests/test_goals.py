@@ -754,7 +754,6 @@ def test_turn_done_cancel_consumes_cancel_event(tmp_path) -> None:
     fake.clear_stream = lambda: None
     fake.set_activity = lambda *args, **kwargs: None
     fake._refresh_git_chrome = lambda: None
-    fake._clear_subagent_status = lambda: None
     fake.query_one = lambda *args, **kwargs: SimpleNamespace(focus=lambda: None)
     fake._clear_turn_context = lambda: None
     fake._bind_steer_queue = lambda: None

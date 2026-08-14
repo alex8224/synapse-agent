@@ -62,7 +62,6 @@ def build_default_subagents(
     tool_output_disabled_types: list[str] | None = None,
     tool_output_transform_plugins: list[str] | None = None,
     enable_native_tool_output_compression: bool = True,
-    inherited_openai_oauth: bool = False,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -174,16 +173,7 @@ def build_default_subagents(
         result_reader = build_tool_result_reader_tool(tool_output_db_path)
     for spec in (researcher, tester, reviewer):
         existing = list(spec.get("middleware") or [])
-        compat: list[Any] = []
-        # Explicit string models are independent profiles/providers. Only specs
-        # inheriting the positively-marked OAuth parent need Codex adaptation.
-        if inherited_openai_oauth and "model" not in spec:
-            from synapse.integrations.openai_oauth_middleware import (
-                build_openai_oauth_compat_middleware,
-            )
-
-            compat.append(build_openai_oauth_compat_middleware())
-        spec["middleware"] = result_middleware + _intent_middleware() + existing + compat
+        spec["middleware"] = result_middleware + _intent_middleware() + existing
         if result_reader is not None:
             spec["tools"] = [*list(spec.get("tools") or []), result_reader]
 

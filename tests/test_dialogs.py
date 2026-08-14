@@ -482,14 +482,6 @@ class TestDialogTransparentBackground:
         dlg = McpPanelDialog(Settings(_env_file=None, theme="cursor-dark"))
         assert dlg.styles.background.a == 0
 
-    def test_subagent_monitor_uses_transparent_screen(self):
-        from synapse.ui.dialogs.subagent_monitor import SubagentMonitorDialog
-
-        assert "background: transparent" in SubagentMonitorDialog.DEFAULT_CSS
-        assert "background: $theme-bg 60%" not in SubagentMonitorDialog.DEFAULT_CSS
-        dlg = SubagentMonitorDialog(MagicMock())
-        assert dlg.styles.background.a == 0
-
 
 class TestDialogWindowFitsScreen:
     """Window height is capped to the terminal so the modal screen itself

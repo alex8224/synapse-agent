@@ -264,17 +264,6 @@ APP_CSS = """
         background: $theme-bg;
         content-align: left middle;
     }
-    #subagent-status {
-        height: auto;
-        min-height: 1;
-        padding: 0 2;
-        color: $theme-fg;
-        background: $theme-bar;
-        display: none;
-    }
-    #subagent-status.visible {
-        display: block;
-    }
     /* Must be in the app stylesheet: widget DEFAULT_CSS is parsed separately
        and cannot resolve the app's $theme-* variables. */
     TurnRailItem {

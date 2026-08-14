@@ -79,7 +79,6 @@ nav:
       - P6 Client 反向服务: acp-adapter/phase-6-client-services.md
       - P7 高级能力: acp-adapter/phase-7-advanced-capabilities.md
       - P8 合规与发布: acp-adapter/phase-8-compliance.md
-  - 子代理架构调研: subagent-architecture-survey.md
   - 模型配置: models.md
   - MCP Server: mcp.md
   - 会话管理: sessions.md

@@ -142,9 +142,6 @@ class SlashController:
         if cmd == "/mcp" and len(parts) == 1:
             self.open_mcp_dialog()
             return True
-        if cmd in {"/subagents", "/agents"} and len(parts) == 1:
-            self.open_subagent_monitor()
-            return True
         if cmd == "/safety" and len(parts) == 1:
             self.open_safety_dialog()
             return True
@@ -710,11 +707,6 @@ class SlashController:
             ),
             self.on_mcp_dialog_done,
         )
-
-    def open_subagent_monitor(self) -> None:
-        from synapse.ui.dialogs import SubagentMonitorDialog
-
-        self._app.push_screen(SubagentMonitorDialog(self._app._subagent_monitor))
 
     def on_mcp_dialog_done(self, result: object) -> None:
         if result is None:

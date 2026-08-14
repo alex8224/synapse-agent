@@ -186,7 +186,9 @@ def test_native_grep_supports_regex_glob_and_virtual_paths(tmp_path: Path):
     ]
 
 
-def test_native_grep_retries_empty_include_glob_result(tmp_path: Path):
+def test_native_grep_normalizes_leading_slash_in_include_glob(tmp_path: Path):
+    """include_glob must be relative (no leading slash) so the native globset
+    matches relative paths; there is no per-file retry fallback anymore."""
     backend = CodingLocalShellBackend(
         root_dir=tmp_path,
         virtual_mode=True,
@@ -196,28 +198,19 @@ def test_native_grep_retries_empty_include_glob_result(tmp_path: Path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "app.py").write_text("TODO: recovered\n", encoding="utf-8")
-    empty_payload = {"matches": [], "total_matches": 0, "truncated": False}
-    file_payload = {
-        "matches": [{"path": "", "line": 1, "text": "TODO: recovered"}],
+    payload = {
+        "matches": [{"path": "app.py", "line": 1, "text": "TODO: recovered"}],
         "total_matches": 1,
         "truncated": False,
     }
-    glob_payload = {
-        "matches": [{"path": "app.py", "is_dir": False}],
-    }
 
-    with (
-        patch("synapse_core_tool.grep", side_effect=[empty_payload, file_payload]) as grep,
-        patch("synapse_core_tool.glob", return_value=glob_payload) as glob,
-    ):
-        result = backend.grep("TODO", path="/src", glob="*.py", max_results=10)
+    with patch("synapse_core_tool.grep", return_value=payload) as grep:
+        result = backend.grep("TODO", path="/src", glob="/**/*.py", max_results=10)
 
     assert result.error is None
     assert result.matches == [{"path": "/src/app.py", "line": 1, "text": "TODO: recovered"}]
-    glob.assert_called_once_with(str(src), "*.py")
-    assert grep.call_count == 2
-    assert grep.call_args_list[0].kwargs["include_glob"] == "*.py"
-    assert "include_glob" not in grep.call_args_list[1].kwargs
+    grep.assert_called_once()
+    assert grep.call_args.kwargs["include_glob"] == "**/*.py"
 
 
 def test_search_files_tool_applies_glob_as_include_filter(tmp_path: Path):

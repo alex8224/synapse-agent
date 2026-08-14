@@ -2,7 +2,7 @@
 
 > 基于 `src/synapse/**/*.py` 全部源文件分析，版本 v0.1.10+
 > 侧重**运行时流程与组件交互**。结构总览参见 `docs/architecture.md`
-> 第四轮更新：完整15中间件栈 / 工具输出变换管道 / DAG子代理调度 / MCP SessionPool / 交互账本 / Steer中程引导（2025-07）
+> 第四轮更新：完整15中间件栈 / 工具输出变换管道 / MCP SessionPool / 交互账本 / Steer中程引导（2025-07）
 
 ---
 
@@ -85,21 +85,20 @@ Settings
   ├─ 8. _build_checkpointer(settings)                ← AsyncSqliteSaver / MemorySaver
   ├─ 9. 解析 memory_paths / skills_paths
   ├─ 10. build_default_subagents(...)                ← researcher / tester / reviewer
-  ├─ 11. DAGSubAgentMiddleware (可选, 并行模式)
-  ├─ 12. build_filesystem_permissions(...)           ← 默认 None (LocalShellBackend)
-  ├─ 13. 构造工具列表: session_tools + MCP tools + extra_tools
-  ├─ 14. MCP 加载决策 (eager / deferred)
-  ├─ 15. 初始化 ToolOutputRepository + ToolOutputTransformPipeline
-  ├─ 16. 组装 middleware 列表 (15个中间件, 见第三节)
-  ├─ 17. 可选: RAG (ProjectKnowledgeBase) / LTM (LongTermMemory)
+  ├─ 11. build_filesystem_permissions(...)           ← 默认 None (LocalShellBackend)
+  ├─ 12. 构造工具列表: session_tools + MCP tools + extra_tools
+  ├─ 13. MCP 加载决策 (eager / deferred)
+  ├─ 14. 初始化 ToolOutputRepository + ToolOutputTransformPipeline
+  ├─ 15. 组装 middleware 列表 (14个中间件, 见第三节)
+  ├─ 16. 可选: RAG (ProjectKnowledgeBase) / LTM (LongTermMemory)
   │
-  └─ 18. create_deep_agent(
+  └─ 17. create_deep_agent(
          model=model,
          system_prompt=build_system_prompt(root),
          backend=backend, tools=tools,
-         middleware=middleware,       ← 15个中间件
+         middleware=middleware,       ← 14个中间件
          memory=memory_paths, skills=skills_paths,
-         subagents=None,             ← DAGSubAgentMiddleware 接管
+         subagents=subagents,        ← deepagents 原生委派
          permissions=None,           ← LocalShellBackend 不兼容
          interrupt_on=None,          ← dev-autopass 无中断
          checkpointer=saver, debug=settings.debug,
@@ -136,7 +135,6 @@ deferred → 仅读服务器名称(UI状态栏), 后续 /mcp reload 触发 hot-a
 | `_coding_checkpointer` | AsyncSqliteSaver 实例 |
 | `_coding_steer_queue` | SteerQueue (跨图重建保持) |
 | `_coding_subagents` | subagent 声明列表 |
-| `_coding_parallel_subagents` | DAG 并行模式是否激活 |
 | `_coding_async_only` | 是否仅支持异步调用 |
 | `_coding_mcp_attached` | MCP 是否已连接 |
 | `_coding_knowledge_base` | ProjectKnowledgeBase (可选) |
@@ -161,12 +159,12 @@ deferred → 仅读服务器名称(UI状态栏), 后续 /mcp reload 触发 hot-a
 | 9 | **IntentSchemaMiddleware** (x2) | `build_intent_schema_middleware()` | before_model+after_tool | 注入/剥离 intent 字段 |
 | 10 | **SteerMiddleware** | `build_steer_middleware(steer_queue)` | before_model | 中程用户引导注入 |
 | 11 | **CompactToolMiddleware** | `build_compact_tool_middleware()` | after_tool | compact_conversation 工具 |
-| 12 | **DAGSubAgentMiddleware** (可选) | `DAGSubAgentMiddleware(...)` | before_model | DAG并行子代理调度 |
-| 13 | **StripRedundantPromptMiddleware** | `build_strip_redundant_prompt_blocks()` | before_model | 移除冗余 blocks |
-| 14 | **CompactToolDescriptionsMiddleware** | `build_compact_tool_descriptions()` | before_model | 压缩工具描述(~30K token) |
-| 15 | **ModelRequestCompressionMiddleware** | `build_model_request_compression_middleware()` | before_model | 诊断:token计数,stale替换 |
+> 注：仓库曾引入自研 `DAGSubAgentMiddleware`（第12位，可选），已回退。当前子代理走 deepagents 原生 `SubAgentMiddleware`（框架内置，不在本表）。
+| 12 | **StripRedundantPromptMiddleware** | `build_strip_redundant_prompt_blocks()` | before_model | 移除冗余 blocks |
+| 13 | **CompactToolDescriptionsMiddleware** | `build_compact_tool_descriptions()` | before_model | 压缩工具描述(~30K token) |
+| 14 | **ModelRequestCompressionMiddleware** | `build_model_request_compression_middleware()` | before_model | 诊断:token计数,stale替换 |
 
-> deepagents 内置中间件(框架自动添加): SummarizationMiddleware, FilesystemMiddleware, TodoListMiddleware, SkillsMiddleware, MemoryMiddleware。DAGSubAgentMiddleware 替代内置 SubAgentMiddleware。
+> deepagents 内置中间件(框架自动添加): SummarizationMiddleware, FilesystemMiddleware, TodoListMiddleware, SkillsMiddleware, MemoryMiddleware, SubAgentMiddleware。
 
 ### 3.2 洋葱模型执行顺序
 
@@ -242,7 +240,7 @@ before_model:
 │  4. LangGraph ToolNode 路由                              │
 │     ├─ 文件工具 → FilesystemMiddleware → backend         │
 │     ├─ execute → CodingLocalShellBackend._execute()      │
-│     ├─ task → DAGSubAgentMiddleware                      │
+│     ├─ task → SubAgentMiddleware (原生)                      │
 │     └─ compact_conversation → SummarizationMiddleware    │
 │  5. wrap_tool_call 洋葱层                                │
 │     PathNormalize → Intent(strip) → ErrorRecovery →      │
@@ -369,20 +367,17 @@ interaction_events      ← 模型/工具交互事件
 | **自定义 model** | researcher_model | tester_model | reviewer_model |
 | **共同排除** | write_todos | write_todos | write_todos |
 
-### 7.2 DAGSubAgentMiddleware 调度算法
+### 7.2 子 Agent 调度（deepagents 原生 SubAgentMiddleware）
 
 ```
-_execute_dag(task_calls):
-  1. 解析 task 调用 → tasks 列表
-  2. while remaining:
-       ready, remaining = _topological_waves(remaining, completed)
-       if not ready and remaining → 死锁报错
-       batch = ready[:max_parallel]  (默认6)
-       ★ asyncio.gather(*batch) 并行执行
-  3. 返回 (results, task_wave, task_deps, total_waves)
+SubAgentMiddleware (deepagents 内置):
+  1. 主 Agent 在模型输出中调用 task(subagent_type, description)
+  2. ToolNode 阶段执行: 每个 task 编译为独立子图 (独立上下文)
+  3. 子 Agent 完成后仅返回最终文本 → ToolMessage
+  4. 主 Agent 收到所有 task 结果后继续推理
 ```
 
-**depends_on 语义**: 依赖任务输出注入下游描述；循环依赖→ValueError；task() 同步阻塞: 同轮 task 在本轮内全部执行完。
+子 Agent 工具隔离由 `build_default_subagents()` 的 tool-exclusion middleware 实现；无 depends_on / task_id / 波次并行。
 
 ---
 
@@ -473,7 +468,7 @@ load_settings(**overrides):
 | 安全 | require_approval(False), safety_profile("dev-autopass") | -- |
 | 检查点 | checkpoint_backend("sqlite") | project/.synapse/ |
 | 工具输出 | enable_tool_output_transform(True), threshold_bytes(512) | -- |
-| 子代理 | enable_subagents(True), parallel_subagents(False), max_parallel(6) | -- |
+| 子代理 | enable_subagents(True) | -- |
 | MCP | enable_mcp(True), mcp_eager(False) | -- |
 | UI | theme("cursor-dark"), history_tail_turns(20) | -- |
 | 记忆/RAG | enable_memory(False), enable_rag(False) | -- |
@@ -570,8 +565,8 @@ Tab 补全: slash_complete.py 按命令分派，支持模型名/会话ID/服务�
           │              build_coding_agent()                       │
           │  Middleware: 15 个中间件 (洋葱模型)                      │
           │  Tools: session_tools + MCP tools                       │
-          │  Subagents: DAGSubAgentMiddleware (researcher/tester/   │
-          │             reviewer, max_parallel=6)                   │
+          │  Subagents: deepagents 原生委派 (researcher/tester/      │
+          │             reviewer)                                    │
           │  Backend: CodingLocalShellBackend (UTF-8, pwsh)         │
           │  Checkpointer: AsyncSqliteSaver (WAL)                   │
           └──────────────────────────┬──────────────────────────────┘
@@ -611,7 +606,7 @@ agent.py ──────┬──▶ agent_md.py (AgentMdMiddleware)
                ├──▶ middleware.py (retry, path_normalize, intent, ...)
                ├──▶ steer.py (SteerQueue → SteerMiddleware)
                ├──▶ context_compact.py (SummarizationToolMiddleware)
-               ├──▶ subagents.py → parallel_subagents.py (DAG)
+               ├──▶ subagents.py (researcher/tester/reviewer specs)
                ├──▶ fs_permissions.py (None for LocalShell)
                ├──▶ model_request_compression_middleware.py
                ├──▶ tool_output_middleware.py

@@ -42,7 +42,6 @@ from synapse.sessions.transcript_projection import (
     TranscriptUsage,
     default_transcript_projection_path,
 )
-from synapse.subagent_monitor import SubagentMonitor
 from synapse.tool_output.metrics import clear_metrics_notifier, set_metrics_notifier
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.ui.agent_lifecycle import AgentLifecycleController
@@ -90,7 +89,6 @@ from synapse.ui.selectable_static import (
 from synapse.ui.status_controller import StatusController
 from synapse.ui.steer_controller import SteerController
 from synapse.ui.steer_widget import SteerQueueWidget
-from synapse.ui.subagent_status_bar import SubagentStatusBar
 from synapse.ui.theme_controller import ThemeController
 from synapse.ui.timeline import TODO_MARK_ACTIVE as _TODO_MARK_ACTIVE
 from synapse.ui.timeline import TODO_MARK_DONE as _TODO_MARK_DONE
@@ -222,7 +220,6 @@ class CodingAgentApp(App[None]):
         Binding("f6", "dialog_safety", "Safety", show=False),
         Binding("f7", "dialog_codex_import", "Import Codex", show=False),
         Binding("f8", "dialog_theme_designer", "Design Theme", show=False),
-        Binding("f9", "dialog_subagents", "Subagents", show=False),
         Binding("f10", "dialog_sessions_delete", "Delete sessions", show=False),
         Binding("f11", "dialog_debug_inspector", "Debug Inspector", show=True),
         Binding("f12", "project_drawer", "Projects", show=True),
@@ -278,9 +275,6 @@ class CodingAgentApp(App[None]):
 
     def action_dialog_theme_designer(self) -> None:
         self._open_theme_designer()
-
-    def action_dialog_subagents(self) -> None:
-        self._open_subagent_monitor()
 
     def action_dialog_debug_inspector(self) -> None:
         """Start the inspector without blocking Textual's event loop."""
@@ -370,8 +364,6 @@ class CodingAgentApp(App[None]):
         self._theme = ThemeController(self)
         self._status = StatusController(self)
         self._status._detail = "ready" if agent is not None else "starting"
-        self._subagent_monitor = SubagentMonitor()
-        self._subagent_status_text = ""
         self._skip_steer_followup = False
         self._transcript = TranscriptController(self)
         # Paginated transcript restore: only the last N visible turns are
@@ -464,7 +456,6 @@ class CodingAgentApp(App[None]):
             yield Static(id="stream")
         with Vertical(id="bottom-chrome"):
             yield SteerQueueWidget(id="steer-queue")
-            yield SubagentStatusBar("", id="subagent-status")
             yield Static("", id="status")
             yield Static("", id="complete-hint")
             yield ImagePreview(id="image-preview")
@@ -1639,6 +1630,15 @@ class CodingAgentApp(App[None]):
     def set_activity(self, phase: str, detail: str = "", reset_timer: bool = False) -> None:
         self._status.set_activity(phase, detail, reset_timer)
 
+    def _clear_subagent_status(self) -> None:
+        """Keep the pre-status-controller turn contract compatible.
+
+        The dedicated subagent status widget was removed; subagent activity is
+        now cleared by the streaming sink and the normal idle transition in
+        ``TurnController.turn_done``.  Keep this entry point because plugins
+        and older turn-controller fixtures may still call it.
+        """
+
     def _resident_status_right(self) -> str:
         """Deprecated: model/mcp live on the bottombar now."""
         return ""
@@ -1690,63 +1690,11 @@ class CodingAgentApp(App[None]):
         self._steer.clear()
 
     def _tick_status(self) -> None:
-        busy = self._status.tick()
-        if busy:
-            # Auto-open subagent monitor when DAG planning registers tasks
-            # during an active turn — shows live status immediately.
-            self._maybe_auto_open_subagent_monitor()
+        self._status.tick()
         # Keep Thought "Thinking… Xs" / final seal clock honest between tokens.
         live = self._transcript.state.live_stream_block
         if isinstance(live, ThoughtBlock) and live.live:
             live.tick_live()
-
-    def _maybe_auto_open_subagent_monitor(self) -> None:
-        """Render inline subagent status in the main TUI during DAG execution."""
-        monitor = getattr(self, "_subagent_monitor", None)
-        if monitor is None:
-            return
-        _, runs = monitor.snapshot()
-        status_widget = self.query_one("#subagent-status", Static)
-        if not runs:
-            self._subagent_status_text = ""
-            status_widget.remove_class("visible")
-            status_widget.update("")
-            return
-        counts: dict[str, int] = {}
-        for r in runs:
-            s = r.status or ""
-            counts[s] = counts.get(s, 0) + 1
-        parts: list[str] = ["Subagents:"]
-        if counts.get("pending"):
-            parts.append(f"\u25a1 {counts['pending']} pending")
-        if counts.get("running"):
-            parts.append(f"\u26a1 {counts['running']} running")
-        if counts.get("ok"):
-            parts.append(f"\u2713 {counts['ok']} done")
-        if counts.get("error"):
-            parts.append(f"\u2717 {counts['error']} error")
-        text = "  ".join(parts)
-        if text != getattr(self, "_subagent_status_text", ""):
-            self._subagent_status_text = text
-            status_widget.update(text)
-            status_widget.add_class("visible")
-        # Keep the dialog auto-open as a fallback for the first detection
-        # in a turn — then the inline bar takes over for updates.
-        if not getattr(self, "_subagent_monitor_auto_opened", False):
-            active = any(r.status in {"pending", "running"} for r in runs)
-            if active:
-                self._subagent_monitor_auto_opened = True
-                self._open_subagent_monitor()
-
-    def _clear_subagent_status(self) -> None:
-        """Clear the inline subagent status bar (called on turn reset)."""
-        self._subagent_status_text = ""
-        try:
-            w = self.query_one("#subagent-status", Static)
-            w.remove_class("visible")
-            w.update("")
-        except Exception:  # noqa: BLE001
-            pass
 
     # -- transcript controller forwarding ---------------------------------
 
@@ -1954,9 +1902,6 @@ class CodingAgentApp(App[None]):
         self._image_bank.clear()
         self.refresh_image_preview()
         self._prompt.clear_paste_replacements()
-        self._subagent_monitor.reset()
-        self._subagent_monitor_auto_opened = False
-        self._subagent_status_text = ""
         # Drop paginated-history state together with the DOM.
         self._history.state.reset()
 
@@ -2296,9 +2241,6 @@ class CodingAgentApp(App[None]):
     def _open_mcp_dialog(self) -> None:
         self._slash.open_mcp_dialog()
 
-    def _open_subagent_monitor(self) -> None:
-        self._slash.open_subagent_monitor()
-
     def _on_mcp_dialog_done(self, result: object) -> None:
         self._slash.on_mcp_dialog_done(result)
 
@@ -2349,14 +2291,11 @@ class CodingAgentApp(App[None]):
 
         launch_context = getattr(self._turn, "launch_context", None)
         if callable(launch_context):
-            thread_id, agent, generation, monitor_id = launch_context()
+            thread_id, agent, generation = launch_context()
         else:  # compatibility for lightweight hosts/extensions
             thread_id = self.thread_id
             agent = getattr(self, "agent", None)
             generation = int(getattr(self, "_transcript_generation", 0))
-            monitor_id = str(
-                getattr(getattr(self, "_subagent_monitor", None), "monitor_id", "")
-            )
 
         def _run() -> None:
             if callable(launch_context):
@@ -2364,7 +2303,6 @@ class CodingAgentApp(App[None]):
                     "thread_id": thread_id,
                     "agent": agent,
                     "transcript_generation": generation,
-                    "monitor_id": monitor_id,
                 }
                 if reservation is not None:
                     kwargs["reservation"] = reservation
@@ -2384,14 +2322,11 @@ class CodingAgentApp(App[None]):
     def run_resume(self, action: str, message: str | None = None) -> None:
         launch_context = getattr(self._turn, "launch_context", None)
         if callable(launch_context):
-            thread_id, agent, generation, monitor_id = launch_context()
+            thread_id, agent, generation = launch_context()
         else:  # compatibility for lightweight hosts/extensions
             thread_id = self.thread_id
             agent = getattr(self, "agent", None)
             generation = int(getattr(self, "_transcript_generation", 0))
-            monitor_id = str(
-                getattr(getattr(self, "_subagent_monitor", None), "monitor_id", "")
-            )
 
         def _run() -> None:
             if callable(launch_context):
@@ -2401,7 +2336,6 @@ class CodingAgentApp(App[None]):
                     thread_id=thread_id,
                     agent=agent,
                     transcript_generation=generation,
-                    monitor_id=monitor_id,
                 )
             else:
                 self._turn.run_resume(action, message)

@@ -7,7 +7,6 @@ from typing import Any
 
 from synapse.content.multimodal import compose_user_content, provider_from_settings
 from synapse.runtime.agent_loop.request import TurnRequest
-from synapse.subagent_monitor import MONITOR_CONFIG_KEY
 
 
 def build_turn_request(
@@ -16,7 +15,6 @@ def build_turn_request(
     attachments: Sequence[Any] | None,
     settings: Any,
     thread_id: str,
-    monitor_id: str,
     max_concurrency: int | None = None,
 ) -> TurnRequest:
     """Compatibility builder preserving old module patch points."""
@@ -32,7 +30,6 @@ def build_turn_request(
         config={
             "configurable": {
                 "thread_id": thread_id,
-                MONITOR_CONFIG_KEY: monitor_id,
             },
             "max_concurrency": max_concurrency
             if max_concurrency is not None

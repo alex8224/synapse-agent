@@ -261,12 +261,6 @@ class Settings(BaseSettings):
     subagent_reviewer_model: str | None = Field(
         default=None, validation_alias="AGENT_SUBAGENT_REVIEWER_MODEL"
     )
-    parallel_subagents: bool = Field(
-        default=False, validation_alias="AGENT_PARALLEL_SUBAGENTS"
-    )
-    max_parallel_subagents: int = Field(
-        default=6, validation_alias="AGENT_MAX_PARALLEL_SUBAGENTS"
-    )
     readonly: bool = Field(default=False, validation_alias="AGENT_READONLY")
     excluded_tools: list[str] = Field(default_factory=list, validation_alias="AGENT_EXCLUDED_TOOLS")
     enable_fs_permissions: bool = Field(

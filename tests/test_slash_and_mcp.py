@@ -105,7 +105,6 @@ def test_slash_switch_persists_outgoing_model_binding(tmp_path: Path):
         _coding_model_registry=None,
         _coding_model_cache=None,
         _coding_prompt_cache_key=None,
-        _coding_parallel_subagents=False,
         _coding_mcp_attached=False,
     )
     store = SessionStore(settings.resolved_sessions_path())
@@ -130,9 +129,10 @@ def test_slash_switch_persists_outgoing_model_binding(tmp_path: Path):
         store2.close()
 
 
-def test_slash_subagents_reports_disabled_mode(tmp_path: Path):
+def test_slash_subagents_reports_disabled_when_disabled(tmp_path: Path):
     settings = _FakeSettings(tmp_path)
-    agent = SimpleNamespace(_coding_subagents=None, _coding_subagent_mode="disabled")
+    settings.enable_subagents = False
+    agent = SimpleNamespace(_coding_subagents=None)
 
     result = handle_slash(
         "/subagents",
@@ -143,24 +143,13 @@ def test_slash_subagents_reports_disabled_mode(tmp_path: Path):
     )
 
     assert result.handled
-    assert result.lines[0] == "subagent mode: disabled"
-    assert result.lines[1] == "subagents: disabled"
+    assert result.lines == ["subagents: disabled"]
     assert result.markdown == "## Sub-agents\n\n*disabled*"
 
 
-def test_slash_subagents_reports_parallel_specs(tmp_path: Path):
+def test_slash_subagents_reports_default_specs(tmp_path: Path):
     settings = _FakeSettings(tmp_path)
-    agent = SimpleNamespace(
-        _coding_subagent_mode="parallel",
-        _coding_subagents=[
-            {
-                "name": "researcher",
-                "description": "inspect code",
-                "middleware": [],
-                "tools": [],
-            }
-        ],
-    )
+    agent = SimpleNamespace(_coding_subagents=None)
 
     result = handle_slash(
         "/subagents",
@@ -171,8 +160,11 @@ def test_slash_subagents_reports_parallel_specs(tmp_path: Path):
     )
 
     assert result.handled
-    assert result.lines[0] == "subagent mode: parallel"
-    assert "Mode: `parallel`" in str(result.markdown)
+    assert result.lines[0] == "subagents: 3"
+    assert "## Sub-agents (3)" in result.markdown
+    assert "researcher" in result.markdown
+    assert "tester" in result.markdown
+    assert "reviewer" in result.markdown
 
 
 def test_slash_session_management(tmp_path: Path):
