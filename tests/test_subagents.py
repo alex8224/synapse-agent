@@ -14,6 +14,7 @@ from synapse.runtime.subagent_specs import (
     compile_task_specs,
     parse_agent_markdown,
     render_agent_markdown,
+    resolve_subagent_model_config,
 )
 from synapse.runtime.subagents import (
     _builtin_definitions,
@@ -187,6 +188,63 @@ def test_compile_inherit_defaults_and_model(tmp_path: Path) -> None:
         "find_files",
         "search_files",
     ]
+
+
+def _oauth_middleware_present(spec: dict) -> bool:
+    return any(
+        type(item).__name__ == "_OpenAIOAuthCompatMiddleware"
+        for item in spec["middleware"]
+    )
+
+
+def test_compile_oauth_pinned_model_adds_oauth_message_compatibility() -> None:
+    """Only OAuth-marked models get the Responses-compat middleware."""
+    definition = SubAgentDefinition(
+        name="x", description="d", system_prompt="p", model="openai:codex-compatible"
+    )
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> object:
+        return SimpleNamespace(_synapse_openai_oauth=True)
+
+    specs = compile_task_specs(
+        [definition], inherit_tools=[], model_factory=factory
+    )
+    assert _oauth_middleware_present(specs[0])
+
+
+def test_compile_non_oauth_pinned_model_skips_oauth_message_compatibility() -> None:
+    """Plain OpenAI / Anthropic pinned models must not get OAuth rewrites."""
+    definition = SubAgentDefinition(
+        name="x", description="d", system_prompt="p", model="anthropic:claude"
+    )
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> object:
+        return SimpleNamespace(_synapse_openai_oauth=False)
+
+    specs = compile_task_specs(
+        [definition], inherit_tools=[], model_factory=factory
+    )
+    assert not _oauth_middleware_present(specs[0])
+
+
+def test_compile_raw_string_model_skips_oauth_message_compatibility() -> None:
+    """Ad-hoc raw model names (no factory-built instance) are not OAuth."""
+    definition = SubAgentDefinition(
+        name="x", description="d", system_prompt="p", model="openai:codex-compatible"
+    )
+
+    specs = compile_task_specs([definition], inherit_tools=[])
+
+    assert specs[0]["model"] == "openai:codex-compatible"
+    assert not _oauth_middleware_present(specs[0])
+
+
+def test_compile_inherited_model_skips_oauth_message_compatibility() -> None:
+    definition = SubAgentDefinition(name="x", description="d", system_prompt="p")
+
+    specs = compile_task_specs([definition], inherit_tools=[])
+
+    assert not _oauth_middleware_present(specs[0])
 
 
 def test_compile_skips_disabled_and_handoff(tmp_path: Path) -> None:
@@ -403,3 +461,268 @@ def test_ensure_user_subagents_force_overwrites(tmp_path: Path, monkeypatch) -> 
     text = edited.read_text(encoding="utf-8")
     assert "custom body" not in text
     assert "testing specialist" in text
+
+
+# --------------------------------------------------------------------------- #
+# reasoning_effort parsing / rendering
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_reasoning_effort(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path / "a.md",
+        "name: n\ndescription: d\nmodel: algo:1\nreasoning_effort: high\n",
+    )
+    d = parse_agent_markdown(path)
+    assert d.reasoning_effort == "high"
+
+
+def test_render_reasoning_effort_roundtrip(tmp_path: Path) -> None:
+    d = SubAgentDefinition(
+        name="n",
+        description="d",
+        system_prompt="p",
+        model="algo:1",
+        reasoning_effort="medium",
+    )
+    path = tmp_path / "n.md"
+    path.write_text(render_agent_markdown(d), encoding="utf-8")
+    assert parse_agent_markdown(path).reasoning_effort == "medium"
+
+
+def test_parse_invalid_reasoning_effort(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path / "a.md",
+        "name: n\ndescription: d\nreasoning_effort: [high]\n",
+    )
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        parse_agent_markdown(path)
+
+
+def test_parse_reasoning_effort_rejects_unknown_level(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path / "a.md",
+        "name: n\ndescription: d\nreasoning_effort: turbo\n",
+    )
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        parse_agent_markdown(path)
+
+
+def test_parse_reasoning_effort_accepts_inherit(tmp_path: Path) -> None:
+    path = _write_agent(
+        tmp_path / "a.md",
+        "name: n\ndescription: d\nreasoning_effort: inherit\n",
+    )
+    assert parse_agent_markdown(path).reasoning_effort == "inherit"
+
+
+# --------------------------------------------------------------------------- #
+# resolve_subagent_model_config priority
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_model_config_override_wins(tmp_path: Path) -> None:
+    d = SubAgentDefinition(
+        name="tester",
+        description="d",
+        system_prompt="p",
+        model="def:m",
+        reasoning_effort="low",
+    )
+    model, effort = resolve_subagent_model_config(
+        d,
+        name_overrides={"tester": ("override:m", "high")},
+        default_model="global:m",
+        default_reasoning_effort="medium",
+    )
+    assert model == "override:m"
+    assert effort == "high"
+
+
+def test_resolve_model_config_definition_then_default(tmp_path: Path) -> None:
+    d = SubAgentDefinition(
+        name="tester", description="d", system_prompt="p", model="def:m"
+    )
+    model, effort = resolve_subagent_model_config(
+        d,
+        default_model="global:m",
+        default_reasoning_effort="medium",
+    )
+    assert model == "def:m"
+    assert effort == "medium"
+
+
+def test_resolve_model_config_inherit_returns_none(tmp_path: Path) -> None:
+    d = SubAgentDefinition(
+        name="tester",
+        description="d",
+        system_prompt="p",
+        model="inherit",
+        reasoning_effort="inherit",
+    )
+    model, effort = resolve_subagent_model_config(d, name_overrides={"tester": (None, None)})
+    assert model is None
+    assert effort is None
+
+
+def test_resolve_model_config_override_inherit_skips_layer(tmp_path: Path) -> None:
+    """An override of "inherit" means "not configured here": the definition
+    frontmatter (and then the global default) still applies."""
+    d = SubAgentDefinition(
+        name="tester",
+        description="d",
+        system_prompt="p",
+        model="def:m",
+        reasoning_effort="low",
+    )
+    model, effort = resolve_subagent_model_config(
+        d,
+        name_overrides={"tester": ("inherit", "inherit")},
+        default_model="global:m",
+        default_reasoning_effort="medium",
+    )
+    assert (model, effort) == ("def:m", "low")
+
+    # All layers "inherit" / unset => follow the main agent.
+    d2 = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+    model, effort = resolve_subagent_model_config(
+        d2,
+        name_overrides={"tester": ("inherit", "inherit")},
+        default_model="inherit",
+        default_reasoning_effort="inherit",
+    )
+    assert (model, effort) == (None, None)
+
+
+# --------------------------------------------------------------------------- #
+# compile_task_specs with model_factory
+# --------------------------------------------------------------------------- #
+
+
+def test_compile_factory_applies_overrides_and_reasoning() -> None:
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+
+    built: list[tuple[str | None, str | None]] = []
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> str:
+        built.append((model_name, reasoning_effort))
+        return f"MODEL({model_name},{reasoning_effort})"
+
+    specs = compile_task_specs(
+        [d],
+        inherit_tools=[],
+        model_factory=factory,
+        model_overrides={"tester": "algo:1"},
+        reasoning_effort_overrides={"tester": "high"},
+    )
+    assert specs[0]["model"] == "MODEL(algo:1,high)"
+    assert built == [("algo:1", "high")]
+
+
+def test_compile_factory_reasoning_only_pins_inherited_model() -> None:
+    """A reasoning-only override must still pin a model instance (inherit
+    model name) so the effort override actually reaches the subagent."""
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+
+    built: list[tuple[str | None, str | None]] = []
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> str:
+        built.append((model_name, reasoning_effort))
+        return f"MODEL({model_name},{reasoning_effort})"
+
+    specs = compile_task_specs(
+        [d],
+        inherit_tools=[],
+        model_factory=factory,
+        reasoning_effort_overrides={"tester": "off"},
+    )
+    assert specs[0]["model"] == "MODEL(None,off)"
+    assert built == [(None, "off")]
+
+
+def test_compile_factory_default_reasoning_only_pins_inherited_model() -> None:
+    """Global default reasoning without a default model also pins a model."""
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> str:
+        assert model_name is None
+        assert reasoning_effort == "low"
+        return "MODEL"
+
+    specs = compile_task_specs(
+        [d],
+        inherit_tools=[],
+        model_factory=factory,
+        default_reasoning_effort="low",
+    )
+    assert specs[0]["model"] == "MODEL"
+
+
+def test_compile_factory_string_model_skips_oauth_middleware() -> None:
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> str:
+        return model_name or "openai:codex"
+
+    specs = compile_task_specs(
+        [d],
+        inherit_tools=[],
+        model_factory=factory,
+        model_overrides={"tester": "openai:codex"},
+    )
+    assert specs[0]["model"] == "openai:codex"
+    assert not any(
+        type(item).__name__ == "_OpenAIOAuthCompatMiddleware"
+        for item in specs[0]["middleware"]
+    )
+
+
+def test_compile_factory_inherit_keeps_model_unset() -> None:
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> str:
+        return model_name or ""
+
+    specs = compile_task_specs([d], inherit_tools=[], model_factory=factory)
+    assert "model" not in specs[0]
+
+
+def test_subagent_definition_positional_args_keep_order() -> None:
+    """New fields are appended at the end so legacy positional construction
+    (name, description, prompt, model, tools, disallowed_tools, ownership, ...)
+    keeps its meaning."""
+    d = SubAgentDefinition(
+        "n", "d", "p", "model:m", ["a"], ["b"], "task", None, True, "builtin"
+    )
+    assert d.model == "model:m"
+    assert d.tools == ["a"]
+    assert d.disallowed_tools == ["b"]
+    assert d.ownership == "task"
+    assert d.output_schema is None
+    assert d.enabled is True
+    assert d.source == "builtin"
+    assert d.reasoning_effort is None
+
+
+def test_planner_config_resolution_from_overrides_and_defaults() -> None:
+    """The planner name participates in the same override->default chain."""
+    planner = SubAgentDefinition(name="planner", description="", system_prompt="")
+    # Default only.
+    model, effort = resolve_subagent_model_config(
+        planner,
+        name_overrides=None,
+        default_model="algo:planner",
+        default_reasoning_effort="low",
+    )
+    assert (model, effort) == ("algo:planner", "low")
+    # Per-name override wins over default.
+    model, effort = resolve_subagent_model_config(
+        planner,
+        name_overrides={"planner": ("algo:fast", "high")},
+        default_model="algo:planner",
+        default_reasoning_effort="low",
+    )
+    assert (model, effort) == ("algo:fast", "high")
+    # No config => planner inherits the main model.
+    model, effort = resolve_subagent_model_config(planner)
+    assert (model, effort) == (None, None)

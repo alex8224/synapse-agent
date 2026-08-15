@@ -92,6 +92,7 @@ You are a security reviewer. Inspect diffs for...
 | `description` | 是 | 主 Agent 据此决定何时委托（路由规则，写具体触发条件） |
 | （正文） | 是 | 子代理 system prompt |
 | `model` | 否 | `inherit` 或 `provider:model-name`；缺省继承主 Agent 模型 |
+| `reasoning_effort` | 否 | `off`/`minimal`/`low`/`medium`/`high`/`max`；缺省继承主 Agent 当前推理级别 |
 | `tools` | 否 | allowlist：`null` 继承 `find_files`/`search_files`；`[]` 仅用 deepagents 内置工具；`[names]` 按名过滤主 Agent 工具 |
 | `disallowed_tools` | 否 | denylist，作用于继承/allowlist 之后的工具集 |
 | `ownership` | 否 | `task` 或 `handoff`（预留）；当前仅 `task` 参与编译 |
@@ -181,6 +182,31 @@ sequenceDiagram
 | `AGENT_ENABLE_CUSTOM_SUBAGENTS` | `true` | 加载 `.synapse/agents/*.md` 自定义子代理 |
 | `AGENT_CUSTOM_AGENTS_DIRS` | `[]` | 额外扫描目录（JSON 数组） |
 | `AGENT_DISABLE_BUILTIN_SUBAGENTS` | `[]` | 禁用的内置子代理名（JSON 数组） |
+| `AGENT_SUBAGENT_DEFAULT_MODEL` | — | 子代理全局默认模型 |
+| `AGENT_SUBAGENT_DEFAULT_REASONING_EFFORT` | — | 子代理全局默认推理级别 |
+| `AGENT_SUBAGENT_MODEL_OVERRIDES_JSON` | `{}` | 按子代理名覆盖模型（JSON 对象） |
+| `AGENT_SUBAGENT_REASONING_EFFORT_OVERRIDES_JSON` | `{}` | 按子代理名覆盖推理级别（JSON 对象） |
+
+### 模型与推理级别解析优先级
+
+TUI 的 `/subagent-models` 配置页可以设置全局默认与按名覆盖；这些值持久化到分层
+`settings.json`。编译时按以下优先级（高 → 低）解析每个子代理的模型与推理级别：
+
+1. 按名覆盖（TUI 中某个子代理的独立配置）
+2. 定义文件 frontmatter 中的 `model` / `reasoning_effort`
+3. 全局默认（`(Global defaults)`）
+4. 全部未配置 → 继承主 Agent 当前模型与推理级别（`inherit`）
+
+两条轴（模型、推理级别）独立解析：只覆盖其中一条不会影响另一条。当显式指定模型
+（或只覆盖推理级别）时，子代理使用独立构建的模型实例；推理级别为 `off` 时关闭
+thinking，为具体级别时以对应 `reasoning_effort` 开启。未指定推理级别时继承主 Agent
+当前会话设置。保存配置后当前 Agent 会立即重建，无需重启。
+
+`inherit` 表示“该层未配置”，等价于删除该层的值：TUI 编辑框中的 `inherit` 不会写入
+任何覆盖，因此该角色的 frontmatter 或全局默认仍然生效。按名覆盖始终优先于
+frontmatter；只有选择 `inherit`（或删除覆盖）时才会回退到
+frontmatter → 全局默认 → 主 Agent。`reasoning_effort` 的合法值为
+`off`/`minimal`/`low`/`medium`/`high`/`max`/`inherit`，配置与 frontmatter 均校验。
 
 ## 演进路径：handoff 与 workflow
 

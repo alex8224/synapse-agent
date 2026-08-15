@@ -22,7 +22,7 @@ with user-defined files through the same registry.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -30,6 +30,9 @@ from typing import Any, Literal
 import yaml
 
 from synapse.content.prompts import MANDATORY_CODING_RULES
+from synapse.integrations.openai_oauth_middleware import (
+    build_openai_oauth_compat_middleware,
+)
 from synapse.runtime.middleware import build_tool_exclusion_middleware
 from synapse.settings.config_paths import layered_agents_dirs
 
@@ -46,6 +49,22 @@ _TODO_TOOL_NAMES = frozenset({"write_todos", "todo_write", "todos"})
 # else (session/goal/mcp/vision tools) stays out of the read-only subagent
 # context.
 DEFAULT_INHERIT_TOOL_NAMES = frozenset({"find_files", "search_files"})
+
+# Reasoning levels accepted for frontmatter / settings overrides. ``"inherit"``
+# is additionally accepted everywhere as "skip this layer" (see _resolve_axis).
+REASONING_EFFORT_LEVELS: tuple[str, ...] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "max",
+)
+
+# Builds (or returns a raw model name for) a subagent's model instance.
+# ``model_name=None`` means "inherit the main agent model" and is used when a
+# reasoning-only override must produce an independent model instance.
+SubagentModelFactory = Callable[[str | None, str | None], Any]
 
 _FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)$", re.DOTALL)
 
@@ -81,6 +100,9 @@ class SubAgentDefinition:
     enabled: bool = True
     # Provenance marker for diagnostics/UI ("builtin" | "custom").
     source: str = "builtin"
+    # "inherit"/None => follow the parent session's reasoning level. Appended
+    # after every pre-existing field so positional callers keep their order.
+    reasoning_effort: str | None = None
 
 
 @dataclass
@@ -183,12 +205,23 @@ def parse_agent_markdown(path: Path) -> SubAgentDefinition:
     disallowed = meta.get("disallowed_tools") or []
     if not isinstance(disallowed, list):
         raise ValueError("`disallowed_tools` must be a list of tool names")
+    reasoning_effort = meta.get("reasoning_effort")
+    if reasoning_effort is not None:
+        if not isinstance(reasoning_effort, str) or (
+            reasoning_effort not in REASONING_EFFORT_LEVELS
+            and reasoning_effort != "inherit"
+        ):
+            raise ValueError(
+                f"`reasoning_effort` must be one of "
+                f"{', '.join(REASONING_EFFORT_LEVELS)} or 'inherit'"
+            )
 
     return SubAgentDefinition(
         name=name.strip(),
         description=description.strip(),
         system_prompt=body,
         model=meta.get("model"),
+        reasoning_effort=reasoning_effort,
         tools=[str(t) for t in tools] if tools is not None else None,
         disallowed_tools=[str(t) for t in disallowed],
         ownership=ownership,
@@ -210,6 +243,8 @@ def render_agent_markdown(definition: SubAgentDefinition) -> str:
     }
     if definition.model and definition.model != "inherit":
         meta["model"] = definition.model
+    if definition.reasoning_effort and definition.reasoning_effort != "inherit":
+        meta["reasoning_effort"] = definition.reasoning_effort
     if definition.tools is not None:
         meta["tools"] = definition.tools
     if definition.disallowed_tools:
@@ -222,6 +257,36 @@ def render_agent_markdown(definition: SubAgentDefinition) -> str:
     return f"---\n{frontmatter}\n---\n{definition.system_prompt.strip()}\n"
 
 
+def resolve_subagent_model_config(
+    definition: SubAgentDefinition,
+    *,
+    name_overrides: dict[str, tuple[str | None, str | None]] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve model and reasoning independently, with inherit fallback."""
+    override = (name_overrides or {}).get(definition.name)
+    return (
+        _resolve_axis(override[0] if override else None, definition.model, default_model),
+        _resolve_axis(
+            override[1] if override else None,
+            definition.reasoning_effort,
+            default_reasoning_effort,
+        ),
+    )
+
+
+def _resolve_axis(
+    override: str | None,
+    definition_value: str | None,
+    default: str | None,
+) -> str | None:
+    for candidate in (override, definition_value, default):
+        if candidate and candidate != "inherit":
+            return candidate
+    return None
+
+
 def compile_task_specs(
     definitions: Sequence[SubAgentDefinition],
     *,
@@ -229,6 +294,11 @@ def compile_task_specs(
     extra_middleware: Sequence[Any] = (),
     result_reader: Any | None = None,
     inherit_names: frozenset[str] = DEFAULT_INHERIT_TOOL_NAMES,
+    model_factory: SubagentModelFactory | None = None,
+    model_overrides: dict[str, str] | None = None,
+    reasoning_effort_overrides: dict[str, str] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compile task-mode definitions into deepagents ``SubAgent`` dicts.
 
@@ -250,8 +320,35 @@ def compile_task_specs(
             # cannot drop critical file-tool path rules.
             "system_prompt": f"{d.system_prompt.strip()}\n\n{MANDATORY_CODING_RULES.strip()}",
         }
-        if d.model and d.model != "inherit":
-            spec["model"] = d.model
+        pinned_model = False
+        if model_factory is None:
+            if d.model and d.model != "inherit":
+                spec["model"] = d.model
+                pinned_model = True
+        else:
+            names = set(model_overrides or {}) | set(reasoning_effort_overrides or {})
+            overrides = {
+                name: (
+                    (model_overrides or {}).get(name),
+                    (reasoning_effort_overrides or {}).get(name),
+                )
+                for name in names
+            }
+            model_name, reasoning_effort = resolve_subagent_model_config(
+                d,
+                name_overrides=overrides or None,
+                default_model=default_model,
+                default_reasoning_effort=default_reasoning_effort,
+            )
+            # A reasoning-only override (model_name=None) still pins a model so
+            # the subagent gets an independent instance with the effort applied;
+            # both axes inherited keep the model key unset (deepagents inherits
+            # the parent graph's model).
+            if model_name is not None or reasoning_effort is not None:
+                built = model_factory(model_name, reasoning_effort)
+                if built is not None:
+                    spec["model"] = built
+                    pinned_model = True
 
         # Tool allowlist resolution. None => inherit the allow-listed
         # main-agent tools; [] => built-ins only; [names] => filter by name.
@@ -285,9 +382,20 @@ def compile_task_specs(
         blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES
         if hide_builtin_search:
             blocked |= _BUILTIN_SEARCH_TOOL_NAMES
-        spec["middleware"] = [
+        middleware = [
             *extra_middleware,
             build_tool_exclusion_middleware(blocked),
         ]
+        # Pinned subagent models compile their own agent graph and therefore do
+        # not inherit the parent graph's OAuth compatibility middleware. Reuse
+        # it here only when the *built* model is actually an OpenAI Codex OAuth
+        # model (mirroring the main agent's check in agent_assembly.py); raw
+        # model-name strings (ad-hoc aliases) and non-OAuth providers are left
+        # untouched so Responses-only rewrites cannot leak into ordinary calls.
+        if pinned_model:
+            built_model = spec.get("model")
+            if getattr(built_model, "_synapse_openai_oauth", False) is True:
+                middleware.append(build_openai_oauth_compat_middleware())
+        spec["middleware"] = middleware
         specs.append(spec)
     return specs

@@ -70,6 +70,36 @@ def bootstrap_project_env(project_root: Path | None = None) -> Path | None:
     return env_path
 
 
+def validate_subagent_reasoning_value(value: Any) -> None:
+    """Raise ``ValueError`` for reasoning levels outside the known set.
+
+    Shared by the Settings field validator (env / direct construction) and the
+    layered ``settings.json`` merge path, which bypasses Pydantic validation.
+    """
+    from synapse.runtime.subagent_specs import REASONING_EFFORT_LEVELS
+
+    allowed = set(REASONING_EFFORT_LEVELS) | {"inherit"}
+    if value is None:
+        return
+    if isinstance(value, str):
+        if value not in allowed:
+            raise ValueError(
+                f"reasoning_effort must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return
+    if isinstance(value, dict):
+        bad: dict[Any, Any] = {}
+        for k, v in value.items():
+            if not isinstance(k, str) or not isinstance(v, str) or v not in allowed:
+                bad[k] = v
+        if bad:
+            raise ValueError(
+                f"invalid reasoning_effort values: {bad}; allowed: {sorted(allowed)}"
+            )
+        return
+    raise ValueError(f"invalid reasoning_effort type: {type(value).__name__}")
+
+
 def project_env_mapping(project_root: Path | None = None) -> dict[str, str]:
     """Parse a project's legacy ``.env`` as a private mapping.
 
@@ -263,6 +293,21 @@ class Settings(BaseSettings):
     )
     subagent_researcher_model: str | None = Field(
         default=None, validation_alias="AGENT_SUBAGENT_RESEARCHER_MODEL"
+    )
+    # TUI-managed subagent model/reasoning defaults and per-name overrides.
+    # ``None`` means inherit the parent agent/session setting.
+    subagent_default_model: str | None = Field(
+        default=None, validation_alias="AGENT_SUBAGENT_DEFAULT_MODEL"
+    )
+    subagent_default_reasoning_effort: str | None = Field(
+        default=None, validation_alias="AGENT_SUBAGENT_DEFAULT_REASONING_EFFORT"
+    )
+    subagent_model_overrides: dict[str, str] = Field(
+        default_factory=dict, validation_alias="AGENT_SUBAGENT_MODEL_OVERRIDES_JSON"
+    )
+    subagent_reasoning_effort_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="AGENT_SUBAGENT_REASONING_EFFORT_OVERRIDES_JSON",
     )
     # Load user-defined subagents from layered `.synapse/agents/*.md` files
     # (user → project; project overrides user on name collision).
@@ -459,6 +504,16 @@ class Settings(BaseSettings):
             return float(text)
         return value
 
+    @field_validator(
+        "subagent_default_reasoning_effort",
+        "subagent_reasoning_effort_overrides",
+    )
+    @classmethod
+    def _validate_subagent_reasoning(cls, value: object) -> object:
+        """Reject reasoning levels outside the known set (or "inherit")."""
+        validate_subagent_reasoning_value(value)
+        return value
+
     def ensure_dirs(self) -> None:
         """Create local state directories if needed."""
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -594,6 +649,17 @@ def _load_settings_impl(
             ):
                 if pk in updates and updates[pk] is not None:
                     updates[pk] = Path(str(updates[pk])).expanduser()
+            # Layered JSON bypasses Pydantic field validators via model_copy;
+            # validate the reasoning overrides explicitly so a hand-edited file
+            # cannot smuggle an invalid level into the model factory.
+            if "subagent_reasoning_effort_overrides" in updates:
+                validate_subagent_reasoning_value(
+                    updates["subagent_reasoning_effort_overrides"]
+                )
+            if "subagent_default_reasoning_effort" in updates:
+                validate_subagent_reasoning_value(
+                    updates["subagent_default_reasoning_effort"]
+                )
             settings = settings.model_copy(update=updates)
 
     if overrides:

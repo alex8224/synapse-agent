@@ -105,6 +105,10 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_ENABLE_CUSTOM_SUBAGENTS` | `true` | 加载用户自定义子代理（`.synapse/agents/*.md`） |
 | `AGENT_CUSTOM_AGENTS_DIRS` | `[]` | 额外扫描的子代理定义目录（JSON 数组，绝对路径或相对 workspace） |
 | `AGENT_DISABLE_BUILTIN_SUBAGENTS` | `[]` | 禁用的内置子代理名（JSON 数组，如 `["tester"]`） |
+| `AGENT_SUBAGENT_DEFAULT_MODEL` | — | 所有子代理的全局默认模型；未配置时继承主 Agent 模型 |
+| `AGENT_SUBAGENT_DEFAULT_REASONING_EFFORT` | — | 所有子代理的全局默认推理级别（`off`/`minimal`/`low`/`medium`/`high`/`max`） |
+| `AGENT_SUBAGENT_MODEL_OVERRIDES_JSON` | `{}` | 按子代理名覆盖模型（JSON 对象，如 `{"tester":"algo:1"}`） |
+| `AGENT_SUBAGENT_REASONING_EFFORT_OVERRIDES_JSON` | `{}` | 按子代理名覆盖推理级别（JSON 对象） |
 
 #### 自定义子代理
 
@@ -117,6 +121,7 @@ Markdown 文件即可新增子代理（项目层覆盖用户层同名定义）�
 name: security-reviewer
 description: Use after security-sensitive changes. Reviews for injection and secret leaks.
 model: inherit            # 或 "provider:model-name"
+reasoning_effort: high    # 可选：off/minimal/low/medium/high/max；缺省继承主 Agent
 tools: [read_file, search_files, find_files, execute]   # 可选 allowlist；省略则继承 find_files/search_files
 disallowed_tools: [write_file, edit_file]               # 可选 denylist
 ownership: task           # 预留字段，仅支持 task

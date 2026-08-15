@@ -24,6 +24,7 @@ from synapse.integrations.mcp_client import (
     load_mcp_server_configs,
     load_mcp_tools,
 )
+from synapse.models.helpers import settings_fallback_api_key
 from synapse.models.registry import (
     build_model_from_settings,
     model_cache_key,
@@ -35,7 +36,7 @@ from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.runtime.steer import SteerQueue
-from synapse.runtime.subagent_specs import SubagentRegistry
+from synapse.runtime.subagent_specs import SubagentModelFactory, SubagentRegistry
 from synapse.runtime.subagents import build_default_subagents, ensure_user_subagents
 from synapse.settings import Settings
 from synapse.tool_output.repository import ToolOutputRepository
@@ -47,6 +48,42 @@ from synapse.tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelFactory:
+    """Materialize a pinned subagent model with an optional effort override.
+
+    ``model_name=None`` builds the registry's default (main agent) profile so a
+    reasoning-only override still gets an independent instance; unknown ad-hoc
+    names fall back to the raw string for native deepagents resolution.
+    """
+
+    def factory(model_name: str | None, reasoning_effort: str | None) -> Any:
+        if reasoning_effort == "off":
+            enabled, effort = False, None
+        elif reasoning_effort:
+            enabled, effort = True, reasoning_effort
+        else:
+            enabled, effort = None, None
+        try:
+            return registry.build_chat_model(
+                model_name,
+                fallback_api_key=settings_fallback_api_key(settings, model_name),
+                fallback_base_url=settings.openai_base_url,
+                fallback_enable_thinking=settings.enable_thinking,
+                fallback_reasoning_effort=settings.reasoning_effort,
+                fallback_parallel_tool_calls=settings.parallel_tool_calls,
+                fallback_websocket=getattr(settings, "openai_websocket", False),
+                fallback_stream_chunk_timeout=getattr(settings, "stream_chunk_timeout", None),
+                enable_thinking=enabled,
+                reasoning_effort=effort,
+            )
+        except KeyError:
+            # Unknown ad-hoc model name: keep the raw string so deepagents
+            # resolves it natively instead of failing the whole agent build.
+            return model_name
+
+    return factory
 
 
 def _build_checkpointer(settings: Settings):
@@ -451,6 +488,11 @@ def build_coding_agent(
             inherit_tools=tools,
             custom_subagents=custom_subagents,
             disable_builtin_subagents=settings.disable_builtin_subagents,
+            model_factory=_subagent_model_factory(registry, settings),
+            model_overrides=settings.subagent_model_overrides,
+            reasoning_effort_overrides=settings.subagent_reasoning_effort_overrides,
+            default_model=settings.subagent_default_model,
+            default_reasoning_effort=settings.subagent_default_reasoning_effort,
         )
 
     goals_enabled = bool(getattr(settings, "enable_goals", True))
@@ -533,8 +575,41 @@ def build_coding_agent(
     # 长期记忆 / 知识库 / 规划（默认 None，在 CLI/TUI 层异步查询）
     agent._coding_knowledge_base = _kb  # type: ignore[attr-defined]
     agent._coding_long_term_memory = _ltm  # type: ignore[attr-defined]
-    # Planner model: 使用主模型做规划（如需节省成本可用更轻量的模型）
-    agent._coding_planner_model = model  # type: ignore[attr-defined]
+    # Planner model: 使用主模型做规划（如需节省成本可用更轻量的模型）。
+    # TUI 子代理配置页可按 planner 名称覆盖模型与推理级别；未配置时继承主模型。
+    try:
+        from synapse.runtime.subagent_specs import (
+            SubAgentDefinition,
+            resolve_subagent_model_config,
+        )
+
+        planner_model_name, planner_reasoning = resolve_subagent_model_config(
+            SubAgentDefinition(name="planner", description="", system_prompt=""),
+            name_overrides={
+                name: (
+                    settings.subagent_model_overrides.get(name),
+                    settings.subagent_reasoning_effort_overrides.get(name),
+                )
+                for name in set(settings.subagent_model_overrides)
+                | set(settings.subagent_reasoning_effort_overrides)
+            }
+            or None,
+            default_model=settings.subagent_default_model,
+            default_reasoning_effort=settings.subagent_default_reasoning_effort,
+        )
+        # Reasoning-only overrides (planner_model_name is None) still pin an
+        # independent instance of the main model with the effort applied.
+        if planner_model_name is not None or planner_reasoning is not None:
+            agent._coding_planner_model = _subagent_model_factory(registry, settings)(
+                planner_model_name, planner_reasoning
+            )
+        else:
+            agent._coding_planner_model = model  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 - planner degrades to the main model
+        logger.warning(
+            "planner model override failed (%s); using the main model", exc
+        )
+        agent._coding_planner_model = model  # type: ignore[attr-defined]
     # Expose process async runtime when using AsyncSqliteSaver so stream can
     # schedule astream on the same loop the checkpointer is bound to.
     try:

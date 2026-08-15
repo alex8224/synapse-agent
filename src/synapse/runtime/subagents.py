@@ -167,6 +167,11 @@ def build_default_subagents(
     inherit_tools: list[Any] | None = None,
     custom_subagents: Sequence[SubAgentDefinition] | None = None,
     disable_builtin_subagents: Sequence[str] | None = None,
+    model_factory: Any | None = None,
+    model_overrides: dict[str, str] | None = None,
+    reasoning_effort_overrides: dict[str, str] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -250,6 +255,11 @@ def build_default_subagents(
         inherit_tools=inherit_tools,
         extra_middleware=result_middleware + _intent_middleware(),
         result_reader=result_reader,
+        model_factory=model_factory,
+        model_overrides=model_overrides,
+        reasoning_effort_overrides=reasoning_effort_overrides,
+        default_model=default_model,
+        default_reasoning_effort=default_reasoning_effort,
     )
 
 

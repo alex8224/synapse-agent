@@ -106,6 +106,9 @@ class SlashController:
         if cmd == "/model" and len(parts) == 1:
             self.open_model_dialog(parts[1:])
             return True
+        if cmd in {"/subagent-models", "/subagent-model", "/subagents-config"} and len(parts) == 1:
+            self.open_subagent_models_dialog()
+            return True
         if cmd == "/model":
             # Args form (/model <alias> [thinking ...]): rebuild in background.
             app._switch_model_bg(
@@ -501,6 +504,72 @@ class SlashController:
             ModelPickerDialog(self._app.settings),
             self.on_model_dialog_done,
         )
+
+    def open_subagent_models_dialog(self) -> None:
+        from synapse.models.registry import registry_from_settings
+        from synapse.ui.dialogs import SubagentModelsDialog
+
+        app = self._app
+        self._subagent_config = SubagentModelsDialog(
+            app.settings, registry=registry_from_settings(app.settings)
+        )
+        app.push_screen(self._subagent_config, self.on_subagent_models_done)
+
+    def on_subagent_models_done(self, result: object) -> None:
+        if result is None:
+            return
+        action, value = result
+        if action == "edit":
+            from synapse.models.registry import registry_from_settings
+            from synapse.ui.dialogs import SubagentEditDialog
+
+            app = self._app
+            dialog = getattr(self, "_subagent_config", None)
+            config = getattr(dialog, "_config", None)
+            if config is None:
+                return
+            app.push_screen(
+                SubagentEditDialog(
+                    app.settings,
+                    str(value),
+                    config,
+                    registry_from_settings(app.settings),
+                ),
+                self.on_subagent_edit_done,
+            )
+        elif action == "save":
+            self._save_subagent_config(value)
+
+    def on_subagent_edit_done(self, result: object) -> None:
+        if result is None:
+            # Editing was cancelled: return to the list instead of dropping the
+            # user back onto the chat screen.
+            self.open_subagent_models_dialog()
+            return
+        action, config = result
+        if action == "edited":
+            self._save_subagent_config(config, reopen=True)
+
+    def _save_subagent_config(
+        self, config: dict[str, Any], *, reopen: bool = False
+    ) -> None:
+        from synapse.runtime.subagent_config_persist import save_subagent_config
+
+        app = self._app
+        try:
+            save_subagent_config(app.settings, config)
+            app._switch_model_bg(
+                f"/model {getattr(app.settings, 'active_model', None) or app.settings.model}",
+                "rebuilding subagents",
+                origin_thread_id=app.thread_id,
+                origin_agent=app.agent,
+                origin_settings=self._copy_settings(app.settings),
+            )
+            app.flash_status("subagent models saved", "dim")
+        except Exception as exc:  # noqa: BLE001
+            app.append_event(f"subagent config failed: {exc}", "yellow")
+        if reopen:
+            self.open_subagent_models_dialog()
 
     def on_model_dialog_done(self, result: object) -> None:
         if result is None:
