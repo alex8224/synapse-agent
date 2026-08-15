@@ -14,11 +14,13 @@ from synapse.runtime.subagent_specs import (
     compile_task_specs,
     parse_agent_markdown,
     render_agent_markdown,
+    resolve_subagent_display_config,
     resolve_subagent_model_config,
 )
 from synapse.runtime.subagents import (
     _builtin_definitions,
     build_default_subagents,
+    build_default_subagents_with_display,
     ensure_user_subagents,
 )
 
@@ -726,3 +728,215 @@ def test_planner_config_resolution_from_overrides_and_defaults() -> None:
     # No config => planner inherits the main model.
     model, effort = resolve_subagent_model_config(planner)
     assert (model, effort) == (None, None)
+
+
+# --------------------------------------------------------------------------- #
+# resolve_subagent_display_config
+# --------------------------------------------------------------------------- #
+
+
+def test_display_config_override_wins_over_definition_and_main() -> None:
+    d = SubAgentDefinition(
+        name="reviewer",
+        description="d",
+        system_prompt="p",
+        model="def:model",
+        reasoning_effort="low",
+    )
+    resolved = resolve_subagent_display_config(
+        d,
+        name_overrides={"reviewer": ("ovr:model", "high")},
+        main_model="main:model",
+        main_reasoning_effort="medium",
+    )
+    assert resolved.model == "ovr:model"
+    assert resolved.reasoning_effort == "high"
+    assert resolved.model_inherited is False
+    assert resolved.reasoning_effort_inherited is False
+
+
+def test_display_config_definition_wins_over_default_and_main() -> None:
+    d = SubAgentDefinition(
+        name="reviewer",
+        description="d",
+        system_prompt="p",
+        model="def:model",
+        reasoning_effort="low",
+    )
+    resolved = resolve_subagent_display_config(
+        d,
+        default_model="subdef:model",
+        default_reasoning_effort="medium",
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    assert resolved.model == "def:model"
+    assert resolved.reasoning_effort == "low"
+    assert not resolved.model_inherited
+    assert not resolved.reasoning_effort_inherited
+
+
+def test_display_config_default_wins_over_main() -> None:
+    d = SubAgentDefinition(name="tester", description="d", system_prompt="p")
+    resolved = resolve_subagent_display_config(
+        d,
+        default_model="subdef:model",
+        default_reasoning_effort="low",
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    assert resolved.model == "subdef:model"
+    assert resolved.reasoning_effort == "low"
+    assert not resolved.model_inherited
+    assert not resolved.reasoning_effort_inherited
+
+
+def test_display_config_inherit_falls_back_to_main() -> None:
+    d = SubAgentDefinition(name="researcher", description="d", system_prompt="p")
+    resolved = resolve_subagent_display_config(
+        d,
+        main_model="main:model",
+        main_reasoning_effort="off",
+    )
+    assert resolved.model == "main:model"
+    assert resolved.reasoning_effort == "off"
+    assert resolved.model_inherited is True
+    assert resolved.reasoning_effort_inherited is True
+
+
+def test_display_config_axes_inherit_independently() -> None:
+    d = SubAgentDefinition(
+        name="reviewer",
+        description="d",
+        system_prompt="p",
+        model="def:model",
+    )
+    resolved = resolve_subagent_display_config(
+        d,
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    assert resolved.model == "def:model"
+    assert not resolved.model_inherited
+    assert resolved.reasoning_effort == "high"
+    assert resolved.reasoning_effort_inherited is True
+
+
+def test_display_config_explicit_inherit_override_is_not_inherited_when_shadowed() -> None:
+    """An ``inherit`` override shadowed by a definition value must not be
+    reported as inherited (inherit flags describe the *final* source)."""
+    d = SubAgentDefinition(
+        name="reviewer",
+        description="d",
+        system_prompt="p",
+        model="def:model",
+        reasoning_effort="low",
+    )
+    resolved = resolve_subagent_display_config(
+        d,
+        name_overrides={"reviewer": ("inherit", "inherit")},
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    assert resolved.model == "def:model"
+    assert resolved.reasoning_effort == "low"
+    assert not resolved.model_inherited
+    assert not resolved.reasoning_effort_inherited
+
+
+def test_display_config_no_main_fallback_stays_empty() -> None:
+    d = SubAgentDefinition(name="researcher", description="d", system_prompt="p")
+    resolved = resolve_subagent_display_config(d)
+    assert resolved.model is None
+    assert resolved.reasoning_effort is None
+    assert resolved.model_inherited is True
+    assert resolved.reasoning_effort_inherited is True
+
+
+def test_build_with_display_shared_merge_matches_specs() -> None:
+    """Specs and display configs must come from the same merged definitions:
+    custom same-name override, legacy builtin model injection, and disabled
+    filtering apply identically to both halves."""
+    custom = [
+        SubAgentDefinition(
+            name="reviewer",
+            description="custom reviewer",
+            system_prompt="custom prompt",
+            tools=[],
+        ),
+        SubAgentDefinition(
+            name="security-reviewer",
+            description="security",
+            system_prompt="security prompt",
+            tools=[],
+            model="sec:model",
+            reasoning_effort="medium",
+        ),
+    ]
+    result = build_default_subagents_with_display(
+        reviewer_model="builtin:reviewer-model",
+        custom_subagents=custom,
+        disable_builtin_subagents=["tester"],
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    names = [s["name"] for s in result.specs]
+    assert names == ["researcher", "reviewer", "security-reviewer"]
+    # Same merged list is the source of both halves.
+    assert set(result.display_configs) == set(names)
+    # Custom same-name override kept the legacy builtin model injection.
+    assert result.display_configs["reviewer"].model == "builtin:reviewer-model"
+    assert result.display_configs["reviewer"].model_inherited is False
+    # Pinned custom config.
+    assert result.display_configs["security-reviewer"].model == "sec:model"
+    assert result.display_configs["security-reviewer"].reasoning_effort == "medium"
+    # Disabled name absent from both.
+    assert "tester" not in result.display_configs
+    # Researcher fully inherits the main agent.
+    assert result.display_configs["researcher"].model == "main:model"
+    assert result.display_configs["researcher"].model_inherited is True
+    assert result.display_configs["researcher"].reasoning_effort == "high"
+
+
+def test_build_with_display_disabled_returns_empty_map() -> None:
+    result = build_default_subagents_with_display(enabled=False)
+    assert result.specs is None
+    assert result.display_configs == {}
+
+
+def test_build_default_subagents_keeps_legacy_signature_behavior() -> None:
+    """The thin wrapper still returns specs only (and None when disabled)."""
+    assert build_default_subagents() is not None
+    assert build_default_subagents(enabled=False) is None
+
+
+def test_build_with_display_filters_handoff_and_disabled_definitions() -> None:
+    """display_configs must mirror compile_task_specs: disabled definitions
+    and handoff-owned ones are excluded from both halves."""
+    custom = [
+        SubAgentDefinition(
+            name="planner",
+            description="handoff planner",
+            system_prompt="plan",
+            tools=[],
+            ownership="handoff",
+        ),
+        SubAgentDefinition(
+            name="ghost",
+            description="disabled ghost",
+            system_prompt="ghost",
+            tools=[],
+            enabled=False,
+        ),
+    ]
+    result = build_default_subagents_with_display(
+        custom_subagents=custom,
+        main_model="main:model",
+        main_reasoning_effort="high",
+    )
+    names = [s["name"] for s in result.specs]
+    assert "planner" not in names
+    assert "ghost" not in names
+    assert "planner" not in result.display_configs
+    assert "ghost" not in result.display_configs
+    assert set(result.display_configs) == set(names)

@@ -287,6 +287,63 @@ def _resolve_axis(
     return None
 
 
+@dataclass(frozen=True)
+class ResolvedSubagentDisplayConfig:
+    """Effective model/reasoning configuration snapshot for UI display.
+
+    ``*_inherited`` marks an axis that fell through to the main agent's
+    effective value (no per-name override, definition value, or subagent
+    default applied). The two axes are resolved independently.
+    """
+
+    name: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+    model_inherited: bool = False
+    reasoning_effort_inherited: bool = False
+
+
+def resolve_subagent_display_config(
+    definition: SubAgentDefinition,
+    *,
+    name_overrides: dict[str, tuple[str | None, str | None]] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+    main_model: str | None = None,
+    main_reasoning_effort: str | None = None,
+) -> ResolvedSubagentDisplayConfig:
+    """Resolve the effective model/reasoning axes for UI display.
+
+    Per-axis priority: per-name override > definition value > subagent
+    default > main agent effective value. ``*_inherited`` is True only when
+    the axis fell through to the main agent value, so an explicit
+    ``"inherit"`` override that is shadowed by a definition value is not
+    reported as inherited.
+
+    The main agent fallback values are supplied by the caller (the agent
+    assembly layer) and are expected to already be the *effective* values;
+    this helper never loads settings or registry files itself.
+    """
+    override = (name_overrides or {}).get(definition.name)
+    model = _resolve_axis(
+        override[0] if override else None, definition.model, default_model
+    )
+    effort = _resolve_axis(
+        override[1] if override else None,
+        definition.reasoning_effort,
+        default_reasoning_effort,
+    )
+    model_inherited = model is None
+    effort_inherited = effort is None
+    return ResolvedSubagentDisplayConfig(
+        name=definition.name,
+        model=main_model if model_inherited else model,
+        reasoning_effort=main_reasoning_effort if effort_inherited else effort,
+        model_inherited=model_inherited,
+        reasoning_effort_inherited=effort_inherited,
+    )
+
+
 def compile_task_specs(
     definitions: Sequence[SubAgentDefinition],
     *,

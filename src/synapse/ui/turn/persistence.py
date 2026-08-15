@@ -50,6 +50,19 @@ class TurnPersistenceController:
                         "args": {
                             "label": getattr(item, "label", ""),
                             "path": getattr(item, "path", None),
+                            # Subagent metadata snapshot so restored transcripts
+                            # keep showing the config actually used that turn.
+                            "subagent_type": getattr(item, "subagent_name", None),
+                            "subagent_model": getattr(item, "subagent_model", None),
+                            "subagent_reasoning_effort": getattr(
+                                item, "subagent_reasoning_effort", None
+                            ),
+                            "subagent_model_inherited": getattr(
+                                item, "subagent_model_inherited", False
+                            ),
+                            "subagent_reasoning_inherited": getattr(
+                                item, "subagent_reasoning_inherited", False
+                            ),
                         },
                     }
                 )
@@ -125,7 +138,17 @@ class TurnPersistenceController:
                     {
                         "id": item_id,
                         "name": item.name or "tool",
-                        "args": {"label": item.label, "path": item.path},
+                        "args": {
+                            "label": item.label,
+                            "path": item.path,
+                            # Subagent metadata snapshot so restored transcripts
+                            # keep showing the config actually used that turn.
+                            "subagent_type": item.subagent_name,
+                            "subagent_model": item.subagent_model,
+                            "subagent_reasoning_effort": item.subagent_reasoning_effort,
+                            "subagent_model_inherited": item.subagent_model_inherited,
+                            "subagent_reasoning_inherited": item.subagent_reasoning_inherited,
+                        },
                     }
                 )
                 results.append(

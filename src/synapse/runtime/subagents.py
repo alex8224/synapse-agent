@@ -15,16 +15,18 @@ layers that future handoff and workflow modes will reuse.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from synapse.runtime.middleware import build_tool_error_recovery_middleware
 from synapse.runtime.subagent_specs import (
+    ResolvedSubagentDisplayConfig,
     SubAgentDefinition,
     SubagentRegistry,
     compile_task_specs,
     render_agent_markdown,
+    resolve_subagent_display_config,
 )
 from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.settings.config_paths import user_agents_dir
@@ -32,6 +34,19 @@ from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
 from synapse.tools import build_tool_result_reader_tool
+
+
+@dataclass
+class SubagentBuildResult:
+    """Compiled task specs plus UI display configs from the same merge.
+
+    Both halves are produced from the identical merged definitions and
+    override sets, so the timeline can show the exact model/reasoning
+    configuration the running graph actually uses.
+    """
+
+    specs: list[dict[str, Any]] | None
+    display_configs: dict[str, ResolvedSubagentDisplayConfig]
 
 
 def _intent_middleware() -> list[Any]:
@@ -152,70 +167,23 @@ def ensure_user_subagents(*, force: bool = False) -> list[Path]:
     return paths
 
 
-def build_default_subagents(
+def _merge_subagent_definitions(
     *,
-    enabled: bool = True,
     tester_model: str | None = None,
     reviewer_model: str | None = None,
     researcher_model: str | None = None,
     isolate_tools: bool = True,
-    tool_output_db_path: Path | str | None = None,
-    tool_output_transform_threshold_bytes: int = 512,
-    tool_output_disabled_types: list[str] | None = None,
-    tool_output_transform_plugins: list[str] | None = None,
-    enable_native_tool_output_compression: bool = True,
-    inherit_tools: list[Any] | None = None,
     custom_subagents: Sequence[SubAgentDefinition] | None = None,
     disable_builtin_subagents: Sequence[str] | None = None,
-    model_factory: Any | None = None,
-    model_overrides: dict[str, str] | None = None,
-    reasoning_effort_overrides: dict[str, str] | None = None,
-    default_model: str | None = None,
-    default_reasoning_effort: str | None = None,
-) -> list[dict[str, Any]] | None:
-    """Return declarative SubAgent specs, or None when disabled.
+) -> list[SubAgentDefinition]:
+    """Merge built-in and custom definitions, then apply disabled filtering.
 
-    deepagents exposes these via the built-in `task` tool. The main agent
-    routes by reading each subagent's description.
-
-    Merge rules: built-ins first, then user definitions override built-ins with
-    the same ``name`` (inheriting the built-in's model when the user file leaves
-    ``model`` unset); names listed in ``disable_builtin_subagents`` are dropped
-    by name regardless of provenance. When ``isolate_tools`` is True
-    (LocalShell-safe):
-    - researcher: exclude write_file/edit_file/patch/execute
-    - reviewer: exclude write_file/edit_file/patch
-    - tester: uses built-in ``execute`` and project ``AGENTS.md`` commands
+    Built-ins come first; custom definitions override built-ins with the same
+    ``name`` (inheriting the built-in's model when the user file leaves
+    ``model`` unset, so ``AGENT_SUBAGENT_*_MODEL`` keeps applying); names
+    listed in ``disable_builtin_subagents`` are dropped by name regardless of
+    provenance.
     """
-    if not enabled:
-        return None
-
-    # Subagents use the exact same reversible transformation policy as the
-    # parent, scoped by their checkpoint namespace.
-    result_middleware: list[Any] = []
-    result_reader: Any | None = None
-    if tool_output_db_path is not None:
-        try:
-            output_pipeline = ToolOutputTransformPipeline(
-                transformers=load_transformer_plugins(tool_output_transform_plugins or []),
-                disabled_types=set(tool_output_disabled_types or []),
-                use_native=enable_native_tool_output_compression,
-            )
-        except Exception:  # noqa: BLE001
-            output_pipeline = ToolOutputTransformPipeline(
-                disabled_types=set(tool_output_disabled_types or []),
-                use_native=enable_native_tool_output_compression,
-            )
-        result_middleware = [
-            build_tool_output_transform_middleware(
-                ToolOutputRepository(tool_output_db_path),
-                threshold_bytes=tool_output_transform_threshold_bytes,
-                pipeline=output_pipeline,
-            ),
-            build_tool_error_recovery_middleware(),
-        ]
-        result_reader = build_tool_result_reader_tool(tool_output_db_path)
-
     builtins = _builtin_definitions(
         tester_model=tester_model,
         reviewer_model=reviewer_model,
@@ -248,9 +216,78 @@ def build_default_subagents(
     # ``source`` alone would let AGENT_DISABLE_BUILTIN_SUBAGENTS silently fail
     # once the seed files exist.
     disabled = set(disable_builtin_subagents or [])
-    merged = [d for d in registry.items() if d.name not in disabled]
+    return [d for d in registry.items() if d.name not in disabled]
 
-    return compile_task_specs(
+
+def _build_default_subagent_runtime(
+    *,
+    enabled: bool = True,
+    tester_model: str | None = None,
+    reviewer_model: str | None = None,
+    researcher_model: str | None = None,
+    isolate_tools: bool = True,
+    tool_output_db_path: Path | str | None = None,
+    tool_output_transform_threshold_bytes: int = 512,
+    tool_output_disabled_types: list[str] | None = None,
+    tool_output_transform_plugins: list[str] | None = None,
+    enable_native_tool_output_compression: bool = True,
+    inherit_tools: list[Any] | None = None,
+    custom_subagents: Sequence[SubAgentDefinition] | None = None,
+    disable_builtin_subagents: Sequence[str] | None = None,
+    model_factory: Any | None = None,
+    model_overrides: dict[str, str] | None = None,
+    reasoning_effort_overrides: dict[str, str] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+    main_model: str | None = None,
+    main_reasoning_effort: str | None = None,
+) -> SubagentBuildResult:
+    """Build specs plus display configs from one shared definition merge.
+
+    Returns declarative SubAgent specs (None when disabled) and a
+    ``name -> ResolvedSubagentDisplayConfig`` map for the UI timeline. The
+    display values are resolved with the same overrides/defaults the specs
+    compiler receives, falling back to the main agent's effective model and
+    reasoning effort when a subagent inherits them.
+    """
+    if not enabled:
+        return SubagentBuildResult(specs=None, display_configs={})
+
+    # Subagents use the exact same reversible transformation policy as the
+    # parent, scoped by their checkpoint namespace.
+    result_middleware: list[Any] = []
+    result_reader: Any | None = None
+    if tool_output_db_path is not None:
+        try:
+            output_pipeline = ToolOutputTransformPipeline(
+                transformers=load_transformer_plugins(tool_output_transform_plugins or []),
+                disabled_types=set(tool_output_disabled_types or []),
+                use_native=enable_native_tool_output_compression,
+            )
+        except Exception:  # noqa: BLE001
+            output_pipeline = ToolOutputTransformPipeline(
+                disabled_types=set(tool_output_disabled_types or []),
+                use_native=enable_native_tool_output_compression,
+            )
+        result_middleware = [
+            build_tool_output_transform_middleware(
+                ToolOutputRepository(tool_output_db_path),
+                threshold_bytes=tool_output_transform_threshold_bytes,
+                pipeline=output_pipeline,
+            ),
+            build_tool_error_recovery_middleware(),
+        ]
+        result_reader = build_tool_result_reader_tool(tool_output_db_path)
+
+    merged = _merge_subagent_definitions(
+        tester_model=tester_model,
+        reviewer_model=reviewer_model,
+        researcher_model=researcher_model,
+        isolate_tools=isolate_tools,
+        custom_subagents=custom_subagents,
+        disable_builtin_subagents=disable_builtin_subagents,
+    )
+    specs = compile_task_specs(
         merged,
         inherit_tools=inherit_tools,
         extra_middleware=result_middleware + _intent_middleware(),
@@ -260,6 +297,139 @@ def build_default_subagents(
         reasoning_effort_overrides=reasoning_effort_overrides,
         default_model=default_model,
         default_reasoning_effort=default_reasoning_effort,
+    )
+    names = set(model_overrides or {}) | set(reasoning_effort_overrides or {})
+    overrides = {
+        name: (
+            (model_overrides or {}).get(name),
+            (reasoning_effort_overrides or {}).get(name),
+        )
+        for name in names
+    }
+    display_configs = {
+        definition.name: resolve_subagent_display_config(
+            definition,
+            name_overrides=overrides or None,
+            default_model=default_model,
+            default_reasoning_effort=default_reasoning_effort,
+            main_model=main_model,
+            main_reasoning_effort=main_reasoning_effort,
+        )
+        for definition in merged
+        # Mirror compile_task_specs' filter so the snapshot only covers
+        # subagents that are actually compiled into specs.
+        if definition.enabled and definition.ownership == "task"
+    }
+    return SubagentBuildResult(specs=specs, display_configs=display_configs)
+
+
+def build_default_subagents(
+    *,
+    enabled: bool = True,
+    tester_model: str | None = None,
+    reviewer_model: str | None = None,
+    researcher_model: str | None = None,
+    isolate_tools: bool = True,
+    tool_output_db_path: Path | str | None = None,
+    tool_output_transform_threshold_bytes: int = 512,
+    tool_output_disabled_types: list[str] | None = None,
+    tool_output_transform_plugins: list[str] | None = None,
+    enable_native_tool_output_compression: bool = True,
+    inherit_tools: list[Any] | None = None,
+    custom_subagents: Sequence[SubAgentDefinition] | None = None,
+    disable_builtin_subagents: Sequence[str] | None = None,
+    model_factory: Any | None = None,
+    model_overrides: dict[str, str] | None = None,
+    reasoning_effort_overrides: dict[str, str] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+    main_model: str | None = None,
+    main_reasoning_effort: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Return declarative SubAgent specs, or None when disabled.
+
+    deepagents exposes these via the built-in `task` tool. The main agent
+    routes by reading each subagent's description.
+
+    See ``_build_default_subagent_runtime`` for the merge rules. When
+    ``model_factory`` is provided, the display snapshot mirrors the compiled
+    model/reasoning resolution (overrides/defaults/inherit); without a factory
+    the compiled specs ignore overrides and the display values are advisory.
+    """
+    return _build_default_subagent_runtime(
+        enabled=enabled,
+        tester_model=tester_model,
+        reviewer_model=reviewer_model,
+        researcher_model=researcher_model,
+        isolate_tools=isolate_tools,
+        tool_output_db_path=tool_output_db_path,
+        tool_output_transform_threshold_bytes=tool_output_transform_threshold_bytes,
+        tool_output_disabled_types=tool_output_disabled_types,
+        tool_output_transform_plugins=tool_output_transform_plugins,
+        enable_native_tool_output_compression=enable_native_tool_output_compression,
+        inherit_tools=inherit_tools,
+        custom_subagents=custom_subagents,
+        disable_builtin_subagents=disable_builtin_subagents,
+        model_factory=model_factory,
+        model_overrides=model_overrides,
+        reasoning_effort_overrides=reasoning_effort_overrides,
+        default_model=default_model,
+        default_reasoning_effort=default_reasoning_effort,
+        main_model=main_model,
+        main_reasoning_effort=main_reasoning_effort,
+    ).specs
+
+
+def build_default_subagents_with_display(
+    *,
+    enabled: bool = True,
+    tester_model: str | None = None,
+    reviewer_model: str | None = None,
+    researcher_model: str | None = None,
+    isolate_tools: bool = True,
+    tool_output_db_path: Path | str | None = None,
+    tool_output_transform_threshold_bytes: int = 512,
+    tool_output_disabled_types: list[str] | None = None,
+    tool_output_transform_plugins: list[str] | None = None,
+    enable_native_tool_output_compression: bool = True,
+    inherit_tools: list[Any] | None = None,
+    custom_subagents: Sequence[SubAgentDefinition] | None = None,
+    disable_builtin_subagents: Sequence[str] | None = None,
+    model_factory: Any | None = None,
+    model_overrides: dict[str, str] | None = None,
+    reasoning_effort_overrides: dict[str, str] | None = None,
+    default_model: str | None = None,
+    default_reasoning_effort: str | None = None,
+    main_model: str | None = None,
+    main_reasoning_effort: str | None = None,
+) -> SubagentBuildResult:
+    """Like ``build_default_subagents``, but also returns UI display configs.
+
+    The returned ``display_configs`` map is a build-time snapshot sharing the
+    same merged definitions and override sets as the compiled specs; the UI
+    must not re-resolve settings or agent files at render time.
+    """
+    return _build_default_subagent_runtime(
+        enabled=enabled,
+        tester_model=tester_model,
+        reviewer_model=reviewer_model,
+        researcher_model=researcher_model,
+        isolate_tools=isolate_tools,
+        tool_output_db_path=tool_output_db_path,
+        tool_output_transform_threshold_bytes=tool_output_transform_threshold_bytes,
+        tool_output_disabled_types=tool_output_disabled_types,
+        tool_output_transform_plugins=tool_output_transform_plugins,
+        enable_native_tool_output_compression=enable_native_tool_output_compression,
+        inherit_tools=inherit_tools,
+        custom_subagents=custom_subagents,
+        disable_builtin_subagents=disable_builtin_subagents,
+        model_factory=model_factory,
+        model_overrides=model_overrides,
+        reasoning_effort_overrides=reasoning_effort_overrides,
+        default_model=default_model,
+        default_reasoning_effort=default_reasoning_effort,
+        main_model=main_model,
+        main_reasoning_effort=main_reasoning_effort,
     )
 
 

@@ -19,6 +19,7 @@ wheels/
 .coding-agent/
 .cmd-agent/
 .tmp/
+.tmp-pytest/
 .synapse/
 .pytest_cache/
 .ruff_cache/

@@ -45,6 +45,35 @@ def todo_kind_style(kind: str) -> str:
     return _theme_color("dim", _DEFAULT_DIM)
 
 
+def _suffix_truncate(value: str, limit: int) -> str:
+    """Bound a suffix field so custom long names cannot blow up the row."""
+    return value if len(value) <= limit else f"{value[: limit - 1]}…"
+
+
+def format_subagent_suffix(item: ToolItem) -> str:
+    """Return the muted subagent metadata suffix, or ``""`` when not applicable.
+
+    Only top-level ``task`` items with a known ``subagent_name`` get a
+    suffix. Missing model/effort degrade to a bare ``[name]`` instead of
+    ``None``/``?`` placeholders; each axis falling back to the main agent is
+    marked ``(inherit)`` so the shown value is not mistaken for a pinned one.
+    """
+    if item.sub or item.category != "task" or not item.subagent_name:
+        return ""
+    parts = [_suffix_truncate(item.subagent_name, 32)]
+    if item.subagent_model:
+        model = _suffix_truncate(item.subagent_model, 48)
+        if item.subagent_model_inherited:
+            model = f"{model} (inherit)"
+        parts.append(model)
+    if item.subagent_reasoning_effort:
+        effort = _suffix_truncate(item.subagent_reasoning_effort, 24)
+        if item.subagent_reasoning_inherited:
+            effort = f"{effort} (inherit)"
+        parts.append(effort)
+    return f"[{' · '.join(parts)}]"
+
+
 def render_todo_row_texts(
     rows: list[TodoRow],
     *,
@@ -270,13 +299,20 @@ class ToolGroupBlock(SelectableStatic):
                     style = green
                     bullet = "✓"
                 label = item.label or item.name
+                suffix = format_subagent_suffix(item)
+                suffix_text = f"  {suffix}" if suffix else ""
                 if " " in label and item.category in {"read", "edit", "list"}:
                     head, tail = label.split(" ", 1)
                     row = Text(f"{indent}{bullet}  {head} ", style=style)
                     row.append(tail, style=orange)
+                    if suffix_text:
+                        row.append(suffix_text, style=muted)
                     lines.append(row)
                 else:
-                    lines.append(Text(f"{indent}{bullet}  {label}", style=style))
+                    row = Text(f"{indent}{bullet}  {label}", style=style)
+                    if suffix_text:
+                        row.append(suffix_text, style=muted)
+                    lines.append(row)
                 if is_todo_tool(item.name) or str(item.label or "").startswith("Todos "):
                     lines.extend(
                         render_todo_checklist_from_preview(
@@ -349,6 +385,11 @@ class ToolGroupBlock(SelectableStatic):
                 existing.sub = item.sub
                 existing.parent_id = item.parent_id
                 existing.call_id = item.call_id
+                existing.subagent_name = item.subagent_name
+                existing.subagent_model = item.subagent_model
+                existing.subagent_reasoning_effort = item.subagent_reasoning_effort
+                existing.subagent_model_inherited = item.subagent_model_inherited
+                existing.subagent_reasoning_inherited = item.subagent_reasoning_inherited
                 self._sync_summary_from_items()
                 if render:
                     self._render_block()
@@ -435,7 +476,11 @@ class ToolGroupBlock(SelectableStatic):
                 lines.append(f"  … and {overflow} earlier")
             for parent, subs in visible_groups:
                 parent_status = "err" if parent.error else (parent.status or "done")
-                lines.append(f"  {parent.label or parent.name} [{parent_status}]")
+                suffix = format_subagent_suffix(parent)
+                suffix_text = f"  {suffix}" if suffix else ""
+                lines.append(
+                    f"  {parent.label or parent.name}{suffix_text} [{parent_status}]"
+                )
                 visible_subs, sub_overflow = self._visible_subs(subs)
                 if sub_overflow:
                     lines.append(f"    … and {sub_overflow} earlier")
@@ -462,6 +507,7 @@ class ToolGroupBlock(SelectableStatic):
 __all__ = [
     "TodoChecklist",
     "ToolGroupBlock",
+    "format_subagent_suffix",
     "render_todo_checklist_from_preview",
     "render_todo_row_texts",
     "todo_kind_style",

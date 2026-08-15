@@ -57,7 +57,18 @@ class _ItemSink:
 
     def tool_item_started(self, item: ToolItem) -> None:
         self.events.append(
-            ("tool_item_started", item.id, item.label, item.name, item.parent_id)
+            (
+                "tool_item_started",
+                item.id,
+                item.label,
+                item.name,
+                item.parent_id,
+                item.subagent_name,
+                item.subagent_model,
+                item.subagent_reasoning_effort,
+                item.subagent_model_inherited,
+                item.subagent_reasoning_inherited,
+            )
         )
 
     def tool_item_updated(self, item: ToolItem) -> None:
@@ -1124,3 +1135,94 @@ def test_stream_agent_renders_tool_batch_on_same_id_upgrade() -> None:
     # The duplicate completed batch must be deduped.
     assert len(started) == 1
     assert result.tool_calls == 1
+
+
+class _MetadataSubagentAgent:
+    """Single task call with the runtime display-config attribute attached."""
+
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
+
+    _coding_subagent_display_configs = {
+        "reviewer": ResolvedSubagentDisplayConfig(
+            name="reviewer",
+            model="gpt-5.2",
+            reasoning_effort="high",
+            model_inherited=False,
+            reasoning_effort_inherited=False,
+        )
+    }
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {
+                                        "intent": "审查修复",
+                                        "subagent_type": "reviewer",
+                                        "description": "review the fix",
+                                    },
+                                    "id": "task-1",
+                                }
+                            ],
+                            id="m1",
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "messages": [
+                        _Chunk(
+                            type="tool",
+                            name="task",
+                            content="done",
+                            id="r1",
+                            tool_call_id="task-1",
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_binds_subagent_metadata_from_agent_snapshot() -> None:
+    """The parser must attach the build-time config map to task parents only."""
+    sink = _ItemSink()
+    stream_agent(
+        _MetadataSubagentAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=False,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    started = [e for e in sink.events if e[0] == "tool_item_started"]
+    assert len(started) == 1
+    _, item_id, label, name, parent_id, sub_name, model, effort, m_inh, e_inh = started[0]
+    assert name == "task"
+    assert label == "审查修复"
+    assert parent_id is None
+    assert sub_name == "reviewer"
+    assert model == "gpt-5.2"
+    assert effort == "high"
+    assert m_inh is False
+    assert e_inh is False
+
+    # Finished event keeps flowing; metadata is bound at start and untouched
+    # by the completion path.
+    finished = [e for e in sink.events if e[0] == "tool_item_finished"]
+    assert finished and finished[0][1] == item_id

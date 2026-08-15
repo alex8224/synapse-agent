@@ -349,3 +349,71 @@ def test_build_coding_agent_keeps_model_registry_after_subagent_load(
 
         rebuilt = agent_mod.rebuild_coding_agent(settings, agent, project_root=tmp_path)
         assert rebuilt is not None
+
+
+def test_resolve_display_effort_from_profiles_mirrors_build_chat_model() -> None:
+    """Model-pinned subagents with no explicit effort get their profile's
+    effective effort (falling back to session settings), matching what
+    ``build_chat_model`` compiles — not a misleading main-agent inherit tag."""
+    from types import SimpleNamespace
+
+    from synapse.app.agent import _resolve_display_effort_from_profiles
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
+
+    class _Profile:
+        def __init__(
+            self, *, enable_thinking=None, reasoning_effort=None, model=None  # noqa: ANN001
+        ):
+            self.enable_thinking = enable_thinking
+            self.reasoning_effort = reasoning_effort
+            self.model = model or "openai:gpt-x"
+
+    class _Registry:
+        def __init__(self, profiles):  # noqa: ANN001
+            self.profiles = profiles
+
+        def get(self, name):  # noqa: ANN001
+            if name not in self.profiles:
+                raise KeyError(name)
+            return self.profiles[name]
+
+    settings = SimpleNamespace(enable_thinking=True, reasoning_effort="high")
+    registry = _Registry(
+        {
+            "openai:gpt-x": _Profile(reasoning_effort="low", model="openai:gpt-x"),
+            "openai:gpt-off": _Profile(
+                enable_thinking=False, model="openai:gpt-off"
+            ),
+            "openai:gpt-plain": _Profile(),
+        }
+    )
+    configs = {
+        "pinned-profile": ResolvedSubagentDisplayConfig(
+            name="pinned-profile", model="openai:gpt-x", model_inherited=False
+        ),
+        "pinned-off": ResolvedSubagentDisplayConfig(
+            name="pinned-off", model="openai:gpt-off", model_inherited=False
+        ),
+        "pinned-plain": ResolvedSubagentDisplayConfig(
+            name="pinned-plain", model="openai:gpt-plain", model_inherited=False
+        ),
+        "inherited": ResolvedSubagentDisplayConfig(
+            name="inherited", model="main:model", model_inherited=True
+        ),
+        "unknown": ResolvedSubagentDisplayConfig(
+            name="unknown", model="ad-hoc:missing", model_inherited=False
+        ),
+    }
+    out = _resolve_display_effort_from_profiles(configs, registry, settings)
+    # Profile effort wins over the session fallback.
+    assert out["pinned-profile"].reasoning_effort == "low"
+    assert out["pinned-profile"].reasoning_effort_inherited is False
+    # Profile alias is normalized to the actual provider model.
+    assert out["pinned-profile"].model == "openai:gpt-x"
+    # Thinking off on the profile => "off", mirroring the factory's level.
+    assert out["pinned-off"].reasoning_effort == "off"
+    # Profile without effort => session fallback (same as build_chat_model).
+    assert out["pinned-plain"].reasoning_effort == "high"
+    # Fully inherited / unknown models are left untouched (no effort shown).
+    assert out["inherited"].reasoning_effort is None
+    assert out["unknown"].reasoning_effort is None

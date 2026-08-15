@@ -187,3 +187,179 @@ def test_match_tool_result_does_not_steal_parent_task():
     )
     matched = match_tool_result([task], "read_file")
     assert matched is None
+
+
+# --------------------------------------------------------------------------- #
+# subagent metadata binding (build_tool_item)
+# --------------------------------------------------------------------------- #
+
+
+def _task_call(**args):
+    return {
+        "name": "task",
+        "args": {"intent": "审查修复", "subagent_type": "reviewer", **args},
+    }
+
+
+def test_item_label_task_prefers_intent_then_description():
+    """The UI suffix change must not alter the base intent label."""
+    assert item_label("task", {"intent": "审查修复"}) == "审查修复"
+    assert item_label("task", {"description": "Review the fix"}) == "Review the fix"
+    assert item_label("task", {}) == "Launched subagent"
+
+
+def test_build_tool_item_task_binds_subagent_metadata():
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
+
+    configs = {
+        "reviewer": ResolvedSubagentDisplayConfig(
+            name="reviewer",
+            model="gpt-5.2",
+            reasoning_effort="high",
+            model_inherited=False,
+            reasoning_effort_inherited=False,
+        )
+    }
+    item = build_tool_item(
+        _task_call(intent="审查修复"),
+        item_id="t1",
+        index=0,
+        subagent_configs=configs,
+    )
+    assert item.name == "task"
+    assert item.category == "task"
+    assert item.label == "审查修复"
+    assert item.subagent_name == "reviewer"
+    assert item.subagent_model == "gpt-5.2"
+    assert item.subagent_reasoning_effort == "high"
+    assert item.subagent_model_inherited is False
+    assert item.subagent_reasoning_inherited is False
+
+
+def test_build_tool_item_task_inherited_metadata():
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
+
+    configs = {
+        "researcher": ResolvedSubagentDisplayConfig(
+            name="researcher",
+            model="main:model",
+            reasoning_effort="high",
+            model_inherited=True,
+            reasoning_effort_inherited=True,
+        )
+    }
+    item = build_tool_item(
+        {"name": "task", "args": {"intent": "explore", "subagent_type": "researcher"}},
+        item_id="t2",
+        subagent_configs=configs,
+    )
+    assert item.subagent_name == "researcher"
+    assert item.subagent_model == "main:model"
+    assert item.subagent_model_inherited is True
+    assert item.subagent_reasoning_inherited is True
+
+
+def test_build_tool_item_task_missing_subagent_type():
+    item = build_tool_item(
+        {"name": "task", "args": {"intent": "explore"}},
+        item_id="t3",
+    )
+    assert item.subagent_name is None
+    assert item.subagent_model is None
+
+
+def test_build_tool_item_task_unknown_name_keeps_name_only():
+    item = build_tool_item(
+        _task_call(intent="custom run"),
+        item_id="t4",
+        subagent_configs={},
+    )
+    # Unknown name (no config map entry): the name is still captured from the
+    # call args; model/effort stay empty and are never guessed.
+    assert item.subagent_name == "reviewer"
+    assert item.subagent_model is None
+    assert item.subagent_reasoning_effort is None
+
+
+def test_build_tool_item_non_task_ignores_subagent_keys():
+    item = build_tool_item(
+        {"name": "read_file", "args": {"file_path": "/a", "subagent_type": "reviewer"}},
+        item_id="t5",
+        subagent_configs={},
+    )
+    assert item.subagent_name is None
+    assert item.category == "read"
+
+
+def test_build_tool_item_nested_sub_item_not_tagged():
+    item = build_tool_item(
+        _task_call(intent="nested"),
+        item_id="t6",
+        sub=True,
+        subagent_configs={},
+    )
+    assert item.sub is True
+    assert item.subagent_name is None
+
+
+def test_build_tool_item_restore_snapshot_fallback():
+    """Transcript restore path: no live config map, but persistence wrote the
+    snapshot into args, so the metadata is rehydrated."""
+    item = build_tool_item(
+        {
+            "name": "task",
+            "args": {
+                "label": "审查修复",
+                "path": None,
+                "subagent_type": "reviewer",
+                "subagent_model": "gpt-5.1",
+                "subagent_reasoning_effort": "medium",
+                "subagent_model_inherited": True,
+                "subagent_reasoning_inherited": False,
+            },
+        },
+        item_id="hist-1",
+    )
+    assert item.subagent_name == "reviewer"
+    assert item.subagent_model == "gpt-5.1"
+    assert item.subagent_reasoning_effort == "medium"
+    assert item.subagent_model_inherited is True
+    assert item.subagent_reasoning_inherited is False
+
+
+def test_item_label_task_restores_persisted_label():
+    """Persisted transcripts store the intent under ``label``; the restored
+    row must keep its original title instead of the generic fallback."""
+    assert (
+        item_label("task", {"label": "审查修复", "subagent_type": "reviewer"})
+        == "审查修复"
+    )
+    # Real task calls never carry ``label``, so description still applies.
+    assert (
+        item_label("task", {"description": "Review the fix"}) == "Review the fix"
+    )
+
+
+def test_build_tool_item_config_lookup_is_case_insensitive():
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
+
+    configs = {
+        "reviewer": ResolvedSubagentDisplayConfig(
+            name="reviewer",
+            model="gpt-5.2",
+            reasoning_effort="high",
+            model_inherited=False,
+            reasoning_effort_inherited=False,
+        )
+    }
+    item = build_tool_item(
+        {
+            "name": "task",
+            "args": {"intent": "审查", "subagent_type": "Reviewer"},
+        },
+        item_id="t7",
+        subagent_configs=configs,
+    )
+    assert item.subagent_name == "Reviewer"
+    assert item.subagent_model == "gpt-5.2"
+    assert item.subagent_reasoning_effort == "high"

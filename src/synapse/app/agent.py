@@ -24,7 +24,7 @@ from synapse.integrations.mcp_client import (
     load_mcp_server_configs,
     load_mcp_tools,
 )
-from synapse.models.helpers import settings_fallback_api_key
+from synapse.models.helpers import settings_fallback_api_key, settings_thinking_label
 from synapse.models.registry import (
     build_model_from_settings,
     model_cache_key,
@@ -36,8 +36,15 @@ from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.runtime.steer import SteerQueue
-from synapse.runtime.subagent_specs import SubagentModelFactory, SubagentRegistry
-from synapse.runtime.subagents import build_default_subagents, ensure_user_subagents
+from synapse.runtime.subagent_specs import (
+    ResolvedSubagentDisplayConfig,
+    SubagentModelFactory,
+    SubagentRegistry,
+)
+from synapse.runtime.subagents import (
+    build_default_subagents_with_display,
+    ensure_user_subagents,
+)
 from synapse.settings import Settings
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tools import (
@@ -50,12 +57,62 @@ from synapse.tools import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_display_effort_from_profiles(
+    configs: dict[str, ResolvedSubagentDisplayConfig],
+    registry: Any,
+    settings: Settings,
+) -> dict[str, ResolvedSubagentDisplayConfig]:
+    """Backfill the effective effort for model-pinned subagents.
+
+    When a subagent pins a model but leaves ``reasoning_effort`` unspecified,
+    ``build_chat_model`` resolves the effort from the pinned model's profile
+    (falling back to session settings), *not* from the main agent. Mirror that
+    resolution in the display snapshot so the UI shows the value actually used
+    instead of a misleading ``(inherit)`` tag; unknown/ad-hoc model names are
+    left untouched (no effort shown).
+    """
+    from dataclasses import replace
+
+    out = dict(configs)
+    for name, cfg in configs.items():
+        if cfg.reasoning_effort is not None or cfg.model_inherited or not cfg.model:
+            continue
+        try:
+            profile = registry.get(cfg.model)
+        except Exception:  # noqa: BLE001 - ad-hoc or unknown model names
+            profile = None
+        if profile is None:
+            continue
+        enable = getattr(profile, "enable_thinking", None)
+        if enable is None:
+            enable = settings.enable_thinking
+        effort: str | None
+        if not enable:
+            effort = "off"
+        else:
+            effort = getattr(profile, "reasoning_effort", None) or settings.reasoning_effort
+        out[name] = replace(
+            cfg,
+            # Normalize a profile alias to the actual provider model so the
+            # suffix shows the model that is really used, like the main agent.
+            model=(
+                str(profile.model)
+                if getattr(profile, "model", None)
+                else cfg.model
+            ),
+            reasoning_effort=effort,
+            reasoning_effort_inherited=False,
+        )
+    return out
+
+
 def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelFactory:
     """Materialize a pinned subagent model with an optional effort override.
 
-    ``model_name=None`` builds the registry's default (main agent) profile so a
-    reasoning-only override still gets an independent instance; unknown ad-hoc
-    names fall back to the raw string for native deepagents resolution.
+    ``model_name=None`` builds the main agent's *active* profile (falling back
+    to the registry default) so a reasoning-only override runs the same model
+    the main agent uses — matching what the UI reports as inherited; unknown
+    ad-hoc names fall back to the raw string for native deepagents resolution.
     """
 
     def factory(model_name: str | None, reasoning_effort: str | None) -> Any:
@@ -65,10 +122,14 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
             enabled, effort = True, reasoning_effort
         else:
             enabled, effort = None, None
+        # ``model_name=None`` means "inherit the main agent model"; resolve it
+        # against the active profile (not the registry default) so the built
+        # instance matches the main agent and the UI's inherit display.
+        resolved_name = model_name or settings.active_model or None
         try:
             return registry.build_chat_model(
-                model_name,
-                fallback_api_key=settings_fallback_api_key(settings, model_name),
+                resolved_name,
+                fallback_api_key=settings_fallback_api_key(settings, resolved_name),
                 fallback_base_url=settings.openai_base_url,
                 fallback_enable_thinking=settings.enable_thinking,
                 fallback_reasoning_effort=settings.reasoning_effort,
@@ -474,7 +535,11 @@ def build_coding_agent(
             except Exception:  # noqa: BLE001 - custom subagents are best-effort
                 logger.warning("failed to load custom subagents", exc_info=True)
                 custom_subagents = None
-        subagents = build_default_subagents(
+        # Main agent's effective reasoning level, mirroring the status bar /
+        # model-factory fallback semantics so inherited subagents display the
+        # value actually in use (thinking off => "off", empty effort => "on").
+        main_reasoning_effort = settings_thinking_label(settings)
+        subagent_build = build_default_subagents_with_display(
             enabled=settings.enable_subagents,
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
@@ -493,6 +558,12 @@ def build_coding_agent(
             reasoning_effort_overrides=settings.subagent_reasoning_effort_overrides,
             default_model=settings.subagent_default_model,
             default_reasoning_effort=settings.subagent_default_reasoning_effort,
+            main_model=model_spec,
+            main_reasoning_effort=main_reasoning_effort,
+        )
+        subagents = subagent_build.specs
+        display_configs = _resolve_display_effort_from_profiles(
+            subagent_build.display_configs, registry, settings
         )
 
     goals_enabled = bool(getattr(settings, "enable_goals", True))
@@ -554,6 +625,7 @@ def build_coding_agent(
         else (get_goal_service() if goals_enabled else None)
     )  # type: ignore[attr-defined]
     agent._coding_subagents = subagents  # type: ignore[attr-defined]
+    agent._coding_subagent_display_configs = display_configs  # type: ignore[attr-defined]
     agent._coding_model = model  # type: ignore[attr-defined]
     agent._coding_model_registry = registry  # type: ignore[attr-defined]
     agent._coding_primary_image_input = primary_image_input  # type: ignore[attr-defined]

@@ -176,6 +176,10 @@ def stream_agent(
     # namespace to the oldest still-running, not-yet-bound parent task.
     ns_to_parent_id: dict[tuple[str, ...], str] = {}
     bound_parent_ids: set[str] = set()
+    # Build-time snapshot of each subagent's effective model/reasoning config
+    # (attached by app/agent.py). Read once per turn so concurrent tasks see a
+    # consistent map; falls back to empty when the agent lacks the attribute.
+    subagent_configs = getattr(agent, "_coding_subagent_display_configs", {}) or {}
 
     def _note_usage(*, estimated: bool = False, force: bool = False) -> None:
         nonlocal last_live_rate_push
@@ -779,6 +783,7 @@ def stream_agent(
                                     item_id=f"{gid}-{idx}",
                                     index=idx,
                                     sub=in_sub,
+                                    subagent_configs=subagent_configs,
                                 )
                                 pending_tool_items.append(item)
                                 if item.name == "task" and item.call_id:

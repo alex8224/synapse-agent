@@ -218,4 +218,9 @@ def _tool_item(payload: ToolItemPayload) -> ToolItem:
         sub=payload.sub,
         parent_id=payload.parent_id,
         call_id=payload.call_id,
+        subagent_name=payload.subagent_name,
+        subagent_model=payload.subagent_model,
+        subagent_reasoning_effort=payload.subagent_reasoning_effort,
+        subagent_model_inherited=payload.subagent_model_inherited,
+        subagent_reasoning_inherited=payload.subagent_reasoning_inherited,
     )

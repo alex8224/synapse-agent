@@ -816,3 +816,159 @@ def test_projection_failure_does_not_change_completed_status() -> None:
         await session.close(cancel_active=False)
 
     asyncio.run(run())
+
+
+def _subagent_task_payload(item_id: str = "item-1", call_id: str = "call-1") -> ToolItemPayload:
+    return ToolItemPayload(
+        item_id=item_id,
+        call_id=call_id,
+        name="task",
+        category="task",
+        label="审查修复",
+        path=None,
+        status="running",
+        preview=None,
+        error=False,
+        sub=False,
+        parent_id=None,
+        subagent_name="reviewer",
+        subagent_model="gpt-5.2",
+        subagent_reasoning_effort="high",
+        subagent_model_inherited=False,
+        subagent_reasoning_inherited=False,
+    )
+
+
+def test_session_persistence_persists_subagent_metadata_from_turn_events(
+    tmp_path,
+) -> None:
+    """The fallback (no state messages) path writes the subagent snapshot so
+    restored transcripts keep the model/effort suffix."""
+    from synapse.runtime.agent_loop import TurnContext, build_turn_request
+    from synapse.runtime.sessions.persistence import SessionPersistence
+    from synapse.sessions.transcript_projection import TranscriptProjection
+
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    settings = SimpleNamespace(max_concurrency=2)
+    context = TurnContext(
+        thread_id="thread",
+        agent=object(),
+        settings=settings,
+        request=build_turn_request(
+            text="inspect",
+            attachments=None,
+            settings=settings,
+            thread_id="thread",
+        ),
+        turn_id="turn",
+    )
+    turn_events = [
+        _event(1, TurnEventKind.TOOL_STARTED, _subagent_task_payload()),
+        _event(
+            2,
+            TurnEventKind.TOOL_FINISHED,
+            ToolFinishedPayload(item_id="item-1", status="ok", preview="done", error=False),
+        ),
+    ]
+    persistence = SessionPersistence(
+        transcript_projection=projection,
+        summary_store=SimpleNamespace(),
+        summary_mode="off",
+        catalog_enabled=False,
+    )
+    persistence.persist(
+        context,
+        TurnResult(
+            turn_id="turn",
+            thread_id="thread",
+            status=TurnStatus.COMPLETED,
+            final_text="done",
+        ),
+        turn_events=turn_events,
+    )
+
+    page = projection.load_tail("thread", turns=1)
+    tools = next(event for event in page.events if event.kind == "tools")
+    args = tools.tool_calls[0]["args"]
+    assert args["subagent_type"] == "reviewer"
+    assert args["subagent_model"] == "gpt-5.2"
+    assert args["subagent_reasoning_effort"] == "high"
+    assert args["subagent_model_inherited"] is False
+    projection.close()
+
+
+def test_session_persistence_backfills_subagent_metadata_on_state_events(
+    tmp_path,
+) -> None:
+    """The state-message path keeps original task args; the runtime events must
+    backfill the resolved model/effort by call id."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from synapse.runtime.agent_loop import TurnContext, build_turn_request
+    from synapse.runtime.sessions.persistence import SessionPersistence
+    from synapse.sessions.transcript_projection import TranscriptProjection
+
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    settings = SimpleNamespace(max_concurrency=2)
+    context = TurnContext(
+        thread_id="thread",
+        agent=object(),
+        settings=settings,
+        request=build_turn_request(
+            text="inspect",
+            attachments=None,
+            settings=settings,
+            thread_id="thread",
+        ),
+        turn_id="turn",
+    )
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"intent": "审查修复", "subagent_type": "reviewer"},
+                        "id": "call-1",
+                    }
+                ],
+            ),
+            ToolMessage(content="done", tool_call_id="call-1"),
+        ]
+    }
+    turn_events = [
+        _event(1, TurnEventKind.TOOL_STARTED, _subagent_task_payload()),
+        _event(
+            2,
+            TurnEventKind.TOOL_FINISHED,
+            ToolFinishedPayload(item_id="item-1", status="ok", preview="done", error=False),
+        ),
+    ]
+    persistence = SessionPersistence(
+        transcript_projection=projection,
+        summary_store=SimpleNamespace(),
+        summary_mode="off",
+        catalog_enabled=False,
+    )
+    persistence.persist(
+        context,
+        TurnResult(
+            turn_id="turn",
+            thread_id="thread",
+            status=TurnStatus.COMPLETED,
+            state=state,
+            final_text="done",
+        ),
+        turn_events=turn_events,
+    )
+
+    page = projection.load_tail("thread", turns=1)
+    tools = next(event for event in page.events if event.kind == "tools")
+    call = next(c for c in tools.tool_calls if c["id"] == "call-1")
+    args = call["args"]
+    assert args["subagent_type"] == "reviewer"
+    assert args["subagent_model"] == "gpt-5.2"
+    assert args["subagent_reasoning_effort"] == "high"
+    assert args["subagent_model_inherited"] is False
+    projection.close()

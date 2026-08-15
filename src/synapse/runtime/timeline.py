@@ -13,9 +13,14 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from synapse.runtime.streaming.tool_model import ToolItem
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from synapse.runtime.subagent_specs import ResolvedSubagentDisplayConfig
 
 # Default preview budget (matches docs/tui-cursor-refactor.md).
 DEFAULT_PREVIEW_CHARS = 2000
@@ -388,6 +393,13 @@ def item_label(name: str, args: Any = None) -> str:
     base = _basename(path)
 
     if cat == "task" and isinstance(args, dict):
+        # Persisted transcripts store the intent under ``label`` (their args
+        # never carry ``intent``); prefer it over the generic fallback so
+        # restored subagent rows keep their original title.
+        label_arg = args.get("label")
+        if isinstance(label_arg, str) and label_arg.strip():
+            s = " ".join(label_arg.split()).strip()
+            return s if len(s) <= 96 else s[:95].rstrip() + "…"
         desc = args.get("description") or args.get("prompt")
         if isinstance(desc, str) and desc.strip():
             s = " ".join(desc.split()).strip()
@@ -541,12 +553,27 @@ def format_preview_with_lines(preview: str, *, max_lines: int = 12) -> str:
     return "\n".join(out)
 
 
+def extract_subagent_type(args: Any) -> str | None:
+    """Return a normalized ``subagent_type`` from a task tool call's args.
+
+    Returns None for missing / empty / non-string values so callers can
+    degrade silently instead of rendering ``[?]`` noise.
+    """
+    if not isinstance(args, dict):
+        return None
+    value = args.get("subagent_type")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
 def build_tool_item(
     call: Any,
     *,
     item_id: str,
     index: int = 0,
     sub: bool = False,
+    subagent_configs: Mapping[str, ResolvedSubagentDisplayConfig] | None = None,
 ) -> ToolItem:
     """Build a ToolItem from a LangChain-style tool call object/dict."""
     if isinstance(call, dict):
@@ -564,7 +591,7 @@ def build_tool_item(
     preview = None
     if is_todo_tool(name):
         preview = format_todos_preview(extract_todos(args))
-    return ToolItem(
+    item = ToolItem(
         id=item_id or f"{name}-{index}",
         name=name,
         category=cat,
@@ -576,6 +603,48 @@ def build_tool_item(
         sub=sub,
         call_id=str(call_id) if call_id else None,
     )
+    # Only top-level task parents carry subagent metadata; nested sub-items
+    # and non-task tools are never tagged, even when their args happen to
+    # contain a ``subagent_type`` key.
+    if cat == "task" and not sub and isinstance(args, dict):
+        subagent_name = extract_subagent_type(args)
+        if subagent_name is not None:
+            item.subagent_name = subagent_name
+            configs = subagent_configs or {}
+            resolved = configs.get(subagent_name)
+            if resolved is None:
+                # Definitions are lowercase but task calls may carry other
+                # casings; match case-insensitively before falling back.
+                folded_name = subagent_name.casefold()
+                for key, value in configs.items():
+                    if key.casefold() == folded_name:
+                        resolved = value
+                        break
+            if resolved is not None:
+                item.subagent_model = resolved.model
+                item.subagent_reasoning_effort = resolved.reasoning_effort
+                item.subagent_model_inherited = resolved.model_inherited
+                item.subagent_reasoning_inherited = resolved.reasoning_effort_inherited
+            else:
+                # Transcript-restore fallback: rehydrate the snapshot that
+                # persistence wrote into args (unknown name or no live map).
+                # Extra keys are inert for real task calls, which never carry
+                # these subagent_* keys.
+                model = args.get("subagent_model")
+                effort = args.get("subagent_reasoning_effort")
+                item.subagent_model = (
+                    str(model) if isinstance(model, str) and model.strip() else None
+                )
+                item.subagent_reasoning_effort = (
+                    str(effort) if isinstance(effort, str) and effort.strip() else None
+                )
+                item.subagent_model_inherited = bool(
+                    args.get("subagent_model_inherited", False)
+                )
+                item.subagent_reasoning_inherited = bool(
+                    args.get("subagent_reasoning_inherited", False)
+                )
+    return item
 
 
 def match_tool_result(

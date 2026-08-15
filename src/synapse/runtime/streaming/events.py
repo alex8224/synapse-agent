@@ -152,6 +152,13 @@ class ToolItemPayload:
     sub: bool
     parent_id: str | None
     workspace_changed: bool = False
+    # Subagent metadata (top-level ``task`` items only). Optional with
+    # defaults so older events without the fields keep deserializing.
+    subagent_name: str | None = None
+    subagent_model: str | None = None
+    subagent_reasoning_effort: str | None = None
+    subagent_model_inherited: bool = False
+    subagent_reasoning_inherited: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +241,28 @@ def tool_item_payload(item: Any, *, workspace_changed: bool = False) -> ToolItem
             else None
         ),
         workspace_changed=workspace_changed,
+        subagent_name=(
+            str(value)
+            if (value := getattr(item, "subagent_name", None)) is not None
+            else None
+        ),
+        subagent_model=(
+            str(value)
+            if (value := getattr(item, "subagent_model", None)) is not None
+            else None
+        ),
+        subagent_reasoning_effort=(
+            str(value)
+            if (value := getattr(item, "subagent_reasoning_effort", None))
+            is not None
+            else None
+        ),
+        subagent_model_inherited=bool(
+            getattr(item, "subagent_model_inherited", False)
+        ),
+        subagent_reasoning_inherited=bool(
+            getattr(item, "subagent_reasoning_inherited", False)
+        ),
     )
 
 

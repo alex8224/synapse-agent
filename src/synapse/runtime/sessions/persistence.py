@@ -69,6 +69,8 @@ class SessionPersistence:
             tool_event = _tools_from_turn_events(turn_events)
             if tool_event is not None:
                 tool_events.append(tool_event)
+        if tool_events and turn_events:
+            _annotate_tool_calls_with_subagent_snapshots(tool_events, turn_events)
         events.extend(tool_events)
         answer_text = result.final_text or _last_answer_text(state_events)
         if answer_text:
@@ -135,7 +137,7 @@ def _tools_from_turn_events(events: list[TurnEvent]) -> UiTranscriptEvent | None
             calls[item_id] = {
                 "id": item_id,
                 "name": payload.name,
-                "args": {"intent": payload.label},
+                "args": _subagent_args(payload, intent=payload.label),
             }
             results[item_id] = {
                 "id": item_id,
@@ -157,3 +159,60 @@ def _tools_from_turn_events(events: list[TurnEvent]) -> UiTranscriptEvent | None
         tool_calls=list(calls.values()),
         tool_results=list(results.values()),
     )
+
+
+def _subagent_args(payload: ToolItemPayload, *, intent: str) -> dict[str, Any]:
+    """Persisted tool-call args including the subagent metadata snapshot.
+
+    Restored transcripts rebuild ``ToolItem`` via ``build_tool_item``, which
+    rehydrates ``subagent_name`` from ``subagent_type`` and the model/effort
+    from these ``subagent_*`` keys when no live config map is available.
+    """
+    args: dict[str, Any] = {"intent": intent}
+    if payload.subagent_name:
+        args["subagent_type"] = payload.subagent_name
+    if payload.subagent_model:
+        args["subagent_model"] = payload.subagent_model
+    if payload.subagent_reasoning_effort:
+        args["subagent_reasoning_effort"] = payload.subagent_reasoning_effort
+    args["subagent_model_inherited"] = payload.subagent_model_inherited
+    args["subagent_reasoning_inherited"] = payload.subagent_reasoning_inherited
+    return args
+
+
+def _annotate_tool_calls_with_subagent_snapshots(
+    tool_events: list[UiTranscriptEvent],
+    turn_events: list[TurnEvent],
+) -> None:
+    """Backfill subagent metadata snapshots onto persisted tool calls.
+
+    The state-message path (``fold_messages_for_ui``) keeps the original task
+    call args (``intent``/``subagent_type``) but not the resolved model/effort;
+    match each call by its tool-call id against the runtime ``ToolItemPayload``
+    events and copy the snapshot so history restores show the exact config used
+    that turn.
+    """
+    by_call_id: dict[str, ToolItemPayload] = {}
+    for event in turn_events or []:
+        payload = event.payload
+        if event.kind in {TurnEventKind.TOOL_STARTED, TurnEventKind.TOOL_UPDATED} and isinstance(
+            payload, ToolItemPayload
+        ):
+            if payload.call_id:
+                by_call_id[payload.call_id] = payload
+    if not by_call_id:
+        return
+    for event in tool_events:
+        for call in event.tool_calls or []:
+            payload = by_call_id.get(str(call.get("id") or ""))
+            if payload is None:
+                continue
+            args = call.setdefault("args", {})
+            args.update(
+                {
+                    key: value
+                    for key, value in _subagent_args(
+                        payload, intent=str(args.get("intent") or payload.label or "")
+                    ).items()
+                }
+            )

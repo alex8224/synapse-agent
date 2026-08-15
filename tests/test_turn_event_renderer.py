@@ -638,3 +638,70 @@ def test_tool_group_block_renders_subagent_phase() -> None:
     block._render_block()
     lines = _rendered_lines(block)
     assert not any("thinking" in line or "answering" in line for line in lines)
+
+
+# --------------------------------------------------------------------------- #
+# subagent metadata payload round-trip
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_item_payload_round_trips_subagent_metadata() -> None:
+    """ToolItem -> ToolItemPayload -> ToolItem must keep all metadata."""
+    import json
+
+    from synapse.runtime.streaming.events import tool_item_payload
+    from synapse.runtime.streaming.tool_model import ToolItem
+    from synapse.ui.turn.event_renderer import _tool_item
+
+    item = ToolItem(
+        id="g1-0",
+        name="task",
+        category="task",
+        label="审查修复",
+        path=None,
+        status="running",
+        error=False,
+        sub=False,
+        call_id="task-1",
+        subagent_name="reviewer",
+        subagent_model="gpt-5.2",
+        subagent_reasoning_effort="high",
+        subagent_model_inherited=False,
+        subagent_reasoning_inherited=True,
+    )
+    payload = tool_item_payload(item)
+    restored = _tool_item(payload)
+    assert restored.subagent_name == "reviewer"
+    assert restored.subagent_model == "gpt-5.2"
+    assert restored.subagent_reasoning_effort == "high"
+    assert restored.subagent_model_inherited is False
+    assert restored.subagent_reasoning_inherited is True
+
+    # The event envelope serializes the new fields and stays JSON-safe.
+    event = _event(1, TurnEventKind.TOOL_BATCH_STARTED, payload)
+    dumped = json.dumps(event.to_dict(), ensure_ascii=False)
+    assert '"subagent_name": "reviewer"' in dumped
+    assert '"subagent_model": "gpt-5.2"' in dumped
+
+
+def test_tool_item_payload_defaults_for_legacy_items() -> None:
+    """Payloads without subagent fields (older events) must degrade cleanly."""
+    import json
+    from dataclasses import asdict
+
+    from synapse.runtime.streaming.events import tool_item_payload
+    from synapse.runtime.streaming.tool_model import ToolItem
+    from synapse.ui.turn.event_renderer import _tool_item
+
+    item = ToolItem(id="g1-0", name="read_file", category="read", label="Read a.py")
+    payload = tool_item_payload(item)
+    assert payload.subagent_name is None
+    assert payload.subagent_model is None
+    assert payload.subagent_reasoning_effort is None
+    assert payload.subagent_model_inherited is False
+    assert payload.subagent_reasoning_inherited is False
+
+    restored = _tool_item(payload)
+    assert restored.subagent_name is None
+    assert restored.subagent_model is None
+    assert json.dumps(asdict(payload))  # default fields are JSON-safe
