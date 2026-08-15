@@ -261,6 +261,23 @@ class Settings(BaseSettings):
     subagent_reviewer_model: str | None = Field(
         default=None, validation_alias="AGENT_SUBAGENT_REVIEWER_MODEL"
     )
+    subagent_researcher_model: str | None = Field(
+        default=None, validation_alias="AGENT_SUBAGENT_RESEARCHER_MODEL"
+    )
+    # Load user-defined subagents from layered `.synapse/agents/*.md` files
+    # (user → project; project overrides user on name collision).
+    enable_custom_subagents: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_CUSTOM_SUBAGENTS"
+    )
+    # Extra directories (absolute or workspace-relative) scanned for agent
+    # definitions, after the built-in layered dirs.
+    custom_agents_dirs: list[str] = Field(
+        default_factory=list, validation_alias="AGENT_CUSTOM_AGENTS_DIRS"
+    )
+    # Built-in subagent names (researcher/tester/reviewer) to drop entirely.
+    disable_builtin_subagents: list[str] = Field(
+        default_factory=list, validation_alias="AGENT_DISABLE_BUILTIN_SUBAGENTS"
+    )
     readonly: bool = Field(default=False, validation_alias="AGENT_READONLY")
     excluded_tools: list[str] = Field(default_factory=list, validation_alias="AGENT_EXCLUDED_TOOLS")
     enable_fs_permissions: bool = Field(

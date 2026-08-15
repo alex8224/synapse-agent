@@ -35,7 +35,11 @@ markdown_extensions:
   - admonition
   - pymdownx.highlight:
       anchor_linenums: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.inlinehilite
   - pymdownx.details
   - pymdownx.tabbed:
@@ -49,6 +53,7 @@ nav:
   - 快速开始: quickstart.md
   - CLI 命令参考: cli.md
   - 配置指南: config.md
+  - 子代理: subagents.md
   - Agent Runtime 解耦实施文档:
       - 总体方案: agent-runtime-decoupling/index.md
       - 实施进度: agent-runtime-decoupling/progress.md

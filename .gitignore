@@ -30,6 +30,10 @@ htmlcov/
 large_tool_results/
 conversation_history/
 
+# Local misc files (unrelated to the repo)
+/ear-anatomy-exploded.html
+/ear-models/
+
 # IDE
 .idea/
 .vscode/

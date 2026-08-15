@@ -309,3 +309,43 @@ def test_attach_mcp_to_agent_reuses_live_pool_tools(tmp_path: Path):
 
     assert build.call_args.kwargs["load_mcp"] is False
     assert build.call_args.kwargs["mcp_tools"] == [tool]
+
+
+def test_build_coding_agent_keeps_model_registry_after_subagent_load(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: the subagents span must not shadow the model registry local.
+
+    ``build_coding_agent`` stores the model ``registry`` on
+    ``_coding_model_registry``. Loading custom subagents reuses a
+    ``registry``-named local and used to overwrite the ModelRegistry with a
+    SubagentRegistry, breaking every later rebuild (``/new`` session switch and
+    MCP attach) with ``'NoneType' object has no attribute 'model'``.
+    """
+    from synapse.app import agent as agent_mod
+    from synapse.models.registry import ModelRegistry
+
+    settings = load_settings(
+        workspace=tmp_path,
+        model="openai:gpt-4.1",
+        checkpoint_backend="memory",
+        enable_mcp=False,
+        enable_subagents=True,
+    )
+    # Keep the subagent seed/scan off the real user dir.
+    monkeypatch.setattr(agent_mod, "ensure_user_subagents", lambda: [])
+
+    fake_model = MagicMock(name="model")
+    with (
+        patch("synapse.models.registry.init_chat_model", return_value=fake_model),
+        patch("deepagents.create_deep_agent", return_value=MagicMock(name="agent")),
+        patch("deepagents.register_harness_profile", MagicMock()),
+        patch("deepagents.HarnessProfile", MagicMock()),
+    ):
+        agent = agent_mod.build_coding_agent(settings, project_root=tmp_path)
+        reg = getattr(agent, "_coding_model_registry", None)
+        assert isinstance(reg, ModelRegistry), type(reg).__name__
+        assert reg.profiles
+
+        rebuilt = agent_mod.rebuild_coding_agent(settings, agent, project_root=tmp_path)
+        assert rebuilt is not None

@@ -107,7 +107,7 @@ Three ways to talk to it:
 - **MCP built in** — attach MCP servers and their tools appear in the agent automatically.
 - **Sessions that resume** — SQLite checkpoints, a global project catalog across all your projects, and a lightweight paged transcript so even huge sessions reopen fast.
 - **Memory and skills** — `AGENTS.md` memory plus Agent Skills (`skills/**`) that load only when relevant.
-- **Sub-agents** — built-in `researcher`, `tester`, and `reviewer` roles for parallel delegation.
+- **Sub-agents** — built-in `researcher`, `tester`, and `reviewer` roles for parallel delegation, plus user-defined subagents from `.synapse/agents/*.md`.
 - **Approvals when you want them** — optional human-in-the-loop (`--require-approval`) and safety profiles.
 
 ## Slash commands

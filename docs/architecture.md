@@ -129,13 +129,21 @@
 │                                                                     │
 │  ┌────────────────────  子Agent 系统  ──────────────────────────┐  │
 │  │                                                               │  │
-│  │  subagents.py                                                    │  │
-│  │  build_default_subagents() → 3 种规范:                            │  │
-│  │  ┌──────────┬──────────┬──────────┐                              │  │
-│  │  │researcher│  tester  │ reviewer │                              │  │
-│  │  │ 只读分析  │ 运行测试 │ 代码审查 │                              │  │
-│  │  │ 无execute│ execute  │ 无write  │                              │  │
-│  │  └──────────┴──────────┴──────────┘                              │  │
+│  │  subagent_specs.py  (定义/注册/编译 三层)                     │  │
+│  │  ├─ SubAgentDefinition: 拓扑无关声明                          │  │
+│  │  │   name/description/system_prompt/model/tools               │  │
+│  │  │   ownership(预留 handoff)/output_schema(预留 workflow)     │  │
+│  │  ├─ SubagentRegistry: 分层加载 .synapse/agents/*.md          │  │
+│  │  │   user → project 同名覆盖 · 坏文件降级跳过                 │  │
+│  │  └─ compile_task_specs: Definition → deepagents SubAgent      │  │
+│  │                                                               │  │
+│  │  subagents.py                                                 │  │
+│  │  build_default_subagents() → 内置 + 自定义合并 → 3+ 规范:       │  │
+│  │  ┌──────────┬──────────┬──────────┬──────────────┐            │  │
+│  │  │researcher│  tester  │ reviewer │ 自定义...     │            │  │
+│  │  │ 只读分析  │ 运行测试 │ 代码审查 │ 用户定义      │            │  │
+│  │  │ 无execute│ execute  │ 无write  │ 覆盖/追加     │            │  │
+│  │  └──────────┴──────────┴──────────┴──────────────┘            │  │
 │  │                                                               │  │
 │  │  deepagents SubAgentMiddleware (原生)                          │  │
 │  │  ├─ task 工具 → ToolNode 阶段执行                                │  │

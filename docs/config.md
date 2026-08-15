@@ -101,6 +101,38 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_ENABLE_SUBAGENTS` | `true` | 启用子代理 |
 | `AGENT_SUBAGENT_TESTER_MODEL` | — | Tester 子代理模型 |
 | `AGENT_SUBAGENT_REVIEWER_MODEL` | — | Reviewer 子代理模型 |
+| `AGENT_SUBAGENT_RESEARCHER_MODEL` | — | Researcher 子代理模型 |
+| `AGENT_ENABLE_CUSTOM_SUBAGENTS` | `true` | 加载用户自定义子代理（`.synapse/agents/*.md`） |
+| `AGENT_CUSTOM_AGENTS_DIRS` | `[]` | 额外扫描的子代理定义目录（JSON 数组，绝对路径或相对 workspace） |
+| `AGENT_DISABLE_BUILTIN_SUBAGENTS` | `[]` | 禁用的内置子代理名（JSON 数组，如 `["tester"]`） |
+
+#### 自定义子代理
+
+在用户层 `~/.synapse/agents/*.md` 或项目层 `<workspace>/.synapse/agents/*.md` 放置
+Markdown 文件即可新增子代理（项目层覆盖用户层同名定义）。YAML frontmatter 提供元数据，
+文件正文是子代理的 system prompt：
+
+```markdown
+---
+name: security-reviewer
+description: Use after security-sensitive changes. Reviews for injection and secret leaks.
+model: inherit            # 或 "provider:model-name"
+tools: [read_file, search_files, find_files, execute]   # 可选 allowlist；省略则继承 find_files/search_files
+disallowed_tools: [write_file, edit_file]               # 可选 denylist
+ownership: task           # 预留字段，仅支持 task
+---
+
+You are a security reviewer. Inspect diffs for...
+```
+
+- `name` 与内置（researcher/tester/reviewer）同名时覆盖内置定义。
+- `tools: []` 表示仅使用 deepagents 内置工具（不继承主代理工具）。
+- 解析失败的文件会被跳过并记录 warning，不会导致启动失败。
+- `ownership` / `output_schema` 为未来 handoff 与 workflow 编排预留，当前仅支持 `task`。
+- 首次启动会在 `~/.synapse/agents/` 生成 `researcher.md` / `tester.md` / `reviewer.md`
+  种子文件，编辑即可覆盖内置；已编辑内容不会被覆盖。同名文件存在但未显式写 `model`
+  时，`AGENT_SUBAGENT_*_MODEL` 仍会注入；在文件里显式写 `model`（或 `model: inherit`）
+  后由文件接管。
 
 ### MCP
 

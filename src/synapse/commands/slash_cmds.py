@@ -544,9 +544,16 @@ def handle_slash(
 
         specs = getattr(agent, "_coding_subagents", None)
         if specs is None:
+            # Fallback when the agent has no cached compiled specs (rare). Custom
+            # subagents are not loaded here because there is no inherit_tools
+            # context; the cached path above already reflects them.
             specs = build_default_subagents(
                 enabled=getattr(settings, "enable_subagents", True),
                 isolate_tools=True,
+                tester_model=getattr(settings, "subagent_tester_model", None),
+                reviewer_model=getattr(settings, "subagent_reviewer_model", None),
+                researcher_model=getattr(settings, "subagent_researcher_model", None),
+                disable_builtin_subagents=getattr(settings, "disable_builtin_subagents", []),
             )
         plain = format_subagents_lines(specs)
         if not specs:

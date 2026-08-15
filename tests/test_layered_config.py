@@ -162,6 +162,42 @@ def test_settings_json_layer(tmp_path, monkeypatch):
     assert settings.history_tail_turns == 7
 
 
+def test_subagent_settings_json_layer(tmp_path, monkeypatch):
+    home = tmp_path / "home" / ".synapse"
+    home.mkdir(parents=True)
+    (home / "settings.json").write_text(
+        '{"enable_subagents": false, "disable_builtin_subagents": ["tester"]}',
+        encoding="utf-8",
+    )
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".synapse").mkdir()
+    (proj / ".synapse" / "settings.json").write_text(
+        '{"disable_builtin_subagents": ["reviewer"], "custom_agents_dirs": ["agents"]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir",
+        lambda: home.resolve(),
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.executable_config_dirs",
+        lambda: [],
+    )
+    monkeypatch.chdir(proj)
+
+    cfg = load_layered_settings_file(proj)
+    assert cfg["enable_subagents"] is False
+    # Lists are replaced (not concatenated) across layers.
+    assert cfg["disable_builtin_subagents"] == ["reviewer"]
+    assert cfg["custom_agents_dirs"] == ["agents"]
+
+    settings = load_settings(workspace=proj.resolve())
+    assert settings.enable_subagents is False
+    assert settings.disable_builtin_subagents == ["reviewer"]
+    assert settings.custom_agents_dirs == ["agents"]
+
+
 def test_merge_profiles_inherit_key():
     base = ModelProfile(name="p", model="openai:a", api_key="k1", base_url="http://a")
     over = ModelProfile(name="p", model="openai:b", base_url="http://b")

@@ -20,6 +20,7 @@ def test_default_approval_is_off(monkeypatch):
 def test_tool_output_transform_defaults_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM", raising=False)
     monkeypatch.delenv("AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES", raising=False)
+    monkeypatch.delenv("AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION", raising=False)
     settings = Settings(_env_file=None)
     assert settings.enable_tool_output_transform is True
     assert settings.tool_output_transform_threshold_bytes == 512
@@ -136,6 +137,42 @@ def test_blacklist_blocks_rm_rf_root():
 def test_blacklist_allows_pytest():
     verdict = check_command("uv run pytest -q")
     assert verdict.allowed is True
+
+
+def test_subagent_settings_defaults_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_ENABLE_SUBAGENTS", raising=False)
+    monkeypatch.delenv("AGENT_ENABLE_CUSTOM_SUBAGENTS", raising=False)
+    monkeypatch.delenv("AGENT_SUBAGENT_TESTER_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_SUBAGENT_REVIEWER_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_SUBAGENT_RESEARCHER_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_CUSTOM_AGENTS_DIRS", raising=False)
+    monkeypatch.delenv("AGENT_DISABLE_BUILTIN_SUBAGENTS", raising=False)
+
+    defaults = Settings(_env_file=None)
+    assert defaults.enable_subagents is True
+    assert defaults.enable_custom_subagents is True
+    assert defaults.subagent_tester_model is None
+    assert defaults.subagent_reviewer_model is None
+    assert defaults.subagent_researcher_model is None
+    assert defaults.custom_agents_dirs == []
+    assert defaults.disable_builtin_subagents == []
+
+    monkeypatch.setenv("AGENT_ENABLE_SUBAGENTS", "false")
+    monkeypatch.setenv("AGENT_ENABLE_CUSTOM_SUBAGENTS", "false")
+    monkeypatch.setenv("AGENT_SUBAGENT_TESTER_MODEL", "openai:gpt-t")
+    monkeypatch.setenv("AGENT_SUBAGENT_REVIEWER_MODEL", "openai:gpt-r")
+    monkeypatch.setenv("AGENT_SUBAGENT_RESEARCHER_MODEL", "openai:gpt-res")
+    monkeypatch.setenv("AGENT_CUSTOM_AGENTS_DIRS", '["extra", "more/agents"]')
+    monkeypatch.setenv("AGENT_DISABLE_BUILTIN_SUBAGENTS", '["tester"]')
+
+    configured = Settings(_env_file=None)
+    assert configured.enable_subagents is False
+    assert configured.enable_custom_subagents is False
+    assert configured.subagent_tester_model == "openai:gpt-t"
+    assert configured.subagent_reviewer_model == "openai:gpt-r"
+    assert configured.subagent_researcher_model == "openai:gpt-res"
+    assert configured.custom_agents_dirs == ["extra", "more/agents"]
+    assert configured.disable_builtin_subagents == ["tester"]
 
 
 def test_load_settings_workspace_override(tmp_path: Path):

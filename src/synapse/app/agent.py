@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -34,7 +35,8 @@ from synapse.runtime.fs_permissions import build_filesystem_permissions
 from synapse.runtime.harness import apply_harness_exclusions
 from synapse.runtime.safety import apply_safety_to_settings, build_interrupt_on, get_safety_profile
 from synapse.runtime.steer import SteerQueue
-from synapse.runtime.subagents import build_default_subagents
+from synapse.runtime.subagent_specs import SubagentRegistry
+from synapse.runtime.subagents import build_default_subagents, ensure_user_subagents
 from synapse.settings import Settings
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tools import (
@@ -43,6 +45,8 @@ from synapse.tools import (
     build_filesystem_search_tools,
     build_session_tools,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _build_checkpointer(settings: Settings):
@@ -417,10 +421,27 @@ def build_coding_agent(
     )
 
     with span("subagents"):
+        custom_subagents: list | None = None
+        if settings.enable_custom_subagents:
+            try:
+                # Seed editable built-in overrides in ~/.synapse/agents/ so
+                # users can customize researcher/tester/reviewer via files.
+                ensure_user_subagents()
+                subagent_registry = SubagentRegistry.load(
+                    settings.workspace,
+                    extra_dirs=settings.custom_agents_dirs,
+                )
+                custom_subagents = subagent_registry.items()
+                for warning in subagent_registry.warnings:
+                    logger.warning("subagent: %s", warning)
+            except Exception:  # noqa: BLE001 - custom subagents are best-effort
+                logger.warning("failed to load custom subagents", exc_info=True)
+                custom_subagents = None
         subagents = build_default_subagents(
             enabled=settings.enable_subagents,
             tester_model=settings.subagent_tester_model,
             reviewer_model=settings.subagent_reviewer_model,
+            researcher_model=settings.subagent_researcher_model,
             isolate_tools=True,
             tool_output_db_path=settings.resolved_tool_output_db_path(),
             tool_output_transform_threshold_bytes=settings.tool_output_transform_threshold_bytes,
@@ -428,6 +449,8 @@ def build_coding_agent(
             tool_output_transform_plugins=settings.tool_output_transform_plugins,
             enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
             inherit_tools=tools,
+            custom_subagents=custom_subagents,
+            disable_builtin_subagents=settings.disable_builtin_subagents,
         )
 
     goals_enabled = bool(getattr(settings, "enable_goals", True))

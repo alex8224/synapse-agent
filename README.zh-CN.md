@@ -125,6 +125,7 @@ Synapse 采用**分层配置**策略：用户全局配置（`~/.synapse/`）与�
   mcp.json               # MCP Server 定义
   settings.json          # 非敏感 Settings 覆盖
   themes.json            # 自定义 UI 主题
+  agents/                # 自定义子代理定义（*.md，YAML frontmatter + system prompt 正文）
 
 <workspace>/.synapse/    # 项目层（优先级高，覆盖用户层）
   models.json
@@ -132,6 +133,7 @@ Synapse 采用**分层配置**策略：用户全局配置（`~/.synapse/`）与�
   settings.json
   themes.json
   system_prompt.md       # 自定义系统提示
+  agents/                # 项目级子代理定义（同名覆盖用户层）
   sessions.sqlite
   checkpoints.sqlite
 ```

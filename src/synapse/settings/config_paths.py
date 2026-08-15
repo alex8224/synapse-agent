@@ -15,6 +15,7 @@ File layout (either layer)::
       settings.json       # non-secret Settings overrides (includes theme)
       themes.json         # optional custom UI themes (merged user → project)
       system_prompt.md    # coding agent system prompt (user/project override)
+      agents/             # subagent definitions (*.md, merged user → project)
       sessions.sqlite     # project layer typically
       checkpoints.sqlite
       history
@@ -33,6 +34,7 @@ MODELS_FILENAME = "models.json"
 MCP_FILENAME = "mcp.json"
 SETTINGS_FILENAME = "settings.json"
 THEMES_FILENAME = "themes.json"
+AGENTS_DIRNAME = "agents"
 
 
 def user_config_dir() -> Path:
@@ -42,6 +44,48 @@ def user_config_dir() -> Path:
 def project_config_dir(workspace: Path | str | None = None) -> Path:
     base = Path(workspace).expanduser().resolve() if workspace is not None else Path.cwd().resolve()
     return (base / SYNAPSE_DIRNAME).resolve()
+
+
+def user_agents_dir() -> Path:
+    """User-global subagent definitions directory (``~/.synapse/agents/``)."""
+    return user_config_dir() / AGENTS_DIRNAME
+
+
+def project_agents_dir(workspace: Path | str | None = None) -> Path:
+    """Project-local subagent definitions directory (``<workspace>/.synapse/agents/``)."""
+    return project_config_dir(workspace) / AGENTS_DIRNAME
+
+
+def layered_agents_dirs(
+    workspace: Path | str | None = None,
+    *,
+    include_exe: bool = True,
+) -> list[Path]:
+    """Ordered subagent definition dirs: user → (exe) → project.
+
+    Merge rule mirrors ``layered_config_dirs``: later entries override earlier
+    ones for the same subagent ``name``.
+    """
+    dirs: list[Path] = [user_agents_dir()]
+    if include_exe:
+        for d in executable_config_dirs():
+            if d.name == SYNAPSE_DIRNAME:
+                dirs.append(d / AGENTS_DIRNAME)
+            else:
+                dirs.append(d / SYNAPSE_DIRNAME / AGENTS_DIRNAME)
+    dirs.append(project_agents_dir(workspace))
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for d in dirs:
+        try:
+            key = d.resolve()
+        except Exception:  # noqa: BLE001
+            key = d
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
 
 
 def executable_config_dirs() -> list[Path]:
