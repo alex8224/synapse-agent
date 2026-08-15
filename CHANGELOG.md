@@ -8,6 +8,29 @@ All entries are written in English.
 
 ---
 
+## v0.1.33
+
+### New Features
+
+- Added per-subagent model and reasoning-effort configuration in the TUI, with layered configuration and display metadata for subagent tool calls.
+- Improved subagent activity rendering with live reasoning, tool-calling, and answering phases, including attribution for concurrent activity.
+
+### Bug Fixes
+
+- Fixed subagent tool-call inheritance and model selection behavior.
+- Enforced non-overridable file-tool path rules in subagent prompts.
+- Fixed TUI model and subagent picker keyboard interactions.
+- Fixed subagent sub-call display windows so recent calls remain visible as new calls arrive.
+- Fixed long-line Ruff violations in selectable-text and cancellation status rendering.
+
+### Engineering
+
+- Simplified subagent specifications and removed the obsolete DAG parallel-subagent runtime.
+- Improved TUI responsiveness by batching session replay and moving blocking work off the event loop.
+- Updated the bundled `synapse-core-tool` dependency metadata to v0.1.3.
+
+---
+
 ## v0.1.32
 
 ### New Features
