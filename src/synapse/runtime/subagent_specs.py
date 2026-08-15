@@ -29,6 +29,7 @@ from typing import Any, Literal
 
 import yaml
 
+from synapse.content.prompts import MANDATORY_CODING_RULES
 from synapse.runtime.middleware import build_tool_exclusion_middleware
 from synapse.settings.config_paths import layered_agents_dirs
 
@@ -244,7 +245,10 @@ def compile_task_specs(
         spec: dict[str, Any] = {
             "name": d.name,
             "description": d.description,
-            "system_prompt": d.system_prompt,
+            # Mandatory rules are appended at compile time so user-defined
+            # ``*.md`` files (which fully replace the built-in system prompt)
+            # cannot drop critical file-tool path rules.
+            "system_prompt": f"{d.system_prompt.strip()}\n\n{MANDATORY_CODING_RULES.strip()}",
         }
         if d.model and d.model != "inherit":
             spec["model"] = d.model

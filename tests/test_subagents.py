@@ -262,7 +262,19 @@ def test_build_default_subagents_custom_override_and_append() -> None:
     assert names == ["researcher", "tester", "reviewer", "security-reviewer"]
     by_name = {s["name"]: s for s in specs}
     assert by_name["reviewer"]["description"] == "custom reviewer"
-    assert by_name["reviewer"]["system_prompt"] == "custom prompt"
+    assert by_name["reviewer"]["system_prompt"].startswith("custom prompt")
+    assert by_name["security-reviewer"]["system_prompt"].startswith("security prompt")
+
+
+def test_compile_task_specs_appends_mandatory_path_rules() -> None:
+    """User/builtin prompts cannot drop the non-overridable file-tool rules."""
+    definition = SubAgentDefinition(name="t", description="d", system_prompt="p", tools=[])
+    specs = compile_task_specs([definition])
+    prompt = specs[0]["system_prompt"]
+    assert prompt.startswith("p")
+    assert "## File-tool paths (mandatory)" in prompt
+    assert "Never use Windows drive paths" in prompt
+    assert "Start with `/`." in prompt
 
 
 def test_build_default_subagents_legacy_parity() -> None:

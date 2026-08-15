@@ -168,6 +168,26 @@ For casual input, reply in one or two sentences.
 # Backward-compatible alias used by older imports/tests.
 CODING_SYSTEM_PROMPT = DEFAULT_CODING_SYSTEM_PROMPT
 
+# Non-overridable rules appended after any external prompt body. External
+# ``system_prompt.md`` files may replace ``DEFAULT_CODING_SYSTEM_PROMPT`` but
+# never this section, so critical file-tool path rules survive distribution
+# and cannot be lost by user-level overrides. Subagent system prompts get the
+# same rules appended at compile time (``compile_task_specs``), because
+# subagents do not see the main agent's prompt.
+MANDATORY_CODING_RULES = """\
+## File-tool paths (mandatory)
+
+File-tool paths for `read_file`, `search_files`, `find_files`, `edit_file`, `patch`,
+and `write_file` must:
+
+* Start with `/`.
+* Be relative to the workspace root.
+* Never use Windows drive paths, host absolute paths, or paths without a leading slash.
+
+The real host workspace path may only be used by shell or git commands.
+If a virtual-path error occurs, convert the path to `/...`; do not retry a host or Windows path.
+"""
+
 
 def user_system_prompt_path() -> Path:
     """``~/.synapse/system_prompt.md``."""
@@ -300,6 +320,7 @@ def build_system_prompt(
     effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
     return (
         f"{body}\n\n"
+        f"{MANDATORY_CODING_RULES}\n"
         f"## Current workspace\n"
         f"- Host root (shell/git only): `{root}`\n"
         f"- File-tool virtual root: `/` maps to the host root above\n"

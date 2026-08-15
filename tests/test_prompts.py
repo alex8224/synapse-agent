@@ -103,3 +103,16 @@ def test_shell_context_survives_external_prompt_override(tmp_path: Path):
     assert "cannot express exclusions" in prompt
     assert "## Shell environment" in prompt
     assert "Do not use Bash heredocs" in prompt
+
+
+def test_mandatory_path_rules_survive_external_prompt_override(tmp_path: Path):
+    config_dir = tmp_path / ".synapse"
+    config_dir.mkdir()
+    (config_dir / "system_prompt.md").write_text("CUSTOM PROMPT", encoding="utf-8")
+
+    prompt = build_system_prompt(tmp_path, shell_executable="pwsh")
+
+    assert prompt.startswith("CUSTOM PROMPT")
+    assert "## File-tool paths (mandatory)" in prompt
+    assert "Never use Windows drive paths, host absolute paths" in prompt
+    assert "convert the path to `/...`" in prompt
