@@ -71,7 +71,7 @@ class ImageViewerScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="viewer-box"):
-            yield Static("Esc 或点击关闭", id="viewer-hint")
+            yield Static("Esc or click to close", id="viewer-hint")
 
     def on_mount(self) -> None:
         """Render the image sized to at most 70% of the viewport."""

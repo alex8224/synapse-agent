@@ -185,7 +185,7 @@ class SteerRow(Static):
 
 
 class SteerHeader(Static):
-    """Compact title: 排队 · N   清空."""
+    """Compact title: Queue · N   Clear."""
 
     DEFAULT_CSS = """
     SteerHeader {
@@ -218,10 +218,10 @@ class SteerHeader(Static):
             w = 48
         usable = max(12, w - 2)
         mark = "▸" if self._collapsed else "▾"
-        left = f"{mark}  排队"
+        left = f"{mark}  Queue"
         if self._n:
             left = f"{left} · {self._n}"
-        right = "清空"
+        right = "Clear"
         pad = max(1, usable - _display_width(left) - _display_width(right))
         line = Text()
         line.append(left, style=f"bold {_C_ORANGE}")

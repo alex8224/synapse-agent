@@ -223,7 +223,7 @@ class TextualStreamSink:
         """Coalesce + delay subagent status so nested tools stay readable."""
         text = " ".join((detail or "").split()).strip()
         if not text or text.startswith("ns="):
-            text = self._last_sub_detail or "子代理运行中"
+            text = self._last_sub_detail or "subagent running"
         noise = {
             "streaming nested tokens",
             "waiting for model",
@@ -232,7 +232,7 @@ class TextualStreamSink:
         if text in noise and self._last_sub_detail:
             text = self._last_sub_detail
         elif text in noise:
-            text = "子代理运行中"
+            text = "subagent running"
         self._pending_activity = ("subagent", text, reset_timer)
         now = time.monotonic()
         due = (now - self._last_activity_push) >= self._sub_activity_interval
@@ -569,7 +569,7 @@ class TextualStreamSink:
             detail = (name or "tool").strip()
             st = (status or "").strip()
             if st.lower().startswith("error"):
-                detail = f"{detail} 失败"
+                detail = f"{detail} failed"
             self._queue_subagent_activity(detail, force=True)
             return
         # If we already have items, legacy results are no-ops (item API handles).

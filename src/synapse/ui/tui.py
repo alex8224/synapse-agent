@@ -1853,7 +1853,7 @@ class CodingAgentApp(App[None]):
         turn_busy = self._turn.busy
         projection_busy = self._busy
         if self._compacting_context:
-            self.append_event("上下文压缩正在执行，当前无法安全取消。", "yellow")
+            self.append_event("Context compression is running and cannot be safely cancelled.", "yellow")
             return
         goal_paused = self._pause_goal_for_interrupt()
         if not turn_busy and not projection_busy and not goal_paused:
@@ -1866,7 +1866,7 @@ class CodingAgentApp(App[None]):
         if turn_busy:
             self._turn.cancel("user")
         self.set_activity("idle", "cancelling…", True)
-        message = "正在终止当前任务… (Esc)" if turn_busy else "已暂停当前 goal。"
+        message = "Terminating current task… (Esc)" if turn_busy else "Goal paused."
         self.append_event(message, "yellow")
 
     def _pause_goal_for_interrupt(self) -> bool:

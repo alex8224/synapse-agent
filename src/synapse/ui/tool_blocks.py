@@ -141,7 +141,7 @@ class ToolGroupBlock(SelectableStatic):
     _ITEM_INDENT = "   "
     _SUB_ITEM_INDENT = "      "
     _TODO_INDENT = "    "
-    _PHASE_LABELS = {"thinking": "推理中", "answering": "回答中"}
+    _PHASE_LABELS = {"thinking": "thinking", "answering": "answering"}
 
     def __init__(self, summary: str = "tools") -> None:
         self.summary = summary or "tools"

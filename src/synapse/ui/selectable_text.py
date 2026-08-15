@@ -75,8 +75,8 @@ class SelectableTextModal(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(
-            f" 对话纯文本视图  —  {self._char_count} 字符  |  "
-            "鼠标选择 + Enter 复制  |  Esc 关闭",
+            f" Conversation plain-text view — {self._char_count} chars | "
+            "Mouse select + Enter to copy | Esc to close",
             id="sel-header",
         )
         yield TextArea(
@@ -87,7 +87,7 @@ class SelectableTextModal(ModalScreen[None]):
             show_line_numbers=False,
         )
         yield Static(
-            "  鼠标拖拽选择文本  |  Ctrl+C 复制选中  |  Esc / 点击空白区域 关闭",
+            "  Drag to select text  |  Ctrl+C to copy selection  |  Esc / click blank area to close",
             id="sel-footer",
         )
         yield Footer()
@@ -106,7 +106,7 @@ class SelectableTextModal(ModalScreen[None]):
             if _copy_to_clipboard(selected):
                 try:
                     self.notify(
-                        f"已复制 {len(selected)} 字符到剪贴板",
+                        f"Copied {len(selected)} characters to clipboard",
                         timeout=2.0,
                         severity="information",
                     )
@@ -116,7 +116,7 @@ class SelectableTextModal(ModalScreen[None]):
             if _copy_to_clipboard(self._transcript):
                 try:
                     self.notify(
-                        f"已复制全部 {self._char_count} 字符到剪贴板",
+                        f"Copied all {self._char_count} characters to clipboard",
                         timeout=2.0,
                         severity="information",
                     )
@@ -131,10 +131,10 @@ def build_transcript_from_log(log_container: Any) -> str:
     """Walk ``#log`` children and build a chronological plain-text transcript.
 
     Recognised widget types:
-        UserTurnBlock   → ``[用户] ...``
-        ThoughtBlock    → ``[思考] ...``
-        ToolGroupBlock  → ``[工具] item1, item2, ...``
-        AnswerBlock     → ``[回答] ...``
+        UserTurnBlock   → ``[User] ...``
+        ThoughtBlock    → ``[Thought] ...``
+        ToolGroupBlock  → ``[Tools] item1, item2, ...``
+        AnswerBlock     → ``[Answer] ...``
         AnswerDivider   → ``---``
         Static          → fallback (plain text)
     """
@@ -185,16 +185,16 @@ def build_transcript_from_log(log_container: Any) -> str:
 
 
 def _fmt_user(text: str) -> str:
-    return f"═══ 用户 ═══\n{text.strip()}"
+    return f"═══ User ═══\n{text.strip()}"
 
 
 def _fmt_thought(text: str, elapsed: float = 0) -> str:
-    header = f"─── 思考 ({(elapsed or 0):.0f}s) ───"
+    header = f"─── Thought ({(elapsed or 0):.0f}s) ───"
     return f"{header}\n{text.strip()}"
 
 
 def _fmt_tools(summary: str, items: list[Any]) -> str:
-    header = f"─── 工具: {summary} ───"
+    header = f"─── Tools: {summary} ───"
     lines = [header]
     for item in items:
         name = getattr(item, "name", str(item))
@@ -207,4 +207,4 @@ def _fmt_tools(summary: str, items: list[Any]) -> str:
 
 
 def _fmt_answer(text: str) -> str:
-    return f"─── 回答 ───\n{text.strip()}"
+    return f"─── Answer ───\n{text.strip()}"

@@ -875,7 +875,7 @@ def test_esc_cancels_pending_goal_followup_while_runtime_is_idle(tmp_path) -> No
     goal = svc.get("t1")
     assert goal is not None and goal.status == ThreadGoalStatus.PAUSED
     assert fake._cancel_event.is_set()
-    assert events == ["已暂停当前 goal。"]
+    assert events == ["Goal paused."]
 
 
 def test_start_followup_drops_goal_continuation_paused_after_scheduling(tmp_path) -> None:

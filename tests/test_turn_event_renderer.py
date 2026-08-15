@@ -626,15 +626,15 @@ def test_tool_group_block_renders_subagent_phase() -> None:
 
     block.set_subagent_phase("taskA", "thinking", render=False)
     block._render_block()
-    assert any("推理中" in line for line in _rendered_lines(block))
+    assert any("thinking" in line for line in _rendered_lines(block))
 
     block.set_subagent_phase("taskA", "answering", render=False)
     block._render_block()
     lines = _rendered_lines(block)
-    assert any("回答中" in line for line in lines)
-    assert not any("推理中" in line for line in lines)
+    assert any("answering" in line for line in lines)
+    assert not any("thinking" in line for line in lines)
 
     block.set_subagent_phase("taskA", None, render=False)
     block._render_block()
     lines = _rendered_lines(block)
-    assert not any("推理中" in line or "回答中" in line for line in lines)
+    assert not any("thinking" in line or "answering" in line for line in lines)

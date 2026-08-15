@@ -1397,7 +1397,7 @@ class TurnController:
 
         if getattr(result, "cancelled", False):
             app._skip_steer_followup = True
-            ui(app.append_event, "已终止（上下文已保留）。可继续输入。", "yellow")
+            ui(app.append_event, "Terminated (context preserved). You can keep typing.", "yellow")
             return True
         # Session token totals for chrome: input / cache / output.
         if (
