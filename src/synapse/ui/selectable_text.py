@@ -87,7 +87,8 @@ class SelectableTextModal(ModalScreen[None]):
             show_line_numbers=False,
         )
         yield Static(
-            "  Drag to select text  |  Ctrl+C to copy selection  |  Esc / click blank area to close",
+            "  Drag to select text  |  Ctrl+C to copy selection  |  "
+            "Esc / click blank area to close",
             id="sel-footer",
         )
         yield Footer()

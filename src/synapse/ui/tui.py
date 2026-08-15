@@ -1853,7 +1853,9 @@ class CodingAgentApp(App[None]):
         turn_busy = self._turn.busy
         projection_busy = self._busy
         if self._compacting_context:
-            self.append_event("Context compression is running and cannot be safely cancelled.", "yellow")
+            self.append_event(
+                "Context compression is running and cannot be safely cancelled.", "yellow"
+            )
             return
         goal_paused = self._pause_goal_for_interrupt()
         if not turn_busy and not projection_busy and not goal_paused:
