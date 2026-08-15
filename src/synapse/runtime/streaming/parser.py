@@ -463,11 +463,11 @@ def stream_agent(
                         parent_id = _sub_parent_id(ns)
                         if parent_id is not None:
                             if sub_tool_chunks:
-                                sink.subagent_phase(parent_id, None)
+                                sink.subagent_phase(parent_id, "calling_tools")
                             elif sub_text:
                                 sink.subagent_phase(parent_id, "answering")
                             elif sub_reasoning:
-                                sink.subagent_phase(parent_id, "thinking")
+                                sink.subagent_phase(parent_id, "reasoning")
                     continue
 
                 reasoning_delta = _extract_reasoning(msg_chunk)
@@ -622,6 +622,10 @@ def stream_agent(
                                     preview=preview,
                                     error=err,
                                 )
+                                # A finished subagent must not keep a stale
+                                # transient stage (reasoning/answering/…).
+                                if item.name == "task":
+                                    sink.subagent_phase(item.id, None)
                                 try:
                                     pending_tool_items.remove(item)
                                 except ValueError:
@@ -735,7 +739,7 @@ def stream_agent(
                                     sink.tool_item_started(item)
                             # Tool execution replaces the thinking/answering stage.
                             if parent_id is not None:
-                                sink.subagent_phase(parent_id, None)
+                                sink.subagent_phase(parent_id, "calling_tools")
                         elif parent_id is not None:
                             # Free-text stage: surface only the stage, never the
                             # reasoning/answer payload itself. Hidden-reasoning
@@ -743,7 +747,7 @@ def stream_agent(
                             if text:
                                 sink.subagent_phase(parent_id, "answering")
                             elif reasoning or _reasoning_token_count(msg):
-                                sink.subagent_phase(parent_id, "thinking")
+                                sink.subagent_phase(parent_id, "reasoning")
                         continue
 
                     r_tokens = _reasoning_token_count(msg)

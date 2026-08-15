@@ -760,8 +760,9 @@ def test_stream_agent_forwards_subagent_stage_without_payload():
 
     phases = [event for event in sink.events if event[0] == "subagent_phase"]
     assert [event[1:] for event in phases] == [
-        ("g1-0", "thinking"),
+        ("g1-0", "reasoning"),
         ("g1-0", "answering"),
+        ("g1-0", None),
     ]
 
 
@@ -838,8 +839,9 @@ def test_stream_agent_drives_subagent_stage_from_token_stream():
 
     phases = [event for event in sink.events if event[0] == "subagent_phase"]
     assert [event[1:] for event in phases] == [
-        ("g1-0", "thinking"),
+        ("g1-0", "reasoning"),
         ("g1-0", "answering"),
+        ("g1-0", "calling_tools"),
         ("g1-0", None),
     ]
 

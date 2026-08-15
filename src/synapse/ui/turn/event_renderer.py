@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from synapse.runtime.streaming import (
     ActivityPayload,
+    SubagentStatusPayload,
     TextPayload,
     ToolBatchFinishedPayload,
     ToolBatchPayload,
@@ -176,6 +177,10 @@ class TextualTurnEventRenderer:
             payload, ToolBatchFinishedPayload
         ):
             self._sink.tool_group_closed(payload.group_id)
+        elif kind is TurnEventKind.SUBAGENT_STATUS_CHANGED and isinstance(
+            payload, SubagentStatusPayload
+        ):
+            self._sink.subagent_phase(payload.parent_id, payload.status)
         elif kind is TurnEventKind.USAGE_UPDATED and isinstance(payload, UsagePayload):
             self._sink.note_usage(
                 turn_input=payload.turn_input,

@@ -7,6 +7,7 @@ from typing import Any
 from synapse.runtime.sessions import SessionEventBroker
 from synapse.runtime.streaming import (
     EVENT_VERSION,
+    SubagentStatusPayload,
     TextPayload,
     ToolBatchPayload,
     ToolCallPayload,
@@ -67,6 +68,59 @@ def test_event_renderer_maps_answer_and_terminal() -> None:
     assert answers[-1][1] == ("hello",)
     assert renderer.closed is True
     assert renderer.last_sequence == 4
+
+
+def test_event_renderer_forwards_subagent_status_changes() -> None:
+    """SUBAGENT_STATUS_CHANGED reaches the host subagent_phase in order."""
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.emit(
+        _event(
+            1,
+            TurnEventKind.SUBAGENT_STATUS_CHANGED,
+            SubagentStatusPayload(parent_id="g1-0", status="reasoning"),
+        )
+    )
+    renderer.emit(
+        _event(
+            2,
+            TurnEventKind.SUBAGENT_STATUS_CHANGED,
+            SubagentStatusPayload(parent_id="g1-0", status="calling_tools"),
+        )
+    )
+    renderer.emit(
+        _event(
+            3,
+            TurnEventKind.SUBAGENT_STATUS_CHANGED,
+            SubagentStatusPayload(parent_id="g1-0", status="answering"),
+        )
+    )
+    renderer.emit(
+        _event(
+            4,
+            TurnEventKind.SUBAGENT_STATUS_CHANGED,
+            SubagentStatusPayload(parent_id="g1-0", status=None),
+        )
+    )
+
+    phases = [call for call in host.calls if call[0] == "subagent_phase"]
+    assert [call[1] for call in phases] == [
+        ("g1-0", "reasoning"),
+        ("g1-0", "calling_tools"),
+        ("g1-0", "answering"),
+        ("g1-0", None),
+    ]
+    assert renderer.last_sequence == 4
+
+
+def test_event_renderer_subagent_status_payload_round_trip() -> None:
+    """The new payload serializes to a JSON-safe envelope."""
+    payload = SubagentStatusPayload(parent_id="g1-0", status="answering")
+    event = _event(1, TurnEventKind.SUBAGENT_STATUS_CHANGED, payload)
+    data = event.to_dict()
+    assert data["kind"] == "subagent_status_changed"
+    assert data["payload"] == {"parent_id": "g1-0", "status": "answering"}
 
 
 def test_event_renderer_routes_legacy_tool_result_to_tool_group() -> None:
@@ -584,8 +638,25 @@ def test_tool_group_block_shows_recent_three_subs_per_parent() -> None:
     assert overflow == 2
 
 
-def test_tool_group_block_keeps_live_subs_visible() -> None:
-    """Running/errored nested calls are never folded into the earlier line."""
+def test_tool_group_block_shows_latest_three_even_when_oldest_errored() -> None:
+    """An old errored call must not pin the visible window."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    block = ToolGroupBlock("tools")
+    subs = [
+        _tool_item("s1", sub=True, parent_id="taskA", error=True, status="done"),
+        _tool_item("s2", sub=True, parent_id="taskA"),
+        _tool_item("s3", sub=True, parent_id="taskA"),
+        _tool_item("s4", sub=True, parent_id="taskA"),
+    ]
+
+    visible, overflow = block._visible_subs(subs)
+    assert [s.id for s in visible] == ["s2", "s3", "s4"]
+    assert overflow == 1
+
+
+def test_tool_group_block_shows_latest_three_even_when_oldest_running() -> None:
+    """A long-stuck running call must not pin the visible window either."""
     from synapse.ui.tool_blocks import ToolGroupBlock
 
     block = ToolGroupBlock("tools")
@@ -594,13 +665,11 @@ def test_tool_group_block_keeps_live_subs_visible() -> None:
         _tool_item("s2", sub=True, parent_id="taskA", error=True, status="done"),
         _tool_item("s3", sub=True, parent_id="taskA"),
         _tool_item("s4", sub=True, parent_id="taskA"),
-        _tool_item("s5", sub=True, parent_id="taskA"),
+        _tool_item("s5", sub=True, parent_id="taskA", status="running"),
     ]
 
     visible, overflow = block._visible_subs(subs)
-    ids = [s.id for s in visible]
-    assert "s1" in ids and "s2" in ids, "live nested calls must stay visible"
-    assert len(visible) == 3
+    assert [s.id for s in visible] == ["s3", "s4", "s5"]
     assert overflow == 2
 
 
@@ -615,7 +684,7 @@ def _rendered_lines(block: Any) -> list[str]:
 
 
 def test_tool_group_block_renders_subagent_phase() -> None:
-    """A running subagent row shows a transient thinking/answering stage."""
+    """A running subagent row shows the transient stage inline, three states."""
     from synapse.ui.tool_blocks import ToolGroupBlock
 
     block = ToolGroupBlock("tools")
@@ -624,20 +693,53 @@ def test_tool_group_block_renders_subagent_phase() -> None:
         render=False,
     )
 
-    block.set_subagent_phase("taskA", "thinking", render=False)
+    block.set_subagent_phase("taskA", "calling_tools", render=False)
     block._render_block()
-    assert any("thinking" in line for line in _rendered_lines(block))
+    lines = _rendered_lines(block)
+    assert any("calling tools" in line for line in lines)
+
+    block.set_subagent_phase("taskA", "reasoning", render=False)
+    block._render_block()
+    lines = _rendered_lines(block)
+    assert any("reasoning" in line for line in lines)
+    assert not any("calling tools" in line for line in lines)
 
     block.set_subagent_phase("taskA", "answering", render=False)
     block._render_block()
     lines = _rendered_lines(block)
     assert any("answering" in line for line in lines)
-    assert not any("thinking" in line for line in lines)
+    assert not any("reasoning" in line for line in lines)
 
     block.set_subagent_phase("taskA", None, render=False)
     block._render_block()
     lines = _rendered_lines(block)
-    assert not any("thinking" in line or "answering" in line for line in lines)
+    assert not any(
+        "calling tools" in line or "reasoning" in line or "answering" in line
+        for line in lines
+    )
+
+
+def test_tool_group_block_status_only_while_running_task() -> None:
+    """Finished rows and non-task tools never show the transient stage."""
+    from synapse.ui.tool_blocks import ToolGroupBlock
+
+    done = ToolGroupBlock("tools")
+    done.add_item(
+        _tool_item("taskA", name="task", category="task", status="done"),
+        render=False,
+    )
+    done.set_subagent_phase("taskA", "answering", render=False)
+    done._render_block()
+    assert not any("answering" in line for line in _rendered_lines(done))
+
+    plain = ToolGroupBlock("tools")
+    plain.add_item(
+        _tool_item("r1", name="read_file", category="read", status="running"),
+        render=False,
+    )
+    plain.set_subagent_phase("r1", "reasoning", render=False)
+    plain._render_block()
+    assert not any("reasoning" in line for line in _rendered_lines(plain))
 
 
 # --------------------------------------------------------------------------- #

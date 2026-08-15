@@ -11,6 +11,7 @@ from synapse.runtime.streaming.events import (
     PlanEntryPayload,
     PlanPayload,
     PlanRemovedPayload,
+    SubagentStatusPayload,
     TextPayload,
     ToolBatchFinishedPayload,
     ToolBatchPayload,
@@ -66,6 +67,7 @@ class InstrumentedStreamSink:
             accumulator_options["turn_id"] = turn_id
         self.accumulator = TurnAccumulator(**accumulator_options)
         self._open_answer = self.accumulator.open_answer
+        self._subagent_statuses: dict[str, str] = {}
         self._enhanced = all(
             callable(getattr(renderer, name, None))
             for name in ("tool_item_started", "tool_item_finished", "tool_group_closed")
@@ -165,9 +167,21 @@ class InstrumentedStreamSink:
     def subagent_phase(self, parent_id: str, phase: str | None) -> None:
         """Forward a transient subagent stage to the renderer.
 
-        Live-only UI state: intentionally not emitted as a semantic event, so
-        it never replays into history or the transcript log.
+        Emits a deduplicated ``SUBAGENT_STATUS_CHANGED`` semantic event (only
+        on actual transitions, so reasoning token streams cannot flood the
+        event queue), then forwards to the legacy renderer for compatibility.
         """
+        current = self._subagent_statuses.get(parent_id)
+        if current == phase:
+            return
+        if phase is None:
+            self._subagent_statuses.pop(parent_id, None)
+        else:
+            self._subagent_statuses[parent_id] = phase
+        self.accumulator.emit(
+            TurnEventKind.SUBAGENT_STATUS_CHANGED,
+            SubagentStatusPayload(parent_id=parent_id, status=phase),
+        )
         self._forward("subagent_phase", parent_id, phase)
 
     def write_reasoning(self, text: str) -> None:

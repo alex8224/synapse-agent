@@ -39,6 +39,12 @@ def _task_item(
 
 def _renderable(block: ToolGroupBlock):
     """Return the Rich Group the block painted (bypasses Textual mounting)."""
+    # Textual's ``Widget._render`` caches the visual in ``_layout_cache``;
+    # clear it so a re-rendered block (e.g. after a status transition) is
+    # never read from the stale cache.
+    cache = getattr(block, "_layout_cache", None)
+    if cache is not None:
+        cache.clear()
     visual = block._render()
     return getattr(visual, "_renderable", visual)
 
@@ -159,3 +165,136 @@ def test_folding_counts_unaffected_by_suffix() -> None:
         block.add_item(_task_item(f"t{i}", label=f"task {i}"))
     text = _render_text(block)
     assert "… and" in text
+
+
+def _with_status(block: ToolGroupBlock, status: str) -> str:
+    block.set_subagent_phase("t1", status, render=False)
+    block._render_block()
+    return _render_text(block)
+
+
+def test_status_sits_between_intent_and_suffix() -> None:
+    for status, label in (
+        ("calling_tools", "calling tools"),
+        ("reasoning", "reasoning"),
+        ("answering", "answering"),
+    ):
+        block = ToolGroupBlock("Running 1 subagent")
+        block.add_item(_task_item("t1", label="审查修复"))
+        text = _with_status(block, status)
+        assert text.index("审查修复") < text.index(label) < text.index(
+            "[reviewer · gpt-5.2 · high]"
+        ), status
+
+
+def test_status_colors_differ_and_are_not_muted() -> None:
+
+    styles: dict[str, str] = {}
+    for status in ("calling_tools", "reasoning", "answering"):
+        block = ToolGroupBlock("Running 1 subagent")
+        block.add_item(_task_item("t1"))
+        block.set_subagent_phase("t1", status, render=False)
+        block._render_block()
+        segments: list[Segment] = [
+            seg
+            for line in _render_segments(block)
+            for seg in line
+            if seg.text.strip() in {"calling tools", "reasoning", "answering"}
+        ]
+        assert len(segments) == 1, status
+        style = str(segments[0].style or "")
+        assert style, status
+        assert not any(
+            marker in style for marker in ("muted", "dim", "italic")
+        ), f"{status}: {style}"
+        styles[status] = style
+    assert len({*styles.values()}) == 3, styles
+
+
+def test_status_hidden_when_done_or_error() -> None:
+    done = ToolGroupBlock("Launched 1 subagent")
+    done.add_item(_task_item("t1", status="done"))
+    assert "reasoning" not in _with_status(done, "reasoning")
+
+    failed = ToolGroupBlock("Launched 1 subagent")
+    failed.add_item(_task_item("t1", status="error", error=True))
+    assert "answering" not in _with_status(failed, "answering")
+
+
+def test_status_cleared_on_update_to_finished() -> None:
+    block = ToolGroupBlock("Running 1 subagent")
+    block.add_item(_task_item("t1"))
+    block.set_subagent_phase("t1", "answering", render=False)
+    block._render_block()
+    assert "answering" in _render_text(block)
+    block.update_item("t1", status="ok", render=False)
+    block._render_block()
+    assert "answering" not in _render_text(block)
+
+
+def test_status_in_selectable_text() -> None:
+    block = ToolGroupBlock("Running 1 subagent")
+    block.add_item(_task_item("t1"))
+    block.set_subagent_phase("t1", "calling_tools", render=False)
+    assert (
+        "审查修复  calling tools  [reviewer · gpt-5.2 · high] [running]"
+        in block.selectable_text()
+    )
+
+
+def test_sub_window_scrolls_forward_as_calls_arrive() -> None:
+    """Oldest sub-calls fold away as new ones arrive (regression)."""
+    from synapse.runtime.streaming.tool_model import ToolItem
+
+    block = ToolGroupBlock("Running 1 subagent")
+    block.add_item(_task_item("t1"))
+    for i in range(1, 6):
+        block.add_item(
+            ToolItem(
+                id=f"s{i}",
+                name="search_files",
+                category="search",
+                label=f"Searched pattern {i}",
+                status="done",
+                error=False,
+                sub=True,
+                parent_id="t1",
+            ),
+            render=False,
+        )
+
+    def visible_labels() -> list[str]:
+        text = _render_text(block)
+        return [f"Searched pattern {i}" for i in range(1, 6) if f"Searched pattern {i}" in text]
+
+    block._render_block()
+    assert visible_labels() == ["Searched pattern 3", "Searched pattern 4", "Searched pattern 5"]
+    assert "… and 2 earlier" in _render_text(block)
+    # Folding is display-only: all five calls stay in the model.
+    assert len([i for i in block.items if i.sub]) == 5
+
+
+def test_sub_window_rolls_past_errored_calls() -> None:
+    """An old errored sub-call is replaced once newer calls arrive."""
+    from synapse.runtime.streaming.tool_model import ToolItem
+
+    block = ToolGroupBlock("Running 1 subagent")
+    block.add_item(_task_item("t1"))
+    for i in range(1, 5):
+        block.add_item(
+            ToolItem(
+                id=f"s{i}",
+                name="search_files",
+                category="search",
+                label=f"Searched pattern {i}",
+                status="error",
+                error=True,
+                sub=True,
+                parent_id="t1",
+            ),
+            render=False,
+        )
+    block._render_block()
+    text = _render_text(block)
+    assert "Searched pattern 1" not in text
+    assert "Searched pattern 2" in text and "Searched pattern 4" in text

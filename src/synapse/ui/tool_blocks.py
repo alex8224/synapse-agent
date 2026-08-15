@@ -23,6 +23,7 @@ _DEFAULT_DIM = "#9aa0a6"
 _DEFAULT_FG = "#e8eaed"
 _DEFAULT_GREEN = "#81c995"
 _DEFAULT_ORANGE = "#f4b183"
+_DEFAULT_USER = "#8ab4f8"
 _DEFAULT_MUTED = "#5f6368"
 _DEFAULT_BAR = "#2b2d31"
 
@@ -165,12 +166,19 @@ class ToolGroupBlock(SelectableStatic):
     # Top-level tool rows kept before folding the oldest completed ones.
     _MAX_EXPANDED_ROWS = 12
     # Nested calls shown per subagent; older calls fold into "... and N earlier".
+    # A strict arrival-order window: running/errored calls are not exempt, so
+    # the visible rows always scroll forward as new sub-calls arrive.
     _MAX_SUB_ROWS = 3
+    # Transient subagent stage shown between the intent and the metadata suffix.
+    _SUBAGENT_STATUS_LABELS = {
+        "calling_tools": "calling tools",
+        "reasoning": "reasoning",
+        "answering": "answering",
+    }
     _HEADER_INDENT = "  "
     _ITEM_INDENT = "   "
     _SUB_ITEM_INDENT = "      "
     _TODO_INDENT = "    "
-    _PHASE_LABELS = {"thinking": "thinking", "answering": "answering"}
 
     def __init__(self, summary: str = "tools") -> None:
         self.summary = summary or "tools"
@@ -246,28 +254,15 @@ class ToolGroupBlock(SelectableStatic):
         return visible, len(groups) - len(visible)
 
     def _visible_subs(self, subs: list[ToolItem]) -> tuple[list[ToolItem], int]:
-        """Keep live nested calls visible, then the newest completed ones.
+        """Keep the newest nested calls, folding older ones into the earlier line.
 
-        Mirrors the top-level policy: running/errored sub-calls are never
-        folded into "... and N earlier"; the remaining slots go to the most
-        recent completed calls.
+        A strict arrival-order window: running/errored sub-calls are not
+        exempt from folding, so the visible rows always scroll forward as new
+        calls arrive instead of pinning an old failure at the top.
         """
         if len(subs) <= self._MAX_SUB_ROWS:
             return list(subs), 0
-
-        order = {id(sub): i for i, sub in enumerate(subs)}
-        live = [sub for sub in subs if sub.error or sub.status == "running"]
-        done = [sub for sub in subs if not sub.error and sub.status != "running"]
-
-        visible = list(live)
-        if len(visible) > self._MAX_SUB_ROWS:
-            visible = visible[-self._MAX_SUB_ROWS :]
-        else:
-            room = self._MAX_SUB_ROWS - len(visible)
-            if room > 0 and done:
-                visible = visible + done[-room:]
-
-        visible.sort(key=lambda sub: order[id(sub)])
+        visible = list(subs[-self._MAX_SUB_ROWS :])
         return visible, len(subs) - len(visible)
 
     def _render_block(self) -> None:
@@ -301,15 +296,23 @@ class ToolGroupBlock(SelectableStatic):
                 label = item.label or item.name
                 suffix = format_subagent_suffix(item)
                 suffix_text = f"  {suffix}" if suffix else ""
+                # Transient subagent stage sits between the intent and the
+                # metadata suffix, colored per state, only while running.
+                status = self._subagent_status(item)
+                status_text = f"  {status[0]}" if status else ""
                 if " " in label and item.category in {"read", "edit", "list"}:
                     head, tail = label.split(" ", 1)
                     row = Text(f"{indent}{bullet}  {head} ", style=style)
                     row.append(tail, style=orange)
+                    if status_text:
+                        row.append(status_text, style=status[1])
                     if suffix_text:
                         row.append(suffix_text, style=muted)
                     lines.append(row)
                 else:
                     row = Text(f"{indent}{bullet}  {label}", style=style)
+                    if status_text:
+                        row.append(status_text, style=status[1])
                     if suffix_text:
                         row.append(suffix_text, style=muted)
                     lines.append(row)
@@ -322,15 +325,6 @@ class ToolGroupBlock(SelectableStatic):
 
             for parent, subs in visible_groups:
                 render_item(parent, self._ITEM_INDENT)
-                phase = self._phases.get(parent.id)
-                if phase and parent.status == "running":
-                    label = self._PHASE_LABELS.get(phase, phase)
-                    lines.append(
-                        Text(
-                            f"{self._SUB_ITEM_INDENT}◈ {label}…",
-                            style=f"italic {muted}",
-                        )
-                    )
                 visible_subs, sub_overflow = self._visible_subs(subs)
                 if sub_overflow:
                     lines.append(
@@ -352,10 +346,33 @@ class ToolGroupBlock(SelectableStatic):
         if render:
             self._render_block()
 
+    def _subagent_status(self, item: ToolItem) -> tuple[str, str] | None:
+        """Return the transient stage ``(label, color)`` for a running task row.
+
+        Only top-level running ``task`` rows with a known stage get a status;
+        completed/errored rows and non-subagent tools show none so history
+        never displays a stale stage.
+        """
+        if item.sub or item.category != "task" or item.status != "running":
+            return None
+        stage = self._phases.get(item.id)
+        if not stage:
+            return None
+        label = self._SUBAGENT_STATUS_LABELS.get(stage, stage)
+        if stage == "calling_tools":
+            color = _theme_color("orange", _DEFAULT_ORANGE)
+        elif stage == "reasoning":
+            color = _theme_color("user", _DEFAULT_USER)
+        elif stage == "answering":
+            color = _theme_color("green", _DEFAULT_GREEN)
+        else:
+            color = _theme_color("muted", _DEFAULT_MUTED)
+        return label, color
+
     def set_subagent_phase(
         self, parent_id: str, phase: str | None, *, render: bool = True
     ) -> None:
-        """Set or clear a subagent row's transient thinking/answering stage.
+        """Set or clear a subagent row's transient stage (calling tools / reasoning / answering).
 
         No-op when the stage is unchanged so high-frequency token streams only
         trigger a re-render on actual transitions.
@@ -438,6 +455,10 @@ class ToolGroupBlock(SelectableStatic):
                 item.category = category
             if status is not None:
                 item.status = status
+                # Safety net: a finished/errored parent must never keep a
+                # stale transient stage in the mapping.
+                if status != "running":
+                    self._phases.pop(item_id, None)
             if preview is not None:
                 item.preview = preview
             if error is not None:
@@ -478,8 +499,10 @@ class ToolGroupBlock(SelectableStatic):
                 parent_status = "err" if parent.error else (parent.status or "done")
                 suffix = format_subagent_suffix(parent)
                 suffix_text = f"  {suffix}" if suffix else ""
+                status = self._subagent_status(parent)
+                status_text = f"  {status[0]}" if status else ""
                 lines.append(
-                    f"  {parent.label or parent.name}{suffix_text} [{parent_status}]"
+                    f"  {parent.label or parent.name}{status_text}{suffix_text} [{parent_status}]"
                 )
                 visible_subs, sub_overflow = self._visible_subs(subs)
                 if sub_overflow:

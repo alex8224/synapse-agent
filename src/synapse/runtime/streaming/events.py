@@ -26,6 +26,7 @@ class TurnEventKind(StrEnum):
     TOOL_FINISHED = "tool_finished"
     TOOL_RESULT = "tool_result"
     TOOL_BATCH_FINISHED = "tool_batch_finished"
+    SUBAGENT_STATUS_CHANGED = "subagent_status_changed"
     PLAN_UPDATED = "plan_updated"
     PLAN_REMOVED = "plan_removed"
     DIFF_UPDATED = "diff_updated"
@@ -92,6 +93,18 @@ class ToolBatchPayload:
 @dataclass(frozen=True, slots=True)
 class ToolBatchFinishedPayload:
     group_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentStatusPayload:
+    """Transient stage of one running subagent row.
+
+    ``status`` is one of ``calling_tools`` / ``reasoning`` / ``answering``,
+    or ``None`` to clear the stage (parent finished/errored/cancelled).
+    """
+
+    parent_id: str
+    status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

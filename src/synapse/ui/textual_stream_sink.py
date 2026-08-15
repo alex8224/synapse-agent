@@ -58,6 +58,8 @@ class TextualStreamHost(Protocol):
 
     def end_tool_batch(self) -> None: ...
 
+    def subagent_phase(self, parent_id: str, status: str | None) -> None: ...
+
 
 _WS_RE = re.compile(r"\s+")
 _STREAM_INTERVAL_SMALL = 0.12
