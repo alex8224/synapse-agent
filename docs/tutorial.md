@@ -572,7 +572,7 @@ class Settings(BaseSettings):
 }
 ```
 
-切换模型：`synapse tui -m deepseek` 或在 TUI 中按 `Ctrl+P` 弹出模型选择器。
+切换模型：`synapse tui -m deepseek` 或在 TUI 中按 `F2` 弹出模型选择器。
 
 ### 5.5 模型客户端缓存与 HTTP 连接管理
 
@@ -1263,7 +1263,7 @@ TextualStreamSink  # 把事件翻译成 UI 更新
 
 | 快捷键 | 功能 |
 |--------|------|
-| `Ctrl+P` | 切换模型 |
+| `F2` | 模型选择框：`↑/↓` 移动，`Space` 分别标记模型与推理级别（可各选一个），`s` 一起保存，`Esc` 取消 |
 | `Ctrl+T` | 选择主题 |
 | `Ctrl+S` | 会话列表 |
 | `Ctrl+O` | 查看 MCP 工具 |

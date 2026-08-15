@@ -574,6 +574,16 @@ class SlashController:
     def on_model_dialog_done(self, result: object) -> None:
         if result is None:
             return
+        if isinstance(result, (tuple, list)) and len(result) == 3 and result[0] == "both":
+            _, alias, level = result
+            self._app._switch_model_bg(
+                f"/model {alias} thinking {level}",
+                f"model -> {alias}, thinking -> {level}",
+                origin_thread_id=self._app.thread_id,
+                origin_agent=self._app.agent,
+                origin_settings=self._copy_settings(self._app.settings),
+            )
+            return
         action, value = result
         if action == "model":
             self.apply_model_switch(value)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 
 from synapse.ui.dialogs.base import (
     DialogBase,
@@ -17,12 +18,25 @@ THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "max")
 class ModelPickerDialog(DialogBase):
     """Pick a model profile + thinking level.
 
+    Space marks a pending row (model and thinking sections are independent);
+    ``s`` commits the marked combination. Enter is intentionally disabled here
+    (base ``confirm`` is overridden) — only space + ``s`` commit.
+
     dismiss result:
-      ("model", alias)       → switch model, use default thinking
-      ("thinking", level)    → change thinking only
+      ("model", alias)                 → switch model only
+      ("thinking", level)              → change thinking only
+      ("both", alias, level)           → switch model AND thinking together
+      None                             → no change / cancelled
     """
 
     _title_icon = "◆"
+    BINDINGS = [
+        *DialogBase.BINDINGS,
+        Binding("space", "toggle_selection", "Select", show=False, priority=True),
+        Binding("s", "save", "Save", show=False, priority=True),
+    ]
+
+    _title_keys = "\u2191\u2193 move \u00b7 space select \u00b7 s save \u00b7 esc"
 
     def __init__(self, settings: Any) -> None:
         super().__init__()
@@ -56,6 +70,11 @@ class ModelPickerDialog(DialogBase):
         self._model_names = model_names
         self._allowed_think = allowed_think
         self._model_count = len(model_names)
+        # Independent pending targets: space marks one model and one thinking
+        # level; `s` commits the marked combination. None = keep current value
+        # (that section is not part of the commit).
+        self._pending_model: str | None = None
+        self._pending_think: str | None = None
 
     @property
     def title_text(self) -> str:
@@ -110,22 +129,75 @@ class ModelPickerDialog(DialogBase):
             body.append_section("Thinking")
             body.append_options(think_items, mark="  ")
 
-    def _on_apply(self) -> None:
+    def action_toggle_selection(self) -> None:
+        """Space: toggle the highlighted row as a pending save target.
+
+        Model and thinking sections are independent: space marks/unmarks one
+        row inside the section the cursor is on. The dialog stays open; `s`
+        commits the marked combination.
+        """
         body = self.query_one("#dialog-body")
         key = body.selected_key
         if not key:
-            self.dismiss(None)
             return
-        self._dismiss_with(key)
+        if key.startswith("thinking:"):
+            if key == self._pending_think:
+                self._pending_think = None
+            else:
+                self._pending_think = key
+        else:
+            if key == self._pending_model:
+                self._pending_model = None
+            else:
+                self._pending_model = key
+        self._sync_markers()
 
-    def _on_selected(self, key: str | None) -> None:
-        if key:
-            self._dismiss_with(key)
+    def _sync_markers(self) -> None:
+        """Reflect the ● markers per section: pending target or current value.
+
+        Each section always shows one marker: the space-pinned pending row if
+        the user marked one, otherwise the current value. This keeps the two
+        sections independent and never hides the current configuration.
+        """
+        body = self.query_one("#dialog-body")
+        keys: set[str] = set()
+        if self._pending_model:
+            keys.add(self._pending_model)
+        elif self._current_model:
+            keys.add(self._current_model)
+        if self._pending_think:
+            keys.add(self._pending_think)
+        elif self._current_think or "high":
+            keys.add(f"thinking:{self._current_think or 'high'}")
+        body.set_selected_marker(keys or None)
+
+    def action_save(self) -> None:
+        """`s`: commit the marked combination."""
+        self._on_apply()
+
+    def _row_clicked(self, key: str) -> None:
+        """Mouse click: toggle the row's pending state (like space).
+
+        The click already moved the cursor; the dialog stays open, only ``s``
+        commits. Overrides DialogBase._row_clicked (no instant dismiss)."""
+        self.action_toggle_selection()
+
+    def _on_apply(self) -> None:
+        if self._pending_model and self._pending_think:
+            self.dismiss(
+                (
+                    "both",
+                    self._pending_model,
+                    self._pending_think.removeprefix("thinking:"),
+                )
+            )
+        elif self._pending_model:
+            self.dismiss(("model", self._pending_model))
+        elif self._pending_think:
+            self.dismiss(("thinking", self._pending_think.removeprefix("thinking:")))
         else:
             self.dismiss(None)
 
-    def _dismiss_with(self, key: str) -> None:
-        if key.startswith("thinking:"):
-            self.dismiss(("thinking", key.split(":", 1)[1]))
-        else:
-            self.dismiss(("model", key))
+    def action_confirm(self) -> None:
+        """Enter is intentionally disabled: only space + ``s`` commit."""
+        # Overrides DialogBase.action_confirm so other dialogs keep Enter.

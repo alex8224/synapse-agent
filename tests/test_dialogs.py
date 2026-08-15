@@ -885,9 +885,34 @@ class TestModelPickerMount:
         assert "_on_enter" not in DialogBase.__dict__
         assert "_on_enter" not in ModelPickerDialog.__dict__
 
-        dialog._on_selected("thinking:high")
+        # Enter is disabled: base confirm must not apply anything.
+        dialog.action_confirm()
+        dialog.dismiss.assert_not_called()
 
-        dialog.dismiss.assert_called_once_with(("thinking", "high"))
+    def test_row_click_toggles_pending_without_closing(self, monkeypatch):
+        """Mouse click marks/unmarks like space; only ``s`` dismisses."""
+
+        async def scenario(pilot, dialog, body, result, app):
+            # Clicks are wired to the polymorphic row-click hook (toggle, not
+            # an instant commit), even after DialogBase's mount dispatch.
+            from synapse.ui.dialogs.model_picker import ModelPickerDialog
+
+            assert body.on_row_click.__func__ is ModelPickerDialog._row_clicked
+            row = body._rows[0]
+            await pilot.click(row)
+            await pilot.pause()
+            # Clicked the first model row: pending set, dialog still open.
+            assert dialog._pending_model == row.item.key
+            assert app.screen is dialog
+            assert result == []
+            await pilot.click(row)
+            await pilot.pause()
+            assert dialog._pending_model is None
+            await pilot.press("s")
+            await pilot.pause()
+            assert result == [None]
+
+        self._run_picker(monkeypatch, scenario)
 
     def test_modal_keyboard_navigation_and_buttons_are_available(self):
         """The modal takes focus, exposes actions, and confirms the highlighted item."""
@@ -927,7 +952,9 @@ class TestModelPickerMount:
 
                 await pilot.press("down")
                 selected_key = body.selected_key
-                await pilot.press("enter")
+                await pilot.press("space")
+                await pilot.pause()
+                await pilot.press("s")
                 await pilot.pause()
 
                 assert selected_key is not None
@@ -1028,6 +1055,285 @@ class TestModelPickerMount:
         assert app.check_action("cancel_run", ()) is True
         assert app.check_action("history_up", ()) is True
         assert app.check_action("clear_log", ()) is True
+
+    # ------------------------------------------------------------------
+    # Space = select (pin pending save target), s = save
+    # ------------------------------------------------------------------
+
+    def _run_picker(self, monkeypatch, scenario) -> list[object]:
+        """Run ModelPickerDialog in a Textual test app with a fake registry.
+
+        ``scenario(pilot, dialog, body, result, app)`` is awaited inside the
+        app context; the list of dismissed results is returned afterwards.
+        """
+        from textual.app import App
+
+        from synapse.config import Settings
+        from synapse.ui.dialogs.model_picker import ModelPickerDialog
+        from synapse.ui.theme import get_theme
+
+        class FakeRegistry:
+            default = "model-a"
+
+            @staticmethod
+            def list_names():
+                return ["model-a", "model-b"]
+
+            @staticmethod
+            def allowed_thinking_levels(_model):
+                return ["off", "high"]
+
+            @staticmethod
+            def get(name):
+                return MagicMock(model=f"provider:{name}")
+
+        monkeypatch.setattr(
+            "synapse.models.registry.registry_from_settings",
+            lambda _settings: FakeRegistry(),
+        )
+        monkeypatch.setattr(
+            "synapse.models.registry.settings_thinking_label",
+            lambda _settings: "high",
+        )
+
+        class DialogTestApp(App[None]):
+            def get_css_variables(self) -> dict[str, str]:
+                return {**super().get_css_variables(), **get_theme().css_variables()}
+
+        async def exercise() -> list[object]:
+            app = DialogTestApp()
+            result: list[object] = []
+            async with app.run_test() as pilot:
+                await app.push_screen(
+                    ModelPickerDialog(Settings(_env_file=None, theme="cursor-dark")),
+                    result.append,
+                )
+                await pilot.pause()
+                await scenario(
+                    pilot,
+                    app.screen,
+                    app.screen.query_one("#dialog-body"),
+                    result,
+                    app,
+                )
+            return result
+
+        return asyncio.run(exercise())
+
+    def test_bindings_include_space_select_and_s_save(self):
+        from synapse.ui.dialogs.base import DialogBase
+        from synapse.ui.dialogs.model_picker import ModelPickerDialog
+
+        bindings = {b.key: b for b in ModelPickerDialog.BINDINGS}
+        assert bindings["space"].action == "toggle_selection"
+        assert bindings["space"].priority is True
+        assert bindings["space"].show is False
+        assert bindings["s"].action == "save"
+        assert bindings["s"].priority is True
+        assert bindings["s"].show is False
+        # The base class must not gain a global `s` (other dialogs unaffected).
+        assert "s" not in {b.key for b in DialogBase.BINDINGS}
+
+    def test_space_select_marks_pending_and_keeps_dialog_open(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            key = body.selected_key
+            assert key is not None
+            await pilot.press("space")
+            await pilot.pause()
+            assert dialog._pending_model == key
+            # Dialog stays open: nothing dismissed yet.
+            assert app.screen is dialog
+            assert result == []
+            # Model marker is unique; thinking section keeps its current ●.
+            model_marked = [
+                r.item.key
+                for r in body._rows
+                if r.item.selected and not r.item.key.startswith("thinking:")
+            ]
+            assert model_marked == [key]
+            assert "thinking:high" in [r.item.key for r in body._rows if r.item.selected]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_space_switches_single_marker_to_new_row(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            first = body.selected_key
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            second = body.selected_key
+            assert second != first
+            await pilot.press("space")
+            await pilot.pause()
+            assert dialog._pending_model == second
+            model_marked = [
+                r.item.key
+                for r in body._rows
+                if r.item.selected and not r.item.key.startswith("thinking:")
+            ]
+            assert model_marked == [second]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_space_toggle_cancel_then_s_dismisses_none(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            await pilot.press("space")
+            await pilot.pause()
+            assert dialog._pending_model is not None
+            await pilot.press("space")
+            await pilot.pause()
+            assert dialog._pending_model is None
+            await pilot.press("s")
+            await pilot.pause()
+            assert result == [None]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_s_saves_marked_item_not_highlighted(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            first = body.selected_key
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert body.selected_key != first
+            await pilot.press("s")
+            await pilot.pause()
+            # Save the space-marked row, not the currently highlighted one.
+            assert result == [("model", first)]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_enter_is_disabled(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # Enter is disabled: dialog stays open, nothing dismissed.
+            assert app.screen is dialog
+            assert result == []
+            # The marked combination is still committable via `s`.
+            await pilot.press("s")
+            await pilot.pause()
+            assert result == [("model", dialog._pending_model)]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_registry_failure_still_provides_thinking_fallback(self, monkeypatch):
+        """A broken registry must leave the thinking list navigable/savable."""
+        from synapse.config import Settings
+        from synapse.ui.dialogs.base import DialogBase
+        from synapse.ui.dialogs.model_picker import ModelPickerDialog
+
+        class FakeBody:
+            def __init__(self):
+                self.option_batches = []
+                self.sections = []
+
+            def set_options(self, items, *, mark):
+                self.option_batches.append(list(items))
+
+            def append_section(self, text):
+                self.sections.append(text)
+
+            def append_options(self, items, *, mark):
+                self.option_batches.append(list(items))
+
+        def boom(_settings):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr("synapse.models.registry.registry_from_settings", boom)
+        monkeypatch.setattr(DialogBase, "on_mount", lambda _self: None)
+
+        dialog = ModelPickerDialog(Settings(_env_file=None, theme="cursor-dark"))
+        body = FakeBody()
+        monkeypatch.setattr(dialog, "query_one", lambda _selector: body)
+
+        dialog.on_mount()
+
+        assert dialog._model_names == []
+        keys = [item.key for batch in body.option_batches for item in batch]
+        assert "thinking:off" in keys
+        assert "thinking:max" in keys
+
+    def test_s_saves_thinking_item(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            # Rows: model-a, model-b, thinking:off, thinking:high.
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.pause()
+            assert body.selected_key == "thinking:off"
+            await pilot.press("space")
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert result == [("thinking", "off")]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_s_without_marker_dismisses_none(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            await pilot.press("s")
+            await pilot.pause()
+            # `s` commits the marked combination; nothing marked -> no change.
+            assert result == [None]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_s_saves_both_model_and_thinking(self, monkeypatch):
+        async def scenario(pilot, dialog, body, result, app):
+            # Rows: model-a, model-b, thinking:off, thinking:high.
+            await pilot.press("space")  # mark model-a
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("down")  # -> thinking:high
+            await pilot.pause()
+            assert body.selected_key == "thinking:high"
+            await pilot.press("space")  # mark thinking:high
+            await pilot.pause()
+            assert dialog._pending_model == "model-a"
+            assert dialog._pending_think == "thinking:high"
+            await pilot.press("s")
+            await pilot.pause()
+            assert result == [("both", "model-a", "high")]
+
+        self._run_picker(monkeypatch, scenario)
+
+    def test_model_dialog_both_result_switches_model_and_thinking(self, monkeypatch):
+        app = _make_app(monkeypatch)
+        app._switch_model_bg = MagicMock()
+
+        app._slash.on_model_dialog_done(("both", "model-a", "high"))
+
+        app._switch_model_bg.assert_called_once()
+        assert app._switch_model_bg.call_args[0][0] == "/model model-a thinking high"
+
+    def test_model_dialog_single_results_still_dispatch(self, monkeypatch):
+        app = _make_app(monkeypatch)
+        app._switch_model_bg = MagicMock()
+
+        app._slash.on_model_dialog_done(("model", "model-a"))
+        assert app._switch_model_bg.call_args[0][0] == "/model model-a"
+        app._switch_model_bg.reset_mock()
+
+        app._slash.on_model_dialog_done(("thinking", "high"))
+        assert app._switch_model_bg.call_args[0][0] == "/model thinking high"
+
+    def test_other_dialogs_keep_their_space_and_s_bindings(self):
+        from synapse.ui.dialogs.base import DialogBase
+        from synapse.ui.dialogs.mcp_panel import McpPanelDialog
+
+        mcp_bindings = {b.key: b for b in McpPanelDialog.BINDINGS}
+        assert mcp_bindings["space"].action == "toggle_check"
+        assert mcp_bindings["s"].action == "save"
+        base_bindings = {b.key: b for b in DialogBase.BINDINGS}
+        assert base_bindings["space"].action == "toggle_check"
+        assert "s" not in base_bindings
 
 
 # =========================================================================

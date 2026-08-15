@@ -316,6 +316,23 @@ class DialogBody(VerticalScroll):
             row.item.checked = not row.item.checked
             row._update_content()
 
+    def set_selected_marker(self, keys: str | set[str] | None) -> None:
+        """Set the single-select marker (●) on one or more rows, clearing others.
+
+        Single-select dialogs use this to pin the rows that will be saved on
+        confirm, independently of the keyboard highlight cursor. Pass a set to
+        mark several independent sections at once (e.g. one model + one
+        thinking level); pass ``None`` to clear every marker. Only the visual
+        ``OptionItem.selected`` state is changed: the navigation cursor
+        (``_selected_idx``) and multi-select ``checked`` state are untouched.
+        """
+        targets: set[str] = set() if keys is None else (
+            {keys} if isinstance(keys, str) else set(keys)
+        )
+        for row in self._rows:
+            row.item.selected = row.item.key in targets
+            row._update_content()
+
     def select_all(self) -> None:
         """Toggle: check all or uncheck all checkable rows."""
         if not self._checkable:
@@ -446,8 +463,17 @@ class DialogBase(ModalScreen[Any]):
         win.border_title = f"{icon} {title}".strip() if icon else title
         win.border_subtitle = self._title_keys
         # Keep keyboard input inside the modal list.
-        body.on_row_click = self._on_selected
+        body.on_row_click = self._row_clicked
         self.set_focus(body)
+
+    def _row_clicked(self, key: str) -> None:
+        """Row click hook: default confirms via ``_on_selected``.
+
+        Subclasses override this (instead of mutating ``body.on_row_click``)
+        so the wiring survives Textual's MRO mount dispatch, which re-runs
+        ``DialogBase.on_mount`` after the subclass ``on_mount``.
+        """
+        self._on_selected(key)
 
     def _on_apply(self) -> None:
         """Override in subclass."""
