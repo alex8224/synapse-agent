@@ -19,8 +19,8 @@ class ModelPickerDialog(DialogBase):
     """Pick a model profile + thinking level.
 
     Space marks a pending row (model and thinking sections are independent);
-    ``s`` commits the marked combination. Enter is intentionally disabled here
-    (base ``confirm`` is overridden) — only space + ``s`` commit.
+    Enter commits the marked combination (``confirm`` is overridden to save
+    pending targets). No separate ``s`` key.
 
     dismiss result:
       ("model", alias)                 → switch model only
@@ -33,10 +33,9 @@ class ModelPickerDialog(DialogBase):
     BINDINGS = [
         *DialogBase.BINDINGS,
         Binding("space", "toggle_selection", "Select", show=False, priority=True),
-        Binding("s", "save", "Save", show=False, priority=True),
     ]
 
-    _title_keys = "\u2191\u2193 move \u00b7 space select \u00b7 s save \u00b7 esc"
+    _title_keys = "\u2191\u2193 move \u00b7 space select \u00b7 enter save \u00b7 esc"
 
     def __init__(self, settings: Any) -> None:
         super().__init__()
@@ -71,7 +70,7 @@ class ModelPickerDialog(DialogBase):
         self._allowed_think = allowed_think
         self._model_count = len(model_names)
         # Independent pending targets: space marks one model and one thinking
-        # level; `s` commits the marked combination. None = keep current value
+        # level; Enter commits the marked combination. None = keep current value
         # (that section is not part of the commit).
         self._pending_model: str | None = None
         self._pending_think: str | None = None
@@ -133,7 +132,7 @@ class ModelPickerDialog(DialogBase):
         """Space: toggle the highlighted row as a pending save target.
 
         Model and thinking sections are independent: space marks/unmarks one
-        row inside the section the cursor is on. The dialog stays open; `s`
+        row inside the section the cursor is on. The dialog stays open; Enter
         commits the marked combination.
         """
         body = self.query_one("#dialog-body")
@@ -171,14 +170,10 @@ class ModelPickerDialog(DialogBase):
             keys.add(f"thinking:{self._current_think or 'high'}")
         body.set_selected_marker(keys or None)
 
-    def action_save(self) -> None:
-        """`s`: commit the marked combination."""
-        self._on_apply()
-
     def _row_clicked(self, key: str) -> None:
         """Mouse click: toggle the row's pending state (like space).
 
-        The click already moved the cursor; the dialog stays open, only ``s``
+        The click already moved the cursor; the dialog stays open, only Enter
         commits. Overrides DialogBase._row_clicked (no instant dismiss)."""
         self.action_toggle_selection()
 
@@ -199,5 +194,5 @@ class ModelPickerDialog(DialogBase):
             self.dismiss(None)
 
     def action_confirm(self) -> None:
-        """Enter is intentionally disabled: only space + ``s`` commit."""
-        # Overrides DialogBase.action_confirm so other dialogs keep Enter.
+        """Enter: commit the marked combination (model + thinking)."""
+        self._on_apply()

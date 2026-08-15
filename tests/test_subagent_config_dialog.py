@@ -221,9 +221,11 @@ def test_subagent_edit_global_untouched_model_keeps_default(tmp_path: Path) -> N
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             # Row order: model:inherit, model:global:m, reasoning:inherit,
-            # reasoning:off, ... Select the same model then reasoning:inherit.
-            await pilot.press("down", "enter")  # model:global:m
-            await pilot.press("down", "down", "enter")  # reasoning:inherit
+            # reasoning:off, ... Cursor starts on model:global:m. Mark it and
+            # reasoning:inherit, then Enter commits the marked combination.
+            await pilot.press("space")  # mark model:global:m
+            await pilot.press("down", "space")  # mark reasoning:inherit
+            await pilot.press("enter")
             await pilot.pause()
 
     asyncio.run(asyncio.wait_for(exercise(), timeout=20))
@@ -234,8 +236,8 @@ def test_subagent_edit_global_untouched_model_keeps_default(tmp_path: Path) -> N
 
 
 def test_subagent_edit_only_model_change_keeps_reasoning_inherit(tmp_path: Path) -> None:
-    """Selecting a model without touching reasoning writes the model override
-    and records ``inherit`` (persisted as "no override"), never a fallback."""
+    """Marking a model without touching reasoning writes the model override
+    and leaves reasoning untouched (no override written), never a fallback."""
     settings = _settings_with_config(tmp_path)
     config = {
         "default_model": None,
@@ -251,15 +253,16 @@ def test_subagent_edit_only_model_change_keeps_reasoning_inherit(tmp_path: Path)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             # Row order: model:inherit, model:algo:1, model:algo:2,
-            # reasoning:inherit, reasoning:off, ...
-            await pilot.press("down", "enter")  # model:algo:1
-            await pilot.press("down", "down", "enter")  # reasoning:inherit
+            # reasoning:inherit, reasoning:off, ... Mark only the model;
+            # reasoning stays untouched on Enter.
+            await pilot.press("down", "space")  # mark model:algo:1
+            await pilot.press("enter")
             await pilot.pause()
 
     asyncio.run(asyncio.wait_for(exercise(), timeout=20))
     assert results == [("edited", config)]
     assert config["model_overrides"] == {"tester": "algo:1"}
-    assert config["reasoning_effort_overrides"] == {"tester": "inherit"}
+    assert config["reasoning_effort_overrides"] == {}
 
 
 def test_subagent_edit_global_routes_to_defaults(tmp_path: Path) -> None:
@@ -275,3 +278,95 @@ def test_subagent_edit_global_routes_to_defaults(tmp_path: Path) -> None:
     assert config["default_reasoning_effort"] == "high"
     assert config["model_overrides"] == {}
     assert config["reasoning_effort_overrides"] == {}
+
+
+def test_subagent_edit_dialog_bindings_space_select_enter_save() -> None:
+    """The edit dialog uses Space to mark and Enter to save — no ``s`` key,
+    while the role-list dialog keeps its own ``s`` save_config."""
+    from synapse.ui.dialogs.base import DialogBase
+    from synapse.ui.dialogs.subagent_config import (
+        SubagentEditDialog,
+        SubagentModelsDialog,
+    )
+
+    edit_bindings = {b.key: b for b in SubagentEditDialog.BINDINGS}
+    assert edit_bindings["space"].action == "toggle_selection"
+    assert edit_bindings["space"].priority is True
+    assert edit_bindings["enter"].action == "confirm"
+    assert "s" not in edit_bindings
+
+    list_bindings = {b.key: b for b in SubagentModelsDialog.BINDINGS}
+    assert list_bindings["s"].action == "save_config"
+    assert "s" not in {b.key for b in DialogBase.BINDINGS}
+
+
+def test_subagent_edit_marks_both_and_commits_together(tmp_path: Path) -> None:
+    """Space marks model + reasoning independently; Enter saves both at once."""
+    settings = _settings_with_config(tmp_path)
+    config = {
+        "default_model": None,
+        "default_reasoning_effort": None,
+        "model_overrides": {},
+        "reasoning_effort_overrides": {},
+    }
+    results: list[object] = []
+    dialog = SubagentEditDialog(settings, "tester", config, _FakeRegistry(["algo:1", "algo:2"]))
+
+    async def exercise() -> None:
+        app = _host_for(dialog, results.append)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            # Row order: model:inherit, model:algo:1, model:algo:2,
+            # reasoning:inherit, reasoning:off, reasoning:minimal, ...
+            await pilot.press("down", "space")  # mark model:algo:1
+            await pilot.press("down", "down", "space")  # mark reasoning:inherit
+            await pilot.pause()
+            assert dialog._pending_model == "model:algo:1"
+            assert dialog._pending_reasoning == "reasoning:inherit"
+            # Dialog stays open until Enter commits.
+            assert results == []
+            assert app.screen is dialog
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=20))
+    assert results == [("edited", config)]
+    assert config["model_overrides"] == {"tester": "algo:1"}
+    assert config["reasoning_effort_overrides"] == {"tester": "inherit"}
+
+
+def test_subagent_edit_marker_follows_sections(tmp_path: Path) -> None:
+    """Marking a second model row replaces the model marker only; the
+    reasoning section keeps its current value marker."""
+    settings = _settings_with_config(tmp_path)
+    config = {
+        "default_model": None,
+        "default_reasoning_effort": None,
+        "model_overrides": {},
+        "reasoning_effort_overrides": {"tester": "high"},
+    }
+    dialog = SubagentEditDialog(settings, "tester", config, _FakeRegistry(["algo:1", "algo:2"]))
+    assert dialog._selected_reasoning == "high"
+
+    async def exercise() -> None:
+        app = _host_for(dialog)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            body = dialog.query_one("#dialog-body", DialogBody)
+            # Row order: model:inherit, model:algo:1, model:algo:2,
+            # reasoning:inherit, reasoning:off, ..., reasoning:high.
+            await pilot.press("down", "space")  # mark model:algo:1
+            await pilot.press("down", "space")  # switch marker to model:algo:2
+            await pilot.pause()
+            model_marked = [
+                r.item.key
+                for r in body._rows
+                if r.item.selected and r.item.key.startswith("model:")
+            ]
+            assert model_marked == ["model:algo:2"]
+            # Reasoning section still shows its current value.
+            assert "reasoning:high" in [
+                r.item.key for r in body._rows if r.item.selected
+            ]
+
+    asyncio.run(asyncio.wait_for(exercise(), timeout=20))

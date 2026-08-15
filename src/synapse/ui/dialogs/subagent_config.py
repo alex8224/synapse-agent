@@ -163,7 +163,11 @@ class SubagentModelsDialog(DialogBase):
 class SubagentEditDialog(DialogBase):
     """Choose one model and one reasoning level for a subagent role."""
 
-    _title_keys = "\u2191\u2193 enter \u00b7 esc"
+    BINDINGS = [
+        *DialogBase.BINDINGS,
+        Binding("space", "toggle_selection", "Select", show=False, priority=True),
+    ]
+    _title_keys = "\u2191\u2193 move \u00b7 space select \u00b7 enter save \u00b7 esc"
     _title_icon = "\u25c6"
 
     def __init__(self, settings: Any, name: str, config: dict[str, Any], registry: Any) -> None:
@@ -187,7 +191,8 @@ class SubagentEditDialog(DialogBase):
             self._selected_reasoning = _inherit_to_none(
                 _override_reasoning(config, name)
             )
-        self._model_touched = False
+        self._pending_model: str | None = None
+        self._pending_reasoning: str | None = None
 
     @property
     def title_text(self) -> str:
@@ -269,28 +274,74 @@ class SubagentEditDialog(DialogBase):
         )
         body.append_options(reasoning_items, mark="  ")
 
-    def _on_selected(self, key: str | None) -> None:
-        """Enter on a model records it; Enter on reasoning saves and closes."""
+    def action_toggle_selection(self) -> None:
+        """Space: toggle the highlighted row as a pending save target.
+
+        Model and reasoning sections are independent; the dialog stays open
+        until Enter commits the marked combination.
+        """
+        body = self.query_one("#dialog-body", DialogBody)
+        key = body.selected_key
         if not key:
-            self.dismiss(None)
             return
-        kind, value = key.split(":", 1)
-        if kind == "model":
-            self._selected_model = None if value == "inherit" else value
-            self._model_touched = True
+        if key.startswith("model:"):
+            if key == self._pending_model:
+                self._pending_model = None
+            else:
+                self._pending_model = key
+        elif key.startswith("reasoning:"):
+            if key == self._pending_reasoning:
+                self._pending_reasoning = None
+            else:
+                self._pending_reasoning = key
+        else:
             return
-        self._selected_reasoning = None if value == "inherit" else value
-        if self._model_touched:
+        self._sync_markers()
+
+    def _sync_markers(self) -> None:
+        """Reflect pending targets (or current values) as ● per section."""
+        body = self.query_one("#dialog-body", DialogBody)
+        keys: set[str] = set()
+        if self._pending_model:
+            keys.add(self._pending_model)
+        elif self._selected_model is None:
+            keys.add(_INHERIT_MODEL_KEY)
+        else:
+            keys.add(f"model:{self._selected_model}")
+        if self._pending_reasoning:
+            keys.add(self._pending_reasoning)
+        elif self._selected_reasoning is None:
+            keys.add(_INHERIT_REASONING_KEY)
+        else:
+            keys.add(f"reasoning:{self._selected_reasoning}")
+        body.set_selected_marker(keys or None)
+
+    def _row_clicked(self, key: str) -> None:
+        """Mouse click: toggle the row's pending state (like space)."""
+        self.action_toggle_selection()
+
+    def _pending_value(self, key: str) -> str:
+        """Row key -> config value, keeping ``inherit`` explicit (the persist
+        layer normalizes it away; the in-memory config mirrors the old flow)."""
+        return key.split(":", 1)[1]
+
+    def action_confirm(self) -> None:
+        """Enter: commit the marked combination and close."""
+        if self._pending_model is not None:
             _set_config_value(
                 self._config,
                 "model",
                 self._name,
-                "inherit" if self._selected_model is None else self._selected_model,
+                self._pending_value(self._pending_model),
             )
-        _set_config_value(
-            self._config,
-            "reasoning",
-            self._name,
-            "inherit" if self._selected_reasoning is None else self._selected_reasoning,
-        )
+        if self._pending_reasoning is not None:
+            _set_config_value(
+                self._config,
+                "reasoning",
+                self._name,
+                self._pending_value(self._pending_reasoning),
+            )
+        if self._pending_model is None and self._pending_reasoning is None:
+            self.dismiss(None)
+            return
         self.dismiss(("edited", self._config))

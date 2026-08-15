@@ -885,12 +885,12 @@ class TestModelPickerMount:
         assert "_on_enter" not in DialogBase.__dict__
         assert "_on_enter" not in ModelPickerDialog.__dict__
 
-        # Enter is disabled: base confirm must not apply anything.
+        # Enter commits via the marked-combination path; nothing marked -> None.
         dialog.action_confirm()
-        dialog.dismiss.assert_not_called()
+        dialog.dismiss.assert_called_once_with(None)
 
     def test_row_click_toggles_pending_without_closing(self, monkeypatch):
-        """Mouse click marks/unmarks like space; only ``s`` dismisses."""
+        """Mouse click marks/unmarks like space; only Enter commits."""
 
         async def scenario(pilot, dialog, body, result, app):
             # Clicks are wired to the polymorphic row-click hook (toggle, not
@@ -908,7 +908,7 @@ class TestModelPickerMount:
             await pilot.click(row)
             await pilot.pause()
             assert dialog._pending_model is None
-            await pilot.press("s")
+            await pilot.press("enter")
             await pilot.pause()
             assert result == [None]
 
@@ -954,7 +954,7 @@ class TestModelPickerMount:
                 selected_key = body.selected_key
                 await pilot.press("space")
                 await pilot.pause()
-                await pilot.press("s")
+                await pilot.press("enter")
                 await pilot.pause()
 
                 assert selected_key is not None
@@ -1057,7 +1057,7 @@ class TestModelPickerMount:
         assert app.check_action("clear_log", ()) is True
 
     # ------------------------------------------------------------------
-    # Space = select (pin pending save target), s = save
+    # Space = select (pin pending save target), Enter = save
     # ------------------------------------------------------------------
 
     def _run_picker(self, monkeypatch, scenario) -> list[object]:
@@ -1120,7 +1120,7 @@ class TestModelPickerMount:
 
         return asyncio.run(exercise())
 
-    def test_bindings_include_space_select_and_s_save(self):
+    def test_bindings_include_space_select_and_no_s_save(self):
         from synapse.ui.dialogs.base import DialogBase
         from synapse.ui.dialogs.model_picker import ModelPickerDialog
 
@@ -1128,9 +1128,9 @@ class TestModelPickerMount:
         assert bindings["space"].action == "toggle_selection"
         assert bindings["space"].priority is True
         assert bindings["space"].show is False
-        assert bindings["s"].action == "save"
-        assert bindings["s"].priority is True
-        assert bindings["s"].show is False
+        # No `s` key: Enter (base confirm) is the single commit key.
+        assert "s" not in bindings
+        assert bindings["enter"].action == "confirm"
         # The base class must not gain a global `s` (other dialogs unaffected).
         assert "s" not in {b.key for b in DialogBase.BINDINGS}
 
@@ -1176,7 +1176,7 @@ class TestModelPickerMount:
 
         self._run_picker(monkeypatch, scenario)
 
-    def test_space_toggle_cancel_then_s_dismisses_none(self, monkeypatch):
+    def test_space_toggle_cancel_then_enter_dismisses_none(self, monkeypatch):
         async def scenario(pilot, dialog, body, result, app):
             await pilot.press("space")
             await pilot.pause()
@@ -1184,13 +1184,13 @@ class TestModelPickerMount:
             await pilot.press("space")
             await pilot.pause()
             assert dialog._pending_model is None
-            await pilot.press("s")
+            await pilot.press("enter")
             await pilot.pause()
             assert result == [None]
 
         self._run_picker(monkeypatch, scenario)
 
-    def test_s_saves_marked_item_not_highlighted(self, monkeypatch):
+    def test_enter_saves_marked_item_not_highlighted(self, monkeypatch):
         async def scenario(pilot, dialog, body, result, app):
             first = body.selected_key
             await pilot.press("space")
@@ -1198,28 +1198,10 @@ class TestModelPickerMount:
             await pilot.press("down")
             await pilot.pause()
             assert body.selected_key != first
-            await pilot.press("s")
-            await pilot.pause()
-            # Save the space-marked row, not the currently highlighted one.
-            assert result == [("model", first)]
-
-        self._run_picker(monkeypatch, scenario)
-
-    def test_enter_is_disabled(self, monkeypatch):
-        async def scenario(pilot, dialog, body, result, app):
-            await pilot.press("space")
-            await pilot.pause()
-            await pilot.press("down")
-            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
-            # Enter is disabled: dialog stays open, nothing dismissed.
-            assert app.screen is dialog
-            assert result == []
-            # The marked combination is still committable via `s`.
-            await pilot.press("s")
-            await pilot.pause()
-            assert result == [("model", dialog._pending_model)]
+            # Enter saves the space-marked row, not the highlighted one.
+            assert result == [("model", first)]
 
         self._run_picker(monkeypatch, scenario)
 
@@ -1260,7 +1242,7 @@ class TestModelPickerMount:
         assert "thinking:off" in keys
         assert "thinking:max" in keys
 
-    def test_s_saves_thinking_item(self, monkeypatch):
+    def test_enter_saves_thinking_item(self, monkeypatch):
         async def scenario(pilot, dialog, body, result, app):
             # Rows: model-a, model-b, thinking:off, thinking:high.
             await pilot.press("down")
@@ -1269,22 +1251,22 @@ class TestModelPickerMount:
             assert body.selected_key == "thinking:off"
             await pilot.press("space")
             await pilot.pause()
-            await pilot.press("s")
+            await pilot.press("enter")
             await pilot.pause()
             assert result == [("thinking", "off")]
 
         self._run_picker(monkeypatch, scenario)
 
-    def test_s_without_marker_dismisses_none(self, monkeypatch):
+    def test_enter_without_marker_dismisses_none(self, monkeypatch):
         async def scenario(pilot, dialog, body, result, app):
-            await pilot.press("s")
+            await pilot.press("enter")
             await pilot.pause()
-            # `s` commits the marked combination; nothing marked -> no change.
+            # Enter commits the marked combination; nothing marked -> no change.
             assert result == [None]
 
         self._run_picker(monkeypatch, scenario)
 
-    def test_s_saves_both_model_and_thinking(self, monkeypatch):
+    def test_enter_saves_both_model_and_thinking(self, monkeypatch):
         async def scenario(pilot, dialog, body, result, app):
             # Rows: model-a, model-b, thinking:off, thinking:high.
             await pilot.press("space")  # mark model-a
@@ -1298,7 +1280,7 @@ class TestModelPickerMount:
             await pilot.pause()
             assert dialog._pending_model == "model-a"
             assert dialog._pending_think == "thinking:high"
-            await pilot.press("s")
+            await pilot.press("enter")
             await pilot.pause()
             assert result == [("both", "model-a", "high")]
 
