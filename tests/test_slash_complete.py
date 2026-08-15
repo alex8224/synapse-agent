@@ -21,6 +21,7 @@ def test_root_command_prefix():
     assert "/codex" in complete_slash("/co")
     assert "/sessions" in complete_slash("/se")
     assert best_completion("/m") in {"/mcp", "/model", "/memory"}
+    assert "/subagent" in complete_slash("/subag")
     assert complete_slash("hello") == []
 
 

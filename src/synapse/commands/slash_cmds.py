@@ -122,7 +122,7 @@ HELP_TEXT = """## Slash Commands
 | `/tool-output ...` | Alias for `/compression ...` |
 | `/skills` | List skills |
 | `/memory` | List memory files |
-| `/subagents` | List sub-agents |
+| `/subagent` | Open sub-agent model configuration (TUI only) |
 | `/image [auto\|tgp\|sixel\|halfcell\|unicode]` | Image renderer diagnostic / switch |
 """
 
@@ -537,43 +537,6 @@ def handle_slash(
                 status = "ok" if exists else "missing"
                 md += f"| `{markdown_escape(path)}` | {size} | {status} |\n"
             md += "\n*Existing files are injected via `create_deep_agent(memory=...)`*"
-        return SlashResult(handled=True, lines=plain, markdown=md)
-
-    if cmd in {"/subagents", "/subagent"}:
-        from synapse.runtime.subagents import build_default_subagents, format_subagents_lines
-
-        specs = getattr(agent, "_coding_subagents", None)
-        if specs is None:
-            # Fallback when the agent has no cached compiled specs (rare). Custom
-            # subagents are not loaded here because there is no inherit_tools
-            # context; the cached path above already reflects them.
-            specs = build_default_subagents(
-                enabled=getattr(settings, "enable_subagents", True),
-                isolate_tools=True,
-                tester_model=getattr(settings, "subagent_tester_model", None),
-                reviewer_model=getattr(settings, "subagent_reviewer_model", None),
-                researcher_model=getattr(settings, "subagent_researcher_model", None),
-                disable_builtin_subagents=getattr(settings, "disable_builtin_subagents", []),
-            )
-        plain = format_subagents_lines(specs)
-        if not specs:
-            md = "## Sub-agents\n\n*disabled*"
-        else:
-            md = f"## Sub-agents ({len(specs)})\n\n"
-            md += "| Name | Model | Isolation | Tools |\n|---|---|---|---|\n"
-            for spec in specs:
-                name = spec.get("name") or "?"
-                model = spec.get("model") or "(inherit)"
-                tools = spec.get("tools") or []
-                tool_names = [getattr(t, "name", getattr(t, "__name__", str(t))) for t in tools]
-                mw = spec.get("middleware") or []
-                isolation = "tool-exclude" if mw else ("tools+" if tools else "default")
-                tool_list = ", ".join(str(n) for n in tool_names) if tool_names else "-"
-                md += (
-                    f"| {markdown_escape(name)} | {markdown_escape(model)} "
-                    f"| {markdown_escape(isolation)} "
-                    f"| {markdown_escape(tool_list)} |\n"
-                )
         return SlashResult(handled=True, lines=plain, markdown=md)
 
     if raw.startswith("/"):

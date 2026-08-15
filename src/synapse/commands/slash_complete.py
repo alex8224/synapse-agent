@@ -41,7 +41,7 @@ ROOT_COMMANDS: list[str] = [
     "/reject",
     "/skills",
     "/memory",
-    "/subagents",
+    "/subagent",
     "/mcp",
     "/model",
     "/fast",

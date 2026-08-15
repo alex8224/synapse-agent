@@ -1335,6 +1335,7 @@ DIALOG_CMDS = [
     "/safety",
     "/codex",
     "/codex import",
+    "/subagent",
 ]
 
 NOT_DIALOG_CMDS = [
@@ -1348,6 +1349,10 @@ NOT_DIALOG_CMDS = [
     "/mcp tools",
     "/safety dev-approve",
     "/safety readonly",
+    "/subagent-models",
+    "/subagent-model",
+    "/subagents-config",
+    "/subagents",
 ]
 
 

@@ -666,7 +666,7 @@ ledger.claim(source_id, digest, proposed_thread_id):
 | **上下文** | `/compact`, `/context` | 手动压缩 + 上下文状态 |
 | **安全** | `/safety [profile]`, `/approve`, `/reject [reason]` | 安全 profile + HITL 审批 |
 | **主题** | `/theme [name]` | 主题切换 |
-| **其他** | `/skills`, `/memory`, `/subagents` | 技能/记忆/子代理状态 |
+| **其他** | `/skills`, `/memory`, `/subagent` | 技能/记忆/子代理模型配置（`/subagent` 仅 TUI） |
 
 **SlashResult 三种逻辑状态**: `handled`（已处理，显示 lines）→ `passthru`（非斜杠命令，传递给 LLM）→ `rebuild`（agent 非 None，模型/MCP/安全变更需重建图）。
 

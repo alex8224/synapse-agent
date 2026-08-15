@@ -129,13 +129,12 @@ def test_slash_switch_persists_outgoing_model_binding(tmp_path: Path):
         store2.close()
 
 
-def test_slash_subagents_reports_disabled_when_disabled(tmp_path: Path):
+def test_slash_subagent_unknown_outside_tui(tmp_path: Path):
     settings = _FakeSettings(tmp_path)
-    settings.enable_subagents = False
-    agent = SimpleNamespace(_coding_subagents=None)
+    agent = SimpleNamespace()
 
     result = handle_slash(
-        "/subagents",
+        "/subagent",
         settings=settings,
         agent=agent,
         thread_id="t1",
@@ -143,28 +142,8 @@ def test_slash_subagents_reports_disabled_when_disabled(tmp_path: Path):
     )
 
     assert result.handled
-    assert result.lines == ["subagents: disabled"]
-    assert result.markdown == "## Sub-agents\n\n*disabled*"
-
-
-def test_slash_subagents_reports_default_specs(tmp_path: Path):
-    settings = _FakeSettings(tmp_path)
-    agent = SimpleNamespace(_coding_subagents=None)
-
-    result = handle_slash(
-        "/subagents",
-        settings=settings,
-        agent=agent,
-        thread_id="t1",
-        project_root=tmp_path,
-    )
-
-    assert result.handled
-    assert result.lines[0] == "subagents: 3"
-    assert "## Sub-agents (3)" in result.markdown
-    assert "researcher" in result.markdown
-    assert "tester" in result.markdown
-    assert "reviewer" in result.markdown
+    assert result.error
+    assert result.lines == ["unknown command: /subagent", "type /help for commands"]
 
 
 def test_slash_session_management(tmp_path: Path):

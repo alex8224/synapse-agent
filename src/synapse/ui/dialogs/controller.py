@@ -106,7 +106,7 @@ class SlashController:
         if cmd == "/model" and len(parts) == 1:
             self.open_model_dialog(parts[1:])
             return True
-        if cmd in {"/subagent-models", "/subagent-model", "/subagents-config"} and len(parts) == 1:
+        if cmd == "/subagent" and len(parts) == 1:
             self.open_subagent_models_dialog()
             return True
         if cmd == "/model":
