@@ -7,6 +7,7 @@ Each id maps to an in-memory (or file-backed) attachment held by the TUI compose
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 import re
 import subprocess
@@ -459,7 +460,7 @@ def read_clipboard() -> ClipboardResult:
     """Best-effort clipboard read: prefer image, else text.
 
     Order:
-    1. Platform image (Windows Forms / PIL / xclip / pngpaste)
+    1. Platform image (Windows Forms / PIL / xclip / pngpaste / osascript)
     2. Platform text
     3. If text is an existing image path -> treat as image file
     """
@@ -663,31 +664,83 @@ $img.Dispose()
     return data, "image/png", "clipboard.png"
 
 
+_OSASCRIPT_CLIP_TYPES = (
+    ("PNGf", "image/png"),
+    ("TIFF", "image/tiff"),
+)
+
+
+def _parse_osascript_data(out: bytes) -> bytes | None:
+    """Decode AppleScript ``«data XXXX<hex>»`` output into raw bytes.
+
+    ``osascript`` prints clipboard data as ``«data PNGf89504E47...»``. The
+    four characters after ``«data `` are the OSType; everything up to the
+    closing ``»`` is the hex payload.
+    """
+    marker = "«data "
+    try:
+        text = out.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - arbitrary process/terminal output
+        return None
+    idx = text.find(marker)
+    if idx < 0:
+        return None
+    payload = text[idx + len(marker):]
+    if len(payload) < 4:
+        return None
+    hexpart = payload[4:]
+    end = hexpart.find("»")
+    if end >= 0:
+        hexpart = hexpart[:end]
+    hexpart = "".join(ch for ch in hexpart if ch in "0123456789abcdefABCDEF")
+    if not hexpart or len(hexpart) % 2:
+        return None
+    try:
+        return binascii.unhexlify(hexpart)
+    except (binascii.Error, ValueError):
+        return None
+
+
 def _mac_clipboard_image() -> tuple[bytes, str, str] | None:
+    """Read a clipboard image on macOS.
+
+    Prefers ``pngpaste`` when installed; otherwise falls back to the built-in
+    ``osascript`` clipboard coercion (PNG, then TIFF) so image paste works on a
+    stock macOS install without extra Homebrew packages.
+    """
     tmp = Path(tempfile.gettempdir()) / f"coding-agent-clip-{os.getpid()}.png"
     try:
         if tmp.is_file():
             tmp.unlink()
     except OSError:
         pass
-    # pngpaste is optional; osascript fallback is heavy — try pngpaste only.
-    out = _run_capture(["pngpaste", str(tmp)], timeout=5)
-    if out is None and not tmp.is_file():
-        return None
-    if not tmp.is_file():
-        return None
-    try:
-        data = tmp.read_bytes()
-    except OSError:
-        return None
-    finally:
+    _run_capture(["pngpaste", str(tmp)], timeout=5)
+    if tmp.is_file():
         try:
-            tmp.unlink(missing_ok=True)
+            data = tmp.read_bytes()
         except OSError:
-            pass
-    if not data:
-        return None
-    return data, "image/png", "clipboard.png"
+            data = b""
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if data:
+            return data, "image/png", "clipboard.png"
+
+    for type_code, mime in _OSASCRIPT_CLIP_TYPES:
+        out = _run_capture(
+            ["osascript", "-e", f"get the clipboard as «class {type_code}»"],
+            timeout=6,
+        )
+        if not out:
+            continue
+        raw = _parse_osascript_data(out)
+        if not raw:
+            continue
+        data, mime_out = _normalize_image_bytes(raw, mime)
+        return data, mime_out, "clipboard" + MIME_TO_EXT.get(mime_out, ".png")
+    return None
 
 
 def _linux_clipboard_image() -> tuple[bytes, str, str] | None:

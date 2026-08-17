@@ -92,3 +92,70 @@ def test_looks_like_image_data_rejects_normal_text() -> None:
     assert multimodal.looks_like_image_data("BP is an energy company") is False
     assert multimodal.looks_like_image_data("hello world") is False
     assert multimodal.looks_like_image_data("") is False
+
+
+def _osascript_output(type_code: str, data: bytes) -> bytes:
+    return f"«data {type_code}{data.hex()}»\n".encode()
+
+
+def test_parse_osascript_data_pngf() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    assert multimodal._parse_osascript_data(_osascript_output("PNGf", png)) == png
+
+
+def test_parse_osascript_data_ignores_surrounding_noise() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    out = b"log line\n" + _osascript_output("TIFF", png) + b"trailing"
+    assert multimodal._parse_osascript_data(out) == png
+
+
+def test_parse_osascript_data_rejects_malformed() -> None:
+    assert multimodal._parse_osascript_data(b"no data here") is None
+    assert multimodal._parse_osascript_data("«data PNGfZZ»".encode()) is None
+
+
+def test_mac_clipboard_image_osascript_fallback(monkeypatch) -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=3.0):
+        seen.append(list(cmd))
+        if cmd[0] == "pngpaste":
+            return None
+        if cmd[0] == "osascript":
+            return _osascript_output("PNGf", png)
+        return None
+
+    monkeypatch.setattr(multimodal, "_run_capture", fake_run)
+
+    result = multimodal._mac_clipboard_image()
+
+    assert result is not None
+    data, mime, name = result
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert mime == "image/png"
+    assert name == "clipboard.png"
+    assert any(c[0] == "osascript" for c in seen)
+
+
+def test_mac_clipboard_image_osascript_tiff_to_png(monkeypatch) -> None:
+    tiff_buf = BytesIO()
+    Image.new("RGB", (2, 2), (0, 255, 0)).save(tiff_buf, format="TIFF")
+    tiff = tiff_buf.getvalue()
+
+    def fake_run(cmd, timeout=3.0):
+        if cmd[0] == "pngpaste":
+            return None
+        if cmd[0] == "osascript":
+            return _osascript_output("TIFF", tiff)
+        return None
+
+    monkeypatch.setattr(multimodal, "_run_capture", fake_run)
+
+    result = multimodal._mac_clipboard_image()
+
+    assert result is not None
+    data, mime, name = result
+    assert mime == "image/png"
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert name == "clipboard.png"
