@@ -109,14 +109,15 @@ def _resolve_init_chat_model() -> Callable[..., Any]:
     return __getattr__("init_chat_model")
 
 
-def _resolve_turbo_proxy_url(profile: ModelProfile) -> str:
+def _resolve_turbo_proxy_url(profile: ModelProfile, fallback: str | None = None) -> str:
     """Resolve the headroom-turbo proxy base URL for a profile.
 
-    Priority: profile ``turbo_base_url`` → ``SYNAPSE_TURBO_PROXY_URL`` env →
-    the local default ``http://localhost:8787/v1``.
+    Priority: profile ``turbo_base_url`` → explicit fallback (Settings) →
+    ``SYNAPSE_TURBO_PROXY_URL`` env → the local default ``http://localhost:8787/v1``.
     """
     return (
         profile.turbo_base_url
+        or fallback
         or os.environ.get("SYNAPSE_TURBO_PROXY_URL")
         or "http://localhost:8787/v1"
     )
@@ -199,6 +200,8 @@ class ModelRegistry:
         fallback_parallel_tool_calls: bool = True,
         fallback_websocket: bool = False,
         fallback_stream_chunk_timeout: float | None = None,
+        fallback_turbo: bool = False,
+        fallback_turbo_proxy_url: str | None = None,
         enable_thinking: bool | None = None,
         reasoning_effort: str | None = None,
         progress: Callable[[str], None] | None = None,
@@ -283,14 +286,16 @@ class ModelRegistry:
                 enable_responses_reasoning_patch()
             # Turbo mode: route through the headroom-turbo proxy and forward the
             # original upstream via x-headroom-base-url so the proxy compresses
-            # and relays. OAuth-backed Codex is excluded (its base_url is pinned
-            # to the first-party backend and must never be redirected).
-            if profile.turbo and base_url and oauth_provider is None:
+            # and relays. Enabled globally (Settings.turbo) or per profile
+            # (profile.turbo). OAuth-backed Codex is excluded (its base_url is
+            # pinned to the first-party backend and must never be redirected).
+            turbo_enabled = bool(fallback_turbo or profile.turbo)
+            if turbo_enabled and base_url and oauth_provider is None:
                 configured_headers = _merge_headers(
                     configured_headers,
                     {"x-headroom-base-url": _turbo_upstream_origin(base_url)},
                 )
-                base_url = _resolve_turbo_proxy_url(profile)
+                base_url = _resolve_turbo_proxy_url(profile, fallback_turbo_proxy_url)
             if base_url:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:
@@ -889,8 +894,9 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         "provider": profile.provider,
         "wire_api": profile.wire_api,
         "base_url": profile.base_url or getattr(settings, "openai_base_url", None),
-        "turbo": profile.turbo,
-        "turbo_base_url": profile.turbo_base_url,
+        "turbo": bool(getattr(settings, "turbo", False)) or profile.turbo,
+        "turbo_base_url": profile.turbo_base_url
+        or getattr(settings, "turbo_proxy_url", None),
         "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
         "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
         "reasoning_effort": getattr(settings, "reasoning_effort", None),
@@ -931,6 +937,8 @@ def build_model_from_settings(
         fallback_stream_chunk_timeout=getattr(
             settings, "stream_chunk_timeout", None
         ),
+        fallback_turbo=bool(getattr(settings, "turbo", False)),
+        fallback_turbo_proxy_url=getattr(settings, "turbo_proxy_url", None),
         # Session Settings always win over profile defaults.
         enable_thinking=bool(settings.enable_thinking),
         reasoning_effort=settings.reasoning_effort,

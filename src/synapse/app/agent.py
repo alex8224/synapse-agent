@@ -136,6 +136,8 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
                 fallback_parallel_tool_calls=settings.parallel_tool_calls,
                 fallback_websocket=getattr(settings, "openai_websocket", False),
                 fallback_stream_chunk_timeout=getattr(settings, "stream_chunk_timeout", None),
+                fallback_turbo=bool(getattr(settings, "turbo", False)),
+                fallback_turbo_proxy_url=getattr(settings, "turbo_proxy_url", None),
                 enable_thinking=enabled,
                 reasoning_effort=effort,
             )
@@ -591,7 +593,10 @@ def build_coding_agent(
             goal_service=goal_service,
             steer_queue=steer_queue,
             prompt_cache_key=prompt_cache_key,
-            turbo=bool(getattr(selected_profile, "turbo", False)),
+            turbo=bool(
+                getattr(settings, "turbo", False)
+                or getattr(selected_profile, "turbo", False)
+            ),
         )
     )
 

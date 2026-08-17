@@ -143,6 +143,14 @@ class Settings(BaseSettings):
     models_json: str | None = Field(default=None, validation_alias="MODELS_JSON")
     # Selected profile alias (optional; falls back to model / registry default)
     active_model: str | None = Field(default=None, validation_alias="AGENT_ACTIVE_MODEL")
+    # Turbo mode: route all OpenAI-compatible model traffic through a local
+    # headroom-turbo proxy. The profile's original base_url is forwarded via the
+    # x-headroom-base-url header so the proxy compresses and relays. Requires no
+    # models.json change — any selected profile is affected.
+    turbo: bool = Field(default=False, validation_alias="AGENT_TURBO")
+    turbo_proxy_url: str = Field(
+        default="http://localhost:8787/v1", validation_alias="AGENT_TURBO_PROXY_URL"
+    )
     # Independent OpenAI-compatible image-to-text model configuration.
     # Example: {"model": "qwen-vl-max", "base_url": "...", "api_key_env": "VISION_API_KEY"}
     vision_model: dict[str, Any] | None = Field(default=None, validation_alias="VISION_MODEL")
