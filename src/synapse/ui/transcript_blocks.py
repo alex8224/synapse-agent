@@ -366,7 +366,11 @@ class AnswerBlock(SelectableStatic):
             return
         from synapse.ui.mermaid_image import make_mermaid_widget_from_png
 
-        widget = make_mermaid_widget_from_png(png) if png else None
+        widget = (
+            make_mermaid_widget_from_png(png, source=placeholder.source)
+            if png
+            else None
+        )
         if widget is None:
             widget = Static(render_markdown(f"```mermaid\n{placeholder.source}\n```"))
         try:

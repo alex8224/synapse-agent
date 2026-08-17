@@ -123,6 +123,7 @@ def make_image_widget(
     *,
     max_cols: int = PREVIEW_MAX_COLS,
     max_rows: int = PREVIEW_MAX_ROWS,
+    zoom: float = 1.0,
 ) -> Any | None:
     """Create a Textual image widget for one attachment.
 
@@ -140,7 +141,9 @@ def make_image_widget(
         # The widget treats raw bytes as a file path; decode to a PIL image.
         img = PILImage.open(io.BytesIO(data))
         img.load()
-        return make_pil_image_widget(img, max_cols=max_cols, max_rows=max_rows)
+        return make_pil_image_widget(
+            img, max_cols=max_cols, max_rows=max_rows, zoom=zoom
+        )
     except Exception:  # noqa: BLE001 - corrupt/unsupported image payload
         return None
 
@@ -150,6 +153,8 @@ def make_pil_image_widget(
     *,
     max_cols: int = PREVIEW_MAX_COLS,
     max_rows: int = PREVIEW_MAX_ROWS,
+    zoom: float = 1.0,
+    max_cells: int | None = None,
 ) -> Any | None:
     """Create a protocol-aware Textual widget from a decoded PIL image."""
     widget_cls = resolve_widget_cls()
@@ -159,12 +164,16 @@ def make_pil_image_widget(
     try:
         width, height = int(size[0]), int(size[1])
         extra = 1 if renderer_needs_extra_row() else 0
+        if max_cells is None:
+            max_cells = _renderer_max_cells()
         cols, rows = fit_cell_size(
             width,
             height,
             max_cols=max_cols,
             max_rows=max_rows,
             extra_rows=extra,
+            zoom=zoom,
+            max_cells=max_cells,
         )
         widget = widget_cls(image)
         # Pin both dimensions: auto sizing stretches to the container width.
@@ -194,6 +203,24 @@ def active_renderer_name() -> str:
     if getattr(cls, "__name__", "?") == "Image":
         return getattr(cls, "__module__", "?").rsplit(".", 1)[-1]
     return getattr(cls, "__name__", "?")
+
+
+def _renderer_max_cells() -> int | None:
+    """Hard cell-dimension limit of the active renderer, or ``None``.
+
+    Kitty's TGP renderer encodes cell coordinates through a fixed-size diacritic
+    table and raises ``ValueError("Image to large to render")`` once a dimension
+    exceeds it. Other renderers (sixel / halfcell / unicode) have no such fixed
+    table, so return ``None`` for them.
+    """
+    if active_renderer_name().casefold() not in {"tgp", "tgpimage"}:
+        return None
+    try:
+        from textual_image.renderable import tgp
+
+        return len(tgp._NUMBER_TO_DIACRITIC)
+    except Exception:  # noqa: BLE001 - private table unavailable -> safe fallback
+        return 297
 
 
 def renderer_diagnostic() -> str:
@@ -226,15 +253,26 @@ def fit_cell_size(
     max_rows: int,
     extra_rows: int = 0,
     cell: tuple[int, int] | None = None,
+    zoom: float = 1.0,
+    max_cells: int | None = None,
 ) -> tuple[int, int]:
     """Aspect-preserving target size in terminal cells.
 
-    The image is fitted in *pixels* (never upscaled) against a budget of
-    ``max_cols x max_rows`` cells, then converted back to cells. ``extra_rows``
+    The image is fitted in *pixels* (not upscaled by the fit itself) against a
+    budget of ``max_cols x max_rows`` cells, then converted back to cells.
+    ``extra_rows``
     reserves trailing rows (e.g. the sixel control line) whose height is part of
     the rendered output; the returned ``rows`` exclude them so that
     ``rows + extra_rows`` fits the widget height budget exactly. ``cell`` is the
     terminal cell size in pixels; defaults to the cached terminal query result.
+
+    ``zoom`` multiplies the fitted size after the fit (``1.0`` = fit only,
+    ``> 1.0`` scales the fitted image up, possibly beyond the viewport budget,
+    ``< 1.0`` shrinks it). This is the image viewer's zoom control.
+
+    ``max_cells`` optionally clamps both returned dimensions so neither exceeds
+    the given cell count (some pixel renderers, e.g. kitty TGP, encode cell
+    coordinates through a fixed-size diacritic table and raise once exceeded).
     Returns ``(1, 1)`` for invalid input.
     """
     if pixel_width <= 0 or pixel_height <= 0:
@@ -251,10 +289,17 @@ def fit_cell_size(
         (max_cols * cell_w) / pixel_width,
         (max_rows * cell_h) / pixel_height,
     )
+    if zoom != 1.0:
+        scale *= max(0.0, zoom)
     target_w = pixel_width * scale
     target_h = pixel_height * scale
     cols = max(1, round(target_w / cell_w))
     render_rows = max(1, round(target_h / cell_h))
+    if max_cells is not None and max_cells > 0:
+        shrink = min(1.0, max_cells / cols, max_cells / render_rows)
+        if shrink < 1.0:
+            cols = max(1, round(cols * shrink))
+            render_rows = max(1, round(render_rows * shrink))
     return (cols, max(1, render_rows - int(extra_rows)))
 
 

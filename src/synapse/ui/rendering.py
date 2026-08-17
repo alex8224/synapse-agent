@@ -238,8 +238,14 @@ except Exception:  # noqa: BLE001 - degrade to termaid / source-fence fallback
     _mmdr_module = None
 
 _MERMAID_PNG_MAX_SOURCE_CHARS = 12_000
-# source -> PNG bytes, or None meaning "known bad / too heavy"
-_mermaid_png_cache: dict[str, bytes | None] = {}
+# Re-rasterization scaling is applied to the SVG itself: mmdr's
+# ``svg_to_png(width=...)`` hint is a no-op in current wheels.
+# Cap any rasterized edge so a very wide diagram cannot allocate huge buffers.
+_MERMAID_MAX_RASTER_PX = 4096
+# source -> recolored SVG string, or None meaning "known bad / too heavy"
+_mermaid_svg_cache: dict[str, str | None] = {}
+# (source, scale) -> PNG bytes, or None meaning "known bad / too heavy"
+_mermaid_png_cache: dict[tuple[str, float], bytes | None] = {}
 
 
 def mmdr_available() -> bool:
@@ -305,54 +311,117 @@ def _mermaid_raster_background(svg: str, background: str | None) -> str | None:
     return "#ffffff"
 
 
-def _render_mmdr_png(diagram: Any) -> bytes:
-    """Rasterize an mmdr Diagram on its native opaque light surface."""
-    background = "#ffffff"
-    svg = _mermaid_recolor_svg(diagram.svg(), background)
-    raster_background = _mermaid_raster_background(svg, background)
-    return bytes(_mmdr_module.svg_to_png(svg, None, None, raster_background))
+_MERMAID_SVG_TAG_RE = re.compile(r"<svg\b[^>]*>")
+_MERMAID_VIEWBOX_RE = re.compile(
+    r'viewBox="([-\d.e]+)[ ,]+([-\d.e]+)[ ,]+([-\d.e]+)[ ,]+([-\d.e]+)"'
+)
+_MERMAID_WIDTH_ATTR_RE = re.compile(r'(?<![\w-])width="[^"]*"')
+_MERMAID_HEIGHT_ATTR_RE = re.compile(r'(?<![\w-])height="[^"]*"')
 
 
-def _render_mmdr_png_cached(text: str) -> bytes | None:
-    """Render one source string through mmdr; isolate the native failure boundary."""
+def _mermaid_scale_svg(svg: str, scale: float) -> str:
+    """Scale the SVG root's pixel size by ``scale``, preserving aspect ratio.
+
+    merman emits ``width="100%"`` with no ``height`` and a ``viewBox`` carrying
+    the intrinsic size, so mmdr rasterizes at the viewBox dimensions. Rewriting
+    both ``width`` and ``height`` (derived from the viewBox) is the only way to
+    raise the output pixel density through ``svg_to_png``.
+    """
+    if scale <= 1.0:
+        return svg
+
+    def _repl(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        viewbox = _MERMAID_VIEWBOX_RE.search(tag)
+        if viewbox is None:
+            return tag
+        w = float(viewbox.group(3))
+        h = float(viewbox.group(4))
+        # Clamp so a pathological wide/tall diagram cannot explode the buffer.
+        cap = _MERMAID_MAX_RASTER_PX
+        if max(w, h) * scale > cap:
+            scale_eff = cap / max(w, h) if max(w, h) > 0 else scale
+        else:
+            scale_eff = scale
+        width = max(1, int(round(w * scale_eff)))
+        height = max(1, int(round(h * scale_eff)))
+        tag = _MERMAID_WIDTH_ATTR_RE.sub("", tag)
+        tag = _MERMAID_HEIGHT_ATTR_RE.sub("", tag)
+        return tag.replace(
+            "<svg",
+            f'<svg width="{width}px" height="{height}px"',
+            1,
+        )
+
+    return _MERMAID_SVG_TAG_RE.sub(_repl, svg, count=1)
+
+
+def _cached_mermaid_svg(text: str) -> str | None:
+    """Render/recolor one source string to SVG; cache failures too.
+    Kept separate from the PNG cache so a viewer re-rasterization at a larger
+    scale can reuse the expensive mermaid layout without re-running it.
+    """
+    cached = _mermaid_svg_cache.get(text)
+    if cached is not None:
+        return cached
+    if text in _mermaid_svg_cache:
+        return None
+    # Mark in-flight as failed first so concurrent re-entries do not stampede.
+    _mermaid_svg_cache[text] = None
     try:
         diagram = _mmdr_module.render(text)
-        png = _render_mmdr_png(diagram)
-        return png or None
+        svg = _mermaid_recolor_svg(diagram.svg(), "#ffffff")
     except Exception:  # noqa: BLE001 - parse / layout failures all fall back
-        return None
+        svg = None
+    _mermaid_svg_cache[text] = svg
+    return svg
 
 
-def _cached_mermaid_png(text: str) -> bytes | None:
-    """Read/render/write the PNG cache without repeating known failures."""
-    cache_key = text
+def _cached_mermaid_png(text: str, *, scale: float = 1.0) -> bytes | None:
+    """Rasterize a cached SVG at ``scale``; cache the PNG per (source, scale)."""
+    cache_key = (text, scale)
     cached = _mermaid_png_cache.get(cache_key)
     if cached is not None:
         return cached
     if cache_key in _mermaid_png_cache:
         return None
-    # Mark in-flight as failed first so concurrent re-entries do not stampede.
+    svg = _cached_mermaid_svg(text)
+    if svg is None:
+        # SVG failed or is still rendering; do not record a PNG failure so a
+        # later call (after the SVG lands) can still rasterize it.
+        return None
+    # Mark in-flight before rasterizing so concurrent re-entries do not
+    # stampede; a successful raster overwrites the sentinel below.
     _mermaid_png_cache[cache_key] = None
-    png = _render_mmdr_png_cached(text)
+    png: bytes | None = None
+    try:
+        raster_background = _mermaid_raster_background(svg, "#ffffff")
+        svg_scaled = _mermaid_scale_svg(svg, scale)
+        png = bytes(
+            _mmdr_module.svg_to_png(svg_scaled, None, None, raster_background)
+        )
+    except Exception:  # noqa: BLE001 - raster failures fall back
+        png = None
     if png:
         _mermaid_png_cache[cache_key] = png
     return png
 
 
-def render_mermaid_png(source: str) -> bytes | None:
+def render_mermaid_png(source: str, *, scale: float = 1.0) -> bytes | None:
     """Render one mermaid diagram to PNG via the optional native mmdr backend.
 
     The native merman palette is preserved on an opaque white canvas so dark
     and ANSI terminals cannot alter transparent/blended diagram colors. Returns
     ``None`` when mmdr is absent or rendering fails; callers fall back to the
-    termaid ASCII renderer, then to the source fence.
+    termaid ASCII renderer, then to the source fence. ``scale`` raises the
+    output pixel density (1.0 = intrinsic SVG size) for zoomed-in viewing.
     """
     text = (source or "").strip()
     if not text or _mmdr_module is None:
         return None
     if len(text) > _MERMAID_PNG_MAX_SOURCE_CHARS:
         return None
-    return _cached_mermaid_png(text)
+    return _cached_mermaid_png(text, scale=scale)
 
 
 

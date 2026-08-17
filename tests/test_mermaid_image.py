@@ -14,6 +14,7 @@ from textual.widgets import Static
 from synapse.ui import mermaid_image as mi
 from synapse.ui.rendering import (
     _mermaid_recolor_svg,
+    _mermaid_scale_svg,
     _MermaidCodeBlock,
     mmdr_available,
     render_mermaid_png,
@@ -84,6 +85,52 @@ def test_render_mermaid_png_none_on_render_failure():
         pytest.skip("mmdr not installed")
     # Invalid source raises inside mmdr; must degrade to None, never raise.
     assert render_mermaid_png("not a diagram at all") is None
+
+
+def test_render_mermaid_png_scale_multiplies_pixels():
+    """The viewer scale raises output pixel density, not just display size."""
+    if not mmdr_available():
+        pytest.skip("mmdr not installed")
+    source = "graph LR\n  A --> B --> C"
+    base = render_mermaid_png(source)
+    zoomed = render_mermaid_png(source, scale=3.0)
+    assert base and zoomed
+    base_size = Image.open(BytesIO(base)).size
+    zoomed_size = Image.open(BytesIO(zoomed)).size
+    assert zoomed_size == (base_size[0] * 3, base_size[1] * 3)
+
+
+def test_mermaid_scale_svg_preserves_viewbox_and_sets_size():
+    """Scaling must keep the viewBox and set both width and height attrs."""
+    svg = (
+        '<svg id="merman" width="100%" viewBox="0 0 428.984375 174" '
+        'style="background-color:white">'
+        '<text>hi</text></svg>'
+    )
+    out = _mermaid_scale_svg(svg, 3.0)
+    assert 'viewBox="0 0 428.984375 174"' in out
+    assert 'width="1287px"' in out
+    assert 'height="522px"' in out
+
+
+def test_mermaid_scale_svg_identity_below_one():
+    """scale <= 1 must leave the SVG untouched."""
+    svg = '<svg width="100%" viewBox="0 0 10 20"></svg>'
+    assert _mermaid_scale_svg(svg, 1.0) == svg
+    assert _mermaid_scale_svg(svg, 0.5) == svg
+
+
+def test_mermaid_scale_svg_keeps_hyphenated_attributes():
+    """stroke-width must survive; only the root size attributes change."""
+    svg = (
+        '<svg id="merman" width="100%" viewBox="0 0 100 50" '
+        'stroke-width="2"><rect/></svg>'
+    )
+    out = _mermaid_scale_svg(svg, 2.0)
+    assert 'stroke-width="2"' in out
+    assert 'width="200px"' in out
+    assert 'height="100px"' in out
+
 
 
 def test_render_mermaid_png_ansi_theme_uses_opaque_white_background():

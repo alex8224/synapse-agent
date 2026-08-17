@@ -46,6 +46,8 @@ class MermaidImageAttachment:
     mime: str = "image/png"
     name: str = "mermaid-diagram.png"
     source: str = "mermaid"
+    diagram: str | None = None
+    """Original mermaid source, used by the viewer to re-rasterize larger."""
 
 
 def split_mermaid_fences(
@@ -86,15 +88,19 @@ def make_mermaid_widget(source: str) -> Any | None:
     png = render_mermaid_png(source)
     if not png:
         return None
-    return make_mermaid_widget_from_png(png)
+    return make_mermaid_widget_from_png(png, source=source)
 
 
-def make_mermaid_widget_from_png(png: bytes) -> Any | None:
+def make_mermaid_widget_from_png(
+    png: bytes, *, source: str | None = None
+) -> Any | None:
     """Build an image widget from already-rendered Mermaid PNG bytes.
 
     Rendering may happen in a background worker, but Textual widgets must be
     created on the UI thread. Keeping that boundary explicit prevents native
-    mmdr work from blocking the event loop.
+    mmdr work from blocking the event loop. ``source`` is the original mermaid
+    fence text, carried on the attachment so the image viewer can re-rasterize
+    at a higher pixel density.
     """
     try:
         from PIL import Image as PILImage
@@ -111,7 +117,9 @@ def make_mermaid_widget_from_png(png: bytes) -> Any | None:
             # Reuse the transcript image click contract: CodingAgentApp walks
             # ancestors for this class/metadata and opens ImageViewerScreen.
             widget.add_class("transcript-image")
-            widget.image_attachment = MermaidImageAttachment(data=png)
+            widget.image_attachment = MermaidImageAttachment(
+                data=png, diagram=source
+            )
             # Keep consecutive diagrams visually distinct without doubling the
             # gap above and below every image.
             widget.styles.margin = (0, 0, 1, 0)

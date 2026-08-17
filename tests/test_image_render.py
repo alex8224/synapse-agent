@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from unittest.mock import patch
 
 import pytest
 from PIL import Image as PILImage
@@ -82,6 +83,75 @@ def test_fit_cell_size_extra_rows_reserved() -> None:
     assert rows + 1 <= 6
 
 
+def test_fit_cell_size_zoom_upscales_fitted_size() -> None:
+    """zoom multiplies the fitted cell size after the fit is computed."""
+    # 200x100 at 10x20 cells fits exactly 20x5 cells; zoom 2 doubles both.
+    cols, rows = fit_cell_size(200, 100, max_cols=60, max_rows=6, zoom=2.0)
+    assert cols == 40
+    assert rows == 10
+
+
+def test_fit_cell_size_zoom_below_one_shrinks() -> None:
+    """zoom below 1.0 shrinks the fitted size."""
+    cols, rows = fit_cell_size(200, 100, max_cols=60, max_rows=6, zoom=0.5)
+    assert cols == 10
+    assert rows == 2  # round(2.5) bank-rounds to 2
+
+
+def test_fit_cell_size_zoom_default_is_identity() -> None:
+    """zoom=1.0 (the default) leaves the fit unchanged."""
+    cols, rows = fit_cell_size(200, 100, max_cols=60, max_rows=6)
+    assert (cols, rows) == (20, 5)
+
+
+def test_fit_cell_size_max_cells_clamps_zoom_overshoot() -> None:
+    """max_cells clamps both dimensions after zoom has scaled them up."""
+    cols, rows = fit_cell_size(
+        200, 100, max_cols=60, max_rows=6, zoom=8.0, max_cells=50
+    )
+    assert cols <= 50
+    assert rows <= 50
+
+
+def test_fit_cell_size_max_cells_preserves_aspect_ratio() -> None:
+    """The clamp shrinks proportionally, roughly keeping the aspect ratio."""
+    cols, rows = fit_cell_size(
+        200, 100, max_cols=60, max_rows=6, zoom=8.0, max_cells=50
+    )
+    # Clamped dimension hits 50; the pixel aspect ratio stays near 2:1.
+    assert cols == 50
+    assert rows <= 50
+    assert abs((cols * 10) / (rows * 20) - 2.0) < 0.3
+
+
+def test_renderer_max_cells_tgp_only() -> None:
+    """Only the TGP renderer has a hard cell-dimension cap."""
+    import synapse.ui.image_render as ir
+
+    with patch.object(ir, "active_renderer_name", return_value="tgp"):
+        assert ir._renderer_max_cells() == 297
+    with patch.object(ir, "active_renderer_name", return_value="halfcell"):
+        assert ir._renderer_max_cells() is None
+
+
+def test_make_pil_image_widget_applies_renderer_max_cells() -> None:
+    """Widgets clamp to the renderer's cell cap when one is inferred."""
+    import synapse.ui.image_render as ir
+
+    image = PILImage.new("RGBA", (4000, 2000), (255, 255, 255, 255))
+    with (
+        patch.object(ir, "_renderer_max_cells", return_value=50),
+        patch.object(ir, "fit_cell_size", wraps=ir.fit_cell_size) as fit,
+    ):
+        ir.set_renderer("halfcell")
+        widget = make_pil_image_widget(image, max_cols=200, max_rows=50)
+
+    assert widget is not None
+    assert fit.call_args.kwargs["max_cells"] == 50
+    assert widget.styles.width.value <= 50
+    assert widget.styles.height.value <= 50
+
+
 # -- attachment_renderable ----------------------------------------------
 
 def test_attachment_renderable_valid_png() -> None:
@@ -154,15 +224,15 @@ def test_preview_hidden_when_empty() -> None:
     asyncio.run(run())
 
 
-def test_image_viewer_sizes_image_within_70pct_viewport() -> None:
-    """The viewer modal renders the image at most 70% of the viewport."""
+def test_image_viewer_sizes_image_within_viewport_below_toolbar() -> None:
+    """The viewer modal fits the image to the full width below the toolbar."""
     import asyncio
 
     from textual.app import App, ComposeResult
     from textual.widgets import Static
 
     from synapse.ui.image_render import set_renderer
-    from synapse.ui.image_viewer import VIEWER_FRACTION, ImageViewerScreen
+    from synapse.ui.image_viewer import VIEWER_TOOLBAR_ROWS, ImageViewerScreen
 
     class Host(App[None]):
         def compose(self) -> ComposeResult:
@@ -181,8 +251,8 @@ def test_image_viewer_sizes_image_within_70pct_viewport() -> None:
             widgets = list(app.screen.query(SixelImage))
             assert widgets
             size = widgets[0].size
-            assert size.width <= app.size.width * VIEWER_FRACTION + 1
-            assert size.height <= app.size.height * VIEWER_FRACTION + 1
+            assert size.width <= app.size.width + 1
+            assert size.height <= app.size.height - VIEWER_TOOLBAR_ROWS + 1
             # wide image: width-bounded, aspect kept (1600x200 -> ~8:1)
             ratio = (size.width * 10) / (size.height * 20)
             assert abs(ratio - 8.0) < 1.5
