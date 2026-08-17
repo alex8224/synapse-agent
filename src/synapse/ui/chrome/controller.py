@@ -271,7 +271,7 @@ class ChromeController:
             return ""
         parts: list[str] = []
         if turn:
-            parts.append(f"回合 {turn}")
+            parts.append(f"turn {turn}")
         if ttft is not None:
             parts.append(f"TTFT {ttft:.1f}s")
         rate_label = format_token_rate(rate, estimated=app._token_rate_estimated)

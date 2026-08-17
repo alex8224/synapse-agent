@@ -410,7 +410,7 @@ def test_turn_stats_label_empty_without_any_data() -> None:
 def test_turn_stats_label_hides_turn_zero() -> None:
     app = _turn_stats_app(ttft=1.2, rate=42.0, steps=5)
     label = ChromeController(app).turn_stats_label()
-    assert "回合" not in label
+    assert "turn" not in label
     assert "TTFT 1.2s" in label
     assert "5 steps" in label
 
@@ -418,7 +418,7 @@ def test_turn_stats_label_hides_turn_zero() -> None:
 def test_turn_stats_label_shows_turn_with_stats() -> None:
     app = _turn_stats_app(turn=3, ttft=1.2, rate=42.0, steps=5)
     label = ChromeController(app).turn_stats_label()
-    assert label.startswith("回合 3")
+    assert label.startswith("turn 3")
     assert "TTFT 1.2s" in label
     assert "5 steps" in label
 
@@ -426,7 +426,7 @@ def test_turn_stats_label_shows_turn_with_stats() -> None:
 def test_turn_stats_label_shows_turn_alone_after_restore() -> None:
     """Restored sessions have no live TTFT/rate yet; turn alone must render."""
     app = _turn_stats_app(turn=7)
-    assert ChromeController(app).turn_stats_label() == "回合 7"
+    assert ChromeController(app).turn_stats_label() == "turn 7"
 
 
 def test_turn_stats_label_defaults_missing_turn_field() -> None:
@@ -434,7 +434,7 @@ def test_turn_stats_label_defaults_missing_turn_field() -> None:
     app = _turn_stats_app(turn=0)
     del app._current_turn
     label = ChromeController(app).turn_stats_label()
-    assert label == "" or "回合" not in label
+    assert label == "" or "turn" not in label
 
 
 def test_reset_session_token_chrome_resets_turn() -> None:
