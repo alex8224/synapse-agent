@@ -35,6 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from synapse.integrations.llm_openai_compat import (
     deepseek_thinking_kwargs,
@@ -119,6 +120,22 @@ def _resolve_turbo_proxy_url(profile: ModelProfile) -> str:
         or os.environ.get("SYNAPSE_TURBO_PROXY_URL")
         or "http://localhost:8787/v1"
     )
+
+
+def _turbo_upstream_origin(base_url: str) -> str:
+    """Reduce an upstream base URL to scheme://host[:port] for the proxy.
+
+    Headroom's OpenAI chat path appends ``/v1/chat/completions`` to the
+    ``x-headroom-base-url`` value itself, so forwarding the full base URL
+    (e.g. ``http://host/v1``) would produce a duplicated ``/v1/v1/...`` path.
+    Sending the bare origin keeps sub-path routing correct for standard
+    OpenAI-compatible endpoints.
+    """
+    parsed = urlparse(str(base_url).strip())
+    if not parsed.scheme or not parsed.hostname:
+        return str(base_url).rstrip("/")
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
 
 
 @dataclass
@@ -271,7 +288,7 @@ class ModelRegistry:
             if profile.turbo and base_url and oauth_provider is None:
                 configured_headers = _merge_headers(
                     configured_headers,
-                    {"x-headroom-base-url": str(base_url).rstrip("/")},
+                    {"x-headroom-base-url": _turbo_upstream_origin(base_url)},
                 )
                 base_url = _resolve_turbo_proxy_url(profile)
             if base_url:
