@@ -210,3 +210,25 @@ def test_paste_clipboard_stores_large_text_as_placeholder() -> None:
     assert "500 chars]" in app.prompt.value
     assert controller.state.paste_replacements[app.prompt.value.strip()] == big
     assert "pasted text truncated" in app.events[-1]
+
+
+def test_insert_pasted_text_multiline_becomes_placeholder() -> None:
+    controller, app = _make_controller()
+    body = "line one\nline two\nline three"
+
+    controller.insert_pasted_text(body)
+
+    assert app.prompt.value == "[line one line two li... 28 chars]"
+    assert controller.state.paste_replacements[app.prompt.value] == body
+    assert "pasted text truncated" in app.events[-1]
+
+
+def test_insert_pasted_text_short_appends_directly() -> None:
+    controller, app = _make_controller()
+    app.prompt.value = "prefix "
+
+    controller.insert_pasted_text("hello")
+
+    assert app.prompt.value == "prefix hello"
+    assert controller.state.paste_replacements == {}
+    assert app.prompt.focused is True

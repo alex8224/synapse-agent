@@ -24,7 +24,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Click, Key, MouseMove, MouseUp
+from textual.events import Click, Key, MouseMove, MouseUp, Paste
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -178,6 +178,30 @@ def _git_branch(cwd: Path) -> str | None:
     """Backward-compatible branch name probe."""
     info = probe_git_branch_chrome(cwd)
     return info.name if info is not None else None
+class PromptInput(Input):
+    """Prompt input that routes terminal-native paste through the controller.
+
+    Shift+Insert / middle-click / right-click paste arrive as a bracketed-paste
+    ``Paste`` event. The stock ``Input`` keeps only the first line
+    (``event.text.splitlines()[0]``), which silently truncates multi-line
+    content; this subclass forwards the full text to the prompt controller so
+    long/multi-line pastes become ``[prefix... N chars]`` placeholders instead.
+    """
+
+    def __init__(self, on_paste_text: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._on_paste_text = on_paste_text
+
+    def _on_paste(self, event: Paste) -> None:
+        # prevent_default skips the parent Input._on_paste in the dispatch
+        # chain (named handlers are not deduplicated across the MRO), which
+        # would otherwise also insert the first line of the paste.
+        event.prevent_default()
+        event.stop()
+        if event.text:
+            self._on_paste_text(event.text)
+
+
 class CodingAgentApp(App[None]):
     """Cursor-like agent transcript."""
 
@@ -459,13 +483,14 @@ class CodingAgentApp(App[None]):
             yield Static("", id="status")
             yield Static("", id="complete-hint")
             yield ImagePreview(id="image-preview")
-            yield Input(
+            yield PromptInput(
                 placeholder=f"{_MARK_INPUT}  Build anything  (/ for commands, Tab complete)",
                 id="prompt",
                 suggester=make_textual_suggester(
                     self._prompt.complete_ctx,
                     workspace=self.project_root,
                 ),
+                on_paste_text=self._prompt.insert_pasted_text,
             )
             yield Static("", id="bottombar")
 

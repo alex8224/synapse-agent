@@ -385,23 +385,7 @@ class PromptController:
             return
 
         if result.kind == "text":
-            text = result.text or ""
-            prompt = self._prompt_widget()
-            if len(text) > 200 or "\n" in text or "\r" in text:
-                prefix = text[:20].replace("\r", " ").replace("\n", " ").strip()
-                placeholder = f"[{prefix}... {len(text)} chars]"
-                self.state.paste_replacements[placeholder] = text
-                old = prompt.value or ""
-                prompt.value = old + placeholder
-                self._app.append_event(
-                    f"pasted text truncated: {len(text)} chars -> "
-                    "placeholder (content preserved)",
-                    "dim",
-                )
-            else:
-                old = prompt.value or ""
-                prompt.value = old + text
-            prompt.focus()
+            self.insert_pasted_text(result.text or "")
             return
 
         if result.kind == "image":
@@ -419,6 +403,29 @@ class PromptController:
             old = prompt.value or ""
             prompt.value = old + f" [image#{att.id}]"
             prompt.focus()
+
+    def insert_pasted_text(self, text: str) -> None:
+        """Insert pasted text into the prompt.
+
+        Long or multi-line text is collapsed into a placeholder and stored in
+        ``state.paste_replacements``; the full content is expanded on submit.
+        """
+        prompt = self._prompt_widget()
+        if len(text) > 200 or "\n" in text or "\r" in text:
+            prefix = text[:20].replace("\r", " ").replace("\n", " ").strip()
+            placeholder = f"[{prefix}... {len(text)} chars]"
+            self.state.paste_replacements[placeholder] = text
+            old = prompt.value or ""
+            prompt.value = old + placeholder
+            self._app.append_event(
+                f"pasted text truncated: {len(text)} chars -> "
+                "placeholder (content preserved)",
+                "dim",
+            )
+        else:
+            old = prompt.value or ""
+            prompt.value = old + text
+        prompt.focus()
 
     def expand_paste(self, text: str) -> tuple[str, str]:
         """Expand paste placeholders for submission.
