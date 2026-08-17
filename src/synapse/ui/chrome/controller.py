@@ -695,10 +695,8 @@ class ChromeController:
                 busy=lambda: bool(app._busy),
                 thread=lambda: "",  # thread chrome disabled on bottombar
                 mode=self.bottombar_mode_label,
-                idle_hints=lambda: (
-                    "Tab complete · / · Alt+C copy · F2 model · F4 sessions · F9 agents"
-                ),
-                busy_hints=lambda: "Esc cancel · Enter queue · Alt+C copy · F9 agents",
+                idle_hints=lambda: "",
+                busy_hints=lambda: "",
                 model=self.current_session_model_label,
                 codex_usage=self.codex_usage_label,
                 mcp=self.mcp_label,
