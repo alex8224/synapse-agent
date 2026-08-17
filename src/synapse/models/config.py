@@ -19,6 +19,8 @@ _PROFILE_META_KEYS = {
     "thinking", "thinking_level", "reasoning_effort", "thinking_levels",
     "parallel_tool_calls", "image_input", "capabilities", "extra",
     "model_kwargs", "extra_body", "params",
+    # Import metadata (Codex config): provider name and original wire API.
+    "provider", "wire_api",
 }
 
 def expand_env_string(value: Any) -> Any:

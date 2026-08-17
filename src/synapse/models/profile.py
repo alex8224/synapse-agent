@@ -23,6 +23,13 @@ class ModelProfile:
     # "openai_oauth" uses the user-level Codex OAuth credential store.
     auth: str | None = None
     base_url: str | None = None
+    # Canonical provider key (openai/anthropic/...). Metadata for display and
+    # import provenance; model routing is driven by the ``provider:`` prefix.
+    provider: str | None = None
+    # Original wire API from an imported Codex provider ("chat"/"responses").
+    # Metadata only: ``responses`` is honored exclusively through
+    # ``auth == "openai_oauth"`` at build time.
+    wire_api: str | None = None
     # Per-model request headers. Same-name values override registry-level headers.
     headers: dict[str, str] = field(default_factory=dict)
     # Model input context size (tokens). Used by compact/summarization thresholds.

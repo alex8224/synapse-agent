@@ -121,6 +121,7 @@ Type `/help` in the TUI for the full reference. The essentials:
 | `/new` · `/switch <id>` · `/sessions` | Create, switch, and list sessions |
 | `/export [md\|json]` | Export the transcript to a file |
 | `/model <provider:model>` | Switch models at runtime |
+| `/model manage` · `/model import-codex` · `/model providers` | Manage profiles, import Codex config, list providers |
 | `/fast [on\|off\|status]` | Toggle the Codex Fast tier (OAuth profiles) |
 | `/mcp list` · `/mcp reload` | Manage MCP servers |
 | `/theme <name>` | Switch UI themes |

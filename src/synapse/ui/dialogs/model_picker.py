@@ -33,9 +33,15 @@ class ModelPickerDialog(DialogBase):
     BINDINGS = [
         *DialogBase.BINDINGS,
         Binding("space", "toggle_selection", "Select", show=False, priority=True),
+        Binding("m", "manage", "Manage", show=False),
+        Binding("i", "import_codex", "Codex import", show=False),
+        Binding("p", "providers", "Providers", show=False),
     ]
 
-    _title_keys = "\u2191\u2193 move \u00b7 space select \u00b7 enter save \u00b7 esc"
+    _title_keys = (
+        "\u2191\u2193 move \u00b7 space select \u00b7 enter save \u00b7 "
+        "m manage \u00b7 esc"
+    )
 
     def __init__(self, settings: Any) -> None:
         super().__init__()
@@ -196,3 +202,12 @@ class ModelPickerDialog(DialogBase):
     def action_confirm(self) -> None:
         """Enter: commit the marked combination (model + thinking)."""
         self._on_apply()
+
+    def action_manage(self) -> None:
+        self.dismiss(("manage",))
+
+    def action_import_codex(self) -> None:
+        self.dismiss(("import-codex",))
+
+    def action_providers(self) -> None:
+        self.dismiss(("providers",))

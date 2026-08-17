@@ -481,6 +481,18 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         base_url = cfg.get("base_url")
         if base_url is not None:
             base_url = str(expand_env_string(base_url)).strip() or None
+
+        provider = cfg.get("provider")
+        if provider is not None:
+            provider = str(provider).strip().casefold() or None
+        wire_api = cfg.get("wire_api")
+        if wire_api is not None:
+            wire_api = str(wire_api).strip().casefold()
+            if wire_api not in {"chat", "responses"}:
+                raise ValueError(
+                    f"model profile {name!r} wire_api must be 'chat' or 'responses'"
+                )
+
         headers = _parse_headers(cfg.get("headers"), field_name=f"model profile {name!r} headers")
 
         model_kwargs = cfg.get("model_kwargs") or {}
@@ -523,6 +535,8 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
             api_key_env=cfg.get("api_key_env"),
             auth=str(cfg.get("auth") or "").strip().casefold() or None,
             base_url=base_url,
+            provider=provider,
+            wire_api=wire_api,
             headers=headers,
             context_window=context_window,
             enable_thinking=enable_thinking,
@@ -599,6 +613,8 @@ def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelPro
         ),
         auth=override.auth if override.auth not in (None, "") else base.auth,
         base_url=override.base_url if override.base_url not in (None, "") else base.base_url,
+        provider=(override.provider or base.provider),
+        wire_api=(override.wire_api or base.wire_api),
         headers=_merge_headers(base.headers, override.headers),
         context_window=(
             override.context_window
@@ -825,6 +841,8 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         "selected": selected,
         "model": profile.model,
         "auth": profile.auth,
+        "provider": profile.provider,
+        "wire_api": profile.wire_api,
         "base_url": profile.base_url or getattr(settings, "openai_base_url", None),
         "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
         "enable_thinking": bool(getattr(settings, "enable_thinking", True)),

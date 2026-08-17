@@ -196,3 +196,52 @@ Synapse 支持任何 OpenAI 兼容的 API：
   }
 }
 ```
+
+## TUI 模型管理与 Codex 导入
+
+TUI 内可对模型 profile 增删改，并从 Codex CLI 配置导入，无需手写 JSON。
+
+入口（对话内斜杠命令）：
+
+| 命令 | 作用 |
+|---|---|
+| `/model` | 选择模型与思考级别（对话框内 `m` 打开管理） |
+| `/model manage` | 打开模型管理器 |
+| `/model import-codex` | 检测并导入 Codex 配置 |
+| `/model providers` | 查看支持的 Provider 目录 |
+
+模型管理器中按键：`a` 新增、`e` 编辑、`d` 删除（连按两次确认）、`s` 设为默认、`i` 导入 Codex、`p` Provider 目录。新增/编辑表单字段包括别名、Provider、模型 ID、`api_key_env`、`base_url`、思考级别、上下文窗口、图片输入、自定义 headers / `model_kwargs` / `extra_body`（JSON）。保存或导入后立即生效并重建当前会话的模型。
+
+### Provider 目录
+
+开箱即用的 Provider 只有三种，其余一律走 OpenAI 兼容接口（`openai:` 前缀 + 自定义 `base_url`）：
+
+| Provider | 默认 base_url | 默认 env | 说明 |
+|---|---|---|---|
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | 官方或任意 OpenAI 兼容网关 |
+| `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | Anthropic 原生 |
+| `openai_oauth` | ChatGPT Codex 后端 | —（OAuth） | `auth: openai_oauth`，需 `synapse auth openai login` |
+
+### Codex 配置导入
+
+导入器检测：
+
+- 用户级 `~/.codex/config.toml`
+- 项目级 `<workspace>/.codex/config.toml`（覆盖用户级同名键）
+- `~/.codex/auth.json` 凭据状态（OAuth / 明文 API key）
+
+映射规则：
+
+| Codex 字段 | Synapse 字段 |
+|---|---|
+| `model_provider`（内置 openai/anthropic） | 保留原生前缀 |
+| `model_provider`（自定义名） | `openai:` + `base_url`（OpenAI 兼容兜底） |
+| `base_url` | `base_url`（显式配置即生效，含内置 provider） |
+| `env_key`（字符串或数组） | `api_key_env`（取第一个已设置的环境变量） |
+| `wire_api = "responses"` | 仅 OAuth 专用；API key 场景降级为 chat 并给出 warning |
+| `http_headers` / `env_http_headers` | `headers` |
+| `query_params` | `model_kwargs.default_query` |
+| `model_reasoning_effort` | `reasoning_effort` |
+| `[profiles.<name>]` | 生成同名 profile 别名 |
+
+导入前会逐行预览（别名、`provider:model`、来源、目标文件），冲突别名可切换跳过/覆盖；确认后一次原子写入项目层 `.synapse/models.json`。凭据绝不拷贝进 `models.json`：OAuth 仅提示可用，明文 API key 只通过 `api_key_env` 引用环境变量。

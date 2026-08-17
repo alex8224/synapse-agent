@@ -106,6 +106,15 @@ class SlashController:
         if cmd == "/model" and len(parts) == 1:
             self.open_model_dialog(parts[1:])
             return True
+        if cmd == "/model" and len(parts) == 2 and parts[1].casefold() == "manage":
+            self.open_model_manager()
+            return True
+        if cmd == "/model" and len(parts) == 2 and parts[1].casefold() == "import-codex":
+            self.open_codex_config_import()
+            return True
+        if cmd == "/model" and len(parts) == 2 and parts[1].casefold() == "providers":
+            self.open_provider_catalog()
+            return True
         if cmd == "/subagent" and len(parts) == 1:
             self.open_subagent_models_dialog()
             return True
@@ -505,6 +514,146 @@ class SlashController:
             self.on_model_dialog_done,
         )
 
+    def open_model_manager(self) -> None:
+        from synapse.ui.dialogs import ModelManagerDialog
+
+        self._app.push_screen(
+            ModelManagerDialog(self._app.settings),
+            self.on_model_manager_done,
+        )
+
+    def open_model_form(self, alias: str | None, initial: dict[str, Any] | None) -> None:
+        from synapse.ui.dialogs import ModelFormDialog
+
+        self._app.push_screen(
+            ModelFormDialog(self._app.settings, alias=alias, initial=initial),
+            self.on_model_form_done,
+        )
+
+    def open_codex_config_import(self) -> None:
+        from synapse.ui.dialogs import CodexConfigImportDialog
+
+        self._app.push_screen(
+            CodexConfigImportDialog(self._app.settings),
+            self.on_codex_config_import_done,
+        )
+
+    def open_provider_catalog(self) -> None:
+        from synapse.ui.dialogs import ProviderCatalogDialog
+
+        self._app.push_screen(ProviderCatalogDialog(), None)
+
+    def on_model_manager_done(self, result: object) -> None:
+        if result is None:
+            return
+        if not isinstance(result, (tuple, list)) or not result:
+            return
+        action, alias, payload = result
+        if action == "open-form":
+            self.open_model_form(alias, payload)
+            return
+        if action == "open-import":
+            self.open_codex_config_import()
+            return
+        if action == "open-providers":
+            self.open_provider_catalog()
+            return
+        # Persist-backed operations close the manager, apply, then reopen it
+        # so the refreshed store is visible.
+        app = self._app
+        try:
+            self._persist_model_action(action, alias)
+        except Exception as exc:  # noqa: BLE001
+            app.append_event(f"model change failed: {exc}", "yellow")
+        self.open_model_manager()
+
+    def _persist_model_action(self, action: str, alias: str) -> None:
+        from synapse.models import persist
+
+        app = self._app
+        if action == "delete":
+            persist.delete_profile(app.settings, alias)
+            app.flash_status(f"model {alias} deleted", "dim")
+            self._reload_after_model_change()
+        elif action == "set-default":
+            persist.set_default(app.settings, alias)
+            app.flash_status(f"default model -> {alias}", "dim")
+            self._reload_after_model_change(alias)
+        else:
+            app.flash_status("model unchanged", "dim")
+
+    def on_model_form_done(self, result: object) -> None:
+        if result is None:
+            self.open_model_manager()
+            return
+        action, alias, payload = result
+        if action not in {"add", "edit"}:
+            self.open_model_manager()
+            return
+        app = self._app
+        try:
+            self._persist_model_form(action, alias, payload)
+        except Exception as exc:  # noqa: BLE001
+            app.append_event(f"model change failed: {exc}", "yellow")
+        self.open_model_manager()
+
+    def _persist_model_form(self, action: str, alias: str, payload: dict[str, Any]) -> None:
+        from synapse.models import persist
+
+        app = self._app
+        if action == "add":
+            persist.add_profile(app.settings, alias, payload)
+            app.flash_status(f"model {alias} added", "dim")
+            self._reload_after_model_change(alias)
+        else:
+            persist.update_profile(app.settings, alias, payload)
+            app.flash_status(f"model {alias} updated", "dim")
+            self._reload_after_model_change(alias)
+
+    def on_codex_config_import_done(self, result: object) -> None:
+        if result is None:
+            self.open_model_manager()
+            return
+        if not isinstance(result, (tuple, list)) or not result or result[0] != "imported":
+            self.open_model_manager()
+            return
+        app = self._app
+        plan = result[1]
+        try:
+            from synapse.integrations.codex_config import apply_import
+
+            written, skipped = apply_import(app.settings, plan)
+            app.flash_status(f"codex import: {written} written, {skipped} skipped", "dim")
+            self._reload_after_model_change()
+        except Exception as exc:  # noqa: BLE001
+            app.append_event(f"codex import failed: {exc}", "yellow")
+        self.open_model_manager()
+
+    def _reload_after_model_change(self, preferred_alias: str | None = None) -> None:
+        """Reload the models store and rebuild the active agent in place."""
+        from synapse.models.persist import load_models_store
+
+        app = self._app
+        try:
+            data = load_models_store(app.settings)
+        except Exception:  # noqa: BLE001
+            data = {"models": {}}
+        models = data.get("models") or {}
+        alias = (
+            preferred_alias
+            if preferred_alias in models
+            else data.get("default") or (next(iter(models), None))
+        )
+        if not alias:
+            return
+        app._switch_model_bg(
+            f"/model {alias}",
+            "reloading models",
+            origin_thread_id=app.thread_id,
+            origin_agent=app.agent,
+            origin_settings=self._copy_settings(app.settings),
+        )
+
     def open_subagent_models_dialog(self) -> None:
         from synapse.models.registry import registry_from_settings
         from synapse.ui.dialogs import SubagentModelsDialog
@@ -573,6 +722,15 @@ class SlashController:
 
     def on_model_dialog_done(self, result: object) -> None:
         if result is None:
+            return
+        if isinstance(result, (tuple, list)) and len(result) == 1:
+            action = result[0]
+            if action == "manage":
+                self.open_model_manager()
+            elif action == "import-codex":
+                self.open_codex_config_import()
+            elif action == "providers":
+                self.open_provider_catalog()
             return
         if isinstance(result, (tuple, list)) and len(result) == 3 and result[0] == "both":
             _, alias, level = result
