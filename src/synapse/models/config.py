@@ -21,6 +21,8 @@ _PROFILE_META_KEYS = {
     "model_kwargs", "extra_body", "params",
     # Import metadata (Codex config): provider name and original wire API.
     "provider", "wire_api",
+    # Turbo mode: route through headroom-turbo proxy.
+    "turbo", "turbo_base_url",
 }
 
 def expand_env_string(value: Any) -> Any:

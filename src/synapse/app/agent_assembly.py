@@ -98,6 +98,10 @@ class MiddlewareContext:
     goal_service: Any | None
     steer_queue: SteerQueue
     prompt_cache_key: Any | None = None
+    # Turbo mode: model traffic is routed through a headroom-turbo proxy, so
+    # the built-in reversible tool-output compression is skipped (they are
+    # mutually exclusive).
+    turbo: bool = False
 
 
 def build_tool_output_pipeline(settings: Any) -> ToolOutputTransformPipeline:
@@ -142,6 +146,11 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
         ),
     ]
     transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
+    if context.turbo:
+        # Turbo routes tool outputs through the headroom proxy for compression;
+        # running the built-in transformer too would double-compress and break
+        # the proxy's content-type routing.
+        transform_enabled = False
     middleware.append(
         build_tool_output_transform_middleware(
             context.output_repository,

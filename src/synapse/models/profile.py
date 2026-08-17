@@ -50,6 +50,13 @@ class ModelProfile:
     # Whether the selected primary model accepts native image content.
     # None means infer from provider/model name.
     image_input: bool | None = None
+    # Turbo mode: route model traffic through a local headroom-turbo proxy.
+    # The profile's original base_url is forwarded via the x-headroom-base-url
+    # header so the proxy compresses and relays to the real upstream.
+    turbo: bool = False
+    # Optional override for the turbo proxy base URL. Defaults to
+    # SYNAPSE_TURBO_PROXY_URL, then http://localhost:8787/v1.
+    turbo_base_url: str | None = None
 
     def resolved_api_key(self) -> str | None:
         if self.api_key:

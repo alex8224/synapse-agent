@@ -591,6 +591,7 @@ def build_coding_agent(
             goal_service=goal_service,
             steer_queue=steer_queue,
             prompt_cache_key=prompt_cache_key,
+            turbo=bool(getattr(selected_profile, "turbo", False)),
         )
     )
 

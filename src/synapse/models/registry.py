@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +106,19 @@ def _resolve_init_chat_model() -> Callable[..., Any]:
     if factory := globals().get("init_chat_model"):
         return factory
     return __getattr__("init_chat_model")
+
+
+def _resolve_turbo_proxy_url(profile: ModelProfile) -> str:
+    """Resolve the headroom-turbo proxy base URL for a profile.
+
+    Priority: profile ``turbo_base_url`` → ``SYNAPSE_TURBO_PROXY_URL`` env →
+    the local default ``http://localhost:8787/v1``.
+    """
+    return (
+        profile.turbo_base_url
+        or os.environ.get("SYNAPSE_TURBO_PROXY_URL")
+        or "http://localhost:8787/v1"
+    )
 
 
 @dataclass
@@ -250,6 +264,16 @@ class ModelRegistry:
             with span("model:openai_compat_patch"):
                 enable_openai_compat_reasoning_patch()
                 enable_responses_reasoning_patch()
+            # Turbo mode: route through the headroom-turbo proxy and forward the
+            # original upstream via x-headroom-base-url so the proxy compresses
+            # and relays. OAuth-backed Codex is excluded (its base_url is pinned
+            # to the first-party backend and must never be redirected).
+            if profile.turbo and base_url and oauth_provider is None:
+                configured_headers = _merge_headers(
+                    configured_headers,
+                    {"x-headroom-base-url": str(base_url).rstrip("/")},
+                )
+                base_url = _resolve_turbo_proxy_url(profile)
             if base_url:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:
@@ -545,6 +569,8 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
             parallel_tool_calls=None if parallel is None else bool(parallel),
             websocket=websocket,
             image_input=image_input,
+            turbo=bool(cfg.get("turbo") or False),
+            turbo_base_url=cfg.get("turbo_base_url") or None,
             extra=expanded_params,
             model_kwargs=dict(model_kwargs),
             extra_body=dict(extra_body),
@@ -649,6 +675,8 @@ def merge_model_profiles(base: ModelProfile, override: ModelProfile) -> ModelPro
             if override.image_input is not None
             else base.image_input
         ),
+        turbo=(override.turbo or base.turbo),
+        turbo_base_url=(override.turbo_base_url or base.turbo_base_url),
         extra={**base.extra, **override.extra},
         model_kwargs={**base.model_kwargs, **override.model_kwargs},
         extra_body={**base.extra_body, **override.extra_body},
@@ -844,6 +872,8 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         "provider": profile.provider,
         "wire_api": profile.wire_api,
         "base_url": profile.base_url or getattr(settings, "openai_base_url", None),
+        "turbo": profile.turbo,
+        "turbo_base_url": profile.turbo_base_url,
         "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
         "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
         "reasoning_effort": getattr(settings, "reasoning_effort", None),
