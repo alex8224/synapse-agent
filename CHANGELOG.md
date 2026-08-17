@@ -8,6 +8,29 @@ All entries are written in English.
 
 ---
 
+## v0.1.35
+
+### New Features
+
+- Added a TUI model manager for add/edit/delete/set-default model profiles with instant hot reload (`/model manage`, `m` in the model picker).
+- Added Codex config import: detects `~/.codex/config.toml` and `auth.json`, maps model_providers/profiles into `models.json` with an OpenAI-compatible fallback and conflict preview (`/model import-codex`).
+- Added a supported provider catalog dialog (`/model providers`).
+- Show turn number in bottombar turn-stats chrome.
+- Added accurate token-rate/TTFT stats to bottombar turn-stats.
+
+### Bug Fixes
+
+- Localized bottombar turn chrome to English.
+- Rendered mermaid text on Linux via DejaVu Sans fallback.
+- Added built-in osascript fallback for macOS clipboard image paste.
+
+### Engineering
+
+- Added `synapse.models.persist`, an atomic CRUD layer for layered `models.json`.
+- `ModelProfile` gains `provider`/`wire_api` metadata fields with backward-compatible parsing.
+
+---
+
 ## v0.1.34
 
 ### Bug Fixes
