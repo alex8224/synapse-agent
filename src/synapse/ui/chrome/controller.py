@@ -706,6 +706,7 @@ class ChromeController:
                     getattr(app.settings, "openai_fast_mode", False)
                 )
                 and self.has_codex_oauth_profile(),
+                turbo=lambda: bool(getattr(app.settings, "turbo", False)),
                 goal=self.goal_label,
                 turn_stats=self.turn_stats_label,
             ),

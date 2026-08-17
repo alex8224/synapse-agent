@@ -43,6 +43,9 @@ class BottomBarContext:
     # True while Codex Fast tier is active for the current OAuth profile.
     # Renders a static ``FAST`` badge next to the model/thinking label.
     fast_mode: BoolFn = _never
+    # True while headroom-turbo mode is active (Settings.turbo or profile.turbo).
+    # Renders a static ``TURBO`` badge next to the FAST badge.
+    turbo: BoolFn = _never
     # Long-running goal chrome (left; ``goal·active 12.5K/50K``). Empty hides.
     goal: RichLabelFn = lambda: ""  # noqa: E731
     # Last turn latency/throughput chrome (``TTFT 1.2s · 42 tok/s``). Empty hides.

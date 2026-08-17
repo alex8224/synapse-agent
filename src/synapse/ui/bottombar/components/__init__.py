@@ -27,6 +27,7 @@ from synapse.ui.bottombar.components import (
     mcp,
     mode,
     model,
+    turbo,
     turn_stats,
 )
 from synapse.ui.bottombar.core import (
@@ -50,6 +51,7 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     turn_stats.install,
     model.install,
     fast.install,
+    turbo.install,
     codex_usage.install,
     mcp.install,
 ]
@@ -107,6 +109,7 @@ def install_default_components(
     codex_usage: Callable[[], str | object] | None = None,
     mcp: Callable[[], str] | None = None,
     fast_mode: Callable[[], bool] | None = None,
+    turbo: Callable[[], bool] | None = None,
     goal: Callable[[], str | object] | None = None,
     turn_stats: Callable[[], str | object] | None = None,
     installers: list[ComponentInstaller] | None = None,
@@ -143,6 +146,7 @@ def install_default_components(
             codex_usage=codex_usage or _empty,
             mcp=mcp or _empty,
             fast_mode=fast_mode or _off,
+            turbo=turbo or _off,
             goal=goal or _empty,
             turn_stats=turn_stats or _empty,
         )
@@ -157,6 +161,7 @@ def install_default_components(
             codex_usage=codex_usage or ctx.codex_usage,
             mcp=mcp or ctx.mcp,
             fast_mode=fast_mode or ctx.fast_mode,
+            turbo=turbo or ctx.turbo,
             goal=goal or ctx.goal,
             turn_stats=turn_stats or ctx.turn_stats,
         )
