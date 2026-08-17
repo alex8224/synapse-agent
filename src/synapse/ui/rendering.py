@@ -249,6 +249,19 @@ def mmdr_available() -> bool:
 
 _MERMAID_SVG_WHITE_BG_RE = re.compile(r"background-color:\s*white", re.IGNORECASE)
 
+# merman 只输出 Windows 字体栈 "trebuchet ms", verdana, arial, sans-serif。
+# resvg/fontdb 在 Linux 上不会把泛型 family "sans-serif" 解析成具体字体，
+# 且基础 Linux 镜像没有这几款命名字体，导致所有文字被静默丢弃。
+# 在泛型前插入 Linux 上基本必装的 DejaVu Sans；缺字形时 resvg 仍会按
+# 字符在整个字体库中回退（例如 CJK 回退到 Noto/宋体）。
+_MERMAID_FONT_FAMILY_RE = re.compile(
+    r'font-family:\s*"trebuchet ms"\s*,\s*verdana\s*,\s*arial\s*,\s*sans-serif',
+    re.IGNORECASE,
+)
+_MERMAID_FONT_FAMILY = (
+    'font-family:"trebuchet ms",verdana,arial,"DejaVu Sans",sans-serif'
+)
+
 # journey 图的每个步骤文字输出两层重叠的 <text>:
 # 主层 + fallback 层重叠后在 resvg 中产生半透明"双影"。
 # 移除主层，保留自带深色 fill 的 fallback 层。
@@ -281,6 +294,7 @@ def _mermaid_recolor_svg(svg: str, background: str | None) -> str:
         svg,
         count=1,
     )
+    svg = _MERMAID_FONT_FAMILY_RE.sub(_MERMAID_FONT_FAMILY, svg)
     if _mermaid_role(svg) == "journey":
         svg = _JOURNEY_MAIN_TASK_TEXT_RE.sub("", svg)
     return svg

@@ -135,6 +135,19 @@ def test_journey_recolor_removes_duplicate_label_layer():
     assert 'class="merman-foreignobject-fallback-text task"' in out
 
 
+def test_recolor_rewrites_windows_only_font_stack():
+    """merman 的 Windows 字体栈必须补上 Linux 回退，避免 resvg 静默丢字。"""
+    svg = (
+        '<svg aria-roledescription="sequence" style="background-color:white">'
+        '<style>#merman{font-family:"trebuchet ms",verdana,arial,sans-serif;'
+        "font-size:16px;fill:#333;}</style></svg>"
+    )
+    out = _mermaid_recolor_svg(svg, "#ffffff")
+    assert (
+        'font-family:"trebuchet ms",verdana,arial,"DejaVu Sans",sans-serif'
+    ) in out
+
+
 def test_journey_cleanup_is_theme_independent():
     """Duplicate task labels are removed on every terminal theme."""
     svg = (
