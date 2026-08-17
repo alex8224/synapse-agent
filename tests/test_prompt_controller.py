@@ -232,3 +232,32 @@ def test_insert_pasted_text_short_appends_directly() -> None:
     assert app.prompt.value == "prefix hello"
     assert controller.state.paste_replacements == {}
     assert app.prompt.focused is True
+
+
+def test_insert_pasted_text_image_bytes_falls_back_to_clipboard(monkeypatch) -> None:
+    controller, app = _make_controller()
+    called: list[bool] = []
+    monkeypatch.setattr(
+        controller, "_paste_clipboard_image_only", lambda: called.append(True)
+    )
+
+    # BMP magic prefix plus binary noise (as delivered by terminal paste).
+    controller.insert_pasted_text("BM" + "\ufffd" * 200)
+
+    assert called == [True]
+    assert app.prompt.value == ""
+    assert controller.state.paste_replacements == {}
+
+
+def test_insert_pasted_text_mangled_bmp_falls_back_to_clipboard(monkeypatch) -> None:
+    controller, app = _make_controller()
+    called: list[bool] = []
+    monkeypatch.setattr(
+        controller, "_paste_clipboard_image_only", lambda: called.append(True)
+    )
+
+    controller.insert_pasted_text("BP" + "\ufffd" * 250)
+
+    assert called == [True]
+    assert app.prompt.value == ""
+    assert controller.state.paste_replacements == {}

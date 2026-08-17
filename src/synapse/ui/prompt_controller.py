@@ -389,20 +389,44 @@ class PromptController:
             return
 
         if result.kind == "image":
-            try:
-                att = self._image_bank.add_bytes(
-                    result.data, mime=result.mime, name=result.name
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._app.append_event(f"image rejected: {exc}", "yellow")
-                return
-            self._app.append_event(
-                f"pasted {att.name} -> [image#{att.id}]", "dim"
+            self._attach_image(result)
+
+    def _attach_image(self, result: Any) -> None:
+        """Attach a clipboard image result to the prompt as ``[image#N]``."""
+        try:
+            att = self._image_bank.add_bytes(
+                result.data, mime=result.mime, name=result.name
             )
-            prompt = self._prompt_widget()
-            old = prompt.value or ""
-            prompt.value = old + f" [image#{att.id}]"
-            prompt.focus()
+        except Exception as exc:  # noqa: BLE001
+            self._app.append_event(f"image rejected: {exc}", "yellow")
+            return
+        self._app.append_event(f"pasted {att.name} -> [image#{att.id}]", "dim")
+        prompt = self._prompt_widget()
+        old = prompt.value or ""
+        prompt.value = old + f" [image#{att.id}]"
+        prompt.focus()
+
+    def _paste_clipboard_image_only(self) -> None:
+        """Fallback for pasted image bytes: re-read the clipboard image.
+
+        Shift+Insert of an image may deliver raw image bytes as text; instead
+        of storing them as a text placeholder, re-read the clipboard and attach
+        the image when available.
+        """
+        from synapse.content.multimodal import read_clipboard
+
+        try:
+            result = read_clipboard()
+        except Exception:  # noqa: BLE001
+            self._app.append_event("clipboard read failed", "yellow")
+            return
+        if result.kind == "image":
+            self._attach_image(result)
+        else:
+            self._app.append_event(
+                "pasted content looks like image data but clipboard has no image",
+                "dim",
+            )
 
     def insert_pasted_text(self, text: str) -> None:
         """Insert pasted text into the prompt.
@@ -410,6 +434,11 @@ class PromptController:
         Long or multi-line text is collapsed into a placeholder and stored in
         ``state.paste_replacements``; the full content is expanded on submit.
         """
+        from synapse.content.multimodal import looks_like_image_data
+
+        if looks_like_image_data(text):
+            self._paste_clipboard_image_only()
+            return
         prompt = self._prompt_widget()
         if len(text) > 200 or "\n" in text or "\r" in text:
             prefix = text[:20].replace("\r", " ").replace("\n", " ").strip()

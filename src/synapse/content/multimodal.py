@@ -433,6 +433,28 @@ class ClipboardResult:
     detail: str | None = None
 
 
+_IMAGE_MAGIC_PREFIXES = ("BM", "BP", "GIF8", "RIFF")
+
+
+def looks_like_image_data(text: str) -> bool:
+    """True when ``text`` looks like raw image bytes delivered as text.
+
+    Terminal-native paste of an image can deliver raw image bytes through the
+    text channel. Some terminal paths preserve BMP's ``BM`` signature while
+    others have been observed to expose it as ``BP``. Require substantial
+    binary noise as well as the signature to avoid treating ordinary text as
+    image data.
+    """
+    if not text:
+        return False
+    sample = text[:512]
+    head = sample[:8]
+    if not (head.startswith(_IMAGE_MAGIC_PREFIXES) or head.startswith("\ufffdPNG")):
+        return False
+    noisy = sum(1 for ch in sample if ch < " " or ch == "\ufffd")
+    return noisy >= max(8, len(sample) // 4)
+
+
 def read_clipboard() -> ClipboardResult:
     """Best-effort clipboard read: prefer image, else text.
 
@@ -485,7 +507,7 @@ def _read_clipboard_text() -> str | None:
             return out.decode("utf-8", errors="replace")
     # 3) Linux
     for cmd in (
-        ["wl-paste", "-n"],
+        ["wl-paste", "-n", "-t", "text/plain", "-t", "text/plain;charset=utf-8"],
         ["xclip", "-selection", "clipboard", "-o"],
         ["xsel", "--clipboard", "--output"],
     ):
@@ -669,14 +691,52 @@ def _mac_clipboard_image() -> tuple[bytes, str, str] | None:
 
 
 def _linux_clipboard_image() -> tuple[bytes, str, str] | None:
-    for cmd in (
-        ["wl-paste", "-t", "image/png"],
-        ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
-    ):
-        out = _run_capture(cmd, timeout=5)
+    """Read a clipboard image on Linux/WSLg.
+
+    WSLg syncs Windows bitmap data as ``image/bmp`` (not ``image/png``), so
+    requesting only ``image/png`` misses screenshots pasted from Windows.
+    Common types are tried in order and normalized to PNG when Pillow is
+    available (otherwise the original bytes are kept under their real MIME).
+    """
+    for mime in ("image/png", "image/bmp", "image/jpeg"):
+        out = _run_capture(["wl-paste", "-t", mime], timeout=5)
         if out:
-            return out, "image/png", "clipboard.png"
+            data, mime_out = _normalize_image_bytes(out, mime)
+            return data, mime_out, "clipboard" + MIME_TO_EXT.get(mime_out, ".png")
+    for mime in ("image/png", "image/bmp"):
+        out = _run_capture(
+            ["xclip", "-selection", "clipboard", "-t", mime, "-o"], timeout=5
+        )
+        if out:
+            data, mime_out = _normalize_image_bytes(out, mime)
+            return data, mime_out, "clipboard" + MIME_TO_EXT.get(mime_out, ".png")
     return None
+
+
+def _normalize_image_bytes(data: bytes, mime: str) -> tuple[bytes, str]:
+    """Normalize clipboard image bytes, preferring PNG for model support.
+
+    PNG data with a valid signature is returned unchanged. Other formats
+    (BMP/JPEG, or mislabeled bytes) are re-encoded to PNG via Pillow when
+    available; without Pillow the original bytes and MIME are kept.
+    """
+    if mime == "image/png" and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data, mime
+    try:
+        from io import BytesIO
+
+        from PIL import Image  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        return data, mime
+    try:
+        im = Image.open(BytesIO(data))
+        if getattr(im, "mode", "") not in {"RGB", "RGBA"}:
+            im = im.convert("RGBA")
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue(), "image/png"
+    except Exception:  # noqa: BLE001
+        return data, mime
 
 
 def _run_capture(

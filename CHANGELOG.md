@@ -8,6 +8,20 @@ All entries are written in English.
 
 ---
 
+## v0.1.34
+
+### Bug Fixes
+
+- Fixed clipboard image paste on Linux/WSLg: WSLg syncs Windows screenshots as `image/bmp`, so the Linux reader now tries `image/png`, `image/bmp`, and `image/jpeg` and normalizes non-PNG data to PNG.
+- Fixed pasted image bytes being rendered as a text placeholder (`[BP... chars]`) instead of an image attachment by detecting mangled image signatures with binary noise and falling back to a clipboard image re-read.
+- Fixed multi-line and long Shift+Insert pastes being truncated to the first line; full content is preserved and expanded on submit.
+
+### Engineering
+
+- Added clipboard unit tests for BMP normalization, explicit text MIME requests, and mangled-prefix detection.
+
+---
+
 ## v0.1.33
 
 ### New Features
