@@ -415,6 +415,8 @@ class CodingAgentApp(App[None]):
         self._last_rate_basis = "end_to_end"
         self._token_rate_estimated = False
         self._last_model_calls = 0
+        # 1-based current turn number for the attached session (bottombar chrome).
+        self._current_turn = 0
         # Snapshot before a live turn so mid-turn updates stay absolute.
         self._usage_base_input = 0
         self._usage_base_output = 0

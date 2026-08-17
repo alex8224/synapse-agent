@@ -255,6 +255,9 @@ class TranscriptHistoryController:
         st.has_more = page.has_more
         st.loading = False
         st.thread_id = app.thread_id
+        # Turn chrome: restored sessions continue from their completed turns;
+        # the next user submit advances the counter.
+        app._current_turn = int(page.total_turns or 0)
 
         if not page.events:
             if announce:

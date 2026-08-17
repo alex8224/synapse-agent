@@ -384,3 +384,74 @@ def test_apply_git_chrome_updates_state_and_reloads_when_dirty() -> None:
     assert app._git_chrome_refresh_dirty is False
     assert app.calls == ["topbar"]
     assert scheduled == ["probe"]
+
+
+def _turn_stats_app(
+    *,
+    turn: int = 0,
+    ttft: float | None = None,
+    rate: float | None = None,
+    steps: int = 0,
+) -> _App:
+    app = _App()
+    app._last_ttft_s = ttft
+    app._output_tokens_per_second = rate
+    app._token_rate_estimated = False
+    app._last_model_calls = steps
+    app._current_turn = turn
+    return app
+
+
+def test_turn_stats_label_empty_without_any_data() -> None:
+    app = _turn_stats_app()
+    assert ChromeController(app).turn_stats_label() == ""
+
+
+def test_turn_stats_label_hides_turn_zero() -> None:
+    app = _turn_stats_app(ttft=1.2, rate=42.0, steps=5)
+    label = ChromeController(app).turn_stats_label()
+    assert "回合" not in label
+    assert "TTFT 1.2s" in label
+    assert "5 steps" in label
+
+
+def test_turn_stats_label_shows_turn_with_stats() -> None:
+    app = _turn_stats_app(turn=3, ttft=1.2, rate=42.0, steps=5)
+    label = ChromeController(app).turn_stats_label()
+    assert label.startswith("回合 3")
+    assert "TTFT 1.2s" in label
+    assert "5 steps" in label
+
+
+def test_turn_stats_label_shows_turn_alone_after_restore() -> None:
+    """Restored sessions have no live TTFT/rate yet; turn alone must render."""
+    app = _turn_stats_app(turn=7)
+    assert ChromeController(app).turn_stats_label() == "回合 7"
+
+
+def test_turn_stats_label_defaults_missing_turn_field() -> None:
+    """Compatibility hosts without _current_turn must not crash the chrome."""
+    app = _turn_stats_app(turn=0)
+    del app._current_turn
+    label = ChromeController(app).turn_stats_label()
+    assert label == "" or "回合" not in label
+
+
+def test_reset_session_token_chrome_resets_turn() -> None:
+    """Session switches (incl. /new) reset turn chrome before restore reseeds."""
+    app = _turn_stats_app(turn=5)
+    app._input_tokens = 100
+    app._cache_tokens = 50
+    app._output_tokens = 60
+    app._context_tokens = 20
+    app._last_out_tokens = 30
+    app._last_model_calls = 4
+    app._usage_base_input = 100
+    app._usage_base_output = 60
+    app._usage_base_cache = 50
+
+    ChromeController(app).reset_session_token_chrome()
+
+    assert app._current_turn == 0
+    assert app._last_model_calls == 0
+    assert app._input_tokens == 0

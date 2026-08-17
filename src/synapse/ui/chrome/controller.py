@@ -261,14 +261,17 @@ class ChromeController:
         return label
 
     def turn_stats_label(self) -> str | Text:
-        """Render last-turn TTFT, throughput and step count for the bottombar."""
+        """Render turn number, last-turn TTFT and throughput for the bottombar."""
         app = self._app
         ttft = app._last_ttft_s
         rate = app._output_tokens_per_second
         steps = app._last_model_calls
-        if ttft is None and rate is None and not steps:
+        turn = int(getattr(app, "_current_turn", 0) or 0)
+        if ttft is None and rate is None and not steps and not turn:
             return ""
         parts: list[str] = []
+        if turn:
+            parts.append(f"回合 {turn}")
         if ttft is not None:
             parts.append(f"TTFT {ttft:.1f}s")
         rate_label = format_token_rate(rate, estimated=app._token_rate_estimated)
@@ -391,6 +394,9 @@ class ChromeController:
         app._usage_base_input = 0
         app._usage_base_output = 0
         app._usage_base_cache = 0
+        # Turn chrome is session-scoped: reset on every switch (incl. /new) and
+        # let the transcript restore path re-seed it from the projected turns.
+        app._current_turn = 0
 
     # -- tool-output stats ------------------------------------------------------
 

@@ -1151,6 +1151,9 @@ class TurnController:
         app.refresh_image_preview()
 
         app.append_user(display, images=turn_images or None, full_text=text)
+        # Advance the bottombar turn chrome for the attached session. Steer and
+        # /approve resume reuse this counter only via a fresh user submit.
+        app._current_turn = int(getattr(app, "_current_turn", 0) or 0) + 1
         self.capture_turn_context()
         app._skip_steer_followup = False
         app._transcript.reset_for_turn()
