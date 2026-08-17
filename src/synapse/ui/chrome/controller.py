@@ -261,15 +261,14 @@ class ChromeController:
         return label
 
     def turn_stats_label(self) -> str | Text:
-        """Render turn number, last-turn TTFT and throughput for the bottombar."""
+        """Render turn number, last-turn TTFT/throughput, session token usage
+        and tool-output savings for the bottombar."""
         app = self._app
         ttft = app._last_ttft_s
         rate = app._output_tokens_per_second
         steps = app._last_model_calls
         turn = int(getattr(app, "_current_turn", 0) or 0)
-        if ttft is None and rate is None and not steps and not turn:
-            return ""
-        parts: list[str] = []
+        parts: list[str | Text] = []
         if turn:
             parts.append(f"turn {turn}")
         if ttft is not None:
@@ -279,7 +278,26 @@ class ChromeController:
             parts.append(rate_label)
         if steps:
             parts.append(f"{steps} step" + ("s" if steps != 1 else ""))
-        return " · ".join(parts)
+        usage = self.usage_right_label()
+        if usage:
+            parts.append(usage)
+        saved = self.tool_output_label()
+        if saved:
+            parts.append(saved)
+        if not parts:
+            return ""
+        label = Text()
+        for i, part in enumerate(parts):
+            if i:
+                label.append(" · ", style=_styles._C_ORANGE)
+            if isinstance(part, Text):
+                label.append(part)
+            else:
+                # Plain segments keep the bottombar CENTER region's orange
+                # fallback so the padded region style still applies (Text
+                # chunks skip the region fallback in render_packed_line).
+                label.append(part, style=_styles._C_ORANGE)
+        return label
 
     def begin_turn_usage(self) -> None:
         """Mark session totals baseline for live per-call topbar updates."""
@@ -332,12 +350,17 @@ class ChromeController:
             app._last_rate_basis = str(rate_basis or "end_to_end")
             app._token_rate_estimated = bool(rate_estimated)
         app._last_model_calls = max(0, int(model_calls or 0))
-        app._refresh_topbar()
-        # The bottombar turn-stats chrome reads the same live rate/TTFT fields.
+        self._refresh_chrome_both()
+
+    def _refresh_chrome_both(self) -> None:
+        """Refresh topbar then bottombar, each isolated so one failure never
+        starves the other (usage/savings now render in the bottombar)."""
+        app = self._app
         try:
-            app._refresh_bottombar()
+            app._refresh_topbar()
         except Exception:  # noqa: BLE001 - chrome refresh must never break a turn
             pass
+        self._refresh_bottombar_best_effort()
 
     def apply_restored_usage(self, messages: list[Any] | None) -> None:
         """Hydrate topbar totals from checkpoint messages (session open / switch)."""
@@ -363,7 +386,7 @@ class ChromeController:
         app._usage_base_input = app._input_tokens
         app._usage_base_output = app._output_tokens
         app._usage_base_cache = app._cache_tokens
-        app._refresh_topbar()
+        self._refresh_chrome_both()
 
     def apply_projected_usage(self, usage: TranscriptUsage) -> None:
         """Hydrate topbar totals from the O(1) transcript usage projection."""
@@ -381,7 +404,7 @@ class ChromeController:
         app._usage_base_input = app._input_tokens
         app._usage_base_output = app._output_tokens
         app._usage_base_cache = app._cache_tokens
-        app._refresh_topbar()
+        self._refresh_chrome_both()
 
     def reset_session_token_chrome(self) -> None:
         app = self._app
@@ -397,6 +420,15 @@ class ChromeController:
         # Turn chrome is session-scoped: reset on every switch (incl. /new) and
         # let the transcript restore path re-seed it from the projected turns.
         app._current_turn = 0
+        self._refresh_bottombar_best_effort()
+
+    def _refresh_bottombar_best_effort(self) -> None:
+        """Refresh bottombar chrome; never let a refresh break session state."""
+        app = self._app
+        try:
+            app._refresh_bottombar()
+        except Exception:  # noqa: BLE001 - chrome refresh must never break a turn
+            pass
 
     # -- tool-output stats ------------------------------------------------------
 
@@ -484,7 +516,7 @@ class ChromeController:
             return
         app._tool_output_stats = dict(stats or {})
         app._tool_output_stats_thread_id = thread_id
-        app._refresh_topbar()
+        self._refresh_chrome_both()
         if dirty:
             self.reload_tool_output_stats()
 
@@ -559,7 +591,12 @@ class ChromeController:
     # -- install default components -------------------------------------------
 
     def install_default_topbar(self) -> None:
-        """Register built-in workspace / title / branch / usage components."""
+        """Register built-in workspace / title / branch components.
+
+        Token usage and tool-output savings moved to the bottombar
+        turn-stats chrome; the providers are still passed for custom
+        topbar installers that opt back in.
+        """
         app = self._app
         install_default_components(
             app._topbar,

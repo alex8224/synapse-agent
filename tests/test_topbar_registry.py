@@ -18,7 +18,8 @@ from synapse.ui.topbar import (
 )
 
 
-def test_default_topbar_has_dedicated_tool_output_region() -> None:
+def test_default_topbar_no_usage_or_tool_output() -> None:
+    """usage / tool_output chrome moved to the bottombar turn-stats line."""
     registry = TopBarRegistry()
     install_default_components(
         registry,
@@ -29,10 +30,15 @@ def test_default_topbar_has_dedicated_tool_output_region() -> None:
         tool_output=lambda: Text("OUT −2 KiB/75%", style="#81c995"),
     )
 
+    # The dedicated region survives for custom installers, but the default
+    # installers no longer render usage or tool-output savings on the topbar.
     assert registry.get_region("tool_output") is not None
-    assert [item.id for item in registry.components("tool_output")] == ["tool_output"]
+    ids = {c.id for c in registry.components(include_hidden=True)}
+    assert "usage" not in ids
+    assert "tool_output" not in ids
     line = layout_from_registry(registry, usable_width=100)
-    assert "OUT −2 KiB/75%" in line.plain
+    assert "OUT −2 KiB/75%" not in line.plain
+    assert "1K/0/0" not in line.plain
 
 
 def test_tool_output_yields_to_usage_when_topbar_is_narrow() -> None:
@@ -42,8 +48,21 @@ def test_tool_output_yields_to_usage_when_topbar_is_narrow() -> None:
         workspace=lambda: "",
         title=lambda: "分析今日大的改动",
         branch=lambda: "",
-        usage=lambda: Text("8.9M/8.6M/33K 99K/27%", style="#ffffff"),
-        tool_output=lambda: Text("OUT −18 KiB/17%", style="#81c995"),
+        usage=lambda: "u",
+    )
+    registry.register_fn(
+        "usage",
+        lambda: Text("8.9M/8.6M/33K 99K/27%", style="#ffffff"),
+        region="right",
+        order=10,
+        priority=60,
+    )
+    registry.register_fn(
+        "tool_output",
+        lambda: Text("OUT −18 KiB/17%", style="#81c995"),
+        region="tool_output",
+        order=10,
+        priority=45,
     )
 
     line = layout_from_registry(registry, usable_width=40)
@@ -98,7 +117,8 @@ def test_install_defaults_layout_contains_pieces() -> None:
     assert "proj/ws" in left
     assert "main" in left
     assert left.index("proj/ws") < left.index("main")
-    assert "1K/0/0" in right
+    # usage moved to the bottombar; the topbar right region is empty by default
+    assert "1K/0/0" not in right
     assert "main" not in right
     line = layout_from_registry(reg, usable_width=100)
     plain = line.plain
@@ -123,7 +143,7 @@ def test_custom_component_in_right_region() -> None:
         priority=30,
     )
     right = render_region_text(reg.components(TopBarRegion.RIGHT))
-    assert right == "safe  ·  u"
+    assert right == "safe"
     left = render_region_text(reg.components(TopBarRegion.LEFT))
     assert left.startswith("≡") or "ws" in left
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from rich.text import Text
+
 from synapse.ui.chrome.controller import ChromeController
 
 
@@ -386,6 +388,10 @@ def test_apply_git_chrome_updates_state_and_reloads_when_dirty() -> None:
     assert scheduled == ["probe"]
 
 
+def _turn_stats_plain(label: str | Text) -> str:
+    return label.plain if isinstance(label, Text) else str(label or "")
+
+
 def _turn_stats_app(
     *,
     turn: int = 0,
@@ -394,11 +400,19 @@ def _turn_stats_app(
     steps: int = 0,
 ) -> _App:
     app = _App()
+    app.thread_id = "thread-1"
+    app.settings = SimpleNamespace(active_model=None, model=None)
     app._last_ttft_s = ttft
     app._output_tokens_per_second = rate
     app._token_rate_estimated = False
     app._last_model_calls = steps
     app._current_turn = turn
+    app._context_tokens = 0
+    app._input_tokens = 0
+    app._cache_tokens = 0
+    app._output_tokens = 0
+    app._tool_output_stats = {}
+    app._tool_output_stats_thread_id = None
     return app
 
 
@@ -409,7 +423,7 @@ def test_turn_stats_label_empty_without_any_data() -> None:
 
 def test_turn_stats_label_hides_turn_zero() -> None:
     app = _turn_stats_app(ttft=1.2, rate=42.0, steps=5)
-    label = ChromeController(app).turn_stats_label()
+    label = _turn_stats_plain(ChromeController(app).turn_stats_label())
     assert "turn" not in label
     assert "TTFT 1.2s" in label
     assert "5 steps" in label
@@ -417,7 +431,7 @@ def test_turn_stats_label_hides_turn_zero() -> None:
 
 def test_turn_stats_label_shows_turn_with_stats() -> None:
     app = _turn_stats_app(turn=3, ttft=1.2, rate=42.0, steps=5)
-    label = ChromeController(app).turn_stats_label()
+    label = _turn_stats_plain(ChromeController(app).turn_stats_label())
     assert label.startswith("turn 3")
     assert "TTFT 1.2s" in label
     assert "5 steps" in label
@@ -426,15 +440,49 @@ def test_turn_stats_label_shows_turn_with_stats() -> None:
 def test_turn_stats_label_shows_turn_alone_after_restore() -> None:
     """Restored sessions have no live TTFT/rate yet; turn alone must render."""
     app = _turn_stats_app(turn=7)
-    assert ChromeController(app).turn_stats_label() == "turn 7"
+    assert _turn_stats_plain(ChromeController(app).turn_stats_label()) == "turn 7"
 
 
 def test_turn_stats_label_defaults_missing_turn_field() -> None:
     """Compatibility hosts without _current_turn must not crash the chrome."""
     app = _turn_stats_app(turn=0)
     del app._current_turn
-    label = ChromeController(app).turn_stats_label()
+    label = _turn_stats_plain(ChromeController(app).turn_stats_label())
     assert label == "" or "turn" not in label
+
+
+def test_turn_stats_label_includes_usage_and_savings() -> None:
+    """Token usage and tool-output savings moved from the topbar render here."""
+    app = _turn_stats_app(turn=2, ttft=0.8, rate=31.0, steps=3)
+    app._input_tokens = 1_000
+    app._cache_tokens = 2_000
+    app._output_tokens = 3_000
+    app._context_tokens = 900
+    app._tool_output_stats = {"transformed": 10, "effective_saved_bytes": 2_500_000}
+    app._tool_output_stats_thread_id = "thread-1"
+
+    label = ChromeController(app).turn_stats_label()
+    assert isinstance(label, Text)
+    plain = label.plain
+    assert "turn 2" in plain
+    assert "TTFT 0.8s" in plain
+    assert "3 steps" in plain
+    assert "1K/2K/3K" in plain
+    assert "saved" in plain
+
+
+def test_turn_stats_label_usage_alone_after_restore() -> None:
+    """A restored session shows its projected token usage without TTFT data."""
+    app = _turn_stats_app(turn=7)
+    app._input_tokens = 12_000
+    app._cache_tokens = 10_000
+    app._output_tokens = 4_000
+
+    label = _turn_stats_plain(ChromeController(app).turn_stats_label())
+
+    assert "turn 7" in label
+    assert "12K/10K/4K" in label
+    assert "TTFT" not in label
 
 
 def test_reset_session_token_chrome_resets_turn() -> None:
@@ -455,3 +503,64 @@ def test_reset_session_token_chrome_resets_turn() -> None:
     assert app._current_turn == 0
     assert app._last_model_calls == 0
     assert app._input_tokens == 0
+
+
+def test_turn_stats_label_savings_without_usage_or_turn() -> None:
+    """Tool-output savings alone must render even without turn/usage data."""
+    app = _turn_stats_app()
+    app._tool_output_stats = {"transformed": 10, "effective_saved_bytes": 500_000}
+    app._tool_output_stats_thread_id = "thread-1"
+
+    label = _turn_stats_plain(ChromeController(app).turn_stats_label())
+
+    assert "saved" in label
+    assert "turn" not in label
+    assert "TTFT" not in label
+    assert "/" not in label
+
+
+def test_apply_projected_usage_refreshes_both_bars() -> None:
+    app = _turn_stats_app()
+    app.calls = []
+    app._refresh_topbar = lambda: app.calls.append("topbar")
+    app._refresh_bottombar = lambda: app.calls.append("bottombar")
+    usage = SimpleNamespace(
+        input_tokens=1,
+        output_tokens=2,
+        cache_tokens=3,
+        last_input_tokens=4,
+        last_output_tokens=5,
+        last_cache_tokens=6,
+    )
+
+    ChromeController(app).apply_projected_usage(usage)
+
+    assert app.calls == ["topbar", "bottombar"]
+
+
+def test_apply_restored_usage_refreshes_both_bars() -> None:
+    app = _turn_stats_app()
+    app.calls = []
+    app._refresh_topbar = lambda: app.calls.append("topbar")
+    app._refresh_bottombar = lambda: app.calls.append("bottombar")
+
+    ChromeController(app).apply_restored_usage([])
+
+    assert app.calls == ["topbar", "bottombar"]
+
+
+def test_apply_tool_output_stats_refreshes_bottom_bar() -> None:
+    """Savings now live in the bottombar, so stats apply must repaint it."""
+    app = _turn_stats_app()
+    app.calls = []
+    app._tool_output_refresh_pending = True
+    app._tool_output_refresh_dirty = False
+    app._tool_output_stats = {}
+    app._tool_output_stats_thread_id = None
+    app._refresh_topbar = lambda: app.calls.append("topbar")
+    app._refresh_bottombar = lambda: app.calls.append("bottombar")
+
+    ChromeController(app).apply_tool_output_stats("thread-1", {"transformed": 1})
+
+    assert app.calls == ["topbar", "bottombar"]
+    assert app._tool_output_stats == {"transformed": 1}

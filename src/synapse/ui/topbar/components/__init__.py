@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from synapse.ui.topbar.components import branch, title, tool_output, usage, workspace
+from synapse.ui.topbar.components import branch, title, workspace
 from synapse.ui.topbar.core import (
     DEFAULT_COL_GAP,
     TopBarAlign,
@@ -34,12 +34,11 @@ ComponentInstaller = Callable[[TopBarRegistry, "TopBarContext"], None]
 
 # Order here is install order only (layout uses each component's region/order).
 # To add a component: create a module, then append its ``install`` here.
+# usage / tool_output moved to the bottombar turn-stats chrome.
 DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     workspace.install,
     title.install,
     branch.install,
-    tool_output.install,
-    usage.install,
 ]
 
 
