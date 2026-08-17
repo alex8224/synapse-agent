@@ -172,6 +172,29 @@ def test_fast_badge_shown_only_when_fast_mode_active() -> None:
     assert "FAST" not in left_off
 
 
+def test_turn_stats_renders_in_center_when_present() -> None:
+    stats = {"v": ""}
+    reg = BottomBarRegistry()
+    install_default_components(
+        reg,
+        busy=lambda: False,
+        thread=lambda: "",
+        mode=lambda: "",
+        idle_hints=lambda: "hints",
+        busy_hints=lambda: "busy",
+        model=lambda: "m",
+        codex_usage=lambda: "codex n/a",
+        mcp=lambda: "mcp off",
+        turn_stats=lambda: stats["v"],
+    )
+    center = render_region_text(reg.components(BottomBarRegion.CENTER))
+    assert "TTFT" not in center
+
+    stats["v"] = "TTFT 1.2s · 43 tok/s"
+    center = render_region_text(reg.components(BottomBarRegion.CENTER))
+    assert "TTFT 1.2s · 43 tok/s" in center
+
+
 def test_custom_component_in_left_region() -> None:
     reg = BottomBarRegistry()
     install_default_components(

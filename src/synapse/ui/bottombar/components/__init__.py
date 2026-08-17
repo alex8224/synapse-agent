@@ -27,6 +27,7 @@ from synapse.ui.bottombar.components import (
     mcp,
     mode,
     model,
+    turn_stats,
 )
 from synapse.ui.bottombar.core import (
     DEFAULT_COL_GAP,
@@ -46,6 +47,7 @@ DEFAULT_COMPONENT_INSTALLERS: list[ComponentInstaller] = [
     key_hints.install,
     mode.install,
     goal.install,
+    turn_stats.install,
     model.install,
     fast.install,
     codex_usage.install,
@@ -106,6 +108,7 @@ def install_default_components(
     mcp: Callable[[], str] | None = None,
     fast_mode: Callable[[], bool] | None = None,
     goal: Callable[[], str | object] | None = None,
+    turn_stats: Callable[[], str | object] | None = None,
     installers: list[ComponentInstaller] | None = None,
 ) -> None:
     """Install default regions + component modules.
@@ -141,6 +144,7 @@ def install_default_components(
             mcp=mcp or _empty,
             fast_mode=fast_mode or _off,
             goal=goal or _empty,
+            turn_stats=turn_stats or _empty,
         )
     else:
         ctx = _Ctx(
@@ -154,6 +158,7 @@ def install_default_components(
             mcp=mcp or ctx.mcp,
             fast_mode=fast_mode or ctx.fast_mode,
             goal=goal or ctx.goal,
+            turn_stats=turn_stats or ctx.turn_stats,
         )
 
     install_default_regions(registry)

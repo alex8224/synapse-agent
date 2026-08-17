@@ -414,6 +414,7 @@ class CodingAgentApp(App[None]):
         self._last_ttft_s: float | None = None
         self._last_rate_basis = "end_to_end"
         self._token_rate_estimated = False
+        self._last_model_calls = 0
         # Snapshot before a live turn so mid-turn updates stay absolute.
         self._usage_base_input = 0
         self._usage_base_output = 0
@@ -762,6 +763,7 @@ class CodingAgentApp(App[None]):
         ttft_s: float | None = None,
         rate_basis: str = "end_to_end",
         rate_estimated: bool = False,
+        model_calls: int = 0,
     ) -> None:
         self._chrome.apply_turn_usage(
             turn_input=turn_input,
@@ -774,6 +776,7 @@ class CodingAgentApp(App[None]):
             ttft_s=ttft_s,
             rate_basis=rate_basis,
             rate_estimated=rate_estimated,
+            model_calls=model_calls,
         )
 
     def _reset_session_token_chrome(self) -> None:

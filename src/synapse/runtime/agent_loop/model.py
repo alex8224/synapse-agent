@@ -102,6 +102,7 @@ class TurnResult:
     last_output_tokens_per_second: float | None = None
     last_ttft_s: float | None = None
     last_rate_basis: str = "end_to_end"
+    model_calls: int = 0
     compact_events: int = 0
     cancel_reason: str | None = None
     error_type: str | None = None

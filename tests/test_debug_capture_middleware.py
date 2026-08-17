@@ -16,6 +16,10 @@ from synapse.observability.llm_debug import (
     note_raw_response,
 )
 from synapse.runtime.debug_capture_middleware import build_debug_capture_middleware
+from synapse.runtime.middleware import (
+    clear_model_call_started_notifier,
+    set_model_call_started_notifier,
+)
 
 
 def _fake_request() -> SimpleNamespace:
@@ -129,3 +133,42 @@ def test_middleware_is_pass_through_when_disabled() -> None:
 
     assert result == "model-response"
     assert store.records() == []
+
+
+def test_middleware_fires_model_call_started_when_disabled_sync() -> None:
+    store = DebugCaptureStore()
+    store.enabled = False
+    middleware = build_debug_capture_middleware(store)
+    seen: list[float] = []
+    token = set_model_call_started_notifier(seen.append)
+
+    try:
+        result = middleware.wrap_model_call(_fake_request(), lambda request: "ok")
+    finally:
+        clear_model_call_started_notifier(token)
+
+    assert result == "ok"
+    assert len(seen) == 1
+    assert seen[0] > 0.0
+
+
+def test_middleware_fires_model_call_started_when_disabled_async() -> None:
+    store = DebugCaptureStore()
+    store.enabled = False
+    middleware = build_debug_capture_middleware(store)
+    seen: list[float] = []
+    token = set_model_call_started_notifier(seen.append)
+
+    async def handler(request):
+        return "ok"
+
+    async def run():
+        return await middleware.awrap_model_call(_fake_request(), handler)
+
+    try:
+        assert asyncio.run(run()) == "ok"
+    finally:
+        clear_model_call_started_notifier(token)
+
+    assert len(seen) == 1
+    assert seen[0] > 0.0

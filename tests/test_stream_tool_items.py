@@ -160,7 +160,7 @@ def test_stream_agent_reports_completed_output_rate() -> None:
     )
 
     assert result.output_tokens == 10
-    assert result.last_rate_basis == "end_to_end"
+    assert result.last_rate_basis == "generation"
     assert result.last_ttft_s is not None
     assert result.last_output_tokens_per_second is not None
     usage_events = [event for event in sink.events if event[0] == "usage"]

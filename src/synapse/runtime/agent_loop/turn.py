@@ -252,6 +252,7 @@ class AgentTurnRuntime:
             last_output_tokens_per_second=result.last_output_tokens_per_second,
             last_ttft_s=result.last_ttft_s,
             last_rate_basis=result.last_rate_basis,
+            model_calls=result.model_calls,
             compact_events=result.compact_events,
             cancel_reason=(
                 token.reason or result.cancel_reason

@@ -1430,6 +1430,7 @@ class TurnController:
                 ttft_s=getattr(result, "last_ttft_s", None),
                 rate_basis=str(getattr(result, "last_rate_basis", "end_to_end")),
                 rate_estimated=False,
+                model_calls=int(getattr(result, "model_calls", 0) or 0),
             )
 
         if not resume and getattr(result, "compact_events", 0):
@@ -1550,7 +1551,7 @@ class TurnController:
             goal = service.get(app.thread_id) if app.thread_id else None
         app._current_goal = goal
         try:
-            app._bottombar.refresh()
+            app._refresh_bottombar()
         except Exception:  # noqa: BLE001
             pass
         if goal is None:

@@ -45,3 +45,5 @@ class BottomBarContext:
     fast_mode: BoolFn = _never
     # Long-running goal chrome (left; ``goal·active 12.5K/50K``). Empty hides.
     goal: RichLabelFn = lambda: ""  # noqa: E731
+    # Last turn latency/throughput chrome (``TTFT 1.2s · 42 tok/s``). Empty hides.
+    turn_stats: RichLabelFn = lambda: ""  # noqa: E731

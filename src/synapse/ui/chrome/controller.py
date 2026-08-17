@@ -258,15 +258,25 @@ class ChromeController:
             if label:
                 label.append(" ", style=_styles._C_MUTED)
             label.append(occupancy, style=_styles._C_GREEN)
-        rate_label = format_token_rate(
-            app._output_tokens_per_second,
-            estimated=app._token_rate_estimated,
-        )
-        if rate_label:
-            if label:
-                label.append(" ", style=_styles._C_MUTED)
-            label.append(rate_label, style=_styles._C_ORANGE)
         return label
+
+    def turn_stats_label(self) -> str | Text:
+        """Render last-turn TTFT, throughput and step count for the bottombar."""
+        app = self._app
+        ttft = app._last_ttft_s
+        rate = app._output_tokens_per_second
+        steps = app._last_model_calls
+        if ttft is None and rate is None and not steps:
+            return ""
+        parts: list[str] = []
+        if ttft is not None:
+            parts.append(f"TTFT {ttft:.1f}s")
+        rate_label = format_token_rate(rate, estimated=app._token_rate_estimated)
+        if rate_label:
+            parts.append(rate_label)
+        if steps:
+            parts.append(f"{steps} step" + ("s" if steps != 1 else ""))
+        return " · ".join(parts)
 
     def begin_turn_usage(self) -> None:
         """Mark session totals baseline for live per-call topbar updates."""
@@ -278,6 +288,7 @@ class ChromeController:
         app._last_ttft_s = None
         app._last_rate_basis = "end_to_end"
         app._token_rate_estimated = False
+        app._last_model_calls = 0
 
     def apply_turn_usage(
         self,
@@ -292,6 +303,7 @@ class ChromeController:
         ttft_s: float | None = None,
         rate_basis: str = "end_to_end",
         rate_estimated: bool = False,
+        model_calls: int = 0,
     ) -> None:
         """Apply cumulative-in-turn usage (from stream) onto session chrome.
 
@@ -316,7 +328,13 @@ class ChromeController:
             app._last_ttft_s = float(ttft_s) if ttft_s is not None else None
             app._last_rate_basis = str(rate_basis or "end_to_end")
             app._token_rate_estimated = bool(rate_estimated)
+        app._last_model_calls = max(0, int(model_calls or 0))
         app._refresh_topbar()
+        # The bottombar turn-stats chrome reads the same live rate/TTFT fields.
+        try:
+            app._refresh_bottombar()
+        except Exception:  # noqa: BLE001 - chrome refresh must never break a turn
+            pass
 
     def apply_restored_usage(self, messages: list[Any] | None) -> None:
         """Hydrate topbar totals from checkpoint messages (session open / switch)."""
@@ -338,6 +356,7 @@ class ChromeController:
         app._last_ttft_s = None
         app._last_rate_basis = "end_to_end"
         app._token_rate_estimated = False
+        app._last_model_calls = 0
         app._usage_base_input = app._input_tokens
         app._usage_base_output = app._output_tokens
         app._usage_base_cache = app._cache_tokens
@@ -355,6 +374,7 @@ class ChromeController:
         app._last_ttft_s = None
         app._last_rate_basis = "end_to_end"
         app._token_rate_estimated = False
+        app._last_model_calls = 0
         app._usage_base_input = app._input_tokens
         app._usage_base_output = app._output_tokens
         app._usage_base_cache = app._cache_tokens
@@ -367,6 +387,7 @@ class ChromeController:
         app._output_tokens = 0
         app._context_tokens = 0
         app._last_out_tokens = 0
+        app._last_model_calls = 0
         app._usage_base_input = 0
         app._usage_base_output = 0
         app._usage_base_cache = 0
@@ -643,6 +664,7 @@ class ChromeController:
                 )
                 and self.has_codex_oauth_profile(),
                 goal=self.goal_label,
+                turn_stats=self.turn_stats_label,
             ),
         )
 

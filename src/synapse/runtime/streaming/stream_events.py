@@ -215,6 +215,7 @@ class StreamResult:
     last_output_tokens_per_second: float | None = None
     last_ttft_s: float | None = None
     last_rate_basis: str = "end_to_end"
+    model_calls: int = 0  # completed model calls in this turn (step count)
     cancelled: bool = False  # turn aborted through cancel_event
     cancel_reason: str | None = None  # user / goal_pause / shutdown / unknown
     interrupted: bool = False  # graph paused for HITL approval

@@ -152,6 +152,7 @@ def stream_agent(
     last_rate_estimated = False
     last_live_rate_push = 0.0
     _usage_seen: set[str] = set()  # dedupe usage from repeated messages
+    model_call_count = 0  # completed model calls in this turn (step count)
     rate_tracker = TokenRateTracker()
     rate_tracker.model_started()
     renderer = sink or _NoopRenderer()
@@ -193,7 +194,11 @@ def stream_agent(
             return
         if estimated:
             snapshot = rate_tracker.live_snapshot(now)
-            if snapshot.elapsed_s < 0.5 or snapshot.tokens_per_second is None:
+            # The rate divides by the decode span (now - first output), not the
+            # end-to-end span. Throttle on the decode span too, or the first
+            # chunk after a long TTFT renders an enormous transient tok/s.
+            decode_s = max(0.0, snapshot.elapsed_s - (snapshot.ttft_s or 0.0))
+            if decode_s < 0.5 or snapshot.tokens_per_second is None:
                 return
             last_live_rate_push = now
             rate = snapshot.tokens_per_second
@@ -311,7 +316,12 @@ def stream_agent(
     compact_events = 0
 
     # -- install retry notifier so the middleware can post status-bar updates --
-    from synapse.runtime.middleware import clear_retry_notifier, set_retry_notifier
+    from synapse.runtime.middleware import (
+        clear_model_call_started_notifier,
+        clear_retry_notifier,
+        set_model_call_started_notifier,
+        set_retry_notifier,
+    )
 
     def _retry_notify(attempt: int, delay: float, reason: str) -> None:
         """Post a single-line retry notice through the sink."""
@@ -321,6 +331,13 @@ def stream_agent(
             pass
 
     retry_notifier_token = set_retry_notifier(_retry_notify)
+
+    # The innermost model middleware fires this at actual request dispatch, so
+    # TTFT starts from the provider call instead of the whole-graph stream start.
+    def _model_call_started(ts: float) -> None:
+        rate_tracker.model_started(now=ts)
+
+    model_call_started_token = set_model_call_started_notifier(_model_call_started)
 
     def _note_compact() -> None:
         nonlocal compact_announced, compact_events
@@ -645,7 +662,7 @@ def stream_agent(
                             except ValueError:
                                 pass
                         sink.activity_start("model", "waiting for model")
-                        rate_tracker.model_started()
+                        rate_tracker.ensure_started()
                         continue
 
                     if not _is_ai_message(msg):
@@ -673,6 +690,7 @@ def stream_agent(
                             last_output_tokens = int(u["output_tokens"] or 0)
                             last_cache_tokens = int(u.get("cache_tokens", 0) or 0)
                             rate_snapshot = rate_tracker.model_finished(last_output_tokens)
+                            model_call_count += 1
                             if rate_snapshot.tokens_per_second is not None:
                                 last_output_tokens_per_second = rate_snapshot.tokens_per_second
                                 last_ttft_s = rate_snapshot.ttft_s
@@ -814,6 +832,7 @@ def stream_agent(
         raise
     finally:
         clear_retry_notifier(retry_notifier_token)
+        clear_model_call_started_notifier(model_call_started_token)
         sink.finalize_line()
         sink.activity_stop()
         # Seal any leftover open tool group (e.g. incomplete batch).
@@ -891,6 +910,7 @@ def stream_agent(
         last_output_tokens_per_second=last_output_tokens_per_second,
         last_ttft_s=last_ttft_s,
         last_rate_basis=last_rate_basis,
+        model_calls=model_call_count,
         cancelled=cancelled,
         cancel_reason=cancel_reason,
         interrupted=interrupted,

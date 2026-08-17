@@ -64,6 +64,41 @@ _retry_notifier: contextvars.ContextVar[
     Callable[[int, float, str], None] | None
 ] = contextvars.ContextVar("synapse_retry_notifier", default=None)
 
+# Model-call start bridge: the innermost model middleware fires this just
+# before dispatching the provider request, so the stream runtime can timestamp
+# TTFT from the actual request dispatch instead of the whole-graph stream start.
+_model_call_started_notifier: contextvars.ContextVar[
+    Callable[[float], None] | None
+] = contextvars.ContextVar("synapse_model_call_started_notifier", default=None)
+
+
+def set_model_call_started_notifier(
+    fn: Callable[[float], None] | None,
+) -> contextvars.Token[Callable[[float], None] | None]:
+    """Install a callback invoked with ``time.monotonic()`` at model dispatch."""
+    return _model_call_started_notifier.set(fn)
+
+
+def clear_model_call_started_notifier(
+    token: contextvars.Token[Callable[[float], None] | None] | None = None,
+) -> None:
+    """Restore the previous notifier, or clear the current context slot."""
+    if token is not None:
+        _model_call_started_notifier.reset(token)
+    else:
+        _model_call_started_notifier.set(None)
+
+
+def notify_model_call_started() -> None:
+    """Fire the model-call-started notifier (best-effort, never raises)."""
+    notifier = _model_call_started_notifier.get()
+    if notifier is None:
+        return
+    try:
+        notifier(time.monotonic())
+    except Exception:  # noqa: BLE001 - timing must never break a model call
+        pass
+
 
 def set_retry_notifier(
     fn: Callable[[int, float, str], None] | None,

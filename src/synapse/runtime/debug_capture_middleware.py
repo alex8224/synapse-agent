@@ -4,8 +4,9 @@ Placed as the **innermost** middleware so it sees the final request shape
 after all other middleware have modified it — exactly what is sent to the
 provider.
 
-When ``DebugCaptureStore.enabled`` is False the middleware is a transparent
-pass-through (zero allocation on the hot path).
+When ``DebugCaptureStore.enabled`` is False the middleware skips capture
+bookkeeping, but it still fires the model-call-started notifier used for TTFT
+timing, so the timing hook is independent of debug capture being enabled.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware, AgentState
 
 from synapse.observability.llm_debug import DebugCaptureStore
+from synapse.runtime.middleware import notify_model_call_started
 
 
 def build_debug_capture_middleware(store: DebugCaptureStore) -> AgentMiddleware:
@@ -30,6 +32,7 @@ def build_debug_capture_middleware(store: DebugCaptureStore) -> AgentMiddleware:
         tools: list[Any] = []
 
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            notify_model_call_started()
             if not store.enabled:
                 return handler(request)
             slot = store.begin_raw_capture()
@@ -62,6 +65,7 @@ def build_debug_capture_middleware(store: DebugCaptureStore) -> AgentMiddleware:
                 store.end_raw_capture()
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            notify_model_call_started()
             if not store.enabled:
                 return await handler(request)
             slot = store.begin_raw_capture()
