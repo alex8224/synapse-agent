@@ -15,6 +15,7 @@ Layout::
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -29,7 +30,9 @@ from synapse.settings.config_paths import user_config_dir
 
 # Pinned compatible turbo release. Bump together with the headroom-turbo fork
 # tag (turbo-v{version}) when the sidecar contract changes.
-TURBO_VERSION = "0.1.0"
+# 0.1.1 bundles orjson (proxy dependency gate), excludes litellm, and builds
+# windowed (--noconsole) on Windows so no console window pops up.
+TURBO_VERSION = "0.1.1"
 TURBO_RELEASE_REPO = "alex8224/headroom"
 DEFAULT_PORT = 8787
 
@@ -115,8 +118,6 @@ def ensure_turbo_binary(
 
 def _download(url: str, dest: Path) -> None:
     """Download ``url`` to ``dest`` atomically (temp file + rename)."""
-    import os
-
     turbo_bin_dir().mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "synapse-turbo"})
     fd, tmp = tempfile.mkstemp(prefix=".turbo-", dir=turbo_bin_dir())
@@ -167,9 +168,16 @@ def _start_proxy(port: int) -> None:
         "--host",
         "127.0.0.1",
     ]
+    # The turbo binary is built for headroom's deterministic turbo profile
+    # (no ML/MCP/watchdog extras bundled). HEADROOM_TURBO=1 makes its startup
+    # dependency gate treat optional modules as warn-only instead of hard
+    # failing when they are absent from the bundle.
+    env = dict(os.environ)
+    env["HEADROOM_TURBO"] = "1"
     kwargs: dict[str, object] = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        "env": env,
     }
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
