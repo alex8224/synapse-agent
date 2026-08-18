@@ -2433,7 +2433,7 @@ source = { directory = "rust/synapse-core-tool" }
 
 [[package]]
 name = "synapse-tool-compress-core"
-version = "0.1.2"
+version = "0.1.3"
 source = { directory = "rust/synapse-tool-compress-core" }
 
 [[package]]
