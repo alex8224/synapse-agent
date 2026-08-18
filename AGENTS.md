@@ -23,7 +23,7 @@
 | `src/synapse/ui/` | Textual TUI, stream, timeline, dialogs, topbar/bottombar |
 | `tests/` | Python tests, usually mirroring domain modules |
 | `rust/synapse-core-tool/` | Native filesystem tools (read/edit/patch/search) and math rendering; published to PyPI as `synapse-core-tool` |
-| `rust/synapse-tool-compress-core/` | Optional native tool-output compression core |
+| `rust/synapse-tool-compress-core/` | Native tool-output compression core; required dependency, published to PyPI as `synapse-tool-compress-core` |
 | `docs/`, `mkdocs.yml` | User docs and MkDocs config |
 | `.github/workflows/` | CI, docs, Python release, native wheel builds |
 
@@ -83,10 +83,10 @@ uv build                        # after packaging/entry-point changes
 
 ## Rust/PyO3 native crates
 
-Two optional crates; the Python app must work without their wheels and must keep `ImportError`/`OSError` fallbacks.
+One optional crate; the Python app must work without its wheel and must keep `ImportError`/`OSError` fallbacks.
 
 - `rust/synapse-core-tool` (`synapse-core-tool` on PyPI): native filesystem tools (read/edit/patch/search) and math rendering. Release with tag `synapse-core-tool-v*`; `native-core-tool-wheels.yml` builds wheels and publishes to GitHub Release + PyPI. Keep the `pyproject.toml` version in sync with `Cargo.toml` — maturin names wheels from `pyproject.toml`.
-- `rust/synapse-tool-compress-core`: native tool-output compression core. Release with tag `synapse-tool-compress-core-v*`; `native-compression-wheels.yml` publishes wheels to GitHub Release.
+- `rust/synapse-tool-compress-core` (`synapse-tool-compress-core` on PyPI): native tool-output compression core. **Required dependency** of `synapse-cli-agent`. Release with tag `synapse-tool-compress-core-v*`; `native-compression-wheels.yml` builds wheels and publishes to GitHub Release + PyPI. Keep the `pyproject.toml` version in sync with `Cargo.toml`. Because the main package hard-depends on it, publish the compress-core wheels to PyPI before tagging the main `v*` release.
 
 When changing either crate, at least run:
 

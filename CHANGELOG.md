@@ -8,6 +8,16 @@ All entries are written in English.
 
 ---
 
+## v0.1.37
+
+### Engineering
+
+- Made the native tool-output compression core (`synapse-tool-compress-core`) a required dependency of the main package: pip/uv installs now pull it by default and standalone PyInstaller executables bundle the native compression module.
+- Publish `synapse-tool-compress-core` wheels to PyPI in addition to GitHub Releases so the hard dependency resolves for package installs.
+- Updated the release workflow to collect the native compression extension into Windows/macOS/Linux executables.
+
+---
+
 ## v0.1.36
 
 ### New Features

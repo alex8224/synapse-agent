@@ -1,6 +1,6 @@
 [project]
 name = "synapse-cli-agent"
-version = "0.1.36"
+version = "0.1.37"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "synapse-core-tool>=0.1.0,<0.2.0",
+    "synapse-tool-compress-core>=0.1.2,<0.2.0",
     "aiosqlite==0.22.1",
     "deepagents==0.6.12",
     "httpx[socks]==0.28.1",
@@ -73,6 +74,7 @@ exclude = [
 
 [tool.uv.sources]
 synapse-core-tool = { path = "rust/synapse-core-tool" }
+synapse-tool-compress-core = { path = "rust/synapse-tool-compress-core" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
