@@ -306,6 +306,12 @@ def build_coding_agent(
     model_cache_hit = False
     if model_cache is None:
         model_cache = {}
+    if getattr(settings, "turbo", False):
+        # Turbo mode routes through a local headroom-turbo sidecar; make sure
+        # the pinned binary is downloaded and current before building clients.
+        from synapse.integrations.turbo import ensure_turbo_binary
+
+        ensure_turbo_binary(progress=progress)
     if model is None:
         cache_key = model_cache_key(settings, model_name=model_name)
         cached = model_cache.get(cache_key)
