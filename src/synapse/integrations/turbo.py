@@ -32,7 +32,9 @@ from synapse.settings.config_paths import user_config_dir
 # tag (turbo-v{version}) when the sidecar contract changes.
 # 0.1.1 bundles orjson (proxy dependency gate), excludes litellm, and builds
 # windowed (--noconsole) on Windows so no console window pops up.
-TURBO_VERSION = "0.1.1"
+# 0.1.2 forces turbo mode in the binary entry, so the sidecar also starts
+# standalone without HEADROOM_TURBO=1 in the environment.
+TURBO_VERSION = "0.1.2"
 TURBO_RELEASE_REPO = "alex8224/headroom"
 DEFAULT_PORT = 8787
 
