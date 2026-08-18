@@ -8,6 +8,23 @@ All entries are written in English.
 
 ---
 
+## v0.1.36
+
+### New Features
+
+- Added turbo mode routing: OpenAI-compatible model traffic is relayed through the local headroom-turbo proxy via the `x-headroom-base-url` header, enabling compression for any selected profile without `models.json` changes.
+- Added a global turbo switch (`AGENT_TURBO`) that applies to the whole workspace, not just a single model profile.
+- Added a TURBO badge to the bottombar.
+- Added headroom-turbo sidecar management: pinned binary download, proxy lifecycle management with health check and fallback, and pinned sidecar v0.1.2 (runs standalone without `HEADROOM_TURBO`).
+- Added a zoomable image viewer with high-res mermaid re-rasterization.
+
+### Bug Fixes
+
+- Turbo mode now sends only the origin `x-headroom-base-url` header, preventing the proxy from rewriting the destination.
+- Hidden bottombar idle/busy key hints.
+
+---
+
 ## v0.1.35
 
 ### New Features
