@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "synapse-tool-compress-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aho-corasick",
  "dashmap",
