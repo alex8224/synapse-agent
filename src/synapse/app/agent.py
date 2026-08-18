@@ -308,10 +308,15 @@ def build_coding_agent(
         model_cache = {}
     if getattr(settings, "turbo", False):
         # Turbo mode routes through a local headroom-turbo sidecar; make sure
-        # the pinned binary is downloaded and current before building clients.
-        from synapse.integrations.turbo import ensure_turbo_binary
+        # the pinned binary is downloaded and the proxy is healthy before
+        # building clients. A failed proxy degrades to direct connections.
+        from synapse.integrations.turbo import ensure_turbo_binary, ensure_turbo_running
 
         ensure_turbo_binary(progress=progress)
+        if not ensure_turbo_running(progress=progress):
+            logger.warning(
+                "headroom-turbo proxy unavailable; turbo mode disabled for this run"
+            )
     if model is None:
         cache_key = model_cache_key(settings, model_name=model_name)
         cached = model_cache.get(cache_key)

@@ -287,15 +287,19 @@ class ModelRegistry:
             # Turbo mode: route through the headroom-turbo proxy and forward the
             # original upstream via x-headroom-base-url so the proxy compresses
             # and relays. Enabled globally (Settings.turbo) or per profile
-            # (profile.turbo). OAuth-backed Codex is excluded (its base_url is
-            # pinned to the first-party backend and must never be redirected).
+            # (profile.turbo), and only when the local sidecar is healthy.
+            # OAuth-backed Codex is excluded (its base_url is pinned to the
+            # first-party backend and must never be redirected).
             turbo_enabled = bool(fallback_turbo or profile.turbo)
             if turbo_enabled and base_url and oauth_provider is None:
-                configured_headers = _merge_headers(
-                    configured_headers,
-                    {"x-headroom-base-url": _turbo_upstream_origin(base_url)},
-                )
-                base_url = _resolve_turbo_proxy_url(profile, fallback_turbo_proxy_url)
+                from synapse.integrations.turbo import proxy_ready as _turbo_ready
+
+                if _turbo_ready():
+                    configured_headers = _merge_headers(
+                        configured_headers,
+                        {"x-headroom-base-url": _turbo_upstream_origin(base_url)},
+                    )
+                    base_url = _resolve_turbo_proxy_url(profile, fallback_turbo_proxy_url)
             if base_url:
                 kwargs["base_url"] = str(base_url).rstrip("/")
             if api_key:

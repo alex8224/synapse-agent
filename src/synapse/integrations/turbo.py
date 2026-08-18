@@ -14,10 +14,13 @@ Layout::
 
 from __future__ import annotations
 
+import json
 import platform
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -28,10 +31,16 @@ from synapse.settings.config_paths import user_config_dir
 # tag (turbo-v{version}) when the sidecar contract changes.
 TURBO_VERSION = "0.1.0"
 TURBO_RELEASE_REPO = "alex8224/headroom"
+DEFAULT_PORT = 8787
 
 _BIN_DIRNAME = "bin"
 _VERSION_FILENAME = "headroom-turbo.version"
 _RELEASE_BASE = f"https://github.com/{TURBO_RELEASE_REPO}/releases/download"
+
+# Runtime availability state, set by ensure_turbo_running(). Models only route
+# through the proxy when it is actually healthy; otherwise turbo degrades to a
+# direct connection for the current process.
+_proxy_ready = False
 
 
 def _asset_name() -> str | None:
@@ -125,3 +134,79 @@ def _download(url: str, dest: Path) -> None:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def proxy_ready() -> bool:
+    """Return True once the local turbo proxy has passed a health check."""
+    return _proxy_ready
+
+
+def _health_ok(url: str) -> bool:
+    """True when the proxy /health endpoint reports healthy."""
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode("utf-8"))
+            return str(data.get("status", "")).lower() == "healthy"
+    except Exception:  # noqa: BLE001 - any failure means not ready yet
+        return False
+
+
+def _start_proxy(port: int) -> None:
+    """Launch the sidecar proxy detached from the current process."""
+    binary = turbo_binary_path()
+    if not binary.is_file():
+        raise RuntimeError(f"headroom-turbo binary missing: {binary}")
+    cmd = [
+        str(binary),
+        "proxy",
+        "--port",
+        str(port),
+        "--disable-kompress",
+        "--host",
+        "127.0.0.1",
+    ]
+    kwargs: dict[str, object] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, **kwargs)  # noqa: S603 - fixed args, no shell
+
+
+def ensure_turbo_running(
+    progress: Callable[[str], None] | None = None,
+    *,
+    port: int = DEFAULT_PORT,
+    timeout: float = 30.0,
+) -> bool:
+    """Start the sidecar proxy (if needed) and wait until it is healthy.
+
+    Reuses an already-running healthy proxy on the same port. Returns True when
+    the proxy is ready; False means turbo mode should degrade to direct
+    connections for this process.
+    """
+    global _proxy_ready
+    url = f"http://127.0.0.1:{port}/health"
+    if _health_ok(url):
+        _proxy_ready = True
+        return True
+
+    if progress is not None:
+        progress("starting headroom-turbo proxy")
+    try:
+        _start_proxy(port)
+    except Exception:  # noqa: BLE001 - startup failure degrades, never blocks
+        return False
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _health_ok(url):
+            _proxy_ready = True
+            return True
+        time.sleep(0.5)
+    return False
