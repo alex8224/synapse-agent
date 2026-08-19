@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -52,6 +53,20 @@ def _render_mermaid_png(source: str) -> bytes | None:
 def _render_markdown_renderable(body: str) -> Any:
     """Build a Rich Markdown renderable in a background worker."""
     return render_markdown(body)
+
+
+def _schedule_on_app_thread(app: Any, callback: Callable[..., Any], *args: Any) -> None:
+    """Run ``callback`` on the app's thread from either a worker or the app.
+
+    ``Future.add_done_callback`` fires on the calling thread when the future
+    finished before the callback was registered (fast renders). In that case
+    ``App.call_from_thread`` raises because we are already on the app thread, so
+    fall back to ``call_after_refresh``.
+    """
+    if threading.get_ident() == getattr(app, "_thread_id", None):
+        app.call_after_refresh(callback, *args)
+    else:
+        app.call_from_thread(callback, *args)
 
 
 def _resolve_color(color: _Color | None, fallback: str, theme_attribute: str) -> str:
@@ -222,6 +237,7 @@ class AnswerBlock(SelectableStatic):
         live: bool = False,
         fg_color: _Color | None = None,
         markdown_max_chars: int = _DEFAULT_MARKDOWN_MAX_CHARS,
+        defer_markdown: bool = False,
     ) -> None:
         self.body = body or ""
         self.live = bool(live)
@@ -229,6 +245,12 @@ class AnswerBlock(SelectableStatic):
         self._markdown_max_chars = max(1, int(markdown_max_chars))
         self._mermaid_render_generation = 0
         self._markdown_render_generation = 0
+        # Historical restore defers long-body markdown parsing to a worker so
+        # first paint stays cheap: show plain text, then swap in the renderable.
+        self._defer_markdown = bool(defer_markdown)
+        self._pending_markdown = False
+        self._markdown_rendered = False
+        self._markdown_inflight = False
         super().__init__()
         self._render_block()
 
@@ -239,11 +261,15 @@ class AnswerBlock(SelectableStatic):
     def update_live(self, body: str) -> None:
         self.live = True
         self.body = body or ""
+        self._markdown_rendered = False
+        self._markdown_inflight = False
         self._render_block()
 
     def seal(self, body: str) -> None:
         self.live = False
         self.body = body or ""
+        self._markdown_rendered = False
+        self._markdown_inflight = False
         self._render_block()
 
     def selectable_text(self) -> str:
@@ -317,6 +343,9 @@ class AnswerBlock(SelectableStatic):
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._start_mermaid_renders)
+        if self._pending_markdown:
+            self._pending_markdown = False
+            self._schedule_markdown_render(self.body)
 
     def _start_mermaid_renders(self) -> None:
         """Submit unrendered Mermaid placeholders without blocking Textual's loop."""
@@ -345,8 +374,15 @@ class AnswerBlock(SelectableStatic):
         """Schedule a completed background render back onto Textual's UI thread."""
         try:
             png = future.result()
-            self.app.call_from_thread(
-                self._replace_mermaid_placeholder, placeholder, png, generation
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            return
+        try:
+            _schedule_on_app_thread(
+                self.app,
+                self._replace_mermaid_placeholder,
+                placeholder,
+                png,
+                generation,
             )
         except Exception:  # noqa: BLE001 - app/widget may be shutting down
             pass
@@ -400,6 +436,19 @@ class AnswerBlock(SelectableStatic):
         if len(body) > self._markdown_max_chars:
             self.update(Group(Text(body, style=fg), Text("")))
             return
+        # Historical restore defers long-body Markdown parsing to a worker:
+        # show a bounded plain-text preview immediately, then swap in the
+        # renderable once the block is mounted (see on_mount).
+        if (
+            self._defer_markdown
+            and not self._markdown_rendered
+            and not self._markdown_inflight
+            and len(body) >= _MARKDOWN_ASYNC_MIN_CHARS
+        ):
+            preview = stream_tail_preview(body) or body
+            self.update(Group(Text(preview, style=fg), Text("")))
+            self._pending_markdown = True
+            return
         # Only long, already-attached answers defer Markdown parsing + LaTeX
         # preprocessing off the Textual event loop. Short bodies and off-screen
         # construction stay synchronous so first paint is immediate.
@@ -409,13 +458,18 @@ class AnswerBlock(SelectableStatic):
             self.update(Group(render_markdown(body), Text("")))
 
     def _schedule_markdown_render(self, body: str) -> None:
-        """Submit one Markdown render to the worker pool and wire the callback."""
+        """Submit one Markdown render to the worker pool and wire the callback.
+
+        The current content (live preview or plain-text placeholder) stays
+        visible until the worker finishes, so the block never flashes empty.
+        """
         self._markdown_render_generation += 1
         generation = self._markdown_render_generation
-        self.update(Group(Text(""), Text("")))
+        self._markdown_inflight = True
         try:
             future = _markdown_render_executor.submit(_render_markdown_renderable, body)
         except Exception:  # noqa: BLE001 - executor shutdown fallback
+            self._markdown_inflight = False
             self.update(Group(render_markdown(body), Text("")))
             return
         future.add_done_callback(
@@ -428,7 +482,12 @@ class AnswerBlock(SelectableStatic):
         """Schedule a completed background markdown render back onto the UI thread."""
         try:
             renderable = future.result()
-            self.app.call_from_thread(self._apply_markdown, renderable, generation)
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            return
+        try:
+            _schedule_on_app_thread(
+                self.app, self._apply_markdown, renderable, generation
+            )
         except Exception:  # noqa: BLE001 - app/widget may be shutting down
             pass
 
@@ -440,6 +499,9 @@ class AnswerBlock(SelectableStatic):
             or self.live
         ):
             return
+        self._markdown_rendered = True
+        self._markdown_inflight = False
+        self._pending_markdown = False
         self.update(Group(renderable, Text("")))
 
 

@@ -28,6 +28,10 @@ from synapse.ui.transcript_blocks import ThoughtBlock
 from synapse.ui.turn_rail_widgets import TurnRail
 from synapse.ui.user_turn_block import UserTurnBlock
 
+# Restored blocks are mounted in chunks so a large transcript never forces one
+# giant layout + first-paint pass on the Textual event loop.
+_MOUNT_BATCH_SIZE = 12
+
 
 class TranscriptHistoryState:
     """Paginated history-restore state (projection cursor and pages)."""
@@ -527,18 +531,49 @@ class TranscriptHistoryController:
         return build_restored_blocks(self._app, events)
 
     def mount_blocks(self, blocks: list[Any]) -> None:
-        """Mount a batch of transcript blocks (single layout pass)."""
+        """Mount restored blocks in small chunks across refresh frames.
+
+        A single ``timeline.mount(*blocks)`` forces one big layout pass plus the
+        first paint of every block in the same frame, which stalls the UI on
+        large transcripts. Mounting ``_MOUNT_BATCH_SIZE`` blocks per refresh
+        keeps each frame bounded while the rest paint over subsequent frames.
+        """
         if not blocks:
             return
         app = self._app
         app._transcript._dismiss_welcome()
-        timeline = app.query_one("#log", VerticalScroll)
+        try:
+            timeline = app.query_one("#log", VerticalScroll)
+        except Exception:  # noqa: BLE001 - transcript may be detaching
+            return
         follow = (
             timeline.max_scroll_y <= 0
             or timeline.scroll_y >= timeline.max_scroll_y - 1
         )
-        timeline.mount(*blocks)
-        # ``TranscriptController._mount_block`` tracks live writes; restored batches
-        # are owned by ``state.pages`` and must not be counted a second time.
-        if follow:
-            app.call_after_refresh(app._transcript._scroll_timeline)
+        # Guard each follow-up chunk against session switches: a queued callback
+        # survives ``remove_children()`` and would otherwise remount stale blocks
+        # into the new session's timeline.
+        generation = self.state.generation
+        thread_id = app.thread_id
+
+        def _mount_chunk(start: int) -> None:
+            if self.state.generation != generation or app.thread_id != thread_id:
+                return
+            try:
+                current = app.query_one("#log", VerticalScroll)
+            except Exception:  # noqa: BLE001 - session switched mid-batch
+                return
+            chunk = blocks[start : start + _MOUNT_BATCH_SIZE]
+            if not chunk:
+                if follow:
+                    app.call_after_refresh(app._transcript._scroll_timeline)
+                return
+            try:
+                current.mount(*chunk)
+            except Exception:  # noqa: BLE001 - widget may detach mid-batch
+                return
+            app.call_after_refresh(_mount_chunk, start + _MOUNT_BATCH_SIZE)
+
+        # ``TranscriptController._mount_block`` tracks live writes; restored
+        # batches are owned by ``state.pages`` and must not be counted twice.
+        _mount_chunk(0)

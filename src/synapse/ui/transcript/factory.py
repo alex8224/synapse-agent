@@ -171,6 +171,7 @@ def build_restored_blocks(app: Any, events: list[Any]) -> list[Any]:
                     live=False,
                     fg_color=lambda: _styles._C_FG,
                     markdown_max_chars=_MARKDOWN_MAX_CHARS,
+                    defer_markdown=True,
                 )
             )
     app._transcript._refresh_turn_rail()
