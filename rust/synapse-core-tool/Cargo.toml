@@ -12,8 +12,10 @@ name = "synapse_core_tool"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+async-openai = { version = "0.41", features = ["chat-completion", "byot"] }
 chardetng = "0.1"
 encoding_rs = "0.8"
+futures-util = "0.3"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 globset = "0.4"
@@ -23,4 +25,8 @@ ratex-layout = "=0.1.14"
 ratex-parser = "=0.1.14"
 ratex-render = { version = "=0.1.14", features = ["embed-fonts"] }
 ratex-types = "=0.1.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2.0"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

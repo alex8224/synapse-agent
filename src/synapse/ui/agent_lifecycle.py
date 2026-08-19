@@ -197,6 +197,18 @@ class AgentLifecycleController:
         """
         if self.state.model_prewarm_started:
             return
+        # The native Rust transport does not import langchain_openai, so there
+        # is nothing to prewarm. Skip the import tree and let the agent build
+        # start immediately instead of waiting on a wasted import.
+        try:
+            from synapse.models.registry import should_use_rust_openai
+
+            if should_use_rust_openai(self._app.settings):
+                self.state.model_prewarm_started = True
+                self.state.model_prewarm_done.set()
+                return
+        except Exception:  # noqa: BLE001 - prewarm is best-effort
+            pass
         self.state.model_prewarm_started = True
 
         def _worker() -> None:

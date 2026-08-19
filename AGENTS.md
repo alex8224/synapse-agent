@@ -83,10 +83,20 @@ uv build                        # after packaging/entry-point changes
 
 ## Rust/PyO3 native crates
 
-One optional crate; the Python app must work without its wheel and must keep `ImportError`/`OSError` fallbacks.
+The Python app must work without the optional wheels and must keep `ImportError`/`OSError` fallbacks.
 
-- `rust/synapse-core-tool` (`synapse-core-tool` on PyPI): native filesystem tools (read/edit/patch/search) and math rendering. Release with tag `synapse-core-tool-v*`; `native-core-tool-wheels.yml` builds wheels and publishes to GitHub Release + PyPI. Keep the `pyproject.toml` version in sync with `Cargo.toml` — maturin names wheels from `pyproject.toml`.
+- `rust/synapse-core-tool` (`synapse-core-tool` on PyPI): native filesystem tools (read/edit/patch/search), math rendering, and the native OpenAI-compatible chat client (`RustOpenAIClient`, backed by `async-openai` byot). Release with tag `synapse-core-tool-v*`; `native-core-tool-wheels.yml` builds wheels and publishes to GitHub Release + PyPI. Keep the `pyproject.toml` version in sync with `Cargo.toml` — maturin names wheels from `pyproject.toml`.
 - `rust/synapse-tool-compress-core` (`synapse-tool-compress-core` on PyPI): native tool-output compression core. **Required dependency** of `synapse-cli-agent`. Release with tag `synapse-tool-compress-core-v*`; `native-compression-wheels.yml` builds wheels and publishes to GitHub Release + PyPI. Keep the `pyproject.toml` version in sync with `Cargo.toml`. Because the main package hard-depends on it, publish the compress-core wheels to PyPI before tagging the main `v*` release.
+
+### Building and installing a native crate locally
+
+`uv` builds the path dependencies declared in `[tool.uv.sources]` (`rust/synapse-core-tool` and `rust/synapse-tool-compress-core`). After changing Rust code, rebuild + reinstall the affected crate with:
+
+```powershell
+uv sync --reinstall-package synapse-core-tool
+```
+
+This runs maturin under the hood and installs the freshly built wheel into the venv. Do **not** rely on `maturin develop` — a plain `uv sync` afterwards re-copies the cached (stale) wheel over the develop install. To avoid that surprise, either always rebuild via `uv sync --reinstall-package ...`, or run every command with `uv run --no-sync` after a manual `maturin develop`.
 
 When changing either crate, at least run:
 
@@ -95,7 +105,7 @@ cargo test --manifest-path rust/<crate>/Cargo.toml
 cargo fmt --manifest-path rust/<crate>/Cargo.toml --check
 ```
 
-If Python bindings/APIs change, build or install the local extension and run the related Python tests.
+If Python bindings/APIs change, rebuild via `uv sync --reinstall-package <crate>` and run the related Python tests.
 
 Keep the Apache-2.0 SPDX headers, attribution, `LICENSE`, and `NOTICE` under `rust/synapse-tool-compress-core/src/headroom_port/`; do not introduce excluded network calls or model downloads.
 
