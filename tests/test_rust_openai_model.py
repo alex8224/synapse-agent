@@ -80,8 +80,9 @@ def test_usage_metadata_mapping() -> None:
             "prompt_tokens": 10,
             "completion_tokens": 5,
             "total_tokens": 15,
-            "input_token_details": {"cached_tokens": 2},
-            "output_token_details": {"reasoning_tokens": 3},
+            "prompt_tokens_details": {"cached_tokens": 2},
+            "completion_tokens_details": {"reasoning_tokens": 3},
+            "prompt_cache_hit_tokens": 2,
         }
     )
     assert um["input_tokens"] == 10

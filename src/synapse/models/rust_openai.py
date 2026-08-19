@@ -120,17 +120,27 @@ def tools_to_openai(tools: list[Any] | None) -> list[dict[str, Any]]:
 def usage_metadata_from_openai(usage: dict[str, Any] | None) -> dict[str, Any]:
     if not usage:
         return {}
-    details = usage.get("input_token_details") or {}
-    output_details = usage.get("output_token_details") or {}
+    # OpenAI wire field names: prompt_tokens_details / completion_tokens_details
+    # map to langchain UsageMetadata input_token_details / output_token_details.
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or {}
+    # DeepSeek-compatible gateways also surface prompt_cache_hit_tokens at the
+    # top level; prefer it over prompt_tokens_details.cached_tokens when present.
+    cache_read = usage.get("prompt_cache_hit_tokens")
+    if cache_read is None:
+        cache_read = prompt_details.get("cached_tokens", 0)
+    reasoning = completion_details.get("reasoning_tokens", 0)
+    if not reasoning:
+        reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
     return {
         "input_tokens": usage.get("prompt_tokens", 0),
         "output_tokens": usage.get("completion_tokens", 0),
         "total_tokens": usage.get("total_tokens", 0),
         "input_token_details": {
-            "cache_read": details.get("cached_tokens", 0),
+            "cache_read": cache_read,
         },
         "output_token_details": {
-            "reasoning": output_details.get("reasoning_tokens", 0),
+            "reasoning": reasoning,
         },
     }
 
@@ -362,6 +372,8 @@ class RustOpenAIChatModel(BaseChatModel):
 
         def _run() -> None:
             try:
+                # Run the sync streamer in a worker thread; it drives the
+                # synchronous run_manager (on_llm_new_token) for token callbacks.
                 for chunk in self._stream(messages, stop, None, **kwargs):
                     queue.put_nowait(chunk)
             finally:
@@ -372,6 +384,10 @@ class RustOpenAIChatModel(BaseChatModel):
             chunk = await queue.get()
             if chunk is None:
                 break
+            if run_manager is not None:
+                text = chunk.message.content if isinstance(chunk.message.content, str) else ""
+                if text:
+                    await run_manager.on_llm_new_token(text, chunk=chunk)
             yield chunk
         await task
 
