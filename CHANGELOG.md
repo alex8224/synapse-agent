@@ -8,6 +8,28 @@ All entries are written in English.
 
 ---
 
+## v0.1.38
+
+### New Features
+
+- Added a native Rust OpenAI chat transport (`RustOpenAIClient`) backed by `synapse-core-tool`, used as an OpenAI-compatible model backend.
+- Added an interactive HITL approval block: turn events emit `APPROVAL_REQUIRED`, the transcript mounts an `ApprovalBlock`, and decisions route through `resume_hitl` without treating `WAITING_APPROVAL` as a blocking busy state.
+- Added a `session-crash-repair` skill for recovering crashed sessions.
+
+### Bug Fixes
+
+- Fixed `usage_metadata` mapping in the OpenAI model: `prompt_tokens_details`/`completion_tokens_details` now map to `input_token_details`/`output_token_details` (cache_read and reasoning were always 0), `prompt_cache_hit_tokens` is preferred for cache reads on DeepSeek-compatible gateways, and the async run manager is passed through `_astream` so `on_llm_new_token` fires and TTFT/token rates update live.
+- Fixed the TUI thought block collapsing when clicking the expanded reasoning body; the toggle is now restricted to the header row(s) and clicks that finish a text selection are ignored.
+
+### Engineering
+
+- Reused the OpenAI HTTP client across requests in the native Rust transport (`synapse-core-tool` v0.1.4).
+- Deferred markdown parsing of long restored transcript bodies to a worker (bounded plain-text preview first) and mounted restored blocks in chunks of 12 to avoid one giant layout pass.
+- Cached syntax highlighting across renders (`lru_cache`, cap 16k chars) so repeated redraws of code fences skip re-tokenizing.
+- Cached `SelectableStatic` renders so selection drags skip markdown re-rendering.
+
+---
+
 ## v0.1.37
 
 ### Engineering
