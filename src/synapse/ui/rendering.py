@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import re
 import threading
+from functools import lru_cache
 from typing import Any, ClassVar
 
 from rich import box
@@ -15,6 +16,7 @@ from rich.markdown import MarkdownElement
 from rich.markdown import TableElement as _TableElement
 from rich.panel import Panel
 from rich.segment import Segment
+from rich.syntax import Syntax as _Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme as RichTheme
@@ -480,6 +482,70 @@ def _render_mermaid_image(source: str) -> Any | None:
         return None
 
 
+#: Don't cache highlighting for very large blocks: per-token spans amplify memory.
+_MAX_CACHE_CODE_LEN = 16_384
+
+
+@lru_cache(maxsize=512)
+def _cached_highlight(
+    lexer_name: str,
+    theme: str,
+    code: str,
+    tab_size: int,
+    word_wrap: bool,
+    background_color: str | None,
+) -> Text:
+    """Highlight ``code`` once and cache the resulting ``Text``.
+
+    ``Syntax.highlight`` re-tokenizes the same source on every render, which
+    dominates TUI redraw time when a transcript contains code fences. The
+    returned :class:`~rich.text.Text` is not mutated by the ``word_wrap`` /
+    no-line-numbers render path, so it is safe to share across renders.
+    """
+    syntax = _Syntax(
+        code,
+        lexer_name,
+        theme=theme,
+        word_wrap=word_wrap,
+        tab_size=tab_size,
+        background_color=background_color,
+    )
+    return syntax.highlight(code)
+
+
+class _CachedSyntax(_Syntax):
+    """Rich ``Syntax`` whose Pygments highlight result is cached."""
+
+    def __init__(self, code: str, lexer: Any, **kwargs: Any) -> None:
+        super().__init__(code, lexer, **kwargs)
+        theme = kwargs.get("theme", "monokai")
+        # Only cache when lexer/theme are plain names. Lexer/SyntaxTheme
+        # instances carry caller-specific state we cannot safely key on.
+        self._cacheable = isinstance(lexer, str) and isinstance(theme, str)
+        self._lexer_name = lexer if isinstance(lexer, str) else ""
+        self._theme_name = theme if isinstance(theme, str) else ""
+
+    def highlight(self, code: str, line_range: Any = None) -> Text:
+        # Bypass the cache whenever Rich would mutate the shared Text in place
+        # (word_wrap=False calls remove_suffix) or the request is not keyable.
+        if (
+            line_range is not None
+            or not self.word_wrap
+            or not self._cacheable
+            or self._stylized_ranges
+            or len(code) > _MAX_CACHE_CODE_LEN
+        ):
+            return super().highlight(code, line_range)
+        return _cached_highlight(
+            self._lexer_name,
+            self._theme_name,
+            code,
+            self.tab_size,
+            self.word_wrap,
+            self.background_color,
+        )
+
+
 class _MermaidCodeBlock(_CodeBlock):
     """Code fence that draws mermaid diagrams.
 
@@ -507,7 +573,14 @@ class _MermaidCodeBlock(_CodeBlock):
                 if rendered is not None:
                     yield rendered
                     return
-        yield from super().__rich_console__(console, options)
+        code = str(self.text).rstrip()
+        yield _CachedSyntax(
+            code,
+            self.lexer_name,
+            theme=self.theme,
+            word_wrap=True,
+            padding=1,
+        )
 
 
 class _FullTableElement(_TableElement):
