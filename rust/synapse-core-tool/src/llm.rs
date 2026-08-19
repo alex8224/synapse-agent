@@ -44,31 +44,36 @@ impl StreamIter {
 }
 
 /// OpenAI-compatible chat client (raw JSON transport via async-openai byot).
+///
+/// The underlying ``async_openai::Client`` (and its reqwest connection pool) is
+/// built once and reused across calls, so keep-alive connections and TLS
+/// sessions persist between requests — mirroring the Python integration's
+/// per-model cached httpx client.
 #[pyclass]
 struct RustOpenAIClient {
-    api_key: Option<String>,
-    base_url: Option<String>,
-    headers: HashMap<String, String>,
+    client: async_openai::Client<OpenAIConfig>,
 }
 
-impl RustOpenAIClient {
-    fn make_config(&self) -> Result<OpenAIConfig, String> {
-        let mut cfg = OpenAIConfig::default();
-        // Explicitly override the env-derived key (OpenAIConfig::default reads
-        // OPENAI_API_KEY) so credentials never leak to a custom base_url.
-        cfg = cfg.with_api_key(self.api_key.clone().unwrap_or_default());
-        if let Some(base) = &self.base_url {
-            cfg = cfg.with_api_base(base);
-        }
-        for (k, v) in &self.headers {
-            let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
-                .map_err(|e| format!("invalid header name {k:?}: {e}"))?;
-            cfg = cfg
-                .with_header(name, v.clone())
-                .map_err(|e| format!("invalid header {k:?}: {e}"))?;
-        }
-        Ok(cfg)
+fn build_config(
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    headers: &HashMap<String, String>,
+) -> Result<OpenAIConfig, String> {
+    let mut cfg = OpenAIConfig::default();
+    // Explicitly override the env-derived key (OpenAIConfig::default reads
+    // OPENAI_API_KEY) so credentials never leak to a custom base_url.
+    cfg = cfg.with_api_key(api_key.unwrap_or_default().to_string());
+    if let Some(base) = base_url {
+        cfg = cfg.with_api_base(base);
     }
+    for (k, v) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+            .map_err(|e| format!("invalid header name {k:?}: {e}"))?;
+        cfg = cfg
+            .with_header(name, v.clone())
+            .map_err(|e| format!("invalid header {k:?}: {e}"))?;
+    }
+    Ok(cfg)
 }
 
 #[pymethods]
@@ -84,10 +89,11 @@ impl RustOpenAIClient {
         let _ = timeout_secs; // async-openai config does not expose a per-call timeout
         let base_url = base_url.filter(|b| !b.trim().is_empty());
         let api_key = api_key.filter(|k| !k.trim().is_empty());
+        let headers = headers.unwrap_or_default();
+        let cfg = build_config(api_key.as_deref(), base_url.as_deref(), &headers)
+            .map_err(PyRuntimeError::new_err)?;
         Ok(Self {
-            api_key,
-            base_url,
-            headers: headers.unwrap_or_default(),
+            client: Client::with_config(cfg),
         })
     }
 
@@ -95,11 +101,9 @@ impl RustOpenAIClient {
     fn complete(&self, py: Python<'_>, request_json: String) -> PyResult<String> {
         let request: serde_json::Value = serde_json::from_str(&request_json)
             .map_err(|e| PyRuntimeError::new_err(format!("invalid request JSON: {e}")))?;
-        let cfg = self.make_config().map_err(PyRuntimeError::new_err)?;
-        let client = Client::with_config(cfg);
         let resp: serde_json::Value = py
             .allow_threads(|| {
-                runtime().block_on(async { client.chat().create_byot(request).await })
+                runtime().block_on(async { self.client.chat().create_byot(request).await })
             })
             .map_err(|e| PyRuntimeError::new_err(format!("request failed: {e}")))?;
         serde_json::to_string(&resp)
@@ -113,8 +117,7 @@ impl RustOpenAIClient {
         request["stream"] = serde_json::Value::Bool(true);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, String>>(64);
-        let cfg = self.make_config().map_err(PyRuntimeError::new_err)?;
-        let client = Client::with_config(cfg);
+        let client = self.client.clone();
 
         runtime().spawn(async move {
             let result = async {
