@@ -4,7 +4,8 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `src/synapse/app/` | Agent assembly and `AGENTS.md` injection |
+| `src/synapse/app/` | Agent assembly (composition root in `agent.py`, contracts in `agent_assembly.py`) and `AGENTS.md` injection |
+| `src/synapse/acp/` | Official Agent Client Protocol (ACP) adapter: run Synapse as an ACP agent over stdio; session registry, permission coordinator, event bridge |
 | `src/synapse/commands/` | Slash command parsing, completion, and results |
 | `src/synapse/content/` | Prompts, skills, input history, multimodal content |
 | `src/synapse/goals/` | Goal accounting, steering, and persistence |
@@ -29,7 +30,7 @@
 
 ## Architecture & compatibility
 
-- `src/synapse/app/agent.py` is the assembly layer; keep domain algorithms in their own packages.
+- `src/synapse/app/agent.py` is the assembly composition root; the reusable assembly contracts (middleware build, typed resource wiring) live in `src/synapse/app/agent_assembly.py`. Keep domain algorithms in their own packages.
 - New features belong in the matching domain package; cross-domain wiring goes in `app/` or an explicit runtime middleware.
 - `src/synapse/config.py` is a compatibility re-export layer. Import from `synapse.settings` in new code; keep legacy import paths working.
 - `__init__.py` exports are public API. Keep necessary re-exports when moving implementations.
