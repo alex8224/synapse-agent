@@ -8,7 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.padding import Padding
 from rich.text import Text
 from textual.app import ComposeResult
@@ -25,6 +25,10 @@ _DEFAULT_DIM = "#9aa0a6"
 _DEFAULT_FG = "#e8eaed"
 _DEFAULT_THOUGHT_MARK = "◆"
 _DEFAULT_MARKDOWN_MAX_CHARS = 24_000
+# Console used only by ``Text.wrap`` line counting for the header hit-test;
+# ``RichVisual`` measures with the same algorithm, so line counts match the
+# terminal's wrapping. The console is never rendered to, so it can be minimal.
+_wrap_console = Console(force_terminal=False, no_color=True, width=200)
 # Below this length Markdown parsing is cheap enough to stay synchronous and
 # keep first paint immediate; longer attached answers render on a worker.
 _MARKDOWN_ASYNC_MIN_CHARS = 3_000
@@ -170,7 +174,7 @@ class ThoughtBlock(SelectableStatic):
         if self.live:
             lines: list[Text | Any] = [
                 Text(
-                    f"  {self._thought_mark}  Thinking... {self.elapsed_s:.1f}s",
+                    self._header_text(),
                     style=f"italic {dim}",
                 )
             ]
@@ -181,7 +185,7 @@ class ThoughtBlock(SelectableStatic):
             lines.append(Text(""))
             self.update(Group(*lines))
             return
-        lines = [Text(f"  {self._thought_mark}  Thought for {self.elapsed_s:.1f}s", style=dim)]
+        lines = [Text(self._header_text(), style=dim)]
         if self.body:
             if self.collapsed:
                 preview = " ".join(self.body.split())
@@ -194,6 +198,27 @@ class ThoughtBlock(SelectableStatic):
                 )
         lines.append(Text(""))
         self.update(Group(*lines))
+
+    def _header_text(self) -> str:
+        """Header line shown above the reasoning body (live or sealed)."""
+        if self.live:
+            return f"  {self._thought_mark}  Thinking... {self.elapsed_s:.1f}s"
+        return f"  {self._thought_mark}  Thought for {self.elapsed_s:.1f}s"
+
+    def _header_row_count(self) -> int:
+        """Rows the header occupies at the current content width.
+
+        Textual wraps each Group item at the widget's content width, so a
+        narrow terminal may fold the header onto a second line; the click
+        toggle must accept every header row, not just ``y == 0``.
+        """
+        width = self.content_size.width
+        if width <= 0:
+            return 1
+        try:
+            return len(Text(self._header_text()).wrap(_wrap_console, width, tab_size=8))
+        except Exception:  # noqa: BLE001 - never block toggling on a wrap error
+            return 1
 
     def toggle(self) -> None:
         if not self.body or self.live:
@@ -216,8 +241,29 @@ class ThoughtBlock(SelectableStatic):
     def on_click(self, event: Click) -> None:
         if getattr(event, "chain", 1) != 1:
             return
+        if self._has_active_selection():
+            return
+        # Expand/collapse lives on the header row(s) only. Clicks on the body
+        # (expanded markdown or collapsed preview) must not collapse the block
+        # so the rendered content stays selectable and copyable.
+        if event.y >= self._header_row_count():
+            return
         event.stop()
         self.toggle()
+
+    def _has_active_selection(self) -> bool:
+        """True when the user is finishing a mouse text selection."""
+        try:
+            screen = self.screen
+        except Exception:  # noqa: BLE001 - not mounted, no selection possible
+            return False
+        get_selected = getattr(screen, "get_selected_text", None)
+        if get_selected is None:
+            return False
+        try:
+            return bool(get_selected())
+        except Exception:  # noqa: BLE001
+            return False
 
 
 class AnswerBlock(SelectableStatic):

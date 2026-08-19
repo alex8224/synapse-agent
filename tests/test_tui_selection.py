@@ -258,6 +258,97 @@ def test_thought_block_stays_expanded_on_seal_when_configured() -> None:
     assert block.collapsed is False
 
 
+def test_thought_block_only_header_row_toggles() -> None:
+    """Expand/collapse must live on the header row, not the body content."""
+    from textual.events import Click
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            yield ThoughtBlock(1.0, "alpha\nbeta\ngamma")
+
+    def _click(block: ThoughtBlock, y: int) -> None:
+        block.on_click(Click(block, 0, y, 0, 0, 1, False, False, False))
+
+    async def _run() -> None:
+        app = Host()
+        async with app.run_test() as pilot:
+            del pilot
+            block = app.query_one(ThoughtBlock)
+            assert block.collapsed is True
+            # Collapsed: row 0 is the header, row 1 the preview, row 2 blank.
+            _click(block, 1)  # preview click must not expand
+            _click(block, 2)  # blank click must not expand
+            assert block.collapsed is True
+            # The header row toggles open.
+            _click(block, 0)
+            assert block.collapsed is False
+            # Expanded: rows >= 1 are the rendered markdown body; clicking
+            # them must not collapse the block so the text stays copyable.
+            _click(block, 1)
+            _click(block, 3)
+            assert block.collapsed is False
+            # The header row toggles closed again.
+            _click(block, 0)
+            assert block.collapsed is True
+
+    asyncio.run(_run())
+
+
+def test_thought_block_click_ignored_while_selection_active() -> None:
+    """A click finishing a text selection must not collapse the block."""
+    from textual.events import Click
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            yield ThoughtBlock(1.0, "alpha beta gamma")
+
+    async def _run() -> None:
+        app = Host()
+        async with app.run_test() as pilot:
+            del pilot
+            block = app.query_one(ThoughtBlock)
+            assert block.collapsed is True
+            app.screen.get_selected_text = lambda: "alpha beta"
+            block.on_click(Click(block, 0, 0, 0, 0, 1, False, False, False))
+            assert block.collapsed is True  # selection click never collapses
+            app.screen.get_selected_text = lambda: ""
+            block.on_click(Click(block, 0, 0, 0, 0, 1, False, False, False))
+            assert block.collapsed is False
+
+    asyncio.run(_run())
+
+
+def test_thought_block_wrapped_header_rows_all_toggle() -> None:
+    """A header folded onto two rows by a narrow terminal stays clickable."""
+    from textual.events import Click
+
+    class Host(App):
+        def compose(self) -> ComposeResult:
+            yield ThoughtBlock(12345.6, "alpha beta gamma")
+
+    async def _run() -> None:
+        app = Host()
+        async with app.run_test(size=(14, 8)) as pilot:
+            del pilot
+            block = app.query_one(ThoughtBlock)
+            assert block.collapsed is True
+            # The long elapsed value wraps the header onto a second row.
+            header_rows = block._header_row_count()
+            assert header_rows >= 2
+            # Click the header continuation row: still toggles.
+            block.on_click(
+                Click(block, 0, 1, 0, 0, 1, False, False, False)
+            )
+            assert block.collapsed is False
+            # A body row below the wrapped header never collapses.
+            block.on_click(
+                Click(block, 0, header_rows, 0, 0, 1, False, False, False)
+            )
+            assert block.collapsed is False
+
+    asyncio.run(_run())
+
+
 def test_answer_get_selection_full_body() -> None:
     block = AnswerBlock("alpha\nbeta\ngamma")
     sel = Selection(None, None)
