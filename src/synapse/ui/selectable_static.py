@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from textual.visual import Visual
 from textual.widgets import Static
 
 
@@ -139,6 +142,62 @@ class SelectableStatic(Static):
     """
 
     ALLOW_SELECT = True
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._content_version = 0
+        self._last_content_key: Any = None
+
+    def update(self, content: Any = "", **kwargs: Any) -> None:
+        """Update content and bump the render-cache version."""
+        super().update(content, **kwargs)
+        self._content_version += 1
+
+    def _render_content(self) -> None:
+        """Render content only when the inputs that determine it changed.
+
+        Textual re-runs ``_render_content`` whenever the widget is dirty, and
+        every mouse move resolves the style under the cursor through
+        ``render_line``, which also marks the widget dirty while it does so.
+        The Rich markdown render is by far the most expensive part of that
+        path, so skip it when content, size, or style are unchanged.
+
+        Strips are rendered with ``apply_selection=False`` so selection state
+        is never baked into the cached strips: while a drag is active
+        ``screen.selections`` keeps ``text_selection`` non-None on every mouse
+        move, and the cache must stay valid for the whole drag. Selection
+        painting is applied in ``render_line`` on top of the cached strips
+        instead, so selection state never needs a content re-render.
+        """
+        # ``Visual.to_strips`` skips ``link_style`` while ``screen._selecting``
+        # is true, so the cache key must track it even though
+        # ``apply_selection`` keeps selection paint out of the strips.
+        try:
+            screen_selecting = bool(self.screen._selecting)
+        except Exception:  # noqa: BLE001 - detached widgets render blank anyway
+            screen_selecting = False
+        key = (
+            self._content_version,
+            self.size.width,
+            self.size.height,
+            self.visual_style,
+            self.auto_links,
+            screen_selecting,
+        )
+        if (
+            key == self._last_content_key
+            and getattr(self._render_cache, "size", None) == self.size
+        ):
+            self._dirty_regions.clear()
+            return
+        width, height = self.size
+        visual = self._render()
+        strips = Visual.to_strips(
+            self, visual, width, height, self.visual_style, apply_selection=False
+        )
+        self._render_cache = type(self._render_cache)(self.size, strips)
+        self._dirty_regions.clear()
+        self._last_content_key = key
 
     def selectable_text(self) -> str:
         """Logical plain text (preferred for full-block copy / last-answer)."""

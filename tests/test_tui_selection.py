@@ -421,3 +421,130 @@ def test_drag_select_sets_content_offset_and_highlight() -> None:
                 assert _color_name(seg.style.color) != _color_name(seg.style.bgcolor)
 
     asyncio.run(_run())
+
+
+def _color_name(color: object) -> str:
+    if color is None:
+        return ""
+    name = getattr(color, "name", None)
+    if name:
+        return str(name).lower()
+    return str(color).lower()
+
+
+def _selection_bg_text(line: object) -> str:
+    """Concatenate the text painted with the readable selection background."""
+    return "".join(
+        seg.text
+        for seg in line
+        if seg.style
+        and seg.style.bgcolor is not None
+        and "#264f78" in _color_name(seg.style.bgcolor)
+    )
+
+
+def test_content_selection_move_clears_old_span_and_clear_leaves_none() -> None:
+    """Content visuals (AnswerBlock live text) must not bake selection into
+    the render cache: moving or clearing a selection repaints spans without
+    leaving ghost highlights behind."""
+    import asyncio
+
+    from rich.text import Text as RichText
+    from textual.app import App
+    from textual.containers import Vertical
+    from textual.geometry import Offset, Region
+    from textual.selection import Selection
+
+    class Mini(App):
+        def compose(self) -> ComposeResult:
+            with Vertical():
+                yield SelectableStatic("")
+
+    async def _run() -> None:
+        app = Mini()
+        async with app.run_test(size=(80, 12)):
+            block = app.query_one(SelectableStatic)
+            block.update(RichText("goodbye cruel world, this line changed"))
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            block.render_line(0)
+
+            app.screen.selections = {block: Selection(Offset(0, 0), Offset(5, 0))}
+            app.screen._selecting = True
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            assert _selection_bg_text(block.render_line(0)) == "goodb"
+
+            # Content update while selected (AnswerBlock.update_live path).
+            block.update(RichText("goodbye cruel world, this line changed"))
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            assert "goodb" in _selection_bg_text(block.render_line(0))
+
+            # Move selection: old span is replaced, not accumulated.
+            app.screen.selections = {block: Selection(Offset(8, 0), Offset(13, 0))}
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            painted = _selection_bg_text(block.render_line(0))
+            assert "goodb" not in painted
+            assert "cruel" in painted
+
+            # Clear: no leftover highlight.
+            app.screen.selections = {}
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            assert _selection_bg_text(block.render_line(0)) == ""
+
+    asyncio.run(_run())
+
+
+def test_selection_render_line_does_not_render_content_again() -> None:
+    """Mouse moves while a selection is active must not re-run the expensive
+    content render: cached strips are reused and selection paint is layered on
+    in render_line."""
+    import asyncio
+
+    from rich.text import Text as RichText
+    from textual.app import App
+    from textual.containers import Vertical
+    from textual.geometry import Offset, Region
+    from textual.selection import Selection
+
+    class Mini(App):
+        def compose(self) -> ComposeResult:
+            with Vertical():
+                yield SelectableStatic("")
+
+    async def _run() -> None:
+        app = Mini()
+        async with app.run_test(size=(80, 12)):
+            block = app.query_one(SelectableStatic)
+            block.update(RichText("hello world this is a longer line for spans"))
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            block.render_line(0)
+
+            app.screen.selections = {block: Selection(Offset(0, 0), Offset(5, 0))}
+            app.screen._selecting = True
+            renders = {"n": 0}
+            original = block._render
+
+            def counted() -> object:
+                renders["n"] += 1
+                return original()
+
+            block._render = counted  # type: ignore[method-assign]
+            # Entering selection flips screen._selecting, which is part of the
+            # cache key (link-style semantics): exactly one re-render is
+            # expected there, and the drag itself must not re-render.
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            block.render_line(1)
+            assert renders["n"] == 1
+            renders["n"] = 0
+            for _ in range(50):
+                block._dirty_regions = {Region(0, 0, 80, 12)}
+                block.render_line(1)
+            assert renders["n"] == 0
+
+            # A real content change still re-renders.
+            renders["n"] = 0
+            block.update(RichText("brand new content"))
+            block._dirty_regions = {Region(0, 0, 80, 12)}
+            block.render_line(0)
+            assert renders["n"] == 1
+
+    asyncio.run(_run())
