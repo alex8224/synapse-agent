@@ -102,6 +102,7 @@ jobs:
             --collect-all termaid `
             --collect-all texicode `
             --collect-all synapse_tool_compress_core `
+            --collect-data synapse `
             src/synapse/entry.py
 
       - name: Rename executable for artifact

@@ -25,6 +25,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files as package_files
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -224,7 +225,13 @@ def _record_summary(record: Any, index: int) -> dict[str, Any]:
 # Inspector page
 # ---------------------------------------------------------------------------
 
-_PAGE_HTML = (Path(__file__).with_name("debug_inspector.html")).read_text(encoding="utf-8")
+# Read via importlib.resources so the page also works under PyInstaller
+# (frozen) builds, where ``Path(__file__)`` points into the unpacked bundle.
+_PAGE_HTML = (
+    package_files("synapse.observability")
+    .joinpath("debug_inspector.html")
+    .read_text(encoding="utf-8")
+)
 
 
 # ---------------------------------------------------------------------------
