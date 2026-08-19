@@ -46,7 +46,10 @@ def test_profiles_from_mapping_reads_context_window() -> None:
     assert "temperature" in prof.extra
 
 
-def test_global_and_profile_headers_merge_with_profile_override() -> None:
+def test_global_and_profile_headers_merge_with_profile_override(monkeypatch) -> None:
+    # Assertions inspect kwargs passed to init_chat_model (langchain_openai
+    # fallback); disable the native Rust transport here.
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     reg = _profiles_from_mapping(
         {
             "default": "main",
@@ -184,7 +187,11 @@ def test_apply_context_window_sets_profile() -> None:
     assert model2.profile["other"] is True
 
 
-def test_build_chat_model_stamps_profile_for_summarization() -> None:
+def test_build_chat_model_stamps_profile_for_summarization(monkeypatch) -> None:
+    # The assertion inspects the langchain_openai fallback path; disable the
+    # native Rust transport here (Rust path is covered by
+    # test_capabilities::test_rust_transport_used_when_native_available).
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     reg = ModelRegistry(
         profiles={
             "main": ModelProfile(

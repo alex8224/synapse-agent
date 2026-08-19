@@ -93,6 +93,10 @@ def test_registry_from_models_config(tmp_path: Path, monkeypatch):
 def test_models_config_thinking_and_params(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
+    # Force the langchain_openai fallback path (asserts below inspect kwargs
+    # passed to init_chat_model). The native Rust transport is covered by
+    # test_rust_transport_used_when_native_available.
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     cfg = {
         "default": "main",
         "models": {
@@ -155,6 +159,9 @@ def test_models_config_can_enable_responses_websocket(tmp_path: Path, monkeypatc
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
     monkeypatch.delenv("OPENAI_WEBSOCKET", raising=False)
+    # The http profile asserts the langchain_openai fallback path; keep the
+    # native Rust transport out of this test.
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     cfg = {
         "default": "ws",
         "models": {
@@ -219,6 +226,9 @@ def test_models_config_can_enable_responses_websocket(tmp_path: Path, monkeypatc
 def test_thinking_levels_array_and_session_override(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("MODEL", raising=False)
+    # Assertions below inspect kwargs passed to init_chat_model (the
+    # langchain_openai fallback); disable the native Rust transport here.
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     cfg = {
         "default": "main",
         "thinking_levels": ["off", "low", "high", "max"],
@@ -346,6 +356,9 @@ def test_stream_chunk_timeout_disabled_by_default_and_profile_override(
     """Avoid langchain-openai 120s StreamChunkTimeoutError on long reasoning."""
     monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
     monkeypatch.delenv("STREAM_CHUNK_TIMEOUT", raising=False)
+    # Assertions inspect kwargs passed to init_chat_model (the langchain_openai
+    # fallback); disable the native Rust transport here.
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     monkeypatch.setattr(
         "synapse.settings.config_paths.user_config_dir",
         lambda: tmp_path / "nouser" / ".synapse",
@@ -613,3 +626,95 @@ def test_default_subagents_optional_models(tmp_path: Path):
     assert len(subs) >= 1
     names = {s.get("name") for s in subs}
     assert "tester" in names
+
+
+def test_rust_transport_used_when_native_available(tmp_path: Path, monkeypatch):
+    """Plain HTTP OpenAI profiles prefer the native Rust transport when present."""
+    monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
+    monkeypatch.delenv("MODEL", raising=False)
+    cfg = {
+        "default": "main",
+        "models": {
+            "main": {
+                "model": "openai:gpt-test",
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:9/v1/",
+                "temperature": 0.2,
+                "max_tokens": 512,
+                "model_kwargs": {"foo": 1},
+                "extra_body": {"bar": 2},
+                "thinking": "high",
+            },
+        },
+    }
+    path = tmp_path / ".synapse" / "models.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=None,
+        checkpoint_backend="memory",
+    )
+    reg = registry_from_settings(settings)
+
+    fake_rust_model = MagicMock(name="rust-chat-model")
+    with (
+        patch("synapse.models.rust_openai.rust_openai_available", return_value=True),
+        patch(
+            "synapse.models.rust_openai.RustOpenAIChatModel",
+            return_value=fake_rust_model,
+        ) as rust_model,
+    ):
+        built = reg.build_chat_model("main", fallback_api_key="k")
+
+    assert built is fake_rust_model
+    assert rust_model.call_args.kwargs["model"] == "gpt-test"
+    assert rust_model.call_args.kwargs["api_key"] == "test-key"
+    assert rust_model.call_args.kwargs["base_url"] == "http://127.0.0.1:9/v1"
+    assert rust_model.call_args.kwargs["temperature"] == 0.2
+    assert rust_model.call_args.kwargs["max_tokens"] == 512
+    assert rust_model.call_args.kwargs["model_kwargs"]["foo"] == 1
+    assert rust_model.call_args.kwargs["extra_body"]["bar"] == 2
+    assert rust_model.call_args.kwargs["extra_body"]["thinking"]["type"] == "enabled"
+    assert rust_model.call_args.kwargs["reasoning_effort"] == "high"
+    assert fake_rust_model._coding_rust_openai is True
+
+
+def test_rust_transport_falls_back_to_langchain_when_native_missing(
+    tmp_path: Path, monkeypatch
+):
+    """Without the native extension, openai: profiles use langchain_openai."""
+    monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
+    monkeypatch.delenv("MODEL", raising=False)
+    cfg = {
+        "default": "main",
+        "models": {
+            "main": {
+                "model": "openai:gpt-test",
+                "base_url": "http://127.0.0.1:9/v1/",
+                "thinking": "off",
+            },
+        },
+    }
+    path = tmp_path / ".synapse" / "models.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=None,
+        checkpoint_backend="memory",
+    )
+    reg = registry_from_settings(settings)
+
+    with (
+        patch("synapse.models.rust_openai.rust_openai_available", return_value=False),
+        patch("synapse.models.registry.init_chat_model") as init_mock,
+    ):
+        init_mock.return_value = MagicMock(name="chat")
+        built = reg.build_chat_model("main", fallback_api_key="k")
+
+    assert built is init_mock.return_value
+    kwargs = init_mock.call_args.kwargs
+    assert init_mock.call_args.args == ("openai:gpt-test",)
+    assert kwargs["base_url"] == "http://127.0.0.1:9/v1"
+    assert kwargs["extra_body"]["thinking"]["type"] == "disabled"
