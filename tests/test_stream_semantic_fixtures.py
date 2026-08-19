@@ -111,6 +111,7 @@ def _semantic_trace(events: CollectingEventSink) -> list[str]:
         TurnEventKind.ACTIVITY_STOPPED,
         TurnEventKind.INFO,
         TurnEventKind.USAGE_UPDATED,
+        TurnEventKind.APPROVAL_REQUIRED,
     }
     return [event.kind.value for event in events.events if event.kind not in ignored]
 
@@ -138,3 +139,96 @@ def test_raw_stream_fixture_matches_semantic_trace(scenario_name: str) -> None:
     )
     assert sum(event.kind in _TERMINAL_KINDS for event in events.events) == 1
     assert events.events[-1].kind in _TERMINAL_KINDS
+
+
+class _ApprovalAwareRenderer(_FixtureRenderer):
+    """Renderer that exposes the interactive ``pending_approval`` hook."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pending_approval_calls: list[tuple[Any, Any]] = []
+
+    def pending_approval(self, actions: Any, raw: Any = None) -> None:
+        self.pending_approval_calls.append((actions, raw))
+
+
+def test_hitl_interrupt_uses_pending_approval_when_renderer_supports_it() -> None:
+    """A capable renderer receives the interrupt as an approval event, not text."""
+    scenario = _load_scenarios()["hitl"]
+    renderer = _ApprovalAwareRenderer()
+    events = CollectingEventSink()
+
+    result = stream_agent(
+        _FixtureAgent(scenario),
+        {"messages": []},
+        {"configurable": {"thread_id": "fixture-hitl-approval"}},
+        prefer_async=False,
+        subgraphs=True,
+        sink=renderer,
+        event_sink=events,
+    )
+
+    assert result.interrupted is True
+    assert len(renderer.pending_approval_calls) == 1
+    actions, raw = renderer.pending_approval_calls[0]
+    assert len(actions) == 1
+    assert actions[0].name == "execute"
+    assert actions[0].args == {"command": "safe command"}
+    assert raw is not None
+
+
+def test_hitl_interrupt_falls_back_to_info_lines() -> None:
+    """Renderers without the approval hook keep the legacy plain-text notice."""
+    scenario = _load_scenarios()["hitl"]
+    calls: list[str] = []
+
+    class _InfoRenderer(_FixtureRenderer):
+        def info(self, message: str) -> None:
+            calls.append(message)
+
+    result = stream_agent(
+        _FixtureAgent(scenario),
+        {"messages": []},
+        {"configurable": {"thread_id": "fixture-hitl-fallback"}},
+        prefer_async=False,
+        subgraphs=True,
+        sink=_InfoRenderer(),
+        event_sink=CollectingEventSink(),
+    )
+
+    assert result.interrupted is True
+    assert calls
+    assert any("/approve" in line for line in calls)
+
+
+def test_hitl_interrupt_emits_structured_approval_event() -> None:
+    """The broker always receives APPROVAL_REQUIRED, even with a headless sink.
+
+    This is the TUI live path: the renderer is headless, so the interactive
+    approval widget is rebuilt from the event by ``TextualTurnEventRenderer``.
+    """
+    from synapse.runtime.streaming import ApprovalPayload
+
+    scenario = _load_scenarios()["hitl"]
+    events = CollectingEventSink()
+
+    result = stream_agent(
+        _FixtureAgent(scenario),
+        {"messages": []},
+        {"configurable": {"thread_id": "fixture-hitl-event"}},
+        prefer_async=False,
+        subgraphs=True,
+        sink=_FixtureRenderer(),
+        event_sink=events,
+    )
+
+    assert result.interrupted is True
+    approval = [e for e in events.events if e.kind is TurnEventKind.APPROVAL_REQUIRED]
+    assert len(approval) == 1
+    payload = approval[0].payload
+    assert isinstance(payload, ApprovalPayload)
+    assert len(payload.actions) == 1
+    assert payload.actions[0].name == "execute"
+    assert payload.actions[0].args == {"command": "safe command"}
+    # Terminal event still follows the approval event.
+    assert approval[0].sequence < events.events[-1].sequence

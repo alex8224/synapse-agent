@@ -17,6 +17,8 @@ class TranscriptState:
     user_turns: list[UserTurnBlock] = field(default_factory=list)
     thought_blocks: list[ThoughtBlock] = field(default_factory=list)
     tool_blocks: list[ToolGroupBlock] = field(default_factory=list)
+    # Mounted HITL approval blocks (interactive 通过/拒绝 widgets).
+    approval_blocks: list[object] = field(default_factory=list)
     # Completed mounted turns, oldest first. Each page starts with one UserTurnBlock.
     live_turn_pages: list[list[object]] = field(default_factory=list)
     current_turn_blocks: list[object] = field(default_factory=list)

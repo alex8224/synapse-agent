@@ -2351,7 +2351,13 @@ class CodingAgentApp(App[None]):
             exclusive=True,
         )
 
-    def run_resume(self, action: str, message: str | None = None) -> None:
+    def run_resume(
+        self,
+        action: str,
+        message: str | None = None,
+        *,
+        quiet: bool = False,
+    ) -> None:
         launch_context = getattr(self._turn, "launch_context", None)
         if callable(launch_context):
             thread_id, agent, generation = launch_context()
@@ -2368,9 +2374,10 @@ class CodingAgentApp(App[None]):
                     thread_id=thread_id,
                     agent=agent,
                     transcript_generation=generation,
+                    quiet=quiet,
                 )
             else:
-                self._turn.run_resume(action, message)
+                self._turn.run_resume(action, message, quiet=quiet)
 
         self.run_worker(
             _run,

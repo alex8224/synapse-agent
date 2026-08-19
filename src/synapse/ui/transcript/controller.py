@@ -310,6 +310,8 @@ class TranscriptController:
                 st.thought_blocks.remove(block)
             elif isinstance(block, ToolGroupBlock) and block in st.tool_blocks:
                 st.tool_blocks.remove(block)
+            elif block in st.approval_blocks:
+                st.approval_blocks.remove(block)
 
     def _renumber_user_turns(self) -> None:
         history_state = getattr(getattr(self._app, "_history", None), "state", None)
@@ -655,6 +657,28 @@ class TranscriptController:
         body = soften_turn_footer(message)
         self._mount_block(Static(Text(f"  {body}", style=_styles._C_MUTED)))
 
+    def mount_approval(self, pending: Any) -> None:
+        """Mount an interactive HITL approval block in the timeline."""
+        from synapse.ui.approval import ApprovalBlock
+
+        self._commit_live_tools_to_log()
+        block = ApprovalBlock(pending, on_decide=self._on_approval_decided)
+        self._mount_block(block)
+        self.state.approval_blocks.append(block)
+
+    def _on_approval_decided(self, action: str, message: str | None) -> bool:
+        """Forward an approval-widget decision to the HITL resume path.
+
+        Returns True when the resume was accepted. A False return tells the
+        approval block to re-enable its buttons (the session may still be
+        settling the interrupted turn into ``WAITING_APPROVAL``).
+        """
+        slash = getattr(self._app, "_slash", None)
+        if slash is None:
+            self._app.append_event("approval handler unavailable", "yellow")
+            return False
+        return bool(slash.resume_hitl(action, message))
+
     def append_event(self, message: str, style: str = "dim") -> None:
         self._mount_block(
             Static(Text(f"  {message}", style=style)),
@@ -677,6 +701,7 @@ class TranscriptController:
         st.user_turns.clear()
         st.thought_blocks.clear()
         st.tool_blocks.clear()
+        st.approval_blocks.clear()
         st.live_turn_pages.clear()
         st.current_turn_blocks.clear()
         st.live_stream_block = None

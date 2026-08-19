@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from synapse.runtime.streaming import (
     ActivityPayload,
+    ApprovalPayload,
     SubagentStatusPayload,
     TextPayload,
     ToolBatchFinishedPayload,
@@ -194,6 +195,21 @@ class TextualTurnEventRenderer:
                 rate_basis=payload.rate_basis,
                 rate_estimated=payload.rate_estimated,
             )
+        elif kind is TurnEventKind.APPROVAL_REQUIRED and isinstance(
+            payload, ApprovalPayload
+        ):
+            from synapse.runtime.hitl import PendingAction
+
+            actions = [
+                PendingAction(
+                    name=item.name,
+                    args=dict(item.args or {}),
+                    description=item.description or "",
+                    allowed_decisions=list(item.allowed_decisions or ()),
+                )
+                for item in payload.actions
+            ]
+            self._sink.pending_approval(actions, None)
         elif kind is TurnEventKind.INFO:
             self._sink.info(str(payload))
         elif kind in {

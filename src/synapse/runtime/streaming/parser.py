@@ -879,7 +879,6 @@ def stream_agent(
         try:
             from synapse.runtime.hitl import (
                 extract_pending_interrupt,
-                format_interrupt_lines,
                 has_pending_interrupt,
             )
 
@@ -887,8 +886,7 @@ def stream_agent(
             if interrupted:
                 pending = extract_pending_interrupt(agent, run_config)
                 if pending is not None:
-                    for line in format_interrupt_lines(pending):
-                        sink.info(line)
+                    sink.pending_approval(list(pending.actions), pending.raw)
         except Exception:  # noqa: BLE001
             interrupted = False
 

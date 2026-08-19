@@ -1305,8 +1305,13 @@ class TurnController:
         thread_id: str | None = None,
         agent: Any | None = None,
         transcript_generation: int | None = None,
+        quiet: bool = False,
     ) -> None:
-        """Resume graph after /approve or /reject (host wraps with @work)."""
+        """Resume graph after /approve or /reject (host wraps with @work).
+
+        ``quiet`` skips the plain-text pending list when the decision came
+        from the interactive approval widget (which already shows the actions).
+        """
         from synapse.runtime.hitl import (
             build_decisions,
             build_resume_payload,
@@ -1334,8 +1339,9 @@ class TurnController:
             if pending is None or (not pending.actions and not pending.raw):
                 app.call_from_thread(app.append_event, "no pending approval", "yellow")
                 return
-            for line in format_interrupt_lines(pending):
-                app.call_from_thread(app.append_event, line, "dim")
+            if not quiet:
+                for line in format_interrupt_lines(pending):
+                    app.call_from_thread(app.append_event, line, "dim")
             decisions = build_decisions(pending, action=action, message=message)
             payload = build_resume_payload(decisions)
             request = build_resume_request(

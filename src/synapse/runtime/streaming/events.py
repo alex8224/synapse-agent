@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -31,6 +31,7 @@ class TurnEventKind(StrEnum):
     PLAN_REMOVED = "plan_removed"
     DIFF_UPDATED = "diff_updated"
     USAGE_UPDATED = "usage_updated"
+    APPROVAL_REQUIRED = "approval_required"
     INFO = "info"
     TURN_COMPLETED = "turn_completed"
     TURN_CANCELLED = "turn_cancelled"
@@ -73,6 +74,23 @@ class ActivityPayload:
 class TextPayload:
     text: str
     message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalActionPayload:
+    """One HITL action waiting for a human decision (broker-safe copy)."""
+
+    name: str
+    args: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
+    allowed_decisions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalPayload:
+    """Structured HITL interrupt for interactive approval UIs (replay-safe)."""
+
+    actions: tuple[ApprovalActionPayload, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

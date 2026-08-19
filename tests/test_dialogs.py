@@ -2163,3 +2163,57 @@ class TestActiveSessionSwitcherDialog:
         # Default dialogs keep their narrow window.
         assert DialogBase()._width == 66
         assert _content_cells_for(66) == 60
+
+
+class TestResumeHitlGate:
+    """/approve and /reject must not be blocked by the busy gate while HITL."""
+
+    @staticmethod
+    def _runtime(status: Any) -> MagicMock:
+        from synapse.runtime.sessions import SessionStatus
+
+        runtime = MagicMock()
+        runtime.snapshot.return_value.status = (
+            status if status is not None else SessionStatus.IDLE
+        )
+        return runtime
+
+    def test_resume_allowed_when_waiting_approval(self, monkeypatch) -> None:
+        """WAITING_APPROVAL counts as busy, but resume must still go through."""
+        from synapse.runtime.sessions import SessionStatus
+
+        app = _make_app(monkeypatch)
+        app.run_resume = MagicMock()
+        app._capture_turn_context = MagicMock()
+        runtime = self._runtime(SessionStatus.WAITING_APPROVAL)
+        app._turn._session_runtime = runtime
+        app._turn._sessions = {"test-thread": runtime}
+        app._busy = True
+
+        app._slash.resume_hitl("approve")
+
+        app.run_resume.assert_called_once_with("approve", None)
+        app.append_event.assert_not_called()
+        app.set_activity.assert_called_once_with("tool", "HITL approve", True)
+
+    def test_resume_blocked_when_busy_without_hitl(self, monkeypatch) -> None:
+        """A genuinely running turn still refuses a resume."""
+        app = _make_app(monkeypatch)
+        app.run_resume = MagicMock()
+        app._turn._session_runtime = None
+        app._turn._sessions = {}
+        app._busy = True
+
+        app._slash.resume_hitl("approve")
+
+        app.run_resume.assert_not_called()
+        app.append_event.assert_called_once_with("still running previous turn…", "yellow")
+
+    def test_resume_runs_when_idle(self, monkeypatch) -> None:
+        app = _make_app(monkeypatch)
+        app.run_resume = MagicMock()
+        app._busy = False
+
+        app._slash.resume_hitl("reject", "not needed")
+
+        app.run_resume.assert_called_once_with("reject", "not needed")

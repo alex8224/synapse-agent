@@ -625,7 +625,7 @@ def test_run_turn_worker_uses_session_group() -> None:
         "transcript_generation": 7,
     }
     assert turn_calls == [("hello", ["img"], expected)]
-    assert resume_calls == [("approve", "ok", expected)]
+    assert resume_calls == [("approve", "ok", {**expected, "quiet": False})]
 
 
 def test_run_turn_worker_runs_inside_textual() -> None:

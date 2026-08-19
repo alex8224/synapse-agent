@@ -52,6 +52,8 @@ class TextualStreamHost(Protocol):
 
     def append_meta(self, message: str) -> None: ...
 
+    def mount_approval(self, pending: Any) -> None: ...
+
     def _refresh_git_chrome(self) -> None: ...
 
     def begin_tool_batch(self) -> None: ...
@@ -605,3 +607,9 @@ class TextualStreamSink:
 
     def info(self, message: str) -> None:
         self._call("append_meta", message)
+
+    def pending_approval(self, actions: list[Any], raw: Any = None) -> None:
+        """Mount a friendly interactive approval block instead of raw JSON."""
+        from synapse.runtime.hitl import PendingInterrupt
+
+        self._call("mount_approval", PendingInterrupt(actions=list(actions), raw=raw))

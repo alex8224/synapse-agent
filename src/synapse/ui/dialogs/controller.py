@@ -457,17 +457,49 @@ class SlashController:
 
     def _resume_after_effects(self, action: str, message: str | None) -> None:
         """Start a HITL resume after its slash result has updated host state."""
+        self.resume_hitl(action, message)
+
+    def resume_hitl(self, action: str, message: str | None = None) -> bool:
+        """Resume a HITL-paused graph with a human decision (approve/reject).
+
+        HITL interrupts leave the session runtime in ``WAITING_APPROVAL``,
+        which is intentionally counted as "busy" for new submissions. That
+        state must NOT block resume, otherwise /approve and /reject can never
+        run: the graph is stuck waiting for the decision that only they (or an
+        interactive approval widget) can provide.
+
+        Returns True when the resume was accepted; False when the session is
+        still settling a running turn (the interactive approval widget uses
+        this to re-enable its buttons instead of going permanently dead).
+        """
         app = self._app
         if app.agent is None:
             app.append_event("agent not ready — cannot resume HITL", "yellow")
-            return
-        if app._busy:
+            return False
+        if app._busy and not self._has_pending_hitl(app):
             app.append_event("still running previous turn…", "yellow")
-            return
+            return False
         app._capture_turn_context()
         app._busy = True
         app.set_activity("tool", f"HITL {action}", True)
         app.run_resume(action, message)
+        return True
+
+    @staticmethod
+    def _has_pending_hitl(app: Any) -> bool:
+        """True when the foreground session is paused waiting for approval."""
+        turn = getattr(app, "_turn", None)
+        if turn is None:
+            return False
+        try:
+            runtime = turn.runtime_for(app.thread_id)
+            if runtime is None:
+                return False
+            from synapse.runtime.sessions import SessionStatus
+
+            return runtime.snapshot().status is SessionStatus.WAITING_APPROVAL
+        except Exception:  # noqa: BLE001 - best-effort gate
+            return False
 
     def apply_ok_result(
         self,

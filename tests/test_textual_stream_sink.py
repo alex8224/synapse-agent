@@ -75,3 +75,24 @@ def test_sink_host_protocol_is_explicit() -> None:
     from synapse.ui.transcript.controller import TranscriptController
 
     assert isinstance(TranscriptController(object()), TextualStreamHost)
+
+
+def test_pending_approval_forwards_to_host_mount() -> None:
+    """HITL interrupts mount an approval block instead of raw JSON text."""
+    from synapse.runtime.hitl import PendingAction
+
+    host = _Host()
+    sink = TextualStreamSink(host)
+
+    sink.pending_approval(
+        [PendingAction(name="execute", args={"command": "ls -la"})],
+        raw={"action_requests": []},
+    )
+
+    mounts = [args for name, args, _ in host.calls if name == "mount_approval"]
+    assert len(mounts) == 1
+    pending = mounts[0][0]
+    assert len(pending.actions) == 1
+    assert pending.actions[0].name == "execute"
+    assert pending.actions[0].args == {"command": "ls -la"}
+    assert "info" not in [name for name, _, _ in host.calls]

@@ -7,6 +7,8 @@ from typing import Any
 from synapse.runtime.streaming.accumulator import TurnAccumulator
 from synapse.runtime.streaming.events import (
     ActivityPayload,
+    ApprovalActionPayload,
+    ApprovalPayload,
     DiffPayload,
     PlanEntryPayload,
     PlanPayload,
@@ -252,6 +254,39 @@ class InstrumentedStreamSink:
     def info(self, message: str) -> None:
         self.accumulator.emit(TurnEventKind.INFO, str(message))
         self._forward("info", message)
+
+    def pending_approval(self, actions: list[Any], raw: Any = None) -> None:
+        """Forward a HITL interrupt to broker consumers and direct renderers.
+
+        The structured ``APPROVAL_REQUIRED`` event lets TUI brokers/replays
+        rebuild an interactive approval widget. Renderers that expose
+        ``pending_approval`` also get the structured call directly; renderers
+        without it (CLI, headless) fall back to plain text lines so the
+        interrupt is never silently dropped.
+        """
+        packed = tuple(
+            ApprovalActionPayload(
+                name=getattr(act, "name", "") or "",
+                args=dict(getattr(act, "args", None) or {}),
+                description=getattr(act, "description", "") or "",
+                allowed_decisions=tuple(
+                    getattr(act, "allowed_decisions", None) or ()
+                ),
+            )
+            for act in actions
+        )
+        self.accumulator.emit(
+            TurnEventKind.APPROVAL_REQUIRED, ApprovalPayload(actions=packed)
+        )
+        renderer = self.renderer
+        if callable(getattr(renderer, "pending_approval", None)):
+            self._forward("pending_approval", actions, raw)
+            return
+        from synapse.runtime.hitl import PendingInterrupt, format_interrupt_lines
+
+        pending = PendingInterrupt(actions=list(actions), raw=raw)
+        for line in format_interrupt_lines(pending):
+            self._forward("info", line)
 
     def note_usage(self, **kwargs: Any) -> None:
         usage = UsagePayload(

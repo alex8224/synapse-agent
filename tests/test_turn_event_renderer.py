@@ -344,6 +344,70 @@ def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:
     controller._detach_renderer()
 
 
+def test_event_renderer_forwards_approval_required_to_sink() -> None:
+    """APPROVAL_REQUIRED rebuilds an interactive approval widget on replay."""
+    from synapse.runtime.streaming import ApprovalActionPayload, ApprovalPayload
+
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.emit(
+        _event(
+            1,
+            TurnEventKind.APPROVAL_REQUIRED,
+            ApprovalPayload(
+                actions=(
+                    ApprovalActionPayload(
+                        name="execute",
+                        args={"command": "ls"},
+                        description="run",
+                        allowed_decisions=("approve", "reject"),
+                    ),
+                )
+            ),
+        )
+    )
+
+    mounts = [call for call in host.calls if call[0] == "mount_approval"]
+    assert len(mounts) == 1
+    pending = mounts[0][1][0]
+    assert len(pending.actions) == 1
+    assert pending.actions[0].name == "execute"
+    assert pending.actions[0].args == {"command": "ls"}
+    assert pending.actions[0].allowed_decisions == ["approve", "reject"]
+
+
+def test_approval_payload_serializes_to_json_safe_envelope() -> None:
+    from synapse.runtime.streaming import ApprovalActionPayload, ApprovalPayload
+
+    event = _event(
+        1,
+        TurnEventKind.APPROVAL_REQUIRED,
+        ApprovalPayload(
+            actions=(
+                ApprovalActionPayload(
+                    name="write_file", args={"path": "/a.py"}, description="write"
+                ),
+            )
+        ),
+    )
+    data = event.to_dict()
+    assert data["kind"] == "approval_required"
+    assert data["payload"] == {
+        "actions": (
+            {
+                "name": "write_file",
+                "args": {"path": "/a.py"},
+                "description": "write",
+                "allowed_decisions": (),
+            },
+        )
+    }
+    import json
+
+    json.dumps(data)  # must be JSON-serializable
+
+
 def test_bridge_keeps_terminal_and_stops_after_close() -> None:
     host = _Host()
     renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")

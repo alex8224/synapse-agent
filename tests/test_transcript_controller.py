@@ -109,6 +109,7 @@ def test_reset_all_drops_mounted_references() -> None:
     controller.state.user_turns.append(object())  # type: ignore[arg-type]
     controller.state.thought_blocks.append(object())  # type: ignore[arg-type]
     controller.state.tool_blocks.append(object())  # type: ignore[arg-type]
+    controller.state.approval_blocks.append(object())  # type: ignore[arg-type]
     controller.state.live_stream_block = object()  # type: ignore[assignment]
     controller.state.pending_answer_divider = True
     controller.state.last_answer_text = "answer"
@@ -118,6 +119,7 @@ def test_reset_all_drops_mounted_references() -> None:
     assert controller.state.user_turns == []
     assert controller.state.thought_blocks == []
     assert controller.state.tool_blocks == []
+    assert controller.state.approval_blocks == []
     assert controller.state.live_stream_block is None
     assert controller.state.pending_answer_divider is False
     assert controller.state.last_answer_text == ""
@@ -171,5 +173,66 @@ def test_append_event_mounts_static_row() -> None:
 
     assert len(app.timeline.children) == 1
     assert isinstance(app.timeline.children[0], Static)
+
+
+def test_mount_approval_renders_block_and_forwards_decision() -> None:
+    from synapse.runtime.hitl import PendingAction, PendingInterrupt
+    from synapse.ui.approval import ApprovalBlock
+
+    controller, app = _make()
+    decisions: list[tuple[str, str | None]] = []
+    app._slash = SimpleNamespace(
+        resume_hitl=lambda a, m: (decisions.append((a, m)) or True)
+    )
+
+    pending = PendingInterrupt(
+        actions=[
+            PendingAction(name="execute", args={"command": "ls"}, description="run")
+        ]
+    )
+    controller.mount_approval(pending)
+
+    assert len(controller.state.approval_blocks) == 1
+    block = controller.state.approval_blocks[0]
+    assert isinstance(block, ApprovalBlock)
+    assert app.timeline.children[-1] is block
+
+    accepted = controller._on_approval_decided("approve", None)
+    assert accepted is True
+    assert decisions == [("approve", None)]
+
+
+def test_approval_decision_refused_when_handler_rejects() -> None:
+    from synapse.runtime.hitl import PendingAction, PendingInterrupt
+
+    controller, app = _make()
+    app._slash = SimpleNamespace(resume_hitl=lambda a, m: False)
+
+    pending = PendingInterrupt(
+        actions=[PendingAction(name="execute", args={"command": "ls"})]
+    )
+    controller.mount_approval(pending)
+
+    accepted = controller._on_approval_decided("approve", None)
+    assert accepted is False
+
+
+def test_mount_approval_cleaned_up_on_page_trim() -> None:
+    from synapse.runtime.hitl import PendingAction, PendingInterrupt
+
+    controller, app = _make()
+    app._slash = SimpleNamespace(resume_hitl=lambda a, m: None)
+    pending = PendingInterrupt(
+        actions=[PendingAction(name="execute", args={"command": "ls"})]
+    )
+    controller.mount_approval(pending)
+    block = controller.state.approval_blocks[0]
+
+    # Page eviction must drop the approval block reference along with the DOM.
+    controller.state.live_turn_pages.append([block])
+    controller._drop_page_references([block])
+    controller.state.current_turn_blocks.remove(block)
+
+    assert block not in controller.state.approval_blocks
 
 
