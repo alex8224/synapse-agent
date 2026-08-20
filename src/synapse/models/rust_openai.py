@@ -570,6 +570,8 @@ class RustOpenAIChatModel(BaseChatModel):
     timeout: float | None = None
     parallel_tool_calls: bool | None = None
     use_responses_api: bool = False
+    # Optional proxy URL (http/https/socks5/socks5h) for the native client.
+    proxy: str | None = None
 
     _client: Any = PrivateAttr(default=None)
     # Session id the cached native client was built for; a mismatch means the
@@ -630,6 +632,7 @@ class RustOpenAIChatModel(BaseChatModel):
                 base_url=self.base_url,
                 headers=headers,
                 timeout_secs=self.timeout,
+                proxy=self.proxy,
             )
             self._client_session_id = session_id
             self._client_api_key = api_key

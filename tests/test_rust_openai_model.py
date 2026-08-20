@@ -455,6 +455,26 @@ def test_client_without_session_keeps_static_headers(monkeypatch: Any) -> None:
     assert headers["x-headroom-base-url"] == "https://upstream"
 
 
+def test_proxy_forwarded_to_native_client(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(
+        model="deepseek-v4-flash",
+        base_url="https://x/v1",
+        proxy="socks5://localhost:7991",
+    )
+    model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 1
+    assert instances[0]["proxy"] == "socks5://localhost:7991"
+
+
+def test_proxy_defaults_to_none(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+    model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 1
+    assert instances[0]["proxy"] is None
+
+
 def test_astream_preserves_session_id_across_worker_thread(monkeypatch: Any) -> None:
     instances = _install_fake_rust_client(monkeypatch)
     model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")

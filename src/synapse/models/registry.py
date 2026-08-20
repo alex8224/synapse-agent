@@ -281,13 +281,11 @@ class ModelRegistry:
 
         if model_name.startswith("openai:"):
             # Native Rust transport: ordinary profiles use chat/completions and
-            # OAuth Codex profiles use Responses over HTTP/SSE. WebSocket and
-            # custom proxy kwargs keep the langchain_openai path.
+            # OAuth Codex profiles use Responses over HTTP/SSE. WebSocket keeps
+            # the langchain_openai path; proxy URLs are passed through to the
+            # native client and fall back to langchain_openai if it fails.
             turbo_enabled = bool(fallback_turbo or profile.turbo)
-            # Proxy routing is not implemented in the Rust transport; fall back
-            # when a custom proxy is configured via legacy kwargs.
-            rust_unsupported_kwargs = kwargs.get("openai_proxy") is not None
-            if not websocket and not rust_unsupported_kwargs:
+            if not websocket:
                 try:
                     from synapse.models.rust_openai import (
                         RustOpenAIChatModel,
@@ -375,6 +373,7 @@ class ModelRegistry:
                             timeout=kwargs.get("timeout"),
                             parallel_tool_calls=parallel,
                             use_responses_api=oauth_provider is not None,
+                            proxy=kwargs.get("openai_proxy"),
                         )
                         if oauth_provider is not None:
                             chat_model._oauth_provider = oauth_provider
@@ -974,8 +973,6 @@ def should_use_rust_openai(settings: Any, model_name: str | None = None) -> bool
         model_id = profile.model
         if not model_id.startswith("openai:"):
             return False
-        if profile.auth == "openai_oauth":
-            return False
         websocket = (
             bool(getattr(settings, "openai_websocket", False))
             if profile.websocket is None
@@ -983,10 +980,13 @@ def should_use_rust_openai(settings: Any, model_name: str | None = None) -> bool
         )
         if websocket:
             return False
-        if (profile.extra or {}).get("openai_proxy") is not None:
-            return False
-        from synapse.models.rust_openai import rust_openai_available
+        from synapse.models.rust_openai import (
+            rust_openai_available,
+            rust_openai_responses_available,
+        )
 
+        if profile.auth == "openai_oauth":
+            return rust_openai_responses_available()
         return rust_openai_available()
     except Exception:  # noqa: BLE001 - predicate must never raise
         return False

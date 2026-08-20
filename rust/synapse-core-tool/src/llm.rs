@@ -76,15 +76,50 @@ fn build_config(
     Ok(cfg)
 }
 
+/// Flatten a std::error::Error and its source chain into one readable string.
+///
+/// async-openai's ``OpenAIError::Reqwest`` display only shows the top-level
+/// ``http error: {reqwest}`` text, which hides the underlying connect/TLS/DNS
+/// cause. Walking the source chain keeps diagnostics actionable in Python.
+fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(" => ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+/// Build a reqwest client, optionally routing every request through a proxy.
+///
+/// The ``Client::with_config`` path uses a bare ``reqwest::Client::new()`` with
+/// no proxy configured, so when a proxy URL is supplied we build the client
+/// ourselves and inject it via ``Client::with_http_client``. Accepts the same
+/// schemes as ``reqwest::Proxy`` (http, https, socks4/4a/5/5h, ``all``, ...).
+fn build_http_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(url) = proxy.filter(|p| !p.trim().is_empty()) {
+        let configured =
+            reqwest::Proxy::all(url).map_err(|e| format!("invalid proxy url {url:?}: {e}"))?;
+        builder = builder.proxy(configured);
+    }
+    builder
+        .build()
+        .map_err(|e| format!("failed to build http client: {e}"))
+}
+
 #[pymethods]
 impl RustOpenAIClient {
     #[new]
-    #[pyo3(signature = (api_key=None, base_url=None, headers=None, timeout_secs=None))]
+    #[pyo3(signature = (api_key=None, base_url=None, headers=None, timeout_secs=None, proxy=None))]
     fn new(
         api_key: Option<String>,
         base_url: Option<String>,
         headers: Option<HashMap<String, String>>,
         timeout_secs: Option<f64>,
+        proxy: Option<String>,
     ) -> PyResult<Self> {
         let _ = timeout_secs; // async-openai config does not expose a per-call timeout
         let base_url = base_url.filter(|b| !b.trim().is_empty());
@@ -92,8 +127,9 @@ impl RustOpenAIClient {
         let headers = headers.unwrap_or_default();
         let cfg = build_config(api_key.as_deref(), base_url.as_deref(), &headers)
             .map_err(PyRuntimeError::new_err)?;
+        let http_client = build_http_client(proxy.as_deref()).map_err(PyRuntimeError::new_err)?;
         Ok(Self {
-            client: Client::with_config(cfg),
+            client: Client::with_config(cfg).with_http_client(http_client),
         })
     }
 
@@ -105,7 +141,7 @@ impl RustOpenAIClient {
             .allow_threads(|| {
                 runtime().block_on(async { self.client.chat().create_byot(request).await })
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {e}")))?;
+            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e))))?;
         serde_json::to_string(&resp)
             .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
     }
@@ -118,7 +154,7 @@ impl RustOpenAIClient {
             .allow_threads(|| {
                 runtime().block_on(async { self.client.responses().create_byot(request).await })
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {e}")))?;
+            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e))))?;
         serde_json::to_string(&resp)
             .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
     }
@@ -138,7 +174,7 @@ impl RustOpenAIClient {
                     .chat()
                     .create_stream_byot::<_, serde_json::Value>(request)
                     .await
-                    .map_err(|e| format!("request failed: {e}"))?;
+                    .map_err(|e| format!("request failed: {}", format_error_chain(&e)))?;
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk.map_err(|e| format!("stream read failed: {e}"))?;
                     let json = serde_json::to_string(&chunk)
@@ -173,7 +209,7 @@ impl RustOpenAIClient {
                     .responses()
                     .create_stream_byot::<_, serde_json::Value>(request)
                     .await
-                    .map_err(|e| format!("request failed: {e}"))?;
+                    .map_err(|e| format!("request failed: {}", format_error_chain(&e)))?;
                 while let Some(event) = stream.next().await {
                     let event = event.map_err(|e| format!("stream read failed: {e}"))?;
                     let json = serde_json::to_string(&event)
