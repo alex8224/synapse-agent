@@ -45,6 +45,34 @@ def test_token_rate_completed_snapshot_is_reset_after_finish() -> None:
     assert second.tokens_per_second is None
 
 
+def test_token_rate_hidden_reasoning_falls_back_to_end_to_end() -> None:
+    tracker = TokenRateTracker()
+    tracker.model_started(now=10.0)
+    # Provider hides reasoning deltas; only the short visible answer streams.
+    tracker.output_observed("answer", now=17.0)
+
+    snapshot = tracker.model_finished(100, now=18.0, hidden_reasoning_tokens=90)
+
+    # Decode span would be 1.0s (17 -> 18), but the hidden reasoning makes that
+    # under-count the numerator; end-to-end is 8.0s (10 -> 18).
+    assert snapshot.elapsed_s == 8.0
+    assert snapshot.tokens_per_second == 100 / 8
+    assert snapshot.basis is TokenRateBasis.END_TO_END
+
+
+def test_token_rate_streamed_reasoning_keeps_generation_basis() -> None:
+    tracker = TokenRateTracker()
+    tracker.model_started(now=10.0)
+    tracker.output_observed("think", now=11.0, reasoning=True)
+    tracker.output_observed("answer", now=17.0)
+
+    snapshot = tracker.model_finished(100, now=18.0, hidden_reasoning_tokens=40)
+
+    # Reasoning was streamed, so the decode span (11 -> 18) is honest.
+    assert snapshot.tokens_per_second == 100 / 7
+    assert snapshot.basis is TokenRateBasis.GENERATION
+
+
 def test_token_rate_live_snapshot_is_estimated_in_real_time() -> None:
     tracker = TokenRateTracker()
     tracker.model_started(now=10.0)
@@ -70,6 +98,32 @@ def test_token_rate_single_output_uses_decode_duration() -> None:
     assert snapshot.elapsed_s == 7.0
     assert snapshot.tokens_per_second == 100 / 5
     assert snapshot.ttft_s == 2.0
+    assert snapshot.basis is TokenRateBasis.GENERATION
+
+
+def test_token_rate_tool_call_uses_end_to_end_duration() -> None:
+    tracker = TokenRateTracker()
+    tracker.model_started(now=10.0)
+    tracker.output_observed('{"path":"/tmp/file"}', now=17.0, tool_call=True)
+
+    snapshot = tracker.model_finished(100, now=18.0)
+
+    # Tool-call chunks can end immediately before the final usage message;
+    # decode-span timing would incorrectly report 100 tok/s here.
+    assert snapshot.elapsed_s == 8.0
+    assert snapshot.tokens_per_second == 100 / 8
+    assert snapshot.basis is TokenRateBasis.END_TO_END
+
+
+def test_token_rate_streamed_reasoning_takes_priority_over_tool_call() -> None:
+    tracker = TokenRateTracker()
+    tracker.model_started(now=10.0)
+    tracker.output_observed("think", now=11.0, reasoning=True)
+    tracker.output_observed('{"path":"/tmp/file"}', now=17.0, tool_call=True)
+
+    snapshot = tracker.model_finished(100, now=18.0)
+
+    assert snapshot.tokens_per_second == 100 / 7
     assert snapshot.basis is TokenRateBasis.GENERATION
 
 

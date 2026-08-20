@@ -491,9 +491,9 @@ def stream_agent(
                 text = _chunk_text(msg_chunk)
                 tool_call_chunks = getattr(msg_chunk, "tool_call_chunks", None) or []
                 if reasoning_delta:
-                    rate_tracker.output_observed(reasoning_delta)
+                    rate_tracker.output_observed(reasoning_delta, reasoning=True)
                 if tool_call_chunks:
-                    rate_tracker.output_observed(str(tool_call_chunks))
+                    rate_tracker.output_observed(str(tool_call_chunks), tool_call=True)
                 if reasoning_delta:
                     sink.activity_update("reasoning", "model thinking")
                     sink.write_reasoning(reasoning_delta)
@@ -689,7 +689,10 @@ def stream_agent(
                             last_input_tokens = int(u["input_tokens"] or 0)
                             last_output_tokens = int(u["output_tokens"] or 0)
                             last_cache_tokens = int(u.get("cache_tokens", 0) or 0)
-                            rate_snapshot = rate_tracker.model_finished(last_output_tokens)
+                            rate_snapshot = rate_tracker.model_finished(
+                                last_output_tokens,
+                                hidden_reasoning_tokens=_reasoning_token_count(msg) or 0,
+                            )
                             model_call_count += 1
                             if rate_snapshot.tokens_per_second is not None:
                                 last_output_tokens_per_second = rate_snapshot.tokens_per_second

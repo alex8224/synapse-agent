@@ -170,6 +170,83 @@ def test_stream_agent_reports_completed_output_rate() -> None:
     )
 
 
+class _HiddenReasoningToolAgent:
+    """Stream a short tool call; provider reports hidden reasoning tokens."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        time.sleep(0.01)
+        yield (
+            "messages",
+            (
+                _Chunk(
+                    type="ai",
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "read_file",
+                            "args": '{"file_path": "/src/foo.py"}',
+                            "id": "call_1",
+                            "index": 0,
+                            "type": "tool_call_chunk",
+                        }
+                    ],
+                    id="m1",
+                ),
+                {"langgraph_node": "model"},
+            ),
+        )
+        time.sleep(0.01)
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {"file_path": "/src/foo.py"},
+                                    "id": "call_1",
+                                }
+                            ],
+                            id="m1",
+                            usage_metadata={
+                                "input_tokens": 1500,
+                                "output_tokens": 1000,
+                                "total_tokens": 2500,
+                                "output_token_details": {"reasoning": 960},
+                            },
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_hidden_reasoning_falls_back_to_end_to_end_rate() -> None:
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _HiddenReasoningToolAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    assert result.output_tokens == 1000
+    assert result.last_rate_basis == "end_to_end"
+    assert result.last_output_tokens_per_second is not None
+    usage_events = [event for event in sink.events if event[0] == "usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0][1]["rate_basis"] == "end_to_end"
+
+
 class _SteerUpdateAgent:
     def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
         del payload, config, kwargs
