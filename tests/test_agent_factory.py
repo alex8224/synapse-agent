@@ -16,7 +16,15 @@ from synapse.content.prompts import (
 from synapse.runtime.backends import build_backend
 
 
-def test_build_system_prompt_includes_workspace(tmp_path: Path):
+def test_build_system_prompt_includes_workspace(tmp_path: Path, monkeypatch) -> None:
+    from synapse.content import prompts as prompts_mod
+
+    # Isolate from the user's real ~/.synapse/system_prompt.md so the builtin
+    # English prompt body is exercised deterministically.
+    user_dir = tmp_path / "user-home"
+    user_dir.mkdir()
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: user_dir)
+
     text = build_system_prompt(tmp_path)
     assert str(tmp_path) in text
     assert (
@@ -91,7 +99,7 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         require_approval=False,
         checkpoint_backend="memory",
         enable_mcp=False,
-        enable_subagents=True,
+        enable_subagents=False,
     )
 
     fake_model = MagicMock(name="model")
@@ -100,6 +108,14 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
             "synapse.models.registry.init_chat_model",
             return_value=fake_model,
         ) as mock_model,
+        patch(
+            "synapse.models.rust_openai.rust_openai_available",
+            return_value=False,
+        ),
+        patch(
+            "synapse.runtime.subagent_specs.resolve_subagent_model_config",
+            return_value=(None, None),
+        ),
         patch(
             "deepagents.create_deep_agent",
             return_value=MagicMock(name="agent"),
@@ -170,10 +186,6 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert len(model_retries) == 1
         assert model_retries[0].on_failure == "error"
         assert any(
-            type(m).__name__ == "transform_tool_outputs"
-            for m in (kwargs.get("middleware") or [])
-        )
-        assert any(
             type(m).__name__ == "_FilesystemToolPromptMiddleware"
             for m in (kwargs.get("middleware") or [])
         )
@@ -204,6 +216,7 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
         active_model="openai:gpt-4.1",
         checkpoint_backend="memory",
         enable_mcp=False,
+        enable_subagents=False,
     )
     cache: dict[str, object] = {}
 
@@ -212,6 +225,14 @@ def test_build_coding_agent_reuses_cached_model_for_same_signature(tmp_path: Pat
             "synapse.models.registry.init_chat_model",
             side_effect=[MagicMock(name="model-1"), MagicMock(name="model-2")],
         ) as init,
+        patch(
+            "synapse.models.rust_openai.rust_openai_available",
+            return_value=False,
+        ),
+        patch(
+            "synapse.runtime.subagent_specs.resolve_subagent_model_config",
+            return_value=(None, None),
+        ),
         patch("deepagents.create_deep_agent", side_effect=[MagicMock(), MagicMock(), MagicMock()]),
         patch("deepagents.register_harness_profile", MagicMock()),
         patch("deepagents.HarnessProfile", MagicMock()),

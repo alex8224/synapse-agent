@@ -95,7 +95,8 @@ def test_dump_force_repeats_reported_stages() -> None:
     assert "stage-a" in forced.getvalue()
 
 
-def test_worker_thread_trace_is_registered() -> None:
+def test_worker_thread_trace_is_registered(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_STARTUP_TRACE", "1")
     startup_trace.reset()
     seen: list[StartupTrace] = []
 

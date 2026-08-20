@@ -43,7 +43,7 @@
       {"mode": "updates", "node": "tools", "messages": [{"type": "tool", "id": "task-result", "name": "task", "tool_call_id": "task-a", "content": "done"}]},
       {"mode": "updates", "node": "model", "messages": [{"type": "ai", "id": "task-final", "content": "inspected"}]}
     ],
-    "expected_trace": ["tool_batch_started", "tool_started", "tool_started", "tool_finished", "tool_finished", "tool_batch_finished", "answer_completed", "turn_completed"],
+    "expected_trace": ["tool_batch_started", "tool_started", "tool_started", "subagent_status_changed", "tool_finished", "tool_finished", "subagent_status_changed", "tool_batch_finished", "answer_completed", "turn_completed"],
     "expected_result": {"final_text": "inspected", "reasoning_text": "", "tool_calls": 1, "compact_events": 0, "interrupted": false}
   },
   "compact": {
