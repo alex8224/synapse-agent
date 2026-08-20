@@ -280,39 +280,43 @@ class ModelRegistry:
         websocket = fallback_websocket if profile.websocket is None else profile.websocket
 
         if model_name.startswith("openai:"):
-            # Native Rust transport: chat/completions over HTTP/SSE only. It
-            # avoids importing langchain_openai / the openai SDK (the dominant
-            # startup cost). WebSocket Responses, OAuth Codex, and custom proxy
-            # kwargs keep the langchain_openai path. Turbo is supported by
-            # rewriting base_url + headers exactly like the fallback path below.
+            # Native Rust transport: ordinary profiles use chat/completions and
+            # OAuth Codex profiles use Responses over HTTP/SSE. WebSocket and
+            # custom proxy kwargs keep the langchain_openai path.
             turbo_enabled = bool(fallback_turbo or profile.turbo)
             # Proxy routing is not implemented in the Rust transport; fall back
             # when a custom proxy is configured via legacy kwargs.
             rust_unsupported_kwargs = kwargs.get("openai_proxy") is not None
-            if (
-                not websocket
-                and oauth_provider is None
-                and not rust_unsupported_kwargs
-            ):
+            if not websocket and not rust_unsupported_kwargs:
                 try:
                     from synapse.models.rust_openai import (
                         RustOpenAIChatModel,
                         rust_openai_available,
+                        rust_openai_responses_available,
                     )
 
-                    if rust_openai_available():
+                    rust_available = (
+                        rust_openai_responses_available
+                        if oauth_provider is not None
+                        else rust_openai_available
+                    )
+                    if rust_available():
                         model_kwargs: dict[str, Any] = {}
                         model_kwargs.update(dict(profile.model_kwargs or {}))
                         if parallel:
                             model_kwargs.setdefault("parallel_tool_calls", True)
 
-                        think_kwargs = deepseek_thinking_kwargs(
-                            enabled=bool(resolved_enable),
-                            reasoning_effort=str(resolved_effort or "high"),
+                        think_kwargs = (
+                            {"reasoning_effort": resolved_effort}
+                            if oauth_provider is not None and resolved_enable
+                            else {}
+                            if oauth_provider is not None
+                            else deepseek_thinking_kwargs(
+                                enabled=bool(resolved_enable),
+                                reasoning_effort=str(resolved_effort or "high"),
+                            )
                         )
-                        extra_body: dict[str, Any] = dict(
-                            think_kwargs.get("extra_body") or {}
-                        )
+                        extra_body: dict[str, Any] = dict(think_kwargs.get("extra_body") or {})
                         # One-level deep merge for `thinking` to match the
                         # langchain_openai fallback behavior below.
                         profile_body = dict(profile.extra_body or {})
@@ -322,10 +326,19 @@ class ModelRegistry:
                             merged = dict(extra_body["thinking"])
                             merged.update(profile_body["thinking"])
                             profile_body["thinking"] = merged
+                        if oauth_provider is not None:
+                            extra_body.pop("thinking", None)
+                            profile_body.pop("thinking", None)
                         extra_body.update(profile_body)
 
                         rust_base_url = str(base_url).rstrip("/") if base_url else None
                         rust_headers = _merge_headers(configured_headers, oauth_headers)
+                        if oauth_provider is not None:
+                            rust_headers = {
+                                name: value
+                                for name, value in rust_headers.items()
+                                if name.casefold() != "authorization"
+                            }
                         # Route through headroom-turbo when it is enabled and the
                         # sidecar is healthy, mirroring the langchain_openai path.
                         if turbo_enabled and base_url and oauth_provider is None:
@@ -361,10 +374,16 @@ class ModelRegistry:
                             top_p=kwargs.get("top_p"),
                             timeout=kwargs.get("timeout"),
                             parallel_tool_calls=parallel,
+                            use_responses_api=oauth_provider is not None,
                         )
+                        if oauth_provider is not None:
+                            chat_model._oauth_provider = oauth_provider
                         chat_model._coding_async_only = True
                         chat_model._coding_websocket = False
                         chat_model._coding_http_async_client = None
+                        # The native Responses model performs the Codex request
+                        # adaptation itself; do not install the ChatOpenAI-only
+                        # middleware on top of it.
                         chat_model._synapse_openai_oauth = False
                         chat_model._coding_rust_openai = True
                         logger = logging.getLogger(__name__)
@@ -414,6 +433,12 @@ class ModelRegistry:
             headers = _merge_headers(
                 dict(kwargs.get("default_headers") or {}), configured_headers, oauth_headers
             )
+            if oauth_provider is not None:
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.casefold() != "authorization"
+                }
             if headers:
                 kwargs["default_headers"] = headers
             kwargs.setdefault("use_responses_api", bool(websocket) or oauth_provider is not None)

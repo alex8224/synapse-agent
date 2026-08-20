@@ -9,6 +9,7 @@ import types
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -19,10 +20,15 @@ from langchain_core.messages import (
 from synapse.models.rust_openai import (
     RustOpenAIChatModel,
     aimessage_chunk_from_openai_chunk,
+    aimessage_chunk_from_responses_event,
     aimessage_from_openai,
+    aimessage_from_responses,
     messages_to_openai_dicts,
+    responses_input_from_messages,
     tools_to_openai,
+    tools_to_responses,
     usage_metadata_from_openai,
+    usage_metadata_from_responses,
 )
 from synapse.runtime.session_headers import session_id_context
 
@@ -77,6 +83,170 @@ def test_tools_to_openai_dict_and_object() -> None:
     out = tools_to_openai([get_weather])
     assert out[0]["function"]["name"] == "get_weather"
     assert "city" in out[0]["function"]["parameters"]["properties"]
+
+
+def test_responses_input_hoists_system_and_maps_tool_turn() -> None:
+    instructions, items = responses_input_from_messages(
+        [
+            SystemMessage(content="system"),
+            HumanMessage(content="hello"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-1", "name": "lookup", "args": {"q": "x"}, "type": "tool_call"}
+                ],
+            ),
+            ToolMessage(content="result", tool_call_id="call-1"),
+        ]
+    )
+    assert instructions == "system"
+    assert items[0] == {"role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+    assert items[1]["type"] == "function_call"
+    assert items[1]["arguments"] == '{"q": "x"}'
+    assert items[2] == {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": "result",
+    }
+
+
+def test_responses_developer_input_uses_input_text() -> None:
+    _, items = responses_input_from_messages(
+        [SystemMessage(content="first"), SystemMessage(content="historical")]
+    )
+    assert items == [
+        {"role": "developer", "content": [{"type": "input_text", "text": "historical"}]}
+    ]
+
+
+def test_tools_to_responses_flattens_function_schema() -> None:
+    assert tools_to_responses(
+        [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    ) == [{"type": "function", "name": "f", "parameters": {}}]
+
+
+def test_responses_non_streaming_conversion() -> None:
+    message = aimessage_from_responses(
+        {
+            "id": "resp-1",
+            "output_text": "answer",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "lookup",
+                    "arguments": '{"q":"x"}',
+                }
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        }
+    )
+    assert message.content == "answer"
+    assert message.tool_calls[0]["id"] == "call-1"
+    assert message.tool_calls[0]["args"] == {"q": "x"}
+    assert usage_metadata_from_responses(
+        {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    )["total_tokens"] == 5
+
+
+def test_responses_stream_event_conversion() -> None:
+    state: dict[str, Any] = {}
+    text = aimessage_chunk_from_responses_event(
+        {"type": "response.output_text.delta", "delta": "hi"}, state
+    )
+    assert text is not None and text.content == "hi"
+    tool = aimessage_chunk_from_responses_event(
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc-1",
+            "delta": '{"q":',
+        },
+        state,
+    )
+    assert tool is not None and tool.tool_call_chunks[0]["args"] == '{"q":'
+    reasoning = aimessage_chunk_from_responses_event(
+        {"type": "response.reasoning_summary_text.delta", "delta": "think"}, state
+    )
+    assert reasoning is not None
+    assert reasoning.additional_kwargs["reasoning_content"] == "think"
+
+
+def test_responses_tool_name_is_only_emitted_on_first_argument_chunk() -> None:
+    state: dict[str, Any] = {}
+    added = aimessage_chunk_from_responses_event(
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "lookup"},
+        },
+        state,
+    )
+    assert added is None
+    first = aimessage_chunk_from_responses_event(
+        {"type": "response.function_call_arguments.delta", "item_id": "fc-1", "delta": '{"q":'},
+        state,
+    )
+    second = aimessage_chunk_from_responses_event(
+        {"type": "response.function_call_arguments.delta", "item_id": "fc-1", "delta": '"x"}'},
+        state,
+    )
+    assert first is not None and second is not None
+    merged = first + second
+    assert merged.tool_call_chunks[0]["name"] == "lookup"
+    assert merged.tool_call_chunks[0]["args"] == '{"q":"x"}'
+
+
+def test_responses_pure_tool_turn_omits_empty_assistant_message() -> None:
+    _, items = responses_input_from_messages(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "call-1", "name": "lookup", "args": {}}],
+            )
+        ]
+    )
+    assert items == [
+        {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"}
+    ]
+
+
+def test_chat_non_streaming_error_is_not_silent() -> None:
+    model = RustOpenAIChatModel(model="gpt-test")
+    fake = MagicMock()
+    fake.complete.return_value = json.dumps({"error": {"message": "bad chat response"}})
+    model._client = fake
+    with pytest.raises(RuntimeError, match="bad chat response"):
+        model.invoke([HumanMessage(content="hi")])
+
+
+def test_responses_reasoning_chunk_preserves_following_text_on_merge() -> None:
+    reasoning = aimessage_chunk_from_responses_event(
+        {"type": "response.reasoning_text.delta", "delta": "think"}
+    )
+    answer = aimessage_chunk_from_responses_event(
+        {"type": "response.output_text.delta", "delta": "answer"}
+    )
+    assert reasoning is not None and answer is not None
+    merged = reasoning + answer
+    assert merged.content == "answer"
+    assert merged.additional_kwargs["reasoning_content"] == "think"
+
+
+def test_responses_incomplete_max_output_tokens_keeps_partial_stream() -> None:
+    assert (
+        aimessage_chunk_from_responses_event(
+            {
+                "type": "response.incomplete",
+                "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+            }
+        )
+        is None
+    )
+
+
+def test_responses_non_streaming_error_is_not_silent() -> None:
+    with pytest.raises(RuntimeError, match="bad response"):
+        aimessage_from_responses({"error": {"message": "bad response"}})
 
 
 def test_usage_metadata_mapping() -> None:
@@ -141,6 +311,25 @@ def test_aimessage_chunk_from_stream_with_reasoning() -> None:
 
 def test_model_abstract_methods_implemented() -> None:
     assert RustOpenAIChatModel.__abstractmethods__ == frozenset()
+
+
+def test_responses_request_omits_stream_options_when_non_streaming() -> None:
+    model = RustOpenAIChatModel(
+        model="gpt-5",
+        use_responses_api=True,
+        model_kwargs={"stream_options": {"old": True}},
+    )
+    request = model._build_request([HumanMessage(content="hi")], streaming=False)
+    assert request["store"] is False
+    assert "stream_options" not in request
+
+
+def test_responses_request_includes_stream_options_when_streaming() -> None:
+    model = RustOpenAIChatModel(model="gpt-5", use_responses_api=True)
+    request = model._build_request([HumanMessage(content="hi")], streaming=True)
+    assert request["stream_options"] == {
+        "reasoning_summary_delivery": "sequential_cutoff"
+    }
 
 
 def test_model_invoke_uses_native_client() -> None:

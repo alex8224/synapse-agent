@@ -87,7 +87,8 @@ def test_profiles_from_mapping_reads_openai_oauth_auth() -> None:
     assert reg.get("codex").auth == "openai_oauth"
 
 
-def test_oauth_profile_uses_codex_backend_and_account_header() -> None:
+def test_oauth_profile_uses_codex_backend_and_account_header(monkeypatch) -> None:
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     reg = ModelRegistry(
         profiles={
             "codex": ModelProfile(
@@ -116,6 +117,7 @@ def test_oauth_profile_uses_codex_backend_and_account_header() -> None:
     _, kwargs = init.call_args
     assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert kwargs["default_headers"]["ChatGPT-Account-Id"] == "acct-123"
+    assert "authorization" not in {name.casefold() for name in kwargs["default_headers"]}
     assert kwargs["default_headers"]["originator"] == "synapse"
     assert kwargs["use_responses_api"] is True
     assert kwargs["store"] is False
@@ -138,7 +140,67 @@ def test_oauth_profile_requires_chatgpt_account_id() -> None:
             reg.build_chat_model("codex")
 
 
-def test_oauth_profile_ignores_configured_base_url() -> None:
+def test_oauth_profile_uses_native_responses_when_available(monkeypatch) -> None:
+    monkeypatch.delenv("SYNAPSE_DISABLE_RUST_OPENAI", raising=False)
+    reg = ModelRegistry(
+        profiles={
+            "codex": ModelProfile(
+                name="codex",
+                model="openai:gpt-5",
+                auth="openai_oauth",
+                headers={"Authorization": "Bearer configured"},
+                extra_body={"thinking": {"type": "disabled"}, "keep": True},
+            )
+        },
+        default="codex",
+    )
+    provider = SimpleNamespace(access_token=lambda: "oauth-access", account_id=lambda: "acct-123")
+    fake_model = SimpleNamespace()
+    with (
+        patch("synapse.integrations.openai_oauth.OpenAIOAuthTokenProvider", return_value=provider),
+        patch("synapse.models.rust_openai.rust_openai_responses_available", return_value=True),
+        patch("synapse.models.rust_openai.RustOpenAIChatModel", return_value=fake_model) as factory,
+    ):
+        built = reg.build_chat_model("codex")
+
+    assert built is fake_model
+    kwargs = factory.call_args.kwargs
+    assert kwargs["use_responses_api"] is True
+    assert kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert kwargs["default_headers"]["ChatGPT-Account-Id"] == "acct-123"
+    assert kwargs["extra_body"] == {"keep": True}
+    assert fake_model._oauth_provider is provider
+    assert fake_model._coding_rust_openai is True
+
+
+def test_oauth_profile_falls_back_when_native_responses_unavailable(monkeypatch) -> None:
+    monkeypatch.delenv("SYNAPSE_DISABLE_RUST_OPENAI", raising=False)
+    reg = ModelRegistry(
+        profiles={
+            "codex": ModelProfile(name="codex", model="openai:gpt-5", auth="openai_oauth")
+        },
+        default="codex",
+    )
+    model = SimpleNamespace(profile=None)
+    provider = SimpleNamespace(access_token=lambda: "oauth-access", account_id=lambda: "acct-123")
+    with (
+        patch("synapse.integrations.openai_oauth.OpenAIOAuthTokenProvider", return_value=provider),
+        patch("synapse.models.rust_openai.rust_openai_responses_available", return_value=False),
+        patch(
+            "synapse.integrations.http_clients.build_openai_async_http_client",
+            return_value=object(),
+        ),
+        patch("synapse.models.registry.init_chat_model", return_value=model) as init,
+    ):
+        built = reg.build_chat_model("codex")
+
+    assert built is model
+    assert init.call_args.kwargs["use_responses_api"] is True
+    assert built._synapse_openai_oauth is True
+
+
+def test_oauth_profile_ignores_configured_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("SYNAPSE_DISABLE_RUST_OPENAI", "1")
     reg = ModelRegistry(
         profiles={
             "codex": ModelProfile(

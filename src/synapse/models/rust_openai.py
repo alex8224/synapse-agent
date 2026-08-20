@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -58,6 +59,338 @@ def rust_openai_available() -> bool:
         return hasattr(synapse_core_tool, "RustOpenAIClient")
     except (ImportError, OSError):
         return False
+
+
+def rust_openai_responses_available() -> bool:
+    """True when the native extension exposes the Responses API methods."""
+    if not rust_openai_available():
+        return False
+    try:
+        import synapse_core_tool
+
+        client = getattr(synapse_core_tool, "RustOpenAIClient", None)
+        return client is not None and all(
+            hasattr(client, name) for name in ("complete_responses", "stream_responses")
+        )
+    except (ImportError, OSError):
+        return False
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "\n".join(part for part in parts if part)
+    return str(content) if content is not None else ""
+
+
+def _responses_content(content: Any, *, role: str) -> list[dict[str, Any]]:
+    """Convert LangChain content blocks to Responses input/output content."""
+    text_type = "input_text" if role == "user" else "output_text"
+    if isinstance(content, str):
+        return [{"type": text_type, "text": content}] if content else []
+    if not isinstance(content, list):
+        text = _content_text(content)
+        return [{"type": text_type, "text": text}] if text else []
+
+    result: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, str):
+            result.append({"type": text_type, "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            text = block.get("text")
+            if isinstance(text, str):
+                result.append({"type": text_type, "text": text})
+            continue
+        if role == "user" and block_type == "image_url":
+            image_url = block.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            if isinstance(image_url, str):
+                result.append({"type": "input_image", "image_url": image_url})
+            continue
+        # Preserve already-normalized Responses blocks and unknown provider
+        # extensions instead of silently dropping multimodal input.
+        result.append(dict(block))
+    return result
+
+
+def responses_input_from_messages(
+    messages: list[BaseMessage],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Return top-level instructions and Responses input items."""
+    instructions: str | None = None
+    items: list[dict[str, Any]] = []
+    for message in messages:
+        if isinstance(message, SystemMessage):
+            text = _content_text(message.content)
+            if instructions is None and text.strip():
+                instructions = text
+                continue
+            if text:
+                items.append({
+                    "role": "developer",
+                    # Developer messages are input items, so their text blocks
+                    # use ``input_text`` rather than the output-only type.
+                    "content": _responses_content(message.content, role="user"),
+                })
+            continue
+        if isinstance(message, ToolMessage):
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.tool_call_id or "",
+                    "output": _content_text(message.content),
+                }
+            )
+            continue
+        if isinstance(message, AIMessage):
+            text = _responses_content(message.content, role="assistant")
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for tool_call in message.tool_calls or []:
+                arguments = tool_call.get("args") or {}
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tool_call.get("id") or "",
+                        "name": tool_call.get("name") or "",
+                        "arguments": arguments,
+                    }
+                )
+            continue
+        items.append({"role": "user", "content": _responses_content(message.content, role="user")})
+    return instructions, items
+
+
+def tools_to_responses(tools: list[Any] | None) -> list[dict[str, Any]]:
+    """Flatten Chat Completions function tools to Responses function tools."""
+    result: list[dict[str, Any]] = []
+    for tool in tools_to_openai(tools):
+        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            converted = {"type": "function", **tool["function"]}
+            if "strict" in tool:
+                converted["strict"] = tool["strict"]
+            result.append(converted)
+        else:
+            result.append(tool)
+    return result
+
+
+def usage_metadata_from_responses(usage: dict[str, Any] | None) -> dict[str, Any]:
+    if not usage:
+        return {}
+    input_details = usage.get("input_token_details") or {}
+    output_details = usage.get("output_token_details") or {}
+    return {
+        "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+        "output_tokens": usage.get("output_tokens", usage.get("completion_tokens", 0)),
+        "total_tokens": usage.get("total_tokens", 0),
+        "input_token_details": {
+            "cache_read": input_details.get("cached_tokens", 0),
+        },
+        "output_token_details": {
+            "reasoning": output_details.get("reasoning_tokens", 0),
+        },
+    }
+
+
+def _responses_output_text(payload: dict[str, Any]) -> str:
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+    parts: list[str] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            for content in item.get("content") or []:
+                if isinstance(content, dict) and content.get("type") in {
+                    "output_text",
+                    "text",
+                }:
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+        elif item.get("type") == "output_text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
+
+
+def _responses_reasoning_text(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        for summary in item.get("summary") or []:
+            if isinstance(summary, dict) and isinstance(summary.get("text"), str):
+                parts.append(summary["text"])
+        if isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    try:
+        parsed = json.loads(str(arguments or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {"_raw": str(arguments or "")}
+    return parsed if isinstance(parsed, dict) else {"_raw": str(arguments or "")}
+
+
+def aimessage_from_responses(payload: dict[str, Any]) -> AIMessage:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message") or "Responses API returned an error"
+        raise RuntimeError(str(message))
+    status = payload.get("status")
+    if status in {"failed", "cancelled"}:
+        raise RuntimeError(f"Responses API returned status={status}")
+    reasoning = _responses_reasoning_text(payload)
+    tool_calls: list[dict[str, Any]] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        tool_calls.append(
+            {
+                "id": item.get("call_id") or item.get("id") or "",
+                "name": item.get("name") or "",
+                "args": _parse_tool_arguments(item.get("arguments")),
+                "type": "tool_call",
+            }
+        )
+    return AIMessage(
+        content=_responses_output_text(payload),
+        additional_kwargs={"reasoning_content": reasoning} if reasoning else {},
+        tool_calls=tool_calls,
+        id=payload.get("id"),
+    )
+
+
+def aimessage_chunk_from_responses_event(
+    event: dict[str, Any], state: dict[str, Any] | None = None
+) -> AIMessageChunk | None:
+    """Convert one Responses SSE event to a LangChain message chunk."""
+    state = state if state is not None else {}
+    event_type = event.get("type")
+    if event_type in {"response.failed", "error"}:
+        response = event.get("response") or {}
+        error = event.get("error") or response.get("error") or {}
+        message = error.get("message") if isinstance(error, dict) else None
+        raise RuntimeError(message or f"Responses API event failed: {event_type}")
+
+    if event_type == "response.incomplete":
+        response = event.get("response") or {}
+        details = response.get("incomplete_details") or {}
+        # max_output_tokens is a normal partial-result condition. Preserve the
+        # already streamed output; other incomplete reasons indicate a failed
+        # protocol turn and should not silently enter conversation history.
+        if details.get("reason") == "max_output_tokens":
+            return None
+        raise RuntimeError("Responses API response was incomplete")
+
+    if event_type == "response.output_item.added":
+        item = event.get("item") or {}
+        if item.get("type") == "function_call":
+            item_id = item.get("id") or item.get("call_id") or ""
+            state.setdefault("function_calls", {})[item_id] = {
+                "id": item.get("call_id") or item_id,
+                "name": item.get("name") or "",
+                "arguments_seen": False,
+            }
+        return None
+
+    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+        return AIMessageChunk(content=event.get("delta") or "", id=event.get("item_id"))
+
+    if event_type in {
+        "response.reasoning_text.delta",
+        "response.reasoning_summary_text.delta",
+    }:
+        delta = event.get("delta") or ""
+        return AIMessageChunk(
+            # Empty string is identity-like when LangChain merges chunks;
+            # an empty list would discard later visible text content.
+            content="",
+            additional_kwargs={"reasoning_content": delta} if delta else {},
+            id=event.get("item_id"),
+        )
+
+    if event_type in {
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+    }:
+        item_id = event.get("item_id") or event.get("output_item_id") or ""
+        function_calls = state.setdefault("function_calls", {})
+        meta = function_calls.setdefault(
+            item_id,
+            {"id": item_id, "name": event.get("name") or "", "arguments_seen": False},
+        )
+        if event_type.endswith(".done") and meta.get("arguments_seen"):
+            return None
+        arguments = event.get("delta") if event_type.endswith(".delta") else event.get("arguments")
+        arguments = arguments or ""
+        first_arguments_chunk = not meta.get("arguments_seen")
+        meta["arguments_seen"] = True
+        return AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "index": event.get("output_index", 0),
+                    "id": meta.get("id"),
+                    "name": meta.get("name") if first_arguments_chunk else "",
+                    "args": arguments,
+                    "type": "tool_call_chunk",
+                }
+            ],
+            id=item_id or None,
+        )
+
+    if event_type == "response.output_item.done":
+        item = event.get("item") or {}
+        if item.get("type") != "function_call":
+            return None
+        item_id = item.get("id") or item.get("call_id") or ""
+        meta = state.setdefault("function_calls", {}).setdefault(
+            item_id,
+            {"id": item.get("call_id") or item_id, "name": item.get("name") or ""},
+        )
+        if meta.get("arguments_seen"):
+            return None
+        meta["arguments_seen"] = True
+        return AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "index": event.get("output_index", 0),
+                    "id": meta.get("id"),
+                    "name": meta.get("name") or item.get("name"),
+                    "args": item.get("arguments") or "",
+                    "type": "tool_call_chunk",
+                }
+            ],
+            id=item_id or None,
+        )
+
+    if event_type == "response.completed":
+        response = event.get("response") or {}
+        usage = usage_metadata_from_responses(response.get("usage"))
+        if usage:
+            return AIMessageChunk(content="", id=response.get("id"), usage_metadata=usage)
+    return None
 
 
 def _message_to_openai_dict(msg: BaseMessage) -> dict[str, Any]:
@@ -219,8 +552,9 @@ def aimessage_chunk_from_openai_chunk(chunk: dict[str, Any]) -> AIMessageChunk:
 class RustOpenAIChatModel(BaseChatModel):
     """OpenAI-compatible chat model backed by the native Rust client.
 
-    Only chat/completions (HTTP + SSE streaming) is supported. WebSocket
-    Responses and OAuth Codex paths continue to use ``langchain_openai``.
+    Normal profiles use Chat Completions over HTTP/SSE. OAuth Codex profiles can
+    opt into the Responses HTTP/SSE path while keeping the same LangChain model
+    contract and native connection pool.
     """
 
     model: str
@@ -235,12 +569,17 @@ class RustOpenAIChatModel(BaseChatModel):
     top_p: float | None = None
     timeout: float | None = None
     parallel_tool_calls: bool | None = None
+    use_responses_api: bool = False
 
     _client: Any = PrivateAttr(default=None)
     # Session id the cached native client was built for; a mismatch means the
     # client must be rebuilt so the session-affinity headers are stamped on
     # every request of the conversation.
     _client_session_id: str | None = PrivateAttr(default=None)
+    _client_api_key: str | None = PrivateAttr(default=None)
+    _oauth_provider: Any = PrivateAttr(default=None)
+    _fast_mode: Any = PrivateAttr(default=None)
+    _prompt_cache_key: Any = PrivateAttr(default=None)
 
     @property
     def _llm_type(self) -> str:
@@ -268,7 +607,14 @@ class RustOpenAIChatModel(BaseChatModel):
         # registry caches one model per agent session, so this does not happen
         # in practice. Within one session the same client is reused.
         session_id = get_session_id()
-        if self._client is None or self._client_session_id != session_id:
+        api_key = self.api_key.get_secret_value() if self.api_key else None
+        if self._oauth_provider is not None:
+            api_key = self._oauth_provider.access_token()
+        if (
+            self._client is None
+            or self._client_session_id != session_id
+            or self._client_api_key != api_key
+        ):
             from synapse_core_tool import RustOpenAIClient
 
             # The native client bakes headers into the async-openai config at
@@ -280,12 +626,13 @@ class RustOpenAIChatModel(BaseChatModel):
             if session_headers:
                 headers.update(session_headers)
             self._client = RustOpenAIClient(
-                api_key=self.api_key.get_secret_value() if self.api_key else None,
+                api_key=api_key,
                 base_url=self.base_url,
                 headers=headers,
                 timeout_secs=self.timeout,
             )
             self._client_session_id = session_id
+            self._client_api_key = api_key
         return self._client
 
     def _build_request(
@@ -294,8 +641,13 @@ class RustOpenAIChatModel(BaseChatModel):
         *,
         tools: list[Any] | None = None,
         stop: list[str] | None = None,
+        streaming: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        if self.use_responses_api:
+            return self._build_responses_request(
+                messages, tools=tools, stop=stop, streaming=streaming, **kwargs
+            )
         req: dict[str, Any] = {
             "model": self.model,
             "messages": messages_to_openai_dicts(messages),
@@ -328,6 +680,88 @@ class RustOpenAIChatModel(BaseChatModel):
                 req[key] = kwargs[key]
         return req
 
+    def _build_responses_request(
+        self,
+        messages: list[BaseMessage],
+        *,
+        tools: list[Any] | None = None,
+        stop: list[str] | None = None,
+        streaming: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build the first-party Codex Responses request from chat messages."""
+        del stop  # Responses uses different output controls; do not send Chat's stop.
+        instructions, input_items = responses_input_from_messages(messages)
+        req: dict[str, Any] = {
+            "model": self.model,
+            "input": input_items,
+        }
+        if instructions:
+            req["instructions"] = instructions
+        if tools:
+            req["tools"] = tools_to_responses(tools)
+
+        settings = dict(self.model_kwargs or {})
+        nested_extra = settings.pop("extra_body", None)
+        if isinstance(nested_extra, dict):
+            settings.update(nested_extra)
+        settings.update(dict(self.extra_body or {}))
+        settings.pop("thinking", None)
+        settings["store"] = False
+        settings.setdefault("include", ["reasoning.encrypted_content"])
+        if streaming:
+            settings.setdefault(
+                "stream_options",
+                {"reasoning_summary_delivery": "sequential_cutoff"},
+            )
+        else:
+            settings.pop("stream_options", None)
+        cache_key = self._prompt_cache_key
+        if callable(cache_key):
+            try:
+                cache_key = cache_key()
+            except Exception:  # noqa: BLE001 - cache hint must not break requests
+                cache_key = None
+        if not cache_key and instructions:
+            digest = hashlib.sha256(instructions.encode("utf-8")).hexdigest()[:32]
+            cache_key = f"synapse-{digest}"
+        if cache_key:
+            settings.setdefault("prompt_cache_key", cache_key)
+        fast_mode = self._fast_mode
+        try:
+            fast = bool(fast_mode()) if callable(fast_mode) else bool(fast_mode)
+        except Exception:  # noqa: BLE001 - degrade to normal tier
+            fast = False
+        if fast:
+            settings["service_tier"] = "priority"
+        settings.pop("extra_body", None)
+
+        # Responses names the output budget max_output_tokens, while LangChain
+        # profiles commonly use the Chat Completions name max_tokens.
+        if "max_tokens" in settings and "max_output_tokens" not in settings:
+            settings["max_output_tokens"] = settings.pop("max_tokens")
+        if self.max_tokens is not None:
+            settings["max_output_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            settings["temperature"] = self.temperature
+        if self.top_p is not None:
+            settings["top_p"] = self.top_p
+        if self.reasoning_effort is not None:
+            settings["reasoning"] = {"effort": self.reasoning_effort}
+        if self.parallel_tool_calls is not None:
+            settings["parallel_tool_calls"] = self.parallel_tool_calls
+        bound_choice = getattr(self, "_bound_tool_choice", None)
+        if bound_choice is not None:
+            settings["tool_choice"] = bound_choice
+
+        # Per-call fields remain useful for runtime model wrappers, but avoid
+        # forwarding Chat-only names that Codex rejects.
+        for key in ("temperature", "top_p"):
+            if key in kwargs and kwargs[key] is not None:
+                settings[key] = kwargs[key]
+        req.update(settings)
+        return req
+
     def _effective_tools(self, tools: list[Any] | None) -> list[Any] | None:
         bound = getattr(self, "_bound_tools", None)
         if bound:
@@ -345,13 +779,27 @@ class RustOpenAIChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         tools = self._effective_tools(kwargs.pop("tools", None))
-        req = self._build_request(messages, tools=tools, stop=stop, **kwargs)
-        raw = self._ensure_client().complete(json.dumps(req, default=str))
+        req = self._build_request(messages, tools=tools, stop=stop, streaming=False, **kwargs)
+        client = self._ensure_client()
+        raw = (
+            client.complete_responses(json.dumps(req, default=str))
+            if self.use_responses_api
+            else client.complete(json.dumps(req, default=str))
+        )
         payload = json.loads(raw)
-        choice = (payload.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        ai = aimessage_from_openai(msg)
-        ai.usage_metadata = usage_metadata_from_openai(payload.get("usage"))
+        if self.use_responses_api:
+            ai = aimessage_from_responses(payload)
+            ai.usage_metadata = usage_metadata_from_responses(payload.get("usage"))
+        else:
+            error = payload.get("error")
+            if isinstance(error, dict):
+                raise RuntimeError(str(error.get("message") or "OpenAI API returned an error"))
+            if not payload.get("choices"):
+                raise RuntimeError("OpenAI API response did not contain choices")
+            choice = (payload.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            ai = aimessage_from_openai(msg)
+            ai.usage_metadata = usage_metadata_from_openai(payload.get("usage"))
         return ChatResult(generations=[ChatGeneration(message=ai)])
 
     async def _agenerate(
@@ -371,10 +819,23 @@ class RustOpenAIChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         tools = self._effective_tools(kwargs.pop("tools", None))
-        req = self._build_request(messages, tools=tools, stop=stop, **kwargs)
-        for raw in self._ensure_client().stream(json.dumps(req, default=str)):
+        req = self._build_request(messages, tools=tools, stop=stop, streaming=True, **kwargs)
+        client = self._ensure_client()
+        stream = (
+            client.stream_responses(json.dumps(req, default=str))
+            if self.use_responses_api
+            else client.stream(json.dumps(req, default=str))
+        )
+        response_state: dict[str, Any] = {}
+        for raw in stream:
             payload = json.loads(raw)
-            chunk_msg = aimessage_chunk_from_openai_chunk(payload)
+            chunk_msg = (
+                aimessage_chunk_from_responses_event(payload, response_state)
+                if self.use_responses_api
+                else aimessage_chunk_from_openai_chunk(payload)
+            )
+            if chunk_msg is None:
+                continue
             gen = ChatGenerationChunk(message=chunk_msg)
             if run_manager:
                 text = chunk_msg.content if isinstance(chunk_msg.content, str) else ""
@@ -390,15 +851,19 @@ class RustOpenAIChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         queue: asyncio.Queue[ChatGenerationChunk | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
         def _run() -> None:
+            def _put(chunk: ChatGenerationChunk | None) -> None:
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+
             try:
                 # Run the sync streamer in a worker thread; it drives the
                 # synchronous run_manager (on_llm_new_token) for token callbacks.
                 for chunk in self._stream(messages, stop, None, **kwargs):
-                    queue.put_nowait(chunk)
+                    _put(chunk)
             finally:
-                queue.put_nowait(None)
+                _put(None)
 
         # run_in_executor does not propagate contextvars, so the sync streamer
         # would lose the session id published by the agent middleware. Copy the
@@ -463,6 +928,7 @@ class RustOpenAIChatModel(BaseChatModel):
     def close(self) -> None:
         self._client = None
         self._client_session_id = None
+        self._client_api_key = None
 
     async def aclose(self) -> None:
         self.close()

@@ -110,6 +110,19 @@ impl RustOpenAIClient {
             .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
     }
 
+    /// Send one non-streaming Responses API request, return the raw JSON body.
+    fn complete_responses(&self, py: Python<'_>, request_json: String) -> PyResult<String> {
+        let request: serde_json::Value = serde_json::from_str(&request_json)
+            .map_err(|e| PyRuntimeError::new_err(format!("invalid request JSON: {e}")))?;
+        let resp: serde_json::Value = py
+            .allow_threads(|| {
+                runtime().block_on(async { self.client.responses().create_byot(request).await })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {e}")))?;
+        serde_json::to_string(&resp)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
+    }
+
     /// Start a streaming chat completion; returns an iterator of raw JSON chunks.
     fn stream(&self, py: Python<'_>, request_json: String) -> PyResult<Py<StreamIter>> {
         let mut request: serde_json::Value = serde_json::from_str(&request_json)
@@ -130,6 +143,41 @@ impl RustOpenAIClient {
                     let chunk = chunk.map_err(|e| format!("stream read failed: {e}"))?;
                     let json = serde_json::to_string(&chunk)
                         .map_err(|e| format!("serialize chunk failed: {e}"))?;
+                    if tx.send(Ok(json)).await.is_err() {
+                        return Ok(()); // Python side dropped the iterator
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                let _ = tx.send(Err(e)).await;
+            }
+        });
+
+        Ok(Py::new(py, StreamIter { rx: Some(rx) })?)
+    }
+
+    /// Start a streaming Responses API request; return an iterator of raw JSON events.
+    fn stream_responses(&self, py: Python<'_>, request_json: String) -> PyResult<Py<StreamIter>> {
+        let mut request: serde_json::Value = serde_json::from_str(&request_json)
+            .map_err(|e| PyRuntimeError::new_err(format!("invalid request JSON: {e}")))?;
+        request["stream"] = serde_json::Value::Bool(true);
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, String>>(64);
+        let client = self.client.clone();
+
+        runtime().spawn(async move {
+            let result = async {
+                let mut stream = client
+                    .responses()
+                    .create_stream_byot::<_, serde_json::Value>(request)
+                    .await
+                    .map_err(|e| format!("request failed: {e}"))?;
+                while let Some(event) = stream.next().await {
+                    let event = event.map_err(|e| format!("stream read failed: {e}"))?;
+                    let json = serde_json::to_string(&event)
+                        .map_err(|e| format!("serialize event failed: {e}"))?;
                     if tx.send(Ok(json)).await.is_err() {
                         return Ok(()); // Python side dropped the iterator
                     }

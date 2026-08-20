@@ -361,6 +361,14 @@ def build_coding_agent(
     selected_profile = registry.get(model_name or settings.active_model or registry.default)
     model_spec = selected_profile.model
 
+    # Native Rust Responses models own the Codex request adaptation, so pass
+    # runtime toggles directly instead of installing ChatOpenAI middleware.
+    if getattr(model, "use_responses_api", False) and getattr(
+        model, "_coding_rust_openai", False
+    ):
+        model._fast_mode = lambda: bool(getattr(settings, "openai_fast_mode", False))
+        model._prompt_cache_key = prompt_cache_key
+
     apply_harness_exclusions(
         model_spec,
         readonly=settings.readonly,
