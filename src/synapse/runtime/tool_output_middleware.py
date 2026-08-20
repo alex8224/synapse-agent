@@ -46,11 +46,14 @@ def build_tool_output_transform_middleware(
     pipeline: ToolOutputTransformPipeline | None = None,
     enabled: bool = True,
 ):
-    """Rewrite large outputs once, preserving originals only when needed.
+    """Deprecated: rewrite large outputs once, preserving originals only when needed.
 
     The middleware owns all result rewriting for regular, async, and Command
     result paths. ``execute_capture`` remains in use so an already-truncated
     backend message can be transformed from its complete captured output.
+
+    This middleware is intentionally not registered in the agent assembly for
+    now. Kept for compatibility and future revival.
     """
     threshold = max(0, int(threshold_bytes))
     pipeline = pipeline or ToolOutputTransformPipeline()

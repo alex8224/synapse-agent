@@ -467,7 +467,7 @@ load_settings(**overrides):
 | 工作区 | workspace, shell_timeout(120s), max_output_bytes(100KB) | Path.cwd() |
 | 安全 | require_approval(False), safety_profile("dev-autopass") | -- |
 | 检查点 | checkpoint_backend("sqlite") | project/.synapse/ |
-| 工具输出 | enable_tool_output_transform(True), threshold_bytes(512) | -- |
+| 工具输出 | enable_tool_output_transform(False), threshold_bytes(512) | -- |
 | 子代理 | enable_subagents(True) | -- |
 | MCP | enable_mcp(True), mcp_eager(False) | -- |
 | UI | theme("cursor-dark"), history_tail_turns(20) | -- |

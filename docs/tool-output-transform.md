@@ -18,7 +18,7 @@ All transforms are deterministic. Synapse uses a low-cost `512` byte prefilter, 
 
 ```json
 {
-  "enable_tool_output_transform": true,
+  "enable_tool_output_transform": false,
   "tool_output_transform_threshold_bytes": 512,
   "tool_output_disabled_types": ["code"],
   "tool_output_transform_plugins": ["my_package.transforms:my_transformer"],
@@ -26,10 +26,12 @@ All transforms are deterministic. Synapse uses a low-cost `512` byte prefilter, 
 }
 ```
 
+Tool-output transformation is **off by default** (`enable_tool_output_transform: false`); set it to `true` to enable.
+
 Environment equivalents:
 
 ```text
-AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM=true
+AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM=false
 AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES=512
 AGENT_TOOL_OUTPUT_DISABLED_TYPES=["code"]
 AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS=["my_package.transforms:my_transformer"]

@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     # Originals are stored in a content-addressed SQLite database only after a
     # successful rewrite; small results bypass both transformation and storage.
     enable_tool_output_transform: bool = Field(
-        default=True, validation_alias="AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM"
+        default=False, validation_alias="AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM"
     )
     tool_output_transform_threshold_bytes: int = Field(
         default=512, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES"

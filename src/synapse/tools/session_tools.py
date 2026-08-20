@@ -66,7 +66,11 @@ def _format_search_results(
 
 
 def build_tool_result_reader_tool(tool_output_db_path: Path | str) -> Any:
-    """Create the guarded reader for reversible transformed output."""
+    """Deprecated: create the guarded reader for reversible transformed output.
+
+    Kept for compatibility; no longer registered since the transform middleware
+    that produces ``tool-output://`` references is not wired up.
+    """
     results = ToolOutputRepository(tool_output_db_path)
 
     @tool
@@ -160,7 +164,7 @@ def build_session_tools(
         sessions_path: sessions.sqlite 路径
         checkpoint_path: checkpoints.sqlite 路径
     Returns:
-        [search_session, read_session, read_tool_result]
+        [search_session, read_session]
     """
     from synapse.sessions.search_index import (
         SessionSearchIndex,
@@ -306,5 +310,6 @@ def build_session_tools(
             return header + body
         return body
 
-    output_db = tool_output_db_path or (Path(sessions_path).parent / "tool-outputs.sqlite")
-    return [search_session, read_session, build_tool_result_reader_tool(output_db)]
+    # Deprecated: read_tool_result is no longer registered (the transform
+    # middleware that produces tool-output:// references is not wired up).
+    return [search_session, read_session]

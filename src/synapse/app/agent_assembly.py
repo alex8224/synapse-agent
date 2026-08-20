@@ -29,8 +29,6 @@ from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
 )
 from synapse.runtime.steer import SteerQueue, build_steer_middleware
-from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
-from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
@@ -102,7 +100,11 @@ class MiddlewareContext:
 
 
 def build_tool_output_pipeline(settings: Any) -> ToolOutputTransformPipeline:
-    """Build the reversible tool-output pipeline with plugin fallback."""
+    """Deprecated: build the reversible tool-output pipeline with plugin fallback.
+
+    The transform middleware is no longer registered; this helper is kept for
+    compatibility and for anyone reviving the feature.
+    """
     try:
         return ToolOutputTransformPipeline(
             transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
@@ -148,22 +150,11 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
             service=context.goal_service,
         ),
     ]
-    transform_enabled = bool(getattr(settings, "enable_tool_output_transform", True))
-    if context.turbo:
-        # Turbo routes tool outputs through the headroom proxy for compression;
-        # running the built-in transformer too would double-compress and break
-        # the proxy's content-type routing.
-        transform_enabled = False
-    middleware.append(
-        build_tool_output_transform_middleware(
-            context.output_repository,
-            threshold_bytes=getattr(settings, "tool_output_transform_threshold_bytes", 512),
-            pipeline=build_tool_output_pipeline(settings),
-            enabled=transform_enabled,
-        )
-    )
-    if transform_enabled:
-        middleware.append(build_tool_output_usage_middleware(context.output_repository))
+    # Deprecated: the reversible tool-output transform middleware
+    # (build_tool_output_transform_middleware / build_tool_output_usage_middleware)
+    # is intentionally NOT registered for now. The pipeline and read_tool_result
+    # stay in place for compatibility; re-enable by appending those builders
+    # here when the feature is revived.
     middleware.extend(
         [
             build_tool_error_recovery_middleware(),

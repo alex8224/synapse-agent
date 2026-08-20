@@ -28,12 +28,7 @@ from synapse.runtime.subagent_specs import (
     render_agent_markdown,
     resolve_subagent_display_config,
 )
-from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.settings.config_paths import user_agents_dir
-from synapse.tool_output.pipeline import ToolOutputTransformPipeline
-from synapse.tool_output.repository import ToolOutputRepository
-from synapse.tool_output.transformers import load_transformer_plugins
-from synapse.tools import build_tool_result_reader_tool
 
 
 @dataclass
@@ -253,31 +248,14 @@ def _build_default_subagent_runtime(
     if not enabled:
         return SubagentBuildResult(specs=None, display_configs={})
 
-    # Subagents use the exact same reversible transformation policy as the
-    # parent, scoped by their checkpoint namespace.
+    # Deprecated: subagents no longer register the reversible tool-output
+    # transform middleware nor its read_tool_result reader.
     result_middleware: list[Any] = []
     result_reader: Any | None = None
     if tool_output_db_path is not None:
-        try:
-            output_pipeline = ToolOutputTransformPipeline(
-                transformers=load_transformer_plugins(tool_output_transform_plugins or []),
-                disabled_types=set(tool_output_disabled_types or []),
-                use_native=enable_native_tool_output_compression,
-            )
-        except Exception:  # noqa: BLE001
-            output_pipeline = ToolOutputTransformPipeline(
-                disabled_types=set(tool_output_disabled_types or []),
-                use_native=enable_native_tool_output_compression,
-            )
         result_middleware = [
-            build_tool_output_transform_middleware(
-                ToolOutputRepository(tool_output_db_path),
-                threshold_bytes=tool_output_transform_threshold_bytes,
-                pipeline=output_pipeline,
-            ),
             build_tool_error_recovery_middleware(),
         ]
-        result_reader = build_tool_result_reader_tool(tool_output_db_path)
 
     merged = _merge_subagent_definitions(
         tester_model=tester_model,

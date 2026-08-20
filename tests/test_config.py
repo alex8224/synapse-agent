@@ -22,7 +22,7 @@ def test_tool_output_transform_defaults_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES", raising=False)
     monkeypatch.delenv("AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION", raising=False)
     settings = Settings(_env_file=None)
-    assert settings.enable_tool_output_transform is True
+    assert settings.enable_tool_output_transform is False
     assert settings.tool_output_transform_threshold_bytes == 512
     assert settings.enable_native_tool_output_compression is True
 
