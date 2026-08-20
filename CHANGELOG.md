@@ -8,6 +8,28 @@ All entries are written in English.
 
 ---
 
+## v0.1.39
+
+### New Features
+
+- Stamped session-affinity headers on model requests in both the Python runtime and the native Rust OpenAI client, for consistent session binding at upstream gateways.
+- Added a `session-cache-analysis` skill for computing per-session prompt cache hit rates and diagnosing cache eviction.
+
+### Bug Fixes
+
+- Hashed tools by their OpenAI wire form instead of the raw `StructuredTool` dump, keeping `tools_hash`/`schema_hash` stable across agent rebuilds (previously embedded the function object's memory address).
+- Inserted pasted text at the cursor position in the TUI prompt instead of appending.
+- Persisted the model binding before agent rebuild and on exit.
+- Loaded the debug inspector HTML via `importlib.resources` for frozen (PyInstaller) builds.
+
+### Engineering
+
+- Removed the tool-response truncation middleware and its settings.
+- Deprecated the reversible compression middleware and reader.
+- Kept the AGENTS.md repository-layout table in sync with the current tree.
+
+---
+
 ## v0.1.38
 
 ### New Features
