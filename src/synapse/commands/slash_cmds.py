@@ -141,12 +141,17 @@ def _store(settings: Any) -> SessionStore:
     return SessionStore(settings.resolved_sessions_path())
 
 
-def _persist_model_binding(settings: Any, thread_id: str | None) -> None:
+def _persist_model_binding(settings: Any, thread_id: str | None) -> str | None:
+    """Persist the current settings as the session's model binding.
+
+    Returns an error message when the write failed (never raises), else None.
+    """
     try:
         store = _store(settings)
         store.save_model_binding(thread_id, binding_from_settings(settings), also_last=True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 - persistence must never raise into the caller
+        return f"failed to persist model binding: {exc}"
+    return None
 
 
 def _restore_thread_model(
@@ -352,7 +357,9 @@ def handle_slash(
             and result.thread_id != thread_id
             and cmd in {"/switch", "/session", "/new"}
         ):
-            _persist_model_binding(settings, thread_id)
+            persist_error = _persist_model_binding(settings, thread_id)
+            if persist_error:
+                result.lines = [*result.lines, persist_error]
         # When switching sessions, restore that session's model binding.
         if (
             result.handled

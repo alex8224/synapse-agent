@@ -376,6 +376,10 @@ class CodingAgentApp(App[None]):
             defer_agent_build=defer_agent_build,
         )
         self._mcp_reloading = False
+        # True while a background /model switch worker is settling; the
+        # exit-time binding fallback skips while set so a freshly persisted
+        # binding is never clobbered by stale in-memory settings.
+        self._model_switch_inflight = False
         self._codex = CodexUsageService(settings=settings)
         self._codex_bottombar_hovered = False
         self._current_goal: Any = None
@@ -578,6 +582,22 @@ class CodingAgentApp(App[None]):
                 except Exception:  # noqa: BLE001 - shutdown best effort
                     pass
             session_store = getattr(self, "_session_store", None)
+            # Best-effort: persist the in-memory model binding back to the
+            # current session row. This is the safety net for a model picked
+            # via the F2 dialog whose background switch never completed before
+            # the user quit — without it the choice would exist only in memory
+            # and the session row would keep its old binding on restart.
+            try:
+                from synapse.sessions.store import persist_binding_on_exit
+
+                persist_binding_on_exit(
+                    self.settings,
+                    getattr(self, "thread_id", None),
+                    store=session_store,
+                    in_flight=getattr(self, "_model_switch_inflight", False),
+                )
+            except Exception:  # noqa: BLE001 - shutdown best effort
+                pass
             if session_store is not None and session_store is not summary_store:
                 try:
                     with span("on_unmount.session_store.close"):
@@ -2108,6 +2128,11 @@ class CodingAgentApp(App[None]):
         origin_settings: Any | None = None,
     ) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive."""
+        # Marked while the worker runs so the exit-time binding fallback does
+        # not clobber a binding this worker already persisted with stale
+        # settings. Cleared by SlashController._finish_model_switch on the UI
+        # thread once app.settings is consistent with the persisted rows.
+        self._model_switch_inflight = True
         self._slash.switch_model_bg(
             command,
             activity,

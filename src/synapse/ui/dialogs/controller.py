@@ -1180,15 +1180,22 @@ class SlashController:
                 f"model switched for background session ({origin_thread_id[:10]}…)",
                 "dim",
             )
+            # The origin row was persisted by the slash handler; the foreground
+            # settings are untouched and still consistent with its row.
+            app._model_switch_inflight = False
             return
         if bool(getattr(ok, "error", False)):
             # The slash handler may have mutated the worker's private settings
             # (profile applied) before the rebuild failed; never push that
-            # half-applied state onto the foreground session.
+            # half-applied state onto the foreground session. The binding was
+            # still persisted by the slash handler, so keep the in-flight
+            # marker set: an exit-time fallback must not clobber it with the
+            # stale settings we are refusing to commit.
             self.apply_ok_result(ok, notice_ttl)
             return
         if worker_settings is not None:
             self._commit_settings(app.settings, worker_settings)
+        app._model_switch_inflight = False
         self.apply_ok_result(ok, notice_ttl)
 
     def attach_mcp_after_switch(

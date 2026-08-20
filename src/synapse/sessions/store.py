@@ -738,6 +738,54 @@ def apply_binding_to_settings(settings: Any, binding: ModelBinding) -> bool:
     return before != after
 
 
+def persist_binding_on_exit(
+    settings: Any,
+    thread_id: str | None,
+    *,
+    store: SessionStore | None = None,
+    in_flight: bool = False,
+) -> bool:
+    """Best-effort: write the in-memory binding back to a session row on exit.
+
+    This is the safety net for model selections that live only in process
+    memory (e.g. a model picked via the F2 dialog whose background switch
+    worker never completed before the user quit). Two guards keep it from
+    clobbering a newer persisted binding with stale in-memory settings:
+
+    - ``in_flight``: a background switch is still settling (its settings may
+      not be committed yet).
+    - a stored binding that differs from the in-memory one is treated as
+      newer and left untouched.
+
+    Returns True when a write was attempted.
+    """
+    if in_flight or not thread_id:
+        return False
+    local = store is None
+    target = store
+    try:
+        if local:
+            target = SessionStore(settings.resolved_sessions_path())
+        current = binding_from_settings(settings)
+        stored = target.get_model_binding(thread_id)
+        if stored.has_data() and (
+            stored.active_model != current.active_model
+            or stored.model != current.model
+            or stored.thinking != current.thinking
+        ):
+            return False
+        target.save_model_binding(thread_id, current, also_last=False)
+        return True
+    except Exception:  # noqa: BLE001 - shutdown best effort
+        return False
+    finally:
+        if local and target is not None:
+            try:
+                target.close()
+            except Exception:  # noqa: BLE001 - shutdown best effort
+                pass
+
+
 def resolve_startup_binding(
     store: SessionStore,
     *,

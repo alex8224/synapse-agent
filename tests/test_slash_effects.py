@@ -590,3 +590,122 @@ def test_apply_effects_switch_failure_rolls_back_settings(
     assert settings.active_model == "gpt"
     assert settings.model == "gpt-4.1"
     assert settings.reasoning_effort == "high"
+
+
+def _handle_model_fakes(monkeypatch: pytest.MonkeyPatch) -> tuple[SimpleNamespace, SimpleNamespace]:
+    """Shared fake registry/profile for handle_model model-switch tests."""
+    fake_profile = SimpleNamespace(name="deep", model="openai:deep")
+    fake_registry = SimpleNamespace(
+        default="zen",
+        profiles={"deep": fake_profile},
+        allowed_thinking_levels=lambda name: ["off", "low", "high", "max"],
+    )
+    fake_registry.get = lambda name: (
+        fake_profile if name == "deep" else (_ for _ in ()).throw(KeyError(name))
+    )
+    monkeypatch.setattr(
+        "synapse.commands.model.registry_from_settings", lambda settings: fake_registry
+    )
+    monkeypatch.setattr(
+        "synapse.models.registry.apply_profile_to_settings",
+        lambda settings, profile, *, seed_thinking: setattr(
+            settings, "active_model", profile.name
+        ),
+    )
+    settings = SimpleNamespace(
+        active_model="zen",
+        model="openai:zen",
+        enable_thinking=True,
+        reasoning_effort="high",
+        parallel_tool_calls=True,
+        openai_api_key=None,
+        anthropic_api_key=None,
+        openai_base_url=None,
+    )
+    return settings, fake_profile
+
+
+def test_handle_model_persists_before_rebuild_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the model binding must be persisted even when the slow agent
+    rebuild fails — otherwise the user's choice lives only in memory and is
+    lost on the next startup (the reported F2 dialog model loss)."""
+    from pathlib import Path
+
+    from synapse.commands.model import handle_model
+
+    settings, _ = _handle_model_fakes(monkeypatch)
+    captured: list[tuple[str, str | None]] = []
+
+    def fake_persist(current: object, thread_id: str | None) -> str | None:
+        captured.append((current.active_model, thread_id))
+        return None
+
+    def fake_rebuild(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("gateway unreachable")
+
+    result = handle_model(
+        ["deep"],
+        settings=settings,
+        agent=object(),
+        project_root=Path("."),
+        thread_id="t1",
+        apply_thinking_inplace=lambda *a, **k: False,
+        rebuild_agent=fake_rebuild,
+        persist_model_binding=fake_persist,
+        mcp_attach_pending=lambda s: False,
+    )
+
+    assert result.error is True
+    # Persisted before the rebuild ran (and failed).
+    assert captured == [("deep", "t1")]
+
+
+def test_handle_model_surfaces_persist_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed binding persist must be reported, not silently swallowed."""
+    from pathlib import Path
+
+    from synapse.commands.model import handle_model
+
+    settings, _ = _handle_model_fakes(monkeypatch)
+    monkeypatch.setattr("synapse.models.registry.format_model_status", lambda s: "deep")
+
+    def fake_persist(current: object, thread_id: str | None) -> str | None:
+        del current, thread_id
+        return "failed to persist model binding: disk full"
+
+    result = handle_model(
+        ["deep"],
+        settings=settings,
+        agent=object(),
+        project_root=Path("."),
+        thread_id="t1",
+        apply_thinking_inplace=lambda *a, **k: False,
+        rebuild_agent=lambda *a, **k: object(),
+        persist_model_binding=fake_persist,
+        mcp_attach_pending=lambda s: False,
+    )
+
+    assert result.error is False
+    assert result.lines == [
+        "model switched to deep  (deep)",
+        "failed to persist model binding: disk full",
+    ]
+
+
+def test_persist_model_binding_returns_error_instead_of_silent_swallow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The slash-layer persist must surface failures so the UI can warn."""
+    from synapse.commands import slash_cmds
+
+    def boom(settings: object) -> object:
+        del settings
+        raise OSError("disk full")
+
+    monkeypatch.setattr(slash_cmds, "_store", boom)
+    error = slash_cmds._persist_model_binding(SimpleNamespace(), "t1")
+    assert error is not None
+    assert "disk full" in error

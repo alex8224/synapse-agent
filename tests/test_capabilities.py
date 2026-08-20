@@ -552,6 +552,49 @@ def test_session_model_binding_roundtrip(tmp_path: Path):
     assert snap.thinking == "max"
 
 
+def test_persist_binding_on_exit_skips_inflight_and_writes_row(tmp_path: Path):
+    """Exit-time fallback: skip while a switch is in flight / no thread, and
+    persist the in-memory binding to the session row otherwise."""
+    from synapse.sessions import persist_binding_on_exit
+
+    store = SessionStore(tmp_path / "sessions.sqlite")
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=None,
+        checkpoint_backend="memory",
+        model="openai:deepseek-v4-flash",
+        enable_thinking=True,
+        reasoning_effort="high",
+    )
+    settings.active_model = "deep"  # type: ignore[attr-defined]
+
+    # A switch still settling must never clobber a freshly persisted binding.
+    assert persist_binding_on_exit(settings, "t1", store=store, in_flight=True) is False
+    assert store.get_model_binding("t1").has_data() is False
+
+    # No current session -> nothing to write.
+    assert persist_binding_on_exit(settings, None, store=store) is False
+
+    # Normal exit: the in-memory choice lands on the session row.
+    assert persist_binding_on_exit(settings, "t1", store=store) is True
+    bind = store.get_model_binding("t1")
+    assert bind.active_model == "deep"
+    assert bind.model == "openai:deepseek-v4-flash"
+    assert bind.thinking == "max"
+
+    # A stored binding that differs from the in-memory one is treated as
+    # newer (background switch persisted, settings not yet committed): the
+    # exit fallback must never overwrite it with stale settings.
+    settings.active_model = "zen"  # type: ignore[attr-defined]  # stale
+    assert persist_binding_on_exit(settings, "t1", store=store) is False
+    assert store.get_model_binding("t1").active_model == "deep"
+
+    # Back in sync: writing again is a harmless no-op (returns True).
+    settings.active_model = "deep"  # type: ignore[attr-defined]
+    assert persist_binding_on_exit(settings, "t1", store=store) is True
+    assert store.get_model_binding("t1").active_model == "deep"
+
+
 def test_session_title_from_first_message_and_resolve(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions.sqlite")
     store.ensure("abc123de0001", model="openai:x")

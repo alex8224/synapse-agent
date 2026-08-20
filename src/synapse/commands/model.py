@@ -18,7 +18,7 @@ def handle_model(
     thread_id: str | None = None,
     apply_thinking_inplace: Callable[[Any, Any, str], bool],
     rebuild_agent: Callable[..., Any],
-    persist_model_binding: Callable[[Any, str | None], None],
+    persist_model_binding: Callable[[Any, str | None], str | None],
     mcp_attach_pending: Callable[[Any], bool],
 ) -> SlashResult:
     from synapse.models.registry import (
@@ -73,6 +73,9 @@ def handle_model(
             label = apply_thinking_to_settings(settings, args[1], allowed=allowed)
         except ValueError as exc:
             return SlashResult(handled=True, lines=[str(exc)], error=True)
+        # Persist before the (slow, fallible) rebuild so the user's choice is
+        # not lost when the rebuild fails or the process exits mid-switch.
+        persist_error = persist_model_binding(settings, thread_id)
         model_name = settings.active_model or reg.default
         new_agent = None
         note = ""
@@ -88,15 +91,16 @@ def handle_model(
                     defer_mcp_reconnect=True,
                 )
             except Exception as exc:  # noqa: BLE001
-                return SlashResult(
-                    handled=True,
-                    lines=[f"thinking update failed: {exc}"],
-                    error=True,
-                )
-        persist_model_binding(settings, thread_id)
+                lines = [f"thinking update failed: {exc}"]
+                if persist_error:
+                    lines.append(persist_error)
+                return SlashResult(handled=True, lines=lines, error=True)
+        lines = [f"thinking set to {label}{note}  ({format_model_status(settings)})"]
+        if persist_error:
+            lines.append(persist_error)
         return SlashResult(
             handled=True,
-            lines=[f"thinking set to {label}{note}  ({format_model_status(settings)})"],
+            lines=lines,
             agent=new_agent,
             settings_changed=True,
             mcp_attach_pending=bool(new_agent is not None and mcp_attach_pending(settings)),
@@ -148,6 +152,11 @@ def handle_model(
         except ValueError as exc:
             return SlashResult(handled=True, lines=[str(exc)], error=True)
 
+    # Persist the selection before the (slow, fallible) agent rebuild so a
+    # rebuild failure or an immediate quit cannot silently drop the user's
+    # model choice (it would otherwise live only in process memory).
+    persist_error = persist_model_binding(settings, thread_id)
+
     try:
         new_agent = rebuild_agent(
             settings,
@@ -157,16 +166,21 @@ def handle_model(
             defer_mcp_reconnect=True,
         )
     except Exception as exc:  # noqa: BLE001
+        lines = [f"model switch failed: {exc}"]
+        if persist_error:
+            lines.append(persist_error)
         return SlashResult(
             handled=True,
-            lines=[f"model switch failed: {exc}"],
+            lines=lines,
             error=True,
         )
-    persist_model_binding(settings, thread_id)
     mcp_attach_pending = mcp_attach_pending(settings)
+    lines = [f"model switched to {profile.name}  ({format_model_status(settings)})"]
+    if persist_error:
+        lines.append(persist_error)
     return SlashResult(
         handled=True,
-        lines=[f"model switched to {profile.name}  ({format_model_status(settings)})"],
+        lines=lines,
         agent=new_agent,
         settings_changed=True,
         mcp_attach_pending=mcp_attach_pending,
