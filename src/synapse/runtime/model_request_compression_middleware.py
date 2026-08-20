@@ -413,10 +413,42 @@ def _live_zone_plan(request: Any, provider: str, api_style: str) -> list[dict[st
     return plan
 
 
+def _tool_signature(tool: Any) -> Any:
+    """Return a deterministic, callable-free tool signature for hashing.
+
+    ``StructuredTool.model_dump()`` embeds ``func`` (a Python function object).
+    The ``default=str`` fallback in :func:`_stable_json` serializes it as
+    ``<function ... at 0x...>``, whose memory address changes on every agent
+    rebuild, so hashing the raw dump makes ``schema_hash``/``tools_hash``
+    unstable even when name/description/parameters are unchanged.  Hashing the
+    OpenAI wire form instead is stable and matches what is actually sent
+    upstream (``tools_to_openai`` uses the same converter).
+    """
+    try:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        return convert_to_openai_tool(tool)
+    except Exception:  # noqa: BLE001 - best-effort, mirror tools_to_openai fallback
+        if isinstance(tool, dict):
+            return tool
+        try:
+            parameters = getattr(tool, "args", {}) or {}
+        except Exception:  # noqa: BLE001 - a property access may raise; fall back to empty
+            parameters = {}
+        return {
+            "type": "function",
+            "function": {
+                "name": str(getattr(tool, "name", "") or ""),
+                "description": str(getattr(tool, "description", "") or ""),
+                "parameters": parameters,
+            },
+        }
+
+
 def _tool_schema_profiles(tools: list[Any]) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
     for index, tool in enumerate(tools):
-        raw = _stable_json(tool)
+        signature = _tool_signature(tool)
         data = tool.model_dump() if hasattr(tool, "model_dump") else tool
         data = data if isinstance(data, dict) else {}
         function = data.get("function") if isinstance(data.get("function"), dict) else data
@@ -427,11 +459,11 @@ def _tool_schema_profiles(tools: list[Any]) -> list[dict[str, Any]]:
             {
                 "index": index,
                 "tool_name": name,
-                "schema_bytes": len(raw.encode("utf-8")),
+                "schema_bytes": len(_stable_json(signature).encode("utf-8")),
                 "estimated_tokens": _count([], [tool]),
                 "description_bytes": len(description.encode("utf-8")),
                 "parameters_bytes": len(_stable_json(parameters).encode("utf-8")),
-                "schema_hash": _fingerprint(tool),
+                "schema_hash": _fingerprint(signature),
             }
         )
     return profiles
@@ -443,11 +475,13 @@ def _wire_fingerprints(request: Any) -> dict[str, Any]:
     tools = list(getattr(request, "tools", None) or [])
     return {
         "system_hash": _fingerprint(system) if system is not None else "",
-        "tools_hash": _fingerprint(tools),
+        "tools_hash": _fingerprint([_tool_signature(t) for t in tools]),
         "message_hashes": [_fingerprint(message) for message in messages],
         "message_count": len(messages),
         "tool_count": len(tools),
-        "request_prefix_hash": _fingerprint([system, tools, messages]),
+        "request_prefix_hash": _fingerprint(
+            [system, [_tool_signature(t) for t in tools], messages]
+        ),
     }
 
 
