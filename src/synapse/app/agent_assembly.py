@@ -31,9 +31,6 @@ from synapse.runtime.model_request_compression_middleware import (
 from synapse.runtime.steer import SteerQueue, build_steer_middleware
 from synapse.runtime.tool_output_middleware import build_tool_output_transform_middleware
 from synapse.runtime.tool_output_usage_middleware import build_tool_output_usage_middleware
-from synapse.runtime.tool_response_truncate_middleware import (
-    build_tool_response_truncate_middleware,
-)
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
@@ -179,7 +176,6 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
         [
             build_strip_redundant_prompt_blocks(),
             build_compact_tool_descriptions(),
-            build_tool_response_truncate_middleware(settings),
             build_model_request_compression_middleware(context.output_repository),
         ]
     )

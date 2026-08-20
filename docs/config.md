@@ -77,13 +77,6 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `SESSION_SUMMARY_MAX_CHARS` | `600` | 本地会话摘要的最大字符数（含多轮条目，超出时从最旧条目开始裁剪） |
 | `AGENT_HISTORY_TAIL_TURNS` | `20` | TUI 从轻量 transcript 投影初始读取/渲染的最近可见会话轮数；滚动到顶部后按 turn 游标加载更早历史，最多挂载 5 页 |
 | `AGENT_SESSION_PREWARM_ENABLED` | `false` | 恢复大上下文会话后，在后台对该会话历史发起一次最小模型请求，让 provider 预填充并缓存历史前缀，用户第一条消息可命中缓存、大幅缩短首 token 等待。注意：预热本身会按输入 token 计费一次，仅在需要时开启 |
-| `AGENT_ENABLE_TOOL_RESPONSE_TRUNCATE` | `false` | 启用工具响应裁剪：keep 窗口（默认最近 40K tokens）外的 `execute`/`read_file`/`search_files` 输出折叠为摘要，减小每轮请求体积（大上下文会话可省 20-30%）。请求层变换，不修改历史 |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_KEEP_TOKENS` | `40000` | 工具响应裁剪的 keep 窗口（token），窗口内消息不裁剪 |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_MAX_HEAD_CHARS` | `2000` | 关闭 fold 模式时，超长输出保留的头部字符数 |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_MAX_TAIL_CHARS` | `0` | 关闭 fold 模式时，超长输出额外保留的尾部字符数（>0 表示 head+tail） |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_FOLD_ENABLED` | `true` | fold 模式：窗口外输出一律折叠（有 `tool-output://` 引用的可经 `read_tool_result` 找回原文，无引用的保留头部锚点） |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_FOLD_HEAD_CHARS` | `300` | fold 模式下无引用输出保留的头部锚点字符数 |
-| `AGENT_TOOL_RESPONSE_TRUNCATE_TOOLS` | `["execute","read_file","search_files"]` | 参与折叠/裁剪的工具名单（JSON 数组） |
 
 ### 长程目标（Goals）
 

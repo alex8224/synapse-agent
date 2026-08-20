@@ -245,45 +245,6 @@ class Settings(BaseSettings):
         default=True, validation_alias="AGENT_GOAL_AUTO_CONTINUE"
     )
 
-    # -- Tool-RESPONSE truncation (large-context cost control) --
-    # Deterministically clips oversized ToolMessage content (execute logs,
-    # read_file dumps) in messages outside a keep window, right before the
-    # model call. Preserves tool-output:// references so the full output stays
-    # recoverable via read_tool_result. Request-only: checkpoints untouched.
-    # Keep window is token-counted from the tail so the provider prefix cache
-    # stays stable across turns.
-    enable_tool_response_truncate: bool = Field(
-        default=False, validation_alias="AGENT_ENABLE_TOOL_RESPONSE_TRUNCATE"
-    )
-    tool_response_truncate_keep_tokens: int = Field(
-        default=40000, ge=1000, validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_KEEP_TOKENS"
-    )
-    tool_response_truncate_max_head_chars: int = Field(
-        default=2000, ge=200, validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_MAX_HEAD_CHARS"
-    )
-    # >0 keeps the last N chars too (head+tail); useful for log-style outputs
-    # where errors usually sit at the tail.
-    tool_response_truncate_max_tail_chars: int = Field(
-        default=0, ge=0, validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_MAX_TAIL_CHARS"
-    )
-    # Fold mode (default): responses outside the keep window that carry a
-    # tool-output:// reference are collapsed into a one-line reference summary
-    # regardless of size — the offloaded original stays recoverable via
-    # read_tool_result. Responses without a reference keep a short head anchor
-    # (fold_head_chars) and drop the rest; they cannot be recovered from disk,
-    # but re-running the tool reproduces them. When disabled, only oversized
-    # bodies are clipped.
-    tool_response_truncate_fold_enabled: bool = Field(
-        default=True, validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_FOLD_ENABLED"
-    )
-    tool_response_truncate_fold_head_chars: int = Field(
-        default=300, ge=50, validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_FOLD_HEAD_CHARS"
-    )
-    tool_response_truncate_tools: list[str] = Field(
-        default_factory=lambda: ["execute", "read_file", "search_files"],
-        validation_alias="AGENT_TOOL_RESPONSE_TRUNCATE_TOOLS",
-    )
-
     # Project memory / skills (paths relative to project root or absolute)
     enable_memory: bool = Field(default=False, validation_alias="AGENT_ENABLE_MEMORY")
     memory_paths: list[str] = Field(
