@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
+import types
+from typing import Any
 from unittest.mock import MagicMock
 
 from langchain_core.messages import (
@@ -20,6 +24,7 @@ from synapse.models.rust_openai import (
     tools_to_openai,
     usage_metadata_from_openai,
 )
+from synapse.runtime.session_headers import session_id_context
 
 
 def test_messages_to_openai_dicts_basic() -> None:
@@ -192,3 +197,110 @@ def test_api_key_not_in_repr() -> None:
         api_key="sk-secret",
     )
     assert "sk-secret" not in repr(model)
+
+
+def _install_fake_rust_client(monkeypatch: Any) -> list[dict[str, Any]]:
+    """Replace ``synapse_core_tool.RustOpenAIClient`` with a recording fake."""
+    instances: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            instances.append(kwargs)
+
+        def complete(self, request_json: str) -> str:
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]})
+
+        def stream(self, request_json: str):
+            yield json.dumps({"choices": [{"delta": {"content": "ok"}}]})
+            yield json.dumps({"choices": [{"delta": {}}]})
+
+    fake_mod = types.ModuleType("synapse_core_tool")
+    fake_mod.RustOpenAIClient = _FakeClient
+    monkeypatch.setitem(sys.modules, "synapse_core_tool", fake_mod)
+    return instances
+
+
+def test_client_built_with_session_headers(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+    with session_id_context("thr-1"):
+        model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 1
+    headers = instances[0]["headers"]
+    assert headers["X-Session-ID"] == "thr-1"
+    assert headers["Session-Id"] == "thr-1"
+
+
+def test_client_rebuilt_on_session_change(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+    with session_id_context("thr-1"):
+        model.invoke([HumanMessage(content="hi")])
+    with session_id_context("thr-2"):
+        model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 2
+    assert instances[0]["headers"]["X-Session-ID"] == "thr-1"
+    assert instances[1]["headers"]["X-Session-ID"] == "thr-2"
+
+
+def test_client_reused_within_session(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+    with session_id_context("thr-1"):
+        model.invoke([HumanMessage(content="a")])
+        model.invoke([HumanMessage(content="b")])
+    assert len(instances) == 1
+
+
+def test_client_without_session_keeps_static_headers(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(
+        model="deepseek-v4-flash",
+        base_url="https://x/v1",
+        default_headers={"x-headroom-base-url": "https://upstream"},
+    )
+    model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 1
+    headers = instances[0]["headers"]
+    assert "X-Session-ID" not in headers
+    assert headers["x-headroom-base-url"] == "https://upstream"
+
+
+def test_astream_preserves_session_id_across_worker_thread(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+
+    async def _run() -> None:
+        with session_id_context("thr-9"):
+            async for _ in model.astream([HumanMessage(content="hi")]):
+                pass
+
+    asyncio.run(_run())
+    assert len(instances) == 1
+    assert instances[0]["headers"]["X-Session-ID"] == "thr-9"
+
+
+def test_ainvoke_preserves_session_id_across_thread(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+
+    async def _run() -> None:
+        with session_id_context("thr-5"):
+            await model.ainvoke([HumanMessage(content="hi")])
+
+    asyncio.run(_run())
+    assert len(instances) == 1
+    assert instances[0]["headers"]["X-Session-ID"] == "thr-5"
+
+
+def test_close_then_without_session_rebuilds(monkeypatch: Any) -> None:
+    instances = _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+    with session_id_context("thr-1"):
+        model.invoke([HumanMessage(content="hi")])
+    model.close()
+    # Session -> no-session downgrade after close rebuilds without headers.
+    model.invoke([HumanMessage(content="hi")])
+    assert len(instances) == 2
+    assert instances[0]["headers"]["X-Session-ID"] == "thr-1"
+    assert "X-Session-ID" not in instances[1]["headers"]

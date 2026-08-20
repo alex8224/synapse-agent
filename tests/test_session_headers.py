@@ -13,6 +13,7 @@ from synapse.runtime.session_header_middleware import build_session_header_middl
 from synapse.runtime.session_headers import (
     attach_session_headers,
     get_session_id,
+    session_header_values,
     session_id_context,
     set_session_id,
 )
@@ -86,6 +87,21 @@ def test_session_id_context_restores_previous_value():
         assert get_session_id() == "outer"
     finally:
         set_session_id(None)
+
+
+def test_session_header_values_shared_shape_and_sanitize():
+    # Active session maps to both header names (the shape the httpx hook and
+    # the native Rust client both consume).
+    with session_id_context("thread-abc"):
+        assert session_header_values() == {
+            "X-Session-ID": "thread-abc",
+            "Session-Id": "thread-abc",
+        }
+    # Unsafe values (CR/LF) are dropped, not passed through.
+    with session_id_context("bad\r\nInjected: x"):
+        assert session_header_values() is None
+    # No active session yields None.
+    assert session_header_values() is None
 
 
 class _Runtime:

@@ -12,12 +12,14 @@ The active thread id is carried in a context variable (published by
 httpx layer, so every HTTP request of the conversation — streaming or not —
 carries the same ``X-Session-ID`` / ``Session-Id`` headers.
 
-Scope: the HTTP transport used by OpenAI-compatible models (including the
-turbo proxy relay). WebSocket transport (``ResponsesWebSocketChatOpenAI``)
-does not pass through httpx event hooks and is out of scope; first-party
-OpenAI Codex OAuth requests also carry the headers, which upstream ignores.
-The headers are reserved for session affinity: an active session id always
-overrides any statically configured value.
+Scope: every OpenAI-compatible transport used by the models, including the
+turbo proxy relay and the native Rust chat client (which rebuilds its client
+per session and merges these headers into the request). WebSocket transport
+(``ResponsesWebSocketChatOpenAI``) does not pass through httpx event hooks
+and is out of scope; first-party OpenAI Codex OAuth requests also carry the
+headers, which upstream ignores. The headers are reserved for session
+affinity: an active session id always overrides any statically configured
+value.
 """
 
 from __future__ import annotations
@@ -64,6 +66,22 @@ def session_id_context(thread_id: str | None) -> Iterator[None]:
         _session_id.reset(token)
 
 
+def session_header_values() -> dict[str, str] | None:
+    """Return the session-affinity headers for the current context, if any.
+
+    ``None`` when no session id is active or the value is not a safe header
+    value (RFC 9110). Shared by the httpx hook and the native Rust client so
+    both transports stamp identical headers.
+    """
+    session_id = _session_id.get()
+    if not session_id:
+        return None
+    session_id = _sanitize(session_id)
+    if session_id is None:
+        return None
+    return {name: session_id for name in SESSION_HEADER_NAMES}
+
+
 async def attach_session_headers(request: httpx.Request) -> None:
     """httpx request hook: stamp the active session id on outgoing requests.
 
@@ -72,11 +90,6 @@ async def attach_session_headers(request: httpx.Request) -> None:
     active session id overrides any statically configured value of the same
     header name (the headers are reserved for session affinity).
     """
-    session_id = _session_id.get()
-    if not session_id:
-        return
-    session_id = _sanitize(session_id)
-    if session_id is None:
-        return
-    for name in SESSION_HEADER_NAMES:
-        request.headers[name] = session_id
+    headers = session_header_values()
+    if headers:
+        request.headers.update(headers)

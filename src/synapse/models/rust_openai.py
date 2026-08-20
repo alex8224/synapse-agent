@@ -13,6 +13,7 @@ Requests are sent as raw JSON so non-standard fields (DeepSeek
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -32,6 +33,8 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field, PrivateAttr, SecretStr
+
+from synapse.runtime.session_headers import get_session_id, session_header_values
 
 _OPENAI_ROLE_MAP = {
     "system": "system",
@@ -234,6 +237,10 @@ class RustOpenAIChatModel(BaseChatModel):
     parallel_tool_calls: bool | None = None
 
     _client: Any = PrivateAttr(default=None)
+    # Session id the cached native client was built for; a mismatch means the
+    # client must be rebuilt so the session-affinity headers are stamped on
+    # every request of the conversation.
+    _client_session_id: str | None = PrivateAttr(default=None)
 
     @property
     def _llm_type(self) -> str:
@@ -256,15 +263,29 @@ class RustOpenAIChatModel(BaseChatModel):
         return params
 
     def _ensure_client(self) -> Any:
-        if self._client is None:
+        # Not thread-safe for concurrent calls from *different* sessions on the
+        # same instance (a rebuild race could serve the wrong session headers);
+        # registry caches one model per agent session, so this does not happen
+        # in practice. Within one session the same client is reused.
+        session_id = get_session_id()
+        if self._client is None or self._client_session_id != session_id:
             from synapse_core_tool import RustOpenAIClient
 
+            # The native client bakes headers into the async-openai config at
+            # construction, so a per-session client is (re)built whenever the
+            # active session id changes; within one session the same client
+            # (and its reqwest connection pool) is reused.
+            headers = dict(self.default_headers)
+            session_headers = session_header_values()
+            if session_headers:
+                headers.update(session_headers)
             self._client = RustOpenAIClient(
                 api_key=self.api_key.get_secret_value() if self.api_key else None,
                 base_url=self.base_url,
-                headers=self.default_headers,
+                headers=headers,
                 timeout_secs=self.timeout,
             )
+            self._client_session_id = session_id
         return self._client
 
     def _build_request(
@@ -379,7 +400,12 @@ class RustOpenAIChatModel(BaseChatModel):
             finally:
                 queue.put_nowait(None)
 
-        task = asyncio.get_running_loop().run_in_executor(None, _run)
+        # run_in_executor does not propagate contextvars, so the sync streamer
+        # would lose the session id published by the agent middleware. Copy the
+        # current context explicitly so the native client stamps session
+        # headers on streaming requests too.
+        ctx = contextvars.copy_context()
+        task = asyncio.get_running_loop().run_in_executor(None, lambda: ctx.run(_run))
         while True:
             chunk = await queue.get()
             if chunk is None:
@@ -423,7 +449,9 @@ class RustOpenAIChatModel(BaseChatModel):
                     converted.append(tool)
         bound._bound_tools = converted  # type: ignore[attr-defined]
         bound._bound_tool_choice = tool_choice  # type: ignore[attr-defined]
-        # Shallow copy shares the native client; a new client is not needed.
+        # Shallow copy takes a snapshot of the native client at bind time; a
+        # new client is only needed when the session changes, in which case
+        # ``_ensure_client`` rebuilds on the bound instance too.
         bound._client = self._client
         return bound
 
@@ -434,6 +462,7 @@ class RustOpenAIChatModel(BaseChatModel):
 
     def close(self) -> None:
         self._client = None
+        self._client_session_id = None
 
     async def aclose(self) -> None:
         self.close()
