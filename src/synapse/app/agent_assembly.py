@@ -128,9 +128,15 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
     from synapse.runtime.filesystem_tool_prompt_middleware import (
         build_filesystem_tool_prompt_middleware,
     )
+    from synapse.runtime.session_header_middleware import (
+        build_session_header_middleware,
+    )
 
     settings = context.settings
     middleware: list[Any] = [
+        # Publish the active thread id so the httpx layer can stamp
+        # X-Session-ID / Session-Id on every model request (gateway affinity).
+        build_session_header_middleware(),
         build_agent_md_middleware(context.project_root),
         build_filesystem_tool_prompt_middleware(),
         build_describe_image_middleware(

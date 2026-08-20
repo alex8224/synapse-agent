@@ -488,6 +488,18 @@ class SessionStore:
         items = self.list_nonempty(limit=1)
         return items[0] if items else None
 
+    def latest_with_binding(self) -> SessionInfo | None:
+        """Most recently updated session that carries a model binding.
+
+        Includes placeholders (no real title yet): a session the user just
+        created and picked a model for should still be restored on startup so
+        its binding wins over the last-used fallback.
+        """
+        for item in self.list(limit=500):
+            if item.binding().has_data():
+                return item
+        return None
+
     def prune_empty(
         self,
         *,
@@ -495,6 +507,10 @@ class SessionStore:
         limit: int = 500,
     ) -> list[str]:
         """Delete placeholder sessions that never received a real title.
+
+        Placeholders that carry a model binding (active_model/model/thinking)
+        are kept: the user explicitly chose a model for them, and startup
+        restore should be able to pick them up again (binding first, then last).
 
         Returns deleted thread_ids. Does not touch LangGraph checkpoint files.
         """
@@ -504,6 +520,8 @@ class SessionStore:
             if item.thread_id in keep:
                 continue
             if not self.is_placeholder(item):
+                continue
+            if item.binding().has_data():
                 continue
             if self.delete(item.thread_id):
                 deleted.append(item.thread_id)
@@ -630,6 +648,12 @@ def pick_startup_thread_id(
         latest = store.latest_nonempty()
         if latest is not None:
             return latest.thread_id, True
+        # No real session to resume: fall back to the most recent session that
+        # carries a model binding (user picked a model, maybe before sending
+        # the first message), so its binding wins over the last-used fallback.
+        bound = store.latest_with_binding()
+        if bound is not None:
+            return bound.thread_id, True
     return allocate_thread_id(), False
 
 

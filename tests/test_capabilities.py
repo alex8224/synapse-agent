@@ -476,6 +476,31 @@ def test_session_prune_empty_and_resume_last(tmp_path: Path):
     assert store.get(tid2) is None  # not persisted until first message
 
 
+def test_prune_keeps_placeholder_with_binding_and_startup_restores_it(tmp_path: Path):
+    """A placeholder session the user picked a model for survives prune and is
+    restored on startup (binding wins over the last-used fallback)."""
+    from synapse.sessions import pick_startup_thread_id
+
+    store = SessionStore(tmp_path / "sessions.sqlite")
+    store.save_model_binding(
+        "picked", ModelBinding(active_model="deep", thinking="max"), also_last=False
+    )
+    store.ensure("empty3", title="session empty3")
+
+    deleted = store.prune_empty()
+    assert deleted == ["empty3"]
+    assert store.get("picked") is not None  # placeholder with binding survives
+
+    # No real session exists, but the picked placeholder is resumed so its
+    # binding is applied instead of falling back to last.
+    tid, resumed = pick_startup_thread_id(store, None, resume_last=True)
+    assert resumed is True
+    assert tid == "picked"
+    resolved = resolve_startup_binding(store, thread_id=tid, cli_model=None)
+    assert resolved is not None
+    assert resolved.active_model == "deep"
+
+
 def test_session_model_binding_roundtrip(tmp_path: Path):
     store = SessionStore(tmp_path / "sessions.sqlite")
     bind = ModelBinding(
