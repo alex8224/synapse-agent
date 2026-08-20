@@ -18,6 +18,12 @@ class _FakePrompt:
     def focus(self) -> None:
         self.focused = True
 
+    def insert_text_at_cursor(self, text: str) -> None:
+        """Mirror Textual Input semantics: insert at the cursor, move it past."""
+        pos = max(0, min(self.cursor_position, len(self.value)))
+        self.value = self.value[:pos] + text + self.value[pos:]
+        self.cursor_position = pos + len(text)
+
 
 class _FakeHint:
     def __init__(self) -> None:
@@ -226,12 +232,57 @@ def test_insert_pasted_text_multiline_becomes_placeholder() -> None:
 def test_insert_pasted_text_short_appends_directly() -> None:
     controller, app = _make_controller()
     app.prompt.value = "prefix "
+    app.prompt.cursor_position = len(app.prompt.value)
 
     controller.insert_pasted_text("hello")
 
     assert app.prompt.value == "prefix hello"
+    assert app.prompt.cursor_position == len("prefix hello")
     assert controller.state.paste_replacements == {}
     assert app.prompt.focused is True
+
+
+def test_insert_pasted_text_short_inserts_at_cursor() -> None:
+    """Regression: paste must land at the cursor, not the end of the prompt."""
+    controller, app = _make_controller()
+    app.prompt.value = "这是一个测试 在这个位置 这是第二个测试"
+    app.prompt.cursor_position = app.prompt.value.index(" 这是第二个测试")
+
+    controller.insert_pasted_text("PASTE")
+
+    assert app.prompt.value == "这是一个测试 在这个位置PASTE 这是第二个测试"
+    assert app.prompt.cursor_position == app.prompt.value.index(" 这是第二个测试")
+    assert controller.state.paste_replacements == {}
+
+
+def test_insert_pasted_text_multiline_inserts_placeholder_at_cursor() -> None:
+    """Regression: the compressed placeholder must also land at the cursor."""
+    controller, app = _make_controller()
+    app.prompt.value = "前文 后文"
+    app.prompt.cursor_position = app.prompt.value.index(" 后文")
+    body = "line one\nline two\nline three"
+
+    controller.insert_pasted_text(body)
+
+    placeholder = "[line one line two li... 28 chars]"
+    assert app.prompt.value == f"前文{placeholder} 后文"
+    assert app.prompt.cursor_position == app.prompt.value.index(" 后文")
+    assert controller.state.paste_replacements[placeholder] == body
+    assert "pasted text truncated" in app.events[-1]
+
+
+def test_attach_image_inserts_placeholder_at_cursor() -> None:
+    """Regression: the [image#N] placeholder must follow the cursor position."""
+    controller, app = _make_controller()
+    app.prompt.value = "前文 后文"
+    app.prompt.cursor_position = app.prompt.value.index(" 后文")
+
+    result = SimpleNamespace(data=b"img", mime="image/png", name="p.png")
+    controller._attach_image(result)
+
+    assert app.prompt.value == "前文 [image#1] 后文"
+    assert app.prompt.cursor_position == app.prompt.value.index(" 后文")
+    assert "pasted p.png -> [image#1]" in app.events[-1]
 
 
 def test_insert_pasted_text_image_bytes_falls_back_to_clipboard(monkeypatch) -> None:

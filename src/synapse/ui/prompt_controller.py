@@ -402,8 +402,7 @@ class PromptController:
             return
         self._app.append_event(f"pasted {att.name} -> [image#{att.id}]", "dim")
         prompt = self._prompt_widget()
-        old = prompt.value or ""
-        prompt.value = old + f" [image#{att.id}]"
+        prompt.insert_text_at_cursor(f" [image#{att.id}]")
         prompt.focus()
 
     def _paste_clipboard_image_only(self) -> None:
@@ -444,16 +443,14 @@ class PromptController:
             prefix = text[:20].replace("\r", " ").replace("\n", " ").strip()
             placeholder = f"[{prefix}... {len(text)} chars]"
             self.state.paste_replacements[placeholder] = text
-            old = prompt.value or ""
-            prompt.value = old + placeholder
+            prompt.insert_text_at_cursor(placeholder)
             self._app.append_event(
                 f"pasted text truncated: {len(text)} chars -> "
                 "placeholder (content preserved)",
                 "dim",
             )
         else:
-            old = prompt.value or ""
-            prompt.value = old + text
+            prompt.insert_text_at_cursor(text)
         prompt.focus()
 
     def expand_paste(self, text: str) -> tuple[str, str]:
