@@ -142,9 +142,14 @@ def build_openai_async_http_client(
         )
         if capture_store is not None:
             transport = _CapturingAsyncTransport(transport, capture_store)
+        # Inject session-affinity headers (X-Session-ID / Session-Id) from the
+        # active thread context so gateways can keep one session on one key.
+        from synapse.runtime.session_headers import attach_session_headers
+
         return httpx.AsyncClient(
             transport=transport,
             timeout=DEFAULT_TIMEOUT if timeout is None else timeout,
+            event_hooks={"request": [attach_session_headers]},
         )
 
     client = runtime.run(_build())

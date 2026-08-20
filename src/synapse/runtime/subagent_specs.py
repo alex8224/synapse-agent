@@ -34,6 +34,9 @@ from synapse.integrations.openai_oauth_middleware import (
     build_openai_oauth_compat_middleware,
 )
 from synapse.runtime.middleware import build_tool_exclusion_middleware
+from synapse.runtime.session_header_middleware import (
+    build_session_header_middleware,
+)
 from synapse.settings.config_paths import layered_agents_dirs
 
 OwnershipMode = Literal["task", "handoff"]
@@ -440,6 +443,10 @@ def compile_task_specs(
         if hide_builtin_search:
             blocked |= _BUILTIN_SEARCH_TOOL_NAMES
         middleware = [
+            # Subagents have their own middleware stack; publish the active
+            # thread id here too so subagent model calls carry the same
+            # session-affinity headers as the main agent.
+            build_session_header_middleware(),
             *extra_middleware,
             build_tool_exclusion_middleware(blocked),
         ]
