@@ -250,7 +250,9 @@ py-agent/
 │   └── design.md                 # 本方案
 ├── AGENTS.md                     # 项目级记忆/约定（给 agent 读）
 ├── skills/                       # 可选 skills（渐进披露）
-│   └── python-testing/
+│   ├── session-crash-repair/
+│   │   └── SKILL.md
+│   └── session-cache-analysis/
 │       └── SKILL.md
 ├── src/
 │   └── coding_agent/

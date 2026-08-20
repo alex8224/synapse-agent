@@ -6,9 +6,9 @@ Skills 是 Synapse 的可扩展插件系统，位于项目 `skills/` 目录下�
 
 ```
 skills/
-├── python-testing/
+├── session-cache-analysis/
 │   └── SKILL.md
-└── python-memory-diagnostics/
+└── session-crash-repair/
     └── SKILL.md
 ```
 
@@ -18,16 +18,16 @@ skills/
 
 ```markdown
 ---
-name: python-testing
-description: How to run and write Python tests in this project with uv and pytest.
-license: MIT
-compatibility: Requires uv and pytest in a Python 3.12+ project.
-allowed_tools: execute, run_tests, read_file, write_file, edit_file
+name: session-cache-analysis
+description: Analyze the prompt cache hit rate of a Synapse session (thread).
+license: Apache-2.0
+compatibility: Requires a synapse source checkout with uv and Python 3.12+.
+allowed_tools: execute, read_file, write_file, search_files, find_files, search_session, read_session
 ---
 
-# Python Testing Skill
+# Session Cache Hit-Rate Analysis
 
-## Running Tests
+## 数据来源
 ...
 ```
 
@@ -47,8 +47,8 @@ Synapse 自带两个 Skills：
 
 | Skill | 说明 |
 |---|---|
-| `python-testing` | 使用 uv + pytest 运行和编写测试 |
-| `python-memory-diagnostics` | 诊断 Python 进程内存问题 |
+| `session-crash-repair` | 检测并修复异常退出后 checkpoint 不一致的会话（悬挂工具调用、挂起图任务、过期转录投影） |
+| `session-cache-analysis` | 分析会话的 prompt 缓存命中率，区分增量 miss 与全量逐出并定位根因 |
 
 ## 如何编写自定义 Skill
 

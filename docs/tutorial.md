@@ -328,9 +328,9 @@ synapse-agent/                       # 项目根目录
 │   └── fixtures/                    # 测试 fixtures
 │
 ├── skills/                          # Agent Skills
-│   ├── python-testing/              # Python 测试技能
+│   ├── session-crash-repair/        # 会话崩溃修复技能
 │   │   └── SKILL.md                 # 技能定义文件
-│   └── python-memory-diagnostics/   # 内存诊断技能
+│   └── session-cache-analysis/      # 会话缓存命中率分析技能
 │       └── SKILL.md
 │
 ├── docs/                            # 文档
@@ -1073,20 +1073,20 @@ Skills 是给 Agent 的可加载"专业说明手册"。
 ### 10.1 Skill 文件格式
 
 ```markdown
-<!-- skills/python-testing/SKILL.md -->
+<!-- skills/session-cache-analysis/SKILL.md -->
 
 ---
-name: python-testing
-description: How to run and write Python tests in this project with uv and pytest.
-license: MIT
-allowed-tools: execute run_tests read_file write_file edit_file
+name: session-cache-analysis
+description: Analyze the prompt cache hit rate of a Synapse session (thread).
+license: Apache-2.0
+allowed-tools: execute read_file write_file search_files find_files
 ---
 
-# Python testing skill
+# Session cache hit-rate analysis
 
-## Run tests
+## Data source
 Prefer:
-`uv run pytest`
+`load_messages_from_sqlite_file(checkpoints.sqlite, thread_id)`
 
 ...
 ```
@@ -1114,8 +1114,8 @@ Agent 启动时会扫描 `skills/` 目录，将所有 Skill 的描述注入系�
 
 ### 10.3 现有 Skills
 
-- **python-testing**: 告诉 Agent 如何正确地运行和编写 Python 测试
-- **python-memory-diagnostics**: 告诉 Agent 如何诊断 Python 进程的内存问题
+- **session-crash-repair**: 告诉 Agent 如何检测并修复异常退出后 checkpoint 不一致的会话
+- **session-cache-analysis**: 告诉 Agent 如何分析会话的 prompt 缓存命中率并定位逐出根因
 
 ### 10.4 如何创建新 Skill
 
