@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 from synapse.sessions.transcript import (
     fold_messages_for_ui,
+    latest_checkpoint_id_from_sqlite_file,
+    load_messages_from_checkpointer,
     load_thread_messages,
     message_to_export_dict,
 )
@@ -97,6 +100,72 @@ def test_fold_skips_model_only_steer_human_message():
         ("user", "visible question"),
         ("answer", "visible answer"),
     ]
+
+
+def test_delta_history_rebuilds_legacy_plain_list_seed():
+    """A legacy ``MessagesState`` saver stores the seed as a bare list."""
+
+    class _Checkpointer:
+        def get_delta_channel_history(self, *, config, channels):  # noqa: ARG002
+            return {
+                "messages": {
+                    "seed": [_Human("q1"), _AI("a1"), _Human("q2")],
+                    "writes": [("ckpt-2", "messages", [_AI("a2")])],
+                }
+            }
+
+    messages = load_messages_from_checkpointer(_Checkpointer(), "tid")
+    assert len(messages) == 4
+    assert messages[0].content == "q1"
+    assert messages[-1].content == "a2"
+
+
+def test_delta_history_rebuilds_delta_snapshot_seed():
+    """Delta channels wrap the seed in a ``_DeltaSnapshot(value=[...])``."""
+
+    class _Snapshot:
+        def __init__(self, value):
+            self.value = value
+
+    class _Checkpointer:
+        def get_delta_channel_history(self, *, config, channels):  # noqa: ARG002
+            return {
+                "messages": {
+                    "seed": _Snapshot([_Human("q1"), _AI("a1")]),
+                    "writes": [],
+                }
+            }
+
+    messages = load_messages_from_checkpointer(_Checkpointer(), "tid")
+    assert [message.content for message in messages] == ["q1", "a1"]
+
+
+def test_latest_checkpoint_id_from_sqlite_file(tmp_path):
+    path = tmp_path / "checkpoints.sqlite"
+    connection = sqlite3.connect(str(path))
+    connection.execute(
+        "CREATE TABLE checkpoints ("
+        "thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', "
+        "checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, "
+        "checkpoint BLOB, metadata BLOB, "
+        "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+    )
+    connection.execute(
+        "INSERT INTO checkpoints (thread_id, checkpoint_id) VALUES ('t1', 'ckpt-a')"
+    )
+    connection.execute(
+        "INSERT INTO checkpoints (thread_id, checkpoint_id) VALUES ('t1', 'ckpt-b')"
+    )
+    connection.execute(
+        "INSERT INTO checkpoints (thread_id, checkpoint_id) VALUES ('t2', 'ckpt-c')"
+    )
+    connection.commit()
+    connection.close()
+
+    assert latest_checkpoint_id_from_sqlite_file(path, "t1") == "ckpt-b"
+    assert latest_checkpoint_id_from_sqlite_file(path, "t2") == "ckpt-c"
+    assert latest_checkpoint_id_from_sqlite_file(path, "missing") is None
+    assert latest_checkpoint_id_from_sqlite_file(tmp_path / "nope.sqlite", "t1") is None
 
 
 def test_fold_anthropic_tool_use_blocks_not_dumped_as_answer():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -156,6 +157,7 @@ class SessionRuntime:
         self._last_activity_at = _utcnow()
         self._lock = threading.Lock()
         self._closed = False
+        self._close_future: concurrent.futures.Future[Any] | None = None
         self._settle_tasks: set[asyncio.Task[None]] = set()
         self._settling_handles: set[TurnHandle] = set()
         self._on_status_change = _attach_herdr_status_observer(on_status_change)
@@ -499,18 +501,34 @@ class SessionRuntime:
         cancel_active: bool = True,
         timeout: float | None = None,
     ) -> None:
-        """Close this runtime from a Textual/UI thread and wait for settlement."""
-        if self._closed:
-            # Idempotent: a previous close (or an in-flight async close() that
-            # already set the flag) must not block the caller for `timeout`.
-            return
+        """Close this runtime from a Textual/UI thread and wait for settlement.
+
+        A previous call that timed out leaves ``close()`` running in the
+        background. Later callers must join that in-flight task instead of
+        returning early on ``_closed``; otherwise a second close can race the
+        still-writing ``_settle`` (and the projection shutdown that follows it).
+        """
         from synapse.observability.exit_trace import span
 
         with span(f"session.close_threadsafe:{self.thread_id}"):
-            future = self.turn_runtime.submit_coroutine(
-                self.close(cancel_active=cancel_active)
-            )
-            future.result(timeout=timeout)
+            with self._lock:
+                future = self._close_future
+                if future is None:
+                    future = self.turn_runtime.submit_coroutine(
+                        self.close(cancel_active=cancel_active)
+                    )
+                    self._close_future = future
+            try:
+                future.result(timeout=timeout)
+            except Exception:
+                # A timeout leaves the close coroutine running; keep the future
+                # so later callers rejoin it. A failed coroutine, however, must
+                # not poison every future caller with the same exception.
+                if future.done() and future.exception() is not None:
+                    with self._lock:
+                        if self._close_future is future:
+                            self._close_future = None
+                raise
 
     async def _settle(self, context: TurnContext, handle: TurnHandle) -> None:
         result = await asyncio.wrap_future(handle.future)

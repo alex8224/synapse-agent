@@ -172,6 +172,37 @@ def test_project_runtime_has_running_sessions_blocks_collect(tmp_path: Path) -> 
     runtime.close()
 
 
+def test_project_runtime_keeps_stores_open_when_session_close_times_out(tmp_path: Path) -> None:
+    settings = SimpleNamespace(resolved_sessions_path=lambda: str(tmp_path / "s.sqlite"))
+    runtime = ProjectRuntime(project_id="p1", workspace=tmp_path, settings=settings)
+
+    class _Store:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _StuckSession:
+        thread_id = "t1"
+
+        def close_threadsafe(self, *, cancel_active: bool, timeout: float) -> None:
+            raise TimeoutError
+
+    store = _Store()
+    projection = _Store()
+    runtime.session_store = store
+    runtime.transcript_projection = projection
+    runtime.sessions["t1"] = _StuckSession()
+
+    runtime.close()
+
+    assert store.closed is False
+    assert projection.closed is False
+    assert runtime.session_store is store
+    assert runtime.transcript_projection is projection
+
+
 def test_project_runtime_does_not_replace_claimed_session(tmp_path: Path) -> None:
     settings = SimpleNamespace(resolved_sessions_path=lambda: str(tmp_path / "s.sqlite"))
     project = ProjectRuntime(project_id="p1", workspace=tmp_path, settings=settings)

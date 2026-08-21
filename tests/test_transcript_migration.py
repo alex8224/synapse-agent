@@ -10,7 +10,11 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 
-from synapse.sessions.transcript_migration import migrate_transcript_projection
+from synapse.sessions.transcript import UiTranscriptEvent, latest_checkpoint_id_from_sqlite_file
+from synapse.sessions.transcript_migration import (
+    migrate_transcript_projection,
+    projection_needs_rebuild,
+)
 from synapse.sessions.transcript_projection import TranscriptProjection
 
 
@@ -41,6 +45,33 @@ def _build_checkpoint(path: Path, thread_id: str) -> None:
                         "total_tokens": 49,
                     },
                 ),
+            ]
+        },
+        as_node="model",
+    )
+    connection.close()
+
+
+def _append_turn(path: Path, thread_id: str, *, index: int) -> None:
+    """Append one more user/answer pair to an existing checkpoint thread."""
+    connection = sqlite3.connect(path, check_same_thread=False)
+    saver = SqliteSaver(connection)
+    saver.setup()
+
+    def model(state: MessagesState):  # noqa: ANN001
+        return {}
+
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", model)
+    graph.add_edge(START, "model")
+    graph.add_edge("model", END)
+    agent = graph.compile(checkpointer=saver)
+    agent.update_state(
+        {"configurable": {"thread_id": thread_id}},
+        {
+            "messages": [
+                HumanMessage(content=f"question {index}", id=f"user-{index}"),
+                AIMessage(content=f"answer {index}", id=f"ai-{index}"),
             ]
         },
         as_node="model",
@@ -169,3 +200,73 @@ def test_frozen_binary_uses_hidden_cli_subcommand(monkeypatch, tmp_path: Path) -
     assert "--projection-path" in captured["command"]
     assert "--thread-id" in captured["command"]
     assert "legacy-thread" in captured["command"]
+
+
+def test_projection_needs_rebuild_missing_stale_current(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    projection_path = tmp_path / "transcript.sqlite"
+    _build_checkpoint(checkpoint_path, "t1")
+    latest = latest_checkpoint_id_from_sqlite_file(checkpoint_path, "t1")
+    assert latest is not None
+
+    projection = TranscriptProjection(projection_path)
+    try:
+        # Missing projection always rebuilds.
+        assert projection_needs_rebuild(projection, "t1", checkpoint_path) is True
+
+        # Stale watermark rebuilds.
+        projection.replace_events(
+            "t1",
+            [UiTranscriptEvent(kind="user", text="q1")],
+            source_checkpoint_id="older-than-latest",
+        )
+        assert projection_needs_rebuild(projection, "t1", checkpoint_path) is True
+
+        # Current watermark is kept.
+        projection.replace_events(
+            "t1",
+            [UiTranscriptEvent(kind="user", text="q1")],
+            source_checkpoint_id=latest,
+        )
+        assert projection_needs_rebuild(projection, "t1", checkpoint_path) is False
+    finally:
+        projection.close()
+
+
+def test_migration_rebuilds_stale_projection_after_checkpoint_advances(
+    tmp_path: Path,
+) -> None:
+    """The crash scenario: the checkpoint gains a turn the projection lacks."""
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    projection_path = tmp_path / "transcript.sqlite"
+    _build_checkpoint(checkpoint_path, "crash-thread")
+
+    first = migrate_transcript_projection(
+        checkpoint_path=checkpoint_path,
+        projection_path=projection_path,
+        thread_id="crash-thread",
+        timeout=30,
+    )
+    assert first.success is True
+
+    # Simulate an abnormal shutdown: the checkpoint advanced but the projection
+    # was never updated with the in-flight turn.
+    _append_turn(checkpoint_path, "crash-thread", index=2)
+
+    second = migrate_transcript_projection(
+        checkpoint_path=checkpoint_path,
+        projection_path=projection_path,
+        thread_id="crash-thread",
+        timeout=30,
+    )
+    assert second.success is True
+
+    projection = TranscriptProjection(projection_path)
+    try:
+        page = projection.load_tail("crash-thread")
+        assert [event.text for event in page.events if event.kind == "user"] == [
+            "legacy question",
+            "question 2",
+        ]
+    finally:
+        projection.close()

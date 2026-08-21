@@ -459,6 +459,51 @@ def test_close_threadsafe_is_idempotent() -> None:
     assert session.snapshot().status is SessionStatus.CLOSED
 
 
+class _FailingThenOkRuntime:
+    """First ``submit_coroutine`` fails; the second runs the coroutine to completion."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def submit_coroutine(self, coroutine: Any) -> concurrent.futures.Future[Any]:
+        import threading
+
+        self.calls += 1
+        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        if self.calls == 1:
+            # Simulate the close coroutine failing without running it; close the
+            # coroutine object so it is not left unawaited by the test harness.
+            coroutine.close()
+            future.set_exception(RuntimeError("boom"))
+            return future
+
+        def run() -> None:
+            try:
+                future.set_result(asyncio.run(coroutine))
+            except BaseException as exc:  # noqa: BLE001 - mirror runtime semantics
+                future.set_exception(exc)
+
+        threading.Thread(target=run, daemon=True).start()
+        return future
+
+
+def test_close_threadsafe_recovers_after_failed_close_future() -> None:
+    """A failed close coroutine must not poison every later close call."""
+    controlled = _FailingThenOkRuntime()
+    session = _session(controlled)  # type: ignore[arg-type]
+
+    failed = False
+    try:
+        session.close_threadsafe(cancel_active=True, timeout=3)
+    except RuntimeError:
+        failed = True
+    assert failed is True
+
+    session.close_threadsafe(cancel_active=True, timeout=3)
+    assert session.snapshot().status is SessionStatus.CLOSED
+    assert controlled.calls == 2
+
+
 def test_on_status_change_publishes_transitions() -> None:
     """SessionRuntime notifies the observer on every status transition."""
     controlled = _ControlledTurnRuntime()

@@ -16,6 +16,25 @@ from synapse.sessions.transcript import UiTranscriptEvent, fold_messages_for_ui
 from synapse.sessions.transcript_projection import TranscriptUsage
 
 
+def _latest_checkpoint_id(context: TurnContext) -> str | None:
+    """Read the thread's newest checkpoint id for the projection watermark.
+
+    Best-effort: the projection remains correct without this (a later restore
+    reconciles against the checkpoint anyway); the id only avoids needless
+    rebuilds on the next open.
+    """
+    settings = getattr(context, "settings", None)
+    path = getattr(settings, "checkpoint_path", None)
+    if not path or not getattr(context, "thread_id", None):
+        return None
+    try:
+        from synapse.sessions.transcript import latest_checkpoint_id_from_sqlite_file
+
+        return latest_checkpoint_id_from_sqlite_file(path, context.thread_id)
+    except Exception:  # noqa: BLE001 - persistence must never fail on the watermark
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class SessionPersistence:
     """Persist one frozen turn without consulting widgets or mutable app state."""
@@ -35,23 +54,38 @@ class SessionPersistence:
         *,
         turn_events: list[TurnEvent] | None = None,
     ) -> None:
-        if context.request.resume or result.status not in {
+        if result.status not in {
             TurnStatus.COMPLETED,
             TurnStatus.WAITING_APPROVAL,
+            TurnStatus.CANCELLED,
+            TurnStatus.FAILED,
         }:
             return
-        user_text = context.request.input
+        resume = bool(context.request.resume)
+        user_text = "" if resume else context.request.input
         events = self._events(user_text, result, turn_events=turn_events)
+        if resume:
+            # The original user turn is already projected. Resume may still run
+            # the model after approval/rejection, so persist usage only.
+            events = []
         usage = TranscriptUsage(
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             cache_tokens=result.cache_tokens,
             last_input_tokens=result.last_input_tokens,
             last_output_tokens=result.last_output_tokens,
+            last_cache_tokens=result.last_cache_tokens,
         )
-        self.transcript_projection.append_turn(context.thread_id, events, usage=usage)
-        self._persist_summary(context.thread_id, user_text, result, events)
-        self._project_catalog(context.thread_id)
+        self.transcript_projection.append_turn(
+            context.thread_id,
+            events,
+            usage=usage,
+            turn_id=result.turn_id,
+            source_checkpoint_id=_latest_checkpoint_id(context),
+        )
+        if not resume:
+            self._persist_summary(context.thread_id, user_text, result, events)
+            self._project_catalog(context.thread_id)
 
     @staticmethod
     def _events(

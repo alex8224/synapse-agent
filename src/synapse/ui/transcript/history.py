@@ -33,6 +33,24 @@ from synapse.ui.user_turn_block import UserTurnBlock
 _MOUNT_BATCH_SIZE = 12
 
 
+def _projection_needs_rebuild(
+    projection: Any,
+    thread_id: str,
+    checkpoint_path: Any,
+) -> bool:
+    """Return whether the derived projection must be (re)built from the checkpoint.
+
+    ``contains_thread`` alone is insufficient: after an abnormal shutdown the
+    checkpoint may hold more turns than the projection. Reuse the domain-level
+    reconciliation so the TUI, migration worker, and tests share one rule.
+    """
+    if not checkpoint_path:
+        return not projection.contains_thread(thread_id)
+    from synapse.sessions.transcript_migration import projection_needs_rebuild
+
+    return projection_needs_rebuild(projection, thread_id, checkpoint_path)
+
+
 class TranscriptHistoryState:
     """Paginated history-restore state (projection cursor and pages)."""
 
@@ -184,7 +202,9 @@ class TranscriptHistoryController:
         self.state.generation += 1
         self.state.loading = False
         projection = app._transcript_projection
-        if not projection.contains_thread(app.thread_id):
+        if _projection_needs_rebuild(
+            projection, app.thread_id, getattr(app.settings, "checkpoint_path", None)
+        ):
             self.state.loading = True
             thread_id = app.thread_id
             generation = self.state.generation

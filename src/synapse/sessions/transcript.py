@@ -351,6 +351,11 @@ def _rebuild_messages_from_delta_history(dh: Any) -> list[Any]:
         seed = dh.get("seed")
         if seed is not None:
             value = getattr(seed, "value", None)
+            # Legacy plain-list channels (e.g. ``MessagesState`` under older
+            # savers) store the seed as a bare list without a ``.value`` slot;
+            # delta channels wrap it in a ``_DeltaSnapshot(value=[...])``.
+            if value is None and isinstance(seed, list):
+                value = seed
             if isinstance(value, list):
                 messages.extend(value)
         writes = dh.get("writes") or []
@@ -409,6 +414,44 @@ def load_messages_from_sqlite_file(
         return []
     except Exception:  # noqa: BLE001
         return []
+    finally:
+        conn.close()
+
+
+def latest_checkpoint_id_from_sqlite_file(
+    checkpoint_path: Path | str,
+    thread_id: str,
+) -> str | None:
+    """Return a thread's newest checkpoint id without deserializing messages.
+
+    Used to reconcile the derived ``transcript.sqlite`` projection against the
+    source-of-truth checkpoint store. A single indexed read avoids pulling the
+    full message history into the TUI process.
+
+    The ``ORDER BY checkpoint_id DESC LIMIT 1`` ordering intentionally mirrors
+    LangGraph's own ``SqliteSaver.get_tuple`` "latest checkpoint" semantics, so
+    this id always agrees with the checkpoint that ``load_messages_from_*`` will
+    fold. ``busy_timeout`` matches the runtime writer so a transient WAL lock
+    from ``AsyncSqliteSaver`` does not turn into a lost watermark.
+    """
+    path = Path(checkpoint_path).expanduser()
+    if not path.is_file() or not thread_id:
+        return None
+    try:
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+    except Exception:  # noqa: BLE001 - reconciliation is best-effort
+        return None
+    try:
+        conn.execute("PRAGMA busy_timeout=10000")
+        row = conn.execute(
+            "SELECT checkpoint_id FROM checkpoints "
+            "WHERE thread_id = ? AND checkpoint_ns = '' "
+            "ORDER BY checkpoint_id DESC LIMIT 1",
+            (str(thread_id),),
+        ).fetchone()
+        return str(row[0]) if row else None
+    except Exception:  # noqa: BLE001 - missing table/empty db -> no watermark
+        return None
     finally:
         conn.close()
 

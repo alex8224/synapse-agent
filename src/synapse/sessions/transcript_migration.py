@@ -14,6 +14,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 _MAX_ERROR_CHARS = 2_000
@@ -23,6 +24,28 @@ _MAX_ERROR_CHARS = 2_000
 class TranscriptMigrationResult:
     success: bool
     error: str | None = None
+
+
+def projection_needs_rebuild(
+    projection: Any,
+    thread_id: str,
+    checkpoint_path: Path | str,
+) -> bool:
+    """True when the projection is missing or older than the checkpoint.
+
+    The LangGraph checkpoint is the source of truth. ``contains_thread`` alone
+    is not enough: a crash mid-turn advances the checkpoint while the derived
+    projection stays at the older turn count. Compare the stored source
+    checkpoint id against the newest id without deserializing messages.
+    """
+    if not projection.contains_thread(thread_id):
+        return True
+    from synapse.sessions.transcript import latest_checkpoint_id_from_sqlite_file
+
+    latest = latest_checkpoint_id_from_sqlite_file(checkpoint_path, thread_id)
+    if latest is None:
+        return False
+    return projection.source_checkpoint_id(thread_id) != latest
 
 
 def migrate_transcript_projection(
@@ -101,17 +124,45 @@ def _run_worker(
     thread_id: str,
 ) -> int:
     """Worker entry: all full-history allocations die with this process."""
-    from synapse.sessions.transcript import load_messages_from_sqlite_file
+    from synapse.sessions.transcript import (
+        latest_checkpoint_id_from_sqlite_file,
+        load_messages_from_sqlite_file,
+    )
     from synapse.sessions.transcript_projection import TranscriptProjection
 
     projection = TranscriptProjection(projection_path)
     try:
-        # Another worker/TUI turn may have populated this thread while the child
-        # was starting. Never overwrite newer incremental projection data.
-        if projection.contains_thread(thread_id):
+        # Skip only when the projection already matches the newest checkpoint.
+        # A crash mid-turn leaves the checkpoint ahead of the projection, so a
+        # missing ``source_checkpoint_id`` (or a stale one) must trigger a
+        # rebuild from the source of truth instead of reusing the old data.
+        if not projection_needs_rebuild(projection, thread_id, checkpoint_path):
             return 0
-        messages = load_messages_from_sqlite_file(checkpoint_path, thread_id)
-        projection.replace_from_messages(thread_id, messages)
+        observed_id = projection.source_checkpoint_id(thread_id)
+        snapshot_id = None
+        messages: list[Any] = []
+        for _ in range(3):
+            snapshot_id = latest_checkpoint_id_from_sqlite_file(checkpoint_path, thread_id)
+            messages = load_messages_from_sqlite_file(checkpoint_path, thread_id)
+            latest_id = latest_checkpoint_id_from_sqlite_file(checkpoint_path, thread_id)
+            if latest_id == snapshot_id:
+                break
+        else:
+            # A continuously advancing checkpoint cannot produce a coherent
+            # snapshot in this worker. Report a retryable migration failure
+            # instead of claiming success with a stale projection.
+            return 2
+        # Compare-and-swap: the slow message load above can race a concurrent
+        # turn that appends to the projection. Only overwrite when the
+        # projection watermark is still the value we observed; otherwise a
+        # concurrent append already advanced it and we must not clobber it.
+        projection.replace_from_messages(
+            thread_id,
+            messages,
+            source_checkpoint_id=snapshot_id,
+            expected_source_checkpoint_id=observed_id,
+            require_match=True,
+        )
         return 0
     finally:
         projection.close()

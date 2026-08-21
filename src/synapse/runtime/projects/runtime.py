@@ -155,6 +155,46 @@ class ProjectRuntime:
                 self.sessions.clear()
                 self.checkpointer = None
                 self.goal_service = None
+            # SessionRuntime owns turn cancellation and settlement. Stop sessions
+            # first so no background ``_settle`` can still write to the
+            # transcript projection while we release its SQLite connection.
+            timed_out: list[Any] = []
+            for session in sessions:
+                try:
+                    close_threadsafe = getattr(session, "close_threadsafe", None)
+                    if callable(close_threadsafe):
+                        with span(f"project.close.session:{getattr(session, 'thread_id', '?')}"):
+                            close_threadsafe(cancel_active=True, timeout=5.0)
+                except Exception:  # noqa: BLE001 - project eviction must continue
+                    timed_out.append(session)
+            # A timed-out ``close_threadsafe`` leaves its ``close()`` coroutine
+            # running in the background; later calls rejoin that same future.
+            # Give stragglers one bounded extra grace period before releasing the
+            # stores they may still be writing to.
+            still_settling: list[Any] = []
+            for session in timed_out:
+                try:
+                    close_threadsafe = getattr(session, "close_threadsafe", None)
+                    if callable(close_threadsafe):
+                        close_threadsafe(cancel_active=True, timeout=5.0)
+                except Exception:  # noqa: BLE001 - give up on stuck sessions
+                    still_settling.append(session)
+            if still_settling:
+                # Correctness beats eager cleanup: these sessions still own
+                # background settlement tasks that may persist transcript and
+                # usage. Keep their runtime and stores alive rather than closing
+                # SQLite underneath them. Process shutdown will reclaim them;
+                # idle collection should never reach this active-session path.
+                return
+            if manager is not None:
+                try:
+                    with span("project.close.manager.shutdown"):
+                        future = manager._async_runtime.submit(manager.shutdown())  # noqa: SLF001
+                        future.result(timeout=5.0)
+                except Exception:  # noqa: BLE001 - manager shutdown is best-effort
+                    pass
+            # Finally release the data stores: no session can still be settling.
+            with self._lock:
                 if self.session_store is not None:
                     try:
                         self.session_store.close()
@@ -172,23 +212,7 @@ class ProjectRuntime:
                         pass
                 self.session_store = None
                 self.transcript_projection = None
-            # SessionRuntime owns turn cancellation. ProjectRuntime only performs
-            # this best-effort fallback for callers that close a project directly.
-            for session in sessions:
-                try:
-                    close_threadsafe = getattr(session, "close_threadsafe", None)
-                    if callable(close_threadsafe):
-                        with span(f"project.close.session:{getattr(session, 'thread_id', '?')}"):
-                            close_threadsafe(cancel_active=True, timeout=5.0)
-                except Exception:  # noqa: BLE001 - project eviction must continue
-                    pass
-            if manager is not None:
-                try:
-                    with span("project.close.manager.shutdown"):
-                        future = manager._async_runtime.submit(manager.shutdown())  # noqa: SLF001
-                        future.result(timeout=5.0)
-                except Exception:  # noqa: BLE001 - manager shutdown is best-effort
-                    pass
+                self.mcp_scope = None
 
 
 class ProjectRegistry:
