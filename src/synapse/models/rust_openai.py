@@ -192,14 +192,27 @@ def tools_to_responses(tools: list[Any] | None) -> list[dict[str, Any]]:
 def usage_metadata_from_responses(usage: dict[str, Any] | None) -> dict[str, Any]:
     if not usage:
         return {}
-    input_details = usage.get("input_token_details") or {}
-    output_details = usage.get("output_token_details") or {}
+    # Responses wire fields are plural, while LangChain's normalized
+    # UsageMetadata fields below are singular. Keep the singular aliases as a
+    # compatibility fallback for non-standard gateways.
+    input_details = (
+        usage.get("input_tokens_details") or usage.get("input_token_details") or {}
+    )
+    output_details = (
+        usage.get("output_tokens_details") or usage.get("output_token_details") or {}
+    )
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        total_tokens = input_tokens + output_tokens
     return {
-        "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens", 0)),
-        "output_tokens": usage.get("output_tokens", usage.get("completion_tokens", 0)),
-        "total_tokens": usage.get("total_tokens", 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
         "input_token_details": {
             "cache_read": input_details.get("cached_tokens", 0),
+            "cache_creation": input_details.get("cache_write_tokens", 0),
         },
         "output_token_details": {
             "reasoning": output_details.get("reasoning_tokens", 0),
@@ -468,14 +481,22 @@ def usage_metadata_from_openai(usage: dict[str, Any] | None) -> dict[str, Any]:
     reasoning = completion_details.get("reasoning_tokens", 0)
     if not reasoning:
         reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        total_tokens = input_tokens + output_tokens
     return {
-        "input_tokens": usage.get("prompt_tokens", 0),
-        "output_tokens": usage.get("completion_tokens", 0),
-        "total_tokens": usage.get("total_tokens", 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
         "input_token_details": {
+            "audio": prompt_details.get("audio_tokens", 0),
+            "cache_creation": prompt_details.get("cache_write_tokens", 0),
             "cache_read": cache_read,
         },
         "output_token_details": {
+            "audio": completion_details.get("audio_tokens", 0),
             "reasoning": reasoning,
         },
     }
@@ -570,6 +591,7 @@ class RustOpenAIChatModel(BaseChatModel):
     timeout: float | None = None
     parallel_tool_calls: bool | None = None
     use_responses_api: bool = False
+    stream_usage: bool | None = None
     # Optional proxy URL (http/https/socks5/socks5h) for the native client.
     proxy: str | None = None
 
@@ -664,6 +686,11 @@ class RustOpenAIChatModel(BaseChatModel):
         # literal "extra_body" key would never be expanded by the provider.
         req.update(dict(self.model_kwargs or {}))
         req.update(dict(self.extra_body or {}))
+        # stream_usage is a client-side policy, not an OpenAI wire field. Accept
+        # it from legacy model_kwargs/extra_body without leaking it upstream.
+        configured_stream_usage = req.pop("stream_usage", None)
+        if self.stream_usage is not None:
+            configured_stream_usage = self.stream_usage
         if self.temperature is not None:
             req["temperature"] = self.temperature
         if self.max_tokens is not None:
@@ -681,6 +708,32 @@ class RustOpenAIChatModel(BaseChatModel):
         for key in ("temperature", "max_tokens", "top_p", "response_format", "stop"):
             if key in kwargs and kwargs[key] is not None:
                 req[key] = kwargs[key]
+        if isinstance(kwargs.get("stream_options"), dict):
+            req["stream_options"] = dict(kwargs["stream_options"])
+        if not streaming:
+            # stream_options is invalid or rejected by strict gateways on
+            # ordinary non-streaming Chat Completions requests.
+            req.pop("stream_options", None)
+            return req
+
+        # OpenAI Chat Completions only emits the final usage-only chunk when
+        # include_usage is requested. Per-call policy overrides model policy;
+        # explicit false removes the option entirely for strict gateways.
+        stream_usage = kwargs.get("stream_usage")
+        if stream_usage is None:
+            stream_usage = configured_stream_usage
+        options = req.get("stream_options")
+        options = dict(options) if isinstance(options, dict) else {}
+        if stream_usage is True:
+            options["include_usage"] = True
+        elif stream_usage is False:
+            options.pop("include_usage", None)
+        else:
+            options.setdefault("include_usage", True)
+        if options:
+            req["stream_options"] = options
+        else:
+            req.pop("stream_options", None)
         return req
 
     def _build_responses_request(

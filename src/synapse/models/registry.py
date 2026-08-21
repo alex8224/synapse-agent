@@ -373,6 +373,7 @@ class ModelRegistry:
                             timeout=kwargs.get("timeout"),
                             parallel_tool_calls=parallel,
                             use_responses_api=oauth_provider is not None,
+                            stream_usage=kwargs.get("stream_usage"),
                             proxy=kwargs.get("openai_proxy"),
                         )
                         if oauth_provider is not None:

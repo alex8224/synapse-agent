@@ -711,6 +711,7 @@ def test_rust_transport_used_when_native_available(tmp_path: Path, monkeypatch):
                 "max_tokens": 512,
                 "model_kwargs": {"foo": 1},
                 "extra_body": {"bar": 2},
+                "stream_usage": False,
                 "thinking": "high",
             },
         },
@@ -745,6 +746,7 @@ def test_rust_transport_used_when_native_available(tmp_path: Path, monkeypatch):
     assert rust_model.call_args.kwargs["extra_body"]["bar"] == 2
     assert rust_model.call_args.kwargs["extra_body"]["thinking"]["type"] == "enabled"
     assert rust_model.call_args.kwargs["reasoning_effort"] == "high"
+    assert rust_model.call_args.kwargs["stream_usage"] is False
     assert fake_rust_model._coding_rust_openai is True
 
 

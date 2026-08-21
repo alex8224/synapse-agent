@@ -150,6 +150,38 @@ def test_responses_non_streaming_conversion() -> None:
     )["total_tokens"] == 5
 
 
+def test_responses_usage_metadata_maps_wire_details() -> None:
+    usage = usage_metadata_from_responses(
+        {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 80, "cache_write_tokens": 5},
+            "output_tokens_details": {"reasoning_tokens": 15},
+        }
+    )
+    assert usage == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "input_token_details": {"cache_read": 80, "cache_creation": 5},
+        "output_token_details": {"reasoning": 15},
+    }
+
+
+def test_responses_usage_metadata_accepts_singular_compatibility_details() -> None:
+    usage = usage_metadata_from_responses(
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "input_token_details": {"cached_tokens": 7},
+            "output_token_details": {"reasoning_tokens": 3},
+        }
+    )
+    assert usage["input_token_details"]["cache_read"] == 7
+    assert usage["output_token_details"]["reasoning"] == 3
+
+
 def test_responses_stream_event_conversion() -> None:
     state: dict[str, Any] = {}
     text = aimessage_chunk_from_responses_event(
@@ -170,6 +202,30 @@ def test_responses_stream_event_conversion() -> None:
     )
     assert reasoning is not None
     assert reasoning.additional_kwargs["reasoning_content"] == "think"
+
+    completed = aimessage_chunk_from_responses_event(
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-1",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "input_tokens_details": {"cached_tokens": 7},
+                    "output_tokens_details": {"reasoning_tokens": 3},
+                },
+            },
+        },
+        state,
+    )
+    assert completed is not None
+    assert completed.usage_metadata == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "input_token_details": {"cache_read": 7, "cache_creation": 0},
+        "output_token_details": {"reasoning": 3},
+    }
 
 
 def test_responses_tool_name_is_only_emitted_on_first_argument_chunk() -> None:
@@ -256,7 +312,7 @@ def test_usage_metadata_mapping() -> None:
             "completion_tokens": 5,
             "total_tokens": 15,
             "prompt_tokens_details": {"cached_tokens": 2},
-            "completion_tokens_details": {"reasoning_tokens": 3},
+            "completion_tokens_details": {"reasoning_tokens": 3, "audio_tokens": 1},
             "prompt_cache_hit_tokens": 2,
         }
     )
@@ -265,6 +321,12 @@ def test_usage_metadata_mapping() -> None:
     assert um["total_tokens"] == 15
     assert um["input_token_details"]["cache_read"] == 2
     assert um["output_token_details"]["reasoning"] == 3
+    assert um["output_token_details"]["audio"] == 1
+
+
+def test_usage_metadata_total_tokens_falls_back_to_input_plus_output() -> None:
+    usage = usage_metadata_from_openai({"prompt_tokens": 10, "completion_tokens": 5})
+    assert usage["total_tokens"] == 15
 
 
 def test_aimessage_from_openai_with_reasoning() -> None:
@@ -330,6 +392,84 @@ def test_responses_request_includes_stream_options_when_streaming() -> None:
     assert request["stream_options"] == {
         "reasoning_summary_delivery": "sequential_cutoff"
     }
+
+
+def test_chat_request_includes_usage_when_streaming() -> None:
+    model = RustOpenAIChatModel(model="gpt-test")
+    request = model._build_request([HumanMessage(content="hi")], streaming=True)
+    assert request["stream_options"] == {"include_usage": True}
+
+
+def test_chat_request_omits_usage_options_when_non_streaming() -> None:
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        model_kwargs={"stream_options": {"include_usage": True}},
+    )
+    request = model._build_request(
+        [HumanMessage(content="hi")],
+        streaming=False,
+        stream_options={"continuous_usage_stats": True},
+    )
+    assert "stream_options" not in request
+
+
+def test_chat_stream_usage_preserves_options_and_explicit_opt_out() -> None:
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        model_kwargs={"stream_options": {"continuous_usage_stats": True}},
+    )
+    default_request = model._build_request([HumanMessage(content="hi")], streaming=True)
+    assert default_request["stream_options"] == {
+        "continuous_usage_stats": True,
+        "include_usage": True,
+    }
+
+    disabled_request = model._build_request(
+        [HumanMessage(content="hi")], streaming=True, stream_usage=False
+    )
+    assert disabled_request["stream_options"] == {"continuous_usage_stats": True}
+
+
+def test_chat_model_stream_usage_opt_out_is_not_sent_upstream() -> None:
+    model = RustOpenAIChatModel(model="gpt-test", stream_usage=False)
+    request = model._build_request([HumanMessage(content="hi")], streaming=True)
+    assert "stream_usage" not in request
+    assert "stream_options" not in request
+
+
+def test_chat_legacy_model_kwargs_stream_usage_is_consumed_locally() -> None:
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        model_kwargs={"stream_usage": False},
+    )
+    request = model._build_request([HumanMessage(content="hi")], streaming=True)
+    assert "stream_usage" not in request
+    assert "stream_options" not in request
+
+
+def test_chat_usage_only_stream_chunk_maps_and_merges_usage() -> None:
+    content = aimessage_chunk_from_openai_chunk(
+        {"id": "chat-1", "choices": [{"delta": {"content": "answer"}}]}
+    )
+    usage = aimessage_chunk_from_openai_chunk(
+        {
+            "id": "chat-1",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "prompt_tokens_details": {"cached_tokens": 7},
+                "completion_tokens_details": {"reasoning_tokens": 3},
+            },
+        }
+    )
+    merged = content + usage
+    assert merged.content == "answer"
+    assert merged.usage_metadata is not None
+    assert merged.usage_metadata["input_tokens"] == 10
+    assert merged.usage_metadata["input_token_details"]["cache_read"] == 7
+    assert merged.usage_metadata["output_token_details"]["reasoning"] == 3
 
 
 def test_model_invoke_uses_native_client() -> None:
