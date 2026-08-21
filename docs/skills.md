@@ -8,7 +8,9 @@ Skills 是 Synapse 的可扩展插件系统，位于项目 `skills/` 目录下�
 skills/
 ├── session-cache-analysis/
 │   └── SKILL.md
-└── session-crash-repair/
+├── session-crash-repair/
+│   └── SKILL.md
+└── project-session-reader/
     └── SKILL.md
 ```
 
@@ -43,12 +45,13 @@ allowed_tools: execute, read_file, write_file, search_files, find_files, search_
 
 ## 内置 Skills
 
-Synapse 自带两个 Skills：
+Synapse 自带三个 Skills：
 
 | Skill | 说明 |
 |---|---|
 | `session-crash-repair` | 检测并修复异常退出后 checkpoint 不一致的会话（悬挂工具调用、挂起图任务、过期转录投影） |
 | `session-cache-analysis` | 分析会话的 prompt 缓存命中率，区分增量 miss 与全量逐出并定位根因 |
+| `project-session-reader` | 读取或搜索指定项目（workspace 目录）`.synapse/` 下的会话：列出、全文搜索、按 thread_id 读取并分页 |
 
 ## 如何编写自定义 Skill
 
