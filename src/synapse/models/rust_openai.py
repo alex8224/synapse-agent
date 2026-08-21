@@ -17,7 +17,9 @@ import contextvars
 import hashlib
 import json
 import os
+import threading
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.callbacks import (
@@ -43,6 +45,14 @@ _OPENAI_ROLE_MAP = {
     "ai": "assistant",
     "tool": "tool",
 }
+
+
+@dataclass
+class _NativeClientState:
+    client: Any | None = None
+    session_id: str | None = None
+    api_key: str | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def rust_openai_available() -> bool:
@@ -615,14 +625,10 @@ class RustOpenAIChatModel(BaseChatModel):
     # every request of the conversation.
     _client_session_id: str | None = PrivateAttr(default=None)
     _client_api_key: str | None = PrivateAttr(default=None)
+    _client_state: _NativeClientState = PrivateAttr(default_factory=_NativeClientState)
     _oauth_provider: Any = PrivateAttr(default=None)
     _fast_mode: Any = PrivateAttr(default=None)
     _prompt_cache_key: Any = PrivateAttr(default=None)
-    # Cached persistent Responses WebSocket connection (reused across requests).
-    _ws: Any = PrivateAttr(default=None)
-    # Native client that owns the cached WebSocket. A client rebuild (for example
-    # after a session or OAuth token change) invalidates the old connection.
-    _ws_client: Any = PrivateAttr(default=None)
 
     @property
     def _llm_type(self) -> str:
@@ -653,12 +659,38 @@ class RustOpenAIChatModel(BaseChatModel):
         api_key = self.api_key.get_secret_value() if self.api_key else None
         if self._oauth_provider is not None:
             api_key = self._oauth_provider.access_token()
-        if (
-            self._client is None
-            or self._client_session_id != session_id
-            or self._client_api_key != api_key
-        ):
+        state = self._client_state
+        with state.lock:
+            if (
+                state.client is None
+                and self._client is not None
+                and self._client_session_id == session_id
+                and self._client_api_key == api_key
+            ):
+                # Preserve direct client injection used by lightweight callers
+                # and tests while registering it in the shared lifecycle state.
+                state.client = self._client
+                state.session_id = session_id
+                state.api_key = api_key
+            if (
+                state.client is not None
+                and state.session_id == session_id
+                and state.api_key == api_key
+            ):
+                self._client = state.client
+                self._client_session_id = session_id
+                self._client_api_key = api_key
+                return state.client
+
             from synapse_core_tool import RustOpenAIClient
+
+            if state.client is not None and self.use_websocket:
+                close_websocket = getattr(state.client, "close_websocket", None)
+                if callable(close_websocket):
+                    try:
+                        close_websocket()
+                    except Exception:  # noqa: BLE001 - best-effort close
+                        pass
 
             # The native client bakes headers into the async-openai config at
             # construction, so a per-session client is (re)built whenever the
@@ -668,35 +700,33 @@ class RustOpenAIChatModel(BaseChatModel):
             session_headers = session_header_values()
             if session_headers:
                 headers.update(session_headers)
-            self._client = RustOpenAIClient(
+            client = RustOpenAIClient(
                 api_key=api_key,
                 base_url=self.base_url,
                 headers=headers,
                 timeout_secs=self.timeout,
                 proxy=self.proxy,
             )
+            state.client = client
+            state.session_id = session_id
+            state.api_key = api_key
+            self._client = client
             self._client_session_id = session_id
             self._client_api_key = api_key
-        return self._client
+            return client
 
     def _ensure_websocket(self) -> Any:
-        """Return the cached persistent WebSocket, opening one if needed."""
+        """Return the native client's cached persistent WebSocket handle."""
         client = self._ensure_client()
-        if self._ws is not None and self._ws_client is not client:
-            self._reset_websocket()
-        if self._ws is None:
-            self._ws = client.open_websocket(self.proxy)
-            self._ws_client = client
-        return self._ws
+        return client.open_websocket(self.proxy)
 
     def _reset_websocket(self) -> None:
-        """Close and forget the cached WebSocket so the next request reconnects."""
-        ws = self._ws
-        self._ws = None
-        self._ws_client = None
-        if ws is not None:
+        """Close the native client's cached WebSocket so the next call reconnects."""
+        client = self._client
+        close = getattr(client, "close_websocket", None)
+        if callable(close):
             try:
-                ws.close()
+                close()
             except Exception:  # noqa: BLE001 - best-effort close
                 pass
 
@@ -931,6 +961,7 @@ class RustOpenAIChatModel(BaseChatModel):
             )
 
             event = prepare_responses_websocket_event(req)
+            ws: Any | None = None
             try:
                 ws = self._ensure_websocket()
                 stream = ws.request(json.dumps(event, default=str))
@@ -1049,15 +1080,16 @@ class RustOpenAIChatModel(BaseChatModel):
                     converted.append(tool)
         bound._bound_tools = converted  # type: ignore[attr-defined]
         bound._bound_tool_choice = tool_choice  # type: ignore[attr-defined]
-        # A shallow model copy must not inherit an already-open WebSocket. The
-        # socket has connection/session ownership and is not safe to share with
-        # the independently usable bound model.
-        bound._ws = None
-        bound._ws_client = None
-        # Shallow copy takes a snapshot of the native client at bind time; a
-        # new client is only needed when the session changes, in which case
-        # ``_ensure_client`` rebuilds on the bound instance too.
-        bound._client = self._client
+        # Initialize the native client before copying so every lazy
+        # deepagents bind shares the same Rust client. Rust owns the cached
+        # WebSocket and serializes requests on its command loop.
+        if self.use_websocket:
+            bound._client = self._ensure_client()
+            bound._client_session_id = self._client_session_id
+            bound._client_api_key = self._client_api_key
+            bound._client_state = self._client_state
+        else:
+            bound._client = self._client
         return bound
 
     def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
@@ -1066,10 +1098,20 @@ class RustOpenAIChatModel(BaseChatModel):
         )
 
     def close(self) -> None:
-        self._reset_websocket()
-        self._client = None
-        self._client_session_id = None
-        self._client_api_key = None
+        state = self._client_state
+        with state.lock:
+            close_websocket = getattr(state.client, "close_websocket", None)
+            if callable(close_websocket):
+                try:
+                    close_websocket()
+                except Exception:  # noqa: BLE001 - best-effort close
+                    pass
+            state.client = None
+            state.session_id = None
+            state.api_key = None
+            self._client = None
+            self._client_session_id = None
+            self._client_api_key = None
 
     async def aclose(self) -> None:
         self.close()

@@ -586,12 +586,18 @@ def test_websocket_rebuilt_on_session_change(monkeypatch: Any) -> None:
     class _FakeClient:
         def __init__(self, **kwargs: Any) -> None:
             instances.append(kwargs)
+            self.websocket: _FakeWebSocket | None = None
 
         def open_websocket(self, proxy: str | None = None) -> _FakeWebSocket:
             del proxy
-            socket = _FakeWebSocket()
-            sockets.append(socket)
-            return socket
+            if self.websocket is None:
+                self.websocket = _FakeWebSocket()
+                sockets.append(self.websocket)
+            return self.websocket
+
+        def close_websocket(self) -> None:
+            if self.websocket is not None:
+                self.websocket.close()
 
     fake_mod = types.ModuleType("synapse_core_tool")
     fake_mod.RustOpenAIClient = _FakeClient
@@ -670,23 +676,27 @@ def test_websocket_request_failure_resets_cached_socket() -> None:
         def close(self) -> None:
             self.closed = True
 
-    client = object()
     socket = _FailingWebSocket()
+    class _Client:
+        def open_websocket(self, proxy: str | None = None) -> _FailingWebSocket:
+            del proxy
+            return socket
+
+        def close_websocket(self) -> None:
+            socket.close()
+
+    client = _Client()
     model = RustOpenAIChatModel(
         model="gpt-test",
         use_responses_api=True,
         use_websocket=True,
     )
     model._client = client
-    model._ws = socket
-    model._ws_client = client
 
     with pytest.raises(RuntimeError, match="websocket request failed"):
         next(model._stream([HumanMessage(content="hi")]))
 
     assert socket.closed is True
-    assert model._ws is None
-    assert model._ws_client is None
 
 
 def test_websocket_consumer_close_resets_cached_socket() -> None:
@@ -701,44 +711,103 @@ def test_websocket_consumer_close_resets_cached_socket() -> None:
         def close(self) -> None:
             self.closed = True
 
-    client = object()
     socket = _StreamingWebSocket()
+    class _Client:
+        def open_websocket(self, proxy: str | None = None) -> _StreamingWebSocket:
+            del proxy
+            return socket
+
+        def close_websocket(self) -> None:
+            socket.close()
+
+    client = _Client()
     model = RustOpenAIChatModel(
         model="gpt-test",
         use_responses_api=True,
         use_websocket=True,
     )
     model._client = client
-    model._ws = socket
-    model._ws_client = client
 
     stream = model._stream([HumanMessage(content="hi")])
     assert next(stream).message.content == "partial"
     stream.close()
 
     assert socket.closed is True
-    assert model._ws is None
-    assert model._ws_client is None
 
 
-def test_bind_tools_does_not_share_cached_websocket() -> None:
+def test_bound_models_reuse_one_websocket() -> None:
     class _FakeWebSocket:
         def close(self) -> None:
             pass
 
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.open_count = 0
+            self.websocket: _FakeWebSocket | None = None
+
+        def open_websocket(self, proxy: str | None = None) -> _FakeWebSocket:
+            del proxy
+            if self.websocket is None:
+                self.open_count += 1
+                self.websocket = _FakeWebSocket()
+            return self.websocket
+
+    client = _FakeClient()
     model = RustOpenAIChatModel(
         model="gpt-test",
         use_responses_api=True,
         use_websocket=True,
     )
-    model._ws = _FakeWebSocket()
-    model._ws_client = object()
+    model._client = client
+    first = model.bind_tools([])
+    second = model.bind_tools([])
 
-    bound = model.bind_tools([])
+    first._ensure_websocket()
+    second._ensure_websocket()
 
-    assert bound._ws is None
-    assert bound._ws_client is None
-    assert model._ws is not None
+    assert client.open_count == 1
+    assert first._client is second._client is client
+
+
+def test_lazy_bound_models_reuse_client_and_websocket(monkeypatch: Any) -> None:
+    instances: list[dict[str, Any]] = []
+    sockets: list[Any] = []
+
+    class _FakeWebSocket:
+        def close(self) -> None:
+            pass
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            instances.append(kwargs)
+            self.websocket: _FakeWebSocket | None = None
+
+        def open_websocket(self, proxy: str | None = None) -> _FakeWebSocket:
+            del proxy
+            if self.websocket is None:
+                self.websocket = _FakeWebSocket()
+                sockets.append(self.websocket)
+            return self.websocket
+
+    fake_mod = types.ModuleType("synapse_core_tool")
+    fake_mod.RustOpenAIClient = _FakeClient
+    monkeypatch.setitem(sys.modules, "synapse_core_tool", fake_mod)
+
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        api_key="test-key",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    first = model.bind_tools([])
+    second = model.bind_tools([])
+
+    first_ws = first._ensure_websocket()
+    second_ws = second._ensure_websocket()
+
+    assert len(instances) == 1
+    assert len(sockets) == 1
+    assert first_ws is second_ws is sockets[0]
 
 
 def test_astream_preserves_session_id_across_worker_thread(monkeypatch: Any) -> None:

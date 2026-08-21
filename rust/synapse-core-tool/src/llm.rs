@@ -6,7 +6,7 @@
 //! while async-openai still owns HTTP transport, SSE parsing, and config.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_openai::config::OpenAIConfig;
 use async_openai::types::responses::ResponseWebSocketEvent;
@@ -44,6 +44,23 @@ impl StreamIter {
     }
 }
 
+async fn websocket_loop(
+    ws: async_openai::ResponsesWebSocket<'_, OpenAIConfig>,
+    cmd_rx: tokio::sync::mpsc::Receiver<WsCommand>,
+    cache: Arc<Mutex<Option<Arc<WebSocketConnection>>>>,
+    connection: Arc<WebSocketConnection>,
+) {
+    websocket_loop_inner(ws, cmd_rx).await;
+    if let Ok(mut cached) = cache.lock() {
+        if cached
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &connection))
+        {
+            cached.take();
+        }
+    }
+}
+
 /// OpenAI-compatible chat client (raw JSON transport via async-openai byot).
 ///
 /// The underlying ``async_openai::Client`` (and its reqwest connection pool) is
@@ -53,6 +70,8 @@ impl StreamIter {
 #[pyclass]
 struct RustOpenAIClient {
     client: async_openai::Client<OpenAIConfig>,
+    websocket: Arc<Mutex<Option<Arc<WebSocketConnection>>>>,
+    websocket_connect_lock: Arc<Mutex<()>>,
 }
 
 fn build_config(
@@ -201,7 +220,7 @@ enum WsCommand {
 /// channel until a terminal event, then wait for the next command. Any send/recv
 /// error (or a dropped request channel, e.g. Python cancellation) closes the
 /// socket so unread events cannot leak into the next request.
-async fn websocket_loop(
+async fn websocket_loop_inner(
     mut ws: async_openai::ResponsesWebSocket<'_, OpenAIConfig>,
     mut cmd_rx: tokio::sync::mpsc::Receiver<WsCommand>,
 ) {
@@ -259,9 +278,22 @@ async fn websocket_loop(
 
 /// A handle to a persistent Responses WebSocket connection owned by a
 /// background tokio task.
+#[derive(Clone)]
+struct WebSocketConnection {
+    cmd_tx: tokio::sync::mpsc::Sender<WsCommand>,
+}
+
+impl WebSocketConnection {
+    fn close(&self) {
+        let _ = runtime().block_on(self.cmd_tx.send(WsCommand::Close));
+    }
+}
+
 #[pyclass]
 struct RustWebSocket {
-    cmd_tx: tokio::sync::mpsc::Sender<WsCommand>,
+    connection: Arc<WebSocketConnection>,
+    cache: Arc<Mutex<Option<Arc<WebSocketConnection>>>>,
+    connect_lock: Arc<Mutex<()>>,
 }
 
 #[pymethods]
@@ -274,14 +306,35 @@ impl RustWebSocket {
             data: request_json,
             tx,
         };
-        py.allow_threads(|| runtime().block_on(self.cmd_tx.send(cmd)))
+        py.allow_threads(|| runtime().block_on(self.connection.cmd_tx.send(cmd)))
             .map_err(|_| PyRuntimeError::new_err("websocket connection is closed"))?;
         Ok(Py::new(py, StreamIter { rx: Some(rx) })?)
     }
 
     /// Close the persistent connection.
-    fn close(&self, py: Python<'_>) {
-        let _ = py.allow_threads(|| runtime().block_on(self.cmd_tx.send(WsCommand::Close)));
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let cache = Arc::clone(&self.cache);
+        let connection = Arc::clone(&self.connection);
+        let connect_lock = Arc::clone(&self.connect_lock);
+        py.allow_threads(move || {
+            let _guard = connect_lock
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("websocket connect lock is poisoned"))?;
+            let current = cache
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("websocket state lock is poisoned"))?
+                .as_ref()
+                .filter(|cached| Arc::ptr_eq(cached, &connection))
+                .cloned();
+            if let Some(current) = current {
+                cache
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("websocket state lock is poisoned"))?
+                    .take();
+                current.close();
+            }
+            Ok(())
+        })
     }
 }
 
@@ -305,6 +358,8 @@ impl RustOpenAIClient {
         let http_client = build_http_client(proxy.as_deref()).map_err(PyRuntimeError::new_err)?;
         Ok(Self {
             client: Client::with_config(cfg).with_http_client(http_client),
+            websocket: Arc::new(Mutex::new(None)),
+            websocket_connect_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -431,32 +486,85 @@ impl RustOpenAIClient {
         };
 
         let client = self.client.clone();
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<WsCommand>(8);
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-
-        runtime().spawn(async move {
-            let ws = client.responses().websocket_with_options(options).await;
-            let ws = match ws {
-                Ok(ws) => ws,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(format!(
-                        "websocket connect failed: {}",
-                        format_error_chain(&e)
-                    )));
-                    return;
+        let cache = Arc::clone(&self.websocket);
+        let connect_lock = Arc::clone(&self.websocket_connect_lock);
+        let result: Result<Arc<WebSocketConnection>, String> = py.allow_threads(move || {
+            let _connect_guard = connect_lock
+                .lock()
+                .map_err(|_| "websocket connect lock is poisoned".to_string())?;
+            if let Some(connection) = cache
+                .lock()
+                .map_err(|_| "websocket state lock is poisoned".to_string())?
+                .as_ref()
+                .cloned()
+            {
+                if !connection.cmd_tx.is_closed() {
+                    return Ok(connection);
                 }
-            };
-            let _ = ready_tx.send(Ok(()));
-            websocket_loop(ws, cmd_rx).await;
+                cache
+                    .lock()
+                    .map_err(|_| "websocket state lock is poisoned".to_string())?
+                    .take();
+            }
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<WsCommand>(8);
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+            let connection = Arc::new(WebSocketConnection { cmd_tx });
+            let task_connection = Arc::clone(&connection);
+            let task_cache = Arc::clone(&cache);
+            runtime().spawn(async move {
+                let ws = client.responses().websocket_with_options(options).await;
+                let ws = match ws {
+                    Ok(ws) => ws,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(format!(
+                            "websocket connect failed: {}",
+                            format_error_chain(&e)
+                        )));
+                        return;
+                    }
+                };
+                let _ = ready_tx.send(Ok(()));
+                websocket_loop(ws, cmd_rx, task_cache, task_connection).await;
+            });
+            runtime()
+                .block_on(ready_rx)
+                .map_err(|_| "websocket task terminated unexpectedly".to_string())??;
+            let mut cached = cache
+                .lock()
+                .map_err(|_| "websocket state lock is poisoned".to_string())?;
+            if let Some(existing) = cached.as_ref().cloned() {
+                drop(cached);
+                connection.close();
+                return Ok(existing);
+            }
+            *cached = Some(Arc::clone(&connection));
+            Ok(connection)
         });
+        let connection = result.map_err(PyRuntimeError::new_err)?;
+        Ok(RustWebSocket {
+            connection,
+            cache: Arc::clone(&self.websocket),
+            connect_lock: Arc::clone(&self.websocket_connect_lock),
+        })
+    }
 
-        match py.allow_threads(|| runtime().block_on(ready_rx)) {
-            Ok(Ok(())) => Ok(RustWebSocket { cmd_tx }),
-            Ok(Err(e)) => Err(PyRuntimeError::new_err(e)),
-            Err(_) => Err(PyRuntimeError::new_err(
-                "websocket task terminated unexpectedly",
-            )),
-        }
+    /// Close and forget the cached Responses WebSocket, if any.
+    fn close_websocket(&self, py: Python<'_>) -> PyResult<()> {
+        let cache = Arc::clone(&self.websocket);
+        let connect_lock = Arc::clone(&self.websocket_connect_lock);
+        py.allow_threads(move || {
+            let _guard = connect_lock
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("websocket connect lock is poisoned"))?;
+            let connection = cache
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("websocket state lock is poisoned"))?
+                .take();
+            if let Some(connection) = connection {
+                connection.close();
+            }
+            Ok(())
+        })
     }
 }
 
