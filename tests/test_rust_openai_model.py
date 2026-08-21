@@ -572,6 +572,49 @@ def test_client_rebuilt_on_session_change(monkeypatch: Any) -> None:
     assert instances[1]["headers"]["X-Session-ID"] == "thr-2"
 
 
+def test_websocket_rebuilt_on_session_change(monkeypatch: Any) -> None:
+    instances: list[dict[str, Any]] = []
+    sockets: list[Any] = []
+
+    class _FakeWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            instances.append(kwargs)
+
+        def open_websocket(self, proxy: str | None = None) -> _FakeWebSocket:
+            del proxy
+            socket = _FakeWebSocket()
+            sockets.append(socket)
+            return socket
+
+    fake_mod = types.ModuleType("synapse_core_tool")
+    fake_mod.RustOpenAIClient = _FakeClient
+    monkeypatch.setitem(sys.modules, "synapse_core_tool", fake_mod)
+
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        api_key="test-key",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    with session_id_context("thr-1"):
+        first = model._ensure_websocket()
+    with session_id_context("thr-2"):
+        second = model._ensure_websocket()
+
+    assert first is not second
+    assert sockets[0].closed is True
+    assert len(instances) == 2
+    assert instances[0]["headers"]["X-Session-ID"] == "thr-1"
+    assert instances[1]["headers"]["X-Session-ID"] == "thr-2"
+
+
 def test_client_reused_within_session(monkeypatch: Any) -> None:
     instances = _install_fake_rust_client(monkeypatch)
     model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
@@ -613,6 +656,89 @@ def test_proxy_defaults_to_none(monkeypatch: Any) -> None:
     model.invoke([HumanMessage(content="hi")])
     assert len(instances) == 1
     assert instances[0]["proxy"] is None
+
+
+def test_websocket_request_failure_resets_cached_socket() -> None:
+    class _FailingWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def request(self, request_json: str) -> Any:
+            del request_json
+            raise RuntimeError("websocket request failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = object()
+    socket = _FailingWebSocket()
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    model._client = client
+    model._ws = socket
+    model._ws_client = client
+
+    with pytest.raises(RuntimeError, match="websocket request failed"):
+        next(model._stream([HumanMessage(content="hi")]))
+
+    assert socket.closed is True
+    assert model._ws is None
+    assert model._ws_client is None
+
+
+def test_websocket_consumer_close_resets_cached_socket() -> None:
+    class _StreamingWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def request(self, request_json: str) -> Any:
+            del request_json
+            return iter(['{"type":"response.output_text.delta","delta":"partial"}'])
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = object()
+    socket = _StreamingWebSocket()
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    model._client = client
+    model._ws = socket
+    model._ws_client = client
+
+    stream = model._stream([HumanMessage(content="hi")])
+    assert next(stream).message.content == "partial"
+    stream.close()
+
+    assert socket.closed is True
+    assert model._ws is None
+    assert model._ws_client is None
+
+
+def test_bind_tools_does_not_share_cached_websocket() -> None:
+    class _FakeWebSocket:
+        def close(self) -> None:
+            pass
+
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    model._ws = _FakeWebSocket()
+    model._ws_client = object()
+
+    bound = model.bind_tools([])
+
+    assert bound._ws is None
+    assert bound._ws_client is None
+    assert model._ws is not None
 
 
 def test_astream_preserves_session_id_across_worker_thread(monkeypatch: Any) -> None:

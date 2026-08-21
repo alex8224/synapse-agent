@@ -76,6 +76,19 @@ def rust_openai_responses_available() -> bool:
         return False
 
 
+def rust_openai_websocket_available() -> bool:
+    """True when the native extension exposes the persistent WebSocket method."""
+    if not rust_openai_responses_available():
+        return False
+    try:
+        import synapse_core_tool
+
+        client = getattr(synapse_core_tool, "RustOpenAIClient", None)
+        return client is not None and hasattr(client, "open_websocket")
+    except (ImportError, OSError):
+        return False
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -591,6 +604,7 @@ class RustOpenAIChatModel(BaseChatModel):
     timeout: float | None = None
     parallel_tool_calls: bool | None = None
     use_responses_api: bool = False
+    use_websocket: bool = False
     stream_usage: bool | None = None
     # Optional proxy URL (http/https/socks5/socks5h) for the native client.
     proxy: str | None = None
@@ -604,6 +618,11 @@ class RustOpenAIChatModel(BaseChatModel):
     _oauth_provider: Any = PrivateAttr(default=None)
     _fast_mode: Any = PrivateAttr(default=None)
     _prompt_cache_key: Any = PrivateAttr(default=None)
+    # Cached persistent Responses WebSocket connection (reused across requests).
+    _ws: Any = PrivateAttr(default=None)
+    # Native client that owns the cached WebSocket. A client rebuild (for example
+    # after a session or OAuth token change) invalidates the old connection.
+    _ws_client: Any = PrivateAttr(default=None)
 
     @property
     def _llm_type(self) -> str:
@@ -659,6 +678,27 @@ class RustOpenAIChatModel(BaseChatModel):
             self._client_session_id = session_id
             self._client_api_key = api_key
         return self._client
+
+    def _ensure_websocket(self) -> Any:
+        """Return the cached persistent WebSocket, opening one if needed."""
+        client = self._ensure_client()
+        if self._ws is not None and self._ws_client is not client:
+            self._reset_websocket()
+        if self._ws is None:
+            self._ws = client.open_websocket(self.proxy)
+            self._ws_client = client
+        return self._ws
+
+    def _reset_websocket(self) -> None:
+        """Close and forget the cached WebSocket so the next request reconnects."""
+        ws = self._ws
+        self._ws = None
+        self._ws_client = None
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001 - best-effort close
+                pass
 
     def _build_request(
         self,
@@ -834,6 +874,14 @@ class RustOpenAIChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        if self.use_responses_api and self.use_websocket:
+            # WebSocket is streaming-only; aggregate the stream into a ChatResult
+            # so non-streaming LangChain calls keep using the same transport.
+            from langchain_core.language_models.chat_models import generate_from_stream
+
+            return generate_from_stream(
+                self._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+            )
         tools = self._effective_tools(kwargs.pop("tools", None))
         req = self._build_request(messages, tools=tools, stop=stop, streaming=False, **kwargs)
         client = self._ensure_client()
@@ -876,13 +924,44 @@ class RustOpenAIChatModel(BaseChatModel):
     ) -> Iterator[ChatGenerationChunk]:
         tools = self._effective_tools(kwargs.pop("tools", None))
         req = self._build_request(messages, tools=tools, stop=stop, streaming=True, **kwargs)
-        client = self._ensure_client()
-        stream = (
-            client.stream_responses(json.dumps(req, default=str))
-            if self.use_responses_api
-            else client.stream(json.dumps(req, default=str))
-        )
         response_state: dict[str, Any] = {}
+        if self.use_responses_api and self.use_websocket:
+            from synapse.integrations.llm_openai_websocket import (
+                prepare_responses_websocket_event,
+            )
+
+            event = prepare_responses_websocket_event(req)
+            try:
+                ws = self._ensure_websocket()
+                stream = ws.request(json.dumps(event, default=str))
+                for raw in stream:
+                    payload = json.loads(raw)
+                    chunk_msg = aimessage_chunk_from_responses_event(payload, response_state)
+                    if chunk_msg is None:
+                        continue
+                    gen = ChatGenerationChunk(message=chunk_msg)
+                    if run_manager:
+                        text = chunk_msg.content if isinstance(chunk_msg.content, str) else ""
+                        if text:
+                            run_manager.on_llm_new_token(text, chunk=gen)
+                    yield gen
+            except Exception:
+                # A socket error (or consumer cancellation) leaves the connection
+                # unusable; drop it so the next request opens a fresh one.
+                self._reset_websocket()
+                raise
+            except BaseException:
+                # GeneratorExit is raised when a synchronous consumer closes the
+                # iterator early. The native producer then closes its socket, so
+                # do not leave the now-invalid handle cached on this model.
+                self._reset_websocket()
+                raise
+            return
+        client = self._ensure_client()
+        if self.use_responses_api:
+            stream = client.stream_responses(json.dumps(req, default=str))
+        else:
+            stream = client.stream(json.dumps(req, default=str))
         for raw in stream:
             payload = json.loads(raw)
             chunk_msg = (
@@ -970,6 +1049,11 @@ class RustOpenAIChatModel(BaseChatModel):
                     converted.append(tool)
         bound._bound_tools = converted  # type: ignore[attr-defined]
         bound._bound_tool_choice = tool_choice  # type: ignore[attr-defined]
+        # A shallow model copy must not inherit an already-open WebSocket. The
+        # socket has connection/session ownership and is not safe to share with
+        # the independently usable bound model.
+        bound._ws = None
+        bound._ws_client = None
         # Shallow copy takes a snapshot of the native client at bind time; a
         # new client is only needed when the session changes, in which case
         # ``_ensure_client`` rebuilds on the bound instance too.
@@ -982,6 +1066,7 @@ class RustOpenAIChatModel(BaseChatModel):
         )
 
     def close(self) -> None:
+        self._reset_websocket()
         self._client = None
         self._client_session_id = None
         self._client_api_key = None

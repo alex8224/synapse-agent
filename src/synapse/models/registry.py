@@ -280,128 +280,139 @@ class ModelRegistry:
         websocket = fallback_websocket if profile.websocket is None else profile.websocket
 
         if model_name.startswith("openai:"):
-            # Native Rust transport: ordinary profiles use chat/completions and
-            # OAuth Codex profiles use Responses over HTTP/SSE. WebSocket keeps
-            # the langchain_openai path; proxy URLs are passed through to the
-            # native client and fall back to langchain_openai if it fails.
+            # Native Rust transport is preferred for HTTP/SSE and WebSocket
+            # alike (OAuth Codex uses Responses over HTTP/SSE or WebSocket);
+            # fall back to langchain_openai below when it is unavailable.
             turbo_enabled = bool(fallback_turbo or profile.turbo)
-            if not websocket:
-                try:
-                    from synapse.models.rust_openai import (
-                        RustOpenAIChatModel,
-                        rust_openai_available,
-                        rust_openai_responses_available,
-                    )
+            try:
+                from synapse.models.rust_openai import (
+                    RustOpenAIChatModel,
+                    rust_openai_available,
+                    rust_openai_responses_available,
+                    rust_openai_websocket_available,
+                )
 
-                    rust_available = (
-                        rust_openai_responses_available
+                if websocket:
+                    ws_proxy = kwargs.get("openai_proxy")
+                    if ws_proxy and not _is_socks5_proxy_url(ws_proxy):
+                        # The native WebSocket transport only supports SOCKS5;
+                        # keep the Python SDK WebSocket path for HTTP/HTTPS
+                        # proxies instead of failing mid-stream.
+                        def rust_available() -> bool:
+                            return False
+                    else:
+                        rust_available = rust_openai_websocket_available
+                elif oauth_provider is not None:
+                    rust_available = rust_openai_responses_available
+                else:
+                    rust_available = rust_openai_available
+                if rust_available():
+                    model_kwargs: dict[str, Any] = {}
+                    model_kwargs.update(dict(profile.model_kwargs or {}))
+                    if parallel:
+                        model_kwargs.setdefault("parallel_tool_calls", True)
+
+                    think_kwargs = (
+                        {"reasoning_effort": resolved_effort}
+                        if oauth_provider is not None and resolved_enable
+                        else {}
                         if oauth_provider is not None
-                        else rust_openai_available
+                        else deepseek_thinking_kwargs(
+                            enabled=bool(resolved_enable),
+                            reasoning_effort=str(resolved_effort or "high"),
+                        )
                     )
-                    if rust_available():
-                        model_kwargs: dict[str, Any] = {}
-                        model_kwargs.update(dict(profile.model_kwargs or {}))
-                        if parallel:
-                            model_kwargs.setdefault("parallel_tool_calls", True)
+                    extra_body: dict[str, Any] = dict(think_kwargs.get("extra_body") or {})
+                    # One-level deep merge for `thinking` to match the
+                    # langchain_openai fallback behavior below.
+                    profile_body = dict(profile.extra_body or {})
+                    if "thinking" in extra_body and isinstance(
+                        profile_body.get("thinking"), dict
+                    ):
+                        merged = dict(extra_body["thinking"])
+                        merged.update(profile_body["thinking"])
+                        profile_body["thinking"] = merged
+                    if oauth_provider is not None:
+                        extra_body.pop("thinking", None)
+                        profile_body.pop("thinking", None)
+                    extra_body.update(profile_body)
 
-                        think_kwargs = (
-                            {"reasoning_effort": resolved_effort}
-                            if oauth_provider is not None and resolved_enable
-                            else {}
-                            if oauth_provider is not None
-                            else deepseek_thinking_kwargs(
-                                enabled=bool(resolved_enable),
-                                reasoning_effort=str(resolved_effort or "high"),
-                            )
+                    rust_base_url = str(base_url).rstrip("/") if base_url else None
+                    rust_headers = _merge_headers(configured_headers, oauth_headers)
+                    if oauth_provider is not None:
+                        rust_headers = {
+                            name: value
+                            for name, value in rust_headers.items()
+                            if name.casefold() != "authorization"
+                        }
+                    # Route through headroom-turbo when it is enabled and the
+                    # sidecar is healthy, mirroring the langchain_openai path.
+                    if turbo_enabled and base_url and oauth_provider is None:
+                        from synapse.integrations.turbo import (
+                            proxy_ready as _turbo_ready,
                         )
-                        extra_body: dict[str, Any] = dict(think_kwargs.get("extra_body") or {})
-                        # One-level deep merge for `thinking` to match the
-                        # langchain_openai fallback behavior below.
-                        profile_body = dict(profile.extra_body or {})
-                        if "thinking" in extra_body and isinstance(
-                            profile_body.get("thinking"), dict
-                        ):
-                            merged = dict(extra_body["thinking"])
-                            merged.update(profile_body["thinking"])
-                            profile_body["thinking"] = merged
-                        if oauth_provider is not None:
-                            extra_body.pop("thinking", None)
-                            profile_body.pop("thinking", None)
-                        extra_body.update(profile_body)
 
-                        rust_base_url = str(base_url).rstrip("/") if base_url else None
-                        rust_headers = _merge_headers(configured_headers, oauth_headers)
-                        if oauth_provider is not None:
-                            rust_headers = {
-                                name: value
-                                for name, value in rust_headers.items()
-                                if name.casefold() != "authorization"
-                            }
-                        # Route through headroom-turbo when it is enabled and the
-                        # sidecar is healthy, mirroring the langchain_openai path.
-                        if turbo_enabled and base_url and oauth_provider is None:
-                            from synapse.integrations.turbo import (
-                                proxy_ready as _turbo_ready,
+                        if _turbo_ready():
+                            rust_headers = _merge_headers(
+                                rust_headers,
+                                {
+                                    "x-headroom-base-url": _turbo_upstream_origin(
+                                        base_url
+                                    )
+                                },
+                            )
+                            rust_base_url = _resolve_turbo_proxy_url(
+                                profile, fallback_turbo_proxy_url
                             )
 
-                            if _turbo_ready():
-                                rust_headers = _merge_headers(
-                                    rust_headers,
-                                    {
-                                        "x-headroom-base-url": _turbo_upstream_origin(
-                                            base_url
-                                        )
-                                    },
-                                )
-                                rust_base_url = _resolve_turbo_proxy_url(
-                                    profile, fallback_turbo_proxy_url
-                                )
-
-                        chat_model = RustOpenAIChatModel(
-                            model=short_model_id(model_name),
-                            api_key=api_key,
-                            base_url=rust_base_url,
-                            default_headers=rust_headers,
-                            model_kwargs=model_kwargs,
-                            extra_body=extra_body,
-                            reasoning_effort=(
-                                str(resolved_effort) if resolved_enable else None
-                            ),
-                            temperature=kwargs.get("temperature"),
-                            max_tokens=kwargs.get("max_tokens"),
-                            top_p=kwargs.get("top_p"),
-                            timeout=kwargs.get("timeout"),
-                            parallel_tool_calls=parallel,
-                            use_responses_api=oauth_provider is not None,
-                            stream_usage=kwargs.get("stream_usage"),
-                            proxy=kwargs.get("openai_proxy"),
-                        )
-                        if oauth_provider is not None:
-                            chat_model._oauth_provider = oauth_provider
-                        chat_model._coding_async_only = True
-                        chat_model._coding_websocket = False
-                        chat_model._coding_http_async_client = None
-                        # The native Responses model performs the Codex request
-                        # adaptation itself; do not install the ChatOpenAI-only
-                        # middleware on top of it.
-                        chat_model._synapse_openai_oauth = False
-                        chat_model._coding_rust_openai = True
-                        logger = logging.getLogger(__name__)
-                        logger.info(
-                            "using native rust openai transport for %s (base_url=%s)",
-                            model_name,
-                            rust_base_url,
-                        )
-                        return apply_context_window_to_model(
-                            chat_model, profile.context_window
-                        )
-                except Exception as exc:  # noqa: BLE001 - fall back to langchain_openai
+                    chat_model = RustOpenAIChatModel(
+                        model=short_model_id(model_name),
+                        api_key=api_key,
+                        base_url=rust_base_url,
+                        default_headers=rust_headers,
+                        model_kwargs=model_kwargs,
+                        extra_body=extra_body,
+                        reasoning_effort=(
+                            str(resolved_effort) if resolved_enable else None
+                        ),
+                        temperature=kwargs.get("temperature"),
+                        max_tokens=kwargs.get("max_tokens"),
+                        top_p=kwargs.get("top_p"),
+                        timeout=kwargs.get("timeout"),
+                        parallel_tool_calls=parallel,
+                        use_responses_api=oauth_provider is not None or websocket,
+                        use_websocket=websocket,
+                        stream_usage=kwargs.get("stream_usage"),
+                        proxy=kwargs.get("openai_proxy"),
+                    )
+                    if oauth_provider is not None:
+                        chat_model._oauth_provider = oauth_provider
+                    chat_model._coding_async_only = True
+                    chat_model._coding_websocket = bool(websocket)
+                    chat_model._coding_http_async_client = None
+                    # The native Responses model performs the Codex request
+                    # adaptation itself; do not install the ChatOpenAI-only
+                    # middleware on top of it.
+                    chat_model._synapse_openai_oauth = False
+                    chat_model._coding_rust_openai = True
                     logger = logging.getLogger(__name__)
-                    logger.warning(
-                        "rust openai model unavailable; falling back to "
-                        "langchain_openai: %s",
-                        exc,
+                    logger.info(
+                        "using native rust openai transport for %s (base_url=%s, "
+                        "websocket=%s)",
+                        model_name,
+                        rust_base_url,
+                        websocket,
                     )
+                    return apply_context_window_to_model(
+                        chat_model, profile.context_window
+                    )
+            except Exception as exc:  # noqa: BLE001 - fall back to langchain_openai
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    "rust openai model unavailable; falling back to "
+                    "langchain_openai: %s",
+                    exc,
+                )
 
             if progress is not None:
                 progress("loading OpenAI SDK")
@@ -575,6 +586,20 @@ class ModelRegistry:
 
                 get_async_runtime().track_connection(chat_model)
         return apply_context_window_to_model(chat_model, profile.context_window)
+
+
+def _is_socks5_proxy_url(proxy: Any) -> bool:
+    """True for unauthenticated, valid SOCKS5 URLs supported by native WS."""
+    text = str(proxy or "").strip()
+    parsed = urlparse(text)
+    if parsed.scheme.casefold() not in {"socks5", "socks5h"}:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    try:
+        return bool(parsed.hostname and parsed.port)
+    except ValueError:
+        return False
 
 
 def _merge_headers(*sources: dict[str, str]) -> dict[str, str]:
@@ -980,7 +1005,12 @@ def should_use_rust_openai(settings: Any, model_name: str | None = None) -> bool
             else profile.websocket
         )
         if websocket:
-            return False
+            ws_proxy = (profile.extra or {}).get("openai_proxy")
+            if ws_proxy and not _is_socks5_proxy_url(ws_proxy):
+                return False
+            from synapse.models.rust_openai import rust_openai_websocket_available
+
+            return rust_openai_websocket_available()
         from synapse.models.rust_openai import (
             rust_openai_available,
             rust_openai_responses_available,

@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use async_openai::config::OpenAIConfig;
-use async_openai::Client;
+use async_openai::types::responses::ResponseWebSocketEvent;
+use async_openai::{Client, ResponsesWebSocketOptions, WebSocketProxy};
 use futures_util::StreamExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -110,6 +111,180 @@ fn build_http_client(proxy: Option<&str>) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("failed to build http client: {e}"))
 }
 
+/// Parse a ``socks5://host:port`` / ``socks5h://host:port`` URL into the fork's
+/// WebSocket proxy config. Only SOCKS5 is supported by the WebSocket transport;
+/// HTTP proxies are ignored (fall back to a direct connection).
+fn parse_socks5_proxy(proxy: &str) -> Result<WebSocketProxy, String> {
+    let raw = proxy.trim();
+    let rest = if let Some(r) = raw.strip_prefix("socks5h://") {
+        r
+    } else if let Some(r) = raw.strip_prefix("socks5://") {
+        r
+    } else {
+        return Err(format!(
+            "websocket proxy must be socks5:// or socks5h://, got {proxy:?}"
+        ));
+    };
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| format!("websocket proxy must be host:port, got {proxy:?}"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("invalid websocket proxy port in {proxy:?}"))?;
+    if host.is_empty() {
+        return Err(format!("empty websocket proxy host in {proxy:?}"));
+    }
+    Ok(WebSocketProxy::Socks5 {
+        host: host.to_string(),
+        port,
+    })
+}
+
+/// Serialize a WebSocket event to the JSON shape the Python stream converter
+/// already understands (SSE-shaped ``response.*`` events, plus the nested WS
+/// ``error`` structure). Returns ``(json, is_terminal)``.
+fn websocket_event_to_json(event: ResponseWebSocketEvent) -> (String, bool) {
+    match event {
+        ResponseWebSocketEvent::Stream {
+            stream_id: _,
+            event,
+        } => {
+            let value = serde_json::to_value(&event).unwrap_or_default();
+            let is_terminal = matches!(
+                value.get("type").and_then(|v| v.as_str()),
+                Some("response.completed") | Some("response.failed") | Some("response.incomplete")
+            );
+            (value.to_string(), is_terminal)
+        }
+        ResponseWebSocketEvent::Error(error) => {
+            let mut value = serde_json::Map::new();
+            value.insert("type".into(), serde_json::Value::String("error".into()));
+            let mut detail = serde_json::Map::new();
+            if let Some(code) = &error.error.code {
+                detail.insert("code".into(), code.clone().into());
+            }
+            detail.insert("message".into(), error.error.message.clone().into());
+            if let Some(param) = &error.error.param {
+                detail.insert("param".into(), param.clone().into());
+            }
+            detail.insert("type".into(), error.error.r#type.clone().into());
+            value.insert("error".into(), serde_json::Value::Object(detail));
+            if let Some(sequence_number) = error.sequence_number {
+                value.insert("sequence_number".into(), sequence_number.into());
+            }
+            (serde_json::Value::Object(value).to_string(), true)
+        }
+        ResponseWebSocketEvent::Unknown { data, .. } => {
+            // Provider extension events (e.g. codex.rate_limits) are passed
+            // through verbatim; the Python converter ignores unknown types.
+            (data.to_string(), false)
+        }
+    }
+}
+
+/// Commands sent from Python to the background task that owns a persistent
+/// WebSocket connection.
+enum WsCommand {
+    /// Send one ``response.create`` frame and stream its events back over ``tx``
+    /// until the first terminal event.
+    Request {
+        data: String,
+        tx: tokio::sync::mpsc::Sender<Result<String, String>>,
+    },
+    /// Close the socket and end the task.
+    Close,
+}
+
+/// Background task owning one persistent Responses WebSocket connection.
+///
+/// Commands arrive serially: send a request, stream its events to the per-request
+/// channel until a terminal event, then wait for the next command. Any send/recv
+/// error (or a dropped request channel, e.g. Python cancellation) closes the
+/// socket so unread events cannot leak into the next request.
+async fn websocket_loop(
+    mut ws: async_openai::ResponsesWebSocket<'_, OpenAIConfig>,
+    mut cmd_rx: tokio::sync::mpsc::Receiver<WsCommand>,
+) {
+    loop {
+        let Some(cmd) = cmd_rx.recv().await else {
+            let _ = ws.close().await;
+            return;
+        };
+        match cmd {
+            WsCommand::Request { data, tx } => {
+                if let Err(e) = ws.send_raw(data).await {
+                    let _ = tx
+                        .send(Err(format!(
+                            "websocket send failed: {}",
+                            format_error_chain(&e)
+                        )))
+                        .await;
+                    let _ = ws.close().await;
+                    return;
+                }
+                loop {
+                    match ws.recv().await {
+                        Ok(event) => {
+                            let (json, terminal) = websocket_event_to_json(event);
+                            if tx.send(Ok(json)).await.is_err() {
+                                // Python dropped the request (cancel/timeout);
+                                // the socket may hold unread events, so close it.
+                                let _ = ws.close().await;
+                                return;
+                            }
+                            if terminal {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(Err(format!(
+                                    "websocket recv failed: {}",
+                                    format_error_chain(&e)
+                                )))
+                                .await;
+                            let _ = ws.close().await;
+                            return;
+                        }
+                    }
+                }
+            }
+            WsCommand::Close => {
+                let _ = ws.close().await;
+                return;
+            }
+        }
+    }
+}
+
+/// A handle to a persistent Responses WebSocket connection owned by a
+/// background tokio task.
+#[pyclass]
+struct RustWebSocket {
+    cmd_tx: tokio::sync::mpsc::Sender<WsCommand>,
+}
+
+#[pymethods]
+impl RustWebSocket {
+    /// Send one ``response.create`` frame and return an iterator over the raw
+    /// JSON events of that response (ends after the first terminal event).
+    fn request(&self, py: Python<'_>, request_json: String) -> PyResult<Py<StreamIter>> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, String>>(64);
+        let cmd = WsCommand::Request {
+            data: request_json,
+            tx,
+        };
+        py.allow_threads(|| runtime().block_on(self.cmd_tx.send(cmd)))
+            .map_err(|_| PyRuntimeError::new_err("websocket connection is closed"))?;
+        Ok(Py::new(py, StreamIter { rx: Some(rx) })?)
+    }
+
+    /// Close the persistent connection.
+    fn close(&self, py: Python<'_>) {
+        let _ = py.allow_threads(|| runtime().block_on(self.cmd_tx.send(WsCommand::Close)));
+    }
+}
+
 #[pymethods]
 impl RustOpenAIClient {
     #[new]
@@ -141,7 +316,9 @@ impl RustOpenAIClient {
             .allow_threads(|| {
                 runtime().block_on(async { self.client.chat().create_byot(request).await })
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e))))?;
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e)))
+            })?;
         serde_json::to_string(&resp)
             .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
     }
@@ -154,7 +331,9 @@ impl RustOpenAIClient {
             .allow_threads(|| {
                 runtime().block_on(async { self.client.responses().create_byot(request).await })
             })
-            .map_err(|e| PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e))))?;
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("request failed: {}", format_error_chain(&e)))
+            })?;
         serde_json::to_string(&resp)
             .map_err(|e| PyRuntimeError::new_err(format!("serialize response failed: {e}")))
     }
@@ -228,10 +407,126 @@ impl RustOpenAIClient {
 
         Ok(Py::new(py, StreamIter { rx: Some(rx) })?)
     }
+
+    /// Open a persistent Responses WebSocket connection.
+    ///
+    /// Returns a [`RustWebSocket`] handle whose ``request`` method sends one
+    /// ``response.create`` frame per call; the connection is reused across
+    /// requests until closed or a socket error occurs. SOCKS5 proxies are
+    /// applied to the handshake when supplied.
+    #[pyo3(signature = (proxy=None))]
+    fn open_websocket(&self, py: Python<'_>, proxy: Option<String>) -> PyResult<RustWebSocket> {
+        let options = match proxy.as_deref().map(parse_socks5_proxy).transpose() {
+            Ok(proxy) => {
+                let mut opts = ResponsesWebSocketOptions::default();
+                opts.proxy = proxy;
+                // Disable the fork's transparent reconnect. A recovered
+                // connection does not replay an in-flight `response.create`, so
+                // `recv` could block forever on an empty socket. Surface the
+                // disconnect to Python instead; the upper layer decides retry.
+                opts.max_retries = 0;
+                opts
+            }
+            Err(e) => return Err(PyRuntimeError::new_err(e)),
+        };
+
+        let client = self.client.clone();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<WsCommand>(8);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+        runtime().spawn(async move {
+            let ws = client.responses().websocket_with_options(options).await;
+            let ws = match ws {
+                Ok(ws) => ws,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(format!(
+                        "websocket connect failed: {}",
+                        format_error_chain(&e)
+                    )));
+                    return;
+                }
+            };
+            let _ = ready_tx.send(Ok(()));
+            websocket_loop(ws, cmd_rx).await;
+        });
+
+        match py.allow_threads(|| runtime().block_on(ready_rx)) {
+            Ok(Ok(())) => Ok(RustWebSocket { cmd_tx }),
+            Ok(Err(e)) => Err(PyRuntimeError::new_err(e)),
+            Err(_) => Err(PyRuntimeError::new_err(
+                "websocket task terminated unexpectedly",
+            )),
+        }
+    }
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<RustOpenAIClient>()?;
+    module.add_class::<RustWebSocket>()?;
     module.add_class::<StreamIter>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_socks5_proxies() {
+        let p = parse_socks5_proxy("socks5h://localhost:7991").unwrap();
+        assert_eq!(
+            p,
+            WebSocketProxy::Socks5 {
+                host: "localhost".into(),
+                port: 7991
+            }
+        );
+        let p = parse_socks5_proxy("socks5://127.0.0.1:1080").unwrap();
+        assert_eq!(
+            p,
+            WebSocketProxy::Socks5 {
+                host: "127.0.0.1".into(),
+                port: 1080
+            }
+        );
+        assert!(parse_socks5_proxy("http://localhost:7890").is_err());
+        assert!(parse_socks5_proxy("socks5://localhost").is_err());
+    }
+
+    #[test]
+    fn stream_event_to_json_is_not_terminal() {
+        let event = ResponseWebSocketEvent::parse(
+            r#"{"type":"response.output_text.delta","sequence_number":1,"item_id":"item_1","output_index":0,"content_index":0,"delta":"hi"}"#,
+        )
+        .unwrap();
+        let (json, terminal) = websocket_event_to_json(event);
+        assert!(!terminal);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "response.output_text.delta");
+        assert_eq!(value["delta"], "hi");
+    }
+
+    #[test]
+    fn error_event_to_json_is_terminal_and_nested() {
+        let event = ResponseWebSocketEvent::parse(
+            r#"{"type":"error","sequence_number":5,"error":{"code":"invalid_request_error","message":"bad","param":"input","type":"invalid_request"}}"#,
+        )
+        .unwrap();
+        let (json, terminal) = websocket_event_to_json(event);
+        assert!(terminal);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["error"]["message"], "bad");
+    }
+
+    #[test]
+    fn unknown_event_passes_through_and_is_not_terminal() {
+        let event =
+            ResponseWebSocketEvent::parse(r#"{"type":"codex.rate_limits","tokens":123}"#).unwrap();
+        let (json, terminal) = websocket_event_to_json(event);
+        assert!(!terminal);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "codex.rate_limits");
+        assert_eq!(value["tokens"], 123);
+    }
 }

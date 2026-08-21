@@ -793,6 +793,56 @@ def test_rust_transport_used_with_proxy(tmp_path: Path, monkeypatch):
     assert fake_rust_model._coding_rust_openai is True
 
 
+def test_websocket_with_authenticated_socks5_proxy_falls_back(
+    tmp_path: Path, monkeypatch
+):
+    """Native WebSocket only accepts unauthenticated SOCKS5 proxies."""
+    monkeypatch.delenv("AGENT_MODELS_CONFIG", raising=False)
+    monkeypatch.delenv("MODEL", raising=False)
+    cfg = {
+        "default": "main",
+        "models": {
+            "main": {
+                "model": "openai:gpt-test",
+                "base_url": "http://127.0.0.1:9/v1/",
+                "openai_proxy": "socks5://user:password@localhost:7991",
+                "websocket": True,
+                "thinking": "off",
+            },
+        },
+    }
+    path = tmp_path / ".synapse" / "models.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    settings = load_settings(
+        workspace=tmp_path,
+        models_config_path=None,
+        checkpoint_backend="memory",
+    )
+
+    from synapse.models.registry import should_use_rust_openai
+
+    fake_rust_model = MagicMock(name="rust-chat-model")
+    fallback_model = MagicMock(name="fallback-websocket-model")
+    with (
+        patch("synapse.models.rust_openai.rust_openai_websocket_available", return_value=True),
+        patch(
+            "synapse.models.rust_openai.RustOpenAIChatModel",
+            return_value=fake_rust_model,
+        ) as rust_model,
+        patch(
+            "synapse.integrations.llm_openai_websocket.ResponsesWebSocketChatOpenAI",
+            return_value=fallback_model,
+        ),
+    ):
+        reg = registry_from_settings(settings)
+        built = reg.build_chat_model("main", fallback_api_key="k")
+        assert should_use_rust_openai(settings) is False
+
+    assert built is fallback_model
+    rust_model.assert_not_called()
+
+
 def test_rust_transport_falls_back_to_langchain_when_native_missing(
     tmp_path: Path, monkeypatch
 ):

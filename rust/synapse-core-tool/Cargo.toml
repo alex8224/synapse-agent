@@ -12,7 +12,7 @@ name = "synapse_core_tool"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-async-openai = { git = "https://github.com/alex8224/async-openai.git", rev = "9a28a70", features = ["chat-completion", "responses", "byot"] }
+async-openai = { git = "https://github.com/alex8224/async-openai.git", rev = "c56301b", features = ["chat-completion", "responses", "byot", "responses-ws"] }
 chardetng = "0.1"
 encoding_rs = "0.8"
 futures-util = "0.3"

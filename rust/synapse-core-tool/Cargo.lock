@@ -48,7 +48,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "async-openai"
 version = "0.41.3"
-source = "git+https://github.com/alex8224/async-openai.git?rev=9a28a70#9a28a70996df775974df8dcc7ae6390e04ef8506"
+source = "git+https://github.com/alex8224/async-openai.git?rev=c56301b#c56301bd68dfe4381cc965ebb40a26fb8d9aefc1"
 dependencies = [
  "async-openai-macros",
  "base64",
@@ -65,6 +65,7 @@ dependencies = [
  "serde_urlencoded",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-socks",
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
@@ -76,7 +77,7 @@ dependencies = [
 [[package]]
 name = "async-openai-macros"
 version = "0.3.0"
-source = "git+https://github.com/alex8224/async-openai.git?rev=9a28a70#9a28a70996df775974df8dcc7ae6390e04ef8506"
+source = "git+https://github.com/alex8224/async-openai.git?rev=c56301b#c56301bd68dfe4381cc965ebb40a26fb8d9aefc1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -474,6 +475,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "either"
+version = "1.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
 name = "encoding_rs"
@@ -2333,6 +2340,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-socks"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
+dependencies = [
+ "either",
+ "futures-util",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
