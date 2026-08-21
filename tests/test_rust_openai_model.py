@@ -68,6 +68,101 @@ def test_tool_message_maps_tool_call_id() -> None:
     assert out[0] == {"role": "tool", "content": "ok", "tool_call_id": "c1"}
 
 
+def test_tool_message_image_is_converted_to_image_url() -> None:
+    tm = ToolMessage(
+        content_blocks=[
+            {"type": "image", "base64": "QUJD", "mime_type": "image/png"}
+        ],
+        tool_call_id="read-1",
+        name="read_file",
+    )
+
+    out = messages_to_openai_dicts([tm])
+
+    assert out == [
+        {
+            "role": "tool",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+            ],
+            "tool_call_id": "read-1",
+        }
+    ]
+
+
+def test_messages_convert_generic_image_blocks_to_image_url() -> None:
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": "检查截图"},
+            {"type": "image", "base64": "QUJD", "mime_type": "image/png"},
+            {
+                "type": "input_image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "REVG"},
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/gif;base64,R0lG"},
+                "detail": "high",
+            },
+        ]
+    )
+
+    out = messages_to_openai_dicts([msg])[0]["content"]
+
+    assert out == [
+        {"type": "text", "text": "检查截图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,REVG"}},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/gif;base64,R0lG"},
+            "detail": "high",
+        },
+    ]
+
+
+def test_responses_input_converts_generic_image_blocks() -> None:
+    _, items = responses_input_from_messages(
+        [
+            HumanMessage(
+                content=[{"type": "image", "base64": "QUJD", "mime_type": "image/png"}]
+            )
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "user",
+            "content": [{"type": "input_image", "image_url": "data:image/png;base64,QUJD"}],
+        }
+    ]
+
+
+def test_responses_tool_output_keeps_read_file_image() -> None:
+    _, items = responses_input_from_messages(
+        [
+            ToolMessage(
+                content_blocks=[
+                    {"type": "text", "text": "screenshot.png"},
+                    {"type": "image", "base64": "QUJD", "mime_type": "image/png"},
+                ],
+                tool_call_id="read-1",
+            )
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "function_call_output",
+            "call_id": "read-1",
+            "output": [
+                {"type": "input_text", "text": "screenshot.png"},
+                {"type": "input_image", "image_url": "data:image/png;base64,QUJD"},
+            ],
+        }
+    ]
+
+
 def test_tools_to_openai_dict_and_object() -> None:
     assert tools_to_openai([{"type": "function", "function": {"name": "f"}}]) == [
         {"type": "function", "function": {"name": "f"}}

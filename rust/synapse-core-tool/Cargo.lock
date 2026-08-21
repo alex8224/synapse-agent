@@ -2151,6 +2151,7 @@ name = "synapse-core-tool"
 version = "0.1.4"
 dependencies = [
  "async-openai",
+ "base64",
  "chardetng",
  "encoding_rs",
  "futures-util",

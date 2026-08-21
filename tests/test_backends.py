@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -280,6 +281,24 @@ def test_native_read_returns_requested_raw_line_window(tmp_path: Path):
 
     assert result.error is None
     assert result.file_data == {"content": "second\r\n", "encoding": "utf-8"}
+
+
+def test_native_read_returns_binary_media_as_base64(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+    )
+    raw = b"\x89PNG\r\n\x1a\nimage-bytes"
+    (tmp_path / "screenshot.png").write_bytes(raw)
+
+    result = backend.read("/screenshot.png")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert base64.standard_b64decode(result.file_data["content"]) == raw
 
 
 def test_native_edit_preserves_utf16_encoding(tmp_path: Path):

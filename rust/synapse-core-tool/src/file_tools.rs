@@ -1,6 +1,8 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use pyo3::exceptions::{PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -10,6 +12,17 @@ use crate::file_access::{read_text_detect, write_text_as};
 const MAX_READ_LIMIT: usize = 10_000;
 const MAX_READ_LINE_CHARS: usize = 1_200;
 const MAX_READ_OUTPUT_CHARS: usize = 12_000;
+const MAX_BINARY_READ_BYTES: u64 = 10 * 1024 * 1024;
+
+fn binary_file_type(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" | "jpeg" | "jpg" | "webp" | "gif" | "heic" | "heif" => Some("image"),
+        "mp4" | "mpeg" | "mov" | "avi" | "flv" | "mpg" | "webm" | "wmv" | "3gpp" => Some("video"),
+        "wav" | "mp3" | "aiff" | "aac" | "ogg" | "flac" => Some("audio"),
+        "pdf" | "ppt" | "pptx" => Some("file"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum ExactEditError {
@@ -124,6 +137,44 @@ pub(crate) fn read(
         return Ok(result.unbind());
     }
 
+    if let Some(file_type) = binary_file_type(&path) {
+        let mut file = File::open(&path).map_err(|error| io_error("open file", &path, error))?;
+        let size = file
+            .metadata()
+            .map_err(|error| io_error("inspect file", &path, error))?
+            .len();
+        if size > MAX_BINARY_READ_BYTES {
+            return Err(PyValueError::new_err(format!(
+                "binary file exceeds the {} byte read limit: {}",
+                MAX_BINARY_READ_BYTES,
+                path.display()
+            )));
+        }
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(MAX_BINARY_READ_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| io_error("read file", &path, error))?;
+        if bytes.len() as u64 > MAX_BINARY_READ_BYTES {
+            return Err(PyValueError::new_err(format!(
+                "binary file grew beyond the {} byte read limit: {}",
+                MAX_BINARY_READ_BYTES,
+                path.display()
+            )));
+        }
+        let content = base64::engine::general_purpose::STANDARD.encode(bytes);
+        result.set_item("kind", file_type)?;
+        result.set_item("output", py.None())?;
+        result.set_item("content", content)?;
+        result.set_item("encoding", "base64")?;
+        result.set_item("truncated", false)?;
+        result.set_item("start_line", py.None())?;
+        result.set_item("end_line", py.None())?;
+        result.set_item("total_lines", py.None())?;
+        result.set_item("total_entries", py.None())?;
+        return Ok(result.unbind());
+    }
+
     let (content, _) =
         read_text_detect(&path).map_err(|error| io_error("read file", &path, error))?;
     let lines = content.split_inclusive('\n').collect::<Vec<_>>();
@@ -147,6 +198,7 @@ pub(crate) fn read(
     result.set_item("kind", "file")?;
     result.set_item("output", output)?;
     result.set_item("content", selected)?;
+    result.set_item("encoding", "utf-8")?;
     result.set_item(
         "truncated",
         end < total_lines || output_truncated || line_truncated,
@@ -353,6 +405,14 @@ pub(crate) fn patch(py: Python<'_>, file_path: &str, patch: &str) -> PyResult<Py
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_file_type_is_case_insensitive() {
+        assert_eq!(binary_file_type(Path::new("shot.PNG")), Some("image"));
+        assert_eq!(binary_file_type(Path::new("clip.MP4")), Some("video"));
+        assert_eq!(binary_file_type(Path::new("notes.txt")), None);
+        assert_eq!(MAX_BINARY_READ_BYTES, 10 * 1024 * 1024);
+    }
 
     #[test]
     fn exact_edit_accepts_crlf_candidates() {

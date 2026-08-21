@@ -31,8 +31,6 @@ from synapse.settings import Settings
 # Default shell for this project: pwsh on Windows, bash elsewhere.
 DEFAULT_SHELL_EXECUTABLE = "pwsh" if sys.platform == "win32" else "bash"
 
-
-
 def _basename(path_or_name: str) -> str:
     return Path(path_or_name).name.lower()
 
@@ -220,18 +218,24 @@ class CodingLocalShellBackend(LocalShellBackend):
         return resolved
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        """Read a text file through the native bounded reader."""
-        import synapse_core_tool
-
+        """Read a file through the native filesystem tool."""
         try:
             resolved = self._resolve_native_file_path(file_path)
             if not resolved.is_file():
                 return ReadResult(error=f"File '{file_path}' not found")
+
+            import synapse_core_tool
+
             payload = synapse_core_tool.read(
                 str(resolved),
                 offset=offset + 1,
                 limit=limit,
             )
+            encoding = str(payload.get("encoding") or "utf-8")
+            if encoding == "base64":
+                return ReadResult(
+                    file_data={"content": str(payload["content"]), "encoding": encoding}
+                )
             total_lines = int(payload["total_lines"])
             if total_lines and offset >= total_lines:
                 return ReadResult(
@@ -240,7 +244,7 @@ class CodingLocalShellBackend(LocalShellBackend):
             content = str(payload["content"])
             if not content and total_lines == 0:
                 content = "System reminder: File exists but has empty contents"
-            return ReadResult(file_data={"content": content, "encoding": "utf-8"})
+            return ReadResult(file_data={"content": content, "encoding": encoding})
         except (OSError, PermissionError, RuntimeError, ValueError) as exc:
             return ReadResult(error=f"Error reading file '{file_path}': {exc}")
 

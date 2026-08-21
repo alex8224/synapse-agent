@@ -113,6 +113,64 @@ def _content_text(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
+def _image_data_url(block: dict[str, Any]) -> str | None:
+    """Extract an image block as a data URL or remote URL."""
+    block_type = str(block.get("type") or "").casefold()
+    image_url = block.get("image_url")
+    if isinstance(image_url, dict):
+        image_url = image_url.get("url")
+    if isinstance(image_url, str) and image_url:
+        return image_url
+
+    source = block.get("source")
+    if isinstance(source, dict):
+        source_type = str(source.get("type") or "").casefold()
+        if source_type == "url" and isinstance(source.get("url"), str):
+            return source["url"]
+        if source_type == "base64" and source.get("data"):
+            mime = str(source.get("media_type") or source.get("mime_type") or "image/png")
+            return f"data:{mime};base64,{source['data']}"
+
+    data = block.get("base64")
+    if data and block_type in {"image", "input_image"}:
+        mime = str(block.get("mime_type") or block.get("media_type") or "image/png")
+        return f"data:{mime};base64,{data}"
+    return None
+
+
+def _image_detail(block: dict[str, Any]) -> str | None:
+    """Return an optional image detail setting from either block shape."""
+    detail = block.get("detail")
+    if isinstance(detail, str):
+        return detail
+    image_url = block.get("image_url")
+    if isinstance(image_url, dict) and isinstance(image_url.get("detail"), str):
+        return image_url["detail"]
+    return None
+
+
+def _openai_content(content: Any) -> Any:
+    """Convert framework-native image blocks to Chat Completions blocks."""
+    if not isinstance(content, list):
+        return content
+    normalized: list[Any] = []
+    for block in content:
+        if not isinstance(block, dict):
+            normalized.append(block)
+            continue
+        block_type = str(block.get("type") or "").casefold()
+        if block_type in {"image", "input_image"}:
+            data_url = _image_data_url(block)
+            if data_url:
+                image_url: dict[str, Any] = {"url": data_url}
+                if detail := _image_detail(block):
+                    image_url["detail"] = detail
+                normalized.append({"type": "image_url", "image_url": image_url})
+                continue
+        normalized.append(block)
+    return normalized
+
+
 def _responses_content(content: Any, *, role: str) -> list[dict[str, Any]]:
     """Convert LangChain content blocks to Responses input/output content."""
     text_type = "input_text" if role == "user" else "output_text"
@@ -135,17 +193,55 @@ def _responses_content(content: Any, *, role: str) -> list[dict[str, Any]]:
             if isinstance(text, str):
                 result.append({"type": text_type, "text": text})
             continue
-        if role == "user" and block_type == "image_url":
-            image_url = block.get("image_url")
-            if isinstance(image_url, dict):
-                image_url = image_url.get("url")
-            if isinstance(image_url, str):
-                result.append({"type": "input_image", "image_url": image_url})
+        if role == "user" and block_type in {"image", "input_image", "image_url"}:
+            image_url = _image_data_url(block)
+            if image_url:
+                image_block: dict[str, Any] = {"type": "input_image", "image_url": image_url}
+                if detail := _image_detail(block):
+                    image_block["detail"] = detail
+                result.append(image_block)
             continue
         # Preserve already-normalized Responses blocks and unknown provider
         # extensions instead of silently dropping multimodal input.
         result.append(dict(block))
     return result
+
+
+def _responses_tool_output(content: Any) -> str | list[dict[str, Any]]:
+    """Convert a multimodal tool result to valid Responses output content."""
+    if not isinstance(content, list):
+        return _content_text(content)
+
+    blocks: list[dict[str, Any]] = []
+    has_media = False
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                blocks.append({"type": "input_text", "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").casefold()
+        if block_type in {"text", "input_text", "output_text"}:
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                blocks.append({"type": "input_text", "text": text})
+            continue
+        if block_type in {"image", "input_image", "image_url"}:
+            image_url = _image_data_url(block)
+            if image_url:
+                image_block: dict[str, Any] = {
+                    "type": "input_image",
+                    "image_url": image_url,
+                }
+                if detail := _image_detail(block):
+                    image_block["detail"] = detail
+                blocks.append(image_block)
+                has_media = True
+
+    if has_media:
+        return blocks
+    return _content_text(content)
 
 
 def responses_input_from_messages(
@@ -173,7 +269,7 @@ def responses_input_from_messages(
                 {
                     "type": "function_call_output",
                     "call_id": message.tool_call_id or "",
-                    "output": _content_text(message.content),
+                    "output": _responses_tool_output(message.content),
                 }
             )
             continue
@@ -435,17 +531,17 @@ def _message_to_openai_dict(msg: BaseMessage) -> dict[str, Any]:
     out: dict[str, Any] = {"role": role}
 
     if isinstance(msg, SystemMessage):
-        out["content"] = msg.content if msg.content is not None else ""
+        out["content"] = _openai_content(msg.content if msg.content is not None else "")
         return out
 
     if isinstance(msg, ToolMessage):
-        out["content"] = msg.content if msg.content is not None else ""
+        out["content"] = _openai_content(msg.content if msg.content is not None else "")
         if msg.tool_call_id:
             out["tool_call_id"] = msg.tool_call_id
         return out
 
     if isinstance(msg, AIMessage):
-        out["content"] = msg.content if msg.content is not None else ""
+        out["content"] = _openai_content(msg.content if msg.content is not None else "")
         if msg.tool_calls:
             out["tool_calls"] = [
                 {
@@ -465,7 +561,7 @@ def _message_to_openai_dict(msg: BaseMessage) -> dict[str, Any]:
         return out
 
     # HumanMessage and any unknown role fall through here.
-    out["content"] = msg.content if msg.content is not None else ""
+    out["content"] = _openai_content(msg.content if msg.content is not None else "")
     return out
 
 
