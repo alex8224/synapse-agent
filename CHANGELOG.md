@@ -8,6 +8,32 @@ All entries are written in English.
 
 ---
 
+## v0.1.40
+
+### New Features
+
+- Native file tools read images, video, audio, and PDF files as base64 (10 MB cap); Python adapters convert framework image blocks to Chat Completions and Responses `input_image` blocks (including data URLs and detail).
+- Native Rust OpenAI client supports proxy routing (HTTP/HTTPS/SOCKS4/SOCKS5) by building a proxied reqwest client when a proxy URL is configured; OAuth (Codex) profiles can use the native Responses transport; reqwest error source chains are flattened so connect/TLS/DNS causes are visible.
+- Added an OpenAI Codex Responses OAuth transport.
+- Added a `project-session-reader` skill for listing, searching, and reading a project's `.synapse` session database.
+- Added a `stream_usage` control for Responses usage metadata.
+
+### Bug Fixes
+
+- Reused native websocket connections across requests instead of opening new ones.
+- Handled Codex websocket extension events.
+- Reconciled transcript projection against the checkpoint watermark so projected history stays consistent with persisted state.
+- Corrected Responses usage metadata.
+- Prevented inflated tool-call token rates by excluding tool-call framing from rate accounting.
+
+### Engineering
+
+- Switched the `async-openai` dependency to a local git fork for the Responses-over-WebSocket feature.
+- Added a Rust OpenAI build check script.
+- Stabilized agent startup coverage tests.
+
+---
+
 ## v0.1.39
 
 ### New Features
