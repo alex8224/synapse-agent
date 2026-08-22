@@ -483,10 +483,17 @@ def build_coding_agent(
                     from synapse.integrations.mcp_client import get_mcp_pool_registry
 
                     _pool, mcp_result = get_mcp_pool_registry().acquire(
-                        mcp_pool_key, servers=servers, enabled=True
+                        mcp_pool_key,
+                        servers=servers,
+                        enabled=True,
+                        workspace_root=settings.workspace,
                     )
                 else:
-                    mcp_result = load_mcp_tools(servers, enabled=True)
+                    mcp_result = load_mcp_tools(
+                        servers,
+                        enabled=True,
+                        workspace_root=settings.workspace,
+                    )
             tools.extend(mcp_result.tools)
             build_coding_agent.last_mcp_warnings = list(mcp_result.warnings)  # type: ignore[attr-defined]
             build_coding_agent.last_mcp_servers = list(mcp_result.servers)  # type: ignore[attr-defined]

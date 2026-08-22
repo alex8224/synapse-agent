@@ -533,7 +533,7 @@ def test_mcp_stdio_uses_devnull_when_stderr_descriptor_is_invalid(monkeypatch):
 
     monkeypatch.setattr(sys, "stderr", InvalidStderr())
     monkeypatch.setattr(mcp.client.stdio, "stdio_client", fake_stdio_client)
-    monkeypatch.setattr(mcp, "ClientSession", lambda read, write: Session())
+    monkeypatch.setattr(mcp, "ClientSession", lambda read, write, **kwargs: Session())
     pool = McpSessionPool()
     try:
         live = pool._loop.run(
@@ -546,6 +546,72 @@ def test_mcp_stdio_uses_devnull_when_stderr_descriptor_is_invalid(monkeypatch):
     finally:
         pool.close()
     assert captured["errlog"].closed is True
+
+
+def test_mcp_pool_declares_workspace_roots(monkeypatch):
+    from pathlib import Path
+
+    import mcp
+    import mcp.client.stdio
+
+    from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
+
+    class TransportContext:
+        async def __aenter__(self):
+            return object(), object()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def initialize(self):
+            return None
+
+    captured: dict[str, object] = {}
+
+    def fake_stdio_client(params, errlog):
+        return TransportContext()
+
+    def fake_client_session(read, write, **kwargs):
+        captured["list_roots_callback"] = kwargs.get("list_roots_callback")
+        return Session()
+
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(mcp, "ClientSession", fake_client_session)
+
+    ws = Path.cwd().resolve() / "mcp_roots_ws"
+    pool = McpSessionPool(workspace_root=ws)
+    try:
+        pool._loop.run(
+            pool._open_stdio(McpServerConfig(name="demo", command="demo-server"))
+        )
+        callback = captured.get("list_roots_callback")
+        assert callback is not None, (
+            "roots callback should be passed when workspace_root is set"
+        )
+        result = pool._loop.run(callback(None))
+        assert result.roots[0].name == "workspace"
+        assert str(result.roots[0].uri) == ws.as_uri()
+    finally:
+        pool.close()
+
+    # Without a workspace root, no roots callback is passed (SDK keeps default,
+    # so the roots capability is not advertised).
+    captured.clear()
+    pool2 = McpSessionPool()
+    try:
+        pool2._loop.run(
+            pool2._open_stdio(McpServerConfig(name="demo", command="demo-server"))
+        )
+    finally:
+        pool2.close()
+    assert captured.get("list_roots_callback") is None
 
 
 def test_mcp_open_http_and_stdio_branches_selected():

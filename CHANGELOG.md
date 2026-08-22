@@ -8,6 +8,14 @@ All entries are written in English.
 
 ---
 
+## v0.1.41
+
+### New Features
+
+- MCP clients now declare the project workspace as an MCP workspace root, so file-writing tools (e.g. CDP screenshots) can write inside the project workspace instead of being restricted to the OS temp directory when no roots are configured.
+
+---
+
 ## v0.1.40
 
 ### New Features

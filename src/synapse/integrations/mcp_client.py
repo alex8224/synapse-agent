@@ -375,9 +375,14 @@ class _LiveServer:
 class McpSessionPool:
     """Process-local pool of live MCP ClientSessions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, workspace_root: Path | None = None) -> None:
         self._loop = _LoopThread()
         self._servers: dict[str, _LiveServer] = {}
+        # MCP workspace-roots capability: when set, the client declares this
+        # directory as a root to each server so file-writing tools (e.g. CDP
+        # screenshots) may write inside the project workspace instead of being
+        # restricted to the OS temp directory when no roots are configured.
+        self._workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self._closed = False
         self._follow_active_pool = False
         self.warnings: list[str] = []
@@ -385,6 +390,21 @@ class McpSessionPool:
         self.tools: list[Any] = []
         # server_name → list of raw tool names (before prefix / filtering)
         self.discovered_tools: dict[str, list[str]] = {}
+
+    async def _list_roots(self, context: Any) -> Any:
+        """Return the project workspace as an MCP root (workspace-roots capability)."""
+        from mcp import types as _mcp_types
+
+        if self._workspace_root is None:
+            return _mcp_types.ListRootsResult(roots=[])
+        return _mcp_types.ListRootsResult(
+            roots=[
+                _mcp_types.Root(
+                    uri=self._workspace_root.as_uri(),
+                    name="workspace",
+                )
+            ]
+        )
 
     @property
     def server_names(self) -> list[str]:
@@ -443,7 +463,13 @@ class McpSessionPool:
         try:
             read, write = await transport_cm.__aenter__()
             transport_entered = True
-            session_cm = ClientSession(read, write)
+            session_cm = ClientSession(
+                read,
+                write,
+                list_roots_callback=self._list_roots
+                if self._workspace_root is not None
+                else None,
+            )
             session = await session_cm.__aenter__()
             session_entered = True
             await session.initialize()
@@ -489,7 +515,13 @@ class McpSessionPool:
         read, write = streams[0], streams[1]
         from mcp import ClientSession
 
-        session_cm = ClientSession(read, write)
+        session_cm = ClientSession(
+            read,
+            write,
+            list_roots_callback=self._list_roots
+            if self._workspace_root is not None
+            else None,
+        )
         session = await session_cm.__aenter__()
         await session.initialize()
         return _LiveServer(
@@ -672,6 +704,7 @@ class McpPoolRegistry:
         *,
         servers: list[Any],
         enabled: bool = True,
+        workspace_root: Path | None = None,
     ) -> tuple[McpSessionPool, McpLoadResult]:
         """Return an existing pool for ``key`` or open a new one."""
         with self._lock:
@@ -684,7 +717,7 @@ class McpPoolRegistry:
                     tool_names=list(existing.tool_names),
                     pool=existing,
                 )
-        pool = McpSessionPool()
+        pool = McpSessionPool(workspace_root=workspace_root)
         result = pool.load(servers) if enabled and servers else McpLoadResult(
             tools=[], warnings=[], servers=[], tool_names=[], pool=pool
         )
@@ -751,6 +784,7 @@ def load_mcp_tools(
     *,
     enabled: bool = True,
     reuse_pool: bool = True,
+    workspace_root: Path | None = None,
 ) -> McpLoadResult:
     """Synchronously load tools from configured MCP servers.
 
@@ -775,7 +809,7 @@ def load_mcp_tools(
         except Exception:  # noqa: BLE001
             pass
 
-    pool = McpSessionPool()
+    pool = McpSessionPool(workspace_root=workspace_root)
     pool._follow_active_pool = True  # noqa: SLF001 - legacy active-pool proxy contract
     try:
         result = pool.load(servers)
