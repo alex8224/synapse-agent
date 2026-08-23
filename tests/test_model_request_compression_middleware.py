@@ -329,3 +329,28 @@ def test_prompt_cleanup_is_attributed_without_leaking_model_settings(tmp_path) -
     event = repo.model_request_events(thread_id="thread-a")[0]
     assert event["prompt_saved_tokens"] > 0
     assert "_synapse_prompt_saved_tokens" not in request.model_settings
+
+
+def test_strip_redundant_keeps_skills_system() -> None:
+    system = SystemMessage(
+        content_blocks=[
+            {"type": "text", "text": "\n\n## Skills System\n\n- skill-a: does A"},
+            {"type": "text", "text": "\n\n## `write_todos` docs"},
+            {"type": "text", "text": "\n\n## Following Conventions docs"},
+        ]
+    )
+    request = _Request([HumanMessage(content="go")], system_message=system)
+    cleanup = build_strip_redundant_prompt_blocks()
+
+    seen: dict[str, list[str]] = {}
+
+    def handler(cleaned):  # noqa: ANN001
+        seen["blocks"] = [b["text"] for b in cleaned.system_message.content_blocks]
+        return SimpleNamespace(result=[AIMessage(content="done")])
+
+    cleanup.wrap_model_call(request, handler)
+
+    blocks = seen["blocks"]
+    assert any(b.startswith("\n\n## Skills System") for b in blocks)
+    assert not any(b.startswith("\n\n## `write_todos`") for b in blocks)
+    assert not any(b.startswith("\n\n## Following Conventions") for b in blocks)

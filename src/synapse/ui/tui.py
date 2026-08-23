@@ -1490,6 +1490,9 @@ class CodingAgentApp(App[None]):
         # Swap the app's project context.
         self.settings = project_settings
         self.project_root = workspace
+        from synapse.ui.workspace import set_current_workspace
+
+        set_current_workspace(workspace)
         self.thread_id = target_thread
         if turn is not None:
             try:

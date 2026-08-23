@@ -236,3 +236,17 @@ def test_mount_approval_cleaned_up_on_page_trim() -> None:
     assert block not in controller.state.approval_blocks
 
 
+class _UnmountedApp:
+    def query_one(self, *_args, **_kwargs):
+        from textual.css.query import NoMatches
+
+        raise NoMatches("#log")
+
+
+def test_append_event_ignores_missing_log_during_unmount() -> None:
+    controller = TranscriptController(_UnmountedApp())
+
+    controller.append_event("MCP ready", "dim")
+
+    assert controller.state.current_turn_blocks == []
+

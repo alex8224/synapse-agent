@@ -1,6 +1,6 @@
 ---
 name: project-session-reader
-description: Read or search the sessions of a specified project (workspace directory) from its .synapse session database: list recent sessions, full-text message search, and read a session transcript by thread_id with pagination.
+description: "Read or search the sessions of a specified project (workspace directory) from its .synapse session database: list recent sessions, full-text message search, and read a session transcript by thread_id with pagination."
 license: Apache-2.0
 compatibility: Requires a synapse source checkout with uv and Python 3.12+, or synapse installed as an importable package.
 allowed_tools: execute, read_file, write_file, search_files, find_files

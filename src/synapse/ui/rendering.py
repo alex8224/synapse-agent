@@ -11,6 +11,7 @@ from rich import box
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import BlockQuote as _BlockQuote
 from rich.markdown import CodeBlock as _CodeBlock
+from rich.markdown import ImageItem as _RichImageItem
 from rich.markdown import Markdown as _Markdown
 from rich.markdown import MarkdownElement
 from rich.markdown import TableElement as _TableElement
@@ -633,11 +634,77 @@ class _QuoteLineBlockQuote(_BlockQuote):
             yield new_line
 
 
+_IMAGE_MAX_COLS = 100
+_IMAGE_MAX_ROWS = 30
+
+
+def _render_image_path(destination: str) -> Any | None:
+    """Best-effort terminal pixel renderable for a local image path.
+
+    Mirrors ``_render_mermaid_image``: decode the image with Pillow and wrap it
+    in the active ``textual_image`` protocol renderer (sixel / TGP / half-cell /
+    unicode). Returns ``None`` when the path is not a readable local image or no
+    renderer is available so callers can fall back to the Rich ``[image]``
+    placeholder. HTTP(S) URLs are not resolved here and fall through.
+    """
+    if not destination or destination.startswith(("http://", "https://")):
+        return None
+    try:
+        from PIL import Image as PILImage
+
+        from synapse.ui.image_render import (
+            _resolve_renderer,
+            fit_cell_size,
+            renderer_needs_extra_row,
+        )
+        from synapse.ui.workspace import resolve_workspace_path
+
+        renderer_cls = _resolve_renderer()
+        if renderer_cls is None:
+            return None
+        path = resolve_workspace_path(destination)
+        if path is None:
+            return None
+        image = PILImage.open(path)
+        image.load()
+        width, height = image.size
+        cols, rows = fit_cell_size(
+            width,
+            height,
+            max_cols=_IMAGE_MAX_COLS,
+            max_rows=_IMAGE_MAX_ROWS,
+            extra_rows=1 if renderer_needs_extra_row() else 0,
+        )
+        return renderer_cls(image, width=cols, height=rows)
+    except Exception:  # noqa: BLE001 - any image-path failure falls back to placeholder
+        return None
+
+
+class _ImageItem(_RichImageItem):
+    """Markdown image element that renders local images via the pixel pipeline.
+
+    Overrides Rich's ``ImageItem`` placeholder so ``![alt](path)`` resolves a
+    readable local image through ``_render_image_path`` (the same Pillow +
+    ``textual_image`` pipeline used for mermaid / math). Any failure falls back
+    to the original Rich ``[image]`` placeholder.
+    """
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        image = _render_image_path(self.destination)
+        if image is not None:
+            yield image
+            return
+        yield from super().__rich_console__(console, options)
+
+
 class _FullBorderMarkdown(_Markdown):
     """Rich Markdown with full table borders and mermaid diagram fences."""
 
     elements: ClassVar[dict[str, type[MarkdownElement]]] = {
         **_Markdown.elements,
+        "image": _ImageItem,
         "table_open": _FullTableElement,
         "fence": _MermaidCodeBlock,
         "code_block": _MermaidCodeBlock,

@@ -13,6 +13,7 @@ from typing import Any
 
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import MouseUp
 from textual.widgets import Static
 
@@ -188,7 +189,13 @@ class TranscriptController:
     def _mount_block(self, block: Any, *, dismiss_welcome: bool = True) -> None:
         if dismiss_welcome:
             self._dismiss_welcome()
-        timeline = self._app.query_one("#log", VerticalScroll)
+        try:
+            timeline = self._app.query_one("#log", VerticalScroll)
+        except NoMatches:
+            # Background callbacks may arrive after Textual has torn down the
+            # screen tree. The event is no longer renderable, so discard only
+            # the UI write instead of surfacing a shutdown error.
+            return
         follow = timeline.max_scroll_y <= 0 or timeline.scroll_y >= timeline.max_scroll_y - 1
         timeline.mount(block)
         self.state.current_turn_blocks.append(block)

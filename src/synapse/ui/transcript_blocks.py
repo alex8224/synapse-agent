@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -45,6 +47,59 @@ _markdown_render_executor = ThreadPoolExecutor(
     max_workers=_MARKDOWN_RENDER_WORKERS,
     thread_name_prefix="synapse-markdown",
 )
+
+
+_IMAGE_RENDER_WORKERS = 2
+_image_render_executor = ThreadPoolExecutor(
+    max_workers=_IMAGE_RENDER_WORKERS,
+    thread_name_prefix="synapse-image",
+)
+_IMAGE_MAX_COLS = 100
+_IMAGE_MAX_ROWS = 30
+
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]*)\)")
+
+
+def _image_src(destination: str) -> str:
+    """Extract the image path from an ``![alt](src "title")`` render target."""
+    stripped = destination.strip()
+    return stripped.split()[0] if stripped else ""
+
+
+def split_markdown_images(text: str) -> list[tuple[str, str]]:
+    """Split Markdown into ``(kind, content)`` runs.
+
+    ``image`` runs carry the raw image source from ``![alt](path)``; ``markdown``
+    runs are plain text kept verbatim for the Rich renderer. Used by answer
+    blocks so attached images render through the terminal pixel pipeline.
+    """
+    if not text:
+        return [("markdown", "")]
+    parts: list[tuple[str, str]] = []
+    cursor = 0
+    for match in _MD_IMAGE_RE.finditer(text):
+        if match.start() > cursor:
+            parts.append(("markdown", text[cursor : match.start()]))
+        src = _image_src(match.group(1))
+        if src:
+            parts.append(("image", src))
+        cursor = match.end()
+    if cursor < len(text):
+        parts.append(("markdown", text[cursor:]))
+    return parts or [("markdown", text)]
+
+
+def _read_image_bytes(source: str) -> bytes | None:
+    """Read a local image file in a background worker; ``None`` on failure."""
+    from synapse.ui.workspace import resolve_workspace_path
+
+    path = resolve_workspace_path(source)
+    if path is None:
+        return None
+    try:
+        return path.read_bytes()
+    except Exception:  # noqa: BLE001 - unreadable image falls back to placeholder
+        return None
 
 
 def _render_mermaid_png(source: str) -> bytes | None:
@@ -291,6 +346,7 @@ class AnswerBlock(SelectableStatic):
         self._markdown_max_chars = max(1, int(markdown_max_chars))
         self._mermaid_render_generation = 0
         self._markdown_render_generation = 0
+        self._image_render_generation = 0
         # Historical restore defers long-body markdown parsing to a worker so
         # first paint stays cheap: show plain text, then swap in the renderable.
         self._defer_markdown = bool(defer_markdown)
@@ -351,6 +407,9 @@ class AnswerBlock(SelectableStatic):
                 if any(sub.kind == "math" for sub in split_block_math(segment.source)):
                     has_enriched = True
                     break
+                if _MD_IMAGE_RE.search(segment.source):
+                    has_enriched = True
+                    break
             if not has_enriched:
                 return []
 
@@ -370,8 +429,12 @@ class AnswerBlock(SelectableStatic):
                     if sub.kind == "math":
                         widget = make_math_widget(sub.source, color=fg)
                         widgets.append(widget or MathFallbackBlock(sub.source))
-                    elif sub.source.strip():
-                        widgets.append(Static(render_markdown(sub.source)))
+                        continue
+                    for kind, content in split_markdown_images(sub.source):
+                        if kind == "image" and content:
+                            widgets.append(_ImageRenderPlaceholder(content))
+                        elif content.strip():
+                            widgets.append(Static(render_markdown(content)))
             return widgets
         except Exception:  # noqa: BLE001 - composite rendering is optional
             return []
@@ -384,11 +447,13 @@ class AnswerBlock(SelectableStatic):
             if widgets:
                 self.mount(*widgets)
                 self.call_after_refresh(self._start_mermaid_renders)
+                self.call_after_refresh(self._start_image_renders)
         except Exception:  # noqa: BLE001 - widget may be detaching during session switch
             pass
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._start_mermaid_renders)
+        self.call_after_refresh(self._start_image_renders)
         if self._pending_markdown:
             self._pending_markdown = False
             self._schedule_markdown_render(self.body)
@@ -461,8 +526,84 @@ class AnswerBlock(SelectableStatic):
         except Exception:  # noqa: BLE001 - transcript may detach during session switch
             pass
 
+    def _start_image_renders(self) -> None:
+        """Submit unrendered image placeholders without blocking Textual's loop."""
+        if not self.is_attached:
+            return
+        generation = self._image_render_generation
+        for placeholder in self.query(_ImageRenderPlaceholder):
+            if placeholder.render_started:
+                continue
+            placeholder.render_started = True
+            future = _image_render_executor.submit(
+                _read_image_bytes, placeholder.source
+            )
+            future.add_done_callback(
+                lambda completed, target=placeholder, expected=generation: (
+                    self._deliver_image(completed, target, expected)
+                )
+            )
+
+    def _deliver_image(
+        self,
+        future: Future[bytes | None],
+        placeholder: _ImageRenderPlaceholder,
+        generation: int,
+    ) -> None:
+        """Schedule a completed background image load back onto the UI thread."""
+        try:
+            data = future.result()
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            return
+        try:
+            _schedule_on_app_thread(
+                self.app,
+                self._replace_image_placeholder,
+                placeholder,
+                data,
+                generation,
+            )
+        except Exception:  # noqa: BLE001 - app/widget may be shutting down
+            pass
+
+    def _replace_image_placeholder(
+        self,
+        placeholder: _ImageRenderPlaceholder,
+        data: bytes | None,
+        generation: int,
+    ) -> None:
+        """Replace a still-current image placeholder once its file is loaded."""
+        if (
+            generation != self._image_render_generation
+            or not self.is_attached
+            or not placeholder.is_attached
+        ):
+            return
+        widget = None
+        if data:
+            try:
+                from PIL import Image as PILImage
+
+                from synapse.ui.image_render import make_pil_image_widget
+
+                img = PILImage.open(io.BytesIO(data))
+                img.load()
+                widget = make_pil_image_widget(
+                    img, max_cols=_IMAGE_MAX_COLS, max_rows=_IMAGE_MAX_ROWS
+                )
+            except Exception:  # noqa: BLE001 - corrupt image falls back to placeholder
+                widget = None
+        if widget is None:
+            widget = Static(Text(f"[image: {placeholder.source}]", style="dim italic"))
+        try:
+            self.mount(widget, before=placeholder)
+            placeholder.remove()
+        except Exception:  # noqa: BLE001 - transcript may detach during session switch
+            pass
+
     def _render_block(self) -> None:
         self._mermaid_render_generation += 1
+        self._image_render_generation += 1
         body = self.body or ""
         fg = _resolve_color(self._fg_color, _DEFAULT_FG, "fg")
         if self.live:
@@ -558,6 +699,15 @@ class _MermaidRenderPlaceholder(Static):
         self.source = source
         self.render_started = False
         super().__init__(Text("Rendering Mermaid diagram...", style="dim italic"))
+
+
+class _ImageRenderPlaceholder(Static):
+    """Lightweight UI-thread placeholder while a local image loads on a worker."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.render_started = False
+        super().__init__(Text("Loading image...", style="dim italic"))
 
 
 class _MarkdownBlock(Static):

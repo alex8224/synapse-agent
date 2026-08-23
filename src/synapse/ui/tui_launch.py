@@ -24,6 +24,9 @@ def run_tui(
     # ``run_tui`` re-export, so CodingAgentApp must resolve lazily.
     from synapse.observability.startup_trace import global_mark, span
     from synapse.ui.tui import CodingAgentApp
+    from synapse.ui.workspace import set_current_workspace
+
+    set_current_workspace(settings.workspace)
 
     try:
         from synapse.ui.theme import bootstrap_theme

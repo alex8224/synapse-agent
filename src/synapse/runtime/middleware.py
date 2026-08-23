@@ -668,11 +668,15 @@ def current_prompt_cleanup_saved_tokens() -> int:
 # Text block prefixes injected by deepagents middleware.  Each block
 # duplicates content already present in the corresponding tool definition
 # (e.g. ``write_todos`` description, filesystem tool docs).  Stripping them
-# saves ~720 tokens per model call without losing any capability.
+# saves tokens per model call without losing any capability.
+#
+# ``## Skills System`` is intentionally NOT stripped: it is the skill index
+# (name + description + path) that lets the model auto-discover and trigger
+# local skills.  Without it, skills are not auto-discoverable from the prompt
+# and must be surfaced via the /skills command or a human pointer.
 
 _REDUNDANT_BLOCK_PREFIXES: tuple[str, ...] = (
     "\n\n## `write_todos`",
-    "\n\n## Skills System",
     "\n\n## Following Conventions",
 )
 

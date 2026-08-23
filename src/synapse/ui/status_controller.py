@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from rich.text import Text
+from textual.css.query import NoMatches
 from textual.widgets import Input, Static
 
 import synapse.ui.tui_styles as _styles
@@ -45,7 +46,13 @@ class StatusController:
         self._phase = phase or "idle"
         self._detail = detail
         busy = self._phase not in {"idle", "ready", ""}
-        app.query_one("#status", Static).set_class(busy, "busy")
+        try:
+            app.query_one("#status", Static).set_class(busy, "busy")
+        except NoMatches:
+            # A timer/worker callback can race with screen teardown. Keep the
+            # controller state, but do not turn an already-unmounted UI into
+            # an application error.
+            return
         if busy:
             app.sub_title = f"{model_status_label(app.settings)} · {self._phase}"
         else:
@@ -158,7 +165,12 @@ class StatusController:
         app = self._app
         elapsed = max(0.0, time.monotonic() - self._activity_started)
         busy = self._phase not in {"idle", "ready", ""}
-        status = app.query_one("#status", Static)
+        try:
+            status = app.query_one("#status", Static)
+        except NoMatches:
+            # Textual removes the screen tree before all interval callbacks
+            # have necessarily drained during shutdown.
+            return
         width = max(int(getattr(app.size, "width", 0) or 0), 48)
         # Account for CSS padding (0 2).
         usable = max(16, width - 4)
