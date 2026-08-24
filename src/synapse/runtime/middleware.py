@@ -39,6 +39,18 @@ _TRANSIENT_MODEL_ERROR_MARKERS = (
     "upstream request timeout",
     "rate limit",
     "rate_limit",
+    # Connection-level failures (TCP reset / aborted / timed-out sockets and
+    # the native WebSocket transport) are transient: the underlying peer or an
+    # intermediate idle-timeout recycles the socket, but a fresh connection
+    # usually succeeds. Match these so the model retry middleware recovers the
+    # call instead of surfacing a one-shot "websocket send failed" to the user.
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "software caused connection abort",
+    "websocket send failed",
+    "websocket recv failed",
+    "websocket connection is closed",
 )
 
 # ---------------------------------------------------------------------------

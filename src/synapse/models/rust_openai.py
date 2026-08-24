@@ -1052,37 +1052,56 @@ class RustOpenAIChatModel(BaseChatModel):
         req = self._build_request(messages, tools=tools, stop=stop, streaming=True, **kwargs)
         response_state: dict[str, Any] = {}
         if self.use_responses_api and self.use_websocket:
-            from synapse.integrations.llm_openai_websocket import (
-                prepare_responses_websocket_event,
-            )
+            from synapse.integrations.llm_openai_websocket import prepare_responses_websocket_event
+            from synapse.runtime.middleware import should_retry_transient_model_error
 
             event = prepare_responses_websocket_event(req)
-            ws: Any | None = None
-            try:
-                ws = self._ensure_websocket()
-                stream = ws.request(json.dumps(event, default=str))
-                for raw in stream:
-                    payload = json.loads(raw)
-                    chunk_msg = aimessage_chunk_from_responses_event(payload, response_state)
-                    if chunk_msg is None:
-                        continue
-                    gen = ChatGenerationChunk(message=chunk_msg)
-                    if run_manager:
-                        text = chunk_msg.content if isinstance(chunk_msg.content, str) else ""
-                        if text:
-                            run_manager.on_llm_new_token(text, chunk=gen)
-                    yield gen
-            except Exception:
-                # A socket error (or consumer cancellation) leaves the connection
-                # unusable; drop it so the next request opens a fresh one.
-                self._reset_websocket()
-                raise
-            except BaseException:
-                # GeneratorExit is raised when a synchronous consumer closes the
-                # iterator early. The native producer then closes its socket, so
-                # do not leave the now-invalid handle cached on this model.
-                self._reset_websocket()
-                raise
+            # A long-lived WebSocket connection sits idle in the cache while the
+            # peer or an intermediate idle-timeout recycles the socket, so the
+            # next ``send_raw`` can fail with a connection-aborted IO error
+            # (Windows 10053) without any warning. Retry once on a fresh
+            # connection, but only before any chunk has been emitted — replaying
+            # after output would duplicate tokens.
+            websocket_replay_attempts = 1
+            for attempt in range(websocket_replay_attempts + 1):
+                response_state = {}
+                yielded_chunk = False
+                try:
+                    ws = self._ensure_websocket()
+                    stream = ws.request(json.dumps(event, default=str))
+                    for raw in stream:
+                        payload = json.loads(raw)
+                        chunk_msg = aimessage_chunk_from_responses_event(payload, response_state)
+                        if chunk_msg is None:
+                            continue
+                        gen = ChatGenerationChunk(message=chunk_msg)
+                        yielded_chunk = True
+                        if run_manager:
+                            text = chunk_msg.content if isinstance(chunk_msg.content, str) else ""
+                            if text:
+                                run_manager.on_llm_new_token(text, chunk=gen)
+                        yield gen
+                    return
+                except Exception as exc:
+                    # A socket error (or consumer cancellation) leaves the
+                    # connection unusable; drop it so the next attempt opens a
+                    # fresh one.
+                    self._reset_websocket()
+                    if (
+                        yielded_chunk
+                        or attempt >= websocket_replay_attempts
+                        or not should_retry_transient_model_error(exc)
+                    ):
+                        raise
+                    # Connection failed before any output; reconnect and retry.
+                    continue
+                except BaseException:
+                    # GeneratorExit is raised when a synchronous consumer closes
+                    # the iterator early. The native producer then closes its
+                    # socket, so do not leave the now-invalid handle cached on
+                    # this model.
+                    self._reset_websocket()
+                    raise
             return
         client = self._ensure_client()
         if self.use_responses_api:

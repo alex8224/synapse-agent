@@ -830,6 +830,106 @@ def test_websocket_consumer_close_resets_cached_socket() -> None:
     assert socket.closed is True
 
 
+def test_websocket_send_failed_replays_on_fresh_connection() -> None:
+    class _FlakyWebSocket:
+        def __init__(self, should_fail: bool) -> None:
+            self.should_fail = should_fail
+            self.closed = False
+
+        def request(self, request_json: str) -> Any:
+            del request_json
+            if self.should_fail:
+                self.should_fail = False
+
+                def _fail() -> Any:
+                    raise RuntimeError(
+                        "websocket send failed: websocket error: IO error: "
+                        "你的主机中的软件中止了一个已建立的连接。 (os error 10053)"
+                    )
+                    yield None  # pragma: no cover
+
+                return _fail()
+            return iter(['{"type":"response.output_text.delta","delta":"ok"}'])
+
+        def close(self) -> None:
+            self.closed = True
+
+    sockets: list[_FlakyWebSocket] = []
+
+    class _Client:
+        def open_websocket(self, proxy: str | None = None) -> _FlakyWebSocket:
+            del proxy
+            socket = _FlakyWebSocket(should_fail=not sockets)
+            sockets.append(socket)
+            return socket
+
+        def close_websocket(self) -> None:
+            if sockets:
+                sockets[-1].close()
+
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    model._client = _Client()
+
+    chunks = list(model._stream([HumanMessage(content="hi")]))
+    assert [c.message.content for c in chunks] == ["ok"]
+    assert len(sockets) == 2
+    assert sockets[0].closed is True
+    assert sockets[1].closed is False
+
+
+def test_websocket_does_not_replay_after_output() -> None:
+    class _FlakyWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def request(self, request_json: str) -> Any:
+            del request_json
+
+            def _gen() -> Any:
+                yield '{"type":"response.output_text.delta","delta":"partial"}'
+                raise RuntimeError(
+                    "websocket recv failed: websocket error: IO error: (os error 10053)"
+                )
+
+            return _gen()
+
+        def close(self) -> None:
+            self.closed = True
+
+    sockets: list[_FlakyWebSocket] = []
+
+    class _Client:
+        def open_websocket(self, proxy: str | None = None) -> _FlakyWebSocket:
+            del proxy
+            socket = _FlakyWebSocket()
+            sockets.append(socket)
+            return socket
+
+        def close_websocket(self) -> None:
+            if sockets:
+                sockets[-1].close()
+
+    model = RustOpenAIChatModel(
+        model="gpt-test",
+        use_responses_api=True,
+        use_websocket=True,
+    )
+    model._client = _Client()
+
+    stream = model._stream([HumanMessage(content="hi")])
+    assert next(stream).message.content == "partial"
+    with pytest.raises(RuntimeError, match="recv failed"):
+        next(stream)
+
+    # Already yielded a chunk, so the stale socket must be dropped, not reused.
+    assert len(sockets) == 1
+    assert sockets[0].closed is True
+
+
 def test_bound_models_reuse_one_websocket() -> None:
     class _FakeWebSocket:
         def close(self) -> None:

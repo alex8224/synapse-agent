@@ -30,6 +30,18 @@ class _ProviderError(RuntimeError):
         (_ProviderError("stream failed", body={"error": {"type": "overloaded_error"}}), True),
         (_ProviderError("temporarily unavailable"), True),
         (_ProviderError("rate_limit_error"), True),
+        # -- connection-level transport errors: transient -> retry ---------
+        (_ProviderError("connection reset by peer"), True),
+        (_ProviderError("connection aborted"), True),
+        (
+            _ProviderError(
+                "websocket send failed: websocket error: IO error: "
+                "你的主机中的软件中止了一个已建立的连接。 (os error 10053)"
+            ),
+            True,
+        ),
+        (_ProviderError("websocket recv failed: websocket connection is closed"), True),
+        (_ProviderError("local file operation failed (os error 5)"), False),
         # -- 4xx: never retried -------------------------------------------------
         (_ProviderError("rate limit", status_code=429), False),
         (_ProviderError("invalid API key", status_code=401), False),
