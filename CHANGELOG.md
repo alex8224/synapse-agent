@@ -8,6 +8,19 @@ All entries are written in English.
 
 ---
 
+## v0.1.43
+
+### New Features
+
+- Added Scoop distribution support: a new `bucket/synapse.json` manifest (with `checkver`/`autoupdate`) and a single-file Windows executable let Windows users install and auto-update Synapse via Scoop (`scoop install synapse`).
+
+### Engineering
+
+- The release workflow now publishes a SHA-256 checksum (`<bin>.sha256`) alongside each platform executable, so Scoop's `autoupdate` can verify downloads without manual hash maintenance.
+- Documented Scoop installation in the README.
+
+---
+
 ## v0.1.42
 
 ### Bug Fixes

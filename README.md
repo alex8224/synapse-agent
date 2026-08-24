@@ -37,6 +37,20 @@ One command, no clone required:
 uv tool install synapse-cli-agent
 ```
 
+Windows users can also install via Scoop (single-file executable, auto-updated
+through `checkver`): add the bucket, then install:
+
+```powershell
+scoop bucket add synapse https://github.com/alex8224/synapse-agent
+scoop install synapse
+```
+
+Or install directly from the manifest URL:
+
+```powershell
+scoop install https://raw.githubusercontent.com/alex8224/synapse-agent/main/bucket/synapse.json
+```
+
 Then start the TUI from anywhere:
 
 ```bash

@@ -118,11 +118,20 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x "dist/${{ matrix.binname }}"
 
+      - name: Generate SHA256 checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/${{ matrix.binname }}").Hash.ToLower()
+          Set-Content -LiteralPath "dist/${{ matrix.binname }}.sha256" -Value $hash -NoNewline
+          Write-Host "sha256 for ${{ matrix.binname }}: $hash"
+
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.binname }}
+          path: |
+            dist/${{ matrix.binname }}
+            dist/${{ matrix.binname }}.sha256
           if-no-files-found: error
 
   release:
