@@ -8,6 +8,19 @@ All entries are written in English.
 
 ---
 
+## v0.1.42
+
+### Bug Fixes
+
+- Retried a stale native Responses WebSocket connection once on a fresh socket when the request failed before any output, while avoiding replay after partial streaming output.
+- Classified native WebSocket send/receive connection failures as transient without broadly retrying unrelated operating-system errors.
+
+### Engineering
+
+- Added focused coverage for WebSocket reconnect/replay behavior and transient transport-error classification.
+
+---
+
 ## v0.1.41
 
 ### New Features
