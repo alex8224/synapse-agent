@@ -85,6 +85,9 @@ def normalize_region_id(value: TopBarRegion | str | None) -> str:
 
 
 RenderFn = Callable[[], str | Text]
+# Optional width-aware renderer: given the allocated cell width, produce a
+# "keep the meaningful part" representation (elide smartly instead of hard cut).
+WidthRenderFn = Callable[[int], str | Text]
 
 
 @dataclass(slots=True)
@@ -132,6 +135,8 @@ class TopBarComponent:
     gap_before: str = DEFAULT_REGION_GAP
     style: str | None = None
     visible: bool = True
+    # Optional width-aware renderer; falls back to ``render`` when absent/errors.
+    render_for_width: WidthRenderFn | None = None
 
     def content(self) -> str | Text:
         """Return render output as plain str or styled Rich Text."""
@@ -150,6 +155,18 @@ class TopBarComponent:
         if isinstance(raw, Text):
             return raw.plain
         return raw
+
+    def render_width(self, width: int) -> str | Text:
+        """Width-aware render, falling back to ``render`` when unavailable."""
+        if self.render_for_width is not None:
+            try:
+                raw = self.render_for_width(max(0, int(width)))
+            except Exception:  # noqa: BLE001
+                return self.content()
+            if isinstance(raw, Text):
+                return raw
+            return str(raw or "")
+        return self.content()
 
 
 def _default_regions() -> dict[str, TopBarRegionSpec]:
@@ -338,6 +355,7 @@ class TopBarRegistry:
                 gap_before=component.gap_before,
                 style=component.style,
                 visible=component.visible,
+                render_for_width=component.render_for_width,
             )
         else:
             component.region = rid
@@ -356,6 +374,7 @@ class TopBarRegistry:
         style: str | None = None,
         visible: bool = True,
         replace: bool = True,
+        render_for_width: WidthRenderFn | None = None,
     ) -> TopBarComponent:
         comp = TopBarComponent(
             id=str(id),
@@ -367,6 +386,7 @@ class TopBarRegistry:
             gap_before=str(gap_before),
             style=style,
             visible=bool(visible),
+            render_for_width=render_for_width,
         )
         self.register(comp, replace=replace)
         return comp
@@ -470,6 +490,34 @@ def truncate_to_width(text: str, max_w: int) -> str:
     return "".join(out) + "…"
 
 
+def _elide_tail(text: str, max_w: int) -> str:
+    """Keep the *tail* of ``text``, prefixing ``…`` when it does not fit.
+
+    Used by width-aware components to retain the meaningful tail (e.g. the last
+    path segment for a workspace, or the concrete branch name) instead of a hard
+    cut at the end that would drop exactly the informative part.
+    """
+    raw = text or ""
+    max_w = max(0, int(max_w))
+    if max_w <= 0:
+        return ""
+    if display_width(raw) <= max_w:
+        return raw
+    if max_w == 1:
+        return "…"
+    # Reserve a single cell for the leading ellipsis.
+    budget = max_w - 1
+    tail: list[str] = []
+    used = 0
+    for ch in reversed(raw):
+        cw = display_width(ch)
+        if used + cw > budget:
+            break
+        tail.append(ch)
+        used += cw
+    return "…" + "".join(reversed(tail))
+
+
 def center_in_width(text: str, width: int) -> str:
     """Pad ``text`` so it appears centered within ``width`` terminal cells."""
     return align_in_width(text, width, TopBarAlign.CENTER)
@@ -493,6 +541,26 @@ def align_in_width(text: str, width: int, align: TopBarAlign | str) -> str:
         right = pad - left
         return (" " * left) + body + (" " * right)
     return body + (" " * pad)
+
+
+def _center_lead_for_band(
+    natural: str,
+    *,
+    band_width: int,
+    band_start: int,
+    usable: int,
+) -> int:
+    """Leading pad so ``natural`` centers on the *full* row, not its band.
+
+    ``band_start`` is the absolute content column where this region begins.
+    This keeps a ``center`` region that flex-fills the leftover width visually
+    centered on the row even when a sibling region (e.g. the previously-populated
+    right side) is empty. The result is clamped to the band so the text never
+    overlaps a neighbor or collapses to a negative offset.
+    """
+    cw = display_width(natural)
+    lead = max(0, (usable - cw) // 2 - band_start)
+    return min(lead, max(0, band_width - cw))
 
 
 def join_region_parts(parts: Iterable[tuple[str, str]]) -> str:
@@ -818,7 +886,15 @@ def locate_component_span(
         if reg.spec.align is TopBarAlign.RIGHT:
             lead = max(0, reg.width - display_width(natural))
         elif reg.spec.align is TopBarAlign.CENTER:
-            lead = max(0, (reg.width - display_width(natural)) // 2)
+            if int(reg.spec.flex or 0) > 0:
+                lead = _center_lead_for_band(
+                    natural,
+                    band_width=reg.width,
+                    band_start=cursor,
+                    usable=packed.usable,
+                )
+            else:
+                lead = max(0, (reg.width - display_width(natural)) // 2)
 
         x = cursor + lead
         first = True
@@ -878,6 +954,129 @@ def _append_chunk_with_region_bg(
     line.append(str(chunk), style=_with_bg(style, bg) if bg else style)
 
 
+def _region_has_width_aware(components: list[TopBarComponent]) -> bool:
+    """True when any component can elide to a width-aware representation."""
+    return any(c.render_for_width is not None for c in components)
+
+
+def _allocate_region_span(
+    comps: list[TopBarComponent],
+    ideal: list[int],
+    mins: list[int],
+    budget: int,
+) -> list[int]:
+    """Split ``budget`` cells among components.
+
+    Guarantees each component its ``min_width`` when possible, then hands the
+    leftover proportionally to the natural (ideal) width. If the budget cannot
+    cover all minimums, earlier components win (keeps the chrome anchored left)
+    and the rest are elided away.
+    """
+    n = len(comps)
+    if n == 0:
+        return []
+    if sum(ideal) <= budget:
+        return list(ideal)
+    alloc = [0] * n
+    if sum(mins) > budget:
+        rem = budget
+        for i in range(n):
+            if rem <= 0:
+                break
+            take = min(mins[i], rem)
+            alloc[i] = take
+            rem -= take
+        used = sum(alloc)
+        if used < budget and n:
+            alloc[n - 1] += budget - used
+        return alloc
+    alloc = list(mins)
+    rem = budget - sum(mins)
+    if rem > 0:
+        weight = [max(0, ideal[i] - mins[i]) for i in range(n)]
+        total = sum(weight) or 1
+        for i in range(n):
+            if weight[i] <= 0:
+                continue
+            alloc[i] += min(weight[i], int(rem * weight[i] // total))
+        used = sum(alloc)
+        if used < budget:
+            for i in range(n - 1, -1, -1):
+                room = max(0, ideal[i] - alloc[i])
+                if room <= 0:
+                    continue
+                take = min(room, budget - used)
+                alloc[i] += take
+                used += take
+                if used >= budget:
+                    break
+    return alloc
+
+
+def _render_region_width_aware(
+    reg: PackedRegion,
+    *,
+    style: str | None,
+    bg: str,
+) -> Text:
+    """Render region components with width-aware elision.
+
+    Each visible component gets a slice of ``reg.width`` (min-width floor plus a
+    proportional share of the leftovers) and, if it provides ``render_for_width``,
+    renders exactly that slice by eliding to the meaningful part. Components
+    without one render normally, then a final hard truncation keeps the band from
+    overflowing so neighbour regions stay put.
+    """
+    comps = [c for c in reg.components if c.visible]
+    if not comps:
+        return Text()
+    gap_before = [display_width(c.gap_before) for c in comps]
+    total_gap = sum(gap_before[1:])  # first component has no leading gap
+    budget = max(0, reg.width - total_gap)
+    if budget <= 0:
+        return Text()
+    ideal = []
+    for comp in comps:
+        if comp.render_for_width is not None:
+            raw = comp.render_for_width(budget)
+            plain = raw.plain if isinstance(raw, Text) else str(raw or "")
+            ideal.append(max(1, display_width(plain)))
+        else:
+            ideal.append(max(1, display_width(comp.text())))
+    mins = [max(0, int(c.min_width or 0)) for c in comps]
+    alloc = _allocate_region_span(comps, ideal, mins, budget)
+
+    out = Text()
+    first = True
+    for comp, sub_w in zip(comps, alloc, strict=True):
+        gap = comp.gap_before
+        if not first and gap and sub_w > 0:
+            out.append(gap, style=style)
+        if sub_w <= 0:
+            first = False
+            continue
+        chunk = comp.render_width(sub_w)
+        plain = chunk.plain if isinstance(chunk, Text) else str(chunk or "")
+        if not plain:
+            first = False
+            continue
+        w = display_width(plain)
+        if w > sub_w:
+            # Final cap so the band never overflows.
+            if isinstance(chunk, Text):
+                chunk = Text(truncate_to_width(plain, sub_w))
+            else:
+                chunk = truncate_to_width(plain, sub_w)
+            w = sub_w
+        if isinstance(chunk, Text):
+            _append_chunk_with_region_bg(out, chunk, style=style, bg=bg)
+        else:
+            c_style = comp.style if comp.style is not None else style
+            _append_chunk_with_region_bg(out, chunk, style=c_style, bg=bg)
+        first = False
+    return out
+
+
 def render_packed_line(
     layout: TopBarLayout,
     *,
@@ -898,6 +1097,8 @@ def render_packed_line(
         default_fb = ""
 
     visible = [r for r in layout.regions if r.width > 0 or r.content]
+    # Track cells written so a center+flex region can center on the full row.
+    written = 0
     for i, reg in enumerate(visible):
         fb = fb_map.get(reg.spec.id, default_fb)
         style = reg.spec.style_string(fallback_fg=fb or None)
@@ -905,13 +1106,49 @@ def render_packed_line(
         body = reg.aligned_text()
         natural = reg.content
         # Prefer component path so branch/workspace keep their own styles, even
-        # when the region paints a solid background band.
-        if reg.components and render_region_text(reg.components) == natural:
+        # when the region paints a solid background band. Width-aware elision is
+        # used only when the *full* chrome would not fit the allocated band.
+        if (
+            reg.components
+            and _region_has_width_aware(reg.components)
+            and display_width(render_region_text(reg.components)) > reg.width
+        ):
+            band_style = style or (f"on {bg}" if bg else None)
             lead = 0
             if reg.spec.align is TopBarAlign.RIGHT:
                 lead = max(0, reg.width - display_width(natural))
             elif reg.spec.align is TopBarAlign.CENTER:
-                lead = max(0, (reg.width - display_width(natural)) // 2)
+                if int(reg.spec.flex or 0) > 0:
+                    lead = _center_lead_for_band(
+                        natural,
+                        band_width=reg.width,
+                        band_start=written,
+                        usable=layout.usable,
+                    )
+                else:
+                    lead = max(0, (reg.width - display_width(natural)) // 2)
+            if lead > 0:
+                line.append(" " * lead, style=band_style)
+            smart = _render_region_width_aware(reg, style=style, bg=bg)
+            line.append_text(smart)
+            used = lead + display_width(smart.plain)
+            trail = reg.width - used
+            if trail > 0:
+                line.append(" " * trail, style=band_style)
+        elif reg.components and render_region_text(reg.components) == natural:
+            lead = 0
+            if reg.spec.align is TopBarAlign.RIGHT:
+                lead = max(0, reg.width - display_width(natural))
+            elif reg.spec.align is TopBarAlign.CENTER:
+                if int(reg.spec.flex or 0) > 0:
+                    lead = _center_lead_for_band(
+                        natural,
+                        band_width=reg.width,
+                        band_start=written,
+                        usable=layout.usable,
+                    )
+                else:
+                    lead = max(0, (reg.width - display_width(natural)) // 2)
             # Always paint pad cells with the region style so bg fills the band,
             # not only the glyphs (hug regions used to look like text highlight).
             band_style = style or (f"on {bg}" if bg else None)
@@ -941,9 +1178,11 @@ def render_packed_line(
             band_style = style or (f"on {bg}" if bg else None)
             line.append(" " * reg.width, style=band_style)
 
+        written += reg.width
         if i < len(visible) - 1 and reg.spec.gap_after > 0:
             # Gaps stay unstyled so the widget CSS topbar bg shows between blocks.
             line.append(" " * reg.spec.gap_after, style=None)
+            written += reg.spec.gap_after
 
     plain_w = display_width(line.plain)
     if plain_w < layout.usable:

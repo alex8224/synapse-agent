@@ -656,6 +656,12 @@ class ChromeController:
                 "min_width": 0,
                 "priority": 40,
                 "gap_after": gap,
+                # Fallback cap only: keep the left chrome (workspace + branch +
+                # diff stats like "6f +314 -13") fully visible for normal
+                # projects, and reserve room for the centered title on wide
+                # terminals. A very long branch/workspace elides via
+                # render_for_width only when it exceeds this fallback.
+                "max_width": 80,
             },
             "center": {
                 "flex": 1,
@@ -684,6 +690,7 @@ class ChromeController:
                 min_width=int(conf.get("min_width", 0)),
                 priority=int(conf.get("priority", 0)),
                 gap_after=int(conf.get("gap_after", 0)),
+                max_width=int(conf.get("max_width", 0)),
             )
 
     def install_default_bottombar(self) -> None:
