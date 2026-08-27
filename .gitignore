@@ -35,6 +35,11 @@ conversation_history/
 /ear-anatomy-exploded.html
 /ear-models/
 
+# Local scratch output (untracked scratch files)
+/article-translation/
+/article_ltt.html
+/twitter-replica/
+
 # IDE
 .idea/
 .vscode/
