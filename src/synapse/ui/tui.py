@@ -633,6 +633,10 @@ class CodingAgentApp(App[None]):
             )
         except Exception:  # noqa: BLE001
             pass
+        # Re-probe after mount so a transient/timeout failure during __init__
+        # does not leave the branch chrome empty until the first completed turn.
+        # The controller schedules the actual git subprocess work off-thread.
+        self._refresh_git_chrome()
         self._reload_tool_output_stats()
         set_metrics_notifier(self._on_tool_output_metrics_changed)
         self._refresh_bottombar()
