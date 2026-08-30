@@ -1610,6 +1610,7 @@ class TestApplyOkResult:
             "refresh_css",
         ):
             setattr(app, method, MagicMock())
+        app._turn.agent_for_session = MagicMock(return_value=None)
         return app
 
     def test_applies_agent_and_thread(self, monkeypatch):
@@ -1637,10 +1638,9 @@ class TestApplyOkResult:
     def test_thread_switch_reuses_running_session_agent(self, monkeypatch):
         app = self._make_app(monkeypatch)
         running_agent = object()
-        runtime = MagicMock(agent=running_agent)
         app._turn.detach = MagicMock()
-        app._turn.runtime_for = MagicMock(return_value=runtime)
-        app._turn.attach = MagicMock(return_value=runtime)
+        app._turn.agent_for_session = MagicMock(return_value=running_agent)
+        app._turn.attach = MagicMock(return_value=None)
         app._turn.sync_foreground_status = MagicMock()
         ok = MagicMock(
             agent=None,
@@ -1701,8 +1701,8 @@ class TestApplyOkResult:
 
     def test_thread_switch_clears_once_then_reloads(self, monkeypatch):
         app = self._make_app(monkeypatch)
-        app._turn.runtime_for = MagicMock(return_value=MagicMock(agent=app.agent))
-        app._turn.attach = MagicMock(return_value=MagicMock(agent=app.agent))
+        app._turn.agent_for_session = MagicMock(return_value=app.agent)
+        app._turn.attach = MagicMock(return_value=None)
         app._turn.sync_foreground_status = MagicMock()
         ok = MagicMock(
             agent=None,
@@ -2185,9 +2185,17 @@ class TestResumeHitlGate:
         app = _make_app(monkeypatch)
         app.run_resume = MagicMock()
         app._capture_turn_context = MagicMock()
-        runtime = self._runtime(SessionStatus.WAITING_APPROVAL)
-        app._turn._session_runtime = runtime
-        app._turn._sessions = {"test-thread": runtime}
+        from synapse.runtime.service.queries import SessionView, UsageView
+
+        facade = MagicMock()
+        app._current_project_id = lambda: "default"
+        facade.binding.session.project_id = "default"
+        facade.binding.session.thread_id = "test-thread"
+        facade.state.view = SessionView(
+            "default", "test-thread", SessionStatus.WAITING_APPROVAL.value,
+            "turn", 0, UsageView(), None, "",
+        )
+        app._turn._service_sessions["default:test-thread"] = facade
         app._busy = True
 
         app._slash.resume_hitl("approve")
@@ -2200,8 +2208,7 @@ class TestResumeHitlGate:
         """A genuinely running turn still refuses a resume."""
         app = _make_app(monkeypatch)
         app.run_resume = MagicMock()
-        app._turn._session_runtime = None
-        app._turn._sessions = {}
+        app._turn._service_sessions.clear()
         app._busy = True
 
         app._slash.resume_hitl("approve")

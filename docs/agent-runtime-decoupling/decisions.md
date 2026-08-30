@@ -73,6 +73,21 @@
 - 原因：daemon 需要进程管理、鉴权、IPC、重连和版本兼容，是独立产品能力。
 - 影响：P8 只验证可靠 shutdown，不实现后台服务。
 
+## ADR-011：统一应用端口位于 Runtime 之上，消费者通过 service contract 接入
+
+- 状态：Accepted
+- 决策：新增 `synapse.runtime.service` 传输无关应用服务层（S1 提供 `LocalAgentRuntimeService`：submit turn、查询 session、读取事件、watch replay+live）；S10 的 CLI/TUI/ACP 均通过纯 application DTO ports 接入，复用 RuntimeManager/SessionRuntime 执行栈，不新建执行路径。in-process facade 与 remote client 遵循同一 contract，agent metadata 留在 composition，不走 wire。
+- 原因：统一 DTO/端口可服务未来 CLI/TUI/ACP 与网络/daemon 消费者，但执行与生命周期解耦必须继续由既有 P0-P8 栈承担。
+- 影响：service 只通过 `RuntimeManager.submit_ref/resume_ref`、`get_session_ref()` 与 `SessionRuntime` 公共方法访问运行态；Local consumer 是 composition owner 而非第二业务 runtime，UI/ACP 不访问 owner.manager。daemon 已由 S8 以 foreground 形态交付；不改变其进程边界。
+
+## ADR-012：S10 consumer cutover 保持单一执行链
+
+- 状态：Accepted
+- 决策：CLI 使用 `LocalProjectRuntimeConsumer`，TUI 使用 `TUIRuntimeSessionFacade` 与 `RuntimeEvent` renderer，ACP 使用 service-only `ACPManagedSession`。submit/cancel/steer/approval/watch/status/session switch/dialogs/chrome/steer 均使用 service DTO；TUI UI-only queue 不拥有 execution runtime。watch detach/connection close 只断开观察，不取消 turn；事件使用 session sequence。
+- 原因：消费者必须可替换而不复制 runtime 生命周期或业务执行；同一 contract 同时支持进程内 facade 和 remote client。
+- 影响：保留 legacy `ui.stream.stream_agent` 作为兼容 utility，但 CLI/TUI/ACP 默认路径不调用 `stream_agent` 或 `agent.ainvoke`。ACP approval 使用 `PendingApprovalQuery`/`ResumeTurnCommand`，checkpoint copy/delete 为纯 callback。
+- 验证：实现证据包括安全 ACP 进程内 135 passed、B2 50 passed、C2 433 passed、S6 更新 78 passed、approval service/transport 37 passed；最终全仓安全门禁、MkDocs strict、`uv build` 与 review 尚待完成。
+
 ## 决策更新模板
 
 ```text

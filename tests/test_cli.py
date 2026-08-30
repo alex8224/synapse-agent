@@ -1,14 +1,51 @@
 """CLI help and startup error handling tests."""
 
+import ast
 from pathlib import Path
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
+import synapse.cli as cli
 from synapse.cli import _bounded_preview_text, _launch_tui, _preview_warning_text, app
 
 runner = CliRunner()
+
+
+def test_cli_registers_exactly_one_default_callback_ast():
+    callbacks = [
+        node
+        for node in ast.walk(ast.parse(Path(cli.__file__).read_text()))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "callback"
+    ]
+    assert len(callbacks) == 1
+
+
+def test_cli_registers_exactly_one_tui_command_ast():
+    source = Path(cli.__file__).read_text()
+    tree = ast.parse(source)
+    commands = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "command"
+    ]
+    assert (
+        sum(
+            any(isinstance(arg, ast.Constant) and arg.value == "tui" for arg in node.args)
+            for node in commands
+        )
+        == 1
+    )
+
+
+def test_cli_typer_command_names_are_unique():
+    names = [command.name for command in app.registered_commands]
+    assert len(names) == len(set(names))
 
 
 def test_cli_help():
@@ -154,14 +191,10 @@ def test_resolve_launch_target_session_reference(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr("synapse.cli.ProjectCatalog", _FakeCatalog)
-    monkeypatch.setattr(
-        "synapse.cli.load_settings", lambda **k: _FakeSettings()
-    )
+    monkeypatch.setattr("synapse.cli.load_settings", lambda **k: _FakeSettings())
     monkeypatch.setattr(
         "synapse.runtime.sessions.resolve_session_ref",
-        lambda value, *, catalog=None, verify=False: type(
-            "R", (), {"project_id": "proj-1"}
-        )(),
+        lambda value, *, catalog=None, verify=False: type("R", (), {"project_id": "proj-1"})(),
     )
 
     overrides, thread_id, root = _resolve_launch_target(

@@ -15,7 +15,6 @@ from rich.text import Text
 
 import synapse.ui.tui_styles as _styles
 from synapse.integrations.openai_usage import ConsumeResetResult
-from synapse.runtime.steer import get_agent_steer_queue
 from synapse.sessions.transcript_projection import TranscriptUsage
 from synapse.ui.bottombar import (
     BottomBarContext,
@@ -56,14 +55,9 @@ class ChromeController:
         app = self._app
         turn = getattr(app, "_turn", None)
         if turn is not None:
-            try:
-                runtime = turn.runtime_for(app.thread_id)
-            except Exception:  # noqa: BLE001 - chrome probing is best-effort
-                runtime = None
-            if runtime is not None:
-                agent = getattr(runtime, "agent", None)
-                if agent is not None:
-                    return agent
+            agent = turn.agent_for_session(app.thread_id)
+            if agent is not None:
+                return agent
         return getattr(app, "agent", None)
 
     def mcp_snapshot(self) -> tuple[bool, list[str], list[str], list[str], bool]:
@@ -759,67 +753,23 @@ class ChromeController:
                         from synapse.goals.steering import budget_limit_prompt
 
                         goal_runtime = service.runtime(thread_id)
-                        session_runtime = getattr(
-                            getattr(app, "_turn", None), "session_runtime", None
-                        )
-                        queue = (
-                            session_runtime.steer_queue()
-                            if session_runtime is not None
-                            and goal_runtime.mark_budget_reported(goal.goal_id)
-                            else None
-                        )
-                        if queue is not None:
-                            try:
-                                queue.push(budget_limit_prompt(goal))
-                            except Exception:  # noqa: BLE001
-                                pass
+                        if goal_runtime.mark_budget_reported(goal.goal_id):
+                            app._turn.queue_guidance(budget_limit_prompt(goal))
                     elif (
                         previous is not None
                         and getattr(previous, "objective", None) != goal.objective
                     ):
                         from synapse.goals.steering import objective_updated_prompt
 
-                        session_runtime = getattr(
-                            getattr(app, "_turn", None), "session_runtime", None
-                        )
-                        queue = (
-                            session_runtime.steer_queue()
-                            if session_runtime is not None
-                            else app._turn_steer_queue()
-                        )
-                        if queue is not None:
-                            try:
-                                queue.push(objective_updated_prompt(goal))
-                            except Exception:  # noqa: BLE001
-                                pass
+                        app._turn.queue_guidance(objective_updated_prompt(goal))
                     return
                 # 目标变为 active 且线程空闲（/goal 设置、resume 等）：立即续跑。
                 if goal is not None and goal.status == ThreadGoalStatus.ACTIVE:
                     try:
-                        session_runtime = getattr(
-                            getattr(app, "_turn", None), "session_runtime", None
+                        from synapse.goals.steering import GOAL_STEER_PREFIX, continuation_prompt
+                        app._turn.queue_guidance(
+                            f"{GOAL_STEER_PREFIX}\n{continuation_prompt(goal)}"
                         )
-                        queue = (
-                            session_runtime.steer_queue()
-                            if session_runtime is not None
-                            else get_agent_steer_queue(app.__dict__.get("agent"))
-                        )
-                        if queue is not None:
-                            from synapse.goals.steering import (
-                                GOAL_STEER_PREFIX,
-                                continuation_prompt,
-                            )
-
-                            if not any(
-                                str(item).strip().startswith(GOAL_STEER_PREFIX)
-                                for item in queue.peek_items()
-                            ):
-                                queue.push(
-                                    f"{GOAL_STEER_PREFIX}\n{continuation_prompt(goal)}"
-                                )
-                                schedule = getattr(app, "_schedule_followup_steer", None)
-                                if schedule is not None:
-                                    schedule(queue)
                     except Exception:  # noqa: BLE001
                         pass
 

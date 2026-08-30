@@ -47,6 +47,7 @@ Changelog = "https://github.com/alex8224/synapse-agent/blob/main/CHANGELOG.md"
 synapse = "synapse.entry:main"
 synapse-web = "synapse.web:main"
 synapse-acp = "synapse.acp.server:main"
+synapse-runtime = "synapse.runtime.daemon.entry:main"
 
 [project.optional-dependencies]
 dev = [

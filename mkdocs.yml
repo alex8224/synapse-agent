@@ -70,6 +70,19 @@ nav:
       - P8 稳定性收口: agent-runtime-decoupling/phase-8-hardening.md
       - 迁移说明与余留风险: agent-runtime-decoupling/migration.md
       - 审查问题修复计划: agent-runtime-decoupling/post-review-fix-plan.md
+  - Agent Runtime Service 实施文档:
+      - 总体方案: agent-runtime-service/index.md
+      - 实施进度: agent-runtime-service/progress.md
+      - 架构决策: agent-runtime-service/decisions.md
+      - ADR-S-011 事件契约: agent-runtime-service/adr-s-011-event-contract.md
+      - ADR-S-014 进程内 ACL: agent-runtime-service/adr-s-014-access-control.md
+      - ADR-S-015 JSON-RPC/WebSocket: agent-runtime-service/adr-s-015-json-rpc-websocket.md
+      - ADR-S-016 Daemon ownership: agent-runtime-service/adr-s-016-daemon.md
+      - S7 Wire 协议: agent-runtime-service/s7-wire-protocol.md
+      - S9 Compatibility Matrix: agent-runtime-service/s9-compatibility-matrix.md
+      - ADR-S-017 Reconnect and version negotiation: agent-runtime-service/adr-s-017-reconnect-version-negotiation.md
+      - ADR-S-018 Consumer cutover: agent-runtime-service/adr-s-018-consumer-cutover.md
+      - S2 生命周期专项验证: agent-runtime-service/s2-lifecycle-verification.md
   - ACP 完整语义适配计划:
       - 总体方案: acp-adapter/index.md
       - 实施进度: acp-adapter/progress.md

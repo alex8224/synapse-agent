@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from synapse.runtime.steer import SteerQueue, get_agent_steer_queue
+from synapse.runtime.steer import SteerQueue
 
 
 class SteerController:
@@ -18,19 +18,7 @@ class SteerController:
     def turn_queue(self) -> SteerQueue | None:
         """Return the queue consumed by the active graph run when available."""
         app = self._app
-        controller = getattr(app, "_turn", None)
-        runtime = getattr(controller, "session_runtime", None)
-        if runtime is not None:
-            queue = runtime.steer_queue()
-            if queue is not None:
-                return queue
-        busy = bool(getattr(controller, "busy", getattr(app, "_busy", False)))
-        active_queue = getattr(app, "_active_steer_queue", None)
-        if busy and active_queue is not None:
-            # Compatibility for a turn started before SessionRuntime was
-            # attached (and for lightweight hosts used outside the full TUI).
-            return active_queue
-        return get_agent_steer_queue(app.agent)
+        return getattr(app, "_active_steer_queue", None)
 
     def bind_queue(self) -> None:
         """Bind the status widget to the current agent queue, removing stale listeners."""

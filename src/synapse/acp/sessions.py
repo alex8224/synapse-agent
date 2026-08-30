@@ -9,8 +9,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from synapse.runtime.agent_loop import TurnHandle, TurnResult
-from synapse.runtime.sessions import RuntimeManager, SessionRuntime, UserTurn
+from synapse.runtime.consumer import (
+    ConsumerTurnResult,
+    LocalProjectRuntimeConsumer,
+    execute_consumer_turn,
+    observe_receipt_turn,
+    project_identity_for_workspace,
+)
+from synapse.runtime.service import (
+    AgentRuntimeService,
+    ApprovalDecision,
+    CancelTurnCommand,
+    CloseSessionCommand,
+    GetSessionQuery,
+    OpenSessionCommand,
+    PendingApprovalQuery,
+    PendingApprovalView,
+    ResumeTurnCommand,
+)
+from synapse.runtime.sessions.ref import SessionRef
+
+
+@dataclass(frozen=True, slots=True)
+class ACPTurnOutcome:
+    turn_id: str
+    status: str
+    final_text: str
+    usage: Any
+
+
+def _outcome(result: ConsumerTurnResult) -> ACPTurnOutcome:
+    return ACPTurnOutcome(result.turn_id, result.status, result.final_text, result.usage)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +57,12 @@ class ACPSessionDescriptor:
 
 @dataclass(slots=True)
 class ACPManagedSession:
-    """One ACP session and the runtime resources that own it."""
-
     descriptor: ACPSessionDescriptor
-    manager: Any
-    runtime: SessionRuntime
+    service: AgentRuntimeService
+    session: SessionRef
+    owner: LocalProjectRuntimeConsumer | None = None
+    copy_session_state: Callable[[str], Awaitable[None]] | None = None
+    delete_session_state: Callable[[], Awaitable[None]] | None = None
 
     @property
     def session_id(self) -> str:
@@ -42,27 +72,103 @@ class ACPManagedSession:
     def thread_id(self) -> str:
         return self.descriptor.thread_id
 
-    async def submit(self, message: UserTurn) -> tuple[TurnHandle, TurnResult]:
-        """Submit one turn and wait for runtime settlement."""
-        handle = await self.manager.submit(self.thread_id, message)
-        result = await asyncio.wrap_future(handle.future)
-        await self.runtime.wait_for_settlement(handle)
-        return handle, result
+    async def submit(
+        self, text: str, attachments: tuple[Any, ...] = (), on_event: Any = None
+    ) -> ACPTurnOutcome:
+        return _outcome(
+            await execute_consumer_turn(
+                self.service,
+                self.session,
+                text,
+                attachments=attachments,
+                on_event=on_event,
+                open_session=False,
+            )
+        )
 
-    def cancel(self, reason: str = "client") -> bool:
-        return bool(self.manager.cancel(self.thread_id, reason))
+    async def pending_approval(self, turn_id: str) -> PendingApprovalView:
+        return await self.service.pending_approval(PendingApprovalQuery(self.session, turn_id))
+
+    async def copy_state(self, target_thread_id: str) -> None:
+        if self.copy_session_state is None:
+            raise RuntimeError("checkpoint backend does not support session fork")
+        await self.copy_session_state(target_thread_id)
+
+    async def delete_state(self) -> None:
+        if self.delete_session_state is not None:
+            await self.delete_session_state()
+
+    async def resume(
+        self,
+        expected_turn_id: str,
+        decisions: tuple[ApprovalDecision, ...],
+        on_event: Any = None,
+    ) -> ACPTurnOutcome:
+        view = await self.service.get_session(GetSessionQuery(self.session))
+        async with self.service.watch_events(self.session, after=view.latest_sequence) as events:
+            receipt = None
+            try:
+                receipt = await self.service.resume_turn(
+                    ResumeTurnCommand(self.session, expected_turn_id, decisions)
+                )
+                return _outcome(
+                    await observe_receipt_turn(
+                        self.service, self.session, receipt, on_event=on_event, events=events
+                    )
+                )
+            except asyncio.CancelledError:
+                try:
+                    if receipt is not None:
+                        try:
+                            await self.service.cancel_turn(
+                                CancelTurnCommand(
+                                    self.session,
+                                    receipt.turn_id,
+                                    reason="caller_cancelled",
+                                )
+                            )
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        await self.service.close_session(
+                            CloseSessionCommand(self.session, cancel_active=True)
+                        )
+                    except Exception:
+                        pass
+                raise
+
+    async def cancel(self, reason: str = "client") -> bool:
+        view = await self.service.get_session(GetSessionQuery(self.session))
+        if view.active_turn_id is None:
+            return False
+        await self.service.cancel_turn(
+            CancelTurnCommand(self.session, view.active_turn_id, reason=reason)
+        )
+        return True
+
+    async def close(self, cancel_active: bool = True) -> None:
+        await self.service.close_session(
+            CloseSessionCommand(self.session, cancel_active=cancel_active)
+        )
+
+    async def shutdown_owner(self) -> None:
+        if self.owner is not None:
+            await self.owner.close()
 
 
 SessionFactory = Callable[[ACPSessionDescriptor], Awaitable[ACPManagedSession]]
 
 
 class ACPSessionRegistry:
-    """Own ACP session IDs and prevent cross-session runtime confusion."""
+    """Own ACP session IDs and service consumers."""
 
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
         self._sessions: dict[str, ACPManagedSession] = {}
         self._lock = asyncio.Lock()
+        self._owner_refs: dict[int, tuple[LocalProjectRuntimeConsumer, int]] = {}
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def create(
         self,
@@ -76,27 +182,33 @@ class ACPSessionRegistry:
     ) -> ACPManagedSession:
         session_id = session_id or f"sess_{uuid.uuid4().hex}"
         descriptor = ACPSessionDescriptor(
-            session_id=session_id,
-            thread_id=session_id,
-            cwd=cwd,
-            additional_directories=additional_directories,
-            mcp_servers=mcp_servers,
-            client_service_gateway=client_service_gateway,
-            config=dict(config or {}),
+            session_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            client_service_gateway,
+            dict(config or {}),
         )
         managed = await self._session_factory(descriptor)
         async with self._lock:
             if session_id in self._sessions:
-                raise RuntimeError(f"duplicate ACP session id: {session_id}")
-            self._sessions[session_id] = managed
+                duplicate = True
+            else:
+                duplicate = False
+                self._sessions[session_id] = managed
+                self._retain_owner(managed.owner)
+        if duplicate:
+            await self._cleanup_unregistered(managed)
+            raise RuntimeError(f"duplicate ACP session id: {session_id}")
         return managed
 
     async def add(self, managed: ACPManagedSession) -> ACPManagedSession:
-        """Register an externally restored session for tests and future load."""
         async with self._lock:
             if managed.session_id in self._sessions:
                 raise RuntimeError(f"ACP session already exists: {managed.session_id}")
             self._sessions[managed.session_id] = managed
+            self._retain_owner(managed.owner)
         return managed
 
     def get(self, session_id: str) -> ACPManagedSession | None:
@@ -116,17 +228,91 @@ class ACPSessionRegistry:
             managed = self._sessions.pop(session_id, None)
         if managed is None:
             return False
-        await managed.manager.close_session(managed.thread_id, cancel_active=cancel_active)
+        error: BaseException | None = None
+        try:
+            await managed.close(cancel_active)
+        except BaseException as exc:
+            error = exc
+        owner = await self._release_owner(managed.owner)
+        if owner is not None:
+            try:
+                await owner.close()
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+        if error is not None:
+            raise error
         return True
 
     async def shutdown(self) -> None:
         async with self._lock:
+            if self._shutdown_task is None:
+                self._shutdown_task = asyncio.create_task(self._shutdown_impl())
+            task = self._shutdown_task
+        await asyncio.shield(task)
+
+    async def _shutdown_impl(self) -> None:
+        async with self._lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
-        await asyncio.gather(
-            *(session.manager.shutdown() for session in sessions),
-            return_exceptions=True,
-        )
+            owners = tuple(owner for owner, _ in self._owner_refs.values())
+            self._owner_refs.clear()
+        first_error: BaseException | None = None
+        for managed in sessions:
+            try:
+                await managed.close(True)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        seen: set[int] = set()
+        for owner in owners:
+            if id(owner) in seen:
+                continue
+            seen.add(id(owner))
+            try:
+                await owner.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def _retain_owner(self, owner: LocalProjectRuntimeConsumer | None) -> None:
+        if owner is None:
+            return
+        key = id(owner)
+        current = self._owner_refs.get(key)
+        self._owner_refs[key] = (owner, 1 if current is None else current[1] + 1)
+
+    async def _release_owner(
+        self, owner: LocalProjectRuntimeConsumer | None
+    ) -> LocalProjectRuntimeConsumer | None:
+        if owner is None:
+            return None
+        async with self._lock:
+            key = id(owner)
+            current = self._owner_refs.get(key)
+            if current is None or current[1] > 1:
+                if current is not None:
+                    self._owner_refs[key] = (current[0], current[1] - 1)
+                return None
+            self._owner_refs.pop(key, None)
+            return owner
+
+    async def _cleanup_unregistered(self, managed: ACPManagedSession) -> None:
+        error: BaseException | None = None
+        try:
+            await managed.close(True)
+        except BaseException as exc:
+            error = exc
+        if managed.owner is not None:
+            try:
+                await managed.owner.close()
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+        if error is not None:
+            raise error
 
     def __len__(self) -> int:
         return len(self._sessions)
@@ -154,6 +340,8 @@ def make_runtime_session_factory(
         mcp_configs: list[Any] = merge_mcp_server_configs(project_configs, client_configs)
 
         mcp_pool_key = f"acp:{descriptor.session_id}"
+
+        built_agents: dict[str, Any] = {}
 
         def build_agent(thread_id: str, resources: Any) -> Any:
             del thread_id, resources
@@ -198,16 +386,55 @@ def make_runtime_session_factory(
                     extra_tools=client_tools,
                     load_mcp=False,
                 )
+            built_agents[descriptor.thread_id] = agent
             return agent
 
-        manager = RuntimeManager(
+        project_id, catalog = project_identity_for_workspace(settings, descriptor.cwd)
+        owner = LocalProjectRuntimeConsumer(
             settings=settings,
+            project_id=project_id,
             agent_factory=build_agent,
+            catalog=catalog,
             max_concurrent_sessions=max_concurrent_sessions,
-            project_id=str(descriptor.cwd),
         )
-        runtime = await manager.open_session(descriptor.thread_id)
-        return ACPManagedSession(descriptor=descriptor, manager=manager, runtime=runtime)
+        session = SessionRef(project_id, descriptor.thread_id)
+        try:
+            await owner.service.open_session(OpenSessionCommand(session))
+        except BaseException:
+            try:
+                await owner.close()
+            except BaseException:
+                pass
+            raise
+        async def copy_state(target_thread_id: str) -> None:
+            checkpointer = getattr(
+                built_agents.get(descriptor.thread_id), "_coding_checkpointer", None
+            )
+            copier = getattr(checkpointer, "acopy_thread", None)
+            if callable(copier):
+                await copier(descriptor.thread_id, target_thread_id)
+                return
+            copier = getattr(checkpointer, "copy_thread", None)
+            if callable(copier):
+                await asyncio.to_thread(copier, descriptor.thread_id, target_thread_id)
+                return
+            raise RuntimeError("checkpoint backend does not support session fork")
+
+        async def delete_state() -> None:
+            checkpointer = getattr(
+                built_agents.get(descriptor.thread_id), "_coding_checkpointer", None
+            )
+            deleter = getattr(checkpointer, "adelete_thread", None)
+            if callable(deleter):
+                await deleter(descriptor.thread_id)
+                return
+            deleter = getattr(checkpointer, "delete_thread", None)
+            if callable(deleter):
+                await asyncio.to_thread(deleter, descriptor.thread_id)
+
+        return ACPManagedSession(
+            descriptor, owner.service, session, owner, copy_state, delete_state
+        )
 
     return create
 

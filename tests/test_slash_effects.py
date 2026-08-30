@@ -139,9 +139,12 @@ def test_apply_effects_switch_syncs_settings_to_target_session_agent(
         def detach(self, thread_id: str | None = None) -> None:
             self.attached.append(str(thread_id))
 
-        def runtime_for(self, thread_id: str) -> _Runtime:
+        def agent_for_session(self, thread_id: str) -> object:
             del thread_id
-            return _Runtime()
+            return _Runtime.agent
+
+        def bind_agent(self, thread_id: str, agent: object, **kwargs: object) -> None:
+            del thread_id, agent, kwargs
 
     settings = SimpleNamespace(
         active_model="gpt",
@@ -197,9 +200,12 @@ def test_apply_effects_switch_keeps_settings_when_profiles_match() -> None:
         def detach(self, thread_id: str | None = None) -> None:
             del thread_id
 
-        def runtime_for(self, thread_id: str) -> _Runtime:
+        def agent_for_session(self, thread_id: str) -> object:
             del thread_id
-            return _Runtime()
+            return _Runtime.agent
+
+        def bind_agent(self, thread_id: str, agent: object, **kwargs: object) -> None:
+            del thread_id, agent, kwargs
 
     settings = SimpleNamespace(
         active_model="gpt",
@@ -555,9 +561,12 @@ def test_apply_effects_switch_failure_rolls_back_settings(
         def detach(self, thread_id: str | None = None) -> None:
             del thread_id
 
-        def runtime_for(self, thread_id: str) -> None:
+        def agent_for_session(self, thread_id: str) -> object | None:
             del thread_id
             return None
+
+        def bind_agent(self, thread_id: str, agent: object, **kwargs: object) -> None:
+            del thread_id, agent, kwargs
 
         def attach(self, thread_id: str) -> None:
             del thread_id

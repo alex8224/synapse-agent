@@ -57,6 +57,21 @@ Then start the TUI from anywhere:
 synapse tui -w .
 ```
 
+To run the standalone foreground runtime daemon (S8), use the installed
+`synapse-runtime` command or the module form. It prints one ready JSON metadata
+line to stdout after binding; the token is generated in the private state
+directory and is never printed.
+
+```bash
+synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
+# or: python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime --port 0
+```
+
+Use `--token-file PATH` to select a deployment-specific token file. The daemon
+uses a held lock in the state directory, runs in the foreground, and stops on
+SIGINT/SIGTERM. It does not provide install/start/stop/status controls and does
+not migrate the CLI, TUI, or ACP consumers.
+
 Open a session in any registered project from the global catalog:
 
 ```bash

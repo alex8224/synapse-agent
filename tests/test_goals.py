@@ -484,43 +484,33 @@ class TestGoalHelpers:
 # ---------------------------------------------------------------------------
 def test_tui_maybe_continue_goal_schedules_continuation(tmp_path) -> None:
     """``/goal <objective>`` 设置成功后应调度续跑回合（idle + active）。"""
-    import types
     from types import SimpleNamespace
 
     from synapse.goals.runtime import GoalService
     from synapse.goals.steering import GOAL_STEER_PREFIX
     from synapse.goals.store import GoalStore
-    from synapse.runtime.steer import SteerQueue
     from synapse.ui.turn.controller import TurnController
 
     svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
     svc.set_goal("t1", "objective")
-    queue = SteerQueue()
-
-    fake = object.__new__(TurnController)
-    fake._app = SimpleNamespace(
-        _busy=False,
+    calls: list[tuple[str, object]] = []
+    app = SimpleNamespace(
         settings=SimpleNamespace(goal_auto_continue=True),
         agent=SimpleNamespace(_coding_goal_service=svc),
         thread_id="t1",
-        _turn_steer_queue=lambda: queue,
+        run_turn=lambda text, attachments: calls.append((text, attachments)),
     )
+    controller = TurnController(app)
+    app._turn = controller
 
-    bound = types.MethodType(TurnController.maybe_continue_goal, fake)
-    assert bound() is True
-    assert queue.peek_count() == 1
-    assert str(queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
-
-    # 已存在未消费的 goal continuation 时不重复推送
-    assert bound() is False
-    assert queue.peek_count() == 1
+    assert controller.maybe_continue_goal() is True
+    assert len(calls) == 1
+    assert calls[0][1] is None
+    assert str(calls[0][0]).startswith(GOAL_STEER_PREFIX)
 
     # 非 active 目标不续跑
     svc.pause_goal("t1")
-    queue2 = SteerQueue()
-    fake._app._turn_steer_queue = lambda: queue2
-    assert bound() is False
-    assert queue2.peek_count() == 0
+    assert controller.maybe_continue_goal() is False
 
 
 def test_goal_listener_schedules_continuation_from_ui_thread(tmp_path) -> None:
@@ -529,13 +519,10 @@ def test_goal_listener_schedules_continuation_from_ui_thread(tmp_path) -> None:
     这是 ``/goal <objective>`` 的真实路径：slash 处理在 UI 线程同步调用
     service.set_goal -> notify -> listener。
     """
-    import types
     from types import SimpleNamespace
 
     from synapse.goals.runtime import GoalService
-    from synapse.goals.steering import GOAL_STEER_PREFIX
     from synapse.goals.store import GoalStore
-    from synapse.runtime.steer import SteerQueue
     from synapse.ui.tui import CodingAgentApp
 
     svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
@@ -545,20 +532,12 @@ def test_goal_listener_schedules_continuation_from_ui_thread(tmp_path) -> None:
             self._busy = False
             self.thread_id = "t1"
             self.settings = SimpleNamespace(goal_auto_continue=True)
-            self.queue = SteerQueue()
-            self.agent = SimpleNamespace(
-                _coding_goal_service=svc, _coding_steer_queue=self.queue
-            )
+            self.guidance: list[str] = []
+            self.agent = SimpleNamespace(_coding_goal_service=svc)
             self._current_goal: object | None = None
             self._bottombar = SimpleNamespace(refresh=lambda: None)
             self.deferred: list[tuple[object, ...]] = []
             self.ui_thread_calls = 0
-
-        def _turn_steer_queue(self) -> SteerQueue:
-            return self.queue
-
-        def _schedule_followup_steer(self, queue: SteerQueue) -> bool:
-            return True
 
         def call_from_thread(self, callback, *args, **kwargs) -> object:  # noqa: ANN001
             # 模拟 Textual：从 UI 线程调用必须抛 RuntimeError。
@@ -566,17 +545,14 @@ def test_goal_listener_schedules_continuation_from_ui_thread(tmp_path) -> None:
 
     fake = object.__new__(CodingAgentApp)
     fake.__dict__.update(_FakeApp().__dict__)
-    # 把真实方法绑定到 fake 上
-    fake._turn_steer_queue = types.MethodType(CodingAgentApp._turn_steer_queue, fake)
-    fake._maybe_continue_goal = types.MethodType(CodingAgentApp._maybe_continue_goal, fake)
-    fake._schedule_followup_steer = lambda queue: True  # 不依赖 Textual 运行时
-    fake._bind_goal_listener = types.MethodType(CodingAgentApp._bind_goal_listener, fake)
+    fake._turn = SimpleNamespace(queue_guidance=fake.guidance.append)
+    fake._bind_goal_listener = CodingAgentApp._bind_goal_listener.__get__(fake)
 
     fake._bind_goal_listener()
     svc.set_goal("t1", "objective")  # notify -> listener（模拟 UI 线程，RuntimeError 回退同步）
 
-    assert fake.queue.peek_count() == 1
-    assert str(fake.queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
+    assert len(fake.guidance) == 1
+    assert fake.guidance[0].startswith("[goal continuation]")
 
 
 def test_goal_end_to_end_with_real_agent(tmp_path) -> None:
@@ -934,34 +910,31 @@ def test_pause_does_not_overwrite_concurrent_complete(service, monkeypatch) -> N
 
 def test_goal_resume_after_esc_pause_schedules_continuation(tmp_path) -> None:
     """ESC 暂停的 goal 经 resume 后恢复 ACTIVE，续跑可再次调度。"""
-    import types
     from types import SimpleNamespace
 
     from synapse.goals.runtime import GoalService
     from synapse.goals.steering import GOAL_STEER_PREFIX
     from synapse.goals.store import GoalStore
-    from synapse.runtime.steer import SteerQueue
-    from synapse.ui.tui import CodingAgentApp
+    from synapse.ui.turn.controller import TurnController
 
     svc = GoalService(GoalStore(tmp_path / "sessions.sqlite"))
     svc.set_goal("t1", "objective")
     svc.pause_goal("t1")  # 模拟 ESC interrupt 置为 paused
 
-    queue = SteerQueue()
-    fake = object.__new__(CodingAgentApp)
-    fake._busy = False
-    fake.settings = SimpleNamespace(goal_auto_continue=True)
-    fake.agent = SimpleNamespace(_coding_goal_service=svc)
-    fake.thread_id = "t1"
-    fake._active_steer_queue = None
-    fake._turn_steer_queue = lambda: queue
-    fake._schedule_followup_steer = lambda q: True
+    calls: list[str] = []
+    app = SimpleNamespace(
+        settings=SimpleNamespace(goal_auto_continue=True),
+        agent=SimpleNamespace(_coding_goal_service=svc),
+        thread_id="t1",
+        run_turn=lambda text, attachments: calls.append(text),
+    )
+    controller = TurnController(app)
+    app._turn = controller
 
     goal, error = svc.resume_goal("t1")
     assert goal is not None and error is None
     assert goal.status == ThreadGoalStatus.ACTIVE
 
-    bound = types.MethodType(CodingAgentApp._maybe_continue_goal, fake)
-    assert bound() is True
-    assert queue.peek_count() == 1
-    assert str(queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
+    assert controller.maybe_continue_goal() is True
+    assert len(calls) == 1
+    assert calls[0].startswith(GOAL_STEER_PREFIX)

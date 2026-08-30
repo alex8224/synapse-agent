@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import pytest
 from acp.helpers import update_agent_message_text, update_agent_thought_text
@@ -13,14 +12,7 @@ from acp.schema import InitializeResponse
 from synapse.acp.agent import SynapseACPAgent
 from synapse.acp.lifecycle import ACPSessionCatalog
 from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
-
-
-class _Runtime:
-    def __init__(self) -> None:
-        self.agent = type("Agent", (), {"_coding_checkpointer": _Checkpointer()})()
-
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
+from tests.acp_service_fakes import FakeAgentRuntimeService, FakeOwner, simple_managed
 
 
 class _Checkpointer:
@@ -44,18 +36,6 @@ class _ForkCheckpointer:
 
     async def adelete_thread(self, thread_id: str) -> None:
         self.deleted.append(thread_id)
-
-
-class _Manager:
-    def __init__(self, runtime: _Runtime) -> None:
-        self.runtime = runtime
-        self.closed: list[tuple[str, bool]] = []
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        self.closed.append((thread_id, cancel_active))
-
-    async def shutdown(self) -> None:
-        return None
 
 
 def test_catalog_persists_scope_and_uses_opaque_cursor(tmp_path: Path) -> None:
@@ -107,13 +87,15 @@ def test_catalog_update_history_is_bounded(tmp_path: Path) -> None:
 def test_agent_load_list_close_delete_lifecycle(tmp_path: Path) -> None:
     async def run() -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
-        managers: list[_Manager] = []
+        checkpointer = _Checkpointer()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            manager = _Manager(runtime)
-            managers.append(manager)
-            return ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
+            async def delete() -> None:
+                await checkpointer.adelete_thread(descriptor.thread_id)
+            return simple_managed(
+                descriptor, FakeAgentRuntimeService(), owner=FakeOwner(),
+                delete_session_state=delete,
+            )
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -131,7 +113,7 @@ def test_agent_load_list_close_delete_lifecycle(tmp_path: Path) -> None:
         assert loaded is not None
         await agent.delete_session(created.session_id)
         assert (await agent.list_sessions(cwd=str(tmp_path))).sessions == []
-        assert managers[-1].runtime.agent._coding_checkpointer.deleted == [created.session_id]
+        assert checkpointer.deleted == [created.session_id]
         await agent.shutdown()
 
     asyncio.run(run())
@@ -144,8 +126,7 @@ def test_illegal_lifecycle_transitions_are_rejected(tmp_path: Path) -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -186,8 +167,7 @@ def test_fork_without_checkpoint_copy_is_rejected(tmp_path: Path) -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -211,9 +191,14 @@ def test_fork_copies_checkpoint_and_keeps_child_independent(tmp_path: Path) -> N
         checkpointer = _ForkCheckpointer()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            runtime.agent._coding_checkpointer = checkpointer  # type: ignore[attr-defined]
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            async def copy(target: str) -> None:
+                await checkpointer.acopy_thread(descriptor.thread_id, target)
+            async def delete() -> None:
+                await checkpointer.adelete_thread(descriptor.thread_id)
+            return simple_managed(
+                descriptor, FakeAgentRuntimeService(), copy_session_state=copy,
+                delete_session_state=delete,
+            )
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -244,9 +229,14 @@ def test_fork_copy_failure_rolls_back_child_resources(tmp_path: Path) -> None:
         checkpointer = _ForkCheckpointer()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            runtime.agent._coding_checkpointer = checkpointer  # type: ignore[attr-defined]
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            async def copy(target: str) -> None:
+                await checkpointer.acopy_thread(descriptor.thread_id, target)
+            async def delete() -> None:
+                await checkpointer.adelete_thread(descriptor.thread_id)
+            return simple_managed(
+                descriptor, FakeAgentRuntimeService(), copy_session_state=copy,
+                delete_session_state=delete,
+            )
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -273,8 +263,7 @@ def test_delete_one_session_does_not_affect_others(tmp_path: Path) -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),

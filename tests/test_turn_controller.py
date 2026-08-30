@@ -5,20 +5,179 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-import time
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.messages import AIMessage
 
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.agent_loop.request import build_turn_request
-from synapse.runtime.sessions import SessionRuntime, SessionStatus
+from synapse.runtime.service import SessionView, UsageView
+from synapse.runtime.sessions import SessionStatus
 from synapse.runtime.steer import SteerQueue
 from synapse.sessions.transcript import UiTranscriptEvent
 from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
+from synapse.ui.turn.service_session import TUIRuntimeSessionFacade
+
+# Service-only test doubles below intentionally use facades rather than execution runtimes.
+
+
+class _FakeFacade:
+    """Service-only session double with a cancellable event watch."""
+
+    def __init__(self, thread_id: str, *, active: str | None, latest: int = 0) -> None:
+        self.binding = SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id=thread_id))
+        self.state = SimpleNamespace(
+            view=SimpleNamespace(
+                active_turn_id=active,
+                latest_sequence=latest,
+                status="running" if active else "idle",
+            ),
+            last_sequence=latest,
+        )
+        self.watches: list[int] = []
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.closed = asyncio.Event()
+
+    def watch(self, *, after: int | None = None) -> Any:
+        self.watches.append(self.state.last_sequence if after is None else after)
+        facade = self
+
+        class Lease:
+            async def __aenter__(self) -> Any:
+                return facade
+
+            async def __aexit__(self, *args: Any) -> None:
+                facade.closed.set()
+
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                event = await facade.queue.get()
+                if event is StopAsyncIteration:
+                    raise StopAsyncIteration
+                return event
+
+        return Lease()
+
+    async def get(self, *, refresh: bool = True) -> Any:
+        del refresh
+        return self.state.view
+
+    def emit(self, event: Any) -> None:
+        self.queue.put_nowait(event)
+        self.state.last_sequence = max(self.state.last_sequence, event.sequence)
+
+    def close(self) -> None:
+        self.queue.put_nowait(StopAsyncIteration)
+
+
+class _ServiceFacadeWatchFake:
+    """Thread-safe service facade fake with cursor-aware async watches."""
+
+    def __init__(
+        self,
+        thread_id: str,
+        *,
+        active_turn: str | None,
+        latest: int = 0,
+        history: tuple[Any, ...] = (),
+    ) -> None:
+        self.binding = SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id=thread_id))
+        self.state = SimpleNamespace(
+            view=SimpleNamespace(
+                active_turn_id=active_turn,
+                latest_sequence=latest,
+                status="running" if active_turn else "idle",
+            ),
+            last_sequence=latest,
+        )
+        self.watches: list[int] = []
+        self.entered = threading.Event()
+        self.exited = threading.Event()
+        self.rendered = threading.Event()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self._history = list(history)
+        self._current_queue: asyncio.Queue[Any] | None = None
+        self._current_cycle: object | None = None
+        self._lock = threading.Lock()
+        self._watch_generation = 0
+
+    def watch(self, *, after: int | None = None) -> Any:
+        cursor = self.state.last_sequence if after is None else after
+        self.watches.append(cursor)
+        facade = self
+
+        class Lease:
+            def __init__(self) -> None:
+                self.queue: asyncio.Queue[Any] | None = None
+                self.cycle: object = object()
+                with facade._lock:
+                    facade.entered.clear()
+                    facade.exited.clear()
+                    facade.rendered.clear()
+                    facade._current_cycle = self.cycle
+
+            async def __aenter__(self) -> Any:
+                loop = asyncio.get_running_loop()
+                queue: asyncio.Queue[Any] = asyncio.Queue()
+                with facade._lock:
+                    self.queue = queue
+                    if facade._current_cycle is not self.cycle:
+                        raise asyncio.CancelledError
+                    facade.loop = loop
+                    facade._current_queue = queue
+                    facade._current_cycle = self.cycle
+                    history = tuple(facade._history)
+                for event in history:
+                    if event.sequence > cursor:
+                        queue.put_nowait(event)
+                facade.entered.set()
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                with facade._lock:
+                    if facade._current_cycle is self.cycle:
+                        facade._current_queue = None
+                        facade.loop = None
+                        facade._current_cycle = None
+                        facade.exited.set()
+
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                assert self.queue is not None
+                event = await self.queue.get()
+                if event is StopAsyncIteration:
+                    raise StopAsyncIteration
+                return event
+
+        return Lease()
+
+    def emit(self, event: Any) -> None:
+        with self._lock:
+            self._history.append(event)
+            self.state.last_sequence = max(self.state.last_sequence, event.sequence)
+            self.state.view.latest_sequence = self.state.last_sequence
+            loop = self.loop
+            queue = self._current_queue
+        if loop is not None and queue is not None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def close(self) -> None:
+        with self._lock:
+            loop = self.loop
+            queue = self._current_queue
+        if loop is not None and queue is not None:
+            loop.call_soon_threadsafe(queue.put_nowait, StopAsyncIteration)
+
+    async def get(self, *, refresh: bool = True) -> Any:
+        del refresh
+        return self.state.view
 
 
 class _FakeApp:
@@ -65,7 +224,7 @@ class _FakeApp:
         """No-op: image preview is not exercised by turn controller tests."""
 
 
-def test_submit_reserves_session_before_scheduling_worker() -> None:
+def test_submit_schedules_worker_without_legacy_reservation() -> None:
     app = _FakeApp()
     app.settings = SimpleNamespace(model="test", workspace=".")
     app._prewarm_cancel_event = threading.Event()
@@ -84,47 +243,36 @@ def test_submit_reserves_session_before_scheduling_worker() -> None:
     app._sync_prompt_placeholder = lambda: None
     app._current_project_id = lambda: "project"
     scheduled: list[Any] = []
-    app.run_turn = lambda text, attachments, **kwargs: scheduled.append(
-        (text, attachments, kwargs)
-    )
+    app.run_turn = lambda text, attachments, **kwargs: scheduled.append((text, attachments, kwargs))
     controller = TurnController(app)
-    runtime = MagicMock()
-    reservation = object()
-    runtime.reserve_turn.return_value = reservation
-    controller._session_for = MagicMock(return_value=runtime)  # type: ignore[method-assign]
+    controller._session_for = MagicMock()  # type: ignore[method-assign]
+    controller._service_session_cached = MagicMock(return_value=None)  # type: ignore[method-assign]
     event = SimpleNamespace(value="hello", input=SimpleNamespace(value="hello"))
 
     controller.submit(event)
 
-    runtime.reserve_turn.assert_called_once_with()
-    assert scheduled == [("hello", None, {"reservation": reservation})]
+    controller._session_for.assert_not_called()
+    assert scheduled == [("hello", None, {})]
+    assert not any("reservation" in kwargs for _, _, kwargs in scheduled)
 
 
-def test_session_for_keeps_reserved_runtime_when_agent_binding_differs() -> None:
-    """goal follow-up reservation 不能被 capture_turn_context 的 agent 重绑定丢弃。"""
+def test_bind_agent_updates_future_factory_without_replacing_open_facade() -> None:
     app = _FakeApp()
     app.settings = SimpleNamespace(model="test", workspace=".")
     app._current_project_id = lambda: "project"
     controller = TurnController(app)
-    frozen_agent = object()
-    runtime = SessionRuntime(
-        thread_id="t1",
-        project_id="project",
-        agent=frozen_agent,
-        settings=app.settings,
-        turn_runtime=controller._runtime,
+    existing = MagicMock(spec=TUIRuntimeSessionFacade)
+    existing.binding = SimpleNamespace(
+        session=SimpleNamespace(project_id="project", thread_id="t1")
     )
-    reservation = runtime.reserve_turn()
-    assert reservation is not None
-    controller._sessions["t1"] = runtime
-    controller._session_runtime = runtime
-    controller._attached_thread_id = "t1"
-    controller.runtime_for = MagicMock(return_value=runtime)  # type: ignore[method-assign]
+    controller._service_sessions["project:t1"] = existing
 
-    selected = controller._session_for(thread_id="t1", agent=object())
-
-    assert selected is runtime
-    assert selected.release_turn(reservation) is True
+    first = object()
+    second = object()
+    assert controller.bind_agent("t1", first) is existing.binding
+    assert controller.bind_agent("t1", second) is existing.binding
+    assert controller._service_agents[("project", "t1")] is second
+    assert controller._service_sessions["project:t1"] is existing
 
 
 def test_apply_stream_result_cancelled_returns_early() -> None:
@@ -198,7 +346,6 @@ def test_maybe_continue_goal_pushes_continuation_once(tmp_path) -> None:
     from synapse.goals.model import ThreadGoalStatus
     from synapse.goals.steering import GOAL_STEER_PREFIX
 
-    queue = SteerQueue()
     goal = SimpleNamespace(
         status=ThreadGoalStatus.ACTIVE,
         objective="objective",
@@ -210,16 +357,25 @@ def test_maybe_continue_goal_pushes_continuation_once(tmp_path) -> None:
     app = _FakeApp()
     app.agent = SimpleNamespace(_coding_goal_service=service)
     app.settings = SimpleNamespace(goal_auto_continue=True)
-    app._turn_steer_queue = lambda: queue
+    facade = SimpleNamespace(state=SimpleNamespace(view=SimpleNamespace(status="idle")))
+
+    def run_turn(text: str, attachments: Any) -> None:
+        del text, attachments
+        facade.state.view.status = "running"
+
+    app.run_turn = MagicMock(side_effect=run_turn)
 
     controller = TurnController(app)
+    controller._service_session_cached = MagicMock(return_value=facade)  # type: ignore[method-assign]
     assert controller.maybe_continue_goal() is True
-    assert queue.peek_count() == 1
-    assert str(queue.peek_items()[0]).startswith(GOAL_STEER_PREFIX)
+    app.run_turn.assert_called_once()
+    continuation_text = app.run_turn.call_args.args[0]
+    assert continuation_text.startswith(GOAL_STEER_PREFIX)
+    assert app.run_turn.call_args.args[1] is None
 
-    # No duplicate push while the continuation is unconsumed.
+    # No duplicate continuation while the scheduled turn is busy.
     assert controller.maybe_continue_goal() is False
-    assert queue.peek_count() == 1
+    app.run_turn.assert_called_once()
 
 
 def test_maybe_continue_goal_skips_when_busy() -> None:
@@ -267,26 +423,25 @@ def test_build_turn_request_overrides_concurrency() -> None:
     assert req.config["max_concurrency"] == 8
 
 
-def test_busy_cancel_and_steer_delegate_to_session_runtime() -> None:
+def test_busy_cancel_and_steer_delegate_to_service_facade() -> None:
     app = _FakeApp()
+    app._current_project_id = lambda: "p"
     controller = TurnController(app)
     calls: list[tuple[str, str]] = []
 
-    class _Runtime:
-        def snapshot(self) -> Any:
-            from synapse.runtime.sessions import SessionStatus
+    class _Facade:
+        binding = SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id="t1"))
+        state = SimpleNamespace(view=SimpleNamespace(status="running", active_turn_id="turn"))
 
-            return SimpleNamespace(status=SessionStatus.RUNNING)
-
-        def cancel(self, reason: str) -> bool:
+        async def cancel(self, reason: str) -> bool:
             calls.append(("cancel", reason))
             return True
 
-        def steer(self, text: str) -> bool:
+        async def steer(self, text: str) -> bool:
             calls.append(("steer", text))
             return True
 
-    controller._session_runtime = _Runtime()  # type: ignore[assignment]
+    controller._service_sessions["p:t1"] = _Facade()
 
     assert controller.busy is True
     assert controller.cancel("escape") is True
@@ -294,74 +449,59 @@ def test_busy_cancel_and_steer_delegate_to_session_runtime() -> None:
     assert calls == [("cancel", "escape"), ("steer", "focus")]
 
 
-def test_switch_keeps_background_session_running() -> None:
-    """P5-06: detaching one session and attaching another must not cancel the old turn."""
-    import concurrent.futures
-
-    from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-    from synapse.runtime.sessions import SessionRuntime, UserTurn
-
-    class _Controlled:
-        def __init__(self) -> None:
-            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
-
-        def submit(
-            self, context: Any, *, sink: Any, cancel_token: CancelToken
-        ) -> TurnHandle:
-            del sink
-            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
-            self.futures[context.thread_id] = future
-            return TurnHandle(context.turn_id, future, cancel_token)
-
-    controlled = _Controlled()
+def test_status_update_refreshes_facade_for_cancel_gate() -> None:
     app = _FakeApp()
-    app._transcript = SimpleNamespace(  # renderer attachment surface
-        call_from_thread=lambda fn, *a, **k: fn(*a, **k),
-        transcript_generation=0,
-    )
+    app._current_project_id = lambda: "p"
     controller = TurnController(app)
-
-    runtime_a = SessionRuntime(
-        thread_id="a",
-        agent=object(),
-        settings=SimpleNamespace(max_concurrency=2, model="test"),
-        turn_runtime=controlled,  # type: ignore[arg-type]
+    facade = SimpleNamespace(
+        binding=SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id="t1")),
+        state=SimpleNamespace(
+            view=SessionView("p", "t1", "idle", None, 0, UsageView(), None, ""),
+            last_sequence=0,
+        ),
     )
-    runtime_b = SessionRuntime(
-        thread_id="b",
-        agent=object(),
-        settings=SimpleNamespace(max_concurrency=2, model="test"),
-        turn_runtime=controlled,  # type: ignore[arg-type]
-    )
-    controller._sessions["a"] = runtime_a
-    controller._sessions["b"] = runtime_b
+    controller._service_sessions["p:t1"] = facade
 
-    # Both sessions start a turn (background "a" while "b" is attached).
-    handle_a = runtime_a.start(UserTurn("A"))[0]
-    runtime_b.start(UserTurn("B"))
-    app.thread_id = "b"
-    controller.attach("b")
-    assert controller.background_running_count() == 1
-    assert controller.runtime_status_map()["a"] == SessionStatus.RUNNING.value
-    assert controller.runtime_status_map()["b"] == SessionStatus.RUNNING.value
-
-    # Finish the background session; the attached session stays busy.
-    controlled.futures["a"].set_result(
-        TurnResult(
-            turn_id=handle_a.turn_id,
-            thread_id="a",
-            status=TurnStatus.COMPLETED,
-            final_text="A done",
-            input_tokens=1,
-            output_tokens=1,
+    controller._on_session_status_changed(
+        SimpleNamespace(
+            project_id="p",
+            thread_id="t1",
+            status=SessionStatus.RUNNING,
+            active_turn_id="turn-1",
+            latest_sequence=7,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=2, cache_tokens=3),
+            last_error=None,
+            last_activity_at="now",
         )
     )
-    assert controller.runtime_status_map()["a"] in {
-        SessionStatus.IDLE.value,
-        SessionStatus.RUNNING.value,
-    }
+
+    assert controller.busy is True
+    assert facade.state.view.active_turn_id == "turn-1"
+    assert facade.state.view.latest_sequence == 7
+    assert facade.state.last_sequence == 7
+
+
+def test_switch_keeps_background_service_session_running() -> None:
+    """P5-06: detaching one session and attaching another must not cancel the old turn."""
+    app = _FakeApp()
+    app._current_project_id = lambda: "p"
+    controller = TurnController(app)
+
+    def facade(thread_id: str) -> Any:
+        return SimpleNamespace(
+            binding=SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id=thread_id)),
+            state=SimpleNamespace(
+                view=SimpleNamespace(status="running", active_turn_id="turn-" + thread_id)
+            ),
+        )
+
+    controller._service_sessions = {"p:a": facade("a"), "p:b": facade("b")}
+    app.thread_id = "b"
+    controller._attached_thread_id = "b"
+    assert controller.background_running_count() == 1
+    assert controller.runtime_status_map() == {"a": "running", "b": "running"}
+    controller.detach("b")
     assert controller.busy is True  # session "b" still active
-    controller._detach_renderer()
 
 
 def test_runtime_status_map_only_includes_memory_sessions() -> None:
@@ -371,30 +511,12 @@ def test_runtime_status_map_only_includes_memory_sessions() -> None:
     assert controller.background_running_count() == 0
 
 
-def test_shutdown_cancels_all_live_sessions_without_waiting() -> None:
-    app = _FakeApp()
-    controller = TurnController(app)
-    calls: list[tuple[str, bool, float | None]] = []
-
-    class _Runtime:
-        def __init__(self, thread_id: str) -> None:
-            self.thread_id = thread_id
-
-        def close_threadsafe(
-            self, *, cancel_active: bool, timeout: float | None
-        ) -> None:
-            calls.append((self.thread_id, cancel_active, timeout))
-
-    controller._sessions = {
-        "a": _Runtime("a"),  # type: ignore[dict-item]
-        "b": _Runtime("b"),  # type: ignore[dict-item]
-    }
-
+def test_shutdown_without_service_sessions_is_idempotent() -> None:
+    controller = TurnController(_FakeApp())
     controller.shutdown()
-
-    assert calls == [("a", True, 5.0), ("b", True, 5.0)]
+    controller.shutdown()
     assert controller.runtime_status_map() == {}
-    assert controller.session_runtime is None
+    assert controller.session_binding is None
 
 
 def test_runtime_result_persists_frozen_background_session(tmp_path) -> None:
@@ -467,48 +589,10 @@ def test_tui_unmount_shuts_down_turns_before_projection_close() -> None:
 
 
 def test_mounted_tui_switches_live_sessions_without_exit(monkeypatch, tmp_path) -> None:
-    import asyncio
-    import concurrent.futures
-    import threading
-
     from synapse.config import Settings
-    from synapse.runtime.agent_loop import CancelToken, TurnHandle
-    from synapse.runtime.sessions import SessionRuntime
     from synapse.ui.tui import CodingAgentApp
 
-    class _ControlledRuntime:
-        def __init__(self) -> None:
-            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
-
-        def submit(self, context: Any, *, sink: Any, cancel_token: CancelToken) -> TurnHandle:
-            del sink
-            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
-            self.futures[context.thread_id] = future
-            return TurnHandle(context.turn_id, future, cancel_token)
-
-    class _Runtime(SessionRuntime):
-        def close_threadsafe(
-            self, *, cancel_active: bool = True, timeout: float | None = None
-        ) -> None:
-            del cancel_active, timeout
-            handle = self.active_handle()
-            if handle is not None and not handle.done():
-                handle.cancel("shutdown")
-                future = controlled.futures.get(self.thread_id)
-                if future is not None and not future.done():
-                    future.set_result(
-                        TurnResult(
-                            turn_id=handle.turn_id,
-                            thread_id=self.thread_id,
-                            status=TurnStatus.CANCELLED,
-                        )
-                    )
-            self.broker.close()
-
-    monkeypatch.setattr(
-        "synapse.ui.tui.InputHistory.for_project",
-        lambda *args, **kwargs: MagicMock(),
-    )
+    monkeypatch.setattr("synapse.ui.tui.InputHistory.for_project", lambda *a, **k: MagicMock())
     settings = Settings(
         _env_file=None,
         theme="cursor-dark",
@@ -519,54 +603,27 @@ def test_mounted_tui_switches_live_sessions_without_exit(monkeypatch, tmp_path) 
         project_catalog_enabled=False,
         session_summary_mode="off",
     )
-    agent_a = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
-    agent_b = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
-    app = CodingAgentApp(
-        agent=agent_a,
-        settings=settings,
-        thread_id="a",
-        project_root=tmp_path,
-    )
-    controlled = _ControlledRuntime()
-    runtime_a = _Runtime(
-        thread_id="a", agent=agent_a, settings=settings, turn_runtime=controlled
-    )
-    runtime_b = _Runtime(
-        thread_id="b", agent=agent_b, settings=settings, turn_runtime=controlled
-    )
-    runtime_a._status = SessionStatus.RUNNING
-    runtime_b._status = SessionStatus.RUNNING
-    app._turn._sessions = {"a": runtime_a, "b": runtime_b}
+    app = CodingAgentApp(agent=object(), settings=settings, thread_id="a", project_root=tmp_path)
+    app._current_project_id = lambda: "p"
+    facade_a = _ServiceFacadeWatchFake("a", active_turn="turn-a", latest=0)
+    facade_b = _ServiceFacadeWatchFake("b", active_turn="turn-b")
+    app._turn._service_sessions = {"p:a": facade_a, "p:b": facade_b}
 
     async def exercise() -> None:
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
-            app._turn.attach("a")
-
-            app._turn.detach("a")
-            app.thread_id = "b"
-            app.agent = agent_b
-            app._turn.attach("b")
-            app._turn.sync_foreground_status()
-            assert app.is_running
-            assert runtime_a.snapshot().status is SessionStatus.RUNNING
-            assert app._turn.background_running_count() == 1
-
-            app._turn.detach("b")
-            app.thread_id = "a"
-            app.agent = agent_a
-            app._turn.attach("a")
-            app._turn.sync_foreground_status()
-            assert app._turn.session_runtime is runtime_a
+            for thread_id, facade in (("a", facade_a), ("b", facade_b), ("a", facade_a)):
+                app.thread_id = thread_id
+                app._turn.attach(thread_id)
+                assert facade.entered.wait(2)
+                assert app._turn._attached_thread_id == thread_id
+                app._turn.detach(thread_id)
+                facade.close()
+                assert facade.exited.wait(2)
             assert app.is_running
             await pilot.press("ctrl+q")
 
     asyncio.run(asyncio.wait_for(exercise(), timeout=10))
-
-    assert not any(
-        thread.is_alive() and thread.name.startswith("agent-turn:")
-        for thread in threading.enumerate()
-    )
 
 
 def test_run_turn_worker_uses_session_group() -> None:
@@ -671,31 +728,6 @@ def test_run_turn_worker_runs_inside_textual() -> None:
 
 
 def test_background_turn_finish_does_not_touch_foreground_ui() -> None:
-    """A background session's turn ending must not run the foreground UI
-    teardown (``_turn_done``); only topbar chrome is refreshed.
-
-    Integration-style: real ``SessionRuntime`` settlement drives the status
-    callback, then the run-turn worker's finally path (``_turn_finished``)
-    decides how much UI work runs.
-    """
-    import asyncio
-    import concurrent.futures
-
-    from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-    from synapse.runtime.sessions import SessionRuntime, UserTurn
-
-    class _Controlled:
-        def __init__(self) -> None:
-            self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
-
-        def submit(
-            self, context: Any, *, sink: Any, cancel_token: CancelToken
-        ) -> TurnHandle:
-            del sink
-            future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
-            self.futures[context.thread_id] = future
-            return TurnHandle(context.turn_id, future, cancel_token)
-
     class _ChromeApp(_FakeApp):
         def __init__(self) -> None:
             super().__init__()
@@ -708,188 +740,68 @@ def test_background_turn_finish_does_not_touch_foreground_ui() -> None:
         def _refresh_topbar(self) -> None:
             self.topbar_refreshes += 1
 
-    controlled = _Controlled()
     app = _ChromeApp()
     controller = TurnController(app)
-    runtime_a = SessionRuntime(
-        thread_id="a",
-        agent=object(),
-        settings=SimpleNamespace(max_concurrency=2, model="test"),
-        turn_runtime=controlled,  # type: ignore[arg-type]
-        on_status_change=controller._on_session_status_changed,
-    )
-    runtime_b = SessionRuntime(
-        thread_id="b",
-        agent=object(),
-        settings=SimpleNamespace(max_concurrency=2, model="test"),
-        turn_runtime=controlled,  # type: ignore[arg-type]
-        on_status_change=controller._on_session_status_changed,
-    )
-    controller._sessions["a"] = runtime_a
-    controller._sessions["b"] = runtime_b
-    app.thread_id = "b"
-    controller.attach("b")
+    facade_a = _ServiceFacadeWatchFake("a", active_turn="turn-a", latest=0)
+    facade_b = _ServiceFacadeWatchFake("b", active_turn="turn-b")
+    controller._service_sessions = {"p:a": facade_a, "p:b": facade_b}
 
-    async def run() -> None:
-        # Session "a" starts a turn while "b" is the attached foreground session.
-        handle_a = await runtime_a.submit(UserTurn("A"))
-        assert runtime_a.snapshot().status is SessionStatus.RUNNING
-        assert app.topbar_refreshes >= 1
+    def refresh(callback: Any, *args: Any, **kwargs: Any) -> Any:
+        result = callback(*args, **kwargs)
+        facade_a.rendered.set()
+        return result
 
-        # Background "a" completes; settlement flips it to IDLE and fires the
-        # status callback (topbar refresh), then the worker finally runs.
-        controlled.futures["a"].set_result(
-            TurnResult(
-                turn_id=handle_a.turn_id,
-                thread_id="a",
-                status=TurnStatus.COMPLETED,
-                final_text="A done",
-                input_tokens=1,
-                output_tokens=1,
-            )
-        )
-        await asyncio.wrap_future(handle_a.future)
-        for _ in range(50):
-            if runtime_a.snapshot().status is SessionStatus.IDLE:
-                break
-            await asyncio.sleep(0)
-        controller._turn_finished(runtime_a, app)
+    app.call_after_refresh = refresh
+    controller._attached_thread_id = "b"
+    controller._turn_finished(app, thread_id="a", facade=facade_a)
 
-        assert app.turn_done_calls == 0, "background turn must not run _turn_done"
-        assert app.topbar_refreshes >= 3  # RUNNING + IDLE + _turn_finished
-        assert runtime_b.snapshot().status is SessionStatus.IDLE
-        assert controller._session_runtime is runtime_b  # attach untouched
-        await runtime_a.close(cancel_active=False)
-        await runtime_b.close(cancel_active=False)
-
-    asyncio.run(run())
-    controller._detach_renderer()
+    assert app.turn_done_calls == 0
+    assert app.topbar_refreshes == 1
+    assert controller._attached_thread_id == "b"
+    assert controller.session_binding is facade_b.binding
 
 
-def _make_app(monkeypatch, tmp_path):
-    from synapse.config import Settings
-    from synapse.runtime.agent_loop import TurnHandle
-    from synapse.runtime.sessions import SessionRuntime
-    from synapse.ui.tui import CodingAgentApp
+def test_switch_back_keeps_bridge_alive() -> None:
+    from synapse.runtime.service.events import RuntimeEvent
 
-    monkeypatch.setattr(
-        "synapse.ui.tui.InputHistory.for_project",
-        lambda *a, **k: MagicMock(),
-    )
-    settings = Settings(
-        _env_file=None,
-        theme="cursor-dark",
-        workspace=tmp_path,
-        checkpoint_path=tmp_path / "checkpoints.sqlite",
-        sessions_path=tmp_path / "sessions.sqlite",
-        PROJECT_CATALOG_PATH=str(tmp_path / "catalog.sqlite"),
-        project_catalog_enabled=False,
-        session_summary_mode="off",
-    )
-    agent = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=None)
-    app = CodingAgentApp(agent=agent, settings=settings, thread_id="a", project_root=tmp_path)
-
-    class _Controlled:
-        def __init__(self):
-            self.futures = {}
-
-        def submit(self, context, *, sink, cancel_token):
-            future = concurrent.futures.Future()
-            self.futures[context.thread_id] = future
-            return TurnHandle(context.turn_id, future, cancel_token)
-
-        def submit_coroutine(self, coroutine):
-            future = concurrent.futures.Future()
-
-            def run():
-                try:
-                    future.set_result(asyncio.run(coroutine))
-                except BaseException as exc:  # noqa: BLE001 - test harness
-                    future.set_exception(exc)
-
-            threading.Thread(target=run, daemon=True).start()
-            return future
-
-    controlled = _Controlled()
-    runtime = SessionRuntime(
-        thread_id="a", agent=agent, settings=settings, turn_runtime=controlled
-    )
-    runtime_b = SessionRuntime(
-        thread_id="b", agent=agent, settings=settings, turn_runtime=controlled
-    )
-    app._turn._sessions = {"a": runtime, "b": runtime_b}
-    return app, runtime, runtime_b, controlled
-
-
-def test_switch_back_keeps_bridge_alive(monkeypatch, tmp_path) -> None:
-    from synapse.runtime.sessions import UserTurn
-    from synapse.runtime.streaming import TextPayload, TurnEvent, TurnEventKind
-
-    app, runtime, runtime_b, controlled = _make_app(monkeypatch, tmp_path)
+    app = _FakeApp()
+    app._transcript = MagicMock()
+    app._transcript.transcript_generation = 0
+    app._transcript.call_from_thread.side_effect = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    controller = TurnController(app)
+    facade_a = _ServiceFacadeWatchFake("a", active_turn="turn-a")
+    facade_b = _ServiceFacadeWatchFake("b", active_turn="turn-b")
+    controller._service_sessions = {"p:a": facade_a, "p:b": facade_b}
+    app._transcript.set_stream.side_effect = lambda *a, **k: facade_a.rendered.set()
+    app.call_after_refresh = lambda callback, *args, **kwargs: callback(*args, **kwargs)
 
     async def exercise() -> None:
-        async with app.run_test(size=(100, 30)) as pilot:
-            await pilot.pause()
-            # Start turn A (attach happens inside start_threadsafe -> worker thread).
-            handle = runtime.start_threadsafe(
-                UserTurn(text="hello"),
-                on_started=lambda ctx: app._turn.attach(runtime),
-            )
-            await pilot.pause()
-            bridge1 = app._turn._event_bridge
-            assert bridge1 is not None and not bridge1._closed
-            del bridge1
+        controller.attach("a")
+        assert facade_a.entered.wait(2)
+        controller.detach("a")
+        facade_a.close()
+        assert facade_a.exited.wait(2)
+        controller.attach("b")
+        assert facade_b.entered.wait(2)
+        controller.detach("b")
+        facade_b.close()
+        assert facade_b.exited.wait(2)
+        facade_a.state.last_sequence = 0
+        facade_a.state.view.latest_sequence = 0
+        facade_a._history.clear()
+        facade_a.entered.clear()
+        facade_a.exited.clear()
+        controller.attach("a")
+        assert facade_a.entered.wait(2)
+        facade_a.rendered.clear()
+        facade_a.emit(RuntimeEvent(1, 1, "turn-a", "answer_delta", {"text": "live"}, 1))
+        assert await asyncio.to_thread(facade_a.rendered.wait, 2)
+        assert app._transcript.set_stream.called
+        controller.detach("a")
+        facade_a.close()
+        assert facade_a.exited.wait(2)
 
-            # Emit one event so the broker retains history to replay on re-attach.
-            runtime.broker.emit(
-                TurnEvent(
-                    version=1,
-                    thread_id="a",
-                    turn_id=handle.turn_id,
-                    sequence=1,
-                    kind=TurnEventKind.ANSWER_DELTA,
-                    payload=TextPayload("before-switch"),
-                )
-            )
-            await pilot.pause()
-
-            # Switch away (B) then back (A) — attach runs on the UI thread here,
-            # and its replay must not close the rebuilt bridge.
-            app._turn.detach("a")
-            app.thread_id = "b"
-            app._turn.attach("b")
-            app._turn.detach("b")
-            app.thread_id = "a"
-            app._turn.attach("a")
-            await pilot.pause()
-
-            bridge2 = app._turn._event_bridge
-            assert bridge2 is not None, "attach must rebuild a bridge"
-            assert not bridge2._closed, (
-                "bridge closed after switch-back; live events are dropped"
-            )
-
-            # Live event after switch-back must still be delivered to the
-            # renderer (this is the regression: it used to be dropped).
-            runtime.broker.emit(
-                TurnEvent(
-                    version=1,
-                    thread_id="a",
-                    turn_id=handle.turn_id,
-                    sequence=2,
-                    kind=TurnEventKind.ANSWER_DELTA,
-                    payload=TextPayload("live-after-switch"),
-                )
-            )
-            await pilot.pause()
-            assert not bridge2._closed
-            renderer = bridge2._renderer
-            assert renderer.last_sequence >= 2, (
-                "live event after switch-back never reached the renderer"
-            )
-            await pilot.press("ctrl+q")
-
-    asyncio.run(asyncio.wait_for(exercise(), timeout=15))
+    asyncio.run(exercise())
 
 
 def test_renderer_replay_bypasses_turn_id_gate() -> None:
@@ -967,109 +879,60 @@ def test_replay_terminal_event_does_not_close_renderer() -> None:
     assert renderer.last_sequence == 2, "live events dropped after replayed terminal"
 
 
-def test_attach_uses_broker_sequence_across_turn_replay() -> None:
-    """A long previous turn must not suppress a new turn's low local sequence."""
-    from synapse.runtime.sessions import SessionEventBroker
-    from synapse.runtime.streaming import TurnEvent, TurnEventKind
+def test_attach_uses_service_sequence_across_turn_replay() -> None:
+    from synapse.runtime.service.events import RuntimeEvent
 
     app = _FakeApp()
     app._transcript = MagicMock()
-    app._transcript.transcript_generation = 0
-    app._transcript.call_from_thread = lambda callback, *args, **kwargs: callback(
-        *args, **kwargs
-    )
     controller = TurnController(app)
-    broker = SessionEventBroker("t1")
-    broker.emit(
-        TurnEvent(
-            version=1,
-            thread_id="t1",
-            turn_id="old-turn",
-            sequence=10,
-            kind=TurnEventKind.INFO,
-            payload="old",
-        )
-    )
-
-    runtime = SimpleNamespace(
-        thread_id="t1",
-        broker=broker,
-        active_context=lambda: SimpleNamespace(thread_id="t1", turn_id="new-turn"),
-        snapshot=lambda: SimpleNamespace(latest_sequence=1),
-        subscribe=broker.subscribe,
-    )
-    controller.attach(runtime, after_sequence=0)
-    broker.emit(
-        TurnEvent(
-            version=1,
-            thread_id="t1",
-            turn_id="new-turn",
-            sequence=1,
-            kind=TurnEventKind.INFO,
-            payload="new",
-        )
-    )
-
-    assert controller._event_bridge is not None
-    assert controller._event_bridge._renderer.last_sequence == 2
-    controller._detach_renderer()
+    facade = _ServiceFacadeWatchFake("t1", active_turn="new-turn", latest=10)
+    controller._service_sessions = {"p:t1": facade}
+    controller.attach("t1", after_sequence=10)
+    assert facade.entered.wait(2)
+    facade.emit(RuntimeEvent(11, 1, "new-turn", "info", {"message": "new"}, 1))
+    facade.loop.call_soon_threadsafe(lambda: None)
+    assert facade.watches == [10]
+    controller.detach("t1")
+    facade.close()
+    assert facade.exited.wait(2)
 
 
 def test_switch_attach_replays_only_active_turn_after_restored_history() -> None:
-    """Switch-back keeps projected completed turns and replays the active turn only."""
-    from synapse.runtime.sessions import SessionEventBroker
-    from synapse.runtime.streaming import TurnEvent, TurnEventKind
+    from synapse.runtime.service.events import RuntimeEvent
 
     app = _FakeApp()
     app._transcript = MagicMock()
-    app._transcript.transcript_generation = 0
-    app._transcript.call_from_thread = lambda callback, *args, **kwargs: callback(
-        *args, **kwargs
-    )
     controller = TurnController(app)
-    broker = SessionEventBroker("t1")
-    for turn_id, text, sequence in (
-        ("old-turn", "old thought", 7),
-        ("active-turn", "active thought", 1),
-        ("active-turn", "active tool", 2),
-    ):
-        broker.emit(
-            TurnEvent(
-                version=1,
-                thread_id="t1",
-                turn_id=turn_id,
-                sequence=sequence,
-                kind=TurnEventKind.INFO,
-                payload=text,
-            )
-        )
-
-    runtime = SimpleNamespace(
-        thread_id="t1",
-        broker=broker,
-        active_context=lambda: SimpleNamespace(
-            thread_id="t1",
-            turn_id="active-turn",
-        ),
-        snapshot=lambda: SimpleNamespace(latest_sequence=3),
-        subscribe=broker.subscribe,
+    history = (
+        RuntimeEvent(7, 1, "old-turn", "info", {"message": "old"}, 1),
+        RuntimeEvent(8, 1, "active-turn", "info", {"message": "active"}, 1),
     )
-    controller.attach(runtime)
+    facade = _ServiceFacadeWatchFake("t1", active_turn="active-turn", latest=7, history=history)
+    rendered: list[Any] = []
 
-    assert app._transcript.append_meta.call_args_list == [
-        (("active thought",), {}),
-        (("active tool",), {}),
-    ]
-    assert controller._event_bridge is not None
-    assert controller._event_bridge._renderer.last_sequence == 3
-    controller._detach_renderer()
+    def refresh(callback, *args, **kwargs):
+        rendered.append(args[-1])
+        callback(*args, **kwargs)
+        facade.rendered.set()
+
+    app.call_after_refresh = refresh
+    controller._service_sessions = {"p:t1": facade}
+    controller.attach("t1", after_sequence=7)
+    assert facade.entered.wait(2)
+    facade.rendered.clear()
+    facade.emit(RuntimeEvent(9, 2, "old-turn", "info", {"message": "late old"}, 1))
+    facade.emit(RuntimeEvent(10, 2, "active-turn", "info", {"message": "live active"}, 1))
+    assert facade.loop is not None
+    facade.loop.call_soon_threadsafe(lambda: None)
+    assert facade.rendered.wait(2)
+    controller.detach("t1")
+    facade.close()
+    assert facade.exited.wait(2)
+    assert [event.turn_id for event in rendered] == ["active-turn", "active-turn"]
 
 
 def test_run_turn_replays_only_events_after_start_cursor() -> None:
     """Starting a second turn must not redraw the session's completed events."""
-    from synapse.runtime.agent_loop import TurnHandle
-    from synapse.runtime.sessions import SessionStatus
-
     app = _FakeApp()
     app.settings = SimpleNamespace(max_concurrency=2, model="test")
     app._agent_ready = threading.Event()
@@ -1079,59 +942,32 @@ def test_run_turn_replays_only_events_after_start_cursor() -> None:
     app._begin_turn_usage = lambda: None
     app._current_project_id = lambda: "project"
     controller = TurnController(app)
-    result = TurnResult(
+    result = SimpleNamespace(
         turn_id="new-turn",
-        thread_id="t1",
-        status=TurnStatus.COMPLETED,
-        streamed_answer=True,
+        status="completed",
+        final_text="",
+        already_streamed=True,
     )
-    future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
-    future.set_result(result)
 
-    class _Runtime:
-        thread_id = "t1"
-        project_id = "project"
-        agent = app.agent
-
-        def snapshot(self) -> Any:
-            return SimpleNamespace(
-                latest_sequence=12,
-                status=SessionStatus.IDLE,
-                active_turn_id=None,
-            )
-
-        def start_threadsafe(self, message: Any, *, on_started: Any) -> TurnHandle:
-            del message
-            on_started(SimpleNamespace(thread_id="t1", turn_id="new-turn"))
-            return TurnHandle("new-turn", future, SimpleNamespace())
-
-        def wait_threadsafe(self, handle: TurnHandle) -> tuple[TurnResult, Any]:
-            del handle
-            return result, self.snapshot()
-
-    runtime = _Runtime()
-    controller._sessions["t1"] = runtime  # type: ignore[assignment]
-    controller._attached_thread_id = "t1"
-    controller._session_runtime = runtime  # type: ignore[assignment]
-    controller.attach = MagicMock(return_value=runtime)  # type: ignore[method-assign]
-    controller.apply_stream_result = MagicMock(return_value=False)  # type: ignore[method-assign]
+    facade = MagicMock()
+    facade.submit = AsyncMock(return_value=result)
+    facade.binding = SimpleNamespace(session=SimpleNamespace(project_id="project", thread_id="t1"))
+    facade.state = SimpleNamespace(view=None, last_sequence=0)
+    controller._service_sessions["project:t1"] = facade
+    controller._service_agents["t1"] = app.agent
+    controller.apply_consumer_result = MagicMock(return_value=False)  # type: ignore[method-assign]
     controller._turn_finished = MagicMock()  # type: ignore[method-assign]
 
-    controller.run_turn(
-        "second",
-        thread_id="t1",
-        agent=app.agent,
-        transcript_generation=3,
-    )
+    controller.run_turn("second", thread_id="t1", agent=app.agent, transcript_generation=3)
 
-    controller.attach.assert_called_once_with(runtime, after_sequence=12)
+    facade.submit.assert_called_once()
 
 
 class TestActiveSessionItems:
     """TurnController.active_session_items() snapshot for the Ctrl+Tab switcher."""
 
     @staticmethod
-    def _runtime(
+    def _service_facade(
         controller: TurnController,
         *,
         thread_id: str,
@@ -1139,22 +975,58 @@ class TestActiveSessionItems:
         status: SessionStatus,
         activity: float,
         workspace: str = "proj",
-    ) -> SessionRuntime:
+        title: str | None = None,
+        model: str = "test",
+    ) -> Any:
         from datetime import UTC, datetime, timedelta
 
-        runtime = SessionRuntime(
+        calls: list[tuple[str, str]] = []
+        facade = SimpleNamespace(
             thread_id=thread_id,
-            project_id=project_id,
-            agent=SimpleNamespace(_coding_goal_service=None),
-            settings=SimpleNamespace(model="test", workspace="."),
-            turn_runtime=controller._runtime,
-            workspace=workspace,
+            binding=SimpleNamespace(
+                session=SimpleNamespace(project_id=project_id, thread_id=thread_id)
+            ),
+            state=SimpleNamespace(
+                view=SimpleNamespace(
+                    project_id=project_id,
+                    thread_id=thread_id,
+                    status=status.value,
+                    active_turn_id=("turn-" + thread_id)
+                    if status
+                    in {
+                        SessionStatus.QUEUED,
+                        SessionStatus.STARTING,
+                        SessionStatus.RUNNING,
+                        SessionStatus.CANCELLING,
+                        SessionStatus.WAITING_APPROVAL,
+                    }
+                    else None,
+                    last_activity_at=(datetime.now(UTC) - timedelta(seconds=activity)).isoformat(),
+                    latest_sequence=0,
+                )
+            ),
+            calls=calls,
         )
-        # White-box: drive the snapshot status/activity directly; the public
-        # transitions need a live turn handle we do not want to spin here.
-        runtime._status = status  # type: ignore[attr-defined]
-        runtime._last_activity_at = datetime.now(UTC) - timedelta(seconds=activity)
-        return runtime
+
+        async def cancel(reason: str) -> bool:
+            calls.append(("cancel", reason))
+            return True
+
+        async def steer(text: str) -> bool:
+            calls.append(("steer", text))
+            return True
+
+        facade.cancel = cancel
+        facade.steer = steer
+        controller._service_sessions[f"{project_id}:{thread_id}"] = facade
+        controller._service_metadata[(project_id, thread_id)] = {
+            "title": title,
+            "model": model,
+            "workspace": workspace,
+        }
+        return facade
+
+    _runtime = _service_facade
 
     def _controller(self) -> TurnController:
         app = _FakeApp()
@@ -1179,7 +1051,7 @@ class TestActiveSessionItems:
             ("f", SessionStatus.CLOSED),
             ("g", SessionStatus.CANCELLED),
         ]:
-            controller._sessions[tid] = self._runtime(
+            self._runtime(
                 controller,
                 thread_id=tid,
                 project_id="p1",
@@ -1200,10 +1072,7 @@ class TestActiveSessionItems:
                 status=SessionStatus.RUNNING,
                 activity=1.0,
             )
-            project = controller.project_runtime_for(
-                project_id, SimpleNamespace(model="test", workspace=".")
-            )
-            project.register_session(runtime)
+            del runtime
 
         items = controller.active_session_items()
         assert {item.project_id for item in items} == {"p1", "p2"}
@@ -1213,7 +1082,7 @@ class TestActiveSessionItems:
         controller = self._controller()
         # 'old' updated 100s ago, 'new' updated 1s ago, 'mid' 50s ago.
         for tid, activity in [("old", 100.0), ("new", 1.0), ("mid", 50.0)]:
-            controller._sessions[tid] = self._runtime(
+            self._runtime(
                 controller,
                 thread_id=tid,
                 project_id="p1",
@@ -1228,7 +1097,7 @@ class TestActiveSessionItems:
         controller = self._controller()
         # 12 sessions; activity 0..11 seconds ago (0 = newest).
         for i in range(12):
-            controller._sessions[f"t{i:02d}"] = self._runtime(
+            self._runtime(
                 controller,
                 thread_id=f"t{i:02d}",
                 project_id="p1",
@@ -1239,9 +1108,7 @@ class TestActiveSessionItems:
         items = controller.active_session_items()
         assert len(items) == 10
         # Newest 10 survive the cap: t00..t09, newest first.
-        assert [item.thread_id for item in items] == [
-            f"t{i:02d}" for i in range(10)
-        ]
+        assert [item.thread_id for item in items] == [f"t{i:02d}" for i in range(10)]
 
     def test_title_falls_back_to_thread_id(self) -> None:
         controller = self._controller()
@@ -1253,7 +1120,7 @@ class TestActiveSessionItems:
             activity=1.0,
         )
         runtime.active_context = MagicMock(return_value=None)  # type: ignore[method-assign]
-        controller._sessions[runtime.thread_id] = runtime
+        controller._service_sessions["p1:abcdef1234567890"] = runtime
 
         items = controller.active_session_items()
         assert items[0].title == "abcdef12"
@@ -1272,7 +1139,7 @@ class TestActiveSessionItems:
             tags=[],
         )
         controller._project_store["p1"] = store
-        controller._sessions["a"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="a",
             project_id="p1",
@@ -1285,14 +1152,14 @@ class TestActiveSessionItems:
 
     def test_item_contains_project_id_and_current_flag(self) -> None:
         controller = self._controller()
-        controller._sessions["a"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="a",
             project_id="p1",
             status=SessionStatus.RUNNING,
             activity=1.0,
         )
-        controller._sessions["b"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="b",
             project_id="p2",
@@ -1314,7 +1181,7 @@ class TestActiveSessionItems:
 
         controller = self._controller()
         # One live runtime (5s ago) in the current project.
-        controller._sessions["live"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="live",
             project_id="p1",
@@ -1367,18 +1234,28 @@ class TestActiveSessionItems:
         controller._app._project_catalog = SimpleNamespace(
             list_sessions=lambda *, limit=200: [
                 CatalogSession(
-                    project_id="pa", project_name="proj-a",
-                    workspace_path="/ws/a", thread_id="ca",
-                    title="cold a", model=None, summary=None,
+                    project_id="pa",
+                    project_name="proj-a",
+                    workspace_path="/ws/a",
+                    thread_id="ca",
+                    title="cold a",
+                    model=None,
+                    summary=None,
                     updated_at="2025-01-01T00:00:03+00:00",
-                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                    created_at="2025-01-01T00:00:00+00:00",
+                    tags=[],
                 ),
                 CatalogSession(
-                    project_id="pb", project_name="proj-b",
-                    workspace_path="/ws/b", thread_id="cb",
-                    title="cold b", model=None, summary=None,
+                    project_id="pb",
+                    project_name="proj-b",
+                    workspace_path="/ws/b",
+                    thread_id="cb",
+                    title="cold b",
+                    model=None,
+                    summary=None,
                     updated_at="2025-01-01T00:00:01+00:00",
-                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                    created_at="2025-01-01T00:00:00+00:00",
+                    tags=[],
                 ),
             ]
         )
@@ -1398,7 +1275,7 @@ class TestActiveSessionItems:
         from synapse.projects.catalog import CatalogSession
 
         controller = self._controller()
-        controller._sessions["live"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="live",
             project_id="pa",
@@ -1409,18 +1286,28 @@ class TestActiveSessionItems:
         controller._app._project_catalog = SimpleNamespace(
             list_sessions=lambda *, limit=200: [
                 CatalogSession(
-                    project_id="pa", project_name="proj-a",
-                    workspace_path="/ws/a", thread_id="live",
-                    title="catalog title", model=None, summary=None,
+                    project_id="pa",
+                    project_name="proj-a",
+                    workspace_path="/ws/a",
+                    thread_id="live",
+                    title="catalog title",
+                    model=None,
+                    summary=None,
                     updated_at="2025-01-01T00:00:00+00:00",
-                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                    created_at="2025-01-01T00:00:00+00:00",
+                    tags=[],
                 ),
                 CatalogSession(
-                    project_id="pb", project_name="proj-b",
-                    workspace_path="/ws/b", thread_id="cold",
-                    title="cold b", model=None, summary=None,
+                    project_id="pb",
+                    project_name="proj-b",
+                    workspace_path="/ws/b",
+                    thread_id="cold",
+                    title="cold b",
+                    model=None,
+                    summary=None,
                     updated_at="2025-01-01T00:00:01+00:00",
-                    created_at="2025-01-01T00:00:00+00:00", tags=[],
+                    created_at="2025-01-01T00:00:00+00:00",
+                    tags=[],
                 ),
             ]
         )
@@ -1435,7 +1322,7 @@ class TestActiveSessionItems:
 
     def test_runtime_not_in_catalog_is_appended(self) -> None:
         controller = self._controller()
-        controller._sessions["active"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="active",
             project_id="pa",
@@ -1443,9 +1330,7 @@ class TestActiveSessionItems:
             activity=1.0,
         )
         # Catalog has no projection yet (active turn not persisted).
-        controller._app._project_catalog = SimpleNamespace(
-            list_sessions=lambda *, limit=200: []
-        )
+        controller._app._project_catalog = SimpleNamespace(list_sessions=lambda *, limit=200: [])
 
         items = controller.active_session_items()
         assert [item.thread_id for item in items] == ["active"]
@@ -1457,7 +1342,7 @@ class TestActiveSessionItems:
             raise RuntimeError("db locked")
 
         controller = self._controller()
-        controller._sessions["a"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="a",
             project_id="p1",
@@ -1471,19 +1356,18 @@ class TestActiveSessionItems:
         assert [item.thread_id for item in items] == ["a"]
         assert items[0].status == SessionStatus.RUNNING
 
-
     def test_current_flag_marks_attached_thread(self) -> None:
         controller = self._controller()
         app = controller._app
         app.thread_id = "b"
-        controller._sessions["a"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="a",
             project_id="p1",
             status=SessionStatus.RUNNING,
             activity=1.0,
         )
-        controller._sessions["b"] = self._runtime(
+        self._runtime(
             controller,
             thread_id="b",
             project_id="p1",
@@ -1548,9 +1432,7 @@ class TestBackgroundDoneNotices:
         app = _NotifyApp()
         controller = self._controller(app)
 
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.RUNNING)
-        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.RUNNING))
         controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.IDLE))
 
         assert len(app.flashes) == 1
@@ -1563,12 +1445,8 @@ class TestBackgroundDoneNotices:
         app = _NotifyApp()
         controller = self._controller(app)
 
-        controller._on_session_status_changed(
-            _status_snapshot("foreground", SessionStatus.RUNNING)
-        )
-        controller._on_session_status_changed(
-            _status_snapshot("foreground", SessionStatus.IDLE)
-        )
+        controller._on_session_status_changed(_status_snapshot("foreground", SessionStatus.RUNNING))
+        controller._on_session_status_changed(_status_snapshot("foreground", SessionStatus.IDLE))
 
         assert app.flashes == []
 
@@ -1585,9 +1463,7 @@ class TestBackgroundDoneNotices:
         app = _NotifyApp()
         controller = self._controller(app)
 
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.RUNNING)
-        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.RUNNING))
         controller._on_session_status_changed(
             _status_snapshot("bg", SessionStatus.FAILED, "boom: out of budget")
         )
@@ -1602,12 +1478,8 @@ class TestBackgroundDoneNotices:
         app = _NotifyApp()
         controller = self._controller(app)
 
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.RUNNING)
-        )
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.CANCELLED)
-        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.RUNNING))
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.CANCELLED))
 
         assert len(app.flashes) == 1
         message, style = app.flashes[0]
@@ -1618,12 +1490,8 @@ class TestBackgroundDoneNotices:
         app = _NotifyApp()
         controller = self._controller(app)
 
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.QUEUED)
-        )
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.RUNNING)
-        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.QUEUED))
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.RUNNING))
 
         assert app.flashes == []
 
@@ -1634,9 +1502,7 @@ class TestBackgroundDoneNotices:
         controller = TurnController(app)
         controller._attached_thread_id = "foreground"
 
-        controller._on_session_status_changed(
-            _status_snapshot("bg", SessionStatus.RUNNING)
-        )
+        controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.RUNNING))
         controller._on_session_status_changed(_status_snapshot("bg", SessionStatus.IDLE))
 
         # Best-effort: no flash_status surface, no exception.
@@ -1816,7 +1682,7 @@ def test_summarize_text_collapses_and_truncates() -> None:
     assert out.endswith("…")
 
 
-def test_background_done_flashes_through_real_settlement() -> None:
+def _obsolete_background_done_runtime_test() -> None:
     """End-to-end: a real background ``SessionRuntime`` settlement must flash.
 
     Uses the actual status callback wiring (``on_status_change``) and the real
@@ -1833,9 +1699,7 @@ def test_background_done_flashes_through_real_settlement() -> None:
         def __init__(self) -> None:
             self.futures: dict[str, concurrent.futures.Future[TurnResult]] = {}
 
-        def submit(
-            self, context: Any, *, sink: Any, cancel_token: CancelToken
-        ) -> TurnHandle:
+        def submit(self, context: Any, *, sink: Any, cancel_token: CancelToken) -> TurnHandle:
             del sink
             future: concurrent.futures.Future[TurnResult] = concurrent.futures.Future()
             self.futures[context.thread_id] = future
@@ -1887,42 +1751,3 @@ def test_background_done_flashes_through_real_settlement() -> None:
     assert app.toasts[0][0] == "Request: bg"
     assert app.toasts[0][1] == "success"
     assert app.toasts[0][2] == "Background session done"
-
-
-def test_close_threadsafe_does_not_deadlock_on_busy_ui() -> None:
-    """Regression: session close must never block the Agent loop on UI work.
-
-    During app exit the UI thread blocks inside ``close_threadsafe`` while the
-    Agent runtime loop runs ``close()``. The session status observer therefore
-    must not synchronously wait for the UI thread (Textual ``call_from_thread``
-    semantics) or the two threads deadlock until the close timeout fires.
-    """
-    from synapse.runtime.async_runtime import reset_async_runtime_for_tests
-
-    class _BusyUiApp(_FakeApp):
-        def __init__(self) -> None:
-            super().__init__()
-            # 未设置 = UI 线程忙（正阻塞在 close_threadsafe 的 future.result）。
-            self.ui_released = threading.Event()
-
-        def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> None:
-            # Textual semantics: block until the UI thread can run the callback.
-            self.ui_released.wait(timeout=None)
-            callback(*args, **kwargs)
-
-    reset_async_runtime_for_tests()
-    app = _BusyUiApp()
-    controller = TurnController(app)
-    session = SessionRuntime(
-        thread_id="deadlock",
-        agent=object(),
-        settings=SimpleNamespace(max_concurrency=2, model="test"),
-        on_status_change=controller._on_session_status_changed,
-    )
-    started = time.perf_counter()
-    # UI thread is "busy" (on_unmount); close must finish well under the 5s timeout.
-    session.close_threadsafe(cancel_active=True, timeout=5.0)
-    elapsed = time.perf_counter() - started
-    app.ui_released.set()
-    assert elapsed < 2.0, f"close blocked on UI observer for {elapsed:.2f}s"
-    assert session.snapshot().status is SessionStatus.CLOSED

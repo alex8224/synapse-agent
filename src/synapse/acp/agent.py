@@ -44,11 +44,7 @@ from acp.schema import (
 )
 from acp.schema import SessionInfo as ACPSessionInfo
 
-from synapse.runtime.agent_loop import TurnStatus
-from synapse.runtime.agent_loop.request import build_resume_request
-from synapse.runtime.hitl import build_resume_payload, extract_pending_interrupt
-from synapse.runtime.sessions import UserTurn
-from synapse.runtime.streaming import TurnEventKind
+from synapse.runtime.service import ApprovalDecision
 
 from .client_services import ACPClientScope, ClientServiceGateway
 from .content import (
@@ -540,7 +536,7 @@ class SynapseACPAgent:
         await self.sessions.close(session_id, cancel_active=True)
         self._release_mcp_pool(session_id)
         if managed is not None:
-            await self._delete_checkpoint_thread(managed)
+            await managed.delete_state()
         if not self.catalog.delete(session_id):
             raise acp.RequestError.resource_not_found(session_id)
         try:
@@ -577,10 +573,7 @@ class SynapseACPAgent:
                 {"mcpServers": "fork requires MCP configuration for this session"}
             )
         source_managed = self._require_session(session_id)
-        checkpointer = getattr(source_managed.runtime.agent, "_coding_checkpointer", None)
-        copy_thread = getattr(checkpointer, "copy_thread", None)
-        async_copy_thread = getattr(checkpointer, "acopy_thread", None)
-        if not callable(copy_thread) and not callable(async_copy_thread):
+        if source_managed.copy_session_state is None:
             raise acp.RequestError.internal_error(
                 {"details": "checkpoint backend does not support session fork"}
             )
@@ -604,19 +597,14 @@ class SynapseACPAgent:
                 config=stored.config,
                 session_id=stored.session_id,
             )
-            if callable(async_copy_thread):
-                await async_copy_thread(source.thread_id, stored.thread_id)
-            else:
-                await asyncio.to_thread(copy_thread, source.thread_id, stored.thread_id)
+            await source_managed.copy_state(stored.thread_id)
         except BaseException:
-            delete_thread = getattr(checkpointer, "adelete_thread", None)
-            if callable(delete_thread):
-                await delete_thread(stored.thread_id)
-            elif callable(getattr(checkpointer, "delete_thread", None)):
-                await asyncio.to_thread(checkpointer.delete_thread, stored.thread_id)
             await self._close_client_services(stored.session_id)
             self._release_mcp_pool(stored.session_id)
             self.catalog.delete(stored.session_id)
+            child = self.sessions.get(stored.session_id)
+            if child is not None:
+                await child.delete_state()
             await self.sessions.close(stored.session_id, cancel_active=True)
             raise
         self._mcp_pool_keys.add(f"acp:{stored.session_id}")
@@ -675,11 +663,6 @@ class SynapseACPAgent:
                     {"value": f"unknown model profile: {value}"}
                 )
         managed = self.sessions.get(session_id)
-        snapshot = getattr(managed.runtime, "snapshot", None) if managed is not None else None
-        if callable(snapshot) and snapshot().active_turn_id is not None:
-            raise acp.RequestError.invalid_params(
-                {"sessionId": "session configuration cannot change during an active turn"}
-            )
         stored = self.catalog.update_config(session_id, config_id, value)
         if stored is None:
             raise acp.RequestError.resource_not_found(session_id)
@@ -752,7 +735,7 @@ class SynapseACPAgent:
             connection = self._connection
             if connection is None:
                 return
-            for index, update in enumerate(project_updates(envelope.event, projector)):
+            for index, update in enumerate(project_updates(envelope, projector)):
                 self.catalog.append_update(
                     session_id, envelope.sequence, update, update_index=index
                 )
@@ -760,22 +743,15 @@ class SynapseACPAgent:
 
         bridge.start(forward)
 
-        def on_event(envelope: Any) -> None:
-            kind = getattr(getattr(envelope, "event", None), "kind", None)
-            terminal = kind in {
-                TurnEventKind.TURN_COMPLETED,
-                TurnEventKind.TURN_CANCELLED,
-                TurnEventKind.TURN_WAITING_APPROVAL,
-                TurnEventKind.TURN_FAILED,
-            }
-            bridge.publish(envelope, terminal=terminal)
+        def on_event(event: Any) -> None:
+            kind = getattr(event, "kind", "")
+            bridge.publish(event, terminal=kind in {
+                "turn_completed", "turn_cancelled", "turn_waiting_approval", "turn_failed"
+            })
 
-        subscription = managed.runtime.subscribe(on_event)
-        async def submit() -> tuple[Any, Any]:
+        async def submit() -> Any:
             try:
-                return await managed.submit(
-                    UserTurn(text=text, attachments=to_runtime_attachments(content))
-                )
+                return await managed.submit(text, to_runtime_attachments(content), on_event)
             except RuntimeError as exc:
                 raise acp.RequestError.invalid_params({"sessionId": str(exc)}) from exc
 
@@ -783,9 +759,9 @@ class SynapseACPAgent:
         self._prompt_tasks[session_id] = asyncio.current_task() or task
         prompt_id = uuid.uuid4().hex
         try:
-            handle, result = await asyncio.shield(task)
+            result = await asyncio.shield(task)
             permission_turns = 0
-            while result.status is TurnStatus.WAITING_APPROVAL:
+            while result.status == "waiting_approval":
                 permission_turns += 1
                 if permission_turns > self._max_permission_turns:
                     raise acp.RequestError.internal_error(
@@ -795,47 +771,42 @@ class SynapseACPAgent:
                     managed,
                     session_id=session_id,
                     prompt_id=prompt_id,
-                    turn_id=getattr(handle, "turn_id", result.turn_id),
+                    turn_id=result.turn_id,
                 )
                 if decisions is None:
                     if session_id in self._prompt_cancelled:
                         return PromptResponse(stop_reason="cancelled")
                     break
-                resume = build_resume_request(
-                    payload=build_resume_payload(decisions),
-                    thread_id=managed.thread_id,
-                    max_concurrency=4,
-                )
-                task = asyncio.create_task(managed.submit(UserTurn(text="", request=resume)))
-                handle, result = await asyncio.shield(task)
+                task = asyncio.create_task(managed.resume(result.turn_id, decisions, on_event))
+                result = await asyncio.shield(task)
         except ACPPermissionError:
             return PromptResponse(stop_reason="refusal")
         except asyncio.CancelledError:
             await self.permissions.cancel_session(session_id)
             if not task.done():
-                managed.cancel("client disconnect")
+                await managed.cancel("client disconnect")
             with contextlib.suppress(BaseException):
                 await task
             raise
         finally:
             self._prompt_tasks.pop(session_id, None)
             self._prompt_cancelled.discard(session_id)
-            subscription.close()
             await bridge.close()
 
         stop_reason = {
-            TurnStatus.COMPLETED: "end_turn",
-            TurnStatus.CANCELLED: "cancelled",
-            TurnStatus.FAILED: "refusal",
-            TurnStatus.WAITING_APPROVAL: "max_turn_requests",
+            "completed": "end_turn",
+            "cancelled": "cancelled",
+            "failed": "refusal",
+            "waiting_approval": "max_turn_requests",
         }.get(result.status, "refusal")
         usage = None
-        if result.total_tokens or result.input_tokens or result.output_tokens:
+        usage_data = result.usage if isinstance(result.usage, dict) else {}
+        if usage_data:
             usage = Usage(
-                total_tokens=result.total_tokens or result.input_tokens + result.output_tokens,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                cached_read_tokens=result.cache_tokens,
+                total_tokens=int(usage_data.get("total_tokens", 0)),
+                input_tokens=int(usage_data.get("input_tokens", usage_data.get("in", 0))),
+                output_tokens=int(usage_data.get("output_tokens", usage_data.get("out", 0))),
+                cached_read_tokens=int(usage_data.get("cache_tokens", 0)),
             )
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
@@ -847,9 +818,9 @@ class SynapseACPAgent:
         await self.permissions.cancel_session(session_id)
         prompt_task = self._prompt_tasks.get(session_id)
         if prompt_task is not None and prompt_task is not asyncio.current_task():
-            managed.cancel("client")
+            await managed.cancel("client")
             return
-        if not managed.cancel("client"):
+        if not await managed.cancel("client"):
             raise acp.RequestError.invalid_params({"sessionId": "no active prompt"})
 
     async def _request_permission_decisions(
@@ -859,26 +830,17 @@ class SynapseACPAgent:
         session_id: str,
         prompt_id: str,
         turn_id: str,
-    ) -> list[dict[str, Any]] | None:
+    ) -> tuple[ApprovalDecision, ...] | None:
         """Request ordered decisions for one runtime interrupt batch."""
-        config = {
-            "configurable": {"thread_id": managed.thread_id},
-            "max_concurrency": 4,
-        }
-        runtime_agent = getattr(managed.runtime, "agent", None)
-        if runtime_agent is None:
-            return None
-        pending = extract_pending_interrupt(runtime_agent, config)
-        if pending is None:
-            return None
+        pending = await managed.pending_approval(turn_id)
         if not pending.actions:
             raise ACPPermissionError("runtime interrupt contains no parseable actions")
         connection = self._connection
         if connection is None:
             return None
-        decisions: list[dict[str, Any]] = []
-        for index, action in enumerate(pending.actions):
-            tool_call_id = f"permission-{prompt_id}-{index}"
+        decisions: list[ApprovalDecision] = []
+        for action in pending.actions:
+            tool_call_id = f"permission-{prompt_id}-{action.index}"
             options = [
                 PermissionOption(
                     option_id=f"{tool_call_id}:allow_once",
@@ -931,14 +893,14 @@ class SynapseACPAgent:
                 self._prompt_cancelled.add(session_id)
                 return None
             if decision.kind in {"allow_once", "allow_always"}:
-                decisions.append({"type": "approve"})
+                decisions.append(ApprovalDecision(decision.kind, decision.message))
             elif decision.kind in {"reject_once", "reject_always", "cancelled"}:
                 decisions.append(
-                    {"type": "reject", "message": decision.message or "Rejected by client"}
+                    ApprovalDecision(decision.kind, decision.message or "Rejected by client")
                 )
             else:
                 return None
-        return decisions
+        return tuple(decisions)
 
     def _require_initialized(self) -> None:
         if not self._initialized:
@@ -978,20 +940,6 @@ class SynapseACPAgent:
             config=stored.config,
             session_id=stored.session_id,
         )
-
-    async def _delete_checkpoint_thread(self, managed: ACPManagedSession) -> None:
-        """Delete only the checkpoint thread owned by a permanently deleted session."""
-        runtime_agent = getattr(managed.runtime, "agent", None)
-        checkpointer = getattr(runtime_agent, "_coding_checkpointer", None)
-        if checkpointer is None:
-            return
-        async_delete = getattr(checkpointer, "adelete_thread", None)
-        if callable(async_delete):
-            await async_delete(managed.thread_id)
-            return
-        sync_delete = getattr(checkpointer, "delete_thread", None)
-        if callable(sync_delete):
-            await asyncio.to_thread(sync_delete, managed.thread_id)
 
     def _release_mcp_pool(self, session_id: str) -> None:
         key = f"acp:{session_id}"

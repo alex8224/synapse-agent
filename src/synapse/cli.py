@@ -14,12 +14,10 @@ from synapse.sessions.store import SessionStore, format_session_table
 from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
-    extract_last_ai_text,
     print_banner,
     print_error,
     print_final,
     print_info,
-    stream_agent,
 )
 
 app = typer.Typer(
@@ -503,94 +501,6 @@ def tui(
     )
 
 
-# ---------------------------------------------------------------------------
-# Default callback: launch TUI when no subcommand is given
-# ---------------------------------------------------------------------------
-
-
-@app.callback(invoke_without_command=True)
-def _default_tui(
-    ctx: typer.Context,
-    workspace: Path | None = typer.Option(
-        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
-    ),
-    model: str | None = typer.Option(
-        None, "--model", "-m", help="Model profile alias or provider:model"
-    ),
-    require_approval: bool = typer.Option(
-        False,
-        "--require-approval/--no-require-approval",
-        help="Enable HITL approval (default: disabled, auto-pass)",
-    ),
-    readonly: bool = typer.Option(
-        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
-    ),
-    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
-    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
-    session: str | None = typer.Option(
-        None,
-        "--session",
-        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
-    ),
-    project: str | None = typer.Option(
-        None, "--project", help="Open a registered project by id prefix, name, or path"
-    ),
-) -> None:
-    """Full-screen Textual TUI - the default interface."""
-    if ctx.invoked_subcommand is not None:
-        return
-    _launch_tui(
-        workspace=workspace,
-        model=model,
-        require_approval=require_approval,
-        readonly=readonly,
-        thread_id=thread_id,
-        debug=debug,
-        session=session,
-        project=project,
-    )
-
-
-@app.command("tui")
-def tui_cmd(
-    workspace: Path | None = typer.Option(
-        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
-    ),
-    model: str | None = typer.Option(
-        None, "--model", "-m", help="Model profile alias or provider:model"
-    ),
-    require_approval: bool = typer.Option(
-        False,
-        "--require-approval/--no-require-approval",
-        help="Enable HITL approval (default: disabled, auto-pass)",
-    ),
-    readonly: bool = typer.Option(
-        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
-    ),
-    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
-    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
-    session: str | None = typer.Option(
-        None,
-        "--session",
-        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
-    ),
-    project: str | None = typer.Option(
-        None, "--project", help="Open a registered project by id prefix, name, or path"
-    ),
-) -> None:
-    """Full-screen Textual TUI - the default interface."""
-    _launch_tui(
-        workspace=workspace,
-        model=model,
-        require_approval=require_approval,
-        readonly=readonly,
-        thread_id=thread_id,
-        debug=debug,
-        session=session,
-        project=project,
-    )
-
-
 @app.command("transcript-migration-worker", hidden=True)
 def transcript_migration_worker(
     checkpoint_path: Path = typer.Option(
@@ -643,50 +553,23 @@ def _print_tokens_from_state(state: dict) -> None:
         print_info(f"tokens: {total} (in={total_in} out={total_out})")
 
 
-def _run_once(
-    agent,
-    payload: dict | Any,
-    config: dict,
+async def _run_consumer_turn_and_close(
+    consumer: Any,
+    session: Any,
+    task: str,
     *,
-    use_stream: bool = True,
-    token_stream: bool = True,
-    max_concurrency: int = 8,
-    sink=None,
-) -> tuple[str, bool, Any]:
-    """Execute one turn.
+    before_execute: Any = None,
+    on_event: Any = None,
+) -> Any:
+    """Run and close a consumer on one event loop, including setup failures."""
+    try:
+        if before_execute is not None:
+            before_execute()
+        from synapse.runtime.consumer import execute_consumer_turn
 
-    Returns:
-        (answer_text, already_displayed, stream_result_or_none)
-    """
-    if use_stream:
-        streamed = stream_agent(
-            agent,
-            payload,
-            config,
-            token_stream=token_stream,
-            prefer_async=True,
-            max_concurrency=max_concurrency,
-            sink=sink,
-        )
-        if streamed.final_text:
-            return streamed.final_text, streamed.streamed_answer, streamed
-        if streamed.state.get("messages"):
-            return extract_last_ai_text(streamed.state), False, streamed
-        if streamed.interrupted:
-            return "", True, streamed
-        print_info("stream empty, falling back to invoke...")
-    else:
-        print_info("running...")
-
-    # Model clients are async-only (see b788b62); use ainvoke instead of invoke.
-    invoked = asyncio.run(agent.ainvoke(payload, config=config))
-    state = invoked if isinstance(invoked, dict) else {"messages": invoked}
-    _print_tokens_from_state(state)
-    return (
-        extract_last_ai_text(state),
-        False,
-        None,
-    )
+        return await execute_consumer_turn(consumer.service, session, task, on_event=on_event)
+    finally:
+        await consumer.close()
 
 
 @app.command("run")
@@ -729,50 +612,58 @@ def run_cmd(
         f"base_url={settings.openai_base_url!r} model={settings.model!r}"
     )
 
-    try:
-        from synapse.app.agent import build_coding_agent, default_thread_id
-
-        agent = build_coding_agent(
-            settings,
-            project_root=settings.workspace,
-            load_mcp=bool(settings.enable_mcp),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print_error(f"failed to build agent: {exc}")
-        raise typer.Exit(code=1) from exc
-
-    tid = thread_id or default_thread_id()
-    store = _session_store(settings)
-    store.touch(tid, title_hint=task, model=settings.model)
-    config = {
-        "configurable": {"thread_id": tid},
-        "max_concurrency": settings.max_concurrency,
-    }
-    payload = {"messages": [{"role": "user", "content": task}]}
-    print_info(f"thread_id={tid}")
-    print_info(
-        f"stream: token={settings.token_stream} "
-        f"parallel_tools={settings.parallel_tool_calls} "
-        f"max_concurrency={settings.max_concurrency}"
+    from synapse.app.agent import build_coding_agent, default_thread_id
+    from synapse.runtime.consumer import (
+        LocalProjectRuntimeConsumer,
+        project_identity_for_workspace,
     )
-
+    from synapse.runtime.sessions.ref import SessionRef
+    tid = thread_id or default_thread_id()
+    project_id, catalog = project_identity_for_workspace(settings, Path(settings.workspace))
+    consumer = LocalProjectRuntimeConsumer(
+        settings=settings,
+        project_id=project_id,
+        catalog=catalog,
+        agent_factory=lambda current_thread, _resources: build_coding_agent(
+            settings, project_root=settings.workspace, load_mcp=bool(settings.enable_mcp),
+            prompt_cache_key=lambda: current_thread,
+            mcp_pool_key=f"{project_id}:{current_thread}",
+        ),
+    )
     try:
-        answer, already, streamed = _run_once(
-            agent,
-            payload,
-            config,
-            use_stream=stream,
-            token_stream=settings.token_stream,
-            max_concurrency=settings.max_concurrency,
+        def prepare_run() -> None:
+            _session_store(settings).touch(tid, title_hint=task, model=settings.model)
+            print_info(f"thread_id={tid}")
+            print_info(
+                f"stream: token={settings.token_stream} "
+                f"parallel_tools={settings.parallel_tool_calls} "
+                f"max_concurrency={settings.max_concurrency}"
+            )
+
+        def show_event(event):
+            if stream and event.kind == "answer_delta" and isinstance(event.payload, dict):
+                console.print(event.payload.get("text", ""), end="")
+
+        result = asyncio.run(
+            _run_consumer_turn_and_close(
+                consumer,
+                SessionRef(project_id, tid),
+                task,
+                before_execute=prepare_run,
+                on_event=show_event if stream else None,
+            )
         )
-        if streamed is not None and getattr(streamed, "interrupted", False):
+        if result.status == "waiting_approval":
             print_error(
                 "task paused for approval; run without --require-approval "
                 f"or resume later with thread_id={tid}"
             )
             raise typer.Exit(code=2)
-        if not already:
-            print_final(answer)
+        elif result.status in {"failed", "cancelled"}:
+            print_error(f"task {result.status}")
+            raise typer.Exit(code=1)
+        elif not result.already_streamed:
+            print_final(result.final_text)
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001

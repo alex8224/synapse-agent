@@ -134,6 +134,19 @@ def test_resolve_project_by_id_prefix_name_and_path(
     assert catalog.resolve_project("missing") is None
 
 
+def test_get_project_by_id_is_exact_and_does_not_resolve_aliases(
+    catalog: ProjectCatalog, tmp_path: Path
+) -> None:
+    ws = tmp_path / "exact-project"
+    ws.mkdir()
+    info = catalog.register_project(ws, detect_git=False)
+
+    assert catalog.get_project(project_id=info.project_id).project_id == info.project_id  # type: ignore[union-attr]
+    assert catalog.get_project(project_id=info.project_id[:8]) is None
+    assert catalog.get_project(project_id=info.name) is None
+    assert catalog.get_project(project_id=str(ws)) is None
+
+
 def test_search_sessions_cross_project(catalog: ProjectCatalog, tmp_path: Path) -> None:
     a = tmp_path / "proj-a"
     b = tmp_path / "proj-b"

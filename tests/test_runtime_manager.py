@@ -7,8 +7,16 @@ import concurrent.futures
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-from synapse.runtime.sessions import RuntimeManager, SessionRuntime, SessionStatus, UserTurn
+from synapse.runtime.sessions import (
+    RuntimeClosedError,
+    RuntimeManager,
+    SessionRuntime,
+    SessionStatus,
+    UserTurn,
+)
 from synapse.runtime.streaming import EVENT_VERSION, TextPayload, TurnEvent, TurnEventKind
 
 
@@ -109,6 +117,79 @@ def test_two_sessions_run_concurrently_without_event_crosstalk() -> None:
         sub_a.close()
         sub_b.close()
         await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_submit_close_after_permit_acquire_releases_global_permit() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory, limit=1)
+        acquired = asyncio.Event()
+        allow_return = asyncio.Event()
+        real_semaphore = asyncio.Semaphore(1)
+
+        class Semaphore:
+            async def acquire(self) -> bool:
+                result = await real_semaphore.acquire()
+                acquired.set()
+                try:
+                    await allow_return.wait()
+                except asyncio.CancelledError:
+                    await allow_return.wait()
+                return result
+
+            def release(self) -> None:
+                real_semaphore.release()
+
+        semaphore = Semaphore()
+        manager._get_semaphore = lambda: semaphore  # type: ignore[method-assign]
+        submit = asyncio.create_task(manager.submit("a", UserTurn("a")))
+        await acquired.wait()
+        close = asyncio.create_task(manager.close_session("a", cancel_active=True))
+        allow_return.set()
+        await close
+        with pytest.raises(RuntimeClosedError):
+            await submit
+        other = await manager.submit("b", UserTurn("b"))
+        factory.turns["b"].future.set_result(_result("b", "ok"))
+        await asyncio.wrap_future(other.future)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_shutdown_after_permit_acquire_releases_global_permit() -> None:
+    async def run() -> None:
+        factory = _SessionFactory()
+        manager = _manager(factory, limit=1)
+        acquired = asyncio.Event()
+        allow_return = asyncio.Event()
+        real_semaphore = asyncio.Semaphore(1)
+
+        class Semaphore:
+            async def acquire(self) -> bool:
+                result = await real_semaphore.acquire()
+                acquired.set()
+                try:
+                    await allow_return.wait()
+                except asyncio.CancelledError:
+                    await allow_return.wait()
+                return result
+
+            def release(self) -> None:
+                real_semaphore.release()
+
+        semaphore = Semaphore()
+        manager._get_semaphore = lambda: semaphore  # type: ignore[method-assign]
+        submit = asyncio.create_task(manager.submit("a", UserTurn("a")))
+        await acquired.wait()
+        shutdown = asyncio.create_task(manager.shutdown())
+        allow_return.set()
+        await shutdown
+        with pytest.raises(RuntimeClosedError):
+            await submit
+        assert real_semaphore._value == 1
 
     asyncio.run(run())
 

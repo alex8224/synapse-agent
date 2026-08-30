@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from acp.helpers import (
@@ -14,8 +16,6 @@ from acp.helpers import (
     update_tool_call,
 )
 from acp.schema import AgentPlanRemovedUpdate, ToolCallLocation, UsageUpdate
-
-from synapse.runtime.streaming import TurnEventKind
 
 
 class ACPUpdateProjector:
@@ -51,83 +51,107 @@ def project_updates(event: Any, projector: ACPUpdateProjector | None = None) -> 
 
 
 def _project_updates(event: Any) -> list[Any]:
-    kind = event.kind
-    payload = event.payload
-    if kind is TurnEventKind.ANSWER_DELTA:
-        return [update_agent_message_text(str(payload.text))]
-    if kind is TurnEventKind.REASONING_DELTA:
-        return [update_agent_thought_text(str(payload.text))]
-    if kind is TurnEventKind.TOOL_STARTED:
-        call_id = str(payload.item_id or payload.call_id)
-        locations = [ToolCallLocation(path=payload.path)] if payload.path else None
+    kind, payload = _normalize_event(event)
+    if kind == "answer_delta":
+        return [update_agent_message_text(str(payload.get("text", "")))]
+    if kind == "reasoning_delta":
+        return [update_agent_thought_text(str(payload.get("text", "")))]
+    if kind == "tool_started":
+        call_id = str(payload.get("item_id") or payload.get("call_id"))
+        locations = [ToolCallLocation(path=payload.get("path"))] if payload.get("path") else None
         return [start_tool_call(
             call_id,
-            payload.label or payload.name,
-            kind=_tool_kind(payload.category or payload.name),
-            status=_tool_status(payload.status, payload.error),
+            payload.get("label") or payload.get("name", "tool"),
+            kind=_tool_kind(payload.get("category") or payload.get("name", "")),
+            status=_tool_status(payload.get("status", "in_progress"), payload.get("error", False)),
             locations=locations,
-            raw_input={"path": payload.path} if payload.path else None,
+            raw_input={"path": payload.get("path")} if payload.get("path") else None,
         )]
-    if kind is TurnEventKind.TOOL_BATCH_STARTED:
+    if kind == "tool_batch_started":
         # Per-item TOOL_STARTED/TOOL_UPDATED/TOOL_FINISHED carry the stable
         # ``item_id`` across the full lifecycle. The batch announcement only has
         # the LangChain ``call_id`` and would both duplicate starts and break id
         # correlation with the per-item finish events.
         return []
     if kind in {
-        TurnEventKind.TOOL_UPDATED,
-        TurnEventKind.TOOL_FINISHED,
-        TurnEventKind.TOOL_RESULT,
+        "tool_updated", "tool_finished", "tool_result",
     }:
-        call_id = str(getattr(payload, "item_id", None) or getattr(payload, "call_id", None) or "")
+        call_id = str(payload.get("item_id") or payload.get("call_id") or "")
         if not call_id:
             return []
         status = _tool_status(
-            str(getattr(payload, "status", "in_progress")),
-            bool(getattr(payload, "error", False)),
+            str(payload.get("status", "in_progress")), bool(payload.get("error", False)),
         )
         content = None
-        path = getattr(payload, "path", None)
-        preview = getattr(payload, "preview", None)
-        if kind is TurnEventKind.TOOL_RESULT:
-            status = _tool_status(str(getattr(payload, "status", "completed")))
+        path = payload.get("path")
+        preview = payload.get("preview")
+        if kind == "tool_result":
+            status = _tool_status(str(payload.get("status", "completed")))
             preview = None
         if path and preview is not None:
             content = [tool_diff_content(str(path), str(preview))]
         locations = [ToolCallLocation(path=str(path))] if path else None
         return [update_tool_call(
             call_id,
-            title=getattr(payload, "label", None),
-            kind=_tool_kind(str(getattr(payload, "category", "other"))),
+            title=payload.get("label"),
+            kind=_tool_kind(str(payload.get("category", "other"))),
             status=status,
             content=content,
             locations=locations,
             raw_output=preview,
         )]
-    if kind is TurnEventKind.PLAN_UPDATED:
+    if kind == "plan_updated":
         return [update_plan(
             plan_entry(
-                entry.content,
-                priority=_priority(entry.priority),
-                status=_status(entry.status),
+                entry.get("content", ""),
+                priority=_priority(str(entry.get("priority", "medium"))),
+                status=_status(str(entry.get("status", "pending"))),
             )
-            for entry in payload.entries
+            for entry in payload.get("entries", [])
+            if isinstance(entry, Mapping)
         )]
-    if kind is TurnEventKind.PLAN_REMOVED:
-        return [AgentPlanRemovedUpdate(session_update="plan_removed", plan_id=payload.plan_id)]
-    if kind is TurnEventKind.DIFF_UPDATED:
+    if kind == "plan_removed":
+        return [
+            AgentPlanRemovedUpdate(
+                session_update="plan_removed", plan_id=payload.get("plan_id", "")
+            )
+        ]
+    if kind == "diff_updated":
         return [update_tool_call(
-            payload.call_id,
+            str(payload.get("call_id", "")),
             status="in_progress",
-            content=[tool_diff_content(payload.path, payload.new_text, payload.old_text)],
+            content=[tool_diff_content(
+                str(payload.get("path", "")),
+                str(payload.get("new_text", "")),
+                str(payload.get("old_text", "")),
+            )],
         )]
-    if kind is TurnEventKind.USAGE_UPDATED and payload.context_size is not None:
+    if kind == "usage_updated" and payload.get("context_size") is not None:
         return [UsageUpdate(
             session_update="usage_update",
-            used=payload.turn_input + payload.turn_output,
-            size=payload.context_size,
+            used=int(payload.get("turn_input", 0)) + int(payload.get("turn_output", 0)),
+            size=int(payload["context_size"]),
         )]
     return []
+
+
+def _normalize_event(event: Any) -> tuple[str, Mapping[str, Any]]:
+    """Normalize RuntimeEvent mappings and legacy TurnEvent dataclasses."""
+    raw_kind = event.get("kind") if isinstance(event, Mapping) else getattr(event, "kind", "")
+    kind = getattr(raw_kind, "value", raw_kind)
+    raw_payload = (
+        event.get("payload", {})
+        if isinstance(event, Mapping)
+        else getattr(event, "payload", {})
+    )
+    if isinstance(raw_payload, Mapping):
+        return str(kind), raw_payload
+    if is_dataclass(raw_payload):
+        return str(kind), asdict(raw_payload)
+    try:
+        return str(kind), vars(raw_payload)
+    except TypeError:
+        return str(kind), {}
 
 
 def _tool_status(value: str, error: bool = False) -> str:

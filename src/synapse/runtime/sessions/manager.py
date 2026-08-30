@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,10 +11,17 @@ from typing import Any
 
 from synapse.runtime.agent_loop import TurnHandle
 from synapse.runtime.async_runtime import AsyncRuntime, get_async_runtime
+from synapse.runtime.sessions.errors import (
+    NoActiveTurnError,
+    RuntimeClosedError,
+    SessionBusyError,
+)
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.sessions.runtime import (
     SessionRuntime,
     SessionSnapshot,
+    SessionStatus,
+    TurnReservation,
     UserTurn,
 )
 from synapse.runtime.steer import SteerQueue
@@ -27,6 +35,24 @@ class ProjectSharedResources:
     checkpointer: Any | None = None
     mcp_tools: tuple[Any, ...] = ()
     backend_config: Any | None = None
+
+
+@dataclass(slots=True)
+class _QueuedOwner:
+    """One submit waiting on the global semaphore for a thread.
+
+    Close with ``cancel_active=True`` explicitly tracks this owner so it can
+    cancel the blocked acquire: the submit's own cleanup then releases the
+    per-session submit lock and the (already revoked) reservation, so close
+    never waits behind the global semaphore and no lock leaks (ADR-S-010).
+    """
+
+    thread_id: str
+    acquire_task: asyncio.Task[None]
+    reservation: TurnReservation
+    submit_lock: asyncio.Lock
+    cleanup: asyncio.Future[None]
+    released: bool = False
 
 
 class RuntimeManager:
@@ -64,23 +90,52 @@ class RuntimeManager:
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_loop: asyncio.AbstractEventLoop | None = None
         self._submit_locks: dict[str, asyncio.Lock] = {}
+        #: Per-thread lifecycle coordinator serializing open/create/register/
+        #: close for the same ref so concurrent opens build the agent/session
+        #: exactly once (ADR-S-010).
+        self._lifecycle_locks: dict[str, asyncio.Lock] = {}
+        #: Submits currently waiting on the global semaphore, keyed by thread.
+        self._queued_owners: dict[str, _QueuedOwner] = {}
         self._release_tasks: set[asyncio.Task[None]] = set()
+        self._release_tasks_by_thread: dict[str, asyncio.Task[None]] = {}
+        self._closing: dict[str, asyncio.Future[tuple[bool, str | None, bool]]] = {}
         self._closed = False
 
     # -- SessionRef routing -------------------------------------------------
 
     def _check_ref(self, ref: SessionRef) -> str:
-        if self.project_id is None:
-            self.project_id = ref.project_id
-        if ref.project_id != self.project_id:
-            raise ValueError(
-                f"ref project {ref.project_id!r} does not match manager "
-                f"project {self.project_id!r}"
-            )
+        with self._lock:
+            if self.project_id is None:
+                self.project_id = ref.project_id
+            if ref.project_id != self.project_id:
+                raise ValueError(
+                    f"ref project {ref.project_id!r} does not match manager "
+                    f"project {self.project_id!r}"
+                )
         return ref.thread_id
 
-    async def submit_ref(self, ref: SessionRef, message: UserTurn) -> TurnHandle:
-        return await self.submit(self._check_ref(ref), message)
+    async def submit_ref(
+        self,
+        ref: SessionRef,
+        message: UserTurn,
+        *,
+        _approval_claim: tuple[str, int] | None = None,
+    ) -> TurnHandle:
+        return await self.submit(
+            self._check_ref(ref), message, _approval_claim=_approval_claim
+        )
+
+    async def resume_ref(
+        self, ref: SessionRef, expected_turn_id: str, decisions: list[dict[str, Any]]
+    ) -> TurnHandle:
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise NoActiveTurnError("no approval is pending")
+        request = session.build_approval_resume(expected_turn_id, decisions)
+        claim = session.take_approval_claim(expected_turn_id)
+        return await self.submit_ref(
+            ref, UserTurn(text="", request=request, approval_resume=True), _approval_claim=claim
+        )
 
     def steer_ref(self, ref: SessionRef, text: str) -> bool:
         return self.steer(self._check_ref(ref), text)
@@ -95,14 +150,58 @@ class RuntimeManager:
         return self.get_session(self._check_ref(ref))
 
     async def open_session(self, thread_id: str) -> SessionRuntime:
+        """Legacy single-project convenience wrapper over :meth:`open_session_ref`."""
+        runtime, _created = await self.open_session_ref(
+            SessionRef(project_id=self.project_id or "", thread_id=thread_id)
+        )
+        return runtime
+
+    async def open_session_ref(self, ref: SessionRef) -> tuple[SessionRuntime, bool]:
+        """Open (or reuse) the runtime for ``ref``; return ``(runtime, created)``.
+
+        The whole open/create/register critical section runs under the
+        per-thread lifecycle coordinator, so concurrent opens for the same ref
+        call ``agent_factory``/``session_factory`` exactly once and
+        ``created`` is True only for the call that actually inserted the new
+        runtime.  A closed manager raises :class:`RuntimeClosedError`.
+        """
+        thread_id = self._check_ref(ref)
         with self._lock:
             if self._closed:
-                raise RuntimeError("RuntimeManager is closed")
-            existing = self._sessions.get(thread_id)
-            if existing is not None:
-                return existing
+                raise RuntimeClosedError("RuntimeManager is closed")
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
             self._submit_locks.setdefault(thread_id, asyncio.Lock())
-        agent = self.agent_factory(thread_id, self.shared_resources)
+        while True:
+            await lock.acquire()
+            with self._lock:
+                if self._closed:
+                    lock.release()
+                    raise RuntimeClosedError("RuntimeManager is closed")
+                closing = self._closing.get(thread_id)
+                existing = self._sessions.get(thread_id)
+            if closing is not None:
+                # Never await a close while owning the coordinator: close may
+                # be waiting for a queued submit to release that coordinator.
+                lock.release()
+                await asyncio.shield(closing)
+                continue
+            if existing is not None:
+                lock.release()
+                return existing, False
+            try:
+                agent = self.agent_factory(thread_id, self.shared_resources)
+                runtime = self._build_runtime(thread_id, agent)
+                with self._lock:
+                    existing = self._sessions.get(thread_id)
+                    if existing is not None or thread_id in self._closing:
+                        continue
+                    self._sessions[thread_id] = runtime
+                    return runtime, True
+            finally:
+                if lock.locked():
+                    lock.release()
+
+    def _build_runtime(self, thread_id: str, agent: Any) -> SessionRuntime:
         runtime_kwargs = {
             "thread_id": thread_id,
             "agent": agent,
@@ -112,10 +211,129 @@ class RuntimeManager:
             runtime_kwargs["persist_result"] = self.persist_result
         if self.on_status_change is not None:
             runtime_kwargs["on_status_change"] = self.on_status_change
-        runtime = self.session_factory(**runtime_kwargs)
+        # Preserve old custom factories whose callable only accepts the S1
+        # keyword set, while the built-in runtime receives the manager's
+        # project identity for OpenSessionResult.view projection.
+        if self.session_factory is SessionRuntime:
+            runtime_kwargs["project_id"] = self.project_id or ""
+        return self.session_factory(**runtime_kwargs)
+
+    def cancel_turn_ref(
+        self, ref: SessionRef, expected_turn_id: str, reason: str = "user"
+    ) -> tuple[str, bool]:
+        """Cancel the live turn for ``ref`` only when its id matches.
+
+        Delegates to :meth:`SessionRuntime.cancel_turn`; the project is
+        validated first and a missing session surfaces
+        :class:`NoActiveTurnError` (there is certainly no live turn).  Returns
+        ``(turn_id, cancellation_requested)``.
+        """
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise NoActiveTurnError("no active turn to cancel (session not found)")
+        return session.cancel_turn(expected_turn_id, reason)
+
+    def steer_turn_ref(
+        self, ref: SessionRef, expected_turn_id: str, text: str
+    ) -> tuple[str, bool, int]:
+        """Steer the live turn for ``ref`` only when its id matches.
+
+        Delegates to :meth:`SessionRuntime.steer_turn`; the project is
+        validated first and a missing session surfaces
+        :class:`NoActiveTurnError`.  Returns ``(turn_id, accepted,
+        pending_count)``.
+        """
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise NoActiveTurnError("no active turn to steer (session not found)")
+        return session.steer_turn(expected_turn_id, text)
+
+    async def close_session_ref(
+        self, ref: SessionRef, *, cancel_active: bool = False
+    ) -> tuple[bool, str | None, bool]:
+        """Close the runtime for ``ref``; return ``(closed, active_turn_id,
+        cancellation_requested)``.
+
+        Missing sessions are idempotent: ``(False, None, False)``.  With
+        ``cancel_active=True`` any submit queued on the global semaphore is
+        explicitly released (its acquire cancelled) so close does not wait
+        behind the semaphore and the submit's own cleanup frees its
+        reservation and submit lock.  Close and submit linearize on the
+        session lock inside :meth:`SessionRuntime.close`.
+        """
+        thread_id = self._check_ref(ref)
         with self._lock:
-            existing = self._sessions.setdefault(thread_id, runtime)
-            return existing
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+            self._submit_locks.setdefault(thread_id, asyncio.Lock())
+        join: asyncio.Future[tuple[bool, str | None, bool]] | None = None
+        async with lock:
+            with self._lock:
+                closing = self._closing.get(thread_id)
+                session = self._sessions.get(thread_id)
+            if closing is not None:
+                join = closing
+            elif session is None:
+                return False, None, False
+            elif not cancel_active:
+                # Strict manager close uses the session's atomic busy claim;
+                # unlike direct SessionRuntime.close it never waits for a
+                # completed handle's pending settlement.
+                active_turn_id, cancellation_requested = await session.close(
+                    cancel_active=False, _strict_busy=True
+                )
+                with self._lock:
+                    if self._sessions.get(thread_id) is session:
+                        self._sessions.pop(thread_id, None)
+                        self._submit_locks.pop(thread_id, None)
+                return True, active_turn_id, cancellation_requested
+            else:
+                result_future = asyncio.get_running_loop().create_future()
+                with self._lock:
+                    self._closing[thread_id] = result_future
+                    owner = self._queued_owners.get(thread_id)
+                    if owner is not None and not owner.acquire_task.done():
+                        owner.released = True
+                        owner.acquire_task.cancel()
+                asyncio.create_task(
+                    self._finish_close(
+                        thread_id, session, owner, result_future
+                    )
+                )
+                join = result_future
+        return await asyncio.shield(join) if join is not None else (False, None, False)
+
+    async def _finish_close(
+        self,
+        thread_id: str,
+        session: SessionRuntime,
+        owner: _QueuedOwner | None,
+        result_future: asyncio.Future[tuple[bool, str | None, bool]],
+    ) -> None:
+        try:
+            if owner is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(owner.cleanup)
+            active_turn_id, cancellation_requested = await session.close(
+                cancel_active=True
+            )
+            with self._lock:
+                release_task = self._release_tasks_by_thread.get(thread_id)
+            if release_task is not None:
+                await asyncio.shield(release_task)
+            result = (True, active_turn_id, cancellation_requested)
+            with self._lock:
+                if self._sessions.get(thread_id) is session:
+                    self._sessions.pop(thread_id, None)
+                    self._submit_locks.pop(thread_id, None)
+                if self._closing.get(thread_id) is result_future:
+                    del self._closing[thread_id]
+            result_future.set_result(result)
+        except BaseException as exc:
+            with self._lock:
+                if self._closing.get(thread_id) is result_future:
+                    del self._closing[thread_id]
+            if not result_future.done():
+                result_future.set_exception(exc)
 
     def submit_threadsafe(self, thread_id: str, message: UserTurn) -> TurnHandle:
         """Submit from Textual workers onto the process Agent loop."""
@@ -126,7 +344,7 @@ class RuntimeManager:
         """Register an assembled session graph without replacing a live runtime."""
         with self._lock:
             if self._closed:
-                raise RuntimeError("RuntimeManager is closed")
+                raise RuntimeClosedError("RuntimeManager is closed")
             existing = self._sessions.get(runtime.thread_id)
             if existing is not None:
                 if existing is runtime:
@@ -136,16 +354,84 @@ class RuntimeManager:
             self._sessions[runtime.thread_id] = runtime
             return runtime
 
-    async def submit(self, thread_id: str, message: UserTurn) -> TurnHandle:
+    async def submit(
+        self,
+        thread_id: str,
+        message: UserTurn,
+        *,
+        _approval_claim: tuple[str, int] | None = None,
+    ) -> TurnHandle:
         session = await self.open_session(thread_id)
-        submit_lock = self._submit_locks[thread_id]
-        if submit_lock.locked():
-            raise RuntimeError("session already has an active turn")
-        await submit_lock.acquire()
-        reservation = session.reserve_turn()
-        if reservation is None:
-            submit_lock.release()
-            raise RuntimeError("session already has an active turn")
+        with self._lock:
+            lifecycle_lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+        while True:
+            await lifecycle_lock.acquire()
+            lifecycle_held = True
+            try:
+                with self._lock:
+                    if self._closed or self._closing.get(thread_id) is not None:
+                        raise RuntimeClosedError("session is closing")
+                    if self._sessions.get(thread_id) is not session:
+                        raise RuntimeClosedError("session generation is closed")
+                    submit_lock = self._submit_locks[thread_id]
+                if submit_lock.locked():
+                    status = session.snapshot().status
+                    active = {
+                        SessionStatus.QUEUED,
+                        SessionStatus.STARTING,
+                        SessionStatus.RUNNING,
+                        SessionStatus.CANCELLING,
+                    }
+                    prior_release = None
+                    if status not in active and (
+                        status is not SessionStatus.WAITING_APPROVAL or message.approval_resume
+                    ):
+                        with self._lock:
+                            prior_release = self._release_tasks_by_thread.get(thread_id)
+                        if (
+                            prior_release is not None
+                        ):
+                            # Do not hold the lifecycle coordinator while the
+                            # release task finishes: close uses the same
+                            # coordinator and may otherwise deadlock.
+                            lifecycle_lock.release()
+                            lifecycle_held = False
+                            await asyncio.shield(prior_release)
+                            continue
+                    raise SessionBusyError("session already has an active turn")
+            except BaseException:
+                if lifecycle_held:
+                    lifecycle_lock.release()
+                raise
+            break
+        submit_lock_acquired = False
+        try:
+            if submit_lock.locked():
+                raise SessionBusyError("session already has an active turn")
+            await submit_lock.acquire()
+            submit_lock_acquired = True
+            # Typed reservation lets the caller distinguish a closed session
+            # from a busy one without a snapshot TOCTOU (reserve + status
+            # re-read); the per-session submit lock is always released on the
+            # error path.
+            reservation = session.reserve_turn_or_raise(
+                approval_resume=message.approval_resume, approval_claim=_approval_claim
+            )
+        except (RuntimeClosedError, SessionBusyError):
+            if lifecycle_held:
+                lifecycle_lock.release()
+                lifecycle_held = False
+            if submit_lock_acquired:
+                submit_lock.release()
+            raise
+        except BaseException:
+            if lifecycle_held:
+                lifecycle_lock.release()
+                lifecycle_held = False
+            if submit_lock_acquired:
+                submit_lock.release()
+            raise
+        owner: _QueuedOwner | None = None
         try:
             # Every step after lock acquisition is protected: a failure in
             # semaphore resolution, queued marking, permit acquisition, or the
@@ -155,8 +441,48 @@ class RuntimeManager:
             session.mark_queued()
             acquired = False
             try:
-                await semaphore.acquire()
+                # Acquire the global permit in a tracked sub-task so a
+                # ``close_session_ref(cancel_active=True)`` can release this
+                # queued owner immediately instead of waiting for the
+                # semaphore (ADR-S-010); the submit's own cleanup below frees
+                # the reservation and submit lock either way.
+                acquire_task = asyncio.ensure_future(semaphore.acquire())
+                owner = _QueuedOwner(
+                    thread_id=thread_id,
+                    acquire_task=acquire_task,  # type: ignore[arg-type]
+                    reservation=reservation,
+                    submit_lock=submit_lock,
+                    cleanup=asyncio.get_running_loop().create_future(),
+                )
+                with self._lock:
+                    self._queued_owners[thread_id] = owner
+                lifecycle_lock.release()
+                lifecycle_held = False
+                try:
+                    await acquire_task
+                except asyncio.CancelledError:
+                    with self._lock:
+                        released_by_close = owner.released
+                    if released_by_close:
+                        raise RuntimeClosedError(
+                            "session was closed while the turn was queued"
+                        ) from None
+                    if not acquire_task.done():
+                        acquire_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await acquire_task
+                    raise
+                # acquire() transfers ownership before lifecycle state is
+                # inspected.  Close may win this exact race; the error path
+                # must therefore release the permit exactly once.
                 acquired = True
+                with self._lock:
+                    closing = self._closing.get(thread_id)
+                    manager_closed = self._closed
+                if manager_closed or closing is not None:
+                    raise RuntimeClosedError(
+                        "session was closed while the turn was queued"
+                    )
                 session.mark_starting()
                 handle = await session.submit(message, reservation=reservation)
             except BaseException:
@@ -170,6 +496,15 @@ class RuntimeManager:
             session.clear_queued()
             submit_lock.release()
             raise
+        finally:
+            if lifecycle_held:
+                lifecycle_lock.release()
+            if owner is not None:
+                with self._lock:
+                    if self._queued_owners.get(thread_id) is owner:
+                        del self._queued_owners[thread_id]
+                if not owner.cleanup.done():
+                    owner.cleanup.set_result(None)
 
         async def release_when_done() -> None:
             try:
@@ -180,7 +515,14 @@ class RuntimeManager:
 
         task = asyncio.create_task(release_when_done())
         self._release_tasks.add(task)
+        with self._lock:
+            self._release_tasks_by_thread[thread_id] = task
         task.add_done_callback(self._release_tasks.discard)
+        def forget_release(done: asyncio.Task[None]) -> None:
+            with self._lock:
+                if self._release_tasks_by_thread.get(thread_id) is done:
+                    del self._release_tasks_by_thread[thread_id]
+        task.add_done_callback(forget_release)
         return handle
 
     def steer(self, thread_id: str, text: str) -> bool:
@@ -213,17 +555,23 @@ class RuntimeManager:
         return any(s.snapshot().status.value in active for s in sessions)
 
     async def close_session(self, thread_id: str, *, cancel_active: bool = False) -> bool:
+        """Legacy single-project convenience wrapper over :meth:`close_session_ref`.
+
+        Keeps the historical ``"cannot close a session with an active turn"``
+        wording for the deterministic busy case (UI adapters assert on it); the
+        atomic busy/close claim still happens inside :meth:`SessionRuntime.close`.
+        """
         with self._lock:
             session = self._sessions.get(thread_id)
         if session is None:
             return False
         if session.claimed() and not cancel_active:
-            raise RuntimeError("cannot close a session with an active turn")
-        await session.close(cancel_active=cancel_active)
-        with self._lock:
-            self._sessions.pop(thread_id, None)
-            self._submit_locks.pop(thread_id, None)
-        return True
+            raise SessionBusyError("cannot close a session with an active turn")
+        closed, _active, _requested = await self.close_session_ref(
+            SessionRef(project_id=self.project_id or "", thread_id=thread_id),
+            cancel_active=cancel_active,
+        )
+        return closed
 
     def collectable_sessions(self) -> list[str]:
         """Thread ids whose runtime is idle/completed/failed (P8-03 LRU)."""
@@ -254,7 +602,12 @@ class RuntimeManager:
         evict = idle[max_idle:]
         evicted: list[str] = []
         for thread_id, session in evict:
-            await session.close(cancel_active=False)
+            try:
+                await session.close(cancel_active=False)
+            except SessionBusyError:
+                # The session became active between snapshot and close claim;
+                # the atomic claim rejects it without changing state.
+                continue
             with self._lock:
                 self._sessions.pop(thread_id, None)
                 self._submit_locks.pop(thread_id, None)
@@ -267,6 +620,19 @@ class RuntimeManager:
                 return
             self._closed = True
             sessions = tuple(self._sessions.values())
+            owners = tuple(self._queued_owners.values())
+        # Release queued submits first so their own cleanup frees the submit
+        # locks before the sessions are closed (ADR-S-010).
+        for owner in owners:
+            if not owner.acquire_task.done():
+                with self._lock:
+                    owner.released = True
+                owner.acquire_task.cancel()
+        if owners:
+            await asyncio.gather(
+                *(asyncio.shield(owner.cleanup) for owner in owners),
+                return_exceptions=True,
+            )
         await asyncio.gather(
             *(session.close(cancel_active=True) for session in sessions),
             return_exceptions=True,
@@ -277,6 +643,7 @@ class RuntimeManager:
         with self._lock:
             self._sessions.clear()
             self._submit_locks.clear()
+            self._queued_owners.clear()
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()

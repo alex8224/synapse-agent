@@ -1,8 +1,17 @@
 """Session-owned execution lifecycle and event replay."""
 
+from synapse.runtime.sessions.errors import (
+    InvalidEventCursorError,
+    NoActiveTurnError,
+    RuntimeClosedError,
+    SessionBusyError,
+    SteeringUnavailableError,
+    TurnMismatchError,
+)
 from synapse.runtime.sessions.events import (
     SessionEventBroker,
     SessionEventEnvelope,
+    SessionEventWindow,
     SessionSubscription,
 )
 from synapse.runtime.sessions.manager import (
@@ -29,10 +38,15 @@ from synapse.runtime.sessions.runtime import (
 
 __all__ = [
     "ACTIVE_SESSION_STATUSES",
+    "InvalidEventCursorError",
+    "NoActiveTurnError",
     "ProjectSharedResources",
+    "RuntimeClosedError",
     "RuntimeManager",
+    "SessionBusyError",
     "SessionEventBroker",
     "SessionEventEnvelope",
+    "SessionEventWindow",
     "SessionPersistence",
     "SessionRef",
     "SessionResolutionError",
@@ -41,6 +55,8 @@ __all__ = [
     "SessionStatus",
     "SessionSubscription",
     "SessionUsage",
+    "SteeringUnavailableError",
+    "TurnMismatchError",
     "TurnReservation",
     "UserTurn",
     "build_session_agent_factory",

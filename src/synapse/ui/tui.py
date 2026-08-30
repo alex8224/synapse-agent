@@ -35,7 +35,6 @@ from synapse.content.multimodal import (
     find_placeholders,
 )
 from synapse.integrations.openai_usage import CodexUsageService, ConsumeResetResult
-from synapse.runtime.sessions import TurnReservation
 from synapse.runtime.steer import SteerQueue
 from synapse.sessions.transcript_projection import (
     TranscriptProjection,
@@ -178,6 +177,8 @@ def _git_branch(cwd: Path) -> str | None:
     """Backward-compatible branch name probe."""
     info = probe_git_branch_chrome(cwd)
     return info.name if info is not None else None
+
+
 class PromptInput(Input):
     """Prompt input that routes terminal-native paste through the controller.
 
@@ -345,7 +346,7 @@ class CodingAgentApp(App[None]):
 
     @property
     def _busy(self) -> bool:
-        """Compatibility projection; SessionRuntime owns Agent turn busy state."""
+        """Compatibility projection sourced from the service session view."""
         controller = self.__dict__.get("_turn")
         runtime_busy = bool(controller.busy) if controller is not None else False
         return runtime_busy or bool(self.__dict__.get("_busy_projection", False))
@@ -405,6 +406,7 @@ class CodingAgentApp(App[None]):
         self._slash = SlashController(self)
         # Invalidates callbacks queued by a stream sink from an older session.
         self._transcript_generation = 0
+        self._project_switch_generation = 0
         # Global project catalog (projection) and per-turn summary persistence.
         self._project_catalog: Any = None
         self._summary_store: Any = None
@@ -463,9 +465,7 @@ class CodingAgentApp(App[None]):
             workspace_provider=lambda: Path(
                 getattr(self.settings, "workspace", Path.cwd()) or Path.cwd()
             ),
-            dirty_provider=lambda: bool(
-                self._git_chrome is not None and self._git_chrome.dirty
-            ),
+            dirty_provider=lambda: bool(self._git_chrome is not None and self._git_chrome.dirty),
             tool_output_stats_provider=self._tool_output_hover_stats,
             usable_width_provider=self._topbar_usable_width,
             colors={
@@ -844,9 +844,7 @@ class CodingAgentApp(App[None]):
             title = (info.title or "").strip() if info is not None else None
         except Exception:  # noqa: BLE001 - session touch is best-effort
             title = None
-        self._call_for_transcript(
-            generation, self._apply_session_touch, thread_id, title
-        )
+        self._call_for_transcript(generation, self._apply_session_touch, thread_id, title)
 
     def _apply_session_touch(self, thread_id: str, title: str | None) -> None:
         """UI-thread apply step for a completed background session touch."""
@@ -893,11 +891,7 @@ class CodingAgentApp(App[None]):
         """Show reset-credit details in a popup; fetch details if needed."""
         credits = self._codex.reset_credits
         sn = self._codex.snapshot
-        available = (
-            sn.reset_credits.available_count
-            if sn and sn.reset_credits
-            else 0
-        )
+        available = sn.reset_credits.available_count if sn and sn.reset_credits else 0
         # When we have a count but no detail rows yet, fetch first then re-open.
         if available > 0 and credits is None:
             self.flash_status("fetching reset-credit details…", "dim")
@@ -980,9 +974,7 @@ class CodingAgentApp(App[None]):
             replace=replace,
         )
 
-    def unregister_bottombar_region(
-        self, id: str, *, drop_components: bool = False
-    ) -> bool:
+    def unregister_bottombar_region(self, id: str, *, drop_components: bool = False) -> bool:
         """Remove a bottombar region (optionally its components)."""
         return self._bottombar.unregister_region(id, drop_components=drop_components)
 
@@ -1095,9 +1087,7 @@ class CodingAgentApp(App[None]):
         if self._codex_bottombar_hovered:
             from synapse.ui.topbar.core import locate_component_span
 
-            span = locate_component_span(
-                self._bottombar, "codex_usage", usable_width=usable
-            )
+            span = locate_component_span(self._bottombar, "codex_usage", usable_width=usable)
             if span is not None:
                 start, width = span
                 line.stylize("on #2a2d31", start, start + width)
@@ -1361,9 +1351,7 @@ class CodingAgentApp(App[None]):
                 current_project_id=self._current_project_id(),
                 current_thread_id=self.thread_id,
                 runtime_status=runtime_status,
-                runtime_status_provider=(
-                    turn.runtime_status_map if turn is not None else None
-                ),
+                runtime_status_provider=(turn.runtime_status_map if turn is not None else None),
                 runtime_status_by_project_provider=(
                     turn.runtime_status_by_project if turn is not None else None
                 ),
@@ -1463,8 +1451,12 @@ class CodingAgentApp(App[None]):
         if info is None:
             self.append_event(f"project not found: {project_id}", "yellow")
             return
-        workspace = Path(info.workspace_path or project_id)
+        # Resolve once so the background build cannot follow a later mutation
+        # of the app's active project context.
+        workspace = Path(info.workspace_path or project_id).resolve()
         target_thread = thread_id or allocate_thread_id()
+        self._project_switch_generation += 1
+        build_generation = self._project_switch_generation
         turn = getattr(self, "_turn", None)
         try:
             project_settings = (
@@ -1500,9 +1492,7 @@ class CodingAgentApp(App[None]):
         self.thread_id = target_thread
         if turn is not None:
             try:
-                self._transcript_projection = turn.projection_for(
-                    project_id, project_settings
-                )
+                self._transcript_projection = turn.projection_for(project_id, project_settings)
             except Exception:  # noqa: BLE001 - projection is best-effort
                 pass
             try:
@@ -1522,7 +1512,11 @@ class CodingAgentApp(App[None]):
         self._load_current_goal()
 
         def on_ready() -> None:
-            if self.thread_id != target_thread:
+            if (
+                build_generation != self._project_switch_generation
+                or self._current_project_id() != project_id
+                or self.thread_id != target_thread
+            ):
                 return
             if turn is not None:
                 turn.attach(target_thread)
@@ -1540,45 +1534,54 @@ class CodingAgentApp(App[None]):
         # Rendering attachment always happens via the transcript-reset
         # on_complete (or the agent-build ready callback) so it never paints
         # onto the previous project's transcript.
-        frozen = turn.runtime_for_project(project_id) if turn is not None else None
-        if frozen is not None and frozen.agent is not None:
-            self.agent = frozen.agent
+        reused = turn.agent_for_session(target_thread, project_id) if turn is not None else None
+        if reused is not None:
+            self.agent = reused
             self._bind_steer_queue()
         else:
-            self._build_project_agent_bg(project_id, project_settings, target_thread)
+            self._build_project_agent_bg(
+                project_id, project_settings, target_thread, build_generation, workspace
+            )
 
     @work(thread=True, exclusive=True, group="project-agent")
     def _build_project_agent_bg(
-        self, project_id: str, settings: Any, thread_id: str
+        self,
+        project_id: str,
+        settings: Any,
+        thread_id: str,
+        generation: int | None = None,
+        workspace: Path | None = None,
     ) -> None:
         """Build the target project's agent graph for an in-process switch."""
         from synapse.app.agent import build_coding_agent
 
         turn = getattr(self, "_turn", None)
-        goal_service = (
-            turn.goal_service_for(project_id, settings) if turn is not None else None
-        )
+        goal_service = turn.goal_service_for(project_id, settings) if turn is not None else None
+        build_workspace = (workspace or Path(settings.workspace)).resolve()
         try:
             agent = build_coding_agent(
                 settings,
-                project_root=self.project_root,
+                project_root=build_workspace,
                 load_mcp=False,
                 prompt_cache_key=lambda: thread_id,
                 goal_service=goal_service,
             )
         except Exception as exc:  # noqa: BLE001 - agent build failure stays recoverable
-            self.call_from_thread(
-                self.append_event, f"project agent failed: {exc}", "bold red"
-            )
+            self.call_from_thread(self.append_event, f"project agent failed: {exc}", "bold red")
             return
 
         def ready() -> None:
-            if self.thread_id != thread_id:
+            if (
+                generation is not None
+                and generation != self._project_switch_generation
+            ) or self.thread_id != thread_id or (
+                generation is not None and self._current_project_id() != project_id
+            ):
                 return
             self.agent = agent
             turn = getattr(self, "_turn", None)
             if turn is not None:
-                turn.bind_agent(thread_id, agent)
+                turn.bind_agent(thread_id, agent, project_id=project_id)
                 turn.attach(thread_id)
                 turn.sync_foreground_status()
             self._bind_steer_queue()
@@ -1636,9 +1639,7 @@ class CodingAgentApp(App[None]):
 
     # -- status ----------------------------------------------------------
 
-    def flash_status(
-        self, message: str, style: str = "dim", *, ttl: float = 4.0
-    ) -> None:
+    def flash_status(self, message: str, style: str = "dim", *, ttl: float = 4.0) -> None:
         self._status.flash_status(message, style, ttl=ttl)
 
     def _clear_status_notice(self) -> None:
@@ -1889,9 +1890,7 @@ class CodingAgentApp(App[None]):
             category=category,
         )
 
-    def write_tool_preview(
-        self, item_id: str, preview: str, *, error: bool = False
-    ) -> None:
+    def write_tool_preview(self, item_id: str, preview: str, *, error: bool = False) -> None:
         self._transcript.write_tool_preview(item_id, preview, error=error)
 
     def close_tool_group(self) -> None:
@@ -2012,9 +2011,7 @@ class CodingAgentApp(App[None]):
         success: bool,
         error: str | None,
     ) -> None:
-        self._history.transcript_migration_done(
-            thread_id, generation, announce, success, error
-        )
+        self._history.transcript_migration_done(thread_id, generation, announce, success, error)
 
     def _paint_restored_transcript(self, page: Any, *, announce: bool) -> None:
         self._history.paint_restored_transcript(page, announce=announce)
@@ -2033,9 +2030,7 @@ class CodingAgentApp(App[None]):
         thread_id: str,
         generation: int,
     ) -> None:
-        self._history.load_earlier_history_bg(
-            before_turn, tail_turns, thread_id, generation
-        )
+        self._history.load_earlier_history_bg(before_turn, tail_turns, thread_id, generation)
 
     def _history_load_done(
         self,
@@ -2045,9 +2040,7 @@ class CodingAgentApp(App[None]):
         generation: int,
         error: str | None,
     ) -> None:
-        self._history.history_load_done(
-            page, expected_turn, thread_id, generation, error
-        )
+        self._history.history_load_done(page, expected_turn, thread_id, generation, error)
 
     def _trim_mounted_history_pages(self) -> None:
         self._history.trim_mounted_history_pages()
@@ -2100,9 +2093,7 @@ class CodingAgentApp(App[None]):
             self.append_event("nothing to show", "dim")
             return
 
-        self.push_screen(
-            SelectableTextModal(transcript, char_count=len(transcript))
-        )
+        self.push_screen(SelectableTextModal(transcript, char_count=len(transcript)))
 
     # -- theme -----------------------------------------------------------
 
@@ -2119,11 +2110,6 @@ class CodingAgentApp(App[None]):
         self._theme.repaint_widgets()
 
     # -- dialogs ----------------------------------------------------------
-
-
-
-
-
 
     @work(thread=True, exclusive=True, group="model-switch")
     def _switch_model_bg(
@@ -2167,19 +2153,10 @@ class CodingAgentApp(App[None]):
             origin_settings=origin_settings,
         )
 
-
-
-
-
-
-
     @work(thread=True, exclusive=True, group="codex-import")
     def _import_codex_session_bg(self, native_id: str) -> None:
         """Seed one Codex text snapshot (worker body in SlashController)."""
         self._slash.import_codex_session_bg(native_id)
-
-
-
 
     def _apply_mcp_server_toggle(self, server_name: str) -> None:
         """Temporarily toggle one MCP server through the existing slash handler."""
@@ -2200,7 +2177,6 @@ class CodingAgentApp(App[None]):
             origin_settings=origin_settings,
         )
 
-
     @work(thread=True, exclusive=True, group="mcp-save")
     def _apply_mcp_save_bg(
         self,
@@ -2216,7 +2192,6 @@ class CodingAgentApp(App[None]):
             origin_settings=origin_settings,
         )
 
-
     @work(thread=True, exclusive=True, group="mcp-reload")
     def _apply_mcp_reload_bg(
         self,
@@ -2230,8 +2205,6 @@ class CodingAgentApp(App[None]):
             origin_settings=origin_settings,
         )
 
-
-
     def _apply_ok_result(self, ok: object, notice_ttl: float = 4.0) -> None:
         controller = getattr(self, "_slash", None)
         if controller is None:
@@ -2241,13 +2214,10 @@ class CodingAgentApp(App[None]):
 
     # -- input / turn ----------------------------------------------------
 
-
     @work(thread=True, exclusive=True, group="context-compact")
     def _compact_context_bg(self, agent: Any, thread_id: str) -> None:
         """Execute /compact away from Textual's UI loop (body in SlashController)."""
         self._slash.compact_context_bg(agent, thread_id)
-
-
 
     # -- slash/dialog controller forwarding --------------------------------
 
@@ -2342,15 +2312,13 @@ class CodingAgentApp(App[None]):
         self,
         text: str,
         attachments: list[Any] | None = None,
-        *,
-        reservation: TurnReservation | None = None,
     ) -> None:
         """Run one turn in a session-scoped thread worker.
 
         The worker group is keyed by the target session so turns in different
         sessions can run concurrently (multiple live agent loops), while the
-        same session stays serialized (SessionRuntime also guards double
-        submission).
+        same session stays serialized (the Runtime Service/session command
+        serialization also guards double submission).
         """
 
         launch_context = getattr(self._turn, "launch_context", None)
@@ -2368,13 +2336,9 @@ class CodingAgentApp(App[None]):
                     "agent": agent,
                     "transcript_generation": generation,
                 }
-                if reservation is not None:
-                    kwargs["reservation"] = reservation
                 self._turn.run_turn(text, attachments, **kwargs)
-            elif reservation is None:
-                self._turn.run_turn(text, attachments)
             else:
-                self._turn.run_turn(text, attachments, reservation=reservation)
+                self._turn.run_turn(text, attachments)
 
         self.run_worker(
             _run,

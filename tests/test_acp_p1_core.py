@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from pathlib import Path
 from typing import Any
 
 import acp
@@ -17,90 +16,10 @@ from acp.schema import (
 )
 
 from synapse.acp.agent import SynapseACPAgent
-from synapse.acp.sessions import (
-    ACPManagedSession,
-    ACPSessionDescriptor,
-    ACPSessionRegistry,
-)
-from synapse.runtime.agent_loop import TurnResult, TurnStatus
-from synapse.runtime.sessions.events import SessionEventEnvelope
-from synapse.runtime.streaming.events import TextPayload, TurnEvent, TurnEventKind
-
-
-class FakeSubscription:
-    def close(self) -> None:
-        return None
-
-
-class FakeRuntime:
-    def __init__(self, result: TurnResult, events: list[SessionEventEnvelope]) -> None:
-        self.result = result
-        self.events = events
-        self.callbacks: list[Any] = []
-
-    def subscribe(self, callback: Any, *, after_sequence: int = 0) -> FakeSubscription:
-        del after_sequence
-        self.callbacks.append(callback)
-        return FakeSubscription()
-
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
-
-
-class FakeManager:
-    def __init__(self, runtime: FakeRuntime) -> None:
-        self.runtime = runtime
-        self.cancelled: list[str] = []
-
-    async def submit(self, thread_id: str, message: Any) -> Any:
-        del thread_id, message
-        for callback in self.runtime.callbacks:
-            for event in self.runtime.events:
-                callback(event)
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        future.set_result(self.runtime.result)
-
-        class Handle:
-            def __init__(self, value: Any) -> None:
-                self.future = value
-
-        return Handle(future)
-
-    def cancel(self, thread_id: str, reason: str) -> bool:
-        del thread_id
-        self.cancelled.append(reason)
-        return True
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        del thread_id, cancel_active
-
-    async def shutdown(self) -> None:
-        return None
-
-
-class BlockingManager(FakeManager):
-    def __init__(self, runtime: FakeRuntime) -> None:
-        super().__init__(runtime)
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.active = False
-
-    async def submit(self, thread_id: str, message: Any) -> Any:
-        del thread_id, message
-        if self.active:
-            raise RuntimeError("session already has an active turn")
-        self.active = True
-        self.started.set()
-        try:
-            await self.release.wait()
-            return await super().submit("ignored", "ignored")
-        finally:
-            self.active = False
-
-    def cancel(self, thread_id: str, reason: str) -> bool:
-        accepted = super().cancel(thread_id, reason)
-        self.release.set()
-        return accepted
+from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
+from synapse.runtime.service.events import RuntimeEvent
+from synapse.runtime.streaming.events import TextPayload, TurnEventKind
+from tests.acp_service_fakes import FakeAgentRuntimeService, FakeOutcome, managed
 
 
 class FakeClient:
@@ -112,30 +31,17 @@ class FakeClient:
         self.updates.append((session_id, update))
 
 
-def _managed(result: TurnResult, events: list[SessionEventEnvelope]) -> ACPManagedSession:
-    descriptor = ACPSessionDescriptor(
-        session_id="sess_test",
-        thread_id="sess_test",
-        cwd=Path("C:/workspace"),
-    )
-    runtime = FakeRuntime(result, events)
-    return ACPManagedSession(descriptor, FakeManager(runtime), runtime)  # type: ignore[arg-type]
+def _managed(outcome: FakeOutcome, events: list[RuntimeEvent]) -> ACPManagedSession:
+    return managed(FakeAgentRuntimeService([outcome], events), sid="sess_test")
 
 
-def _result(status: TurnStatus = TurnStatus.COMPLETED) -> TurnResult:
-    return TurnResult(turn_id="turn-1", thread_id="sess_test", status=status, final_text="done")
+def _result(status: str = "completed") -> FakeOutcome:
+    return FakeOutcome(status=status, final_text="done")
 
 
-def _event(kind: TurnEventKind, payload: object) -> SessionEventEnvelope:
-    event = TurnEvent(
-        version=1,
-        thread_id="sess_test",
-        turn_id="turn-1",
-        sequence=1,
-        kind=kind,
-        payload=payload,
-    )
-    return SessionEventEnvelope(thread_id="sess_test", sequence=1, turn_id="turn-1", event=event)
+def _event(kind: Any, payload: object) -> RuntimeEvent:
+    value = payload.text if isinstance(payload, TextPayload) else payload
+    return RuntimeEvent(1, 1, "turn-1", kind.value, {"text": value}, 1)
 
 
 def _agent(managed: ACPManagedSession) -> SynapseACPAgent:
@@ -164,10 +70,10 @@ def test_initialize_advertises_verified_p4_session_capabilities() -> None:
 def test_prompt_stop_reason_projection_covers_all_runtime_terminal_states() -> None:
     async def run() -> None:
         expected = {
-            TurnStatus.COMPLETED: "end_turn",
-            TurnStatus.CANCELLED: "cancelled",
-            TurnStatus.FAILED: "refusal",
-            TurnStatus.WAITING_APPROVAL: "max_turn_requests",
+            "completed": "end_turn",
+            "cancelled": "cancelled",
+            "failed": "refusal",
+            "waiting_approval": "max_turn_requests",
         }
         for status, stop_reason in expected.items():
             managed = _managed(_result(status), [])
@@ -182,14 +88,11 @@ def test_prompt_stop_reason_projection_covers_all_runtime_terminal_states() -> N
 
 def test_prompt_maps_accurate_usage_without_fabricating_when_zero() -> None:
     async def run() -> None:
-        result = TurnResult(
+        result = FakeOutcome(
             turn_id="turn-usage",
-            thread_id="sess_test",
-            status=TurnStatus.COMPLETED,
-            input_tokens=3,
-            output_tokens=4,
-            total_tokens=7,
-            cache_tokens=1,
+            status="completed",
+            final_text="done",
+            usage={"input_tokens": 3, "output_tokens": 4, "total_tokens": 7, "cache_tokens": 1},
         )
         managed = _managed(result, [])
         agent = _agent(managed)
@@ -229,14 +132,8 @@ def test_prompt_rejects_content_for_unadvertised_capability() -> None:
 
 def test_prompt_task_cancellation_requests_runtime_cancel_and_settles() -> None:
     async def run() -> None:
-        runtime = FakeRuntime(_result(TurnStatus.CANCELLED), [])
-        manager = BlockingManager(runtime)
-        descriptor = ACPSessionDescriptor(
-            session_id="sess_disconnect",
-            thread_id="sess_disconnect",
-            cwd=Path("C:/workspace"),
-        )
-        managed = ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
+        service = FakeAgentRuntimeService([_result("cancelled")], blocking=True)
+        managed = globals()["managed"](service, sid="sess_disconnect")
         agent = _agent(managed)
         await agent.initialize(1)
         await agent.sessions.add(managed)
@@ -244,35 +141,29 @@ def test_prompt_task_cancellation_requests_runtime_cancel_and_settles() -> None:
         prompt_task = asyncio.create_task(
             agent.prompt("sess_disconnect", [text_block("long running")])
         )
-        await asyncio.wait_for(manager.started.wait(), timeout=1)
+        await asyncio.wait_for(service.started.wait(), timeout=1)
         prompt_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(prompt_task, timeout=1)
-        assert manager.cancelled == ["client disconnect"]
+        assert any(getattr(call, "reason", None) == "client disconnect" for call in service.calls)
 
     asyncio.run(run())
 
 
 def test_overlapping_prompt_is_rejected_without_replacing_active_turn() -> None:
     async def run() -> None:
-        runtime = FakeRuntime(_result(TurnStatus.COMPLETED), [])
-        manager = BlockingManager(runtime)
-        descriptor = ACPSessionDescriptor(
-            session_id="sess_overlap",
-            thread_id="sess_overlap",
-            cwd=Path("C:/workspace"),
-        )
-        managed = ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
+        service = FakeAgentRuntimeService([_result("completed")], blocking=True)
+        managed = globals()["managed"](service, sid="sess_overlap")
         agent = _agent(managed)
         await agent.initialize(1)
         await agent.sessions.add(managed)
 
         first = asyncio.create_task(agent.prompt("sess_overlap", [text_block("first")]))
-        await asyncio.wait_for(manager.started.wait(), timeout=1)
+        await asyncio.wait_for(service.started.wait(), timeout=1)
         with pytest.raises(acp.RequestError):
             await agent.prompt("sess_overlap", [text_block("second")])
         assert not first.done()
-        manager.release.set()
+        service.release.set()
         assert (await asyncio.wait_for(first, timeout=1)).stop_reason == "end_turn"
 
     asyncio.run(run())
@@ -280,23 +171,17 @@ def test_overlapping_prompt_is_rejected_without_replacing_active_turn() -> None:
 
 def test_cancel_races_with_prompt_and_maps_cancelled_result() -> None:
     async def run() -> None:
-        runtime = FakeRuntime(_result(TurnStatus.CANCELLED), [])
-        manager = BlockingManager(runtime)
-        descriptor = ACPSessionDescriptor(
-            session_id="sess_cancel",
-            thread_id="sess_cancel",
-            cwd=Path("C:/workspace"),
-        )
-        managed = ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
+        service = FakeAgentRuntimeService([_result("cancelled")], blocking=True)
+        managed = globals()["managed"](service, sid="sess_cancel")
         agent = _agent(managed)
         await agent.initialize(1)
         await agent.sessions.add(managed)
 
         prompt_task = asyncio.create_task(agent.prompt("sess_cancel", [text_block("hi")]))
-        await asyncio.wait_for(manager.started.wait(), timeout=1)
+        await asyncio.wait_for(service.started.wait(), timeout=1)
         assert await agent.cancel("sess_cancel") is None
-        assert manager.cancelled == ["client"]
-        manager.release.set()
+        assert any(getattr(call, "reason", None) == "client" for call in service.calls)
+        service.release.set()
         response = await asyncio.wait_for(prompt_task, timeout=1)
         assert response.stop_reason == "cancelled"
 
@@ -371,8 +256,8 @@ def test_prompt_unknown_session_and_cancel_are_protocol_errors() -> None:
 def test_prompt_maps_cancelled_and_failed_results() -> None:
     async def run() -> None:
         for status, expected in (
-            (TurnStatus.CANCELLED, "cancelled"),
-            (TurnStatus.FAILED, "refusal"),
+            ("cancelled", "cancelled"),
+            ("failed", "refusal"),
         ):
             managed = _managed(_result(status), [])
             agent = _agent(managed)

@@ -235,9 +235,10 @@ class SlashController:
                 # transcript (dirty paint) and build/destroy a bridge for no
                 # reason. Rendering attach happens once, after the transcript
                 # reset completes.
-                runtime = turn_controller.runtime_for(app.thread_id)
-                if runtime is not None:
-                    requested_agent = runtime.agent
+                session_agent = turn_controller.agent_for_session(app.thread_id)
+                if session_agent is not None:
+                    requested_agent = session_agent
+                if requested_agent is not None:
                     # The session's frozen agent is the authoritative model
                     # source. Sync settings back to its profile so bottombar
                     # chrome and later rebuilds never show another session's
@@ -492,12 +493,7 @@ class SlashController:
         if turn is None:
             return False
         try:
-            runtime = turn.runtime_for(app.thread_id)
-            if runtime is None:
-                return False
-            from synapse.runtime.sessions import SessionStatus
-
-            return runtime.snapshot().status is SessionStatus.WAITING_APPROVAL
+            return turn.is_waiting_approval(app.thread_id)
         except Exception:  # noqa: BLE001 - best-effort gate
             return False
 
@@ -1284,8 +1280,12 @@ class SlashController:
         """Seed one Codex text snapshot, then switch through the normal path."""
         app = self._app
         controller = getattr(app, "_turn", None)
-        runtime = getattr(controller, "session_runtime", None)
-        turn_agent = runtime.agent if runtime is not None and controller.busy else app.agent
+        turn_agent = (
+            controller.agent_for_session(app.thread_id)
+            if controller is not None
+            else app.agent
+        )
+        turn_agent = turn_agent or app.agent
         ready = getattr(app, "_lifecycle", None)
         if ready is not None:
             ready = ready.agent_ready.wait(timeout=180)

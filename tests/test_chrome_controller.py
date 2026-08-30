@@ -206,9 +206,7 @@ def test_mcp_snapshot_prefers_current_session_agent() -> None:
     app.agent = SimpleNamespace(_coding_mcp_attached=True)
     app.settings = SimpleNamespace(enable_mcp=True)
     app._turn = SimpleNamespace(
-        runtime_for=lambda thread_id: SimpleNamespace(
-            agent=SimpleNamespace(_coding_mcp_attached=False)
-        )
+        agent_for_session=lambda thread_id: SimpleNamespace(_coding_mcp_attached=False)
         if thread_id == "thread-1"
         else None
     )
@@ -229,12 +227,10 @@ def test_mcp_snapshot_uses_agent_metadata_for_attached_session() -> None:
     app.agent = None
     app.settings = SimpleNamespace(enable_mcp=True)
     app._turn = SimpleNamespace(
-        runtime_for=lambda thread_id: SimpleNamespace(
-            agent=SimpleNamespace(
-                _coding_mcp_attached=True,
-                _coding_mcp_servers=["git"],
-                _coding_mcp_tool_names=["git_status"],
-            )
+        agent_for_session=lambda thread_id: SimpleNamespace(
+            _coding_mcp_attached=True,
+            _coding_mcp_servers=["git"],
+            _coding_mcp_tool_names=["git_status"],
         )
         if thread_id == "thread-1"
         else None
@@ -256,12 +252,10 @@ def test_mcp_snapshot_ignores_newer_pool_when_agent_built_with_older_tools() -> 
     app.agent = None
     app.settings = SimpleNamespace(enable_mcp=True)
     app._turn = SimpleNamespace(
-        runtime_for=lambda thread_id: SimpleNamespace(
-            agent=SimpleNamespace(
-                _coding_mcp_attached=True,
-                _coding_mcp_servers=["old-server"],
-                _coding_mcp_tool_names=["old_tool"],
-            )
+        agent_for_session=lambda thread_id: SimpleNamespace(
+            _coding_mcp_attached=True,
+            _coding_mcp_servers=["old-server"],
+            _coding_mcp_tool_names=["old_tool"],
         )
         if thread_id == "thread-1"
         else None
@@ -293,11 +287,9 @@ def test_current_session_model_label_uses_frozen_agent_profile() -> None:
         KeyError(name)
     )
     app._turn = SimpleNamespace(
-        runtime_for=lambda thread_id: SimpleNamespace(
-            agent=SimpleNamespace(
-                _coding_model_profile="claude",
-                _coding_model_registry=fake_registry,
-            )
+        agent_for_session=lambda thread_id: SimpleNamespace(
+            _coding_model_profile="claude",
+            _coding_model_registry=fake_registry,
         )
         if thread_id == "thread-1"
         else None
@@ -313,7 +305,7 @@ def test_current_session_model_label_falls_back_to_settings_without_runtime() ->
     app = _App()
     app.thread_id = "thread-1"
     app.agent = None
-    app._turn = SimpleNamespace(runtime_for=lambda thread_id: None)
+    app._turn = SimpleNamespace(agent_for_session=lambda thread_id: None)
     app.settings = SimpleNamespace(
         active_model="gpt",
         model="gpt-4.1",

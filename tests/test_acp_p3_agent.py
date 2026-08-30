@@ -12,108 +12,31 @@ from acp.helpers import text_block
 from acp.schema import AllowedOutcome, PermissionOption
 
 from synapse.acp.agent import SynapseACPAgent
-from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
-from synapse.runtime.agent_loop import TurnResult, TurnStatus
+from synapse.acp.sessions import ACPSessionRegistry
+from synapse.runtime.service import ApprovalActionView, ResumeTurnCommand, SubmitTurnCommand
+from tests.acp_service_fakes import FakeAgentRuntimeService, FakeOutcome, simple_managed
 
 
-class _Subscription:
-    def close(self) -> None:
-        return None
+def _make_agent(
+    outcomes: list[FakeOutcome] | None = None,
+    *,
+    approval_actions: tuple[ApprovalActionView, ...] = (
+        ApprovalActionView(0, "write_file", {"path": "a.py"}),
+        ApprovalActionView(1, "execute", {"command": "test"}),
+    ),
+    max_permission_turns: int = 16,
+) -> tuple[SynapseACPAgent, FakeAgentRuntimeService]:
+    service = FakeAgentRuntimeService(outcomes, approval_actions=approval_actions)
 
+    async def factory(_descriptor: Any) -> Any:
+        return simple_managed(_descriptor, service)
 
-class _Runtime:
-    def __init__(self, agent: Any) -> None:
-        self.agent = agent
-
-    def subscribe(self, callback: Any, *, after_sequence: int = 0) -> _Subscription:
-        del callback, after_sequence
-        return _Subscription()
-
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
-
-
-class _Manager:
-    def __init__(self, runtime: _Runtime, results: list[TurnResult]) -> None:
-        self.runtime = runtime
-        self.results = list(results)
-        self.submissions: list[Any] = []
-        self.cancelled: list[str] = []
-
-    async def submit(self, thread_id: str, message: Any) -> Any:
-        del thread_id
-        self.submissions.append(message)
-        result = self.results.pop(0)
-        future: asyncio.Future[TurnResult] = asyncio.get_running_loop().create_future()
-        future.set_result(result)
-
-        class Handle:
-            def __init__(self, value: asyncio.Future[TurnResult]) -> None:
-                self.future = value
-
-        return Handle(future)
-
-    def cancel(self, thread_id: str, reason: str) -> bool:
-        del thread_id
-        self.cancelled.append(reason)
-        return True
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        del thread_id, cancel_active
-
-    async def shutdown(self) -> None:
-        return None
-
-
-class _InterruptAgent:
-    def __init__(self) -> None:
-        self.approval_calls = 0
-
-    def get_state(self, config: dict[str, Any]) -> Any:
-        del config
-        if self.approval_calls >= 1:
-            return type("State", (), {"interrupts": (), "tasks": (), "next": ()})()
-        return type(
-            "State",
-            (),
-            {
-                "interrupts": (
-                    type(
-                        "Interrupt",
-                        (),
-                        {
-                            "value": {
-                                "action_requests": [
-                                    {"name": "write_file", "args": {"path": "a.py"}},
-                                    {"name": "execute", "args": {"command": "test"}},
-                                ],
-                                "review_configs": [{}, {}],
-                            }
-                        },
-                    )(),
-                ),
-                "tasks": (),
-                "next": (),
-            },
-        )()
-
-
-def _result(status: TurnStatus, turn_id: str) -> TurnResult:
-    return TurnResult(turn_id=turn_id, thread_id="sess_p3", status=status)
-
-
-def _make_agent() -> tuple[SynapseACPAgent, _Manager, _InterruptAgent]:
-    interrupt_agent = _InterruptAgent()
-    runtime = _Runtime(interrupt_agent)
-    manager = _Manager(
-        runtime,
-        [_result(TurnStatus.WAITING_APPROVAL, "turn-1"), _result(TurnStatus.COMPLETED, "turn-2")],
+    return (
+        SynapseACPAgent(
+            registry=ACPSessionRegistry(factory), max_permission_turns=max_permission_turns
+        ),
+        service,
     )
-
-    async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-        return ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
-
-    return SynapseACPAgent(registry=ACPSessionRegistry(factory)), manager, interrupt_agent
 
 
 class _Client:
@@ -140,7 +63,10 @@ class _Client:
 
 def test_one_prompt_resumes_multiple_actions_in_stable_order() -> None:
     async def run() -> None:
-        agent, manager, interrupt_agent = _make_agent()
+        agent, service = _make_agent([
+            FakeOutcome(status="waiting_approval", turn_id="turn-1"),
+            FakeOutcome(status="completed", turn_id="turn-2"),
+        ])
         client = _Client(["allow_once", "reject_once"])
         agent.on_connect(client)  # type: ignore[arg-type]
         await agent.initialize(1)
@@ -148,16 +74,20 @@ def test_one_prompt_resumes_multiple_actions_in_stable_order() -> None:
         response = await agent.prompt(managed.session_id, [text_block("do it")])
         assert response.stop_reason == "end_turn"
         assert [request[1].title for request in client.requests] == ["write_file", "execute"]
-        assert len(manager.submissions) == 2
-        assert manager.submissions[1].request.resume is True
-        assert interrupt_agent.approval_calls == 0
+        commands = [
+            call
+            for call in service.calls
+            if isinstance(call, (SubmitTurnCommand, ResumeTurnCommand))
+        ]
+        assert len(commands) == 2
+        assert isinstance(commands[1], ResumeTurnCommand)
 
     asyncio.run(run())
 
 
 def test_shutdown_clears_pending_permission_requests() -> None:
     async def run() -> None:
-        agent, _manager, _interrupt_agent = _make_agent()
+        agent, _service = _make_agent()
         started = asyncio.Event()
         release = asyncio.Event()
 
@@ -192,22 +122,9 @@ def test_shutdown_clears_pending_permission_requests() -> None:
 
 def test_unparsed_interrupt_fails_closed() -> None:
     async def run() -> None:
-        class UnparsedAgent:
-            def get_state(self, config: dict[str, Any]) -> Any:
-                del config
-                return type(
-                    "State",
-                    (),
-                    {"interrupts": (type("Interrupt", (), {"value": {"secret": True}})(),)},
-                )()
-
-        runtime = _Runtime(UnparsedAgent())
-        manager = _Manager(runtime, [_result(TurnStatus.WAITING_APPROVAL, "turn-1")])
-
-        async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            return ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
-
-        agent = SynapseACPAgent(registry=ACPSessionRegistry(factory))
+        agent, _service = _make_agent(
+            [FakeOutcome(status="waiting_approval", turn_id="turn-1")], approval_actions=()
+        )
         agent.on_connect(_Client([]))  # type: ignore[arg-type]
         await agent.initialize(1)
         managed = await agent.sessions.create(cwd=Path("C:/workspace"))
@@ -219,32 +136,28 @@ def test_unparsed_interrupt_fails_closed() -> None:
 
 def test_resume_loop_is_bounded() -> None:
     async def run() -> None:
-        interrupt_agent = _InterruptAgent()
-        runtime = _Runtime(interrupt_agent)
-        manager = _Manager(
-            runtime,
-            [_result(TurnStatus.WAITING_APPROVAL, "turn-1")] * 3,
-        )
-
-        async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            return ACPManagedSession(descriptor, manager, runtime)  # type: ignore[arg-type]
-
-        agent = SynapseACPAgent(
-            registry=ACPSessionRegistry(factory), max_permission_turns=1
+        agent, service = _make_agent(
+            [FakeOutcome(status="waiting_approval", turn_id=f"turn-{i}") for i in range(1, 4)],
+            max_permission_turns=1,
         )
         agent.on_connect(_Client(["allow_once", "allow_once"]))  # type: ignore[arg-type]
         await agent.initialize(1)
         managed = await agent.sessions.create(cwd=Path("C:/workspace"))
         with pytest.raises(acp.RequestError):
             await agent.prompt(managed.session_id, [text_block("loop")])
-        assert len(manager.submissions) == 2
+        commands = [
+            call
+            for call in service.calls
+            if isinstance(call, (SubmitTurnCommand, ResumeTurnCommand))
+        ]
+        assert len(commands) == 2
 
     asyncio.run(run())
 
 
 def test_permission_client_failure_fails_closed() -> None:
     async def run() -> None:
-        agent, _manager, _interrupt_agent = _make_agent()
+        agent, _service = _make_agent([FakeOutcome(status="waiting_approval")])
 
         class FailingClient(_Client):
             def __init__(self) -> None:
