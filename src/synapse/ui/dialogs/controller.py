@@ -1109,11 +1109,18 @@ class SlashController:
         """
         from synapse.commands.slash_cmds import handle_slash
         from synapse.observability.startup_trace import duration
+        from synapse.sessions import SessionStore, binding_from_settings
 
         app = self._app
         origin = origin_thread_id or app.thread_id
         origin_agent = origin_agent or app.agent
         worker_settings = origin_settings or self._copy_settings(app.settings)
+        store = None
+        old_binding = old_last = None
+        if hasattr(worker_settings, "resolved_sessions_path"):
+            store = SessionStore(worker_settings.resolved_sessions_path())
+            old_binding = store.get_model_binding(origin)
+            old_last = store.get_last_model_binding()
         switch_started = time.perf_counter()
         app.call_from_thread(app._clear_status_notice)
         app.call_from_thread(app.set_activity, "switching", activity, True)
@@ -1124,6 +1131,7 @@ class SlashController:
                 agent=origin_agent,
                 thread_id=origin,
                 project_root=app.project_root,
+                defer_persist=True,
             )
         except Exception as exc:  # noqa: BLE001
             duration("model.switch", switch_started, command=command, success=False)
@@ -1132,13 +1140,41 @@ class SlashController:
             )
             app.call_from_thread(app.set_activity, "idle", "", True)
             return
+        if not bool(getattr(ok, "error", False)) and getattr(ok, "agent", None) is not None:
+            try:
+                candidate = getattr(ok, "candidate_settings", None)
+                if candidate is None and store is not None:
+                    raise RuntimeError("model switch produced no candidate settings")
+                if store is not None:
+                    store.save_model_binding(
+                        origin, binding_from_settings(candidate), also_last=True
+                    )
+                self.rebind_agent_worker(
+                    origin, ok.agent, settings=candidate
+                )
+            except Exception as exc:  # noqa: BLE001 - keep UI/DB uncommitted
+                try:
+                    if store is not None and old_binding is not None:
+                        store.replace_model_binding(origin, old_binding, also_last=False)
+                    if store is not None and old_last is not None and old_last.has_data():
+                        store.set_last_model_binding(old_last)
+                except Exception as rollback_exc:  # noqa: BLE001
+                    exc = RuntimeError(f"{exc}; rollback failed: {rollback_exc}")
+                app.call_from_thread(
+                    app.append_event, f"{activity} failed: runtime rebind: {exc}", "yellow"
+                )
+                app.call_from_thread(app.set_activity, "idle", "", True)
+                return
+        candidate_settings = getattr(ok, "candidate_settings", None) or worker_settings
+        if store is not None:
+            store.close()
         duration(
             "model.switch",
             switch_started,
             command=command,
             success=not bool(getattr(ok, "error", False)),
         )
-        app.call_from_thread(self._finish_model_switch, ok, origin, worker_settings)
+        app.call_from_thread(self._finish_model_switch, ok, origin, candidate_settings)
         app.call_from_thread(app.set_activity, "idle", "", True)
         if getattr(ok, "mcp_attach_pending", False):
             app.call_from_thread(
@@ -1260,19 +1296,24 @@ class SlashController:
                 app._mcp_attaching = False
         if (origin_agent or app.agent) is not base_agent:
             return
-        turn = getattr(app, "_turn", None)
         if app.thread_id != origin:
             # Foreground moved on while MCP reconnected: bind the finalized
             # graph to the origin session only; never touch the live session.
-            if turn is not None:
-                turn.bind_agent(origin, agent, settings=worker_settings)
+            try:
+                self.rebind_agent_worker(origin, agent, settings=worker_settings)
+            except Exception as exc:  # noqa: BLE001 - retain old binding
+                app.call_from_thread(
+                    app.append_event, f"MCP rebind failed: {exc}", "yellow"
+                )
+                return
+            return
+        try:
+            self.rebind_agent_worker(origin, agent, settings=worker_settings)
+        except Exception as exc:  # noqa: BLE001 - retain old binding
+            app.call_from_thread(app.append_event, f"MCP rebind failed: {exc}", "yellow")
             return
         self._commit_settings(app.settings, worker_settings)
         app.agent = agent
-        if turn is not None:
-            # Keep the session-owned runtime on the MCP-finalized graph; the
-            # earlier bind in apply_effects happened before MCP reconnection.
-            turn.bind_agent(origin, agent, settings=worker_settings)
         app.call_from_thread(app._bind_steer_queue)
         app.call_from_thread(app.flash_status, "MCP reconnected", "dim", ttl=1.5)
 

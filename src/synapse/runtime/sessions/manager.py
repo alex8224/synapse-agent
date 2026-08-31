@@ -176,6 +176,7 @@ class RuntimeManager:
             with self._lock:
                 if self._closed:
                     lock.release()
+
                     raise RuntimeClosedError("RuntimeManager is closed")
                 closing = self._closing.get(thread_id)
                 existing = self._sessions.get(thread_id)
@@ -217,6 +218,33 @@ class RuntimeManager:
         if self.session_factory is SessionRuntime:
             runtime_kwargs["project_id"] = self.project_id or ""
         return self.session_factory(**runtime_kwargs)
+
+    async def rebind_session_ref(
+        self, ref: SessionRef, agent: Any, settings: Any
+    ) -> SessionRuntime:
+        """Atomically bind future turns without closing or replacing a session."""
+        thread_id = self._check_ref(ref)
+        with self._lock:
+            if self._closed:
+                raise RuntimeClosedError("RuntimeManager is closed")
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            with self._lock:
+                if self._closed or thread_id in self._closing:
+                    raise RuntimeClosedError("session is closing")
+                session = self._sessions.get(thread_id)
+            if session is None:
+                session = self._build_runtime(thread_id, agent)
+                with self._lock:
+                    if self._closed or thread_id in self._closing:
+                        raise RuntimeClosedError("session is closing")
+                    existing = self._sessions.get(thread_id)
+                    if existing is not None:
+                        session = existing
+                    else:
+                        self._sessions[thread_id] = session
+            session.rebind(agent, settings)
+            return session
 
     def cancel_turn_ref(
         self, ref: SessionRef, expected_turn_id: str, reason: str = "user"

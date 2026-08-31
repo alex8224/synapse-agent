@@ -28,6 +28,7 @@ from synapse.runtime.sessions.ref import (
 )
 from synapse.runtime.sessions.runtime import (
     ACTIVE_SESSION_STATUSES,
+    ExecutionBinding,
     SessionRuntime,
     SessionSnapshot,
     SessionStatus,
@@ -51,6 +52,7 @@ __all__ = [
     "SessionRef",
     "SessionResolutionError",
     "SessionRuntime",
+    "ExecutionBinding",
     "SessionSnapshot",
     "SessionStatus",
     "SessionSubscription",

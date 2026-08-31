@@ -69,6 +69,12 @@ class LocalProjectRuntimeConsumer:
             task = self._cleanup_task
         await asyncio.shield(task)
 
+    async def rebind_agent(self, thread_id: str, agent: Any, settings: Any) -> None:
+        """Rebind one session without closing its runtime generation."""
+        await self.manager.rebind_session_ref(
+            SessionRef(self.manager.project_id or "", thread_id), agent, settings
+        )
+
     async def _cleanup(self) -> None:
         first_error: BaseException | None = None
         try:
@@ -94,6 +100,7 @@ class ConsumerTurnResult:
     usage: Any
     already_streamed: bool
     turn_id: str = ""
+    error_message: str = ""
 
 
 class ConsumerRuntimeError(RuntimeServiceError):
@@ -215,6 +222,7 @@ async def observe_receipt_turn(
         usage if usage is not None else view.usage,
         displayed,
         receipt.turn_id,
+        str(terminal.get("error") or getattr(view, "last_error", None) or "")[:500],
     )
 
 

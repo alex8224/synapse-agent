@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import copy
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ def handle_model(
     rebuild_agent: Callable[..., Any],
     persist_model_binding: Callable[[Any, str | None], str | None],
     mcp_attach_pending: Callable[[Any], bool],
+    defer_persist: bool = False,
 ) -> SlashResult:
     from synapse.models.registry import (
         apply_thinking_to_settings,
@@ -28,9 +30,14 @@ def handle_model(
         settings_thinking_label,
     )
 
-    reg = registry_from_settings(settings)
+    working_settings = copy(settings) if defer_persist else settings
+    reg = registry_from_settings(working_settings)
     cfg_path = getattr(settings, "models_config_path", None)
-    active = getattr(agent, "_coding_model_profile", None) or settings.active_model or reg.default
+    active = (
+        getattr(agent, "_coding_model_profile", None)
+        or working_settings.active_model
+        or reg.default
+    )
     allowed = reg.allowed_thinking_levels(active)
     allowed_help = "|".join(allowed) if allowed else "off|low|medium|high|max"
 
@@ -70,21 +77,19 @@ def handle_model(
                 error=True,
             )
         try:
-            label = apply_thinking_to_settings(settings, args[1], allowed=allowed)
+            label = apply_thinking_to_settings(working_settings, args[1], allowed=allowed)
         except ValueError as exc:
             return SlashResult(handled=True, lines=[str(exc)], error=True)
-        # Persist before the (slow, fallible) rebuild so the user's choice is
-        # not lost when the rebuild fails or the process exits mid-switch.
-        persist_error = persist_model_binding(settings, thread_id)
-        model_name = settings.active_model or reg.default
+        persist_error = None
+        model_name = working_settings.active_model or reg.default
         new_agent = None
         note = ""
-        if apply_thinking_inplace(settings, agent, model_name):
+        if not defer_persist and apply_thinking_inplace(working_settings, agent, model_name):
             note = " (live, no rebuild)"
         else:
             try:
                 new_agent = rebuild_agent(
-                    settings,
+                    working_settings,
                     project_root=project_root,
                     model_name=model_name,
                     agent=agent,
@@ -95,7 +100,9 @@ def handle_model(
                 if persist_error:
                     lines.append(persist_error)
                 return SlashResult(handled=True, lines=lines, error=True)
-        lines = [f"thinking set to {label}{note}  ({format_model_status(settings)})"]
+        if not defer_persist:
+            persist_error = persist_model_binding(working_settings, thread_id)
+        lines = [f"thinking set to {label}{note}  ({format_model_status(working_settings)})"]
         if persist_error:
             lines.append(persist_error)
         return SlashResult(
@@ -103,7 +110,9 @@ def handle_model(
             lines=lines,
             agent=new_agent,
             settings_changed=True,
-            mcp_attach_pending=bool(new_agent is not None and mcp_attach_pending(settings)),
+            candidate_settings=working_settings if defer_persist else None,
+            error=bool(persist_error),
+            mcp_attach_pending=bool(new_agent is not None and mcp_attach_pending(working_settings)),
         )
 
     target = args[0].strip()
@@ -114,7 +123,7 @@ def handle_model(
 
     from synapse.models.registry import apply_profile_to_settings
 
-    apply_profile_to_settings(settings, profile, seed_thinking=True)
+    apply_profile_to_settings(working_settings, profile, seed_thinking=True)
 
     # /model <alias> high
     # /model <alias> thinking high
@@ -141,25 +150,21 @@ def handle_model(
             ],
             error=True,
         )
+    persist_error = None
 
     if think_raw is not None:
         try:
             apply_thinking_to_settings(
-                settings,
+                working_settings,
                 think_raw,
                 allowed=reg.allowed_thinking_levels(profile.name),
             )
         except ValueError as exc:
             return SlashResult(handled=True, lines=[str(exc)], error=True)
 
-    # Persist the selection before the (slow, fallible) agent rebuild so a
-    # rebuild failure or an immediate quit cannot silently drop the user's
-    # model choice (it would otherwise live only in process memory).
-    persist_error = persist_model_binding(settings, thread_id)
-
     try:
         new_agent = rebuild_agent(
-            settings,
+            working_settings,
             project_root=project_root,
             model_name=profile.name,
             agent=agent,
@@ -174,8 +179,10 @@ def handle_model(
             lines=lines,
             error=True,
         )
-    mcp_attach_pending = mcp_attach_pending(settings)
-    lines = [f"model switched to {profile.name}  ({format_model_status(settings)})"]
+    if not defer_persist:
+        persist_error = persist_model_binding(working_settings, thread_id)
+    mcp_attach_pending = mcp_attach_pending(working_settings)
+    lines = [f"model switched to {profile.name}  ({format_model_status(working_settings)})"]
     if persist_error:
         lines.append(persist_error)
     return SlashResult(
@@ -183,5 +190,7 @@ def handle_model(
         lines=lines,
         agent=new_agent,
         settings_changed=True,
+        candidate_settings=working_settings if defer_persist else None,
+        error=bool(persist_error),
         mcp_attach_pending=mcp_attach_pending,
     )

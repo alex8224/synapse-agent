@@ -367,7 +367,9 @@ def test_finish_model_switch_does_not_commit_background_settings() -> None:
     assert foreground.model == "gpt-4.1"
 
 
-def test_model_switch_pending_mcp_uses_rebuilt_origin_agent() -> None:
+def test_model_switch_pending_mcp_uses_rebuilt_origin_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from pathlib import Path
     from unittest.mock import patch
 
@@ -401,6 +403,7 @@ def test_model_switch_pending_mcp_uses_rebuilt_origin_agent() -> None:
         append_event=lambda *args, **kwargs: None,
     )
     controller = SlashController(app)
+    controller.rebind_agent_worker = lambda *a, **k: None
     ok = SimpleNamespace(error=False, agent=rebuilt_agent, mcp_attach_pending=True)
 
     with patch("synapse.commands.slash_cmds.handle_slash", lambda *a, **k: ok):
@@ -634,7 +637,7 @@ def _handle_model_fakes(monkeypatch: pytest.MonkeyPatch) -> tuple[SimpleNamespac
     return settings, fake_profile
 
 
-def test_handle_model_persists_before_rebuild_failure(
+def test_handle_model_does_not_persist_after_rebuild_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression: the model binding must be persisted even when the slow agent
@@ -668,8 +671,8 @@ def test_handle_model_persists_before_rebuild_failure(
     )
 
     assert result.error is True
-    # Persisted before the rebuild ran (and failed).
-    assert captured == [("deep", "t1")]
+    # A failed build must not persist a binding that has no runtime graph.
+    assert captured == []
 
 
 def test_handle_model_surfaces_persist_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -697,7 +700,7 @@ def test_handle_model_surfaces_persist_error(monkeypatch: pytest.MonkeyPatch) ->
         mcp_attach_pending=lambda s: False,
     )
 
-    assert result.error is False
+    assert result.error is True
     assert result.lines == [
         "model switched to deep  (deep)",
         "failed to persist model binding: disk full",

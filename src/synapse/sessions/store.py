@@ -385,6 +385,24 @@ class SessionStore:
             return ModelBinding()
         return info.binding()
 
+    def replace_model_binding(
+        self, thread_id: str, binding: ModelBinding, *, also_last: bool = True
+    ) -> None:
+        """Replace binding columns exactly, including explicit NULL values."""
+        self.ensure(thread_id)
+        self._conn.execute(
+            """UPDATE sessions SET updated_at = ?, model = ?, active_model = ?, thinking = ?
+               WHERE thread_id = ?""",
+            (_utcnow(), binding.model, binding.active_model, binding.thinking, thread_id),
+        )
+        self._conn.commit()
+        if also_last:
+            if binding.has_data():
+                self.set_last_model_binding(binding)
+            else:
+                self._conn.execute("DELETE FROM prefs WHERE key = ?", ("last_model_binding",))
+                self._conn.commit()
+
     def set_last_model_binding(self, binding: ModelBinding) -> None:
         if not binding.has_data():
             return

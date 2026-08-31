@@ -726,7 +726,37 @@ class TurnController:
         self._service_agents[key] = agent
         self._service_settings[key] = settings or getattr(self._app, "settings", None)
         facade = self._service_session_cached(thread_id, project_id=project_id)
+        # This is deliberately only factory metadata.  An already-open runtime
+        # is changed by the worker-side composition control-plane helper below;
+        # never synchronously wait on the owner loop from this UI method.
         return facade.binding if facade is not None else None
+
+    def rebind_agent_worker(
+        self, thread_id: str, agent: Any, *, settings: Any | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Atomically rebind an open session from a background worker.
+
+        ``LocalProjectRuntimeConsumer`` is an in-process composition control
+        plane, not a DTO service port.  This helper is therefore intentionally
+        usable only by worker code that may block while the runtime owner loop
+        performs the atomic operation.
+        """
+        project_id = project_id or self._current_project_id()
+        # Update the factory metadata first.  Cold sessions have no runtime to
+        # rebind, but their next open must still use the finalized agent.
+        key = (project_id, thread_id)
+        self._service_agents[key] = agent
+        self._service_settings[key] = settings or getattr(self._app, "settings", None)
+        owner = self._service_owners.get(project_id)
+        if owner is None:
+            return
+        binding_settings = settings or self._service_settings.get(
+            (project_id, thread_id), getattr(self._app, "settings", None)
+        )
+        owner.manager._async_runtime.submit(
+            owner.rebind_agent(thread_id, agent, binding_settings)
+        ).result()
 
     def _service_facade(self, thread_id: str) -> TUIRuntimeSessionFacade:
         """Return the lazy service facade for an exact project/session ref."""
@@ -1198,10 +1228,11 @@ class TurnController:
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
+                detail = str(getattr(result, "error_message", "") or "").strip()
                 app._call_for_transcript(
                     transcript_generation,
                     app.append_event,
-                    f"ERROR: {result.status}",
+                    f"ERROR: {detail}" if detail else "ERROR: failed",
                     "bold red",
                 )
         except Exception as exc:  # noqa: BLE001 - UI boundary
@@ -1315,8 +1346,13 @@ class TurnController:
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
-                app._call_for_transcript(transcript_generation, app.append_event,
-                                         "ERROR: failed", "bold red")
+                detail = str(getattr(result, "error_message", "") or "").strip()
+                app._call_for_transcript(
+                    transcript_generation,
+                    app.append_event,
+                    f"ERROR: {detail}" if detail else "ERROR: failed",
+                    "bold red",
+                )
         except Exception as exc:  # noqa: BLE001
             app.call_from_thread(app.append_event, f"ERROR: {exc}", "bold red")
         finally:

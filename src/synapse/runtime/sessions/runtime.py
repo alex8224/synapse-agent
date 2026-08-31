@@ -83,6 +83,19 @@ class SessionUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionBinding:
+    """The agent/settings pair used by a turn.
+
+    A binding is immutable so ``start`` can capture one atomically.  Rebinding
+    only changes the binding for turns which have not reached their start
+    linearization point.
+    """
+
+    agent: Any
+    settings: Any
+
+
+@dataclass(frozen=True, slots=True)
 class UserTurn:
     text: str
     attachments: Sequence[Any] = ()
@@ -100,6 +113,7 @@ class TurnReservation:
     token: str
     approval_turn_id: str | None = None
     approval_generation: int | None = None
+    execution_binding: ExecutionBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,8 +168,7 @@ class SessionRuntime:
     ) -> None:
         self.thread_id = thread_id
         self.project_id = project_id
-        self.agent = agent
-        self.settings = settings
+        self._binding = ExecutionBinding(agent, settings)
         self.workspace = (
             workspace if workspace is not None else getattr(settings, "workspace", None)
         )
@@ -238,7 +251,8 @@ class SessionRuntime:
             if handle.turn_id != expected_turn_id:
                 raise TurnMismatchError("approval turn does not match expected turn")
             generation = self._turn_generation
-            agent = self.agent
+            context = self._active_context
+            agent = context.agent if context is not None else self._binding.agent
             thread_id = self.thread_id
         pending = extract_pending_interrupt(agent, {"configurable": {"thread_id": thread_id}})
         with self._lock:
@@ -265,7 +279,8 @@ class SessionRuntime:
             if handle.turn_id != expected_turn_id:
                 raise TurnMismatchError("approval turn does not match expected turn")
             generation = self._turn_generation
-            agent = self.agent
+            context = self._active_context
+            agent = context.agent if context is not None else self._binding.agent
             thread_id = self.thread_id
         pending = extract_pending_interrupt(agent, {"configurable": {"thread_id": thread_id}})
         action_count = len(pending.actions) if pending is not None else 0
@@ -283,7 +298,9 @@ class SessionRuntime:
             request = build_resume_request(
                 payload=build_resume_payload(decisions),
                 thread_id=thread_id,
-                max_concurrency=int(getattr(self.settings, "max_concurrency", 4)),
+                max_concurrency=int(getattr(context.settings, "max_concurrency", 4))
+                if context is not None
+                else int(getattr(self._binding.settings, "max_concurrency", 4)),
             )
             self._approval_claim = (uuid.uuid4().hex, expected_turn_id, generation)
             return request
@@ -340,20 +357,25 @@ class SessionRuntime:
                     or reservation.token != self._consumed_approval_claim[0]
                 ):
                     raise SessionBusyError("approval resume is not authorized")
+                binding = (
+                    reservation.execution_binding
+                    if message.approval_resume and reservation is not None
+                    else self._binding
+                )
                 request = message.request or build_turn_request(
                     text=message.text,
                     attachments=message.attachments,
-                    settings=self.settings,
+                    settings=binding.settings,
                     thread_id=self.thread_id,
-                    max_concurrency=int(getattr(self.settings, "max_concurrency", 4)),
+                    max_concurrency=int(getattr(binding.settings, "max_concurrency", 4)),
                     config_overrides=message.config_overrides,
                 )
                 if request.thread_id != self.thread_id:
                     raise ValueError("UserTurn request thread_id does not match SessionRuntime")
                 context = TurnContext(
                     thread_id=self.thread_id,
-                    agent=self.agent,
-                    settings=self.settings,
+                    agent=binding.agent,
+                    settings=binding.settings,
                     request=request,
                 )
                 token = message.cancel_token or CancelToken()
@@ -490,6 +512,13 @@ class SessionRuntime:
         self._notify_status()
         return reservation
 
+    def _active_context_binding_locked(self) -> ExecutionBinding:
+        """Return the binding captured by the waiting turn; caller holds the lock."""
+        context = self._active_context
+        if context is None:
+            return self._binding
+        return ExecutionBinding(context.agent, context.settings)
+
     def reserve_turn_or_raise(
         self,
         *,
@@ -528,6 +557,9 @@ class SessionRuntime:
                     token=approval_claim[0],
                     approval_turn_id=handle.turn_id,
                     approval_generation=approval_claim[1],
+                    execution_binding=(
+                        self._active_context_binding_locked()
+                    ),
                 )
             else:
                 if self._status is SessionStatus.WAITING_APPROVAL:
@@ -650,7 +682,30 @@ class SessionRuntime:
 
     def steer_queue(self) -> Any | None:
         """Return the queue fixed to this session's agent."""
-        return get_agent_steer_queue(self.agent)
+        with self._lock:
+            agent = (
+                self._active_context.agent
+                if self._active_context is not None
+                else self._binding.agent
+            )
+        return get_agent_steer_queue(agent)
+
+    def rebind(self, agent: Any, settings: Any) -> None:
+        """Atomically replace the binding for future turns.
+
+        The active context is deliberately untouched.  This is legal while a
+        turn is running or waiting for approval; its resume continues with the
+        captured context.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeClosedError("session runtime is closed")
+            self._binding = ExecutionBinding(agent, settings)
+
+    @property
+    def binding(self) -> ExecutionBinding:
+        with self._lock:
+            return self._binding
 
     def cancel(self, reason: str = "user") -> bool:
         """Cancel the current turn through the strict primitive.
@@ -730,7 +785,12 @@ class SessionRuntime:
                 )
             if handle.done() or self._status is SessionStatus.CANCELLING:
                 raise SessionBusyError("session turn is no longer consuming guidance")
-            queue = get_agent_steer_queue(self.agent)
+            agent = (
+                self._active_context.agent
+                if self._active_context is not None
+                else self._binding.agent
+            )
+            queue = get_agent_steer_queue(agent)
             if queue is None:
                 raise SteeringUnavailableError(
                     "agent has no steer queue for mid-run guidance"
@@ -873,7 +933,12 @@ class SessionRuntime:
                 self._close_claim = claim
                 self._reservation = None
                 handle = self._active_handle
-                steer_queue = get_agent_steer_queue(self.agent)
+                agent = (
+                    self._active_context.agent
+                    if self._active_context is not None
+                    else self._binding.agent
+                )
+                steer_queue = get_agent_steer_queue(agent)
                 if steer_queue is not None:
                     steer_queue.clear_silent()
                 active_turn_id = handle.turn_id if handle is not None else None
@@ -1011,7 +1076,13 @@ class SessionRuntime:
         # start a new turn, so late steers for this turn can never leak into
         # the follow-up.  The silent clear only queues the listener
         # notification; listeners are dispatched below, outside the lock.
-        steer_queue = get_agent_steer_queue(self.agent)
+        with self._lock:
+            agent = (
+                self._active_context.agent
+                if self._active_context is not None
+                else self._binding.agent
+            )
+        steer_queue = get_agent_steer_queue(agent)
         with self._lock:
             if self._active_handle is handle and status is not SessionStatus.WAITING_APPROVAL:
                 self._active_handle = None
