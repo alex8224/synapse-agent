@@ -241,3 +241,12 @@ def test_complete_at_line_recursive(tmp_path: Path):
     # Full-line format preserves the prefix.
     for c in matching:
         assert c.startswith("cat @")
+
+
+def test_at_completion_stops_after_whitespace(tmp_path: Path):
+    """Whitespace after an @ path token ends the completion session."""
+    ws = _make_workspace(tmp_path)
+
+    assert complete_at_line("cat @src continue typing", ws) == []
+    assert complete_at_line("cat @src\tcontinue typing", ws) == []
+    assert complete_at_line("cat @ continue typing", ws) == []
