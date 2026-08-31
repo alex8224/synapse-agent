@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -121,20 +122,36 @@ def _kill_process_tree(proc: subprocess.Popen[Any] | None) -> None:
     if pid is None:
         return
     if os.name == "nt":
+        taskkill_succeeded = False
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
                 check=False,
             )
+            taskkill_succeeded = completed.returncode == 0
         except Exception:  # noqa: BLE001
             pass
+        if not taskkill_succeeded:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
     else:
         try:
-            proc.kill()
-        except Exception:  # noqa: BLE001
+            # execute starts each command in a new session, whose process-group
+            # ID is the shell PID. Kill the group so descendants cannot survive
+            # while retaining stdout/stderr pipe handles.
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
             pass
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
     # Drain pipes with a short timeout so we don't hang forever if child
     # processes still hold them open.
     try:
@@ -426,6 +443,14 @@ class CodingLocalShellBackend(LocalShellBackend):
             "env": self._env,
             "cwd": str(self.cwd),
         }
+        if os.name == "nt":
+            # execute is non-interactive. Do not let commands such as ssh attach
+            # to the TUI console and wait for credentials outside captured stdin.
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            # Detach from the TUI's controlling terminal. Programs that bypass
+            # stdin and open /dev/tty then fail instead of blocking invisibly.
+            run_kwargs["start_new_session"] = True
         if executable:
             run_kwargs["executable"] = executable
 

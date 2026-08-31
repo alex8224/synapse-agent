@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+import os
+import signal
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +14,7 @@ from synapse.config import Settings, load_settings
 from synapse.runtime.backends import (
     DEFAULT_SHELL_EXECUTABLE,
     CodingLocalShellBackend,
+    _kill_process_tree,
     build_backend,
     resolve_shell_invocation,
 )
@@ -131,7 +135,77 @@ def test_execute_pwsh_invocation_kwargs(tmp_path: Path):
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
         assert kwargs["args"][0] == "pwsh"
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        if os.name == "nt":
+            assert kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW
+            assert "start_new_session" not in kwargs
+        else:
+            assert kwargs["start_new_session"] is True
+            assert "creationflags" not in kwargs
         assert "executable" not in kwargs
+
+
+def test_kill_process_tree_uses_platform_tree_termination():
+    proc = MagicMock()
+    proc.pid = 1234
+
+    if os.name == "nt":
+        completed = subprocess.CompletedProcess(args=["taskkill"], returncode=0)
+        with patch("synapse.runtime.backends.subprocess.run", return_value=completed) as run:
+            _kill_process_tree(proc)
+
+        run.assert_called_once()
+        assert run.call_args.args[0] == ["taskkill", "/T", "/F", "/PID", "1234"]
+        assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+        proc.kill.assert_not_called()
+    else:
+        with patch("synapse.runtime.backends.os.killpg") as killpg:
+            _kill_process_tree(proc)
+
+        killpg.assert_called_once_with(1234, signal.SIGKILL)
+
+    proc.communicate.assert_called_once_with(timeout=3)
+
+
+def test_kill_process_tree_falls_back_when_taskkill_fails():
+    proc = MagicMock()
+    proc.pid = 1234
+    completed = subprocess.CompletedProcess(args=["taskkill"], returncode=1)
+
+    with (
+        patch("synapse.runtime.backends.os.name", "nt"),
+        patch("synapse.runtime.backends.subprocess.run", return_value=completed),
+    ):
+        _kill_process_tree(proc)
+
+    proc.kill.assert_called_once_with()
+    proc.communicate.assert_called_once_with(timeout=3)
+
+
+def test_execute_timeout_kills_tree_and_returns_124(tmp_path: Path):
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path,
+        virtual_mode=True,
+        inherit_env=False,
+        env={},
+        shell_executable="pwsh",
+    )
+    mock_proc = MagicMock()
+    mock_proc.communicate.side_effect = subprocess.TimeoutExpired("pwsh", 1)
+
+    with (
+        patch(
+            "synapse.runtime.backends.resolve_shell_invocation",
+            return_value=(["pwsh", "-Command", "sleep"], False, None),
+        ),
+        patch("synapse.runtime.backends.subprocess.Popen", return_value=mock_proc),
+        patch("synapse.runtime.backends._kill_process_tree") as kill_tree,
+    ):
+        response = backend.execute("sleep", timeout=1)
+
+    kill_tree.assert_called_once_with(mock_proc)
+    assert response.exit_code == 124
+    assert "timed out after 1 seconds" in response.output
 
 
 def test_execute_captures_full_output_before_response_truncation(tmp_path: Path):
