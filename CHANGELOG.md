@@ -8,6 +8,25 @@ All entries are written in English.
 
 ---
 
+## v0.1.44
+
+### New Features
+
+- Centered the topbar title and elided topbar components by width.
+
+### Bug Fixes
+
+- Slash path completion now stops once whitespace follows the active `@` token, avoiding spurious path suggestions mid-line.
+- Reworked process-tree termination: on Windows the runtime falls back to `proc.kill()` when `taskkill` fails, and on Unix it kills the whole process group so descendants cannot survive. Commands are also detached from the TUI's controlling terminal (`start_new_session` on Unix, `CREATE_NO_WINDOW` on Windows) so non-interactive tools such as `ssh` cannot block on a hidden console.
+- Re-probe git chrome after mount to retry transient probe failures.
+
+### Engineering
+
+- Ignored local scratch output files.
+- Updated the Scoop manifest.
+
+---
+
 ## v0.1.43
 
 ### New Features
