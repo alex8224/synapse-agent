@@ -583,17 +583,16 @@ def _find_at(value: str) -> tuple[int, str] | None:
     """Find the last ``@`` and extract the path token after it.
 
     Returns ``(at_index, path_prefix)``, e.g. for ``"cat @src/main"``
-    returns ``(4, "src/main")``.  Returns ``None`` when there is no ``@``.
+    returns ``(4, "src/main")``. Returns ``None`` when there is no ``@`` or
+    whitespace after the active ``@`` token has ended path completion.
     """
     idx = value.rfind("@")
     if idx < 0:
         return None
-    # Everything after @ until end or next whitespace.
     rest = value[idx + 1 :]
-    # Split on whitespace to get the path token.
-    parts = rest.split(maxsplit=1)
-    token = parts[0] if parts else ""
-    return idx, token
+    if any(char.isspace() for char in rest):
+        return None
+    return idx, rest
 
 
 def _at_path_prefix(token: str) -> str:
