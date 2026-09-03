@@ -279,6 +279,12 @@ class SlashController:
             # old model / MCP set) and silently undo the switch.
             if turn_controller is not None:
                 turn_controller.bind_agent(app.thread_id, requested_agent)
+                try:
+                    turn_controller.rebind_agent_worker(
+                        app.thread_id, requested_agent, settings=app.settings
+                    )
+                except Exception:
+                    pass
             bind_steer_queue = (
                 getattr(app, "_bind_steer_queue", None)
                 if hasattr(app, "_steer")
@@ -939,6 +945,9 @@ class SlashController:
                 thread_id=app.thread_id,
                 project_root=app.project_root,
             )
+            turn = getattr(app, "_turn", None)
+            if turn is not None:
+                turn.close_session_worker(thread_id)
         except Exception as exc:  # noqa: BLE001
             app.append_event(f"switch failed: {exc}", "yellow")
             return
@@ -1067,7 +1076,12 @@ class SlashController:
         app.set_activity("compacting", "compacting context", True)
         app.flash_status("compacting context…", "dim")
         app._sync_prompt_placeholder()
-        app._compact_context_bg(app.agent, app.thread_id)
+        controller = getattr(app, "_turn", None)
+        cached_agent = (
+            controller.agent_for_session(app.thread_id) if controller is not None else None
+        )
+        compact_agent = cached_agent or app.agent
+        app._compact_context_bg(compact_agent, app.thread_id)
 
     def finish_context_compact(self, result: Any) -> None:
         """Render the completed compact command result on the UI thread."""
@@ -1099,6 +1113,7 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive.
 
@@ -1112,6 +1127,8 @@ class SlashController:
         from synapse.sessions import SessionStore, binding_from_settings
 
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         origin = origin_thread_id or app.thread_id
         origin_agent = origin_agent or app.agent
         worker_settings = origin_settings or self._copy_settings(app.settings)
@@ -1142,7 +1159,7 @@ class SlashController:
             return
         if not bool(getattr(ok, "error", False)) and getattr(ok, "agent", None) is not None:
             try:
-                candidate = getattr(ok, "candidate_settings", None)
+                candidate = getattr(ok, "candidate_settings", None) or worker_settings
                 if candidate is None and store is not None:
                     raise RuntimeError("model switch produced no candidate settings")
                 if store is not None:
@@ -1152,7 +1169,7 @@ class SlashController:
                 turn = getattr(app, "_turn", None)
                 if turn is not None:
                     turn.rebind_agent_worker(
-                        origin, ok.agent, settings=candidate
+                        origin, ok.agent, settings=candidate, project_id=origin_project
                     )
             except Exception as exc:  # noqa: BLE001 - keep UI/DB uncommitted
                 try:
@@ -1198,6 +1215,7 @@ class SlashController:
         ok: Any,
         origin_thread_id: str,
         worker_settings: Any | None = None,
+        origin_project_id: str | None = None,
         notice_ttl: float = 1.5,
     ) -> None:
         """UI-thread completion for a background model switch.
@@ -1207,6 +1225,8 @@ class SlashController:
         chrome must stay untouched.
         """
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         if app.thread_id != origin_thread_id:
             new_agent = getattr(ok, "agent", None)
             if new_agent is not None:
@@ -1217,6 +1237,15 @@ class SlashController:
                         new_agent,
                         settings=worker_settings,
                     )
+                    try:
+                        turn.rebind_agent_worker(
+                            origin_thread_id,
+                            new_agent,
+                            settings=worker_settings,
+                            project_id=origin_project,
+                        )
+                    except Exception:
+                        pass
             app.append_event(
                 f"model switched for background session ({origin_thread_id[:10]}…)",
                 "dim",
@@ -1245,6 +1274,7 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         """Reattach MCP after a model switch, guarded by the lifecycle flag."""
         app = self._app
@@ -1266,6 +1296,7 @@ class SlashController:
             origin_thread_id=origin_thread_id or app.thread_id,
             origin_agent=origin_agent,
             origin_settings=origin_settings,
+            origin_project_id=origin_project_id,
         )
 
     def attach_mcp_after_switch_bg(
@@ -1275,11 +1306,14 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         from synapse.app.agent import attach_mcp_to_agent
         from synapse.observability.startup_trace import duration
 
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         origin = origin_thread_id or app.thread_id
         worker_settings = origin_settings or self._copy_settings(app.settings)
         mcp_started = time.perf_counter()
@@ -1312,7 +1346,12 @@ class SlashController:
             try:
                 turn = getattr(app, "_turn", None)
                 if turn is not None:
-                    turn.rebind_agent_worker(origin, agent, settings=worker_settings)
+                    turn.rebind_agent_worker(
+                        origin,
+                        agent,
+                        settings=worker_settings,
+                        project_id=origin_project,
+                    )
             except Exception as exc:  # noqa: BLE001 - retain old binding
                 app.call_from_thread(
                     app.append_event, f"MCP rebind failed: {exc}", "yellow"
@@ -1322,7 +1361,12 @@ class SlashController:
         try:
             turn = getattr(app, "_turn", None)
             if turn is not None:
-                turn.rebind_agent_worker(origin, agent, settings=worker_settings)
+                turn.rebind_agent_worker(
+                    origin,
+                    agent,
+                    settings=worker_settings,
+                    project_id=origin_project,
+                )
         except Exception as exc:  # noqa: BLE001 - retain old binding
             app.call_from_thread(app.append_event, f"MCP rebind failed: {exc}", "yellow")
             return
@@ -1418,6 +1462,12 @@ class SlashController:
                         new_agent,
                         settings=worker_settings,
                     )
+                    try:
+                        turn.rebind_agent_worker(
+                            origin_thread_id, new_agent, settings=worker_settings
+                        )
+                    except Exception:
+                        pass
             app.append_event(
                 f"MCP updated for background session ({origin_thread_id[:10]}…)",
                 "dim",

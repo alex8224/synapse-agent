@@ -331,6 +331,11 @@ def handle_mcp(
     if sub in {"disable", "off"}:
         settings.enable_mcp = False
         try:
+            from synapse.integrations.mcp_client import close_active_mcp_pool
+            close_active_mcp_pool()
+        except Exception:
+            pass
+        try:
             new_agent = rebuild_agent(
                 settings,
                 project_root=project_root,

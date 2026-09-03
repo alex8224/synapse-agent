@@ -742,7 +742,7 @@ class TurnController:
         usable only by worker code that may block while the runtime owner loop
         performs the atomic operation.
         """
-        project_id = project_id or self._current_project_id()
+        project_id = str(project_id or self._current_project_id() or "")
         # Update the factory metadata first.  Cold sessions have no runtime to
         # rebind, but their next open must still use the finalized agent.
         key = (project_id, thread_id)
@@ -757,6 +757,41 @@ class TurnController:
         owner.manager._async_runtime.submit(
             owner.rebind_agent(thread_id, agent, binding_settings)
         ).result()
+
+    def close_session_worker(
+        self, thread_id: str, *, project_id: str | None = None
+    ) -> None:
+        """Close and discard a session's in-memory runtime and cached factory state."""
+        project_id = str(project_id or self._current_project_id() or "")
+        key = (project_id, thread_id)
+        self._service_agents.pop(key, None)
+        self._service_settings.pop(key, None)
+        facade_key = f"{project_id}:{thread_id}"
+        facade = self._service_sessions.pop(facade_key, None)
+        owner = self._service_owners.get(project_id)
+        if owner is not None:
+            try:
+                owner.manager._async_runtime.submit(
+                    owner.manager.close_session_ref(
+                        SessionRef(project_id, thread_id), cancel_active=True
+                    )
+                ).result(timeout=5.0)
+            except Exception:
+                pass
+        elif facade is not None:
+            try:
+                get_async_runtime().submit(
+                    facade.close(cancel_active=True)
+                ).result(timeout=5.0)
+            except Exception:
+                pass
+        with self._status_track_lock:
+            self._last_known_status.pop((project_id, thread_id), None)
+            self._pending_done_notices = [
+                n
+                for n in self._pending_done_notices
+                if getattr(n[0], "thread_id", "") != thread_id
+            ]
 
     def _service_facade(self, thread_id: str) -> TUIRuntimeSessionFacade:
         """Return the lazy service facade for an exact project/session ref."""
@@ -1112,6 +1147,17 @@ class TurnController:
             app._image_bank.clear()
             app.refresh_image_preview()
             return
+        if self.busy:
+            service = self._service_session_cached(app.thread_id)
+            if service is not None:
+                try:
+                    fresh_view = get_async_runtime().submit(
+                        service.get(refresh=True)
+                    ).result(timeout=0.5)
+                    if self._safe_status(fresh_view.status) not in ACTIVE_SESSION_STATUSES:
+                        self.sync_busy_projection()
+                except Exception:
+                    pass
         if self.busy:
             # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
             if self.steer(text):

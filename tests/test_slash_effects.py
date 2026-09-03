@@ -60,7 +60,7 @@ def test_cancel_active_turn_effect_cancels_session_runtime() -> None:
     rebound_calls = []
 
     class _Turn:
-        def rebind_agent_worker(self, thread_id, agent, *, settings=None):
+        def rebind_agent_worker(self, thread_id, agent, *, settings=None, project_id=None, **kwargs):
             rebound_calls.append((thread_id, agent, settings))
 
     app = SimpleNamespace(
@@ -401,7 +401,7 @@ def test_model_switch_pending_mcp_uses_rebuilt_origin_agent(
     rebound_calls = []
 
     class _Turn:
-        def rebind_agent_worker(self, thread_id, agent, *, settings=None):
+        def rebind_agent_worker(self, thread_id, agent, *, settings=None, project_id=None, **kwargs):
             rebound_calls.append((thread_id, agent, settings))
 
     app = SimpleNamespace(
