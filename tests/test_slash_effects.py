@@ -57,6 +57,12 @@ def test_effects_ignore_non_string_magicmock_like_resume_values() -> None:
 
 def test_cancel_active_turn_effect_cancels_session_runtime() -> None:
     calls: list[str] = []
+    rebound_calls = []
+
+    class _Turn:
+        def rebind_agent_worker(self, thread_id, agent, *, settings=None):
+            rebound_calls.append((thread_id, agent, settings))
+
     app = SimpleNamespace(
         thread_id="thread",
         _turn=SimpleNamespace(cancel=lambda reason: calls.append(reason)),
@@ -392,6 +398,12 @@ def test_model_switch_pending_mcp_uses_rebuilt_origin_agent(
         del kwargs
         scheduled.append((fn, args))
 
+    rebound_calls = []
+
+    class _Turn:
+        def rebind_agent_worker(self, thread_id, agent, *, settings=None):
+            rebound_calls.append((thread_id, agent, settings))
+
     app = SimpleNamespace(
         thread_id="foreground",
         agent=old_agent,
@@ -402,8 +414,8 @@ def test_model_switch_pending_mcp_uses_rebuilt_origin_agent(
         set_activity=lambda *args, **kwargs: None,
         append_event=lambda *args, **kwargs: None,
     )
+    app._turn = _Turn()
     controller = SlashController(app)
-    controller.rebind_agent_worker = lambda *a, **k: None
     ok = SimpleNamespace(error=False, agent=rebuilt_agent, mcp_attach_pending=True)
 
     with patch("synapse.commands.slash_cmds.handle_slash", lambda *a, **k: ok):
@@ -419,6 +431,8 @@ def test_model_switch_pending_mcp_uses_rebuilt_origin_agent(
     assert attach_calls[0][0] == "origin-session"
     assert attach_calls[0][1] is rebuilt_agent
     assert attach_calls[0][2] is not settings
+    assert len(rebound_calls) == 1
+    assert rebound_calls[0][0] == "origin-session"
 
 
 def test_finish_mcp_worker_binds_origin_when_foreground_moved() -> None:

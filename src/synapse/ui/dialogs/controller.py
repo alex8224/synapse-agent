@@ -1149,21 +1149,30 @@ class SlashController:
                     store.save_model_binding(
                         origin, binding_from_settings(candidate), also_last=True
                     )
-                self.rebind_agent_worker(
-                    origin, ok.agent, settings=candidate
-                )
+                turn = getattr(app, "_turn", None)
+                if turn is not None:
+                    turn.rebind_agent_worker(
+                        origin, ok.agent, settings=candidate
+                    )
             except Exception as exc:  # noqa: BLE001 - keep UI/DB uncommitted
                 try:
-                    if store is not None and old_binding is not None:
-                        store.replace_model_binding(origin, old_binding, also_last=False)
-                    if store is not None and old_last is not None and old_last.has_data():
-                        store.set_last_model_binding(old_last)
+                    if store is not None:
+                        if old_binding is not None:
+                            store.replace_model_binding(origin, old_binding, also_last=False)
+                        if old_last is not None and old_last.has_data():
+                            store.set_last_model_binding(old_last)
+                        else:
+                            store._conn.execute(
+                                "DELETE FROM prefs WHERE key = ?", ("last_model_binding",)
+                            )
+                            store._conn.commit()
                 except Exception as rollback_exc:  # noqa: BLE001
                     exc = RuntimeError(f"{exc}; rollback failed: {rollback_exc}")
                 app.call_from_thread(
                     app.append_event, f"{activity} failed: runtime rebind: {exc}", "yellow"
                 )
                 app.call_from_thread(app.set_activity, "idle", "", True)
+                app._model_switch_inflight = False
                 return
         candidate_settings = getattr(ok, "candidate_settings", None) or worker_settings
         if store is not None:
@@ -1224,6 +1233,7 @@ class SlashController:
             # marker set: an exit-time fallback must not clobber it with the
             # stale settings we are refusing to commit.
             self.apply_ok_result(ok, notice_ttl)
+            app._model_switch_inflight = False
             return
         if worker_settings is not None:
             self._commit_settings(app.settings, worker_settings)
@@ -1300,7 +1310,9 @@ class SlashController:
             # Foreground moved on while MCP reconnected: bind the finalized
             # graph to the origin session only; never touch the live session.
             try:
-                self.rebind_agent_worker(origin, agent, settings=worker_settings)
+                turn = getattr(app, "_turn", None)
+                if turn is not None:
+                    turn.rebind_agent_worker(origin, agent, settings=worker_settings)
             except Exception as exc:  # noqa: BLE001 - retain old binding
                 app.call_from_thread(
                     app.append_event, f"MCP rebind failed: {exc}", "yellow"
@@ -1308,7 +1320,9 @@ class SlashController:
                 return
             return
         try:
-            self.rebind_agent_worker(origin, agent, settings=worker_settings)
+            turn = getattr(app, "_turn", None)
+            if turn is not None:
+                turn.rebind_agent_worker(origin, agent, settings=worker_settings)
         except Exception as exc:  # noqa: BLE001 - retain old binding
             app.call_from_thread(app.append_event, f"MCP rebind failed: {exc}", "yellow")
             return
