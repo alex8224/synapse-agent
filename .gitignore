@@ -21,6 +21,8 @@ wheels/
 .tmp/
 .tmp-pytest/
 .synapse/
+*.sqlite
+*.sqlite3
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
