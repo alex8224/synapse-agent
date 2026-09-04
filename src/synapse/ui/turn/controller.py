@@ -1494,6 +1494,8 @@ class TurnController:
             project_id = self._current_project_id()
             self._service_agents[(project_id, app.thread_id)] = app.agent
             self._service_settings[(project_id, app.thread_id)] = app.settings
+        agent = self.agent_for_session(app.thread_id) or getattr(app, "agent", None)
+        app._active_steer_queue = get_agent_steer_queue(agent)
 
     def launch_context(self) -> tuple[str, Any, int]:
         """Freeze everything a queued Textual worker must not read from mutable app state."""
@@ -1528,6 +1530,8 @@ class TurnController:
 
     def clear_turn_context(self) -> None:
         """Compatibility no-op; the service owns immutable turn context."""
+        app = self._app
+        app._active_steer_queue = None
 
     # -- turn end -----------------------------------------------------------
 
@@ -1537,6 +1541,9 @@ class TurnController:
             app.__dict__["_busy_projection"] = False
         self.sync_busy_projection()
         completed_queue = getattr(app, "_active_steer_queue", None)
+        if completed_queue is None:
+            agent = self.agent_for_session(app.thread_id) or getattr(app, "agent", None)
+            completed_queue = get_agent_steer_queue(agent)
         app._sync_prompt_placeholder()
         # An immediate middleware drain retains the panel while the turn is
         # active. Reconcile it now so applied guidance disappears at turn end.

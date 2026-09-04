@@ -30,6 +30,25 @@ def test_turn_queue_prefers_active_queue_while_busy() -> None:
     assert SteerController(app).turn_queue() is active
 
 
+def test_turn_queue_falls_back_to_session_agent_and_app_agent() -> None:
+    app = _App()
+    fallback_queue = SteerQueue()
+    app.agent = SimpleNamespace(_coding_steer_queue=fallback_queue)
+    assert SteerController(app).turn_queue() is fallback_queue
+
+    session_queue = SteerQueue()
+    session_agent = SimpleNamespace(_coding_steer_queue=session_queue)
+    app.thread_id = "test-thread"
+    app._turn = SimpleNamespace(
+        agent_for_session=lambda thread: session_agent if thread == "test-thread" else None
+    )
+    assert SteerController(app).turn_queue() is session_queue
+
+    active_queue = SteerQueue()
+    app._active_steer_queue = active_queue
+    assert SteerController(app).turn_queue() is active_queue
+
+
 def test_bind_queue_replaces_old_listener() -> None:
     app = _App()
     first = SteerQueue()

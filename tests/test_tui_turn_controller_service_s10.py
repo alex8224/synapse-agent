@@ -297,3 +297,32 @@ def test_service_facade_binding_owner_is_preserved():
     owner = object()
     binding = TUISessionBinding(SessionRef("p", "t"), MagicMock(), owner=owner)
     assert TUIRuntimeSessionFacade(binding).binding.owner is owner
+
+
+def test_capture_and_clear_turn_context_maintains_active_steer_queue():
+    from synapse.runtime.steer import SteerQueue
+
+    app = App()
+    queue = SteerQueue()
+    app.agent = SimpleNamespace(_coding_steer_queue=queue)
+    controller = TurnController(app)
+
+    controller.capture_turn_context()
+    assert getattr(app, "_active_steer_queue", None) is queue
+
+    controller.clear_turn_context()
+    assert getattr(app, "_active_steer_queue", None) is None
+
+    controller.capture_turn_context()
+    app._on_steer_items_changed = MagicMock()
+    app.clear_stream = lambda: None
+    app.set_activity = lambda *args, **kwargs: None
+    app.query_one = lambda *args, **kwargs: SimpleNamespace(focus=lambda: None)
+    app._clear_subagent_status = lambda: None
+    app._bind_steer_queue = lambda: None
+    app._cancel_event = SimpleNamespace()
+    app.call_after_refresh = lambda *args, **kwargs: False
+    queue.push("pending-test")
+    controller.turn_done()
+    app._on_steer_items_changed.assert_called()
+    assert app._on_steer_items_changed.call_args[0][0] == ["pending-test"]
