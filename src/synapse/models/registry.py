@@ -554,6 +554,17 @@ class ModelRegistry:
             from synapse.integrations.http_clients import enable_anthropic_long_keepalive_defaults
 
             enable_anthropic_long_keepalive_defaults()
+        elif model_name.startswith("google_genai:"):
+            if progress is not None:
+                progress("loading Google GenAI SDK")
+            if api_key:
+                kwargs["google_api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = str(base_url).rstrip("/")
+            if profile.model_kwargs:
+                mk = dict(kwargs.get("model_kwargs") or {})
+                mk.update(profile.model_kwargs)
+                kwargs["model_kwargs"] = mk
 
         if progress is not None and not model_name.startswith("openai:"):
             progress("creating async model client")
