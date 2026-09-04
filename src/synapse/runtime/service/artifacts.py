@@ -219,6 +219,8 @@ def _workspace_context(session: SessionRuntime) -> _FilesystemContext:
         if not root.is_dir():
             raise ArtifactUnavailableError("artifact workspace is unavailable")
         settings = getattr(session, "settings", None)
+        if settings is None and hasattr(session, "binding"):
+            settings = getattr(getattr(session, "binding", None), "settings", None)
         deny = getattr(settings, "deny_fs_paths", []) or []
         matcher = ToolIgnoreMatcher.from_workspace(root, extra_deny=deny)
     except ArtifactUnavailableError:

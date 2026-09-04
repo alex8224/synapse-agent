@@ -168,6 +168,12 @@ class _Service:
     async def submit_turn(self, value: object) -> object:
         return value
 
+    async def pending_approval(self, value: object) -> object:
+        return value
+
+    async def resume_turn(self, value: object) -> object:
+        return value
+
     async def open_session(self, value: object) -> object:
         return value
 

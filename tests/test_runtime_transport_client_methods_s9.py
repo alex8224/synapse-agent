@@ -160,6 +160,8 @@ def test_loopback_server_auth_success_and_rejection() -> None:
                 raise AssertionError
 
             open_session = submit_turn
+            pending_approval = submit_turn
+            resume_turn = submit_turn
             cancel_turn = submit_turn
             steer_turn = submit_turn
             close_session = submit_turn

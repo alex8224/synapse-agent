@@ -84,6 +84,12 @@ class _SpyService:
     async def submit_turn(self, dto: object) -> object:
         return await self._call("submit_turn", dto)
 
+    async def pending_approval(self, dto: object) -> object:
+        return await self._call("pending_approval", dto)
+
+    async def resume_turn(self, dto: object) -> object:
+        return await self._call("resume_turn", dto)
+
     async def open_session(self, dto: object) -> object:
         return await self._call("open_session", dto)
 

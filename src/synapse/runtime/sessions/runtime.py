@@ -707,6 +707,11 @@ class SessionRuntime:
         with self._lock:
             return self._binding
 
+    @property
+    def settings(self) -> Any:
+        with self._lock:
+            return self._binding.settings
+
     def cancel(self, reason: str = "user") -> bool:
         """Cancel the current turn through the strict primitive.
 
