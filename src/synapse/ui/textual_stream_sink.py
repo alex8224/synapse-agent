@@ -286,6 +286,7 @@ class TextualStreamSink:
     def activity_stop(self) -> None:
         self._pending_activity = None
         self._last_sub_detail = ""
+        self.close_reasoning()
         self._call("clear_stream")
         self._call("set_activity", "idle", "ready", True)
         self._last_activity_push = time.monotonic()

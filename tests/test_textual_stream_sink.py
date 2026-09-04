@@ -96,3 +96,38 @@ def test_pending_approval_forwards_to_host_mount() -> None:
     assert pending.actions[0].name == "execute"
     assert pending.actions[0].args == {"command": "ls -la"}
     assert "info" not in [name for name, _, _ in host.calls]
+
+
+def test_activity_stop_closes_open_reasoning_before_clear_stream() -> None:
+    host = _Host()
+    sink = TextualStreamSink(host)
+    sink.write_reasoning("pondering some more")
+    sink.activity_stop()
+    names = [name for name, _, _ in host.calls]
+    assert "commit_thought" in names
+    assert "clear_stream" in names
+    assert names.index("commit_thought") < names.index("clear_stream")
+
+
+def test_clear_stream_seals_substantive_live_thought_block() -> None:
+    from synapse.ui.transcript.controller import TranscriptController
+    from synapse.ui.transcript_blocks import ThoughtBlock
+
+    class _App:
+        settings = type("Settings", (), {"expand_thinking": False})()
+        def query_one(self, *args: Any, **kwargs: Any) -> Any:
+            raise LookupError()
+        def call_after_refresh(self, fn: Any, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    ctrl = TranscriptController(_App())
+    block = ThoughtBlock(1.0, "Substantive thought", live=True)
+    ctrl.state.live_stream_block = block
+    ctrl.state.live_stream_kind = "reasoning"
+    ctrl.state.thought_blocks.append(block)
+
+    ctrl.clear_stream()
+    assert block.live is False
+    assert block.body == "Substantive thought"
+    assert block in ctrl.state.thought_blocks
+    assert ctrl.state.live_stream_block is None

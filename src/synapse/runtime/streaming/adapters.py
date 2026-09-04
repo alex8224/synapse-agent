@@ -69,6 +69,7 @@ class InstrumentedStreamSink:
             accumulator_options["turn_id"] = turn_id
         self.accumulator = TurnAccumulator(**accumulator_options)
         self._open_answer = self.accumulator.open_answer
+        self._reasoning_open = False
         self._subagent_statuses: dict[str, str] = {}
         self._enhanced = all(
             callable(getattr(renderer, name, None))
@@ -187,11 +188,15 @@ class InstrumentedStreamSink:
         self._forward("subagent_phase", parent_id, phase)
 
     def write_reasoning(self, text: str) -> None:
+        self._reasoning_open = True
         self.accumulator.reasoning_delta(text)
         self.accumulator.emit(TurnEventKind.REASONING_DELTA, TextPayload(text=text))
         self._forward("write_reasoning", text)
 
     def close_reasoning(self) -> None:
+        if not self._reasoning_open and not self.accumulator.open_reasoning:
+            return
+        self._reasoning_open = False
         body = self.accumulator.close_reasoning()
         self.accumulator.emit(
             TurnEventKind.REASONING_COMPLETED,
@@ -199,7 +204,12 @@ class InstrumentedStreamSink:
         )
         self._forward("close_reasoning")
 
+    def _close_reasoning_if_open(self) -> None:
+        if self._reasoning_open or self.accumulator.open_reasoning:
+            self.close_reasoning()
+
     def write_answer_token(self, text: str, *, msg_id: str | None = None) -> None:
+        self._close_reasoning_if_open()
         self.accumulator.answer_delta(text, msg_id)
         self.accumulator.emit(
             TurnEventKind.ANSWER_DELTA,
@@ -208,6 +218,7 @@ class InstrumentedStreamSink:
         self._forward("write_answer_token", text, msg_id=msg_id)
 
     def write_answer_complete(self, text: str, *, msg_id: str | None = None) -> None:
+        self._close_reasoning_if_open()
         accepted = self.accumulator.answer_completed(text, msg_id)
         if accepted:
             self.accumulator.emit(
@@ -217,7 +228,7 @@ class InstrumentedStreamSink:
         self._forward("write_answer_complete", text, msg_id=msg_id)
 
     def finalize_line(self) -> None:
-        self.accumulator.close_reasoning()
+        self._close_reasoning_if_open()
         body = self.accumulator.finalize_answer()
         if body:
             self.accumulator.emit(
@@ -227,6 +238,7 @@ class InstrumentedStreamSink:
         self._forward("finalize_line")
 
     def tool_calls_started(self, calls: list[Any], *, parallel: bool) -> None:
+        self._close_reasoning_if_open()
         self.accumulator.note_tool_batch(len(calls))
         self.accumulator.emit(
             TurnEventKind.TOOL_BATCH_STARTED,

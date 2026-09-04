@@ -137,12 +137,40 @@ class TextualTurnEventRenderer:
             self._sink.write_answer_token(text, msg_id=_str_or_none(payload.get("message_id")))
         elif kind == "reasoning_delta" and isinstance(text, str):
             self._sink.write_reasoning(text)
+        elif kind in {"reasoning_completed", "thinking_completed"}:
+            self._sink.close_reasoning()
+        elif kind == "answer_completed":
+            body = text if isinstance(text, str) else str(payload.get("text", "") or "")
+            self._sink.write_answer_complete(body, msg_id=_str_or_none(payload.get("message_id")))
         elif kind in {"thinking_started", "activity_started"}:
             self._sink.activity_start(
                 str(payload.get("phase", "thinking")), str(payload.get("detail", ""))
             )
+        elif kind in {"thinking_updated", "activity_updated"}:
+            self._sink.activity_update(
+                str(payload.get("phase", "thinking")),
+                str(payload.get("detail", "")),
+                reset_timer=bool(payload.get("reset_timer", False)),
+            )
         elif kind in {"thinking_finished", "activity_stopped"}:
             self._sink.activity_stop()
+        elif kind == "tool_batch_started":
+            raw_calls = payload.get("calls") or ()
+            calls = [
+                {
+                    "id": c.get("call_id") or c.get("id"),
+                    "name": c.get("name"),
+                    "args": {
+                        "intent": (
+                            c.get("args_preview")
+                            if c.get("args_preview") is not None
+                            else c.get("args")
+                        )
+                    },
+                }
+                for c in raw_calls if isinstance(c, Mapping)
+            ]
+            self._sink.tool_calls_started(calls, parallel=bool(payload.get("parallel", False)))
         elif kind == "tool_started":
             if not _valid_tool_payload(payload):
                 return False
@@ -158,6 +186,22 @@ class TextualTurnEventRenderer:
             self._sink.tool_item_finished(item_id, status=str(payload.get("status", "completed")),
                                           preview=_str_or_none(payload.get("preview")),
                                           error=bool(payload.get("error", False)))
+        elif kind == "tool_result":
+            name = payload.get("name")
+            if not isinstance(name, str):
+                return False
+            self._sink.tool_result(
+                name,
+                str(payload.get("status", "completed")),
+                sub=bool(payload.get("sub", False)),
+            )
+        elif kind == "tool_batch_finished":
+            group_id = str(payload.get("group_id", "") or "")
+            self._sink.tool_group_closed(group_id)
+        elif kind == "subagent_status_changed":
+            parent_id = str(payload.get("parent_id", "") or "")
+            status = _str_or_none(payload.get("status"))
+            self._sink.subagent_phase(parent_id, status)
         elif kind == "usage_updated":
             self._sink.note_usage(**{key: payload[key] for key in (
                 "turn_input", "turn_output", "turn_cache", "last_input", "last_output",
@@ -165,6 +209,20 @@ class TextualTurnEventRenderer:
             ) if key in payload})
         elif kind in {"warning", "info"}:
             self._sink.info(str(payload.get("message", payload.get("text", ""))))
+        elif kind == "approval_required":
+            from synapse.runtime.hitl import PendingAction
+
+            raw_actions = payload.get("actions") or ()
+            actions = [
+                PendingAction(
+                    name=str(item.get("name", "") or ""),
+                    args=dict(item.get("args") or {}),
+                    description=str(item.get("description", "") or ""),
+                    allowed_decisions=list(item.get("allowed_decisions") or ()),
+                )
+                for item in raw_actions if isinstance(item, Mapping)
+            ]
+            self._sink.pending_approval(actions, None)
         elif kind in {"turn_completed", "turn_cancelled", "turn_failed", "turn_waiting_approval"}:
             if self._terminal_seen:
                 return False

@@ -775,7 +775,7 @@ def stream_agent(
                     if reasoning and not sink.streamed_reasoning:
                         sink.write_reasoning(reasoning)
                         sink.close_reasoning()
-                    elif reasoning and sink.streamed_reasoning:
+                    elif sink.streamed_reasoning:
                         sink.close_reasoning()
                     elif not sink.streamed_reasoning:
                         placeholder = reasoning_placeholder_text(

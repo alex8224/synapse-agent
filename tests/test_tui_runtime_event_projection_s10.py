@@ -126,6 +126,58 @@ def test_adapter_is_exact_delegate():
     target.render_runtime_event.assert_called_once_with(e)
 
 
+def test_reasoning_lifecycle_events_projected() -> None:
+    host, r = renderer()
+    assert project_runtime_event(r, event(1, "reasoning_delta", {"text": "pondering"})) is True
+    assert project_runtime_event(r, event(2, "reasoning_completed", {"text": "pondering"})) is True
+    assert any(call[0] == "commit_thought" for call in host.calls)
+
+
+def test_answer_completed_event_projected() -> None:
+    host, r = renderer()
+    assert project_runtime_event(r, event(1, "answer_completed", {"text": "full answer"})) is True
+    answers = [call for call in host.calls if call[0] == "commit_answer"]
+    assert answers and answers[-1][1] == ("full answer",)
+
+
+def test_activity_updated_event_projected() -> None:
+    host, r = renderer()
+    ev = event(1, "activity_updated", {"phase": "model", "detail": "generating"})
+    assert project_runtime_event(r, ev) is True
+    assert any(call[0] == "set_activity" for call in host.calls)
+
+
+def test_tool_batch_lifecycle_events_projected() -> None:
+    host, r = renderer()
+    batch_payload = {
+        "calls": [{"id": "c1", "name": "read_file", "args": {"file_path": "a.py"}}],
+        "parallel": False,
+    }
+    assert project_runtime_event(r, event(1, "tool_batch_started", batch_payload)) is True
+    assert any(call[0] == "set_activity" for call in host.calls)
+    res_ev = event(2, "tool_result", {"name": "read_file", "status": "ok"})
+    assert project_runtime_event(r, res_ev) is True
+    assert project_runtime_event(r, event(3, "tool_batch_finished", {"group_id": "g1"})) is True
+
+
+def test_subagent_and_approval_events_projected() -> None:
+    host, r = renderer()
+    sub_ev = event(1, "subagent_status_changed", {"parent_id": "p1", "status": "reasoning"})
+    assert project_runtime_event(r, sub_ev) is True
+    approval_payload = {
+        "actions": [
+            {
+                "name": "execute",
+                "args": {"cmd": "ls"},
+                "description": "run ls",
+                "allowed_decisions": ["allow_once"],
+            }
+        ]
+    }
+    assert project_runtime_event(r, event(2, "approval_required", approval_payload)) is True
+    assert any(call[0] == "mount_approval" for call in host.calls)
+
+
 def test_legacy_turn_event_api_still_works():
     host, r = renderer()
     from synapse.runtime.streaming import TextPayload, TurnEvent, TurnEventKind
