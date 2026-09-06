@@ -430,6 +430,48 @@ def build_path_normalize_middleware(workspace: Path):
     return _dual_wrap_tool_call(name="normalize_virtual_paths", apply=_apply)
 
 
+def format_tool_validation_error(exc: Exception, tool_name: str) -> str:
+    """Format Pydantic ValidationError into actionable, instructive guidance for the model."""
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError):
+        return f"Error: {tool_name} failed ({type(exc).__name__}): {exc}"
+
+    errors = exc.errors()
+    missing_fields: list[str] = []
+    extra_fields: list[str] = []
+    other_issues: list[str] = []
+
+    for err in errors:
+        loc = ".".join(str(p) for p in err.get("loc", []))
+        msg = err.get("msg", "")
+        err_type = err.get("type", "")
+        if "extra_forbidden" in err_type or "extra fields not permitted" in msg:
+            extra_fields.append(loc)
+        elif "missing" in err_type or "Field required" in msg:
+            missing_fields.append(loc)
+        else:
+            other_issues.append(f"'{loc}': {msg}")
+
+    lines = [f"Validation Error: Invalid arguments for tool '{tool_name}'."]
+    if extra_fields:
+        lines.append(
+            f"- Unexpected argument(s): {sorted(extra_fields)}. "
+            "This tool does not accept these fields "
+            "(e.g. do not encapsulate arguments in 'description')."
+        )
+    if missing_fields:
+        lines.append(
+            f"- Missing required argument(s): {sorted(missing_fields)}. "
+            "Provide them directly as top-level arguments."
+        )
+    if other_issues:
+        lines.append(f"- Invalid values: {'; '.join(other_issues)}.")
+
+    lines.append("Please adjust your arguments to strictly follow the tool's parameter schema.")
+    return "\n".join(lines)
+
+
 def build_tool_error_recovery_middleware():
     """Return tool failures to the model instead of terminating the agent graph."""
 
@@ -441,9 +483,11 @@ def build_tool_error_recovery_middleware():
         else:
             name = str(getattr(tool_call, "name", None) or "tool")
             call_id = str(getattr(tool_call, "id", None) or "unknown")
+
+        err_text = format_tool_validation_error(exc, name)
         return ToolMessage(
             content=(
-                f"Error: {name} failed ({type(exc).__name__}): {exc}\n"
+                f"{err_text}\n"
                 "The tool call failed. Continue the task by correcting the arguments "
                 "or choosing another safe tool."
             ),
@@ -592,9 +636,11 @@ def add_intent_to_tool(tool: Any, *, cache: dict[int, Any] | None = None) -> Any
     title = getattr(schema, "__name__", None) or f"{_tool_name(tool)}Schema"
     try:
         # compact_conversation etc. carry ToolRuntime (contains BaseStore).
+        # We explicitly enforce extra="forbid" so model hallucinations (like injecting
+        # a pseudo "description" param into search tools) are cleanly rejected.
         NewModel = create_model(
             f"{title}WithIntent",
-            __config__=ConfigDict(arbitrary_types_allowed=True),
+            __config__=ConfigDict(arbitrary_types_allowed=True, extra="forbid"),
             **defs,
         )
     except Exception:  # noqa: BLE001
