@@ -92,6 +92,13 @@ to switch.  The old session keeps running in the background and is never
 cancelled.  Some terminals never forward `Ctrl+Tab` to the app; `Ctrl+O` is a
 drop-in alternative.
 
+`/new` and switches to cold sessions prepare an independent agent in a background
+worker, leaving the current session visible until preparation succeeds. While
+preparing, submitted prompt text stays in the input instead of being sent to the
+old session; submit it again after the switch. A failed preparation leaves the
+current session unchanged. Mid-turn steer notifications do not wait for UI repaint,
+and streaming updates are coalesced into bounded UI batches.
+
 <details>
 <summary><b>Or run from source</b></summary>
 

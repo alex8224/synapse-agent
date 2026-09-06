@@ -268,15 +268,17 @@ def test_watch_error_boundary_does_not_crash():
     assert c.attach("t") is None
 
 
-def test_three_methods_have_no_legacy_bridge_symbols():
+def test_three_methods_have_no_direct_runtime_subscription():
     tree = ast.parse(Path("src/synapse/ui/turn/controller.py").read_text())
     methods = {
         n.name for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name in {"attach", "detach", "run_resume"}
     }
     assert methods == {"attach", "detach", "run_resume"}
-    source = Path("src/synapse/ui/turn/controller.py").read_text()
-    assert "_event_bridge" not in source and "_session_subscription" not in source
+    # A UI-only coalescing bridge is allowed. Only the obsolete execution /
+    # broker subscription path must stay absent from service consumers.
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not attrs & {"_session_subscription", "session_runtime", "runtime_for"}
 
 
 class _Watch:

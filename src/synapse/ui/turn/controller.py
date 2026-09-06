@@ -35,6 +35,7 @@ from synapse.runtime.steer import (
 )
 from synapse.ui.dialogs.active_session_switcher import ActiveSessionItem
 from synapse.ui.stream import extract_last_ai_text
+from synapse.ui.turn.event_bridge import TextualTurnEventBridge
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
 from synapse.ui.turn.persistence import TurnPersistenceController
 from synapse.ui.turn.service_session import TUIRuntimeSessionFacade, TUISessionBinding
@@ -89,7 +90,9 @@ class TurnController:
         self._project_registry = ProjectRegistry()
         self._attached_thread_id: str | None = None
         self._session_watch_future: Any | None = None
+        self._attached_event_bridge: TextualTurnEventBridge | None = None
         self._attach_generation = 0
+        self._shutting_down = False
         # Per-project resources (P7): settings status_updates, transcript
         # projections and session stores stay keyed by project_id so a
         # background session keeps writing its own project's databases after
@@ -557,6 +560,7 @@ class TurnController:
         from synapse.observability.exit_trace import mark, span
 
         with span("turn.shutdown"):
+            self._shutting_down = True
             self._detach_renderer()
             runtime_loop = get_async_runtime()
             for facade in tuple(self._service_sessions.values()):
@@ -639,18 +643,18 @@ class TurnController:
             thread_id=thread_id,
             turn_id=turn_id,
         )
+        def wake_ui(callback: Callable[[], None]) -> Any:
+            return app.call_after_refresh(
+                lambda: callback() if generation == self._attach_generation else None
+            )
+
+        bridge = TextualTurnEventBridge(renderer, wake_ui)
+        self._attached_event_bridge = bridge
         cursor = view.latest_sequence if after_sequence is None else after_sequence
         async def render_if_current(event: Any) -> None:
-            # The check must happen at callback execution time too: a queued
-            # Textual callback can outlive the watcher which scheduled it.
             if generation != self._attach_generation:
                 return
-            app.call_after_refresh(
-                self._render_attached_event,
-                generation,
-                renderer,
-                event,
-            )
+            bridge.emit(event)
 
         async def watch() -> None:
             try:
@@ -675,13 +679,6 @@ class TurnController:
 
         self._session_watch_future = get_async_runtime().submit(watch())
         return target if not isinstance(target, str) else None
-
-    def _render_attached_event(
-        self, generation: int, renderer: TextualTurnEventRenderer, event: Any
-    ) -> None:
-        """Render a queued attachment event only while its attachment lives."""
-        if generation == self._attach_generation:
-            renderer.render_runtime_event(event)
 
     def _append_generation_warning(self, generation: int, message: str) -> None:
         """Report watcher failure without allowing it to escape the UI loop."""
@@ -1104,6 +1101,9 @@ class TurnController:
 
     def _detach_renderer(self) -> None:
         self._attach_generation += 1
+        if self._attached_event_bridge is not None:
+            self._attached_event_bridge.close()
+            self._attached_event_bridge = None
         future = self._session_watch_future
         if future is not None:
             future.cancel()
@@ -1146,6 +1146,12 @@ class TurnController:
         if app._handle_slash(text):
             app._image_bank.clear()
             app.refresh_image_preview()
+            return
+        if getattr(getattr(app, "_slash", None), "switch_pending", False) is True:
+            # The origin stays visible until the independent graph is ready.
+            # Preserve input rather than accidentally steering/submitting to it.
+            event.input.value = text
+            app.flash_status("session is preparing; input preserved", "dim")
             return
         if self.busy:
             service = self._service_session_cached(app.thread_id)
@@ -1216,6 +1222,28 @@ class TurnController:
 
     # -- run ---------------------------------------------------------------
 
+    def _new_event_bridge(
+        self, thread_id: str, turn_id: str, transcript_generation: int
+    ) -> TextualTurnEventBridge:
+        """Use the same coalescing path for submitted and resumed service turns."""
+        app = self._app
+        renderer = TextualTurnEventRenderer(
+            app._transcript, thread_id=thread_id, turn_id=turn_id
+        )
+        renderer.switch_turn(turn_id, generation=transcript_generation)
+        return TextualTurnEventBridge(renderer, app.call_after_refresh)
+
+    def _finish_event_bridge(self, bridge: TextualTurnEventBridge | None) -> None:
+        """Worker-only drain barrier; never clear chrome ahead of buffered events."""
+        if bridge is not None:
+            # Runtime execution is already complete. Only the Textual worker
+            # waits. A slow UI must not lose accepted completion/tool events.
+            # Poll only to release the worker when there is no UI left to drain.
+            while not bridge.wait_until_drained(0.1):
+                if self._shutting_down or getattr(self._app, "is_running", None) is False:
+                    break
+            bridge.close()
+
     def run_turn(
         self,
         text: str,
@@ -1250,17 +1278,17 @@ class TurnController:
             transcript_generation = app._transcript_generation
         app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         facade: Any | None = None
+        bridge: TextualTurnEventBridge | None = None
         try:
             facade = self._service_facade(turn_thread_id)
-            renderer: TextualTurnEventRenderer | None = None
 
             def on_event(event: Any) -> None:
-                nonlocal renderer
-                if renderer is None:
-                    renderer = TextualTurnEventRenderer(
-                        app._transcript, thread_id=turn_thread_id, turn_id=event.turn_id
+                nonlocal bridge
+                if bridge is None:
+                    bridge = self._new_event_bridge(
+                        turn_thread_id, event.turn_id, transcript_generation
                     )
-                app.call_after_refresh(renderer.render_runtime_event, event)
+                bridge.emit(event)
 
             submit_kwargs = {
                 "attachments": tuple(attachments or ()),
@@ -1271,6 +1299,7 @@ class TurnController:
             result = get_async_runtime().submit(
                 facade.submit(text, **submit_kwargs)
             ).result(timeout=1800.0)
+            self._finish_event_bridge(bridge)
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
@@ -1289,6 +1318,7 @@ class TurnController:
                 "bold red",
             )
         finally:
+            self._finish_event_bridge(bridge)
             self._turn_finished(
                 app,
                 thread_id=turn_thread_id,
@@ -1354,6 +1384,7 @@ class TurnController:
             finally:
                 app.call_from_thread(app._turn_done)
             return
+        bridge: TextualTurnEventBridge | None = None
         try:
             pending = get_async_runtime().submit(facade.pending_approval()).result(timeout=5.0)
             if not pending.actions:
@@ -1376,19 +1407,26 @@ class TurnController:
             elif kind == "reject":
                 kind = "reject_once"
             decisions = tuple(ApprovalDecision(kind=kind, message=message) for _ in pending.actions)
-            renderer: TextualTurnEventRenderer | None = None
+            # A paused foreground session may already have an attached watch.
+            # Resume owns its own watch-before-command stream; do not paint both.
+            if (
+                self._attached_thread_id == turn_thread_id
+                and self._service_session_cached(turn_thread_id) is facade
+            ):
+                app.call_from_thread(self.detach, turn_thread_id)
 
             async def on_event(event: Any) -> None:
-                nonlocal renderer
-                if renderer is None:
-                    renderer = TextualTurnEventRenderer(
-                        app._transcript, thread_id=turn_thread_id, turn_id=event.turn_id
+                nonlocal bridge
+                if bridge is None:
+                    bridge = self._new_event_bridge(
+                        turn_thread_id, event.turn_id, transcript_generation
                     )
-                app.call_after_refresh(renderer.render_runtime_event, event)
+                bridge.emit(event)
 
             result = get_async_runtime().submit(
                 facade.resume(decisions, turn_id=pending.turn_id, on_event=on_event)
             ).result(timeout=1800.0)
+            self._finish_event_bridge(bridge)
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
@@ -1402,6 +1440,7 @@ class TurnController:
         except Exception as exc:  # noqa: BLE001
             app.call_from_thread(app.append_event, f"ERROR: {exc}", "bold red")
         finally:
+            self._finish_event_bridge(bridge)
             app.call_from_thread(app._turn_done)
 
     def apply_stream_result(

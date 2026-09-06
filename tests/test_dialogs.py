@@ -1677,7 +1677,12 @@ class TestApplyOkResult:
         app._turn.attach = MagicMock(return_value=MagicMock(agent=new_agent))
         app._turn.bind_agent = MagicMock()
         app._turn.sync_foreground_status = MagicMock()
-        app._slash._build_session_agent = MagicMock(return_value=new_agent)
+        build = MagicMock(return_value=new_agent)
+        app._slash._session_agent_builder = MagicMock(return_value=build)
+        app._current_project_id = lambda: "project"
+        app.run_worker = MagicMock()
+        app.call_from_thread = lambda callback, *args: callback(*args)
+        app._turn.agent_for_session = MagicMock(return_value=None)
         ok = MagicMock(
             agent=None,
             thread_id="cold-thread",
@@ -1692,9 +1697,18 @@ class TestApplyOkResult:
 
         app._apply_ok_result(ok)
 
-        app._slash._build_session_agent.assert_called_once_with("cold-thread", old_agent)
-        app._turn.bind_agent.assert_called_once_with("cold-thread", new_agent)
+        assert app.thread_id == "old-thread"
+        assert app.agent is old_agent
+        build.assert_not_called()
+        app._schedule_transcript_reset.assert_not_called()
+        app.run_worker.call_args.args[0]()
+        build.assert_called_once_with()
+        binding = app._turn.bind_agent.call_args
+        assert binding.args == ("cold-thread", new_agent)
+        assert binding.kwargs["settings"] is not app.settings
+        assert binding.kwargs["project_id"] == "project"
         assert app.agent is new_agent
+        assert app.thread_id == "cold-thread"
         on_complete = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
         on_complete()
         assert app._turn.attach.call_args_list == [call("cold-thread")]

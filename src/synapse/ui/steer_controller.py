@@ -55,9 +55,16 @@ class SteerController:
                 if self._bound_queue is source:
                     app._on_steer_items_changed(snapshot)
 
-            try:
-                app.call_from_thread(apply, list(items))
-            except Exception:  # noqa: BLE001 - lightweight hosts have no Textual thread
+            wake_ui = getattr(app, "call_after_refresh", None)
+            if callable(wake_ui):
+                # The runtime may be answering a synchronous UI command. Never
+                # wait for that same UI thread to acknowledge a queue mutation.
+                try:
+                    wake_ui(apply, list(items))
+                except RuntimeError:
+                    return  # The UI is shutting down; execution still owns the queue.
+            else:
+                # Lightweight non-Textual hosts have no UI loop to dispatch to.
                 apply(list(items))
 
         self._listener = on_change

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from synapse.runtime.service.events import RuntimeEvent
 from synapse.runtime.streaming import (
@@ -376,6 +380,168 @@ def test_bridge_coalesces_high_frequency_deltas_and_one_wakeup() -> None:
     assert bridge.pending_count == 1
     callbacks.pop()()
     assert renderer.last_sequence == 100
+
+
+def test_finish_bridge_keeps_waiting_for_slow_ui_until_drained() -> None:
+    controller = TurnController(SimpleNamespace())
+    calls = []
+    waits = iter([False, False, True])
+    bridge = SimpleNamespace(
+        wait_until_drained=lambda timeout: calls.append("wait") or next(waits),
+        close=lambda: calls.append("close"),
+    )
+    controller._finish_event_bridge(bridge)
+    assert calls == ["wait", "wait", "wait", "close"]
+
+
+def test_finish_bridge_releases_worker_on_shutdown() -> None:
+    controller = TurnController(SimpleNamespace())
+    controller._shutting_down = True
+    calls = []
+    bridge = SimpleNamespace(
+        wait_until_drained=lambda timeout: False,
+        close=lambda: calls.append("close"),
+    )
+    controller._finish_event_bridge(bridge)
+    assert calls == ["close"]
+
+
+def _runtime_delta(sequence: int, text: str = "x", turn_id: str = "turn") -> RuntimeEvent:
+    return RuntimeEvent(sequence, sequence, turn_id, "answer_delta", {
+        "text": text, "message_id": "message"
+    }, 1)
+
+
+def test_service_bridge_coalesces_without_mutating_payload_and_preserves_completion() -> None:
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    callbacks = []
+    bridge = TextualTurnEventBridge(renderer, callbacks.append)
+    first = _runtime_delta(1)
+    bridge.emit(first)
+    for sequence in range(2, 1001):
+        bridge.emit(_runtime_delta(sequence))
+    bridge.emit(RuntimeEvent(1001, 1001, "turn", "answer_completed", {
+        "text": "x" * 1000, "message_id": "message"
+    }, 1))
+    assert len(callbacks) == 1
+    assert bridge.pending_count == 2
+    assert first.payload["text"] == "x"
+    assert not bridge.wait_until_drained(0)
+    callbacks.pop()()
+    assert bridge.wait_until_drained(0)
+    assert renderer.last_sequence == 1001
+    assert sum(name == "commit_answer" for name, _, _ in host.calls) == 1
+
+
+def test_service_bridge_yields_between_batches_and_close_discards_replay() -> None:
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    callbacks = []
+    bridge = TextualTurnEventBridge(renderer, callbacks.append, drain_batch=4)
+    for sequence in range(1, 11):
+        bridge.emit(RuntimeEvent(sequence, sequence, "turn", "thinking_finished", {}, 1))
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+    assert renderer.last_sequence == 4
+    assert bridge.pending_count == 6 and len(callbacks) == 1
+    assert not bridge.wait_until_drained(0)
+    while callbacks:
+        callbacks.pop(0)()
+    assert renderer.last_sequence == 10 and bridge.wait_until_drained(0)
+    bridge.replay_batch([_runtime_delta(11)])
+    bridge.close()
+    callbacks.pop(0)()
+    assert bridge.pending_count == 0 and bridge.wait_until_drained(0)
+    assert renderer.last_sequence == 10
+
+
+def test_service_bridge_never_merges_different_turns() -> None:
+    renderer = TextualTurnEventRenderer(_Host(), thread_id="thread", turn_id="turn")
+    bridge = TextualTurnEventBridge(renderer, lambda fn: True)
+    bridge.emit(_runtime_delta(1))
+    bridge.emit(_runtime_delta(2, turn_id="other"))
+    assert bridge.pending_count == 2
+    bridge.close()
+
+
+@pytest.mark.parametrize("entry", ["submit", "resume", "attach"])
+def test_service_consumer_entry_coalesces_before_ui_dispatch(monkeypatch, entry) -> None:
+    """Exercise the actual controller entries, not just an unused bridge component."""
+    callbacks = []
+    host = _Host()
+    errors = []
+    produced = threading.Event()
+    done = threading.Event()
+    app = SimpleNamespace(
+        thread_id="thread", agent=object(), settings=SimpleNamespace(),
+        _current_project_id=lambda: "project", _agent_ready=threading.Event(),
+        _agent_error=None, _transcript_generation=1, _transcript=host,
+        _begin_turn_usage=lambda: None, _turn_done=done.set, _refresh_topbar=lambda: None,
+        call_after_refresh=lambda fn, *a: callbacks.append(lambda: fn(*a)),
+        call_from_thread=lambda fn, *a: fn(*a),
+        _call_for_transcript=lambda gen, fn, *a: fn(*a),
+        append_event=lambda *args: errors.append(args),
+    )
+    app._agent_ready.set()
+    controller = TurnController(app)
+    result = SimpleNamespace(status="completed", final_text="x" * 1000, already_streamed=True)
+
+    async def emit(*args, on_event, **kwargs):
+        assert entry != "resume" or controller._attached_event_bridge is None
+        for sequence in range(1, 1001):
+            callback_result = on_event(_runtime_delta(sequence))
+            if inspect.isawaitable(callback_result):
+                await callback_result
+        produced.set()
+        return result
+
+    async def pending():
+        return SimpleNamespace(turn_id="turn", actions=(object(),))
+
+    facade = _ServiceWatchFacade(history=tuple(_runtime_delta(i) for i in range(1, 1001)))
+    facade.submit, facade.resume, facade.pending_approval = emit, emit, pending
+    controller._service_sessions["project:thread"] = facade
+    monkeypatch.setattr(controller, "_service_facade", lambda thread: facade)
+    if entry == "resume":
+        # Resume may start while the paused session's observer is attached.
+        controller.attach("thread")
+        assert facade.entered.wait(1)
+        old_bridge = controller._attached_event_bridge
+        assert old_bridge is not None
+        old_bridge.emit(_runtime_delta(1001, "stale"))
+        # Keep the queued callback: detachment must fence it, not paint twice.
+        stale_callback = callbacks.pop(0)
+    if entry == "attach":
+        controller.attach("thread", after_sequence=0)
+        assert facade.entered.wait(1)
+        from synapse.runtime.async_runtime import get_async_runtime
+        # A no-op scheduled after watch's non-yielding replay establishes that
+        # all events have reached the bridge before checking wake counts.
+        get_async_runtime().submit(asyncio.sleep(0)).result(timeout=1)
+        worker = None
+    else:
+        target = controller.run_turn if entry == "submit" else controller.run_resume
+        worker = threading.Thread(
+            target=target, args=("prompt" if entry == "submit" else "approve",)
+        )
+        worker.start()
+        assert produced.wait(1)
+    try:
+        if entry == "resume":
+            stale_callback()
+            assert old_bridge.pending_count == 0
+        assert len(callbacks) == 1
+        if worker is not None:
+            assert not done.is_set(), "turn chrome cleared ahead of buffered text"
+        callbacks.pop(0)()
+    finally:
+        if worker is not None:
+            worker.join(timeout=2)
+        controller.detach()
+    assert worker is None or not worker.is_alive()
+    assert errors == []
+    assert any(name == "set_stream" for name, _, _ in host.calls)
 
 
 def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:

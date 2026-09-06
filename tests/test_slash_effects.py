@@ -1,10 +1,109 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from textual.app import App
 
 from synapse.ui.dialogs.controller import SlashController, TuiCommandEffects
+from synapse.ui.turn.controller import TurnController
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "project_changed", "newer_switch"])
+def test_new_session_build_keeps_real_ui_responsive(monkeypatch, outcome) -> None:
+    entered, release = threading.Event(), threading.Event()
+    worker_threads = []
+    new_agent = object()
+
+    class SwitchApp(App):
+        def __init__(self) -> None:
+            super().__init__()
+            self.thread_id = "origin"
+            self.project = "project"
+            self.project_root = Path.cwd()
+            self.settings = SimpleNamespace(active_model="probe", model="probe")
+            self.agent = object()
+            self.origin_agent = self.agent
+            self._turn = TurnController(self)
+            self._slash = SlashController(self)
+            self.resets = []
+            self.errors = []
+            self.finished = asyncio.Event()
+            self._prompt = SimpleNamespace(
+                expand_paste=lambda text: (text, text), add_history=lambda text: None
+            )
+            self._image_bank = SimpleNamespace(items={})
+            self._prewarm_cancel_event = threading.Event()
+
+        def _current_project_id(self): return self.project
+        def _handle_slash(self, text): return False
+        def flash_status(self, *args, **kwargs): pass
+        def set_activity(self, *args): pass
+        def _sync_prompt_placeholder(self): pass
+        def _reset_session_token_chrome(self): pass
+        def _reload_tool_output_stats(self): pass
+        def _load_current_goal(self): pass
+        def _render_status(self): pass
+        def _reload_session_title(self): pass
+        def _refresh_topbar(self): pass
+        def _refresh_codex_usage(self, **kwargs): pass
+        def _emit_system_lines(self, *args, **kwargs): pass
+        def _schedule_transcript_reset(self, **kwargs): self.resets.append(self.thread_id)
+        def append_event(self, text, *args): self.errors.append(text)
+
+    def factory(**kwargs):
+        def build(thread_id, resources):
+            worker_threads.append(threading.get_ident())
+            entered.set()
+            assert release.wait(3), "UI never released the worker"
+            if outcome == "failure":
+                raise RuntimeError("build failed")
+            return new_agent
+        return build
+
+    monkeypatch.setattr("synapse.runtime.sessions.build_session_agent_factory", factory)
+    monkeypatch.setattr("synapse.integrations.mcp_client.get_active_mcp_pool", lambda: None)
+    monkeypatch.setattr("synapse.ui.dialogs.controller.model_status_label", lambda _: "probe")
+
+    async def run() -> None:
+        app = SwitchApp()
+        ui_thread = threading.get_ident()
+        async with app.run_test() as pilot:
+            app._slash.apply_effects(TuiCommandEffects(thread_id="new", clear_transcript=True))
+            try:
+                assert await asyncio.to_thread(entered.wait, 1)
+                heartbeat = asyncio.Event()
+                app.call_later(heartbeat.set)
+                await asyncio.wait_for(heartbeat.wait(), 1)
+                assert worker_threads == [worker_threads[0]]
+                assert worker_threads[0] != ui_thread
+                assert app.thread_id == "origin" and app.agent is app.origin_agent
+                assert app.resets == []
+                event = SimpleNamespace(value="next prompt", input=SimpleNamespace(value=""))
+                app._turn.submit(event)
+                assert event.input.value == "next prompt"
+                if outcome == "project_changed":
+                    app.project = "other"
+                elif outcome == "newer_switch":
+                    app._slash.apply_effects(TuiCommandEffects(thread_id="other", agent=object()))
+            finally:
+                release.set()
+            await asyncio.wait_for(app.workers.wait_for_complete(), 3)
+            await pilot.pause()
+            assert not app._slash.switch_pending
+            if outcome == "success":
+                assert app.thread_id == "new" and app.agent is new_agent
+                assert app._turn.agent_for_session("new") is new_agent
+                assert app.resets == ["new"]
+            else:
+                assert app.thread_id == ("other" if outcome == "newer_switch" else "origin")
+                assert app._turn.agent_for_session("new") is None
+                assert bool(app.errors) == (outcome == "failure")
+
+    asyncio.run(run())
 
 
 def test_effects_normalize_thread_switch_and_hitl_action() -> None:
@@ -598,12 +697,16 @@ def test_apply_effects_switch_failure_rolls_back_settings(
     app = _effects_app(agent=object(), settings=settings)
     app._turn = _Turn()
     controller = SlashController(app)
+    workers = []
+    app._current_project_id = lambda: "project"
+    app.run_worker = lambda work, **kwargs: workers.append(work)
+    app.call_from_thread = lambda callback, *args: callback(*args)
+    app.flash_status = lambda *args: None
 
-    def boom(thread_id: str, template_agent: object) -> object:
-        del thread_id, template_agent
+    def boom() -> object:
         raise RuntimeError("build failed")
 
-    monkeypatch.setattr(controller, "_build_session_agent", boom)
+    monkeypatch.setattr(controller, "_session_agent_builder", lambda *args: boom)
     # handle_slash already mutated the global settings towards the target
     # session before apply_effects ran; the pre-switch snapshot was captured
     # by the caller before that mutation.
@@ -618,6 +721,10 @@ def test_apply_effects_switch_failure_rolls_back_settings(
 
     assert app.thread_id == "thread"
     assert settings.active_model == "gpt"
+    assert controller.switch_pending
+    workers.pop()()
+    assert not controller.switch_pending
+    assert app.thread_id == "thread"
     assert settings.model == "gpt-4.1"
     assert settings.reasoning_effort == "high"
 

@@ -897,11 +897,13 @@ def test_attach_uses_service_sequence_across_turn_replay() -> None:
     assert facade.exited.wait(2)
 
 
-def test_switch_attach_replays_only_active_turn_after_restored_history() -> None:
+def test_switch_attach_replays_only_active_turn_after_restored_history(monkeypatch) -> None:
     from synapse.runtime.service.events import RuntimeEvent
+    from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
 
     app = _FakeApp()
     app._transcript = MagicMock()
+    app._transcript.transcript_generation = 0
     controller = TurnController(app)
     history = (
         RuntimeEvent(7, 1, "old-turn", "info", {"message": "old"}, 1),
@@ -910,12 +912,17 @@ def test_switch_attach_replays_only_active_turn_after_restored_history() -> None
     facade = _ServiceFacadeWatchFake("t1", active_turn="active-turn", latest=7, history=history)
     rendered: list[Any] = []
 
-    def refresh(callback, *args, **kwargs):
-        rendered.append(args[-1])
-        callback(*args, **kwargs)
-        facade.rendered.set()
+    render = TextualTurnEventRenderer.render_runtime_event
 
-    app.call_after_refresh = refresh
+    def record(renderer, event):
+        rendered.append(event)
+        result = render(renderer, event)
+        if event.sequence == 10:
+            facade.rendered.set()
+        return result
+
+    monkeypatch.setattr(TextualTurnEventRenderer, "render_runtime_event", record)
+    app.call_after_refresh = lambda callback, *args: callback(*args)
     controller._service_sessions = {"p:t1": facade}
     controller.attach("t1", after_sequence=7)
     assert facade.entered.wait(2)

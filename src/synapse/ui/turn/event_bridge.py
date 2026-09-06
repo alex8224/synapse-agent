@@ -5,9 +5,13 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 
+from synapse.runtime.service.events import RuntimeEvent
 from synapse.runtime.streaming import TextPayload, TurnEvent, TurnEventKind
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
+
+type UIEvent = TurnEvent | RuntimeEvent
 
 _DELTA_KINDS = {TurnEventKind.ANSWER_DELTA, TurnEventKind.REASONING_DELTA}
 _ACTIVITY_KINDS = {TurnEventKind.ACTIVITY_STARTED, TurnEventKind.ACTIVITY_UPDATED}
@@ -33,22 +37,29 @@ class TextualTurnEventBridge:
         self._wake_ui = wake_ui
         self._max_events = max(16, int(max_events))
         self._drain_batch = max(1, int(drain_batch))
-        self._queue: deque[TurnEvent] = deque()
-        self._replay_queue: deque[TurnEvent] = deque()
+        self._queue: deque[UIEvent] = deque()
+        self._replay_queue: deque[UIEvent] = deque()
         self._lock = threading.Lock()
         self._wake_pending = False
         self._closed = False
+        self._drained = threading.Event()
+        self._drained.set()
+
+    def wait_until_drained(self, timeout: float = 5.0) -> bool:
+        """Worker-only barrier: render accepted events before clearing turn chrome."""
+        return self._drained.wait(timeout)
 
     @property
     def pending_count(self) -> int:
         with self._lock:
             return len(self._queue) + len(self._replay_queue)
 
-    def emit(self, event: TurnEvent) -> None:
+    def emit(self, event: UIEvent) -> None:
         should_wake = False
         with self._lock:
             if self._closed:
                 return
+            self._drained.clear()
             if self._coalesce_locked(event):
                 pass
             else:
@@ -92,9 +103,8 @@ class TextualTurnEventBridge:
         and goes through the renderer's batch hooks so tool writes are
         accumulated and flushed once per batch instead of once per event.
         """
-        replay_batch: list[TurnEvent] = []
-        live_batch: list[TurnEvent] = []
-        reschedule = False
+        replay_batch: list[UIEvent] = []
+        live_batch: list[UIEvent] = []
         with self._lock:
             if self._closed:
                 return
@@ -103,26 +113,35 @@ class TextualTurnEventBridge:
             if not replay_batch:
                 for _ in range(min(self._drain_batch, len(self._queue))):
                     live_batch.append(self._queue.popleft())
-            self._wake_pending = False
-            if self._replay_queue or self._queue:
-                self._wake_pending = True
-                reschedule = True
+            # Keep the wake claimed while rendering. Producers only append;
+            # this drainer schedules the next bounded batch after yielding.
         if replay_batch:
             self._renderer.begin_batch()
             try:
                 for event in replay_batch:
-                    self._renderer.replay(event)
+                    if isinstance(event, RuntimeEvent):
+                        self._renderer.render_runtime_event(event)
+                    else:
+                        self._renderer.replay(event)
             finally:
                 self._renderer.end_batch()
         for event in live_batch:
-            self._renderer.emit(event)
+            if isinstance(event, RuntimeEvent):
+                self._renderer.render_runtime_event(event)
+            else:
+                self._renderer.emit(event)
         if self._renderer.closed:
             self.close()
             return
+        with self._lock:
+            reschedule = bool(self._queue or self._replay_queue) and not self._closed
+            self._wake_pending = reschedule
+            if not reschedule:
+                self._drained.set()
         if reschedule:
             self._wake()
 
-    def replay(self, event: TurnEvent) -> None:
+    def replay(self, event: UIEvent) -> None:
         """Enqueue one replayed broker event for batched rendering.
 
         Called from ``attach()`` on the UI thread while replaying retained
@@ -132,7 +151,7 @@ class TextualTurnEventBridge:
         """
         self.replay_batch((event,))
 
-    def replay_batch(self, events: Iterable[TurnEvent]) -> None:
+    def replay_batch(self, events: Iterable[UIEvent]) -> None:
         """Enqueue retained broker events ahead of live events."""
         should_wake = False
         with self._lock:
@@ -140,6 +159,7 @@ class TextualTurnEventBridge:
                 return
             for event in events:
                 self._replay_queue.append(event)
+            self._drained.clear()
             if not self._wake_pending:
                 self._wake_pending = True
                 should_wake = True
@@ -150,16 +170,37 @@ class TextualTurnEventBridge:
         with self._lock:
             self._closed = True
             self._queue.clear()
+            self._replay_queue.clear()
             self._wake_pending = False
+            self._drained.set()
         self._renderer.close()
 
-    def _coalesce_locked(self, event: TurnEvent) -> bool:
+    def _coalesce_locked(self, event: UIEvent) -> bool:
         if not self._queue:
             return False
         previous = self._queue[-1]
+        if type(previous) is not type(event) or previous.turn_id != event.turn_id:
+            return False
+        if event.sequence <= previous.sequence:
+            return False
+        if isinstance(event, TurnEvent) and previous.thread_id != event.thread_id:
+            return False
         if event.kind in _ACTIVITY_KINDS and previous.kind in _ACTIVITY_KINDS:
             self._queue[-1] = event
             return True
+        if isinstance(event, RuntimeEvent) and isinstance(previous, RuntimeEvent):
+            payload, old = event.payload, previous.payload
+            if (
+                event.kind in _DELTA_KINDS and previous.kind == event.kind
+                and isinstance(payload, dict) and isinstance(old, dict)
+                and isinstance(payload.get("text"), str) and isinstance(old.get("text"), str)
+                and payload.get("message_id") == old.get("message_id")
+            ):
+                self._queue[-1] = replace(
+                    event, payload={**payload, "text": old["text"] + payload["text"]}
+                )
+                return True
+            return False
         if (
             event.kind in _DELTA_KINDS
             and previous.kind is event.kind
@@ -181,7 +222,7 @@ class TextualTurnEventBridge:
             return True
         return False
 
-    def _make_room_locked(self, event: TurnEvent) -> None:
+    def _make_room_locked(self, event: UIEvent) -> None:
         if len(self._queue) < self._max_events:
             return
         # Only preview/activity updates may be evicted. Tool completion, errors,

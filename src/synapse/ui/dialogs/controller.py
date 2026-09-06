@@ -9,7 +9,8 @@ controller routes to them and applies effects.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,8 @@ class SlashController:
 
     def __init__(self, app: Any) -> None:
         self._app = app
+        self._switch_generation = 0
+        self.switch_pending = False
 
     def handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
@@ -216,6 +219,23 @@ class SlashController:
             # session-owned turn as the runtime half of the same operation.
             app._turn.cancel("goal_pause")
         requested_agent = effects.agent
+        if thread_changed or requested_agent is not None:
+            self._switch_generation += 1
+            self.switch_pending = False
+        if (
+            thread_changed and turn_controller is not None and requested_agent is None
+            and app.agent is not None
+            and turn_controller.agent_for_session(effects.thread_id) is None
+        ):
+            self._start_session_switch(
+                effects,
+                notice_ttl=notice_ttl,
+                settings_snapshot=(
+                    settings_snapshot if settings_snapshot is not None
+                    else self._settings_snapshot(app.settings)
+                ),
+            )
+            return
         if thread_changed:
             # Transactional switch: settings mutations (model binding restore)
             # happen inside handle_slash/_sync_settings_to_agent before the
@@ -245,20 +265,6 @@ class SlashController:
                     # model (binding may be missing for model changes that
                     # predate this session switch).
                     self._sync_settings_to_agent(requested_agent)
-                elif requested_agent is None and app.agent is not None:
-                    try:
-                        requested_agent = self._build_session_agent(
-                            app.thread_id,
-                            app.agent,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - switch remains recoverable
-                        app.thread_id = previous_thread_id
-                        self._restore_settings_snapshot(app.settings, settings_snapshot)
-                        turn_controller.attach(previous_thread_id)
-                        app.append_event(f"switch failed: {exc}", "yellow")
-                        turn_controller.sync_foreground_status()
-                        return
-                    turn_controller.bind_agent(app.thread_id, requested_agent)
                 turn_controller.detach(app.thread_id)
             if requested_agent is not None:
                 app.agent = requested_agent
@@ -433,8 +439,65 @@ class SlashController:
         except Exception:  # noqa: BLE001 - chrome alignment is best-effort
             pass
 
-    def _build_session_agent(self, thread_id: str, template_agent: Any) -> Any:
-        """Compile one session-owned graph while reusing project resources."""
+    def _start_session_switch(
+        self, effects: TuiCommandEffects, *, notice_ttl: float,
+        settings_snapshot: tuple[Any, ...],
+    ) -> None:
+        """Keep the old session intact until an independent graph is ready."""
+        app = self._app
+        generation = self._switch_generation
+        origin_thread, origin_agent, origin_settings = app.thread_id, app.agent, app.settings
+        project_id = app._current_project_id()
+        project_generation = getattr(app, "_project_switch_generation", 0)
+        assert effects.thread_id is not None
+        worker_settings = self._copy_settings(app.settings)
+        build = self._session_agent_builder(effects.thread_id, origin_agent, worker_settings)
+        # A /switch handler may have restored target model settings already.
+        # The still-visible origin must retain its own settings while we build.
+        self._restore_settings_snapshot(app.settings, settings_snapshot)
+        self.switch_pending = True
+        app.flash_status("preparing session…", "dim")
+
+        def finish(agent: Any | None, error: str | None) -> None:
+            if generation != self._switch_generation:
+                return
+            self.switch_pending = False
+            if (
+                app.thread_id != origin_thread or app.agent is not origin_agent
+                or app.settings is not origin_settings
+                or app._current_project_id() != project_id
+                or getattr(app, "_project_switch_generation", 0) != project_generation
+                or self._settings_snapshot(app.settings) != settings_snapshot
+            ):
+                return
+            if error is not None:
+                app.append_event(f"switch failed: {error}", "yellow")
+                return
+            app._turn.bind_agent(
+                effects.thread_id, agent, settings=worker_settings, project_id=project_id
+            )
+            self._commit_settings(app.settings, worker_settings)
+            self.apply_effects(
+                replace(effects, agent=agent), notice_ttl=notice_ttl,
+                settings_snapshot=settings_snapshot,
+            )
+
+        def work() -> None:
+            try:
+                agent, error = build(), None
+            except Exception as exc:  # noqa: BLE001 - failed build leaves the origin usable
+                agent, error = None, str(exc)
+            try:
+                app.call_from_thread(finish, agent, error)
+            except RuntimeError:
+                pass  # App shutdown discards an uncommitted graph.
+
+        app.run_worker(work, thread=True, exclusive=True, group="session-switch")
+
+    def _session_agent_builder(
+        self, thread_id: str, template_agent: Any, settings: Any
+    ) -> Callable[[], Any]:
+        """Capture project resources on the UI thread; compile only in the worker."""
         from synapse.runtime.sessions import (
             ProjectSharedResources,
             build_session_agent_factory,
@@ -449,8 +512,8 @@ class SlashController:
         except Exception:  # noqa: BLE001 - MCP is optional during session switching
             mcp_tools = ()
         factory = build_session_agent_factory(
-            settings=app.settings,
-            project_root=app.project_root,
+            settings=settings,
+            project_root=Path(app.project_root).resolve(),
             template_agent=template_agent,
             goal_service=getattr(template_agent, "_coding_goal_service", None),
             project_id=app._current_project_id() or None,
@@ -460,7 +523,7 @@ class SlashController:
             checkpointer=getattr(template_agent, "_coding_checkpointer", None),
             mcp_tools=mcp_tools,
         )
-        return factory(thread_id, resources)
+        return lambda: factory(thread_id, resources)
 
     def _resume_after_effects(self, action: str, message: str | None) -> None:
         """Start a HITL resume after its slash result has updated host state."""

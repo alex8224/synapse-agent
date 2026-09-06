@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
 
+from textual.app import App
+
+from synapse.runtime.async_runtime import AsyncRuntime
+from synapse.runtime.service.local import LocalAgentRuntimeService
+from synapse.runtime.sessions.manager import RuntimeManager
+from synapse.runtime.sessions.ref import SessionRef
+from synapse.runtime.sessions.runtime import SessionRuntime, SessionStatus
 from synapse.runtime.steer import SteerQueue
 from synapse.ui.steer_controller import SteerController
+from synapse.ui.turn.controller import TurnController
+from synapse.ui.turn.service_session import TUIRuntimeSessionFacade, TUISessionBinding
 
 
 class _App:
@@ -81,3 +92,99 @@ def test_drop_and_clear_delegate_to_current_queue() -> None:
     assert queue.peek_items() == ["two"]
     controller.clear()
     assert queue.peek_items() == []
+
+
+def test_delayed_notification_cannot_update_a_rebound_queue() -> None:
+    app = _App()
+    callbacks = []
+    app.call_after_refresh = lambda fn, *args: callbacks.append(lambda: fn(*args))
+    first, second = SteerQueue(), SteerQueue()
+    app._active_steer_queue = first
+    controller = SteerController(app)
+    controller.bind_queue()
+    first.push("old")
+    app._active_steer_queue = second
+    controller.bind_queue()
+    for callback in callbacks:
+        callback()
+    assert app.snapshots[-1] == []
+
+
+def test_real_textual_submit_steer_does_not_wait_for_ui_notification(monkeypatch) -> None:
+    """Keep the real two-loop boundary: inline call_from_thread fakes hide this deadlock."""
+    runtime = AsyncRuntime(name="test-steer-ui")
+    monkeypatch.setattr("synapse.ui.turn.controller.get_async_runtime", lambda: runtime)
+
+    class SteerApp(App):
+        def __init__(self) -> None:
+            super().__init__()
+            self.thread_id = "thread"
+            self.settings = SimpleNamespace()
+            self.queue = SteerQueue()
+            self.agent = SimpleNamespace(_coding_steer_queue=self.queue)
+            self._active_steer_queue = self.queue
+            self._turn = TurnController(self)
+            self._steer = SteerController(self)
+            self.snapshots = []
+            self.warnings = []
+            self.submitted = asyncio.Event()
+            self.updated = asyncio.Event()
+            self._prewarm_cancel_event = threading.Event()
+            self._prompt = SimpleNamespace(
+                expand_paste=lambda text: (text, text), add_history=lambda text: None
+            )
+            self._image_bank = SimpleNamespace(items={})
+            session = SessionRuntime(
+                thread_id=self.thread_id, project_id="project", agent=self.agent,
+                settings=self.settings, turn_runtime=object(),
+            )
+            session._status = SessionStatus.RUNNING
+            session._active_handle = SimpleNamespace(turn_id="turn", done=lambda: False)
+            manager = RuntimeManager(
+                settings=self.settings, agent_factory=lambda *args: self.agent,
+                project_id="project", async_runtime=runtime,
+            )
+            manager._sessions[self.thread_id] = session
+            service = LocalAgentRuntimeService(lambda project: manager)
+            facade = TUIRuntimeSessionFacade(
+                TUISessionBinding(SessionRef("project", self.thread_id), service)
+            )
+            facade.state.view = SimpleNamespace(
+                status="running", active_turn_id="turn", latest_sequence=0
+            )
+            self._turn._service_sessions["project:thread"] = facade
+
+        def _current_project_id(self) -> str:
+            return "project"
+
+        def _handle_slash(self, text: str) -> bool:
+            return False
+
+        def append_event(self, text: str, *args: Any) -> None:
+            self.warnings.append(text)
+
+        def _on_steer_items_changed(self, items: list[str]) -> None:
+            self.snapshots.append(items)
+            if items == ["guidance"]:
+                self.updated.set()
+
+        def submit_guidance(self) -> None:
+            self._steer.bind_queue()
+            self._turn.submit(
+                SimpleNamespace(value="guidance", input=SimpleNamespace(value="guidance"))
+            )
+            self.submitted.set()
+
+    async def run() -> None:
+        app = SteerApp()
+        async with app.run_test():
+            app.call_later(app.submit_guidance)
+            await asyncio.wait_for(app.submitted.wait(), timeout=1.0)
+            await asyncio.wait_for(app.updated.wait(), timeout=1.0)
+            assert app.queue.peek_items() == ["guidance"]
+            assert app.warnings == []
+
+    try:
+        asyncio.run(run())
+    finally:
+        runtime.close()
