@@ -8,16 +8,16 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import ScrollableContainer, Vertical
 from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Static
 
 logger = logging.getLogger(__name__)
 
 # Approximate number of terminal rows the top toolbar (hint + zoom buttons +
 # their margins) occupies; the image fits into the remaining viewport space.
-VIEWER_TOOLBAR_ROWS = 4
+VIEWER_TOOLBAR_ROWS = 1
 # Mermaid diagrams re-rasterize at this pixel multiple when opened in the
 # viewer; the inline transcript keeps the compact 1:1 PNG.
 VIEWER_MERMAID_SCALE = 3.0
@@ -27,6 +27,9 @@ VIEWER_MERMAID_SCALE = 3.0
 VIEWER_ZOOM_MIN = 0.1
 VIEWER_ZOOM_MAX = 8.0
 VIEWER_ZOOM_STEP = 1.25
+VIEWER_PAN_STEP_X = 6
+VIEWER_PAN_STEP_Y = 3
+
 
 
 def _render_viewer_mermaid_png(source: str) -> bytes | None:
@@ -54,8 +57,8 @@ class ImageViewerScreen(ModalScreen[None]):
 
     The toolbar is docked at the top; the image keeps its aspect ratio and is
     never upscaled on first paint, but fits the full remaining width/height.
-    Zoom in/out with ``+``/``-``, the mouse wheel, or the on-screen buttons,
-    reset with ``0``. Click anywhere outside the controls or press Esc to close.
+    Zoom in/out with ``+``/``-``, or the mouse wheel, reset with ``0``.
+    Click anywhere outside the controls or press Esc/q to close.
     """
 
     BINDINGS = [
@@ -64,6 +67,16 @@ class ImageViewerScreen(ModalScreen[None]):
         Binding("plus,equals_sign", "zoom_in", "Zoom in", show=False),
         Binding("minus", "zoom_out", "Zoom out", show=False),
         Binding("0", "zoom_reset", "Reset zoom", show=False),
+        Binding("up,k", "pan_up", "Pan up", show=False),
+        Binding("down,j", "pan_down", "Pan down", show=False),
+        Binding("left,h", "pan_left", "Pan left", show=False),
+        Binding("right,l", "pan_right", "Pan right", show=False),
+        Binding("home", "scroll_home", "Scroll to top", show=False),
+        Binding("end", "scroll_end", "Scroll to bottom", show=False),
+        Binding("pageup", "page_up", "Page up", show=False),
+        Binding("pagedown", "page_down", "Page down", show=False),
+        Binding("t", "scroll_home", "Scroll to top", show=False),
+        Binding("b", "scroll_end", "Scroll to bottom", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -74,26 +87,17 @@ class ImageViewerScreen(ModalScreen[None]):
     #viewer-toolbar {
         dock: top;
         width: 1fr;
-        height: auto;
+        height: 1;
     }
     #viewer-hint {
         text-align: center;
-        margin-bottom: 1;
         color: #9aa0a6;
-    }
-    #zoom-bar {
-        height: auto;
-        align-horizontal: center;
-        margin-bottom: 1;
-    }
-    #zoom-bar Button {
-        min-width: 4;
-        margin: 0 1;
     }
     #viewer-image-row {
         width: 1fr;
         height: 1fr;
         align: center middle;
+        overflow: auto auto;
     }
     """
 
@@ -116,14 +120,10 @@ class ImageViewerScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="viewer-toolbar"):
             yield Static(
-                "Esc or click to close · +/− or wheel to zoom · 0 to fit",
+                "Esc/q: close · +/−/wheel: zoom · arrows/hjkl: pan · Home/End/t/b · 0: fit",
                 id="viewer-hint",
             )
-            with Horizontal(id="zoom-bar"):
-                yield Button("−", id="zoom-out")
-                yield Button("+", id="zoom-in")
-                yield Button("Fit", id="zoom-fit")
-        yield Horizontal(id="viewer-image-row")
+        yield ScrollableContainer(id="viewer-image-row")
 
     async def on_mount(self) -> None:
         """Decode the attachment and paint the image fitted to the viewport."""
@@ -153,6 +153,64 @@ class ImageViewerScreen(ModalScreen[None]):
 
     async def action_zoom_reset(self) -> None:
         await self._set_zoom(1.0)
+        self.action_center_scroll()
+
+    def _get_scroll_container(self) -> ScrollableContainer | None:
+        try:
+            return self.query_one("#viewer-image-row", ScrollableContainer)
+        except Exception:  # noqa: BLE001 - container may not be composed yet
+            return None
+
+    def action_pan_up(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_to(y=max(0.0, container.scroll_y - VIEWER_PAN_STEP_Y), animate=False)
+
+    def action_pan_down(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_to(
+                y=min(float(container.max_scroll_y), container.scroll_y + VIEWER_PAN_STEP_Y),
+                animate=False,
+            )
+
+    def action_pan_left(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_to(x=max(0.0, container.scroll_x - VIEWER_PAN_STEP_X), animate=False)
+
+    def action_pan_right(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_to(
+                x=min(float(container.max_scroll_x), container.scroll_x + VIEWER_PAN_STEP_X),
+                animate=False,
+            )
+
+    def action_scroll_home(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_home(animate=False)
+
+    def action_scroll_end(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_end(animate=False)
+
+    def action_page_up(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_page_up(animate=False)
+
+    def action_page_down(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_page_down(animate=False)
+
+    def action_center_scroll(self) -> None:
+        container = self._get_scroll_container()
+        if container is not None:
+            container.scroll_to(x=0, y=0, animate=False)
 
     async def _set_zoom(self, zoom: float) -> None:
         zoom = max(VIEWER_ZOOM_MIN, min(VIEWER_ZOOM_MAX, zoom))
@@ -169,16 +227,6 @@ class ImageViewerScreen(ModalScreen[None]):
     async def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
         event.stop()
         await self.action_zoom_out()
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        event.stop()
-        button_id = getattr(event.button, "id", None)
-        if button_id == "zoom-in":
-            await self.action_zoom_in()
-        elif button_id == "zoom-out":
-            await self.action_zoom_out()
-        elif button_id == "zoom-fit":
-            await self.action_zoom_reset()
 
     # -- image pipeline --------------------------------------------------
 
@@ -219,7 +267,7 @@ class ImageViewerScreen(ModalScreen[None]):
             return
         widget.id = "viewer-image"
         try:
-            row = self.query_one("#viewer-image-row", Horizontal)
+            row = self.query_one("#viewer-image-row", ScrollableContainer)
         except Exception:  # noqa: BLE001 - viewer may not be composed yet
             return
         # ``remove()`` is async (it posts a Prune message), so await it before
@@ -241,8 +289,8 @@ class ImageViewerScreen(ModalScreen[None]):
         pct = round(self._zoom * 100)
         try:
             self.query_one("#viewer-hint", Static).update(
-                "Esc or click to close · +/− or wheel to zoom · 0 to fit"
-                f" · {pct}%"
+                "Esc/q: close · +/−/wheel: zoom · arrows/hjkl: pan · Home/End/t/b · 0: fit"
+                f" ({pct}%)"
             )
         except Exception:  # noqa: BLE001 - hint may not be composed yet
             pass
@@ -297,5 +345,7 @@ __all__ = [
     "VIEWER_ZOOM_MAX",
     "VIEWER_ZOOM_MIN",
     "VIEWER_ZOOM_STEP",
+    "VIEWER_PAN_STEP_X",
+    "VIEWER_PAN_STEP_Y",
     "find_transcript_image_attachment",
 ]

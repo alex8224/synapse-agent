@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +12,8 @@ from textual.events import Click
 
 from synapse.ui.image_viewer import (
     VIEWER_MERMAID_SCALE,
+    VIEWER_PAN_STEP_X,
+    VIEWER_PAN_STEP_Y,
     VIEWER_ZOOM_MAX,
     VIEWER_ZOOM_MIN,
     VIEWER_ZOOM_STEP,
@@ -143,30 +145,6 @@ def test_viewer_mouse_wheel_zooms() -> None:
     down.stop.assert_called_once()
 
 
-def _button_pressed(button_id: str) -> Any:
-    event = MagicMock()
-    event.button = MagicMock()
-    event.button.id = button_id
-    return event
-
-
-def test_viewer_zoom_buttons_dispatch_actions() -> None:
-    """The on-screen buttons map to the three zoom actions."""
-    viewer = ImageViewerScreen(object())
-    with (
-        patch.object(viewer, "action_zoom_in", new=AsyncMock()) as zin,
-        patch.object(viewer, "action_zoom_out", new=AsyncMock()) as zout,
-        patch.object(viewer, "action_zoom_reset", new=AsyncMock()) as zreset,
-    ):
-        asyncio.run(viewer.on_button_pressed(_button_pressed("zoom-in")))
-        asyncio.run(viewer.on_button_pressed(_button_pressed("zoom-out")))
-        asyncio.run(viewer.on_button_pressed(_button_pressed("zoom-fit")))
-
-    zin.assert_awaited_once()
-    zout.assert_awaited_once()
-    zreset.assert_awaited_once()
-
-
 def test_viewer_mounts_image_and_zooms_end_to_end() -> None:
     """A plain image mounts, then zoom in/out/reset rebuild it without error."""
     import io
@@ -192,10 +170,6 @@ def test_viewer_mounts_image_and_zooms_end_to_end() -> None:
             assert viewer._image is not None
             first = viewer.query_one("#viewer-image")
             assert first is not None
-            assert viewer.query_one("#zoom-in") is not None
-            assert viewer.query_one("#zoom-out") is not None
-            assert viewer.query_one("#zoom-fit") is not None
-
             # 回归：图片在查看器内水平居中。
             screen_width = viewer.size.width
             first_region = first.region
@@ -224,6 +198,61 @@ def test_viewer_mounts_image_and_zooms_end_to_end() -> None:
             await pilot.pause()
             assert viewer._zoom == 1.0
             assert viewer.query_one("#viewer-image") is not None
+
+    try:
+        asyncio.run(run())
+    finally:
+        set_renderer("auto")
+
+
+def test_viewer_pan_and_scroll_to_bottom_when_zoomed() -> None:
+    """When zoomed larger than the viewport, the user can pan and jump to bottom."""
+    import io
+
+    from PIL import Image as PILImage
+    from textual.containers import ScrollableContainer
+
+    from synapse.ui.image_render import set_renderer
+
+    buf = io.BytesIO()
+    PILImage.new("RGBA", (400, 300), (0, 128, 255, 255)).save(buf, format="PNG")
+    attachment = type("Attachment", (), {"data": buf.getvalue()})()
+
+    async def run() -> None:
+        set_renderer("halfcell")
+        app = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            viewer = ImageViewerScreen(attachment)
+            await app.push_screen(viewer)
+            await pilot.pause()
+
+            container = viewer.query_one("#viewer-image-row", ScrollableContainer)
+            assert container is not None
+
+            # 放大后出现滚动裕量
+            viewer._zoom = 3.0
+            await viewer._rebuild_viewer_image()
+            await pilot.pause()
+            assert container.max_scroll_y > 0
+            assert container.max_scroll_x > 0
+
+            # 平移测试
+            viewer.action_pan_down()
+            await pilot.pause()
+            assert container.scroll_y == VIEWER_PAN_STEP_Y
+            viewer.action_pan_right()
+            await pilot.pause()
+            assert container.scroll_x == VIEWER_PAN_STEP_X
+
+            # 直达底部测试
+            viewer.action_scroll_end()
+            await pilot.pause()
+            assert container.scroll_y == container.max_scroll_y
+
+            # 直达顶部测试
+            viewer.action_scroll_home()
+            await pilot.pause()
+            assert container.scroll_y == 0
 
     try:
         asyncio.run(run())
