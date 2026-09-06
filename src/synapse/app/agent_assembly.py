@@ -62,12 +62,17 @@ class AgentResources:
 
     def apply_model_exclusions(self, settings: Any) -> set[str]:
         """Return the final model-request tool exclusion set."""
+        effective_excluded = list(getattr(settings, "excluded_tools", []) or [])
+        if getattr(settings, "minimal_filesystem_tools", False):
+            minimal_excluded = getattr(settings, "minimal_filesystem_excluded_tools", []) or []
+            effective_excluded.extend(minimal_excluded)
+
         apply_harness_exclusions(
             self.model_spec,
             readonly=settings.readonly,
-            excluded_tools=settings.excluded_tools,
+            excluded_tools=effective_excluded,
         )
-        excluded = set(settings.excluded_tools) | {"ls", "glob", "grep"}
+        excluded = set(effective_excluded) | {"ls", "glob", "grep"}
         if settings.readonly:
             excluded.update({"execute", "write_file", "edit_file", "patch"})
         return excluded
@@ -137,7 +142,7 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
         # X-Session-ID / Session-Id on every model request (gateway affinity).
         build_session_header_middleware(),
         build_agent_md_middleware(context.project_root),
-        build_filesystem_tool_prompt_middleware(),
+        build_filesystem_tool_prompt_middleware(context.model_request_excluded_tools),
         build_describe_image_middleware(
             image_input=context.primary_image_input,
             config=context.vision_config,

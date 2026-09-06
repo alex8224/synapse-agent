@@ -204,3 +204,19 @@ def test_dotenv_wins_over_stale_process_env(tmp_path: Path, monkeypatch):
     assert settings.openai_base_url == "http://127.0.0.1:3000/v1"
     assert settings.model == "openai:demo-model"
     assert "from-dotenv" in settings.mask_openai_key() or "len=" in settings.mask_openai_key()
+
+
+def test_minimal_filesystem_tools_defaults_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_MINIMAL_FILESYSTEM_TOOLS", raising=False)
+    monkeypatch.delenv("AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.minimal_filesystem_tools is False
+    assert settings.minimal_filesystem_excluded_tools == ["search_files", "edit_file", "write_file"]
+
+    monkeypatch.setenv("AGENT_MINIMAL_FILESYSTEM_TOOLS", "true")
+    monkeypatch.setenv(
+        "AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS", '["search_files", "write_file"]'
+    )
+    settings_on = Settings(_env_file=None)
+    assert settings_on.minimal_filesystem_tools is True
+    assert settings_on.minimal_filesystem_excluded_tools == ["search_files", "write_file"]

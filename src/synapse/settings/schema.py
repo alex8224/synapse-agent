@@ -126,6 +126,7 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         env_ignore_empty=True,
+        populate_by_name=True,
     )
 
     # Model
@@ -294,6 +295,13 @@ class Settings(BaseSettings):
     )
     readonly: bool = Field(default=False, validation_alias="AGENT_READONLY")
     excluded_tools: list[str] = Field(default_factory=list, validation_alias="AGENT_EXCLUDED_TOOLS")
+    minimal_filesystem_tools: bool = Field(
+        default=False, validation_alias="AGENT_MINIMAL_FILESYSTEM_TOOLS"
+    )
+    minimal_filesystem_excluded_tools: list[str] = Field(
+        default_factory=lambda: ["search_files", "edit_file", "write_file"],
+        validation_alias="AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS",
+    )
     enable_fs_permissions: bool = Field(
         default=False, validation_alias="AGENT_ENABLE_FS_PERMISSIONS"
     )
@@ -448,6 +456,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "excluded_tools",
+        "minimal_filesystem_excluded_tools",
         "deny_fs_paths",
         "tool_output_disabled_types",
         "tool_output_transform_plugins",

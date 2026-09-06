@@ -53,6 +53,33 @@ def test_tool_events(kind):
     assert project_runtime_event(r, event(1, kind, payload)) is True
 
 
+def test_tool_started_projects_subagent_metadata():
+    host, r = renderer()
+    payload = {
+        "item_id": "g1-0",
+        "call_id": "task-1",
+        "name": "task",
+        "category": "task",
+        "label": "审查修复",
+        "subagent_name": "reviewer",
+        "subagent_model": "gpt-5.2",
+        "subagent_reasoning_effort": "high",
+        "subagent_model_inherited": False,
+        "subagent_reasoning_inherited": True,
+    }
+    assert project_runtime_event(r, event(1, "tool_started", payload)) is True
+    started_calls = [call for call in host.calls if call[0] == "write_tool_item"]
+    assert len(started_calls) == 1
+    item = started_calls[0][1][0]
+    assert item.name == "task"
+    assert item.label == "审查修复"
+    assert item.subagent_name == "reviewer"
+    assert item.subagent_model == "gpt-5.2"
+    assert item.subagent_reasoning_effort == "high"
+    assert item.subagent_model_inherited is False
+    assert item.subagent_reasoning_inherited is True
+
+
 def test_tool_finished_success_and_error():
     host, r = renderer()
     assert project_runtime_event(r, event(1, "tool_started", {"item_id": "i", "name": "read_file"}))

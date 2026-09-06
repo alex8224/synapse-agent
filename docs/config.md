@@ -62,6 +62,8 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_DENY_FS_PATHS` | — | 禁止访问的文件路径（JSON 数组） |
 | `AGENT_ENABLE_FS_PERMISSIONS` | `false` | 启用文件系统权限 |
 | `AGENT_EXCLUDED_TOOLS` | — | 排除的工具列表（JSON 数组） |
+| `AGENT_MINIMAL_FILESYSTEM_TOOLS` | `false` | 启用极简文件工具模式（开启后自动剔除 `AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS` 指定的工具，只保留必要的文件操作） |
+| `AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS` | `["search_files", "edit_file", "write_file"]` | 极简模式下剔除的文件工具列表（可自定义组合） |
 | `ENABLE_COMMAND_BLACKLIST` | `true` | 启用命令黑名单 |
 
 ### 会话

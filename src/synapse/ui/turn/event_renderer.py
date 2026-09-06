@@ -414,4 +414,9 @@ def _runtime_tool_item(payload: Mapping[str, object]) -> ToolItem:
         sub=bool(payload.get("sub", False)),
         parent_id=_str_or_none(payload.get("parent_id")),
         call_id=_str_or_none(payload.get("call_id")),
+        subagent_name=_str_or_none(payload.get("subagent_name")),
+        subagent_model=_str_or_none(payload.get("subagent_model")),
+        subagent_reasoning_effort=_str_or_none(payload.get("subagent_reasoning_effort")),
+        subagent_model_inherited=bool(payload.get("subagent_model_inherited", False)),
+        subagent_reasoning_inherited=bool(payload.get("subagent_reasoning_inherited", False)),
     )

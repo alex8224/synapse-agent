@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -21,9 +22,11 @@ def _append_guidance(request: Any, guidance: str) -> Any:
     return request.override(system_message=updated)
 
 
-def build_filesystem_tool_prompt_middleware() -> AgentMiddleware:
+def build_filesystem_tool_prompt_middleware(
+    excluded_tools: Iterable[str] | None = None,
+) -> AgentMiddleware:
     """Ensure active Synapse tool semantics override generic framework guidance."""
-    guidance = filesystem_tool_prompt().strip()
+    guidance = filesystem_tool_prompt(excluded_tools).strip()
 
     class _FilesystemToolPromptMiddleware(AgentMiddleware):
         state_schema = AgentState

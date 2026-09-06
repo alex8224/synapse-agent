@@ -394,15 +394,20 @@ def build_coding_agent(
         model._fast_mode = lambda: bool(getattr(settings, "openai_fast_mode", False))
         model._prompt_cache_key = prompt_cache_key
 
+    effective_excluded = list(getattr(settings, "excluded_tools", []) or [])
+    if getattr(settings, "minimal_filesystem_tools", False):
+        minimal_excluded = getattr(settings, "minimal_filesystem_excluded_tools", []) or []
+        effective_excluded.extend(minimal_excluded)
+
     apply_harness_exclusions(
         model_spec,
         readonly=settings.readonly,
-        excluded_tools=settings.excluded_tools,
+        excluded_tools=effective_excluded,
     )
     # Keep deepagents' built-in ``ls``, ``glob``, and ``grep`` out of model
     # requests. Synapse registers the non-conflicting ``find_files`` and
     # ``search_files`` tools explicitly below.
-    model_request_excluded_tools = set(settings.excluded_tools) | {"ls", "glob", "grep"}
+    model_request_excluded_tools = set(effective_excluded) | {"ls", "glob", "grep"}
     if settings.readonly:
         model_request_excluded_tools.update({"execute", "write_file", "edit_file", "patch"})
 
@@ -657,6 +662,7 @@ def build_coding_agent(
         prompt = system_prompt if system_prompt is not None else build_system_prompt(
             root,
             shell_executable=backend.shell_executable,
+            excluded_tools=model_request_excluded_tools,
         )
         agent = create_deep_agent(
             model=model,

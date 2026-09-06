@@ -12,6 +12,7 @@ The workspace footer is always appended in code.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from synapse.settings.config_paths import project_config_dir, user_config_dir
@@ -250,33 +251,72 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
-def filesystem_tool_prompt() -> str:
+def filesystem_tool_prompt(excluded_tools: Iterable[str] | None = None) -> str:
     """Build authoritative guidance matching the model-facing filesystem schemas."""
-    return (
-        "## Active filesystem tools (authoritative)\n"
+    blocked = {t.strip() for t in (excluded_tools or []) if t.strip()}
+    rules: list[str] = [
+        "## Active filesystem tools (authoritative)",
         "This section overrides generic DeepAgents filesystem guidance. The model-facing `ls`, "
-        "`glob`, and `grep` tools are hidden; never call them.\n"
-        "- Use `find_files(pattern, path, max_results, head_limit, offset)` to find paths by glob. "
-        "Use a narrow `path` or `pattern`; do not scan the whole workspace without a reason.\n"
-        "- Use `search_files(pattern, path, glob, output_mode, max_results, head_limit, offset, "
-        "context_lines, case_insensitive)` to search file contents. `pattern` is a "
-        "ripgrep-compatible regex.\n"
-        "- `search_files.glob` is an optional include-only path filter relative to `path`; it "
-        "cannot express exclusions.\n"
-        "- Omit `search_files.glob` when `path` already names a file or sufficiently narrow "
-        "directory.\n"
-        "- Common ignored caches and build artifacts are skipped by built-in ignore rules.\n"
-        "- Use `read_file(file_path, offset, limit)` for bounded text reads. `offset` is "
-        "zero-based; use pagination for large files.\n"
-        "- Prefer `patch(file_path, patch)` for ordinary multi-line edits to an existing file; "
-        "pass only unified-diff hunks beginning with `@@`.\n"
-        "- Use `edit_file(file_path, old_string, new_string, replace_all)` only for a small exact "
-        "replacement. `old_string` must be unique unless `replace_all` is true.\n"
-        "- Use `write_file(file_path, content)` to create a new file, not for routine edits to an "
-        "existing file.\n"
-        "- Do not use `execute` as a substitute for file discovery, content search, reading, or "
-        "editing when the dedicated tools can perform the operation.\n"
-    )
+        "`glob`, and `grep` tools are hidden; never call them.",
+    ]
+    if "find_files" not in blocked:
+        rules.append(
+            "- Use `find_files(pattern, path, max_results, head_limit, offset)` to find paths "
+            "by glob. Use a narrow `path` or `pattern`; do not scan the whole workspace "
+            "without a reason."
+        )
+    if "search_files" not in blocked:
+        rules.extend(
+            [
+                "- Use `search_files(pattern, path, glob, output_mode, max_results, head_limit, "
+                "offset, context_lines, case_insensitive)` to search file contents. `pattern` is a "
+                "ripgrep-compatible regex.",
+                "- `search_files.glob` is an optional include-only path filter relative to `path`; "
+                "it cannot express exclusions.",
+                "- Omit `search_files.glob` when `path` already names a file or "
+                "sufficiently narrow directory.",
+                "- Common ignored caches and build artifacts are skipped by built-in ignore rules.",
+            ]
+        )
+    if "read_file" not in blocked:
+        rules.append(
+            "- Use `read_file(file_path, offset, limit)` for bounded text reads. `offset` is "
+            "zero-based; use pagination for large files."
+        )
+    if "patch" not in blocked:
+        rules.append(
+            "- Prefer `patch(file_path, patch)` for ordinary multi-line edits to an existing file; "
+            "pass only unified-diff hunks beginning with `@@`."
+        )
+    if "edit_file" not in blocked:
+        rules.append(
+            "- Use `edit_file(file_path, old_string, new_string, replace_all)` only for a small "
+            "exact replacement. `old_string` must be unique unless `replace_all` is true."
+        )
+    if "write_file" not in blocked:
+        rules.append(
+            "- Use `write_file(file_path, content)` to create a new file, not for routine edits "
+            "to an existing file."
+        )
+
+    # Note on execute substitute
+    non_execute_file_ops = {
+        "find_files",
+        "search_files",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "patch",
+    }
+    active_file_ops = non_execute_file_ops - blocked
+    if active_file_ops:
+        active_names = ", ".join(sorted(active_file_ops))
+        rules.append(
+            f"- Do not use `execute` as a substitute for file operations when active tools "
+            f"({active_names}) can perform the operation."
+        )
+
+    return "\n".join(rules) + "\n"
 
 
 def _shell_prompt(shell_executable: str) -> str:
@@ -313,6 +353,7 @@ def build_system_prompt(
     *,
     ensure_user_file: bool = False,
     shell_executable: str | None = None,
+    excluded_tools: Iterable[str] | None = None,
 ) -> str:
     """Build a system prompt with workspace and effective host-shell context."""
     root = Path(workspace).resolve()
@@ -326,6 +367,6 @@ def build_system_prompt(
         f"- File-tool virtual root: `/` maps to the host root above\n"
         f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
         f"- Shell commands run on the host, inside the workspace root.\n\n"
-        f"{filesystem_tool_prompt()}\n"
+        f"{filesystem_tool_prompt(excluded_tools)}\n"
         f"{_shell_prompt(effective_shell)}"
     )
