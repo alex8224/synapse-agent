@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from langchain.agents.middleware import ModelRetryMiddleware
@@ -438,3 +439,98 @@ def test_resolve_display_effort_from_profiles_mirrors_build_chat_model() -> None
     # Fully inherited / unknown models are left untouched (no effort shown).
     assert out["inherited"].reasoning_effort is None
     assert out["unknown"].reasoning_effort is None
+
+
+def test_subagent_model_factory_reuses_cached_client(tmp_path: Path) -> None:
+    """Subagent model factory must reuse models from the shared model_cache dict."""
+    from synapse.app.agent import _subagent_model_factory
+
+    settings = load_settings(
+        workspace=tmp_path,
+        model="openai:gpt-4.1",
+        checkpoint_backend="memory",
+        enable_mcp=False,
+    )
+    mock_registry = MagicMock()
+    mock_model = MagicMock(name="built_subagent_model")
+    mock_registry.build_chat_model.return_value = mock_model
+
+    cache: dict[str, Any] = {}
+    factory = _subagent_model_factory(mock_registry, settings, model_cache=cache)
+
+    # First build with specific model and reasoning
+    m1 = factory("openai:gpt-4.1", "high")
+    assert m1 is mock_model
+    assert mock_registry.build_chat_model.call_count == 1
+    assert len(cache) == 1
+
+    # Second build with identical model and reasoning should hit cache
+    m2 = factory("openai:gpt-4.1", "high")
+    assert m2 is m1
+    assert mock_registry.build_chat_model.call_count == 1
+
+    # Third build with different reasoning should create a new model and cache it
+    m3 = factory("openai:gpt-4.1", "low")
+    assert mock_registry.build_chat_model.call_count == 2
+    assert len(cache) == 2
+    assert m3 is not None
+
+
+def test_build_coding_agent_subagents_share_cached_models(tmp_path: Path, monkeypatch) -> None:
+    """Subagents sharing identical model settings must share the same model instance."""
+    from synapse.app import agent as agent_mod
+
+    settings = load_settings(
+        workspace=tmp_path,
+        model="openai:gpt-4.1",
+        checkpoint_backend="memory",
+        enable_mcp=False,
+        enable_subagents=True,
+    )
+    # Give two builtin subagents identical model configurations
+    settings.subagent_model_overrides = {
+        "researcher": "anthropic:claude-sub-shared",
+        "reviewer": "anthropic:claude-sub-shared",
+    }
+    settings.subagent_reasoning_effort_overrides = {
+        "researcher": "high",
+        "reviewer": "high",
+    }
+    monkeypatch.setattr(agent_mod, "ensure_user_subagents", lambda: [])
+
+    captured_models: list[Any] = []
+
+    def fake_create_deep_agent(*args, **kwargs):
+        subagents = kwargs.get("subagents") or []
+        for s in subagents:
+            if isinstance(s, dict) and "model" in s:
+                captured_models.append(s["model"])
+        return MagicMock(name="agent")
+
+    model_build_count = 0
+
+    def fake_init_chat_model(model_name, **kwargs):
+        nonlocal model_build_count
+        model_build_count += 1
+        m = MagicMock(name=f"model_{model_name}_{model_build_count}")
+        return m
+
+    cache: dict[str, Any] = {}
+    with (
+        patch("synapse.models.registry.init_chat_model", side_effect=fake_init_chat_model),
+        patch("deepagents.create_deep_agent", side_effect=fake_create_deep_agent),
+        patch("deepagents.register_harness_profile", MagicMock()),
+        patch("deepagents.HarnessProfile", MagicMock()),
+    ):
+        agent_mod.build_coding_agent(
+            settings, project_root=tmp_path, model_cache=cache
+        )
+
+    # Subagents with the same model configuration must share the exact same model object
+    sub_shared = [
+        m for m in captured_models
+        if getattr(m, "_mock_name", "").startswith("model_anthropic:claude-sub-shared")
+    ]
+    assert len(sub_shared) == 2
+    assert sub_shared[0] is sub_shared[1]
+

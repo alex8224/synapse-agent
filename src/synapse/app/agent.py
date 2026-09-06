@@ -106,13 +106,20 @@ def _resolve_display_effort_from_profiles(
     return out
 
 
-def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelFactory:
+def _subagent_model_factory(
+    registry: Any,
+    settings: Settings,
+    *,
+    model_cache: dict[str, Any] | None = None,
+) -> SubagentModelFactory:
     """Materialize a pinned subagent model with an optional effort override.
 
     ``model_name=None`` builds the main agent's *active* profile (falling back
     to the registry default) so a reasoning-only override runs the same model
     the main agent uses — matching what the UI reports as inherited; unknown
     ad-hoc names fall back to the raw string for native deepagents resolution.
+    If ``model_cache`` is provided, instances configured with identical parameters
+    are reused across subagents and across agent rebuilds.
     """
 
     def factory(model_name: str | None, reasoning_effort: str | None) -> Any:
@@ -126,8 +133,23 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
         # against the active profile (not the registry default) so the built
         # instance matches the main agent and the UI's inherit display.
         resolved_name = model_name or settings.active_model or None
+
+        cache_key = None
+        if model_cache is not None:
+            try:
+                cache_key = model_cache_key(
+                    settings,
+                    model_name=resolved_name,
+                    enable_thinking=enabled,
+                    reasoning_effort=effort,
+                )
+                if cache_key in model_cache:
+                    return model_cache[cache_key]
+            except Exception:  # noqa: BLE001 - cache key generation is best-effort
+                cache_key = None
+
         try:
-            return registry.build_chat_model(
+            built_model = registry.build_chat_model(
                 resolved_name,
                 fallback_api_key=settings_fallback_api_key(settings, resolved_name),
                 fallback_base_url=settings.openai_base_url,
@@ -141,6 +163,9 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
                 enable_thinking=enabled,
                 reasoning_effort=effort,
             )
+            if model_cache is not None and cache_key is not None:
+                model_cache[cache_key] = built_model
+            return built_model
         except KeyError:
             # Unknown ad-hoc model name: keep the raw string so deepagents
             # resolves it natively instead of failing the whole agent build.
@@ -581,7 +606,7 @@ def build_coding_agent(
             inherit_tools=tools,
             custom_subagents=custom_subagents,
             disable_builtin_subagents=settings.disable_builtin_subagents,
-            model_factory=_subagent_model_factory(registry, settings),
+            model_factory=_subagent_model_factory(registry, settings, model_cache=model_cache),
             model_overrides=settings.subagent_model_overrides,
             reasoning_effort_overrides=settings.subagent_reasoning_effort_overrides,
             default_model=settings.subagent_default_model,
@@ -704,9 +729,9 @@ def build_coding_agent(
         # Reasoning-only overrides (planner_model_name is None) still pin an
         # independent instance of the main model with the effort applied.
         if planner_model_name is not None or planner_reasoning is not None:
-            agent._coding_planner_model = _subagent_model_factory(registry, settings)(
-                planner_model_name, planner_reasoning
-            )
+            agent._coding_planner_model = _subagent_model_factory(
+                registry, settings, model_cache=model_cache
+            )(planner_model_name, planner_reasoning)
         else:
             agent._coding_planner_model = model  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001 - planner degrades to the main model
