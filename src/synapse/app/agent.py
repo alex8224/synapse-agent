@@ -618,6 +618,7 @@ def build_coding_agent(
             default_reasoning_effort=settings.subagent_default_reasoning_effort,
             main_model=model_spec,
             main_reasoning_effort=main_reasoning_effort,
+            extra_excluded_tools=effective_excluded,
         )
         subagents = subagent_build.specs
         display_configs = _resolve_display_effort_from_profiles(

@@ -359,6 +359,7 @@ def compile_task_specs(
     reasoning_effort_overrides: dict[str, str] | None = None,
     default_model: str | None = None,
     default_reasoning_effort: str | None = None,
+    extra_excluded_tools: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Compile task-mode definitions into deepagents ``SubAgent`` dicts.
 
@@ -439,7 +440,7 @@ def compile_task_specs(
                 tools = [*tools, result_reader]
             spec["tools"] = tools
 
-        blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES
+        blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES | set(extra_excluded_tools or ())
         if hide_builtin_search:
             blocked |= _BUILTIN_SEARCH_TOOL_NAMES
         middleware = [

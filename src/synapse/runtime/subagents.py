@@ -236,6 +236,7 @@ def _build_default_subagent_runtime(
     default_reasoning_effort: str | None = None,
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
+    extra_excluded_tools: Sequence[str] = (),
 ) -> SubagentBuildResult:
     """Build specs plus display configs from one shared definition merge.
 
@@ -275,6 +276,7 @@ def _build_default_subagent_runtime(
         reasoning_effort_overrides=reasoning_effort_overrides,
         default_model=default_model,
         default_reasoning_effort=default_reasoning_effort,
+        extra_excluded_tools=extra_excluded_tools,
     )
     names = set(model_overrides or {}) | set(reasoning_effort_overrides or {})
     overrides = {
@@ -323,6 +325,7 @@ def build_default_subagents(
     default_reasoning_effort: str | None = None,
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
+    extra_excluded_tools: Sequence[str] = (),
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -355,6 +358,7 @@ def build_default_subagents(
         default_reasoning_effort=default_reasoning_effort,
         main_model=main_model,
         main_reasoning_effort=main_reasoning_effort,
+        extra_excluded_tools=extra_excluded_tools,
     ).specs
 
 
@@ -380,6 +384,7 @@ def build_default_subagents_with_display(
     default_reasoning_effort: str | None = None,
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
+    extra_excluded_tools: Sequence[str] = (),
 ) -> SubagentBuildResult:
     """Like ``build_default_subagents``, but also returns UI display configs.
 
@@ -408,6 +413,7 @@ def build_default_subagents_with_display(
         default_reasoning_effort=default_reasoning_effort,
         main_model=main_model,
         main_reasoning_effort=main_reasoning_effort,
+        extra_excluded_tools=extra_excluded_tools,
     )
 
 
