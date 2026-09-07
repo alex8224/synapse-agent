@@ -28,6 +28,10 @@ from synapse.runtime.service.commands import (
     CommandReceipt,
     OpenSessionCommand,
     OpenSessionResult,
+    RebindSessionCommand,
+    RebindSessionResult,
+    ReloadMcpCommand,
+    ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
     SteerTurnCommand,
@@ -66,6 +70,8 @@ __all__ = [
     "SESSION_OPEN",
     "SESSION_CLOSE",
     "SESSION_READ",
+    "SESSION_REBIND",
+    "SESSION_MCP_RELOAD",
     "TURN_SUBMIT",
     "TURN_CANCEL",
     "TURN_STEER",
@@ -81,6 +87,8 @@ TURN_APPROVAL_READ = "turn.approval.read"
 TURN_APPROVAL_RESUME = "turn.approval.resume"
 SESSION_CLOSE = "session.close"
 SESSION_READ = "session.read"
+SESSION_REBIND = "session.rebind"
+SESSION_MCP_RELOAD = "session.mcp.reload"
 EVENTS_READ = "events.read"
 EVENTS_WATCH = "events.watch"
 ARTIFACTS_STAT = "artifacts.stat"
@@ -97,6 +105,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         TURN_APPROVAL_RESUME,
         SESSION_CLOSE,
         SESSION_READ,
+        SESSION_REBIND,
+        SESSION_MCP_RELOAD,
         EVENTS_READ,
         EVENTS_WATCH,
         ARTIFACTS_STAT,
@@ -349,6 +359,19 @@ class AccessControlledAgentRuntimeService:
         session = self._session_from_dto(command, OpenSessionCommand, "open command")
         self._authorize(session, SESSION_OPEN)
         return await self._delegate.open_session(command)
+
+    async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
+        session = self._session_from_dto(command, RebindSessionCommand, "rebind command")
+        self._authorize(session, SESSION_REBIND)
+        return await self._delegate.rebind_session(command)
+
+    async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult:
+        session = self._session_from_dto(command, ReloadMcpCommand, "MCP reload command")
+        self._authorize(session, SESSION_MCP_RELOAD)
+        delegate = getattr(self._delegate, "reload_mcp", None)
+        if not callable(delegate):
+            raise InvalidRequestError("MCP reload is unavailable")
+        return await delegate(command)
 
     async def cancel_turn(self, command: CancelTurnCommand) -> CancelTurnResult:
         session = self._session_from_dto(command, CancelTurnCommand, "cancel command")

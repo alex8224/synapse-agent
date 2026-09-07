@@ -26,6 +26,10 @@ from synapse.runtime.service.commands import (
     CommandReceipt,
     OpenSessionCommand,
     OpenSessionResult,
+    RebindSessionCommand,
+    RebindSessionResult,
+    ReloadMcpCommand,
+    ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
     SteerTurnCommand,
@@ -104,6 +108,10 @@ class AgentRuntimeService(Protocol):
     async def resume_turn(self, command: ResumeTurnCommand) -> ResumeTurnResult: ...
 
     async def open_session(self, command: OpenSessionCommand) -> OpenSessionResult: ...
+
+    async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult: ...
+
+    async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult: ...
 
     async def cancel_turn(self, command: CancelTurnCommand) -> CancelTurnResult: ...
 

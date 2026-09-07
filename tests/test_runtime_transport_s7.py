@@ -67,8 +67,9 @@ def test_canonical_response_and_strict_result_projection() -> None:
     view = SessionView("项目", "thread", "idle", None, 0, UsageView(), None, "now")
     expected = (
         '{"id":7,"jsonrpc":"2.0","meta":{"wire_version":"1"},'
-        '"result":{"active_turn_id":null,"last_activity_at":"now","last_error":null,'
-        '"latest_sequence":0,"project_id":"项目","status":"idle","thread_id":"thread",'
+        '"result":{"active_model":null,"active_turn_id":null,"last_activity_at":"now",'
+        '"last_error":null,"latest_sequence":0,"model":null,"project_id":"项目",'
+        '"status":"idle","thread_id":"thread",'
         '"usage":{"cache_tokens":0,"input_tokens":0,"output_tokens":0}}}'
     )
     assert encode_response(7, view) == expected
@@ -88,6 +89,12 @@ def test_all_business_parameter_conversions_are_strict() -> None:
     session = {"project_id": "p", "thread_id": "t"}
     values = {
         "runtime.session.open": {"session": session},
+        "runtime.session.rebind": {"session": session, "model": "model-a"},
+        "runtime.session.mcp.reload": {
+            "session": session,
+            "server": "search",
+            "enabled": True,
+        },
         "runtime.turn.submit": {"session": session, "text": "hi"},
         "runtime.turn.cancel": {"session": session, "expected_turn_id": "turn"},
         "runtime.turn.steer": {"session": session, "expected_turn_id": "turn", "text": "hi"},
@@ -193,6 +200,20 @@ def test_projection_base_exception_propagates(error: BaseException) -> None:
             "runtime.session.open",
             {"session": {"project_id": "p", "thread_id": "t"}},
             "OpenSessionCommand",
+        ),
+        (
+            "runtime.session.rebind",
+            {"session": {"project_id": "p", "thread_id": "t"}, "model": "model-a"},
+            "RebindSessionCommand",
+        ),
+        (
+            "runtime.session.mcp.reload",
+            {
+                "session": {"project_id": "p", "thread_id": "t"},
+                "server": "search",
+                "enabled": True,
+            },
+            "ReloadMcpCommand",
         ),
         (
             "runtime.turn.submit",

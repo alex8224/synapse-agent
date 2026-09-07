@@ -18,6 +18,7 @@ from synapse.runtime.sessions.errors import (
 )
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.sessions.runtime import (
+    ExecutionBinding,
     SessionRuntime,
     SessionSnapshot,
     SessionStatus,
@@ -68,6 +69,18 @@ class RuntimeManager:
         *,
         settings: Any,
         agent_factory: Callable[[str, ProjectSharedResources], Any],
+        session_binding_factory: Callable[
+            [str, ProjectSharedResources], tuple[Any, Any]
+        ]
+        | None = None,
+        agent_rebind_factory: Callable[
+            [str, str, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
+        ]
+        | None = None,
+        mcp_rebind_factory: Callable[
+            [str, str, bool, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
+        ]
+        | None = None,
         shared_resources: ProjectSharedResources | None = None,
         max_concurrent_sessions: int = 2,
         session_factory: Callable[..., SessionRuntime] = SessionRuntime,
@@ -75,15 +88,20 @@ class RuntimeManager:
         project_id: str | None = None,
         persist_result: Callable[..., Any] | None = None,
         on_status_change: Callable[[SessionSnapshot], None] | None = None,
+        persist_model_binding: Callable[[str, Any], None] | None = None,
     ) -> None:
         self.settings = settings
         self.agent_factory = agent_factory
+        self.session_binding_factory = session_binding_factory
+        self.agent_rebind_factory = agent_rebind_factory
+        self.mcp_rebind_factory = mcp_rebind_factory
         self.shared_resources = shared_resources or ProjectSharedResources()
         self.max_concurrent_sessions = max(1, int(max_concurrent_sessions))
         self.session_factory = session_factory
         self.project_id = project_id
         self.persist_result = persist_result
         self.on_status_change = on_status_change
+        self.persist_model_binding = persist_model_binding
         self._async_runtime = async_runtime or get_async_runtime()
         self._sessions: dict[str, SessionRuntime] = {}
         self._lock = threading.RLock()
@@ -190,8 +208,14 @@ class RuntimeManager:
                 lock.release()
                 return existing, False
             try:
-                agent = self.agent_factory(thread_id, self.shared_resources)
-                runtime = self._build_runtime(thread_id, agent)
+                if self.session_binding_factory is None:
+                    agent = self.agent_factory(thread_id, self.shared_resources)
+                    runtime = self._build_runtime(thread_id, agent)
+                else:
+                    agent, settings = self.session_binding_factory(
+                        thread_id, self.shared_resources
+                    )
+                    runtime = self._build_runtime(thread_id, agent, settings=settings)
                 with self._lock:
                     existing = self._sessions.get(thread_id)
                     if existing is not None or thread_id in self._closing:
@@ -202,11 +226,13 @@ class RuntimeManager:
                 if lock.locked():
                     lock.release()
 
-    def _build_runtime(self, thread_id: str, agent: Any) -> SessionRuntime:
+    def _build_runtime(
+        self, thread_id: str, agent: Any, *, settings: Any | None = None
+    ) -> SessionRuntime:
         runtime_kwargs = {
             "thread_id": thread_id,
             "agent": agent,
-            "settings": self.settings,
+            "settings": self.settings if settings is None else settings,
         }
         if self.persist_result is not None:
             runtime_kwargs["persist_result"] = self.persist_result
@@ -243,8 +269,39 @@ class RuntimeManager:
                         session = existing
                     else:
                         self._sessions[thread_id] = session
+            previous = session.binding
             session.rebind(agent, settings)
+            try:
+                if self.persist_model_binding is not None:
+                    self.persist_model_binding(thread_id, settings)
+            except Exception:
+                session.rebind(previous.agent, previous.settings)
+                raise
             return session
+
+    def build_model_rebinding(self, ref: SessionRef, model: str) -> tuple[Any, Any]:
+        """Build a replacement agent/settings pair without mutating project defaults."""
+        thread_id = self._check_ref(ref)
+        factory = self.agent_rebind_factory
+        if factory is None:
+            raise ValueError("session model rebind is unavailable")
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise ValueError("session is not open")
+        return factory(thread_id, model, session.binding, self.shared_resources)
+
+    def build_mcp_rebinding(
+        self, ref: SessionRef, server: str, enabled: bool
+    ) -> tuple[Any, Any]:
+        """Persist MCP state and build a replacement agent/settings pair."""
+        thread_id = self._check_ref(ref)
+        factory = self.mcp_rebind_factory
+        if factory is None:
+            raise ValueError("session MCP reload is unavailable")
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise ValueError("session is not open")
+        return factory(thread_id, server, enabled, session.binding, self.shared_resources)
 
     def cancel_turn_ref(
         self, ref: SessionRef, expected_turn_id: str, reason: str = "user"

@@ -21,6 +21,10 @@ __all__ = [
     "CommandReceipt",
     "OpenSessionCommand",
     "OpenSessionResult",
+    "ReloadMcpCommand",
+    "ReloadMcpResult",
+    "RebindSessionCommand",
+    "RebindSessionResult",
     "SteerTurnCommand",
     "SteerTurnResult",
     "SubmitTurnCommand",
@@ -147,6 +151,59 @@ class OpenSessionResult:
     command_id: str
     session: SessionRef
     created: bool
+    view: SessionView
+
+
+@dataclass(frozen=True, slots=True)
+class ReloadMcpCommand:
+    """Persist one MCP server flag and rebuild the current session binding."""
+
+    session: SessionRef
+    server: str
+    enabled: bool
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if type(self.server) is not str or not self.server.strip():
+            raise ValueError("server must not be empty")
+        if type(self.enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class ReloadMcpResult:
+    """Configured and actual runtime state after an MCP session rebuild."""
+
+    command_id: str
+    session: SessionRef
+    server: str
+    enabled: bool
+    attached: bool
+    active_servers: tuple[str, ...]
+    tool_count: int
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RebindSessionCommand:
+    """Rebuild one session binding for future turns with a selected model."""
+
+    session: SessionRef
+    model: str
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if type(self.model) is not str or not self.model.strip():
+            raise ValueError("model must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class RebindSessionResult:
+    """Confirmation that future turns use the replacement agent binding."""
+
+    command_id: str
+    session: SessionRef
+    model: str
     view: SessionView
 
 

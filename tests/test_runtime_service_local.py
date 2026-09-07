@@ -12,7 +12,12 @@ from typing import Any
 import pytest
 
 from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
-from synapse.runtime.service.commands import SubmitTurnCommand
+from synapse.runtime.service.commands import (
+    OpenSessionCommand,
+    RebindSessionCommand,
+    ReloadMcpCommand,
+    SubmitTurnCommand,
+)
 from synapse.runtime.service.errors import (
     ClosedError,
     ConflictError,
@@ -254,6 +259,138 @@ def test_submit_routes_via_submit_ref_and_returns_receipt_without_handle() -> No
         assert view.active_turn_id == receipt.turn_id
 
         factory.turns["a"].future.set_result(_result("a", receipt.turn_id))
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_session_open_restores_binding_and_rebind_persists_it() -> None:
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+        persisted: list[tuple[str, str]] = []
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="default"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(model="default"),
+            session_binding_factory=lambda thread_id, shared: (
+                SimpleNamespace(model="stored"),
+                SimpleNamespace(max_concurrency=2, model="stored", active_model="stored"),
+            ),
+            agent_rebind_factory=lambda thread_id, model, binding, shared: (
+                SimpleNamespace(model=model),
+                SimpleNamespace(max_concurrency=2, model=model, active_model=model),
+            ),
+            persist_model_binding=lambda thread_id, settings: persisted.append(
+                (thread_id, settings.active_model)
+            ),
+            session_factory=factory,
+            project_id="p1",
+        )
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+
+        opened = await service.open_session(OpenSessionCommand(ref))
+        assert opened.view.active_model == "stored"
+        assert opened.view.model == "stored"
+
+        await service.rebind_session(RebindSessionCommand(ref, "new"))
+        assert persisted == [("a", "new")]
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_rebind_persistence_failure_restores_previous_binding() -> None:
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+
+        def fail_persist(thread_id: str, settings: Any) -> None:
+            del thread_id, settings
+            raise OSError("write failed")
+
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="old", active_model="old"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(model="old"),
+            agent_rebind_factory=lambda thread_id, model, binding, shared: (
+                SimpleNamespace(model=model),
+                SimpleNamespace(max_concurrency=2, model=model, active_model=model),
+            ),
+            persist_model_binding=fail_persist,
+            session_factory=factory,
+            project_id="p1",
+        )
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+        await service.open_session(OpenSessionCommand(ref))
+
+        with pytest.raises(OSError, match="write failed"):
+            await service.rebind_session(RebindSessionCommand(ref, "new"))
+        view = await service.get_session(GetSessionQuery(ref))
+        assert view.active_model == "old"
+        assert view.model == "old"
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_reload_mcp_reports_attached_runtime_state() -> None:
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="test"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(),
+            mcp_rebind_factory=lambda thread_id, server, enabled, binding, shared: (
+                SimpleNamespace(
+                    _coding_mcp_servers=[server] if enabled else [],
+                    _coding_mcp_tool_names=["search_query"] if enabled else [],
+                    _coding_mcp_warnings=[],
+                ),
+                SimpleNamespace(max_concurrency=2, model="test"),
+            ),
+            session_factory=factory,
+            project_id="p1",
+        )
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+        await service.open_session(OpenSessionCommand(ref))
+
+        result = await service.reload_mcp(ReloadMcpCommand(ref, "search", True))
+        assert result.enabled is True
+        assert result.attached is True
+        assert result.active_servers == ("search",)
+        assert result.tool_count == 1
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_rebind_session_replaces_future_turn_agent_and_settings() -> None:
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="old"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(model="old"),
+            agent_rebind_factory=lambda thread_id, model, binding, shared: (
+                SimpleNamespace(model=model),
+                SimpleNamespace(max_concurrency=2, model=model, active_model=model),
+            ),
+            session_factory=factory,
+            project_id="p1",
+        )
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+        await service.open_session(OpenSessionCommand(ref))
+
+        result = await service.rebind_session(RebindSessionCommand(ref, "new"))
+        session = manager.get_session_ref(ref)
+        assert session is not None
+        assert result.model == "new"
+        assert result.view.active_model == "new"
+        assert result.view.model == "new"
+        assert session._binding.agent.model == "new"
+        assert session._binding.settings.active_model == "new"
+        view = await service.get_session(GetSessionQuery(ref))
+        assert view.active_model == "new"
+        assert view.model == "new"
         await manager.shutdown()
 
     asyncio.run(run())

@@ -702,6 +702,9 @@ def build_coding_agent(
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_mcp_servers = list(_mcp_servers)  # type: ignore[attr-defined]
     agent._coding_mcp_tool_names = list(_mcp_tool_names)  # type: ignore[attr-defined]
+    agent._coding_mcp_warnings = list(  # type: ignore[attr-defined]
+        getattr(build_coding_agent, "last_mcp_warnings", []) or []
+    )
     agent._coding_mcp_scope_key = mcp_pool_key  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
     # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so

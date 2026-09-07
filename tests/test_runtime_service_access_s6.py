@@ -22,8 +22,10 @@ from synapse.runtime.service import (
     EVENTS_READ,
     EVENTS_WATCH,
     SESSION_CLOSE,
+    SESSION_MCP_RELOAD,
     SESSION_OPEN,
     SESSION_READ,
+    SESSION_REBIND,
     TURN_APPROVAL_READ,
     TURN_APPROVAL_RESUME,
     TURN_CANCEL,
@@ -46,6 +48,8 @@ from synapse.runtime.service import (
     Principal,
     ReadArtifactQuery,
     ReadEventsQuery,
+    RebindSessionCommand,
+    ReloadMcpCommand,
     ResumeTurnCommand,
     StatArtifactQuery,
     SteerTurnCommand,
@@ -93,6 +97,12 @@ class SpyDelegate:
 
     async def open_session(self, command: OpenSessionCommand) -> Any:
         return await self._call("open")
+
+    async def rebind_session(self, command: RebindSessionCommand) -> Any:
+        return await self._call("rebind")
+
+    async def reload_mcp(self, command: ReloadMcpCommand) -> Any:
+        return await self._call("reload_mcp")
 
     async def cancel_turn(self, command: CancelTurnCommand) -> Any:
         return await self._call("cancel")
@@ -175,6 +185,8 @@ def test_capabilities_and_error_codes_are_stable_and_exported() -> None:
             TURN_STEER,
             SESSION_CLOSE,
             SESSION_READ,
+            SESSION_REBIND,
+            SESSION_MCP_RELOAD,
             EVENTS_READ,
             EVENTS_WATCH,
             ARTIFACTS_STAT,
@@ -194,6 +206,8 @@ def test_capabilities_and_error_codes_are_stable_and_exported() -> None:
         for name in (
             "submit_turn",
             "open_session",
+            "rebind_session",
+            "reload_mcp",
             "cancel_turn",
             "steer_turn",
             "close_session",
@@ -260,6 +274,10 @@ def test_authorizer_is_exact_scope_default_deny_and_thread_safe() -> None:
     [
         ("submit_turn", SubmitTurnCommand(REF, "text"), TURN_SUBMIT),
         ("open_session", OpenSessionCommand(REF), SESSION_OPEN),
+        ("rebind_session", RebindSessionCommand(REF, "model-a"), SESSION_REBIND),
+        ("reload_mcp", ReloadMcpCommand(REF, "search", True), SESSION_MCP_RELOAD),
+        ("reload_mcp", ReloadMcpCommand(REF, "search", True), SESSION_MCP_RELOAD),
+        ("rebind_session", RebindSessionCommand(REF, "model-a"), SESSION_REBIND),
         ("cancel_turn", CancelTurnCommand(REF, "turn"), TURN_CANCEL),
         ("steer_turn", SteerTurnCommand(REF, "turn", "text"), TURN_STEER),
         ("close_session", CloseSessionCommand(REF), SESSION_CLOSE),
@@ -285,6 +303,8 @@ def test_each_async_port_authorizes_before_delegate(
         expected_call = {
             "submit_turn": "submit",
             "open_session": "open",
+            "rebind_session": "rebind",
+            "reload_mcp": "reload_mcp",
             "cancel_turn": "cancel",
             "steer_turn": "steer",
             "close_session": "close",
@@ -581,6 +601,8 @@ def test_all_thirteen_ports_have_complete_capability_separation(
             expected = {
                 "submit_turn": "submit",
                 "open_session": "open",
+                "rebind_session": "rebind",
+                "reload_mcp": "reload_mcp",
                 "cancel_turn": "cancel",
                 "steer_turn": "steer",
                 "close_session": "close",

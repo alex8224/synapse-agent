@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from synapse.app.agent import build_coding_agent
+from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
 from synapse.runtime.daemon.auth import BearerTokenAuthenticator, load_token
 from synapse.runtime.daemon.config import DaemonConfig
@@ -25,7 +26,13 @@ from synapse.runtime.service import (
 )
 from synapse.runtime.sessions import RuntimeManager
 from synapse.runtime.transport import RuntimeWebSocketServer
+from synapse.sessions.store import (
+    SessionStore,
+    apply_binding_to_settings,
+    binding_from_settings,
+)
 from synapse.settings import load_global_settings, load_project_settings
+from synapse.settings.config_paths import set_mcp_server_enabled
 
 
 class RuntimeDaemon:
@@ -84,17 +91,76 @@ class RuntimeDaemon:
         if self._manager_factory_override is not None:
             return self._manager_factory_override(descriptor)
         project_settings = load_project_settings(descriptor.workspace)
-        return RuntimeManager(
-            settings=project_settings,
-            agent_factory=lambda thread_id, _shared: build_coding_agent(
-                project_settings,
+
+        def build_agent(settings: Any, thread_id: str) -> Any:
+            return build_coding_agent(
+                settings,
                 project_root=descriptor.workspace,
                 load_mcp=None,
                 prompt_cache_key=lambda: thread_id,
                 mcp_pool_key=f"{descriptor.project_id}:{thread_id}",
+            )
+
+        def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:
+            settings = project_settings.model_copy(deep=True)
+            with SessionStore(settings.resolved_sessions_path()) as store:
+                apply_binding_to_settings(settings, store.get_model_binding(thread_id))
+            return build_agent(settings, thread_id), settings
+
+        def persist_session_binding(thread_id: str, settings: Any) -> None:
+            with SessionStore(settings.resolved_sessions_path()) as store:
+                store.replace_model_binding(
+                    thread_id,
+                    binding_from_settings(settings),
+                    also_last=False,
+                )
+
+        def build_model_rebinding(
+            thread_id: str, model: str, binding: Any, _shared: Any
+        ) -> tuple[Any, Any]:
+            settings = binding.settings.model_copy(deep=True)
+            profile = registry_from_settings(settings).get(model)
+            apply_profile_to_settings(settings, profile)
+            return build_agent(settings, thread_id), settings
+
+        def build_mcp_rebinding(
+            thread_id: str, server: str, enabled: bool, binding: Any, _shared: Any
+        ) -> tuple[Any, Any]:
+            set_mcp_server_enabled(
+                server,
+                enabled,
+                workspace=descriptor.workspace,
+                explicit_path=project_settings.mcp_config_path,
+            )
+            settings = load_project_settings(descriptor.workspace)
+            active_model = binding.settings.active_model or binding.settings.model
+            profile = registry_from_settings(settings).get(active_model)
+            apply_profile_to_settings(settings, profile, seed_thinking=False)
+            from synapse.integrations.mcp_client import get_mcp_pool_registry
+
+            get_mcp_pool_registry().release(f"{descriptor.project_id}:{thread_id}")
+            return (
+                build_coding_agent(
+                    settings,
+                    project_root=descriptor.workspace,
+                    load_mcp=True,
+                    prompt_cache_key=lambda: thread_id,
+                    mcp_pool_key=f"{descriptor.project_id}:{thread_id}",
+                ),
+                settings,
+            )
+
+        return RuntimeManager(
+            settings=project_settings,
+            agent_factory=lambda thread_id, _shared: build_agent(
+                project_settings, thread_id
             ),
+            session_binding_factory=build_session_binding,
+            agent_rebind_factory=build_model_rebinding,
+            mcp_rebind_factory=build_mcp_rebinding,
             max_concurrent_sessions=project_settings.max_concurrency,
             project_id=descriptor.project_id,
+            persist_model_binding=persist_session_binding,
         )
 
     def _make_service(self, principal: Principal) -> Any:

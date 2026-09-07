@@ -127,6 +127,8 @@ class SessionSnapshot:
     goal: Any | None = None
     last_error: str | None = None
     last_activity_at: datetime = field(default_factory=_utcnow)
+    active_model: str | None = None
+    model: str | None = None
 
 
 def _attach_herdr_status_observer(
@@ -826,6 +828,8 @@ class SessionRuntime:
                 goal=self._goal,
                 last_error=self._last_error,
                 last_activity_at=self._last_activity_at,
+                active_model=getattr(self._binding.settings, "active_model", None),
+                model=getattr(self._binding.settings, "model", None),
             )
 
     def subscribe(

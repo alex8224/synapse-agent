@@ -35,6 +35,8 @@ from synapse.runtime.service.commands import (
     CommandReceipt,
     OpenSessionCommand,
     OpenSessionResult,
+    RebindSessionCommand,
+    RebindSessionResult,
     ResumeTurnCommand,
     ResumeTurnResult,
     SteerTurnCommand,
@@ -308,10 +310,16 @@ def _event(value: object) -> RuntimeEvent:
 
 def _view(value: object) -> SessionView:
     try:
-        if not isinstance(value, dict) or set(value) != {
+        required = {
             "project_id", "thread_id", "status", "active_turn_id", "latest_sequence",
             "usage", "last_error", "last_activity_at",
-        }:
+        }
+        optional = {"active_model", "model"}
+        if (
+            not isinstance(value, dict)
+            or not required.issubset(value)
+            or set(value) - required - optional
+        ):
             raise ProtocolTransportError()
         usage = value["usage"]
         if not isinstance(usage, dict) or set(usage) != {
@@ -324,6 +332,11 @@ def _view(value: object) -> SessionView:
             or value["latest_sequence"] < 0
             or (value["active_turn_id"] is not None and type(value["active_turn_id"]) is not str)
             or (value["last_error"] is not None and type(value["last_error"]) is not str)
+            or (
+                value.get("active_model") is not None
+                and type(value.get("active_model")) is not str
+            )
+            or (value.get("model") is not None and type(value.get("model")) is not str)
         ):
             raise ProtocolTransportError()
         if value["status"] not in {
@@ -340,6 +353,8 @@ def _view(value: object) -> SessionView:
             UsageView(usage["input_tokens"], usage["output_tokens"], usage["cache_tokens"]),
             value["last_error"],
             _text(value["last_activity_at"], "last_activity_at", 256),
+            value.get("active_model"),
+            value.get("model"),
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
@@ -908,6 +923,36 @@ class RuntimeWebSocketClient:
                 raise ProtocolTransportError()
             return OpenSessionResult(
                 result["command_id"], _ref(result["session"]), result["created"], _view(result["view"])
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
+        result = await self._command(
+            "runtime.session.rebind",
+            {
+                "session": _wire_session(command.session),
+                "model": command.model,
+                "command_id": command.command_id,
+            },
+            command.command_id,
+        )
+        if not isinstance(result, dict) or set(result) != {
+            "command_id",
+            "session",
+            "model",
+            "view",
+        }:
+            raise ProtocolTransportError()
+        try:
+            if result["command_id"] != command.command_id or type(result["model"]) is not str:
+                raise ProtocolTransportError()
+            return RebindSessionResult(
+                result["command_id"],
+                _ref(result["session"]),
+                result["model"],
+                _view(result["view"]),
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None

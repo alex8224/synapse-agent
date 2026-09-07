@@ -28,6 +28,8 @@ from synapse.runtime.service import (
     PendingApprovalQuery,
     ReadArtifactQuery,
     ReadEventsQuery,
+    RebindSessionCommand,
+    ReloadMcpCommand,
     ResumeTurnCommand,
     StatArtifactQuery,
     SteerTurnCommand,
@@ -78,6 +80,8 @@ METHODS: Final = frozenset(
     {
         "runtime.protocol.negotiate",
         "runtime.session.open",
+        "runtime.session.rebind",
+        "runtime.session.mcp.reload",
         "runtime.turn.submit",
         "runtime.turn.cancel",
         "runtime.turn.steer",
@@ -404,6 +408,29 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else uuid.uuid4().hex
             ),
         )
+    if method == "runtime.session.mcp.reload":
+        _optional_fields(params, {"session", "server", "enabled"}, {"command_id"})
+        return ReloadMcpCommand(
+            session=_session(params["session"]),
+            server=_session_text(params["server"]),
+            enabled=_boolean(params["enabled"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.rebind":
+        _optional_fields(params, {"session", "model"}, {"command_id"})
+        return RebindSessionCommand(
+            session=_session(params["session"]),
+            model=_session_text(params["model"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.turn.approval.get":
         _fields(params, {"session", "expected_turn_id"})
         return PendingApprovalQuery(
@@ -579,6 +606,10 @@ async def dispatch(
         return dto
     if method == "runtime.session.open":
         return await service.open_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.rebind":
+        return await service.rebind_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.mcp.reload":
+        return await service.reload_mcp(dto)  # type: ignore[arg-type]
     if method == "runtime.turn.submit":
         return await service.submit_turn(dto)  # type: ignore[arg-type]
     if method == "runtime.turn.cancel":

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from synapse.config import Settings, load_settings
 from synapse.models_registry import (
     ModelProfile,
@@ -12,6 +14,7 @@ from synapse.settings.config_paths import (
     layered_config_dirs,
     load_layered_settings_file,
     project_config_dir,
+    set_mcp_server_enabled,
 )
 
 
@@ -29,6 +32,46 @@ def test_layered_dirs_order(tmp_path, monkeypatch):
     dirs = layered_config_dirs(workspace, include_exe=False)
     assert dirs[0] == (tmp_path / "home" / ".synapse").resolve()
     assert dirs[-1] == project_config_dir(workspace)
+
+
+def test_set_mcp_server_enabled_updates_highest_layer_and_preserves_fields(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home" / ".synapse"
+    workspace = tmp_path / "proj"
+    home.mkdir(parents=True)
+    project_config = workspace / ".synapse"
+    project_config.mkdir(parents=True)
+    (home / "mcp.json").write_text(
+        json.dumps({"servers": [{"name": "search", "enabled": False}]}),
+        encoding="utf-8",
+    )
+    project_path = project_config / "mcp.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "search",
+                        "enabled": False,
+                        "headers": {"Authorization": "preserved"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir", lambda: home.resolve()
+    )
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+
+    written = set_mcp_server_enabled("search", True, workspace=workspace)
+
+    data = json.loads(project_path.read_text(encoding="utf-8"))
+    assert written == project_path.resolve()
+    assert data["servers"][0]["enabled"] is True
+    assert data["servers"][0]["headers"] == {"Authorization": "preserved"}
 
 
 def test_models_merge_user_then_project(tmp_path, monkeypatch):

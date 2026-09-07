@@ -94,3 +94,5 @@ class SessionView:
     usage: UsageView
     last_error: str | None
     last_activity_at: str
+    active_model: str | None = None
+    model: str | None = None

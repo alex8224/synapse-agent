@@ -34,6 +34,10 @@ from synapse.runtime.service.commands import (
     CommandReceipt,
     OpenSessionCommand,
     OpenSessionResult,
+    RebindSessionCommand,
+    RebindSessionResult,
+    ReloadMcpCommand,
+    ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
     SteerTurnCommand,
@@ -177,6 +181,8 @@ def _project_session(snapshot: SessionSnapshot) -> SessionView:
         ),
         last_error=snapshot.last_error,
         last_activity_at=snapshot.last_activity_at.isoformat(),
+        active_model=snapshot.active_model,
+        model=snapshot.model,
     )
 
 
@@ -186,8 +192,12 @@ class LocalAgentRuntimeService:
     def __init__(
         self,
         manager_provider: Callable[[str], RuntimeManager | None] | RuntimeManagerRouter,
+        *,
+        session_rebinder: Callable[[RuntimeManager, SessionRef, str], tuple[Any, Any]]
+        | None = None,
     ) -> None:
         self._manager_provider = manager_provider
+        self._session_rebinder = session_rebinder
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -247,6 +257,68 @@ class LocalAgentRuntimeService:
             command_id=command.command_id,
             session=command.session,
             created=created,
+            view=_project_session(runtime.snapshot()),
+        )
+
+    async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult:
+        """Persist and apply one MCP server state to the current session."""
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        self._resolve_session(manager, command.session)
+        try:
+            agent, settings = await asyncio.to_thread(
+                manager.build_mcp_rebinding,
+                command.session,
+                command.server,
+                command.enabled,
+            )
+            await manager.rebind_session_ref(command.session, agent, settings)
+        except KeyError as exc:
+            raise NotFoundError("MCP server not found") from exc
+        except (FileNotFoundError, ValueError) as exc:
+            raise InvalidRequestError("MCP reload is unavailable") from exc
+        except RuntimeClosedError as exc:
+            raise ClosedError(str(exc)) from exc
+        active_servers = tuple(getattr(agent, "_coding_mcp_servers", ()) or ())
+        tool_names = tuple(getattr(agent, "_coding_mcp_tool_names", ()) or ())
+        warnings = tuple(getattr(agent, "_coding_mcp_warnings", ()) or ())
+        return ReloadMcpResult(
+            command_id=command.command_id,
+            session=command.session,
+            server=command.server,
+            enabled=command.enabled,
+            attached=command.server in active_servers,
+            active_servers=active_servers,
+            tool_count=len(tool_names),
+            warnings=warnings,
+        )
+
+    async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
+        """Replace the agent/settings binding used by subsequent session turns."""
+        self._validate_ref(command.session)
+        self._validate_model(command.model)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        self._resolve_session(manager, command.session)
+        rebinder = self._session_rebinder or (
+            lambda owner, ref, model: owner.build_model_rebinding(ref, model)
+        )
+        try:
+            agent, settings = await asyncio.to_thread(
+                rebinder, manager, command.session, command.model
+            )
+            runtime = await manager.rebind_session_ref(command.session, agent, settings)
+        except KeyError as exc:
+            raise InvalidRequestError("unknown model") from exc
+        except ValueError as exc:
+            raise InvalidRequestError("invalid model") from exc
+        except RuntimeClosedError as exc:
+            raise ClosedError(str(exc)) from exc
+        return RebindSessionResult(
+            command_id=command.command_id,
+            session=command.session,
+            model=str(getattr(settings, "active_model", None) or settings.model),
             view=_project_session(runtime.snapshot()),
         )
 
@@ -548,6 +620,10 @@ class LocalAgentRuntimeService:
             )
         if not text.strip():
             raise InvalidRequestError("text must not be empty")
+
+    def _validate_model(self, model: str) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise InvalidRequestError("model must not be empty")
 
     def _validate_cancel_active(self, cancel_active: bool) -> None:
         if not isinstance(cancel_active, bool):

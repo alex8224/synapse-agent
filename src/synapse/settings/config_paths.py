@@ -24,6 +24,7 @@ File layout (either layer)::
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -226,3 +227,35 @@ def models_config_paths(workspace: Path | str | None = None) -> list[Path]:
 
 def mcp_config_paths(workspace: Path | str | None = None) -> list[Path]:
     return existing_files(layered_config_dirs(workspace), MCP_FILENAME)
+
+
+def set_mcp_server_enabled(
+    server_name: str,
+    enabled: bool,
+    *,
+    workspace: Path | str | None = None,
+    explicit_path: Path | str | None = None,
+) -> Path:
+    """Update one server flag in its highest-priority MCP config file."""
+    if not server_name.strip():
+        raise ValueError("server_name must not be empty")
+    paths = [Path(explicit_path).expanduser().resolve()] if explicit_path else mcp_config_paths(
+        workspace
+    )
+    if not paths:
+        raise FileNotFoundError("no MCP config file is available")
+    path = paths[-1]
+    data = load_json_object(path)
+    servers = data.get("servers")
+    if not isinstance(servers, list):
+        raise ValueError("MCP config servers must be a list")
+    for server in servers:
+        if isinstance(server, dict) and server.get("name") == server_name:
+            server["enabled"] = enabled
+            break
+    else:
+        raise KeyError(server_name)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
