@@ -340,6 +340,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     metricsLabel: '',
     goal: null,
     thinkingLevelError: null,
+    projectThinkingLevel: null,
+    canSetProjectThinking: false,
+    projectThinkingError: null,
   });
   void connectAuthenticatedRuntime(client, project, epoch);
 }
@@ -563,6 +566,21 @@ interface ConsoleStore {
   setThinkingLevel: (l: string) => Promise<boolean>;
   /** User-facing reason the last reasoning-level write failed (null when fine). */
   thinkingLevelError: string | null;
+  /**
+   * The project's own default reasoning level, or null while the runtime has
+   * not reported one. Never the session's level: a session may have rebound its
+   * own, and the project default only applies to sessions opened afterwards.
+   */
+  projectThinkingLevel: string | null;
+  /** Whether `runtime.project.thinking.set` exists on this peer. */
+  canSetProjectThinking: boolean;
+  /** User-facing reason the last project-default write failed (null when fine). */
+  projectThinkingError: string | null;
+  /**
+   * Write the project's default reasoning level. Resolves true only when the
+   * runtime persisted it; the current session is never rebound.
+   */
+  setProjectThinkingLevel: (l: string) => Promise<boolean>;
   fetchRuntimeConfig: () => Promise<void>;
   mcpStatus: string;
   runtimeStatus: 'idle' | 'running';
@@ -751,6 +769,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     metricsLabel: '',
     goal: null,
     thinkingLevelError: null,
+    projectThinkingLevel: null,
+    canSetProjectThinking: false,
+    projectThinkingError: null,
   });
   if (!client) return;
   try {
@@ -1061,6 +1082,9 @@ async function activateProject(projectId: string): Promise<boolean> {
     metricsLabel: '',
     goal: null,
     thinkingLevelError: null,
+    projectThinkingLevel: null,
+    canSetProjectThinking: false,
+    projectThinkingError: null,
     historyLoading: false,
     historyHasMore: false,
     historyAvailable: null,
@@ -1163,6 +1187,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       usage: null,
       metricsLabel: '',
       thinkingLevelError: null,
+    projectThinkingLevel: null,
+    canSetProjectThinking: false,
+    projectThinkingError: null,
     }));
     if (client) {
       try {
@@ -1369,6 +1396,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   mcpEnabled: false,
   canSetThinking: false,
   canToggleMcpGlobal: false,
+  // The project default is unknown until the runtime reports it, and it is not
+  // writable until the peer advertises the capability.
+  projectThinkingLevel: null,
+  canSetProjectThinking: false,
+  projectThinkingError: null,
   runtimeStatus: 'idle',
   activity: null,
   usage: null,
@@ -1522,6 +1554,42 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       return false;
     }
   },
+  setProjectThinkingLevel: async (l: string) => {
+    // The capability flag is the backend's own answer to "does the project-level
+    // write port exist"; while it is false the console must refuse instead of
+    // pretending a save could succeed.
+    if (!get().canSetProjectThinking) {
+      console.warn('project reasoning default is read-only: no write port');
+      return false;
+    }
+    const client = requireRuntimeClient();
+    if (!client) return false;
+    const { currentSession, projectThinkingLevel } = get();
+    const projectId = currentSession.project_id;
+    if (!projectId) return false;
+    if (l === projectThinkingLevel) return true;
+    // No optimistic flip: the project default only changes once the runtime has
+    // persisted it, so the dialog reports the *stored* value, never a guess.
+    set({ projectThinkingError: null });
+    try {
+      if (client.getState() !== 'connected') {
+        await client.connect();
+      }
+      const result = await client.setProjectThinkingLevel(projectId, l);
+      // Stale-response guard: a write that resolves after the user switched
+      // projects belongs to the previous project and must not be shown as the
+      // newly activated project's default.
+      if (get().currentSession.project_id !== projectId) return false;
+      set({ projectThinkingLevel: result.level, projectThinkingError: null });
+      return true;
+    } catch (e) {
+      if (get().currentSession.project_id === projectId) {
+        set({ projectThinkingError: describeError(e) });
+      }
+      console.warn('Failed to set the project reasoning default:', e);
+      return false;
+    }
+  },
   activeTurnId: null,
   pendingApproval: null,
 
@@ -1625,6 +1693,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       metricsLabel: '',
       goal: null,
       thinkingLevelError: null,
+    projectThinkingLevel: null,
+    canSetProjectThinking: false,
+    projectThinkingError: null,
       historyLoading: false,
       historyHasMore: false,
       historyAvailable: null,

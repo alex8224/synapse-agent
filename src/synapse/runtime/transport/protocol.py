@@ -36,6 +36,7 @@ from synapse.runtime.service import (
     ReconcileSessionQuery,
     ReloadMcpCommand,
     ResumeTurnCommand,
+    SetProjectThinkingLevelCommand,
     SetThinkingLevelCommand,
     StatArtifactQuery,
     SteerTurnCommand,
@@ -98,6 +99,7 @@ MAX_INTEGER_ABS: Final = 2**63 - 1
 METHODS: Final = frozenset(
     {
         "runtime.protocol.negotiate",
+        "runtime.project.thinking.set",
         "runtime.session.open",
         "runtime.session.rebind",
         "runtime.session.thinking.set",
@@ -467,6 +469,17 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else uuid.uuid4().hex
             ),
         )
+    if method == "runtime.project.thinking.set":
+        _optional_fields(params, {"project_id", "level"}, {"command_id"})
+        return SetProjectThinkingLevelCommand(
+            project_id=_session_text(params["project_id"]),
+            level=_session_text(params["level"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.turn.approval.get":
         _fields(params, {"session", "expected_turn_id"})
         return PendingApprovalQuery(
@@ -700,6 +713,8 @@ async def dispatch(
         return await service.rebind_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.thinking.set":
         return await service.set_thinking_level(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.thinking.set":
+        return await service.set_project_thinking_level(dto)  # type: ignore[arg-type]
     if method == "runtime.session.mcp.reload":
         return await service.reload_mcp(dto)  # type: ignore[arg-type]
     if method == "runtime.turn.submit":

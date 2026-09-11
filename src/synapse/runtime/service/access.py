@@ -34,6 +34,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetProjectThinkingLevelCommand,
+    SetProjectThinkingLevelResult,
     SetThinkingLevelCommand,
     SetThinkingLevelResult,
     SteerTurnCommand,
@@ -87,6 +89,7 @@ __all__ = [
     "SESSION_READ",
     "SESSION_REBIND",
     "SESSION_THINKING",
+    "PROJECT_THINKING",
     "SESSION_LIST",
     "SESSION_MCP_RELOAD",
     "TURN_SUBMIT",
@@ -106,6 +109,7 @@ SESSION_CLOSE = "session.close"
 SESSION_READ = "session.read"
 SESSION_REBIND = "session.rebind"
 SESSION_THINKING = "session.thinking"
+PROJECT_THINKING = "project.thinking"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
 EVENTS_READ = "events.read"
@@ -126,6 +130,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_READ,
         SESSION_REBIND,
         SESSION_THINKING,
+        PROJECT_THINKING,
         SESSION_LIST,
         SESSION_MCP_RELOAD,
         EVENTS_READ,
@@ -445,6 +450,33 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "set_thinking_level", None)
         if not callable(delegate):
             raise InvalidRequestError("session thinking level is unavailable")
+        return await delegate(command)
+
+    async def set_project_thinking_level(
+        self, command: SetProjectThinkingLevelCommand
+    ) -> SetProjectThinkingLevelResult:
+        """Authorize the project-scoped reasoning-default write, then delegate.
+
+        Uses ``project.thinking`` — never ``session.read`` / ``session.thinking``
+        / ``session.rebind``: changing a project's default is a different blast
+        radius (it affects sessions opened later), so it needs its own
+        capability, and only a project-wide grant (``thread_ids is None``)
+        authorizes it.  Optional delegate method; the ACL check runs before the
+        delegate is consulted.
+        """
+        if type(command) is not SetProjectThinkingLevelCommand:
+            raise InvalidRequestError(
+                "project thinking command must be a SetProjectThinkingLevelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        if type(command.project_id) is not str or not command.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._authorizer.authorize_project(
+            self._principal, PROJECT_THINKING, command.project_id
+        )
+        delegate = getattr(self._delegate, "set_project_thinking_level", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project thinking level is unavailable")
         return await delegate(command)
 
     async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult:

@@ -37,6 +37,9 @@ export interface RuntimeConfigStatePatch {
   mcpStatus?: string;
   canSetThinking?: boolean;
   canToggleMcpGlobal?: boolean;
+  /** The project's own default level (never the session's rebind). */
+  projectThinkingLevel?: string | null;
+  canSetProjectThinking?: boolean;
 }
 
 /** Human label for the MCP footer, derived only from real server states. */
@@ -79,6 +82,10 @@ export function mapRuntimeConfig(
     mcpStatus: mcpStatusLabel(servers, view.mcp_enabled),
     canSetThinking: view.can_set_thinking,
     canToggleMcpGlobal: view.can_toggle_mcp_global,
+    // A peer that predates the project-scoped port simply omits both fields;
+    // the console then shows the project default as unknown and read-only.
+    projectThinkingLevel: view.project_thinking_level ?? null,
+    canSetProjectThinking: view.can_set_project_thinking ?? false,
   };
   if (!opts.preserveModel) {
     patch.modelName = view.current_model;

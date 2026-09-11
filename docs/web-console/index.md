@@ -66,6 +66,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | SideBar | 项目层级（规范外，本轮新增） | 「项目 → 会话」两级树（对齐 TUI `ProjectDrawer`）：一级＝项目目录名＋当前标记，二级＝该项目的会话（按时间分组，默认展开最近 5 条＋「显示全部」）；只展开当前项目，其余按需懒加载；搜索同时匹配项目名与已加载会话；点其它项目的会话即切换项目（不重启宿主，顶栏工作区/分支随切） | 已实现 |
 | SideBar | 每项目「新建会话」 | 会话数与 `+` **悬停/聚焦时浮现**（保留占位，行宽不跳）；`+` 在**该行所属项目**建会话（必要时先切过去），因此移除了原顶部那个语义含糊的全局 `+`；折叠轨里的 `+` 仍作用于当前项目 | 已实现（按评审调整） |
 | SideBar | 底栏纯净设置入口 | 打开设置面板（控制台 / 工作区 / 模型与推理 / MCP / 用量 + 退出配对），Esc 或点击遮罩关闭 | 已实现 |
+| SettingsDialog | 项目默认推理等级（规范外，本轮新增） | 「模型与推理」区新增「项目默认」行：显示项目自身默认等级 + 「设为项目默认…」下拉。写入 `runtime.project.thinking.set`（能力位 `project.thinking`），落盘到项目设置层，**只影响此后新建的会话**；成功显示「已写入项目默认：X」，失败显示红色原因（无乐观更新，只有真正落盘才改变显示值）。底栏「推理级别」仍显示**当前会话**的实际值 | 已实现 |
 | Transcript | 用户提问胶囊 | 有 | 已实现 |
 | Transcript | ◆ Thought for Xs 折叠思考链 | 按规范文案：`◆ Thought for 0.1s`（流式为 `◆ Thinking...`，历史投影无耗时为 `◆ Thought`），带展开/收起 | 已实现 |
 | Transcript | ▾ N tools executed 折叠工具栏 | 按规范文案 `N tools executed`（含 parallel 标注）；工具卡片状态徽章已中文化（运行中/等待/完成/失败/错误/已取消） | 已实现 |
@@ -81,7 +82,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | BottomBar | Agent 活跃态 (● 运行中/○ 空闲) | 有，置于底栏最左侧 | 已实现 |
 | BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」。**布局定为保持中区居中**：`grid-cols-[1fr_auto_1fr]` + 中区 `justify-self-center`，右列保留为空对称占位列（不改为右对齐） | 已实现 |
 | BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**目标已接入**：新增只读 `runtime.session.goal`，底栏左区按 TUI 语义渲染 `goal·active 250/1.0k` / `goal·active 42s`（无目标则整段不渲染，hover 出目标原文与用量） | 已实现 |
-| TopBar | 工作区文件面板（规范外，本轮新增） | `folder_open` 打开只读文件树 + 文本/差异查看，走 `runtime.artifacts.stat/list/read`：分页（`next_cursor` + 「加载更多」）、单块 64 KiB、单文件累计上限 256 KiB（达到即停读并标注）、二进制文件拒绝解码、错误全部可见；`diff` 开关只对已加载文本按 `+/-` 着色（不计算版本差异） | 已实现 |
+| TopBar | 工作区文件面板（规范外，本轮新增） | `folder_open` 打开只读文件树 + 文本查看 + **真实行级差异**，走 `runtime.artifacts.stat/list/read`：分页（`next_cursor` + 「加载更多」）、按路径子串过滤（只过滤已加载条目，显示 `已过滤/已加载` 计数）、单块 64 KiB、自动续读止于 256 KiB，之后由「继续读取（+64 KiB）」显式续读、硬上限 4 MiB，界面始终标注已读字节范围与是否 EOF；二进制文件拒绝解码、错误全部可见 | 已实现 |
+| TopBar | 文件面板的真实差异（规范外，本轮新增） | 差异比较**两个真实文本**：打开文件时的基线快照 与 当前内容（可用「重新读取」拉取磁盘上的新版本、「重设基准」重设基线），渲染真实行级差异（LCS，含行号与 `+N/-M` 计数）；中段超过 LCS 预算时按整块替换报告并标注「非最小差异」，达到渲染上限标注「已截断」，两侧一致时明确说明「无差异」。wire 无 revision 历史（`revision` 只是 stat 指纹），因此不做跨会话的旧版本比对，见交接报告 | 已实现（客户端基线对比） |
 
 其它实测观察：
 
@@ -124,9 +126,10 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 正式宿主对 JSON-RPC 帧原样中继，控制台当前实际使用：`runtime.protocol.negotiate`、
 `runtime.session.open`、`runtime.session.list`、`runtime.session.history`、
 `runtime.session.reconcile`、`runtime.session.rebind`、`runtime.session.mcp.reload`、
+`runtime.session.thinking.set`、`runtime.project.thinking.set`、`runtime.session.goal`、
 `runtime.config.get`、`runtime.turn.submit`、`runtime.turn.steer`、`runtime.turn.cancel`、
-`runtime.turn.approval.resume`、`runtime.events.watch`、`runtime.events.unwatch`。
-`runtime.artifacts.*` 尚未接入前端（见 `formal-host.md` §9）。
+`runtime.turn.approval.resume`、`runtime.events.watch`、`runtime.events.unwatch`、
+`runtime.artifacts.stat`、`runtime.artifacts.list`、`runtime.artifacts.read`。
 
 ## 4. 事件消费
 

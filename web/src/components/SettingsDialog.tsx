@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -52,6 +52,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     thinkingLevel,
     thinkingLevels,
     canSetThinking,
+    projectThinkingLevel,
+    canSetProjectThinking,
+    projectThinkingError,
+    setProjectThinkingLevel,
     mcpServers,
     mcpEnabled,
     toggleMcpServer,
@@ -60,6 +64,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     metricsLabel,
     logoutConsole,
   } = useConsoleStore();
+
+  // Success is reported explicitly: the stored value changes in the row above,
+  // but a write that succeeds must say so instead of leaving the user to guess
+  // whether the default was persisted.
+  const [projectNotice, setProjectNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -141,6 +150,56 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
               </span>
             }
           />
+          <Row
+            label="项目默认"
+            value={
+              <span
+                className="flex items-center justify-end gap-2"
+                title={
+                  canSetProjectThinking
+                    ? '项目默认只影响此后新建的会话'
+                    : RUNTIME_CONFIG_READ_ONLY_NOTICE
+                }
+              >
+                <span>{projectThinkingLevel ?? '未知'}</span>
+                <select
+                  value=""
+                  disabled={!canSetProjectThinking || thinkingLevels.length === 0}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    if (!next) return;
+                    void setProjectThinkingLevel(next).then((ok) => {
+                      setProjectNotice(
+                        ok ? `已写入项目默认：${next}（此后新建会话生效）` : null,
+                      );
+                    });
+                  }}
+                  title="设为项目默认"
+                  className="max-w-[10rem] rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:text-gray-400"
+                >
+                  <option value="">设为项目默认…</option>
+                  {thinkingLevels.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            }
+          />
+          {projectNotice !== null && projectThinkingError === null && (
+            <p className="mt-1 text-[11px] leading-relaxed text-green-700">{projectNotice}</p>
+          )}
+          {projectThinkingError !== null && (
+            <p className="mt-1 text-[11px] leading-relaxed text-red-600">
+              设置项目默认失败：{projectThinkingError}
+            </p>
+          )}
+          <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
+            项目默认写入项目设置层（daemon 重启后仍生效），只作用于此后新建的会话；上方「推理级别」与底栏显示的始终是
+            <span className="font-mono"> 当前会话 </span>的实际值。
+            {!canSetProjectThinking && ' 该运行时未提供项目级写端口，此项只读。'}
+          </p>
           {!canSetThinking && (
             <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
               运行时配置面是只读的（无写端口），推理级别由服务端设置决定，控制台无法修改。

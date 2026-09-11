@@ -23,6 +23,7 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.session.get` | `session` | `SessionView` |
 | `runtime.session.rebind` | `session`, `model`, optional `command_id` | `RebindSessionResult` |
 | `runtime.session.thinking.set` | `session`, `level`, optional `command_id` | `SetThinkingLevelResult` |
+| `runtime.project.thinking.set` | `project_id`, `level`, optional `command_id` | `SetProjectThinkingLevelResult` |
 | `runtime.session.goal` | `session` | `SessionGoalView` or `null` |
 | `runtime.config.get` | `session` | `RuntimeConfigView` |
 | `runtime.events.read` | `session`, optional `after/limit/scan_limit/filter/max_event_bytes` | `EventPage` |
@@ -40,6 +41,16 @@ thread 后续 turn 使用的 agent/settings 绑定并持久化到该会话的 mo
 `thinking_levels` 白名单内（否则 `invalid_request`），返回 `level` 为规范化后的实际等级
 （关闭思考时为 `off`）与刷新后的 `RuntimeConfigView`。授权上二者各自需要独立写能力位
 （`session.rebind` / `session.thinking`），`session.read` 不足以授权任一写操作。
+
+`runtime.project.thinking.set` 是**项目级写**（参数是 `project_id`，不是 `session`）：把
+`level` 写入该项目的设置层（`<workspace>/.synapse/settings.json` 的 `enable_thinking` /
+`reasoning_effort`），语义是「此后**新建**会话的默认推理等级」——已打开的会话不被重绑，daemon
+重启后仍生效。`level` 必须落在与 `runtime.config.get` 同一来源的白名单内（否则
+`invalid_request`），授权需要独立能力位 `project.thinking`，且只接受项目级授权
+（`thread_ids=None`）；`session.read` / `session.thinking` / `session.rebind` 都不授权它。返回
+`{command_id, project_id, level}`（`level` 为规范化后的实际等级），**不返回设置文件路径**。
+`runtime.config.get` 因此新增两个只读字段：`project_thinking_level`（项目自身默认，可能与
+`thinking_level` 会话值不同）与 `can_set_project_thinking`（该 peer 是否提供项目级写端口）。
 
 S9 增加 transport 控制方法 `runtime.protocol.negotiate`，严格参数为
 `{versions: string[], client?: {name: string, version: string}}`。当前仍只有

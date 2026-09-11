@@ -117,10 +117,15 @@ class RuntimeConfigView:
     """Read-only projection of the effective runtime configuration.
 
     ``can_set_thinking`` is True when the session-scoped reasoning-level write
-    port exists (it does: ``runtime.session.thinking.set``).
-    ``can_toggle_mcp_global`` is still always ``False`` — there is no global MCP
-    write path — so clients render that one as read-only instead of pretending a
-    save could succeed.
+    port exists (it does: ``runtime.session.thinking.set``), and
+    ``can_set_project_thinking`` does the same for the project-scoped default
+    (``runtime.project.thinking.set``).
+    ``project_thinking_level`` is the *project's own* default level, which is not
+    necessarily the session's ``thinking_level``: a session may have rebound its
+    reasoning level, and the project default only applies to sessions opened
+    afterwards.  ``can_toggle_mcp_global`` is still always ``False`` — there is no
+    global MCP write path — so clients render that one as read-only instead of
+    pretending a save could succeed.
     """
 
     current_model: str
@@ -131,6 +136,8 @@ class RuntimeConfigView:
     mcp_enabled: bool
     can_set_thinking: bool = False
     can_toggle_mcp_global: bool = False
+    project_thinking_level: str | None = None
+    can_set_project_thinking: bool = False
 
     def __post_init__(self) -> None:
         _bounded_text(self.current_model, name="current_model")
@@ -157,12 +164,24 @@ class RuntimeConfigView:
                 maximum=MAX_RUNTIME_CONFIG_THINKING_LEVELS,
             ),
         )
+        object.__setattr__(
+            self,
+            "project_thinking_level",
+            _bounded_optional_text(
+                self.project_thinking_level, name="project_thinking_level"
+            ),
+        )
         servers = tuple(self.mcp_servers)
         if any(type(server) is not McpServerView for server in servers):
             raise ValueError("mcp_servers must contain McpServerView values")
         if len(servers) > MAX_RUNTIME_CONFIG_MCP_SERVERS:
             raise ValueError("mcp_servers exceeds the size limit")
         object.__setattr__(self, "mcp_servers", servers)
-        for flag in ("mcp_enabled", "can_set_thinking", "can_toggle_mcp_global"):
+        for flag in (
+            "mcp_enabled",
+            "can_set_thinking",
+            "can_toggle_mcp_global",
+            "can_set_project_thinking",
+        ):
             if type(getattr(self, flag)) is not bool:
                 raise ValueError(f"{flag} must be a boolean")

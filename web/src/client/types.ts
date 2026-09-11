@@ -265,6 +265,15 @@ export interface RuntimeConfigResult {
   mcp_enabled: boolean;
   can_set_thinking: boolean;
   can_toggle_mcp_global: boolean;
+  /**
+   * The project's own default reasoning level (`null` when the peer does not
+   * report one). It is not necessarily `thinking_level`: a session may have
+   * rebound its own level, and the project default only applies to sessions
+   * opened afterwards.
+   */
+  project_thinking_level?: string | null;
+  /** Whether `runtime.project.thinking.set` is available on this peer. */
+  can_set_project_thinking?: boolean;
 }
 
 /**
@@ -280,6 +289,21 @@ export interface SetThinkingLevelResult {
   session: SessionRef;
   level: string;
   view: RuntimeConfigResult;
+}
+
+/**
+ * Result of the project-scoped reasoning-default write
+ * (`runtime.project.thinking.set`).
+ *
+ * `level` is the canonical label now stored in the project's settings layer.
+ * The current session is deliberately unaffected: a project default applies to
+ * sessions opened afterwards, and the target file is never reported (the read
+ * surface does not hand out workspace-absolute paths).
+ */
+export interface SetProjectThinkingLevelResult {
+  command_id: string;
+  project_id: string;
+  level: string;
 }
 
 export interface GetRuntimeConfigParams {

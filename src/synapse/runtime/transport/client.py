@@ -39,6 +39,8 @@ from synapse.runtime.service.commands import (
     RebindSessionResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetProjectThinkingLevelCommand,
+    SetProjectThinkingLevelResult,
     SetThinkingLevelCommand,
     SetThinkingLevelResult,
     SteerTurnCommand,
@@ -453,6 +455,8 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
         "mcp_enabled",
         "can_set_thinking",
         "can_toggle_mcp_global",
+        "project_thinking_level",
+        "can_set_project_thinking",
     }:
         raise ProtocolTransportError()
     names = value["available_models"]
@@ -470,11 +474,20 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
             value["thinking_level"] is not None
             and type(value["thinking_level"]) is not str
         )
+        or (
+            value["project_thinking_level"] is not None
+            and type(value["project_thinking_level"]) is not str
+        )
         or any(type(item) is not str for item in names)
         or any(type(item) is not str for item in levels)
         or any(
             type(value[flag]) is not bool
-            for flag in ("mcp_enabled", "can_set_thinking", "can_toggle_mcp_global")
+            for flag in (
+                "mcp_enabled",
+                "can_set_thinking",
+                "can_toggle_mcp_global",
+                "can_set_project_thinking",
+            )
         )
     ):
         raise ProtocolTransportError()
@@ -504,6 +517,16 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
             mcp_enabled=value["mcp_enabled"],
             can_set_thinking=value["can_set_thinking"],
             can_toggle_mcp_global=value["can_toggle_mcp_global"],
+            project_thinking_level=(
+                _text(
+                    value["project_thinking_level"],
+                    "project_thinking_level",
+                    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+                )
+                if value["project_thinking_level"] is not None
+                else None
+            ),
+            can_set_project_thinking=value["can_set_project_thinking"],
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
@@ -1387,6 +1410,46 @@ class RuntimeWebSocketClient:
                 _ref(result["session"]),
                 result["level"],
                 _runtime_config_view(result["view"]),
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def set_project_thinking_level(
+        self, command: SetProjectThinkingLevelCommand
+    ) -> SetProjectThinkingLevelResult:
+        """Project-scoped reasoning-default write (never retried blindly).
+
+        Strict result decoding: exactly the three documented keys, a matching
+        ``command_id``/``project_id`` and a non-empty level.  The settings file
+        that now holds the default is deliberately not part of the contract (the
+        read surface never hands out workspace-absolute paths).
+        """
+        result = await self._command(
+            "runtime.project.thinking.set",
+            {
+                "project_id": command.project_id,
+                "level": command.level,
+                "command_id": command.command_id,
+            },
+            command.command_id,
+        )
+        if not isinstance(result, dict) or set(result) != {
+            "command_id",
+            "project_id",
+            "level",
+        }:
+            raise ProtocolTransportError()
+        try:
+            if (
+                result["command_id"] != command.command_id
+                or result["project_id"] != command.project_id
+                or type(result["level"]) is not str
+                or not result["level"]
+            ):
+                raise ProtocolTransportError()
+            return SetProjectThinkingLevelResult(
+                result["command_id"], result["project_id"], result["level"]
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None

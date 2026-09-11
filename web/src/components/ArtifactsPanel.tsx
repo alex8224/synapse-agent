@@ -1,17 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { CodeBlock } from './CodeBlock.tsx';
 import {
   ARTIFACT_CHUNK_BYTES,
+  ARTIFACT_HARD_MAX_BYTES,
   ARTIFACT_LIST_LIMIT,
   ARTIFACT_MAX_LOADED_BYTES,
   MalformedArtifactError,
   artifactLanguage,
   decodeBase64Text,
+  filterArtifactEntries,
   formatBytes,
   isTextArtifact,
   parentArtifactPath,
 } from '../client/artifacts.ts';
+import { diffLines } from '../client/artifactsDiff.ts';
 import type { ArtifactEntry } from '../client/artifacts.ts';
 
 interface OpenFile {
@@ -20,6 +23,14 @@ interface OpenFile {
   eof: boolean;
   nextOffset: number;
   loadedBytes: number;
+  /** Revision of the chunk that produced `text`, for the diff header. */
+  revision: string | null;
+}
+
+/** The content captured when the file was first opened (or re-baselined). */
+interface Baseline {
+  text: string;
+  revision: string | null;
 }
 
 function describe(err: unknown): string {
@@ -33,21 +44,39 @@ const KIND_ICON: Record<ArtifactEntry['kind'], string> = {
   file: 'description',
 };
 
+const DIFF_CLASS: Record<'context' | 'add' | 'remove', string> = {
+  context: 'text-gray-700',
+  add: 'bg-green-50 text-green-800',
+  remove: 'bg-red-50 text-red-800',
+};
+
+const DIFF_SIGN: Record<'context' | 'add' | 'remove', string> = {
+  context: ' ',
+  add: '+',
+  remove: '-',
+};
+
 /**
- * Workspace file browser: a paged directory tree plus a bounded text / diff
- * viewer, backed by the read-only `runtime.artifacts.stat/list/read` surface.
+ * Workspace file browser: a paged, filterable directory tree plus a bounded text
+ * viewer and a *real* line diff, backed by the read-only
+ * `runtime.artifacts.stat/list/read` surface.
  *
  * Bounded by construction:
  * - one page per list call, paging only through an explicit "load more";
- * - one chunk per read call (`ARTIFACT_CHUNK_BYTES`), and a hard cap on the bytes
- *   held for one file (`ARTIFACT_MAX_LOADED_BYTES`) — a huge file is never read
- *   whole, and the truncation is stated instead of silently cut;
+ * - one chunk per read call (`ARTIFACT_CHUNK_BYTES`), automatic continuation stops
+ *   at `ARTIFACT_MAX_LOADED_BYTES`, and anything beyond that needs an explicit
+ *   "continue reading" click, up to `ARTIFACT_HARD_MAX_BYTES` — the panel always
+ *   states the loaded range and whether the file is fully read;
+ * - the path filter only narrows the entries already loaded and says so;
  * - every failure is rendered (list error, read error, binary refusal), so the
  *   panel never shows an empty state that looks like "no files".
  *
- * The "diff" toggle highlights added/removed lines of the loaded text; it does
- * not compute a diff between revisions (the wire surface exposes no revision
- * history), and the panel says so.
+ * Diff: the wire surface exposes no revision history (`revision` is a stat
+ * fingerprint), so the diff compares two versions this panel actually holds —
+ * the snapshot taken when the file was opened (or last re-baselined) and the
+ * current content (re-read with "重新读取" when the file changed on disk). It is
+ * a real line diff, never "looks like a diff" colouring, and when the middle
+ * block is too large for an exact LCS the panel says the diff is coarse.
  */
 export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const client = useConsoleStore((s) => s.client);
@@ -59,8 +88,10 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
 
   const [file, setFile] = useState<OpenFile | null>(null);
+  const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [diffMode, setDiffMode] = useState(false);
@@ -110,19 +141,9 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
   };
 
-  const openEntry = async (entry: ArtifactEntry): Promise<void> => {
-    if (entry.kind === 'directory') {
-      setFile(null);
-      setFileError(null);
-      await loadDir(entry.path);
-      return;
-    }
+  /** Read the whole visible text from offset 0 again (a fresh revision). */
+  const readFromStart = async (entry: ArtifactEntry, resetBaseline: boolean): Promise<void> => {
     if (!client) return;
-    if (!isTextArtifact(entry.media_type, entry.path)) {
-      setFile(null);
-      setFileError(`二进制文件（${entry.media_type}）不读取内容`);
-      return;
-    }
     setFileLoading(true);
     setFileError(null);
     try {
@@ -131,26 +152,54 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
         entry.path,
         0,
         ARTIFACT_CHUNK_BYTES,
-        entry.revision,
+        null,
       );
+      const text = decodeBase64Text(chunk.data_base64);
       setFile({
-        entry,
-        text: decodeBase64Text(chunk.data_base64),
+        entry: chunk.metadata,
+        text,
         eof: chunk.eof,
         nextOffset: chunk.nextOffset,
         loadedBytes: chunk.byteLength,
+        revision: chunk.metadata.revision,
       });
+      if (resetBaseline) {
+        setBaseline({ text, revision: chunk.metadata.revision });
+      }
     } catch (err) {
-      setFile(null);
       setFileError(describe(err));
     } finally {
       setFileLoading(false);
     }
   };
 
+  const openEntry = async (entry: ArtifactEntry): Promise<void> => {
+    if (entry.kind === 'directory') {
+      setFile(null);
+      setBaseline(null);
+      setFileError(null);
+      await loadDir(entry.path);
+      return;
+    }
+    if (!client) return;
+    if (!isTextArtifact(entry.media_type, entry.path)) {
+      setFile(null);
+      setBaseline(null);
+      setFileError(`二进制文件（${entry.media_type}）不读取内容`);
+      return;
+    }
+    setDiffMode(false);
+    await readFromStart(entry, true);
+  };
+
   const appendChunk = async (): Promise<void> => {
     if (!client || file === null || file.eof || fileLoading) return;
-    if (file.loadedBytes >= ARTIFACT_MAX_LOADED_BYTES) return;
+    if (file.loadedBytes >= ARTIFACT_HARD_MAX_BYTES) {
+      setFileError(
+        `已达到单文件硬上限 ${formatBytes(ARTIFACT_HARD_MAX_BYTES)}，停止读取（可用「重新读取」回到开头）`,
+      );
+      return;
+    }
     setFileLoading(true);
     setFileError(null);
     try {
@@ -179,14 +228,22 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
     }
   };
 
+  const filtered = useMemo(() => filterArtifactEntries(entries, filter), [entries, filter]);
+
+  const diff = useMemo(() => {
+    if (!diffMode || file === null || baseline === null) return null;
+    return diffLines(baseline.text, file.text);
+  }, [diffMode, file, baseline]);
+
   const truncated = file !== null && !file.eof;
-  const capped = truncated && file.loadedBytes >= ARTIFACT_MAX_LOADED_BYTES;
+  const softCapped = truncated && file.loadedBytes >= ARTIFACT_MAX_LOADED_BYTES;
+  const hardCapped = truncated && file.loadedBytes >= ARTIFACT_HARD_MAX_BYTES;
 
   return (
     <div
       role="dialog"
       aria-label="工作区文件"
-      className="absolute right-0 top-9 z-50 flex h-[32rem] w-[52rem] flex-col rounded-md border border-gray-200 bg-white text-left shadow-xl"
+      className="absolute right-0 top-9 z-50 flex h-[32rem] w-[56rem] flex-col rounded-md border border-gray-200 bg-white text-left shadow-xl"
     >
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-gray-900">工作区文件</span>
@@ -211,6 +268,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
               disabled={dir === '.'}
               onClick={() => {
                 setFile(null);
+                setBaseline(null);
                 void loadDir(parentArtifactPath(dir));
               }}
               className="flex items-center gap-1 disabled:text-gray-300 hover:text-gray-900"
@@ -219,8 +277,16 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
               <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
               ..
             </button>
-            <span>{listLoading ? '读取中…' : `${entries.length} 项`}</span>
+            <span>{listLoading ? '读取中…' : `${filtered.length}/${entries.length} 项`}</span>
           </div>
+
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="按路径过滤…"
+            title="只过滤已加载的条目；更深的目录请先「加载更多」"
+            className="border-b border-gray-50 px-2 py-1 font-mono text-[10px] text-gray-700 placeholder:text-gray-300 focus:outline-none"
+          />
 
           {listError !== null && (
             <div className="border-b border-red-100 bg-red-50 px-2 py-1 text-[10px] leading-relaxed text-red-700">
@@ -232,7 +298,13 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
             {entries.length === 0 && !listLoading && listError === null && (
               <div className="px-2 py-2 font-mono text-[10px] text-gray-400">空目录</div>
             )}
-            {entries.map((entry) => (
+            {entries.length > 0 && filtered.length === 0 && (
+              <div className="px-2 py-2 font-mono text-[10px] text-gray-400">
+                已加载的 {entries.length} 项中没有匹配「{filter.trim()}」的条目
+                {nextCursor !== null ? '（还有未加载的条目）' : ''}
+              </div>
+            )}
+            {filtered.map((entry) => (
               <div
                 key={entry.path}
                 onClick={() => {
@@ -275,18 +347,39 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
             <div className="flex items-center gap-2">
               {file !== null && (
                 <span className="font-mono text-[10px] text-gray-400">
-                  {formatBytes(file.entry.size)} · {file.entry.media_type}
+                  {formatBytes(file.entry.size)} · {file.entry.media_type} · rev{' '}
+                  {file.revision === null ? '-' : file.revision.slice(0, 8)}
                 </span>
               )}
               <button
                 type="button"
+                disabled={file === null || fileLoading}
+                onClick={() => void readFromStart(file!.entry, false)}
+                title="从偏移 0 重新读取（磁盘上的版本可能已变化）；不改变差异基准"
+                className="rounded px-1.5 py-0.5 font-mono text-[10px] text-gray-400 hover:text-gray-700 disabled:text-gray-300"
+              >
+                重新读取
+              </button>
+              <button
+                type="button"
+                disabled={file === null || fileLoading}
+                onClick={() => {
+                  if (file !== null) setBaseline({ text: file.text, revision: file.revision });
+                }}
+                title="把当前内容设为差异基准（之后重新读取即可看到真实差异）"
+                className="rounded px-1.5 py-0.5 font-mono text-[10px] text-gray-400 hover:text-gray-700 disabled:text-gray-300"
+              >
+                重设基准
+              </button>
+              <button
+                type="button"
                 onClick={() => setDiffMode((v) => !v)}
-                title="差异高亮（仅按 +/- 着色，不计算版本差异）"
+                title="与打开时的版本做真实行级差异（基线 vs 当前内容）"
                 className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
                   diffMode ? 'bg-purple-50 text-purple-600' : 'text-gray-400 hover:text-gray-700'
                 }`}
               >
-                diff
+                真实差异
               </button>
             </div>
           </div>
@@ -305,25 +398,66 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
             )}
             {file !== null && (
               <>
-                <CodeBlock
-                  lang={artifactLanguage(file.entry.path, diffMode)}
-                  code={file.text}
-                />
+                {diffMode ? (
+                  <div>
+                    {baseline === null ? (
+                      <div className="font-mono text-[10px] text-amber-700">
+                        没有可比对的基准版本，请先「重设基准」。
+                      </div>
+                    ) : diff === null ? null : diff.identical ? (
+                      <div className="font-mono text-[10px] text-gray-500">
+                        与基准版本一致（基线 rev{' '}
+                        {baseline.revision === null ? '-' : baseline.revision.slice(0, 8)}，当前 rev{' '}
+                        {file.revision === null ? '-' : file.revision.slice(0, 8)}），无差异。
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mb-1 font-mono text-[10px] text-gray-500">
+                          真实行级差异：+{diff.added} / -{diff.removed}（基线 rev{' '}
+                          {baseline.revision === null ? '-' : baseline.revision.slice(0, 8)} → 当前 rev{' '}
+                          {file.revision === null ? '-' : file.revision.slice(0, 8)}）
+                          {diff.coarse && ' · 中段过大，已按整块替换报告（非最小差异）'}
+                          {diff.truncated && ' · 已达渲染上限，差异被截断'}
+                        </div>
+                        <pre className="overflow-auto font-mono text-[11px] leading-4">
+                          {diff.lines.map((line, index) => (
+                            <div
+                              key={`${index}.${line.kind}`}
+                              className={`whitespace-pre ${DIFF_CLASS[line.kind]}`}
+                            >
+                              {`${line.baselineLine === null ? '    ' : String(line.baselineLine).padStart(4)} ${line.currentLine === null ? '    ' : String(line.currentLine).padStart(4)} ${DIFF_SIGN[line.kind]} `}
+                              {line.text}
+                            </div>
+                          ))}
+                        </pre>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <CodeBlock lang={artifactLanguage(file.entry.path, false)} code={file.text} />
+                )}
                 {truncated && (
-                  <div className="mt-1 flex items-center gap-2 font-mono text-[10px] text-amber-700">
+                  <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10px] text-amber-700">
                     <span>
-                      已读取 {formatBytes(file.loadedBytes)} / {formatBytes(file.entry.size)}
-                      {capped ? `（达到单文件上限 ${formatBytes(ARTIFACT_MAX_LOADED_BYTES)}，停止读取）` : '（未读完）'}
+                      已读取 {formatBytes(file.loadedBytes)} / {formatBytes(file.entry.size)}（范围 0–
+                      {file.nextOffset} 字节，未到 EOF）
+                      {softCapped && `；超过自动上限 ${formatBytes(ARTIFACT_MAX_LOADED_BYTES)}，需手动继续`}
+                      {hardCapped && `；已达硬上限 ${formatBytes(ARTIFACT_HARD_MAX_BYTES)}`}
                     </span>
-                    {!capped && (
+                    {!hardCapped && (
                       <button
                         type="button"
                         onClick={() => void appendChunk()}
                         className="text-blue-600 hover:underline"
                       >
-                        读取下一块
+                        继续读取（+{formatBytes(ARTIFACT_CHUNK_BYTES)}）
                       </button>
                     )}
+                  </div>
+                )}
+                {!truncated && (
+                  <div className="mt-1 font-mono text-[10px] text-gray-400">
+                    已读到 EOF（{formatBytes(file.loadedBytes)}，范围 0–{file.nextOffset} 字节）
                   </div>
                 )}
               </>

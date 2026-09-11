@@ -25,6 +25,7 @@ import type {
   RuntimeConfigResult,
   ReconcileSessionParams,
   SessionRecoverabilityResult,
+  SetProjectThinkingLevelResult,
   SetThinkingLevelResult,
 } from './types.ts';
 import { parseRecoverabilityResult } from './recoverability.ts';
@@ -283,6 +284,24 @@ export class SynapseRuntimeClient {
   ): Promise<SetThinkingLevelResult> {
     return this.call<SetThinkingLevelResult>('runtime.session.thinking.set', {
       session,
+      level,
+    });
+  }
+
+  /**
+   * Set one project's default reasoning level (`runtime.project.thinking.set`).
+   *
+   * Project-scoped write: the level is validated server-side against the same
+   * whitelist the read surface advertises and persisted into the project's
+   * settings layer, so it applies to sessions opened afterwards and survives a
+   * daemon restart. The current session is deliberately not rebound.
+   */
+  public async setProjectThinkingLevel(
+    projectId: string,
+    level: string,
+  ): Promise<SetProjectThinkingLevelResult> {
+    return this.call<SetProjectThinkingLevelResult>('runtime.project.thinking.set', {
+      project_id: projectId,
       level,
     });
   }

@@ -81,6 +81,7 @@ class RuntimeManager:
             [str, str, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
         ]
         | None = None,
+        project_thinking_writer: Callable[[str, Any], str] | None = None,
         mcp_rebind_factory: Callable[
             [str, str, bool, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
         ]
@@ -100,6 +101,7 @@ class RuntimeManager:
         self.session_binding_factory = session_binding_factory
         self.agent_rebind_factory = agent_rebind_factory
         self.thinking_rebind_factory = thinking_rebind_factory
+        self.project_thinking_writer = project_thinking_writer
         self.mcp_rebind_factory = mcp_rebind_factory
         self.shared_resources = shared_resources or ProjectSharedResources()
         self.max_concurrent_sessions = max(1, int(max_concurrent_sessions))
@@ -326,6 +328,21 @@ class RuntimeManager:
         if session is None:
             raise ValueError("session is not open")
         return factory(thread_id, level, session.binding, self.shared_resources)
+
+    def set_project_thinking_level(self, level: str) -> str:
+        """Persist this project's default reasoning level for future sessions.
+
+        The writer owns validation (against the project's own whitelist) and
+        persistence, and it is the only component that knows where the project's
+        settings layer lives.  Already-open sessions are deliberately not
+        rebound: a project default applies to sessions opened afterwards, so the
+        caller must not claim the current session changed.  Returns the canonical
+        applied label.
+        """
+        writer = self.project_thinking_writer
+        if writer is None:
+            raise ValueError("project thinking write is unavailable")
+        return str(writer(level, self.settings))
 
     def cancel_turn_ref(
         self, ref: SessionRef, expected_turn_id: str, reason: str = "user"

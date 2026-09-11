@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import inspect
+import logging
 import os
 import signal
 from collections.abc import Callable
@@ -34,6 +36,65 @@ from synapse.sessions.store import (
 )
 from synapse.settings import load_global_settings, load_project_settings
 from synapse.settings.config_paths import set_mcp_server_enabled
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def apply_project_thinking_default(settings: Any, level: str, *, workspace: Any) -> str:
+    """Validate and persist one project's default reasoning level.
+
+    ``settings`` is only used to resolve the live whitelist (the same one
+    ``runtime.config.get`` advertises); the value is validated against it and then
+    written to the project's settings layer (``<workspace>/.synapse/settings.json``
+    — the same file that holds ``reasoning_effort``).  The canonical label is what
+    gets persisted.
+
+    The write is atomic (temp file + replace), so there is no partial state to roll
+    back: the file either still holds the previous default or holds the new one.
+    Newly opened sessions pick the value up from that layer through
+    :func:`apply_project_layer_thinking`, which is what makes the default survive a
+    daemon restart even though ``apply_models_config_to_settings`` re-seeds
+    ``reasoning_effort`` from the model profile on every load.
+    """
+    from synapse.runtime.service.config_source import resolve_thinking_levels
+    from synapse.settings.config_paths import set_project_reasoning_effort
+
+    allowed = list(resolve_thinking_levels(settings))
+    # A throwaway copy is used only so the token can be validated against the live
+    # whitelist; the caller's settings object is never mutated.
+    label = apply_thinking_to_settings(copy.deepcopy(settings), level, allowed=allowed)
+    set_project_reasoning_effort(label, workspace=workspace)
+    return label
+
+
+def apply_project_layer_thinking(settings: Any, workspace: Any) -> None:
+    """Seed a session's settings with the project layer's explicit default level.
+
+    Called on the copy a newly opened session will use, *before* its own persisted
+    binding is applied (a thread that rebound its level keeps it).  The value has to
+    be applied here because the loaded ``Settings`` object already had
+    ``reasoning_effort`` overwritten by the selected model profile, so the project
+    layer is the only place that still knows the project's own default.
+
+    A default that is no longer inside the live whitelist (for example after a
+    model switch) is skipped with a warning instead of blocking the session open.
+    """
+    from synapse.runtime.service.config_source import resolve_thinking_levels
+    from synapse.settings.config_paths import read_project_thinking_default
+
+    level = read_project_thinking_default(workspace)
+    if level is None:
+        return
+    try:
+        allowed = list(resolve_thinking_levels(settings))
+        apply_thinking_to_settings(settings, level, allowed=allowed)
+    except Exception as exc:  # noqa: BLE001 - a stale default must not block opening
+        _LOGGER.warning(
+            "ignoring project reasoning default %r for workspace %s: %s",
+            level,
+            workspace,
+            exc,
+        )
 
 
 class RuntimeDaemon:
@@ -104,6 +165,9 @@ class RuntimeDaemon:
 
         def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:
             settings = project_settings.model_copy(deep=True)
+            # The project's own default level is applied before the thread's
+            # persisted binding, so a session that rebound its level keeps it.
+            apply_project_layer_thinking(settings, descriptor.workspace)
             with SessionStore(settings.resolved_sessions_path()) as store:
                 apply_binding_to_settings(settings, store.get_model_binding(thread_id))
             return build_agent(settings, thread_id), settings
@@ -165,6 +229,12 @@ class RuntimeDaemon:
             apply_thinking_to_settings(settings, level, allowed=allowed)
             return build_agent(settings, thread_id), settings
 
+        def write_project_thinking(level: str, settings: Any) -> str:
+            """Bind :func:`apply_project_thinking_default` to this project."""
+            return apply_project_thinking_default(
+                settings, level, workspace=descriptor.workspace
+            )
+
         from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
 
         # Headless/daemon-executed sessions get the same neutral per-project
@@ -190,6 +260,7 @@ class RuntimeDaemon:
             session_binding_factory=build_session_binding,
             agent_rebind_factory=build_model_rebinding,
             thinking_rebind_factory=build_thinking_rebinding,
+            project_thinking_writer=write_project_thinking,
             mcp_rebind_factory=build_mcp_rebinding,
             max_concurrent_sessions=project_settings.max_concurrency,
             project_id=descriptor.project_id,

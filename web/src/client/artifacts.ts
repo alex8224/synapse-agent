@@ -15,6 +15,12 @@
 export const ARTIFACT_CHUNK_BYTES = 64 * 1024;
 /** Hard cap on the bytes held for one file, so a huge file is never fully loaded. */
 export const ARTIFACT_MAX_LOADED_BYTES = 256 * 1024;
+/**
+ * Absolute ceiling for one file, even with explicit "continue reading" clicks.
+ * Past the soft cap every additional chunk needs a user action, and past this
+ * ceiling the panel refuses with a visible reason instead of growing forever.
+ */
+export const ARTIFACT_HARD_MAX_BYTES = 4 * 1024 * 1024;
 /** One list page (the server accepts at most 1000). */
 export const ARTIFACT_LIST_LIMIT = 200;
 
@@ -166,6 +172,20 @@ export function parseArtifactChunk(payload: unknown): ArtifactChunkView {
     eof,
     metadata: parseArtifactMetadata(record['metadata']),
   };
+}
+
+/**
+ * Case-insensitive path-substring filter over entries that are already loaded.
+ *
+ * Deliberately local: the panel only ever filters the entries it has paged in, so
+ * filtering can never trigger an unbounded directory scan.  The panel states the
+ * loaded/total counts next to the filtered list so a match outside the loaded
+ * page is never mistaken for "no such file".
+ */
+export function filterArtifactEntries(entries: ArtifactEntry[], query: string): ArtifactEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return entries;
+  return entries.filter((entry) => entry.path.toLowerCase().includes(needle));
 }
 
 /** `1024` -> `1.0 KiB`, `1536` -> `1.5 KiB`; bounded to one decimal. */

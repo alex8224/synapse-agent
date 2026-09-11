@@ -26,6 +26,8 @@ __all__ = [
     "ReloadMcpResult",
     "RebindSessionCommand",
     "RebindSessionResult",
+    "SetProjectThinkingLevelCommand",
+    "SetProjectThinkingLevelResult",
     "SetThinkingLevelCommand",
     "SetThinkingLevelResult",
     "SteerTurnCommand",
@@ -243,6 +245,42 @@ class SetThinkingLevelResult:
     session: SessionRef
     level: str
     view: RuntimeConfigView
+
+
+@dataclass(frozen=True, slots=True)
+class SetProjectThinkingLevelCommand:
+    """Set one project's default reasoning level for *future* sessions.
+
+    Project-scoped, so it carries a ``project_id`` instead of a ``SessionRef``:
+    the write targets the project's settings layer, never a thread, and it never
+    rebinds a running session.  Sessions already open keep the level they were
+    built with — only sessions opened afterwards inherit the new default.
+    """
+
+    project_id: str
+    level: str
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if type(self.project_id) is not str or not self.project_id.strip():
+            raise ValueError("project_id must not be empty")
+        if type(self.level) is not str or not self.level.strip():
+            raise ValueError("level must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class SetProjectThinkingLevelResult:
+    """Confirmation that the project default was persisted.
+
+    ``level`` is the canonical label that was written (``off`` when thinking was
+    disabled for the project).  The target file is deliberately *not* reported:
+    the read surface never hands out workspace-absolute paths, and the console
+    only needs to say that the project default changed, not where it lives.
+    """
+
+    command_id: str
+    project_id: str
+    level: str
 
 
 @dataclass(frozen=True, slots=True)

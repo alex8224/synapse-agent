@@ -56,6 +56,8 @@ def _config_result(**overrides: object) -> dict[str, object]:
         "mcp_enabled": True,
         "can_set_thinking": False,
         "can_toggle_mcp_global": False,
+        "project_thinking_level": "low",
+        "can_set_project_thinking": True,
     }
     data.update(overrides)
     return data
@@ -69,6 +71,8 @@ def _config_view() -> RuntimeConfigView:
         thinking_levels=("off", "low", "high"),
         mcp_servers=(McpServerView("files", "stdio", True, tool_prefix="mcp__files"),),
         mcp_enabled=True,
+        project_thinking_level="low",
+        can_set_project_thinking=True,
     )
 
 
@@ -206,6 +210,8 @@ def test_client_get_runtime_config_roundtrip() -> None:
         )
         assert result.can_set_thinking is False
         assert result.can_toggle_mcp_global is False
+        assert result.project_thinking_level == "low"
+        assert result.can_set_project_thinking is True
         frame = _business_frame(fake)
         assert frame["method"] == "runtime.config.get"
         assert frame["params"] == {"session": {"project_id": "p", "thread_id": "t"}}
@@ -259,6 +265,15 @@ def test_client_rejects_invalid_runtime_config_results() -> None:
             ),
         ),
         ("capability wrong type", _config_result(can_toggle_mcp_global=1)),
+        (
+            "project capability wrong type",
+            _config_result(can_set_project_thinking=1),
+        ),
+        (
+            "project level wrong type",
+            _config_result(project_thinking_level=5),
+        ),
+        ("project level empty", _config_result(project_thinking_level="")),
         ("too many models", _config_result(available_models=["m"] * 257)),
         ("too many levels", _config_result(thinking_levels=["high"] * 33)),
         (

@@ -13,6 +13,7 @@ import {
   artifactLanguage,
   decodeBase64Text,
   extensionOf,
+  filterArtifactEntries,
   formatBytes,
   isTextArtifact,
   joinArtifactPath,
@@ -158,4 +159,25 @@ test('path helpers stay inside the workspace root', () => {
 test('artifactLanguage switches to diff highlighting in diff mode', () => {
   assert.equal(artifactLanguage('src/app.py', false), 'py');
   assert.equal(artifactLanguage('src/app.py', true), 'diff');
+});
+
+test('filterArtifactEntries narrows only the loaded entries', () => {
+  const entries = [
+    { path: 'src/a.ts', kind: 'file', size: 1, modified_at: null, media_type: 'text/plain', revision: 'r1' },
+    { path: 'src/b.py', kind: 'file', size: 1, modified_at: null, media_type: 'text/plain', revision: 'r1' },
+    { path: 'docs/c.md', kind: 'file', size: 1, modified_at: null, media_type: 'text/plain', revision: 'r1' },
+  ];
+  assert.deepEqual(filterArtifactEntries(entries, 'SRC/').map((e) => e.path), ['src/a.ts', 'src/b.py']);
+  assert.deepEqual(filterArtifactEntries(entries, '  ').length, 3, 'a blank query keeps everything');
+  assert.deepEqual(filterArtifactEntries(entries, 'zzz'), []);
+});
+
+test('filterArtifactEntries never mutates or reorders its input', () => {
+  const entries = [
+    { path: 'b', kind: 'file', size: 1, modified_at: null, media_type: 'text/plain', revision: null },
+    { path: 'a', kind: 'file', size: 1, modified_at: null, media_type: 'text/plain', revision: null },
+  ];
+  const filtered = filterArtifactEntries(entries, 'a');
+  assert.deepEqual(filtered.map((e) => e.path), ['a']);
+  assert.deepEqual(entries.map((e) => e.path), ['b', 'a']);
 });

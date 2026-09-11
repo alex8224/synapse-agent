@@ -28,6 +28,7 @@ from typing import Any
 
 from synapse.integrations.mcp_client import load_mcp_server_configs
 from synapse.models.config import DEFAULT_THINKING_LEVELS
+from synapse.models.helpers import settings_thinking_label
 from synapse.models.registry import registry_from_settings
 from synapse.runtime.service.errors import ConfigOverflowError
 from synapse.runtime.service.runtime_config import (
@@ -39,6 +40,7 @@ from synapse.runtime.service.runtime_config import (
     RuntimeConfigView,
 )
 from synapse.runtime.sessions.ref import SessionRef
+from synapse.settings.config_paths import read_project_thinking_default
 
 __all__ = ["build_config_view", "resolve_thinking_levels"]
 
@@ -64,6 +66,22 @@ def _model_text(value: Any) -> str | None:
     if size > MAX_RUNTIME_CONFIG_TEXT_BYTES:
         raise ConfigOverflowError("runtime model setting exceeds the length limit")
     return text
+
+
+def _project_thinking_default(project_settings: Any) -> str:
+    """The level a newly opened session starts with for this project.
+
+    The project settings layer wins when it sets an explicit default; otherwise
+    the loaded project settings' own label (model-profile seeded) is reported as
+    the inherited default.  A workspace-less settings object reports its label,
+    because there is no project layer to read.
+    """
+    workspace = _attr(project_settings, "workspace")
+    if workspace is not None:
+        explicit = read_project_thinking_default(workspace)
+        if explicit is not None:
+            return explicit
+    return settings_thinking_label(project_settings)
 
 
 def resolve_thinking_levels(settings: Any, model: str | None = None) -> tuple[str, ...]:
@@ -100,13 +118,31 @@ def resolve_thinking_levels(settings: Any, model: str | None = None) -> tuple[st
     return levels
 
 
-def build_config_view(settings: Any, *, session: SessionRef) -> RuntimeConfigView:
+def build_config_view(
+    settings: Any,
+    *,
+    session: SessionRef,
+    project_settings: Any | None = None,
+    can_set_project_thinking: bool = False,
+) -> RuntimeConfigView:
     """Project one effective settings object into a read-only config view.
 
     ``settings`` is the session-bound settings when the target session is
     already open, or the project settings otherwise (the caller decides).
     ``session`` is only used to name the config context; no secret is derived
     from it.
+
+    ``project_settings`` is the project's own defaults (never the session's), so
+    ``project_thinking_level`` states what a *newly opened* session would start
+    with.  It is omitted by callers that have no project scope, in which case the
+    field stays ``None`` rather than echoing the session's level.
+
+    The project default is read from the project *settings layer*, not from the
+    loaded ``Settings`` object: ``apply_models_config_to_settings`` re-seeds
+    ``reasoning_effort`` from the selected model profile on every load, so the
+    loaded object cannot distinguish "the project asked for low" from "the
+    profile happens to be low".  When the project layer sets nothing, the
+    profile-derived label is reported as the inherited default.
     """
     del session  # display context only; values come from whitelisted settings
     registry = registry_from_settings(settings)
@@ -182,6 +218,14 @@ def build_config_view(settings: Any, *, session: SessionRef) -> RuntimeConfigVie
             # editable reasoning-level control.
             can_set_thinking=True,
             can_toggle_mcp_global=False,
+            # The project default is reported only when the caller supplied the
+            # project's own settings; it is never inferred from the session.
+            project_thinking_level=(
+                _project_thinking_default(project_settings)
+                if project_settings is not None
+                else None
+            ),
+            can_set_project_thinking=bool(can_set_project_thinking),
         )
     except ValueError as exc:
         raise ConfigOverflowError("runtime config exceeds the safety bound") from exc

@@ -259,3 +259,75 @@ def set_mcp_server_enabled(
     temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     temporary.replace(path)
     return path
+
+
+def read_project_thinking_default(workspace: Path | str | None = None) -> str | None:
+    """Read the project layer's *explicit* reasoning default, or ``None``.
+
+    Only ``<workspace>/.synapse/settings.json`` is consulted: this is the layer
+    :func:`set_project_reasoning_effort` writes, so the value reported here is
+    exactly the project's own default rather than an inherited one.
+
+    The effective ``reasoning_effort`` of a loaded ``Settings`` object cannot be
+    used for this: ``apply_models_config_to_settings`` re-seeds
+    ``reasoning_effort`` / ``enable_thinking`` from the selected model profile on
+    every load, so a settings-layer default would be invisible after a reload
+    (which is why the runtime applies this value to newly opened sessions
+    explicitly).  A missing file, a missing key and a malformed file all report
+    ``None`` instead of raising: a stale default must never break a read.
+    """
+    path = project_config_dir(workspace) / SETTINGS_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = load_json_object(path)
+    except (OSError, ValueError):
+        return None
+    if data.get("enable_thinking") is False:
+        return "off"
+    effort = data.get("reasoning_effort")
+    if type(effort) is str and effort.strip():
+        return effort.strip()
+    return None
+
+
+def set_project_reasoning_effort(
+    level: str,
+    *,
+    workspace: Path | str | None = None,
+) -> Path:
+    """Persist one project's default reasoning level into its settings layer.
+
+    The target is ``<workspace>/.synapse/settings.json`` — the layer
+    :func:`load_project_settings` merges last for that workspace — and it is
+    created (with its directory) on first use, because a project that never had a
+    settings file must still be able to record a default.
+
+    ``off`` is stored as ``enable_thinking: false`` while the previous
+    ``reasoning_effort`` is preserved, so re-enabling thinking restores the level
+    the project had before.  Every other level stores ``enable_thinking: true``
+    plus the level itself.  Level validation stays with the caller (the daemon
+    applies the token through ``apply_thinking_to_settings`` against the live
+    whitelist first), so this remains a pure persistence helper.
+
+    The write is atomic (temp file + ``replace``), so an interrupted write can
+    never leave a half-written settings file behind.
+    """
+    if type(level) is not str or not level.strip():
+        raise ValueError("level must not be empty")
+    directory = project_config_dir(workspace)
+    path = directory / SETTINGS_FILENAME
+    data: dict[str, Any] = load_json_object(path) if path.is_file() else {}
+    token = level.strip()
+    if token == "off":
+        data["enable_thinking"] = False
+    else:
+        data["enable_thinking"] = True
+        data["reasoning_effort"] = token
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+    return path

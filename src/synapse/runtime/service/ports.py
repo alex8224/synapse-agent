@@ -32,6 +32,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetProjectThinkingLevelCommand,
+    SetProjectThinkingLevelResult,
     SetThinkingLevelCommand,
     SetThinkingLevelResult,
     SteerTurnCommand,
@@ -136,6 +138,21 @@ class AgentRuntimeService(Protocol):
 
         Session-scoped write: the level must fall inside the target session's
         thinking-level whitelist, and only that thread's binding changes.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def set_project_thinking_level(
+        self, command: SetProjectThinkingLevelCommand
+    ) -> SetProjectThinkingLevelResult:
+        """Set one project's default reasoning level for future sessions.
+
+        Project-scoped write: the level must fall inside the same whitelist the
+        read surface advertises for that project, and it is persisted into the
+        project's settings layer so it survives a daemon restart.  Sessions that
+        are already open are not rebound.
 
         Optional delegate method: an older delegate without it keeps the wrapper
         constructible and reports the feature as unavailable (see the ACL layer).

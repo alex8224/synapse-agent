@@ -157,6 +157,8 @@ def test_view_wire_projection_is_whitelisted_json() -> None:
         "mcp_enabled": True,
         "can_set_thinking": False,
         "can_toggle_mcp_global": False,
+        "project_thinking_level": None,
+        "can_set_project_thinking": False,
     }
     # A view can never carry arbitrary settings keys, so a secret sentinel that
     # exists only on the source settings object cannot leak into JSON.
@@ -265,6 +267,10 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
     # advertises the capability as editable; the global MCP toggle stays False.
     assert view.can_set_thinking is True
     assert view.can_toggle_mcp_global is False
+    # No project settings object was supplied by this caller, so the project
+    # default stays unknown instead of echoing the session's level.
+    assert view.project_thinking_level is None
+    assert view.can_set_project_thinking is False
     assert len(view.mcp_servers) == 1
     mcp = view.mcp_servers[0]
     assert (mcp.name, mcp.transport, mcp.enabled, mcp.tool_prefix) == (
@@ -288,6 +294,8 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
         "mcp_enabled",
         "can_set_thinking",
         "can_toggle_mcp_global",
+        "project_thinking_level",
+        "can_set_project_thinking",
     }
 
 
@@ -417,9 +425,15 @@ def test_local_uses_project_settings_for_unopened_session(monkeypatch) -> None:
     )
     monkeypatch.setattr(config_source, "load_mcp_server_configs", lambda **kwargs: [])
 
-    def spy_build(settings: object, *, session: SessionRef) -> RuntimeConfigView:
+    def spy_build(
+        settings: object, *, session: SessionRef, **kwargs: object
+    ) -> RuntimeConfigView:
         captured.append(settings)
         del session
+        # The project default is read from the project's own settings object,
+        # and the capability flag mirrors the manager's project-level writer.
+        assert kwargs["project_settings"] is project_settings
+        assert kwargs["can_set_project_thinking"] is False
         return _dummy_view()
 
     monkeypatch.setattr(config_source, "build_config_view", spy_build)
@@ -448,7 +462,7 @@ def test_local_prefers_session_bound_settings_for_opened_session(monkeypatch) ->
     monkeypatch.setattr(
         config_source,
         "build_config_view",
-        lambda settings, *, session: captured.append(settings) or _dummy_view(),
+        lambda settings, *, session, **kwargs: captured.append(settings) or _dummy_view(),
     )
 
     manager = _manager(project_settings)

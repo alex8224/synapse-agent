@@ -45,6 +45,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetProjectThinkingLevelCommand,
+    SetProjectThinkingLevelResult,
     SetThinkingLevelCommand,
     SetThinkingLevelResult,
     SteerTurnCommand,
@@ -400,6 +402,43 @@ class LocalAgentRuntimeService:
             view=config_source.build_config_view(settings, session=command.session),
         )
 
+    async def set_project_thinking_level(
+        self, command: SetProjectThinkingLevelCommand
+    ) -> SetProjectThinkingLevelResult:
+        """Persist one project's default reasoning level for future sessions.
+
+        Project-scoped write: the project's manager is resolved on a worker thread
+        (the same lazy path as the session list), the level is validated and
+        applied against the project's own settings — the same whitelist
+        ``runtime.config.get`` advertises for that project — and the project
+        settings layer is rewritten atomically, so a daemon restart keeps the
+        default.  Sessions that are already open are deliberately not rebound.
+        """
+        if type(command) is not SetProjectThinkingLevelCommand:
+            raise InvalidRequestError(
+                "project thinking command must be a SetProjectThinkingLevelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        if type(command.project_id) is not str or not command.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._validate_thinking_level(command.level)
+
+        def _write() -> str:
+            manager = self._resolve_manager_project(command.project_id)
+            try:
+                return manager.set_project_thinking_level(command.level)
+            except KeyError as exc:
+                raise InvalidRequestError("unknown thinking level") from exc
+            except ValueError as exc:
+                raise InvalidRequestError("invalid thinking level") from exc
+
+        level = await asyncio.to_thread(_write)
+        return SetProjectThinkingLevelResult(
+            command_id=command.command_id,
+            project_id=command.project_id,
+            level=level,
+        )
+
     async def resume_turn(self, command: ResumeTurnCommand) -> ResumeTurnResult:
         """Resume a waiting approval without exposing a runtime handle."""
         self._validate_ref(command.session)
@@ -583,7 +622,16 @@ class LocalAgentRuntimeService:
             self._check_project(manager, query.session)
             session = manager.get_session_ref(query.session)
             settings = session.settings if session is not None else manager.settings
-            return config_source.build_config_view(settings, session=query.session)
+            return config_source.build_config_view(
+                settings,
+                session=query.session,
+                # The project default is read from the project's own settings,
+                # never from the session's (a session may have rebound its level),
+                # and the capability flag mirrors whether this manager actually
+                # has a project-level writer wired up.
+                project_settings=manager.settings,
+                can_set_project_thinking=manager.project_thinking_writer is not None,
+            )
 
         return await asyncio.to_thread(_read)
 
