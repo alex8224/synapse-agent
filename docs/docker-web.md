@@ -27,14 +27,15 @@ synapse-web --host 0.0.0.0 --port 8000
 docker build -f Dockerfile.web -t synapse-web .
 ```
 
-默认使用 `pypi` 模式，从 PyPI 安装 `synapse-cli-agent==0.1.23` 及其依赖
+默认使用 `pypi` 模式，从 PyPI 安装 `synapse-cli-agent==0.1.25`（即 `Dockerfile.web`
+中 `ARG SYNAPSE_VERSION` 的默认值）及其依赖
 （包括已有预编译 wheel 的 `synapse-core-tool`）。
 
 如需指定版本：
 
 ```bash
 docker build -f Dockerfile.web \
-  --build-arg SYNAPSE_VERSION=0.1.23 \
+  --build-arg SYNAPSE_VERSION=0.1.25 \
   -t synapse-web .
 ```
 

@@ -632,6 +632,51 @@ synapse.cmd → synapse.cli:main() → run_cmd()
 
 ---
 
+## 附录：Runtime 生命周期与架构边界
+
+### Owner 模式 (Embedded) vs Observer 模式 (Daemon)
+
+Synapse 的 runtime 消费者有两种典型用法：
+
+| 模式 | 谁控制生命周期 | 典型场景 |
+|------|------------|---------|
+| **Embedded owner** | 调用方创建 LocalProjectRuntimeConsumer，拥有 manager 与 catalog | CLI synapse run，集成测试 |
+| **Daemon observer** | 独立进程持有 manager，客户端通过 transport 观察 | 连接 synapse-runtime 的远程客户端；当前 ACP 使用本地 consumer |
+
+### 关闭语义
+
+- **consumer.close()** 调用 manager.shutdown() 后释放 catalog；多次调用幂等。
+- **watch 关闭** 仅关闭事件流，不会 cancel 正在运行的 turn。
+- **execute_consumer_turn 取消** 不是纯观察者退出：已自行打开会话且取得 receipt 时发送 cancel_turn；已打开会话或取得 receipt 时尝试 close_session(cancel_active=True)。纯观察应使用 watch。
+- **shutdown() 失败** 时，close() 仍然释放 catalog 并传播原始异常。
+- **close() 调用者取消** 后仍收到 CancelledError，但已经启动的清理受 asyncio.shield 保护；宿主事件循环必须保持运行，可再次 await close() 等待清理结束。
+
+### 架构边界约定
+
+```text
+runtime/agent_loop  ──┐
+runtime/service     ──┤── 不得导入 synapse.ui / synapse.cli / synapse.acp / textual
+runtime/streaming   ──┘
+
+service 契约文件            ── 不得导入 runtime/transport / langgraph / langchain / deepagents
+(ports, commands, errors,
+ events, queries)
+```
+
+第三阶段边界（执行层展示残留清理）：`AgentTurnRuntime` 不再构造任何 renderer，
+headless 以 `sink=None` 纯事件模式运行 `runtime.streaming.parser.stream_agent`，
+工具生命周期 / 推理 / 审批 / 取消 / 失败事件全部经事件 sink 发出；结构化工具事件
+不再依赖 renderer 能力探测。`AgentTurnRuntime` 不再接收/转发
+`StreamRunnerOptions.renderer`（该内部兼容结构已移除）；需要 Rich/Textual sink
+的调用方在 **UI 边缘 wrapper**（`synapse.ui.stream.stream_agent`，默认 Rich sink）
+显式闭包注入自己的 renderer，runtime 默认路径完全不接触 renderer。core
+（agent_loop/service/streaming）不得导入 `synapse.ui`/`synapse.cli`/`textual`/`rich`
+（AST 守护覆盖，另含 turn.py 不得出现 renderer 残迹标识符的检查）。UI 展示侧
+（Rich/Textual sink、终端刷新）保留在 `synapse.ui.stream`/
+`synapse.ui.textual_stream_sink` 边缘，旧入口 `ui.stream.stream_agent`
+（默认 Rich sink）保留；隐藏推理的 reasoning placeholder
+仍由 runtime 事件合成（作为可投影内容），其完全迁移到 UI 适配属后续工作。
+
 ## 附录：如果想自己写一个 Agent
 
 从 Synapse 项目中可以提炼出最小化的 Agent 构建模式：
