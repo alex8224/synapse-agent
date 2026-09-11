@@ -26,6 +26,150 @@ from synapse.runtime.service import (
 from synapse.runtime.sessions.ref import SessionRef
 
 
+def test_mcp_rebinding_writes_only_what_was_asked_and_reuses_a_live_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+    from typing import Any
+
+    from synapse.runtime.daemon import application as app
+
+    workspace = tmp_path / "proj"
+    workspace.mkdir()
+    written: list[tuple[str, object, object]] = []
+    builds: list[dict[str, object]] = []
+    released: list[str] = []
+
+    class FakePool:
+        tools = ["search__query"]
+
+    live_pool: dict[str, object] = {}
+
+    class FakeRegistry:
+        def get(self, key: str) -> object:
+            return live_pool.get(key)
+
+        def release(self, key: str) -> None:
+            released.append(key)
+            live_pool.pop(key, None)
+
+    monkeypatch.setattr(
+        app,
+        "set_mcp_server_enabled",
+        lambda name, value, **kwargs: written.append(("enabled", name, value)),
+    )
+    monkeypatch.setattr(
+        app,
+        "set_mcp_server_include_tools",
+        lambda name, value, **kwargs: written.append(("include_tools", name, value)),
+    )
+    monkeypatch.setattr(app, "load_project_settings", lambda workspace: SimpleNamespace())
+    monkeypatch.setattr(
+        app, "registry_from_settings", lambda settings: SimpleNamespace(get=lambda model: None)
+    )
+    monkeypatch.setattr(app, "apply_profile_to_settings", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_mcp_server_states", lambda *a, **k: ["state"])
+
+    def fake_build(settings: Any, **kwargs: Any) -> Any:
+        builds.append(kwargs)
+        return SimpleNamespace(_coding_mcp_servers=["search"], _coding_mcp_tool_names=["x"])
+
+    monkeypatch.setattr(app, "build_coding_agent", fake_build)
+    monkeypatch.setattr(
+        "synapse.integrations.mcp_client.get_mcp_pool_registry", lambda: FakeRegistry()
+    )
+
+    descriptor = SimpleNamespace(project_id="p1", workspace=workspace)
+    binding = SimpleNamespace(settings=SimpleNamespace(active_model="m", model="m"))
+    common = {
+        "descriptor": descriptor,
+        "project_settings": SimpleNamespace(mcp_config_path=None),
+        "thread_id": "t1",
+        "binding": binding,
+    }
+
+    # Attach-all: nothing persisted, live pool reused, no reconnect.
+    live_pool["p1:t1"] = FakePool()
+    agent, _settings = app.apply_mcp_rebinding(
+        server=None, enabled=None, include_tools=None, **common
+    )
+    assert written == []
+    assert released == []
+    assert builds[-1]["mcp_tools"] == ["search__query"]
+    assert builds[-1]["load_mcp"] is False
+    assert agent._coding_mcp_server_states == ["state"]
+
+    # Enabled write: persisted, pool released, reconnect forced.
+    app.apply_mcp_rebinding(server="search", enabled=False, include_tools=None, **common)
+    assert written == [("enabled", "search", False)]
+    assert released == ["p1:t1"]
+    assert builds[-1]["load_mcp"] is True
+
+    # Tool whitelist write: persisted as given (empty list = load everything).
+    app.apply_mcp_rebinding(server="search", enabled=None, include_tools=(), **common)
+    assert written[-1] == ("include_tools", "search", ())
+    assert builds[-1]["load_mcp"] is True
+
+
+def test_mcp_server_states_report_config_and_live_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from synapse.runtime.daemon.application import _mcp_server_states
+    from synapse.settings.config_paths import MCP_FILENAME
+
+    # Only the project layer may contribute servers: the developer's own
+    # ~/.synapse/mcp.json must never leak into this assertion.
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir",
+        lambda: (tmp_path / "home" / ".synapse").resolve(),
+    )
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+    workspace = tmp_path / "proj"
+    config_dir = workspace / ".synapse"
+    config_dir.mkdir(parents=True)
+    (config_dir / MCP_FILENAME).write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "search",
+                        "transport": "streamable_http",
+                        "enabled": True,
+                        "include_tools": ["query"],
+                    },
+                    {"name": "other", "transport": "stdio", "enabled": False},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        workspace=str(workspace), mcp_config_path=None, mcp_servers_json=None
+    )
+    pool = SimpleNamespace(discovered_tools={"search": ["query", "fetch"]})
+    agent = SimpleNamespace(
+        _coding_mcp_tool_names=["search__query"],
+    )
+
+    states = _mcp_server_states(settings, pool, agent, active=("search",))
+
+    assert [state["name"] for state in states] == ["search", "other"]
+    assert states[0] == {
+        "name": "search",
+        "enabled": True,
+        "attached": True,
+        "include_tools": ["query"],
+        "discovered": ["query", "fetch"],
+        "loaded": ["search__query"],
+    }
+    # A disabled server is reported as configured-but-not-attached, and the
+    # live pool has nothing for it.
+    assert states[1]["enabled"] is False
+    assert states[1]["attached"] is False
+    assert states[1]["discovered"] == []
+    assert states[1]["loaded"] == []
+
+
 def test_token_is_created_private_and_reused(tmp_path: Path) -> None:
     path = tmp_path / "token"
     first = load_token(path)

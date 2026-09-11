@@ -95,6 +95,9 @@ MAX_COMMAND_ID_BYTES: Final = 256
 MAX_TURN_ID_BYTES: Final = 256
 MAX_SUBSCRIPTION_ID_BYTES: Final = 128
 MAX_INTEGER_ABS: Final = 2**63 - 1
+# One MCP server's tool whitelist is a human-sized selection, not a bulk
+# payload: bound it well below ``MAX_COLLECTION_ITEMS``.
+MAX_MCP_INCLUDE_TOOLS: Final = 512
 
 METHODS: Final = frozenset(
     {
@@ -378,6 +381,13 @@ def _boolean(value: object) -> bool:
     return value
 
 
+def _text_list(value: object, *, maximum: int) -> tuple[str, ...]:
+    """Decode a bounded list of non-empty strings (order preserved)."""
+    if type(value) is not list or len(value) > maximum:
+        raise ProtocolError(-32602, "invalid_params")
+    return tuple(_text(item) for item in value)
+
+
 def _session(value: object) -> SessionRef:
     if not isinstance(value, dict) or set(value) != {"project_id", "thread_id"}:
         raise ProtocolError(-32602, "invalid_params")
@@ -436,11 +446,34 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             ),
         )
     if method == "runtime.session.mcp.reload":
-        _optional_fields(params, {"session", "server", "enabled"}, {"command_id"})
+        # ``server`` / ``enabled`` / ``include_tools`` are all optional: omitting
+        # ``server`` means "attach every enabled server" (the TUI's `/mcp
+        # reload`), ``enabled`` writes the on/off flag, ``include_tools`` writes
+        # the per-server tool whitelist.
+        _optional_fields(
+            params,
+            {"session"},
+            {"server", "enabled", "include_tools", "command_id"},
+        )
+        # ``enabled`` / ``include_tools`` describe one named server: a request
+        # without ``server`` is the attach-all shape and may not carry them.
+        if params.get("server") is None and (
+            params.get("enabled") is not None or params.get("include_tools") is not None
+        ):
+            raise ProtocolError(-32602, "invalid_params")
         return ReloadMcpCommand(
             session=_session(params["session"]),
-            server=_session_text(params["server"]),
-            enabled=_boolean(params["enabled"]),
+            server=(
+                _session_text(params["server"]) if params.get("server") is not None else None
+            ),
+            enabled=(
+                _boolean(params["enabled"]) if params.get("enabled") is not None else None
+            ),
+            include_tools=(
+                _text_list(params["include_tools"], maximum=MAX_MCP_INCLUDE_TOOLS)
+                if params.get("include_tools") is not None
+                else None
+            ),
             command_id=(
                 _command_id(params["command_id"])
                 if "command_id" in params

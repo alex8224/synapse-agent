@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from synapse.config import Settings, load_settings
 from synapse.models_registry import (
     ModelProfile,
@@ -15,6 +17,7 @@ from synapse.settings.config_paths import (
     load_layered_settings_file,
     project_config_dir,
     set_mcp_server_enabled,
+    set_mcp_server_include_tools,
 )
 
 
@@ -72,6 +75,57 @@ def test_set_mcp_server_enabled_updates_highest_layer_and_preserves_fields(
     assert written == project_path.resolve()
     assert data["servers"][0]["enabled"] is True
     assert data["servers"][0]["headers"] == {"Authorization": "preserved"}
+
+
+def test_set_mcp_server_include_tools_writes_and_clears_the_whitelist(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home" / ".synapse"
+    workspace = tmp_path / "proj"
+    home.mkdir(parents=True)
+    project_config = workspace / ".synapse"
+    project_config.mkdir(parents=True)
+    (home / "mcp.json").write_text(
+        json.dumps({"servers": [{"name": "search", "enabled": True}]}),
+        encoding="utf-8",
+    )
+    project_path = project_config / "mcp.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "search",
+                        "enabled": True,
+                        "headers": {"Authorization": "preserved"},
+                    },
+                    {"name": "other", "enabled": False},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir", lambda: home.resolve()
+    )
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+
+    written = set_mcp_server_include_tools(
+        "search", ["query", "fetch"], workspace=workspace
+    )
+    data = json.loads(project_path.read_text(encoding="utf-8"))
+    assert written == project_path.resolve()
+    assert data["servers"][0]["include_tools"] == ["query", "fetch"]
+    assert data["servers"][0]["headers"] == {"Authorization": "preserved"}
+    assert data["servers"][1] == {"name": "other", "enabled": False}
+
+    # An empty selection means "load every tool": the key is removed again.
+    set_mcp_server_include_tools("search", [], workspace=workspace)
+    data = json.loads(project_path.read_text(encoding="utf-8"))
+    assert "include_tools" not in data["servers"][0]
+
+    with pytest.raises(KeyError):
+        set_mcp_server_include_tools("missing", ["query"], workspace=workspace)
 
 
 def test_models_merge_user_then_project(tmp_path, monkeypatch):

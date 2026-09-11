@@ -261,6 +261,47 @@ def set_mcp_server_enabled(
     return path
 
 
+def set_mcp_server_include_tools(
+    server_name: str,
+    include_tools: Iterable[str] | None,
+    *,
+    workspace: Path | str | None = None,
+    explicit_path: Path | str | None = None,
+) -> Path:
+    """Update one server's tool whitelist in its highest-priority MCP config.
+
+    ``None`` or an empty selection removes the key, which means "load every
+    tool the server advertises" — the same convention the TUI MCP panel uses,
+    so both surfaces stay interchangeable.
+    """
+    if not server_name.strip():
+        raise ValueError("server_name must not be empty")
+    tools = [str(tool) for tool in include_tools] if include_tools is not None else []
+    paths = [Path(explicit_path).expanduser().resolve()] if explicit_path else mcp_config_paths(
+        workspace
+    )
+    if not paths:
+        raise FileNotFoundError("no MCP config file is available")
+    path = paths[-1]
+    data = load_json_object(path)
+    servers = data.get("servers")
+    if not isinstance(servers, list):
+        raise ValueError("MCP config servers must be a list")
+    for server in servers:
+        if isinstance(server, dict) and server.get("name") == server_name:
+            if tools:
+                server["include_tools"] = tools
+            else:
+                server.pop("include_tools", None)
+            break
+    else:
+        raise KeyError(server_name)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
 def read_project_thinking_default(workspace: Path | str | None = None) -> str | None:
     """Read the project layer's *explicit* reasoning default, or ``None``.
 

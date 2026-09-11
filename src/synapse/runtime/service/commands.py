@@ -20,6 +20,7 @@ __all__ = [
     "CloseSessionCommand",
     "CloseSessionResult",
     "CommandReceipt",
+    "McpServerStateView",
     "OpenSessionCommand",
     "OpenSessionResult",
     "ReloadMcpCommand",
@@ -161,18 +162,50 @@ class OpenSessionResult:
 
 @dataclass(frozen=True, slots=True)
 class ReloadMcpCommand:
-    """Persist one MCP server flag and rebuild the current session binding."""
+    """Apply one MCP session action and rebuild the current session binding.
+
+    Three shapes, mirroring the TUI MCP panel:
+
+    - ``server=None`` → attach/reload every enabled server (no config write);
+    - ``server`` + ``enabled`` → persist the on/off flag, then reconnect;
+    - ``server`` + ``include_tools`` → persist the tool whitelist, then reconnect.
+    """
 
     session: SessionRef
-    server: str
-    enabled: bool
+    server: str | None = None
+    enabled: bool | None = None
+    include_tools: tuple[str, ...] | None = None
     command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def __post_init__(self) -> None:
-        if type(self.server) is not str or not self.server.strip():
+        if self.server is not None and (type(self.server) is not str or not self.server.strip()):
             raise ValueError("server must not be empty")
-        if type(self.enabled) is not bool:
+        if self.enabled is not None and type(self.enabled) is not bool:
             raise ValueError("enabled must be a boolean")
+        if self.include_tools is not None:
+            if self.server is None:
+                raise ValueError("include_tools requires a server")
+            if not all(type(tool) is str and tool for tool in self.include_tools):
+                raise ValueError("include_tools must be non-empty strings")
+        if self.server is None and self.enabled is not None:
+            raise ValueError("enabled requires a server")
+
+
+@dataclass(frozen=True, slots=True)
+class McpServerStateView:
+    """One MCP server: the configured selection plus the live attach result.
+
+    ``discovered`` is what the server advertised (live connection only, empty
+    while nothing is attached) and ``loaded`` is the subset that ended up in
+    the agent's tool list after the include/exclude filter.
+    """
+
+    name: str
+    enabled: bool
+    attached: bool
+    include_tools: tuple[str, ...] = ()
+    discovered: tuple[str, ...] = ()
+    loaded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,12 +214,14 @@ class ReloadMcpResult:
 
     command_id: str
     session: SessionRef
-    server: str
-    enabled: bool
+    server: str | None
+    enabled: bool | None
     attached: bool
     active_servers: tuple[str, ...]
     tool_count: int
     warnings: tuple[str, ...]
+    tool_names: tuple[str, ...] = ()
+    servers: tuple[McpServerStateView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from synapse.runtime.service import SessionView, UsageView
+from synapse.runtime.service import ReloadMcpCommand, SessionView, UsageView
 from synapse.runtime.service.errors import RuntimeServiceError
 from synapse.runtime.transport import (
     JSONRPC_VERSION,
@@ -23,7 +23,10 @@ from synapse.runtime.transport import (
     parse_request,
     project_result,
 )
-from synapse.runtime.transport.protocol import WireProjectionError
+from synapse.runtime.transport.protocol import (
+    MAX_MCP_INCLUDE_TOOLS,
+    WireProjectionError,
+)
 
 
 def _request(params: object, *, method: str = "runtime.session.get", request_id: object = 1) -> str:
@@ -117,6 +120,53 @@ def test_all_business_parameter_conversions_are_strict() -> None:
         )
     with pytest.raises(ProtocolError):
         decode_params("runtime.session.get", {"session": session, "principal": "attacker"})
+
+
+def test_mcp_reload_accepts_attach_all_and_a_tool_whitelist() -> None:
+    session = {"project_id": "p", "thread_id": "t"}
+
+    # No ``server`` at all is the attach-all shape (the TUI's /mcp reload).
+    attach_all = decode_params("runtime.session.mcp.reload", {"session": session})
+    assert isinstance(attach_all, ReloadMcpCommand)
+    assert attach_all.server is None
+    assert attach_all.enabled is None
+    assert attach_all.include_tools is None
+
+    saved = decode_params(
+        "runtime.session.mcp.reload",
+        {"session": session, "server": "search", "include_tools": ["query", "fetch"]},
+    )
+    assert isinstance(saved, ReloadMcpCommand)
+    assert saved.server == "search"
+    assert saved.enabled is None
+    assert saved.include_tools == ("query", "fetch")
+
+    # An empty whitelist is meaningful ("load every tool"), so it decodes to
+    # an empty tuple rather than being rejected.
+    cleared = decode_params(
+        "runtime.session.mcp.reload",
+        {"session": session, "server": "search", "include_tools": []},
+    )
+    assert isinstance(cleared, ReloadMcpCommand)
+    assert cleared.include_tools == ()
+
+    rejected = (
+        {"session": session, "server": "", "enabled": True},
+        {"session": session, "server": "search", "enabled": "yes"},
+        {"session": session, "server": "search", "include_tools": "query"},
+        {"session": session, "server": "search", "include_tools": [1]},
+        {"session": session, "enabled": True},
+        {"session": session, "include_tools": ["query"]},
+        {
+            "session": session,
+            "server": "search",
+            "include_tools": ["query"] * (MAX_MCP_INCLUDE_TOOLS + 1),
+        },
+        {"session": session, "server": "search", "unknown": True},
+    )
+    for bad in rejected:
+        with pytest.raises(ProtocolError):
+            decode_params("runtime.session.mcp.reload", bad)
 
 
 def test_dataclass_result_projection_is_not_default_str_fallback() -> None:

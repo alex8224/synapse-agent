@@ -288,6 +288,28 @@ def test_mcp_pool_key_and_digest() -> None:
     assert config_digest({"a": 1}) != config_digest({"a": 2})
 
 
+def test_mcp_pool_registry_get_is_a_read_only_probe(monkeypatch: Any) -> None:
+    from synapse.integrations.mcp_client import McpPoolRegistry
+
+    class FakePool:
+        def __init__(self) -> None:
+            self._closed = False
+
+        def close(self) -> None:
+            self._closed = True
+
+    registry = McpPoolRegistry()
+    assert registry.get("missing") is None
+
+    pool = FakePool()
+    registry._pools["proj:thread"] = pool  # noqa: SLF001 - seed the private map
+    assert registry.get("proj:thread") is pool
+
+    registry.release("proj:thread")
+    assert registry.get("proj:thread") is None
+    assert pool._closed is True  # noqa: SLF001 - release closes the pool
+
+
 # ---------------------------------------------------------------------------
 # P6-04: project .env as a private mapping (never mutates os.environ)
 # ---------------------------------------------------------------------------

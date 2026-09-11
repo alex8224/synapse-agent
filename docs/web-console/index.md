@@ -78,7 +78,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | CommandBar | 单一蓝色圆形发送按钮 ↑ | 空闲为蓝色 `↑` 发送（输入为空时禁用）；**运行中变为红色 `■` 停止键**，始终可用，点击调用 `runtime.turn.cancel`。与规范「忙碌自动转为 Steer 插队」有意不同：插话仍由 **Enter** 承担，顶部状态条显示 `运行中 · Steer 队列 N` | 已实现（按评审调整） |
 | BottomBar | 模型切换下拉 | 有（19 个可用，可过滤；F2） | 已实现 |
 | BottomBar | 推理级别选择 (high/medium/low) | **可写**：新增会话级写端口 `runtime.session.thinking.set`（需 `session.thinking` 能力位），`runtime.config.get` 的 `can_set_thinking` 现为 `true` 且 `thinking_level` 反映会话级设置。前端为乐观更新 + 失败回滚 + 失败原因可见（保留在弹层内）；服务端仍按该会话 `thinking_levels` 白名单校验 | 已实现 |
-| BottomBar | MCP 工具池状态 | 有面板与单服务器切换；全局开关只读（虚线边框 + `cursor-not-allowed`） | 部分实现 |
+| BottomBar | MCP 工具池状态 | 有面板与单服务器切换；面板显示**真实运行态**（已停用 / 启动中… / 已连接 / 未连接 / 已启用），可展开工具列表并保存 `include_tools` 白名单，见 §2.2；全局开关只读（虚线边框 + `cursor-not-allowed`） | 已实现（全局开关仍只读） |
 | BottomBar | Agent 活跃态 (● 运行中/○ 空闲) | 有，置于底栏最左侧 | 已实现 |
 | BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」。**布局定为保持中区居中**：`grid-cols-[1fr_auto_1fr]` + 中区 `justify-self-center`，右列保留为空对称占位列（不改为右对齐） | 已实现 |
 | BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**目标已接入**：新增只读 `runtime.session.goal`，底栏左区按 TUI 语义渲染 `goal·active 250/1.0k` / `goal·active 42s`（无目标则整段不渲染，hover 出目标原文与用量） | 已实现 |
@@ -99,6 +99,29 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 - **`context_size` 运行时从不填充**（`runtime/streaming/parser.py` 的 `_note_usage`
   未传该键），所以「上下文」段实际不出现；此时强调落在 token 对上（输入量即上下文占用的
   代理指标）。若后端将来开始上报 `context_size`，该段会自动出现并接管强调。
+
+### 2.2 MCP 面板运行态（与 TUI 面板对齐）
+
+底栏 MCP 面板（F5，`web/src/components/McpPanel.tsx`）不再只显示配置里的
+`enabled` 开关，而是显示该会话的**真实运行态**；运行态只来自
+`runtime.session.mcp.reload` 的结果，配置投影与运行态在
+`web/src/stores/mcpRuntimeView.ts` 中刻意分开，因此面板不会把「配置开启」
+当作「正在运行」。
+
+| 行为 | 实测 |
+|---|---|
+| 服务器行 | 状态圆点 + 名称 + `transport` + 状态文案 + `ON`/`OFF` 徽标；状态文案为 **已停用** / **启动中…** / **已连接** / **未连接** / **已启用**（运行态未上报时的保守显示） |
+| 工具白名单 | 已连接时显示「已连接 N/M 工具」，可展开工具列表逐个勾选并「保存工具选择」，写入该服务器 `include_tools` 后重连该会话 MCP 并刷新状态；全选等于清空白名单（加载全部工具） |
+| 重新连接 | 面板顶部按钮重新附着/重载所有已启用服务器并刷新工具列表，连接中显示「连接中…」 |
+| 开关语义 | 点击服务器行仍是切换该服务器 `enabled`；全局 MCP 开关保持只读 |
+| warnings | 面板底部展示 daemon 上报的 warnings（连接失败原因、`mcp deferred at startup (…)` 等），不再静默丢弃 |
+| 底栏标签 | `mcp: 启动中` / `mcp: N on · 未连接` / `mcp: N on · M 已连接` / `mcp: off` |
+| 会话 attach | 打开会话时像 TUI 一样在后台自动附着已启用服务器，结果到达前显示「启动中」；切换结果从**下一轮对话**开始生效，面板在连接期间提示这一点 |
+| 设置对话框 | SettingsDialog 的 MCP 段落新增「会话连接 M / N 已连接」以及每个服务器的「已连接 X 工具 / 未连接」 |
+
+协议参数与结果字段（`server` 省略＝附着所有已启用服务器、`include_tools`
+空数组＝清空白名单、结果新增 `tool_names` 与每服务器 `discovered`/`loaded` 等）
+见 `docs/mcp.md` 的「MCP 面板协议」。
 
 ---
 

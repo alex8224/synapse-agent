@@ -83,7 +83,9 @@ class RuntimeManager:
         | None = None,
         project_thinking_writer: Callable[[str, Any], str] | None = None,
         mcp_rebind_factory: Callable[
-            [str, str, bool, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
+            [str, str | None, bool | None, tuple[str, ...] | None, ExecutionBinding,
+             ProjectSharedResources],
+            tuple[Any, Any],
         ]
         | None = None,
         shared_resources: ProjectSharedResources | None = None,
@@ -300,9 +302,17 @@ class RuntimeManager:
         return factory(thread_id, model, session.binding, self.shared_resources)
 
     def build_mcp_rebinding(
-        self, ref: SessionRef, server: str, enabled: bool
+        self,
+        ref: SessionRef,
+        server: str | None = None,
+        enabled: bool | None = None,
+        include_tools: tuple[str, ...] | None = None,
     ) -> tuple[Any, Any]:
-        """Persist MCP state and build a replacement agent/settings pair."""
+        """Persist MCP state and build a replacement agent/settings pair.
+
+        ``server=None`` attaches/reloads every enabled server without writing
+        any config, mirroring the TUI's ``/mcp reload``.
+        """
         thread_id = self._check_ref(ref)
         factory = self.mcp_rebind_factory
         if factory is None:
@@ -310,7 +320,14 @@ class RuntimeManager:
         session = self.get_session_ref(ref)
         if session is None:
             raise ValueError("session is not open")
-        return factory(thread_id, server, enabled, session.binding, self.shared_resources)
+        return factory(
+            thread_id,
+            server,
+            enabled,
+            include_tools,
+            session.binding,
+            self.shared_resources,
+        )
 
     def build_thinking_rebinding(self, ref: SessionRef, level: str) -> tuple[Any, Any]:
         """Build a replacement agent/settings pair with a new reasoning level.

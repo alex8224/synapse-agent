@@ -35,9 +35,155 @@ from synapse.sessions.store import (
     binding_from_settings,
 )
 from synapse.settings import load_global_settings, load_project_settings
-from synapse.settings.config_paths import set_mcp_server_enabled
+from synapse.settings.config_paths import (
+    set_mcp_server_enabled,
+    set_mcp_server_include_tools,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _mcp_tool_prefix(config: Any) -> str:
+    """The effective tool prefix for one server (mirrors ``mcp_client``)."""
+    prefix = getattr(config, "tool_prefix", None)
+    if prefix is not None:
+        return str(prefix)
+    return f"{getattr(config, 'name', '')}__"
+
+
+def _mcp_server_states(
+    settings: Any, pool: Any, agent: Any, *, active: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Per-server MCP state for the console panel (never credentials).
+
+    ``discovered`` comes from the live pool (empty while nothing is attached)
+    and ``loaded`` is the subset that reached the agent's tool list, so a client
+    can tell "configured on" apart from "tools actually loaded".
+    """
+    from synapse.integrations.mcp_client import load_mcp_server_configs
+
+    discovered = dict(getattr(pool, "discovered_tools", None) or {}) if pool is not None else {}
+    loaded_names = tuple(getattr(agent, "_coding_mcp_tool_names", ()) or ())
+    try:
+        configs = load_mcp_server_configs(
+            path=getattr(settings, "mcp_config_path", None),
+            json_blob=getattr(settings, "mcp_servers_json", None),
+            workspace=getattr(settings, "workspace", None),
+        )
+    except Exception:  # noqa: BLE001 - reporting surface, never fails a reload
+        _LOGGER.warning("MCP config could not be read while reporting server state")
+        return []
+    states: list[dict[str, Any]] = []
+    for config in configs:
+        name = getattr(config, "name", None)
+        if not isinstance(name, str) or not name:
+            continue
+        prefix = _mcp_tool_prefix(config)
+        include = getattr(config, "include_tools", None) or ()
+        states.append(
+            {
+                "name": name,
+                "enabled": bool(getattr(config, "enabled", False)),
+                "attached": name in active,
+                "include_tools": [str(tool) for tool in include],
+                "discovered": [str(tool) for tool in (discovered.get(name) or ())],
+                "loaded": [
+                    tool for tool in loaded_names if prefix == "" or tool.startswith(prefix)
+                ],
+            }
+        )
+    return states
+
+
+def apply_mcp_rebinding(
+    *,
+    descriptor: Any,
+    project_settings: Any,
+    thread_id: str,
+    server: str | None,
+    enabled: bool | None,
+    include_tools: tuple[str, ...] | None,
+    binding: Any,
+) -> tuple[Any, Any]:
+    """Apply one MCP session action and rebuild that session's agent graph.
+
+    ``server=None`` is the TUI's ``/mcp reload``: attach every enabled server
+    without writing any config, reusing the live connection when one exists.  A
+    flag/whitelist write releases the pool first, so the new config is honoured
+    by a fresh connection instead of the cached tool list.
+
+    The rebuilt agent also carries ``_coding_mcp_server_states`` (configured
+    selection + discovered/loaded tools per server) for the runtime service to
+    project; that is what lets a client tell "configured on" from "tools loaded".
+    """
+    from synapse.integrations.mcp_client import get_mcp_pool_registry
+
+    pool_key = f"{descriptor.project_id}:{thread_id}"
+    registry = get_mcp_pool_registry()
+    if server is not None:
+        if enabled is not None:
+            set_mcp_server_enabled(
+                server,
+                enabled,
+                workspace=descriptor.workspace,
+                explicit_path=project_settings.mcp_config_path,
+            )
+        if include_tools is not None:
+            set_mcp_server_include_tools(
+                server,
+                include_tools,
+                workspace=descriptor.workspace,
+                explicit_path=project_settings.mcp_config_path,
+            )
+        registry.release(pool_key)
+    settings = load_project_settings(descriptor.workspace)
+    active_model = binding.settings.active_model or binding.settings.model
+    profile = registry_from_settings(settings).get(active_model)
+    apply_profile_to_settings(settings, profile, seed_thinking=False)
+    live = registry.get(pool_key)
+    if live is not None and live.tools:
+        agent = build_coding_agent(
+            settings,
+            project_root=descriptor.workspace,
+            mcp_tools=list(live.tools),
+            load_mcp=False,
+            prompt_cache_key=lambda: thread_id,
+            mcp_pool_key=pool_key,
+        )
+    else:
+        if live is not None:
+            # An empty pool would be reused by key: drop it so the rebuild
+            # reconnects instead of attaching nothing.
+            registry.release(pool_key)
+        agent = build_coding_agent(
+            settings,
+            project_root=descriptor.workspace,
+            load_mcp=True,
+            prompt_cache_key=lambda: thread_id,
+            mcp_pool_key=pool_key,
+        )
+    active = tuple(getattr(agent, "_coding_mcp_servers", ()) or ())
+    pool = registry.get(pool_key)
+    if pool is not None:
+        # The reuse path compiles the pool's tools in, and ``build_coding_agent``
+        # then derives the server list from the *process-global* active pool —
+        # which the keyed daemon pools never set. Report the keyed pool's own
+        # servers/tools instead, or a session with loaded tools would claim to
+        # have nothing attached.
+        servers = tuple(getattr(pool, "server_names", ()) or ())
+        tool_names = tuple(getattr(pool, "tool_names", ()) or ())
+        if servers:
+            agent._coding_mcp_servers = list(servers)
+            active = servers
+        if tool_names:
+            agent._coding_mcp_tool_names = list(tool_names)
+    agent._coding_mcp_server_states = _mcp_server_states(
+        settings,
+        pool,
+        agent,
+        active=active,
+    )
+    return (agent, settings)
 
 
 def apply_project_thinking_default(settings: Any, level: str, *, workspace: Any) -> str:
@@ -189,30 +335,21 @@ class RuntimeDaemon:
             return build_agent(settings, thread_id), settings
 
         def build_mcp_rebinding(
-            thread_id: str, server: str, enabled: bool, binding: Any, _shared: Any
+            thread_id: str,
+            server: str | None,
+            enabled: bool | None,
+            include_tools: tuple[str, ...] | None,
+            binding: Any,
+            _shared: Any,
         ) -> tuple[Any, Any]:
-            set_mcp_server_enabled(
-                server,
-                enabled,
-                workspace=descriptor.workspace,
-                explicit_path=project_settings.mcp_config_path,
-            )
-            settings = load_project_settings(descriptor.workspace)
-            active_model = binding.settings.active_model or binding.settings.model
-            profile = registry_from_settings(settings).get(active_model)
-            apply_profile_to_settings(settings, profile, seed_thinking=False)
-            from synapse.integrations.mcp_client import get_mcp_pool_registry
-
-            get_mcp_pool_registry().release(f"{descriptor.project_id}:{thread_id}")
-            return (
-                build_coding_agent(
-                    settings,
-                    project_root=descriptor.workspace,
-                    load_mcp=True,
-                    prompt_cache_key=lambda: thread_id,
-                    mcp_pool_key=f"{descriptor.project_id}:{thread_id}",
-                ),
-                settings,
+            return apply_mcp_rebinding(
+                descriptor=descriptor,
+                project_settings=project_settings,
+                thread_id=thread_id,
+                server=server,
+                enabled=enabled,
+                include_tools=include_tools,
+                binding=binding,
             )
 
         def build_thinking_rebinding(

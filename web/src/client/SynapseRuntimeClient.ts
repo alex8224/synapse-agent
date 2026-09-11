@@ -214,7 +214,14 @@ export class SynapseRuntimeClient {
   }
 
   public async reloadMcp(params: ReloadMcpParams): Promise<ReloadMcpResult> {
-    return this.call<ReloadMcpResult>('runtime.session.mcp.reload', params);
+    // Optional keys are omitted rather than sent as null: the daemon decodes
+    // "no server" as attach-all and rejects an explicit null payload.
+    const payload: Record<string, unknown> = { session: params.session };
+    if (params.server !== undefined) payload.server = params.server;
+    if (params.enabled !== undefined) payload.enabled = params.enabled;
+    if (params.include_tools !== undefined) payload.include_tools = params.include_tools;
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<ReloadMcpResult>('runtime.session.mcp.reload', payload);
   }
 
   public async listSessions(params: ListSessionsParams): Promise<SessionListResult> {

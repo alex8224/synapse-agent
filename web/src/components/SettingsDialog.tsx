@@ -58,6 +58,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     setProjectThinkingLevel,
     mcpServers,
     mcpEnabled,
+    mcpRuntime,
+    mcpConnecting,
+    mcpRuntimeKnown,
     toggleMcpServer,
     canToggleMcpGlobal,
     usage,
@@ -209,24 +212,43 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
 
         <Section title="MCP">
           <Row label="全局" value={mcpEnabled ? '已启用' : '已停用'} />
+          <Row
+            label="会话连接"
+            value={
+              mcpConnecting
+                ? '启动中…'
+                : mcpRuntimeKnown
+                  ? `${mcpServers.filter((server) => server.enabled && mcpRuntime[server.name]?.attached).length} / ${mcpServers.filter((server) => server.enabled).length} 已连接`
+                  : '未上报'
+            }
+          />
           <div className="mt-1 space-y-1">
             {mcpServers.length === 0 ? (
               <div className="text-[11px] text-gray-400">未配置任何 MCP 服务器</div>
             ) : (
-              mcpServers.map((server) => (
-                <div
-                  key={server.name}
-                  onClick={() => {
-                    void toggleMcpServer(server.name);
-                  }}
-                  className="flex cursor-pointer items-center justify-between rounded border border-gray-100 px-2 py-1 text-xs hover:bg-gray-50"
-                >
-                  <span className="truncate text-gray-800">{server.name}</span>
-                  <span className="font-mono text-[10px] text-gray-500">
-                    {server.transport} · {server.enabled ? 'ON' : 'OFF'}
-                  </span>
-                </div>
-              ))
+              mcpServers.map((server) => {
+                const runtime = mcpRuntime[server.name];
+                const attached = runtime?.attached === true;
+                return (
+                  <div
+                    key={server.name}
+                    onClick={() => {
+                      void toggleMcpServer(server.name);
+                    }}
+                    className="flex cursor-pointer items-center justify-between rounded border border-gray-100 px-2 py-1 text-xs hover:bg-gray-50"
+                  >
+                    <span className="truncate text-gray-800">{server.name}</span>
+                    <span className="font-mono text-[10px] text-gray-500">
+                      {server.transport} · {server.enabled ? 'ON' : 'OFF'}
+                      {server.enabled && mcpRuntimeKnown
+                        ? attached
+                          ? ` · 已连接 ${runtime?.loaded.length ?? 0} 工具`
+                          : ' · 未连接'
+                        : ''}
+                    </span>
+                  </div>
+                );
+              })
             )}
           </div>
           {!canToggleMcpGlobal && (

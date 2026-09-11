@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { turnStatSegments, usageSegments, usageTooltip } from '../stores/usageView.ts';
 import { goalLabel, goalTooltip } from '../stores/goalView.ts';
+import { McpPanel } from './McpPanel.tsx';
 
 /** Goal status label -> text colour, mirroring the TUI goal indicator styles. */
 const GOAL_STATUS_CLASS: Record<string, string> = {
@@ -37,11 +38,7 @@ export const BottomBar: React.FC = () => {
     thinkingLevelError,
     mcpStatus,
     mcpServers,
-    mcpEnabled,
     canSetThinking,
-    canToggleMcpGlobal,
-    toggleMcpServer,
-    toggleMcpGlobal,
     runtimeStatus,
     usage,
     goal,
@@ -53,6 +50,21 @@ export const BottomBar: React.FC = () => {
   const [modelSearch, setModelSearch] = useState('');
   const [showHelp, setShowHelp] = useState(false);
 
+  const closeOthers = () => {
+    setShowModelPicker(false);
+    setShowThinkingPicker(false);
+    setShowMcpPanel(false);
+  };
+
+  // Popovers (model / reasoning / MCP) close as soon as they lose focus: a
+  // click anywhere outside their own trigger+panel closes them. The trigger is
+  // part of the same wrapper on purpose, so its own click toggles the popover
+  // instead of fighting this handler.
+  const modelRef = useRef<HTMLDivElement | null>(null);
+  const thinkingRef = useRef<HTMLDivElement | null>(null);
+  const mcpRef = useRef<HTMLDivElement | null>(null);
+  const popoverOpen = showModelPicker || showThinkingPicker || showMcpPanel;
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F1') {
@@ -60,15 +72,38 @@ export const BottomBar: React.FC = () => {
         setShowHelp((v) => !v);
       } else if (e.key === 'F2') {
         e.preventDefault();
+        // Same mutual exclusion as the click path: two overlapping popovers
+        // must never be open at once.
+        closeOthers();
         setShowModelPicker((v) => !v);
       } else if (e.key === 'F5') {
         e.preventDefault();
+        closeOthers();
         setShowMcpPanel((v) => !v);
+      } else if (e.key === 'Escape') {
+        // The popover titles promise "关闭 (Esc)": honour it here as well as in
+        // the top bar, so every advertised dismissal path really works.
+        closeOthers();
+        setShowHelp(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target === null) return;
+      const inside = [modelRef, thinkingRef, mcpRef].some((ref) =>
+        ref.current?.contains(target),
+      );
+      if (!inside) closeOthers();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [popoverOpen]);
 
   const busy = runtimeStatus === 'running';
   // Every usage metric now lives here: the token totals and the speed/latency/
@@ -77,11 +112,6 @@ export const BottomBar: React.FC = () => {
   // An absent goal renders nothing at all (never a placeholder).
   const goalText = goalLabel(goal);
   const goalClass = goal === null ? '' : (GOAL_STATUS_CLASS[goal.label] ?? 'text-gray-600');
-  const closeOthers = () => {
-    setShowModelPicker(false);
-    setShowThinkingPicker(false);
-    setShowMcpPanel(false);
-  };
 
   return (
     <>
@@ -111,7 +141,7 @@ export const BottomBar: React.FC = () => {
           <span className="text-gray-200">|</span>
 
           {/* Model */}
-          <div className="relative">
+          <div className="relative" ref={modelRef}>
             <button
               type="button"
               onClick={() => {
@@ -167,7 +197,7 @@ export const BottomBar: React.FC = () => {
           <span className="text-gray-200">|</span>
 
           {/* Thinking level (session-scoped write: runtime.session.thinking.set) */}
-          <div className="relative">
+          <div className="relative" ref={thinkingRef}>
             <button
               type="button"
               onClick={() => {
@@ -230,7 +260,7 @@ export const BottomBar: React.FC = () => {
           <span className="text-gray-200">|</span>
 
           {/* MCP */}
-          <div className="relative">
+          <div className="relative" ref={mcpRef}>
             <button
               type="button"
               onClick={() => {
@@ -252,59 +282,7 @@ export const BottomBar: React.FC = () => {
               <span className="material-symbols-outlined text-[14px] text-gray-400">expand_more</span>
             </button>
             {showMcpPanel && (
-              <div className="absolute bottom-8 left-0 z-50 w-80 space-y-2 rounded-md border border-gray-200 bg-white p-3 shadow-xl">
-                <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-                  <span className="text-xs font-bold text-gray-900">MCP 工具与服务器 (F5)</span>
-                  <span
-                    aria-disabled={!canToggleMcpGlobal}
-                    title={canToggleMcpGlobal ? undefined : RUNTIME_CONFIG_READ_ONLY_NOTICE}
-                    className={`rounded px-2 py-0.5 font-mono text-[10px] ${
-                      canToggleMcpGlobal
-                        ? 'cursor-pointer'
-                        : 'cursor-not-allowed border border-dashed border-gray-300 text-gray-400'
-                    } ${mcpEnabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}
-                    onClick={() => {
-                      if (canToggleMcpGlobal) void toggleMcpGlobal();
-                    }}
-                  >
-                    {mcpEnabled ? '全局启用' : '全局停用'} · 只读
-                  </span>
-                </div>
-                <div className="max-h-56 space-y-1.5 overflow-y-auto">
-                  {mcpServers.length === 0 ? (
-                    <div className="py-2 text-center font-sans text-xs text-gray-400">
-                      未配置任何 MCP 服务器
-                    </div>
-                  ) : (
-                    mcpServers.map((srv) => (
-                      <div
-                        key={srv.name}
-                        onClick={() => {
-                          void toggleMcpServer(srv.name);
-                        }}
-                        className="flex cursor-pointer items-center justify-between rounded border border-gray-100 p-1.5 text-xs hover:bg-gray-50"
-                      >
-                        <div className="flex items-center space-x-2 truncate">
-                          <span
-                            className={`h-2 w-2 rounded-full ${srv.enabled ? 'bg-green-500' : 'bg-gray-300'}`}
-                          />
-                          <span className="truncate font-medium text-gray-800">{srv.name}</span>
-                          <span className="font-mono text-[10px] text-gray-400">
-                            ({srv.transport})
-                          </span>
-                        </div>
-                        <span
-                          className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                            srv.enabled ? 'bg-blue-50 text-blue-600' : 'text-gray-400'
-                          }`}
-                        >
-                          {srv.enabled ? 'ON' : 'OFF'}
-                        </span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+              <McpPanel onClose={() => setShowMcpPanel(false)} />
             )}
           </div>
 

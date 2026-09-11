@@ -9,20 +9,40 @@ export interface SessionRef {
 
 export interface ReloadMcpParams {
   session: SessionRef;
-  server: string;
-  enabled: boolean;
+  /** Omitted = attach every enabled server (the TUI's /mcp reload). */
+  server?: string;
+  enabled?: boolean;
+  /** Tool whitelist for ``server``; an empty list means "load every tool". */
+  include_tools?: string[];
   command_id?: string;
+}
+
+/**
+ * One server: what the config asks for plus what the live session actually has.
+ *
+ * ``discovered`` is what the server advertised (empty while nothing is
+ * attached) and ``loaded`` is the subset that reached the agent's tool list.
+ */
+export interface McpServerState {
+  name: string;
+  enabled: boolean;
+  attached: boolean;
+  include_tools: string[];
+  discovered: string[];
+  loaded: string[];
 }
 
 export interface ReloadMcpResult {
   command_id: string;
   session: SessionRef;
-  server: string;
-  enabled: boolean;
+  server: string | null;
+  enabled: boolean | null;
   attached: boolean;
   active_servers: string[];
   tool_count: number;
   warnings: string[];
+  tool_names: string[];
+  servers: McpServerState[];
 }
 
 export interface RebindSessionParams {

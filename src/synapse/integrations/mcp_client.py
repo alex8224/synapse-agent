@@ -731,6 +731,18 @@ class McpPoolRegistry:
         if pool is not None:
             pool.close()
 
+    def get(self, key: str) -> McpSessionPool | None:
+        """Return the live pool for ``key`` without opening a new connection.
+
+        Read-only probe for surfaces that report *actual* MCP state (the web
+        console panel) instead of only the configured ``enabled`` flag.
+        """
+        with self._lock:
+            pool = self._pools.get(key)
+        if pool is None or pool._closed:  # noqa: SLF001 - same probe as acquire
+            return None
+        return pool
+
     def close_all(self) -> None:
         with self._lock:
             pools = list(self._pools.values())

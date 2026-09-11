@@ -13,6 +13,7 @@ import pytest
 
 from synapse.runtime.agent_loop import CancelToken, TurnHandle, TurnResult, TurnStatus
 from synapse.runtime.service.commands import (
+    McpServerStateView,
     OpenSessionCommand,
     RebindSessionCommand,
     ReloadMcpCommand,
@@ -335,17 +336,43 @@ def test_rebind_persistence_failure_restores_previous_binding() -> None:
 def test_reload_mcp_reports_attached_runtime_state() -> None:
     async def run() -> None:
         factory = _SessionFactory("p1")
+        calls: list[tuple[str | None, bool | None, tuple[str, ...] | None]] = []
+
+        def mcp_rebind(
+            thread_id: str,
+            server: str | None,
+            enabled: bool | None,
+            include_tools: tuple[str, ...] | None,
+            binding: object,
+            shared: object,
+        ) -> tuple[object, object]:
+            calls.append((server, enabled, include_tools))
+            # A write targets one server; an attach-all call names none.
+            servers = ["search"] if (server is None or enabled) else []
+            return (
+                SimpleNamespace(
+                    _coding_mcp_servers=servers,
+                    _coding_mcp_tool_names=["search_query"] if servers else [],
+                    _coding_mcp_warnings=[],
+                    _coding_mcp_server_states=[
+                        {
+                            "name": "search",
+                            "enabled": True,
+                            "attached": bool(servers),
+                            "include_tools": ["query"],
+                            "discovered": ["query", "fetch"],
+                            "loaded": ["search_query"] if servers else [],
+                        },
+                        "malformed",
+                    ],
+                ),
+                SimpleNamespace(max_concurrency=2, model="test"),
+            )
+
         manager = RuntimeManager(
             settings=SimpleNamespace(max_concurrency=2, model="test"),
             agent_factory=lambda thread_id, shared: SimpleNamespace(),
-            mcp_rebind_factory=lambda thread_id, server, enabled, binding, shared: (
-                SimpleNamespace(
-                    _coding_mcp_servers=[server] if enabled else [],
-                    _coding_mcp_tool_names=["search_query"] if enabled else [],
-                    _coding_mcp_warnings=[],
-                ),
-                SimpleNamespace(max_concurrency=2, model="test"),
-            ),
+            mcp_rebind_factory=mcp_rebind,
             session_factory=factory,
             project_id="p1",
         )
@@ -358,6 +385,33 @@ def test_reload_mcp_reports_attached_runtime_state() -> None:
         assert result.attached is True
         assert result.active_servers == ("search",)
         assert result.tool_count == 1
+        assert result.tool_names == ("search_query",)
+        assert result.servers == (
+            McpServerStateView(
+                name="search",
+                enabled=True,
+                attached=True,
+                include_tools=("query",),
+                discovered=("query", "fetch"),
+                loaded=("search_query",),
+            ),
+        )
+        assert calls == [("search", True, None)]
+
+        # Attach-all: no server named, nothing persisted, state still reported.
+        attached = await service.reload_mcp(ReloadMcpCommand(ref))
+        assert attached.server is None
+        assert attached.enabled is None
+        assert attached.attached is True
+        assert calls[-1] == (None, None, None)
+
+        # A tool-whitelist write travels with the command untouched.
+        saved = await service.reload_mcp(
+            ReloadMcpCommand(ref, server="search", include_tools=("query",))
+        )
+        assert saved.server == "search"
+        assert saved.enabled is None
+        assert calls[-1] == ("search", None, ("query",))
         await manager.shutdown()
 
     asyncio.run(run())

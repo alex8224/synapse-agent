@@ -24,6 +24,7 @@ import type {
   SessionRef,
   PendingApprovalView,
   ApprovalDecision,
+  ReloadMcpResult,
   SessionRecoverabilityResult,
 } from '../client/types.ts';
 import { isCoveredTurn } from '../client/recoverability.ts';
@@ -44,10 +45,12 @@ import {
   toSessionListView,
 } from './historyMapper.ts';
 import type { TranscriptMessage, SessionItem } from './historyMapper.ts';
+import { mapRuntimeConfig } from './runtimeConfigMapper.ts';
 import {
-  mapRuntimeConfig,
-  mcpStatusLabel,
-} from './runtimeConfigMapper.ts';
+  mcpRuntimePatch,
+  mcpRuntimeStatusLabel,
+} from './mcpRuntimeView.ts';
+import type { McpRuntimeServerState } from './mcpRuntimeView.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
 import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
 import type { UsageView } from './usageView.ts';
@@ -546,6 +549,27 @@ interface ConsoleStore {
   canSetThinking: boolean;
   canToggleMcpGlobal: boolean;
   toggleMcpServer: (serverName: string) => Promise<void>;
+  /**
+   * Live MCP state per server, filled only from a reload result: the config
+   * view never claims attachment.
+   */
+  mcpRuntime: Record<string, McpRuntimeServerState>;
+  /** Warnings reported by the last MCP reload (connection failures included). */
+  mcpWarnings: string[];
+  /** True while the session's MCP attach/reload RPC is in flight. */
+  mcpConnecting: boolean;
+  /**
+   * Whether a reload result has ever reported this session's MCP state. While
+   * false the panel must not claim a server is attached *or* unattached.
+   */
+  mcpRuntimeKnown: boolean;
+  /**
+   * Attach/reload every enabled MCP server for the attached session (the TUI's
+   * startup attach + `/mcp reload`) and refresh the reported runtime state.
+   */
+  refreshMcpRuntime: () => Promise<void>;
+  /** Persist one server's tool whitelist and reconnect it. */
+  saveMcpTools: (serverName: string, tools: string[]) => Promise<void>;
   toggleMcpGlobal: () => Promise<void>;
 
   // Active Turn & HITL
@@ -690,11 +714,127 @@ async function refreshRuntimeConfig(epoch: number): Promise<void> {
     }
     // preserveModel=true: the model resolved from open.view is authoritative
     // for the session; a config refresh must never reset it to the project default.
-    store.setState(mapRuntimeConfig(view, { preserveModel: true }));
+    const patch = mapRuntimeConfig(view, { preserveModel: true });
+    // The config projection only knows the enabled flags; keep the footer label
+    // derived from the real attach state when one has already been reported.
+    patch.mcpStatus = mcpRuntimeStatusLabel(
+      patch.mcpServers ?? latest.mcpServers,
+      patch.mcpEnabled ?? latest.mcpEnabled,
+      latest.mcpRuntime,
+      latest.mcpConnecting,
+      latest.mcpRuntimeKnown,
+    );
+    store.setState(patch);
   } catch (err) {
     if (epoch === sessionEpoch) {
       console.warn('fetchRuntimeConfig note:', err);
     }
+  }
+}
+
+/**
+ * Merge one MCP reload result into the console state.
+ *
+ * `mcpRuntimeKnown` flips true here: from this point on the panel may say
+ * "已连接" or "未连接". A per-server reload still reports every configured
+ * server, so a merge (not a replace) keeps the map complete.
+ */
+function applyMcpResult(result: ReloadMcpResult): void {
+  const store = useConsoleStore;
+  const patch = mcpRuntimePatch(result);
+  const state = store.getState();
+  const runtime = { ...state.mcpRuntime, ...patch.servers };
+  store.setState({
+    mcpRuntime: runtime,
+    mcpWarnings: patch.warnings,
+    mcpConnecting: false,
+    mcpRuntimeKnown: true,
+    mcpServers: state.mcpServers.map((server) => {
+      const live = runtime[server.name];
+      return live === undefined ? server : { ...server, attached: live.attached };
+    }),
+    mcpStatus: mcpRuntimeStatusLabel(
+      state.mcpServers,
+      state.mcpEnabled,
+      runtime,
+      false,
+      true,
+    ),
+  });
+}
+
+/**
+ * Enter the "connecting" phase.
+ *
+ * The footer label is recomputed here, not only when the result arrives: while
+ * the attach RPC runs the console must say 启动中 (the TUI-style startup state)
+ * instead of showing the previous label as if nothing were happening.
+ */
+function beginMcpConnect(): void {
+  const store = useConsoleStore;
+  const state = store.getState();
+  store.setState({
+    mcpConnecting: true,
+    mcpStatus: mcpRuntimeStatusLabel(
+      state.mcpServers,
+      state.mcpEnabled,
+      state.mcpRuntime,
+      true,
+      state.mcpRuntimeKnown,
+    ),
+  });
+}
+
+/** Leave the connecting phase after a failure, keeping the label truthful. */
+function failMcpConnect(reason: string): void {
+  const store = useConsoleStore;
+  const state = store.getState();
+  store.setState({
+    mcpConnecting: false,
+    mcpWarnings: [reason],
+    mcpStatus: mcpRuntimeStatusLabel(
+      state.mcpServers,
+      state.mcpEnabled,
+      state.mcpRuntime,
+      false,
+      state.mcpRuntimeKnown,
+    ),
+  });
+}
+
+/**
+ * Attach/reload the attached session's MCP servers and record the real state.
+ *
+ * This is the console's equivalent of the TUI's startup attach: enabled servers
+ * render as 启动中 while the RPC runs, and the result decides between 已连接 and
+ * 未连接 (plus any warning the daemon reported, e.g. a failed connection). The
+ * call is non-fatal — a peer without the method, a refused call and a transport
+ * failure all degrade to a visible warning instead of breaking the attach.
+ */
+async function refreshMcpRuntime(epoch: number): Promise<void> {
+  const store = useConsoleStore;
+  const { client, currentSession, mcpEnabled, mcpServers } = store.getState();
+  if (!client || client.getState() !== 'connected') return;
+  if (!mcpEnabled || !mcpServers.some((server) => server.enabled)) return;
+  const target = {
+    project_id: currentSession.project_id,
+    thread_id: currentSession.thread_id,
+  };
+  beginMcpConnect();
+  try {
+    const result = await client.reloadMcp({ session: currentSession });
+    if (epoch !== sessionEpoch) return;
+    const latest = store.getState();
+    if (
+      latest.currentSession.project_id !== target.project_id ||
+      latest.currentSession.thread_id !== target.thread_id
+    ) {
+      return;
+    }
+    applyMcpResult(result);
+  } catch (err) {
+    if (epoch !== sessionEpoch) return;
+    failMcpConnect(err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -772,6 +912,12 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     projectThinkingLevel: null,
     canSetProjectThinking: false,
     projectThinkingError: null,
+    // The runtime state belongs to the session being left: a new attach must
+    // start from "unknown" until its own reload result arrives.
+    mcpRuntime: {},
+    mcpWarnings: [],
+    mcpConnecting: false,
+    mcpRuntimeKnown: false,
   });
   if (!client) return;
   try {
@@ -796,6 +942,10 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     void refreshSessionGoal(epoch);
     await loadInitialHistory(epoch);
     await refreshRuntimeConfig(epoch);
+    // Same convention as the TUI: attach the configured MCP servers for this
+    // session in the background, then report what actually got loaded. The
+    // config flag alone must never be presented as "running".
+    void refreshMcpRuntime(epoch);
   } catch (err) {
     if (epoch === sessionEpoch) {
       console.error('Failed to attach session:', err);
@@ -1394,6 +1544,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   mcpStatus: '',
   mcpServers: [],
   mcpEnabled: false,
+  mcpRuntime: {},
+  mcpWarnings: [],
+  mcpConnecting: false,
+  mcpRuntimeKnown: false,
   canSetThinking: false,
   canToggleMcpGlobal: false,
   // The project default is unknown until the runtime reports it, and it is not
@@ -1460,6 +1614,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const current = mcpServers.find((server) => server.name === serverName);
     if (!current) return;
     const enabled = !current.enabled;
+    beginMcpConnect();
     try {
       const result = await client.reloadMcp({
         session: currentSession,
@@ -1476,17 +1631,53 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       ) {
         return;
       }
-      const list = get().mcpServers.map((server) =>
-        server.name === serverName
-          ? { ...server, enabled: result.enabled, attached: result.attached }
-          : server
-      );
       set({
-        mcpServers: list,
-        mcpStatus: mcpStatusLabel(list, get().mcpEnabled),
+        mcpServers: get().mcpServers.map((server) =>
+          server.name === serverName
+            ? { ...server, enabled: result.enabled ?? !server.enabled }
+            : server
+        ),
       });
+      // The result carries every server's real state, so this both records the
+      // new flag and refreshes attachment/tools/warnings.
+      applyMcpResult(result);
     } catch (error) {
+      failMcpConnect(error instanceof Error ? error.message : String(error));
       console.error('Failed to reload MCP server:', error);
+      throw error;
+    }
+  },
+  refreshMcpRuntime: async () => {
+    await refreshMcpRuntime(sessionEpoch);
+  },
+  saveMcpTools: async (serverName: string, tools: string[]) => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    const { currentSession } = get();
+    const epoch = sessionEpoch;
+    const target = {
+      project_id: currentSession.project_id,
+      thread_id: currentSession.thread_id,
+    };
+    beginMcpConnect();
+    try {
+      const result = await client.reloadMcp({
+        session: currentSession,
+        server: serverName,
+        include_tools: tools,
+      });
+      if (epoch !== sessionEpoch) return;
+      const latest = get().currentSession;
+      if (
+        latest.project_id !== target.project_id ||
+        latest.thread_id !== target.thread_id
+      ) {
+        return;
+      }
+      applyMcpResult(result);
+    } catch (error) {
+      failMcpConnect(error instanceof Error ? error.message : String(error));
+      console.error('Failed to save MCP tools:', error);
       throw error;
     }
   },

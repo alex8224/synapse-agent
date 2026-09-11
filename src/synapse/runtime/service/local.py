@@ -18,7 +18,7 @@ import time
 import traceback
 from collections import deque
 from collections.abc import Callable
-from typing import Any, Self
+from typing import Any, Final, Self
 
 from synapse.runtime.service.artifacts import (
     ArtifactChunk,
@@ -37,6 +37,7 @@ from synapse.runtime.service.commands import (
     CloseSessionCommand,
     CloseSessionResult,
     CommandReceipt,
+    McpServerStateView,
     OpenSessionCommand,
     OpenSessionResult,
     RebindSessionCommand,
@@ -222,6 +223,52 @@ def _project_session(snapshot: SessionSnapshot) -> SessionView:
     )
 
 
+#: One server's tool list is a reporting detail, not a payload: bound it.
+_MAX_MCP_TOOLS_PER_SERVER: Final = 512
+
+
+def _text_tuple(value: Any) -> tuple[str, ...]:
+    """Coerce a reported string collection into a bounded tuple of strings."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    items: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            items.append(item)
+            if len(items) >= _MAX_MCP_TOOLS_PER_SERVER:
+                break
+    return tuple(items)
+
+
+def _mcp_server_states(agent: Any) -> tuple[McpServerStateView, ...]:
+    """Project the per-server MCP state the daemon recorded on the agent.
+
+    Only the daemon owns the keyed MCP pools, so it annotates the built agent
+    with ``_coding_mcp_server_states`` (what each server advertised, what
+    actually reached the tool list).  Malformed entries are dropped: this is a
+    reporting surface and must never fail a reload.
+    """
+    raw = getattr(agent, "_coding_mcp_server_states", ()) or ()
+    states: list[McpServerStateView] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        states.append(
+            McpServerStateView(
+                name=name,
+                enabled=bool(entry.get("enabled", False)),
+                attached=bool(entry.get("attached", False)),
+                include_tools=_text_tuple(entry.get("include_tools")),
+                discovered=_text_tuple(entry.get("discovered")),
+                loaded=_text_tuple(entry.get("loaded")),
+            )
+        )
+    return tuple(states)
+
+
 class LocalAgentRuntimeService:
     """Transport-independent, in-process implementation of the service ports."""
 
@@ -297,7 +344,13 @@ class LocalAgentRuntimeService:
         )
 
     async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult:
-        """Persist and apply one MCP server state to the current session."""
+        """Apply one MCP session action and report the resulting runtime state.
+
+        ``server=None`` attaches/reloads every enabled server without touching
+        the config; ``enabled`` and ``include_tools`` persist their value for
+        the named server first.  The result always carries the *actual* attach
+        state so a client can tell "configured on" from "tools loaded".
+        """
         self._validate_ref(command.session)
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
@@ -308,6 +361,7 @@ class LocalAgentRuntimeService:
                 command.session,
                 command.server,
                 command.enabled,
+                command.include_tools,
             )
             await manager.rebind_session_ref(command.session, agent, settings)
         except KeyError as exc:
@@ -324,10 +378,18 @@ class LocalAgentRuntimeService:
             session=command.session,
             server=command.server,
             enabled=command.enabled,
-            attached=command.server in active_servers,
+            # With no explicit server the call is "attach everything enabled",
+            # so attachment is reported for the session as a whole.
+            attached=(
+                command.server in active_servers
+                if command.server is not None
+                else bool(active_servers)
+            ),
             active_servers=active_servers,
             tool_count=len(tool_names),
             warnings=warnings,
+            tool_names=tool_names,
+            servers=_mcp_server_states(agent),
         )
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
