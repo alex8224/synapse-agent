@@ -24,7 +24,7 @@
 
 Run `uv sync` after the first install or dependency changes.
 
-Verification order: narrowest test → domain tests → full checks.
+Verification order: narrowest test → domain tests
 
 ```powershell
 uv run --no-sync pytest tests/test_x.py -q
@@ -39,13 +39,6 @@ uv run --no-sync pytest tests/test_x.py::test_case_name -q
 | sessions/Codex import | `tests/test_session_*`, `tests/test_transcript.py`, `tests/test_codex_*` |
 | CLI/slash commands | `tests/test_cli.py`, `tests/test_slash_*` |
 | TUI/widgets/dialogs | `tests/test_tui_*`, `tests/test_stream_*`, `tests/test_dialogs.py`, component tests |
-
-Full checks:
-
-```powershell
-uv run --no-sync ruff check .
-uv run --no-sync pytest -q
-```
 
 CI runs lint on ubuntu-latest and tests on Windows/Linux with Python 3.12/3.13. Platform-specific changes must at least pass on the current machine and be reviewed for the other platform.
 
