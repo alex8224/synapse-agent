@@ -139,6 +139,12 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         assert kwargs["model"] is fake_model
         assert kwargs["backend"] is not None
         assert kwargs["checkpointer"] is not None
+        # Subagents must inherit the delta-stored ``messages`` channel; without an
+        # explicit schema deepagents only defaults it for the top-level graph, so
+        # every subagent step rewrote its full message list into a checkpoint.
+        from deepagents.graph import DeepAgentState
+
+        assert kwargs["state_schema"] is DeepAgentState
         search_tools = {
             tool.name: tool
             for tool in kwargs["tools"]
@@ -533,4 +539,3 @@ def test_build_coding_agent_subagents_share_cached_models(tmp_path: Path, monkey
     ]
     assert len(sub_shared) == 2
     assert sub_shared[0] is sub_shared[1]
-

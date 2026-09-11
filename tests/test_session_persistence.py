@@ -141,3 +141,41 @@ def test_persist_refreshes_source_checkpoint_id_when_available(
     persistence.persist(context, _result(TurnStatus.COMPLETED))
 
     assert projection.calls[0][4] == "ckpt-9"
+
+
+def _gc_context(tmp_path, monkeypatch) -> tuple[list[tuple[str, str]], TurnContext]:
+    import synapse.sessions.checkpoint_gc as gc_mod
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gc_mod,
+        "schedule_subagent_checkpoint_gc",
+        lambda path, thread_id: calls.append((str(path), thread_id)),
+    )
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    checkpoint_path.write_bytes(b"")
+    settings = SimpleNamespace(checkpoint_path=str(checkpoint_path))
+    context = TurnContext(
+        thread_id="t1",
+        agent=SimpleNamespace(),
+        settings=settings,
+        request=SimpleNamespace(resume=False, input="hello", thread_id="t1"),
+    )
+    return calls, context
+
+
+def test_persist_completed_turn_schedules_subagent_gc(tmp_path, monkeypatch) -> None:
+    calls, context = _gc_context(tmp_path, monkeypatch)
+
+    _persistence(_RecordingProjection()).persist(
+        context, _result(TurnStatus.COMPLETED)
+    )
+
+    assert calls == [(str(tmp_path / "checkpoints.sqlite"), "t1")]
+
+
+def test_persist_unfinished_turn_keeps_subagent_state(tmp_path, monkeypatch) -> None:
+    for status in (TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.WAITING_APPROVAL):
+        calls, context = _gc_context(tmp_path, monkeypatch)
+        _persistence(_RecordingProjection()).persist(context, _result(status))
+        assert calls == [], status

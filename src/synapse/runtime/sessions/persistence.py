@@ -36,6 +36,27 @@ def _latest_checkpoint_id(context: TurnContext) -> str | None:
         return None
 
 
+def _schedule_subagent_checkpoint_gc(context: TurnContext) -> None:
+    """Reclaim this thread's finished subagent namespaces (best-effort).
+
+    Subagent subgraphs keep their state under ``checkpoint_ns = "tools:<id>"``
+    and nothing reads it back once the turn completed, so without this sweep
+    those namespaces grow without bound (measured: 83% of a 14 GB checkpoint
+    store).  The sweep itself re-checks that nothing is suspended.
+    """
+    settings = getattr(context, "settings", None)
+    path = getattr(settings, "checkpoint_path", None)
+    thread_id = getattr(context, "thread_id", None)
+    if not path or not thread_id:
+        return
+    try:
+        from synapse.sessions.checkpoint_gc import schedule_subagent_checkpoint_gc
+
+        schedule_subagent_checkpoint_gc(path, thread_id)
+    except Exception:  # noqa: BLE001 - persistence must never fail on the sweep
+        return
+
+
 @dataclass(frozen=True, slots=True)
 class SessionPersistence:
     """Persist one frozen turn without consulting widgets or mutable app state."""
@@ -87,6 +108,8 @@ class SessionPersistence:
         if not resume:
             self._persist_summary(context.thread_id, user_text, result, events)
             self._project_catalog(context.thread_id)
+        if result.status is TurnStatus.COMPLETED:
+            _schedule_subagent_checkpoint_gc(context)
 
     @staticmethod
     def _events(

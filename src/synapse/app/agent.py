@@ -302,6 +302,7 @@ def build_coding_agent(
     change across sessions.
     """
     from deepagents import create_deep_agent
+    from deepagents.graph import DeepAgentState
 
     from synapse.observability.startup_trace import dump as dump_startup_trace
     from synapse.observability.startup_trace import duration, ensure_started, mark, span
@@ -667,6 +668,11 @@ def build_coding_agent(
         )
         agent = create_deep_agent(
             model=model,
+            # Subagents must inherit the delta-stored ``messages`` channel. deepagents
+            # only defaults ``state_schema`` for the top-level graph, so without this
+            # every subagent step rewrote the full message list into its own
+            # checkpoint (measured: 83% of a 14 GB store came from those namespaces).
+            state_schema=DeepAgentState,
             system_prompt=prompt,
             backend=backend,
             tools=tools,
