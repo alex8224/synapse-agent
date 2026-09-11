@@ -67,12 +67,7 @@ def load_token(path: Path) -> str:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(path, flags, 0o600)
     except FileExistsError:
-        fd = _open_existing_token(path)
-        try:
-            with os.fdopen(fd, "rb") as stream:
-                return _validate_token(stream.read(_MAX_TOKEN_BYTES + 1))
-        except OSError:
-            raise TokenFileError("token file could not be read") from None
+        return read_existing_token(path)
     except OSError:
         raise TokenFileError("token file could not be created") from None
 
@@ -110,6 +105,23 @@ def load_token(path: Path) -> str:
             except OSError:
                 pass
         raise TokenFileError("token file could not be written") from None
+
+
+def read_existing_token(path: Path) -> str:
+    """Read an existing token file without ever creating one.
+
+    Used by server-side consumers that must authenticate to an already-running
+    daemon (for example the loopback Web console host).  Missing files,
+    symlinks, unsafe permissions, and malformed contents raise
+    ``TokenFileError`` instead of silently generating a new token.
+    """
+    path = Path(path).expanduser()
+    fd = _open_existing_token(path)
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            return _validate_token(stream.read(_MAX_TOKEN_BYTES + 1))
+    except OSError:
+        raise TokenFileError("token file could not be read") from None
 
 
 class BearerTokenAuthenticator:
