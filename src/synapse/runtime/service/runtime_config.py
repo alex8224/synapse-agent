@@ -1,7 +1,9 @@
-"""Query and result DTOs for the read-only runtime configuration surface.
+"""Query and result DTOs for the runtime configuration read surface.
 
-The whole surface is deliberately *read-only*: there is no command DTO here and
-no write port.  ``RuntimeConfigView`` exposes only whitelisted display fields
+This module owns the *read* DTOs only: the write ports live with the other
+session commands (`RebindSessionCommand` for the model and
+`SetThinkingLevelCommand` for the reasoning level, both session-scoped).
+``RuntimeConfigView`` exposes only whitelisted display fields
 (selected model, available model names, thinking levels, MCP server name /
 transport / enabled / tool prefix).  It never carries API keys, environment
 variables, headers, URLs, commands, arguments, goal state, or attachment
@@ -114,9 +116,11 @@ class McpServerView:
 class RuntimeConfigView:
     """Read-only projection of the effective runtime configuration.
 
-    ``can_set_thinking`` and ``can_toggle_mcp_global`` are capability flags the
-    backend currently always reports as ``False``; they exist so clients can
-    render read-only controls instead of pretending a write path exists.
+    ``can_set_thinking`` is True when the session-scoped reasoning-level write
+    port exists (it does: ``runtime.session.thinking.set``).
+    ``can_toggle_mcp_global`` is still always ``False`` — there is no global MCP
+    write path — so clients render that one as read-only instead of pretending a
+    save could succeed.
     """
 
     current_model: str

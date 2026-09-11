@@ -20,13 +20,23 @@ export interface CodeBlockProps {
   code: string;
   /** True while a streamed fence has not been closed yet. */
   streaming?: boolean;
+  /**
+   * Optional short caveat rendered in the header (e.g. a language the console
+   * has no renderer for).  Kept as plain text so it can never inject markup.
+   */
+  note?: string;
 }
 
 /**
  * One fenced code block: language label, copy button, and a monospace body that
  * scrolls instead of wrapping (wrapped code is unreadable).
  */
-export const CodeBlock: React.FC<CodeBlockProps> = ({ lang, code, streaming = false }) => {
+export const CodeBlock: React.FC<CodeBlockProps> = ({
+  lang,
+  code,
+  streaming = false,
+  note,
+}) => {
   const [copied, setCopied] = useState(false);
   const tokens = useMemo(
     () =>
@@ -55,14 +65,19 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ lang, code, streaming = fa
           {lang || 'text'}
           {streaming ? ' · streaming' : ''}
         </span>
-        <button
-          type="button"
-          onClick={copy}
-          title="复制代码"
-          className="font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
-        >
-          {copied ? '已复制' : '复制'}
-        </button>
+        <div className="flex items-center gap-2">
+          {note !== undefined && (
+            <span className="font-sans text-[10px] text-amber-600">{note}</span>
+          )}
+          <button
+            type="button"
+            onClick={copy}
+            title="复制代码"
+            className="font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
+          >
+            {copied ? '已复制' : '复制'}
+          </button>
+        </div>
       </div>
       <pre className="max-h-[28rem] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
         <code className="whitespace-pre">

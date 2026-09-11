@@ -33,6 +33,38 @@ class GoalStoreError(Exception):
     """Goal 持久化操作失败。"""
 
 
+def read_goal_readonly(sessions_path: Path | str, thread_id: str) -> ThreadGoal | None:
+    """Read one goal without creating anything.
+
+    A missing database file, a database without the ``thread_goals`` table and a
+    thread without a goal all report ``None``.  This exists for read-only
+    consumers (the runtime service's goal query): constructing a
+    :class:`GoalStore` would create the parent directory, the database and the
+    schema, which a pure read must never do.
+    """
+    if type(thread_id) is not str or not thread_id:
+        return None
+    path = Path(sessions_path).expanduser()
+    if not path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        connection.row_factory = sqlite3.Row
+        try:
+            row = connection.execute(
+                "SELECT * FROM thread_goals WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        except sqlite3.Error:
+            # Older database without the goal table: no goal, not an error.
+            return None
+        return _goal_from_row(row) if row is not None else None
+    finally:
+        connection.close()
+
+
 class GoalStore:
     """SQLite-backed per-thread goal storage（线程安全，懒创建）。"""
 

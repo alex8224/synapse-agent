@@ -9,7 +9,9 @@ Only whitelisted display data is returned:
 - model names (registry aliases) and the selected model alias/name,
 - thinking levels for the current model plus the effective reasoning level,
 - MCP server ``name`` / ``transport`` / ``enabled`` / ``tool_prefix``,
-- the global MCP enable flag and the (always False) capability flags.
+- the global MCP enable flag and the capability flags (`can_set_thinking` is
+  True because the session-scoped reasoning-level write port exists;
+  `can_toggle_mcp_global` stays False — no global write path exists).
 
 Secrets (API keys, ``env``, ``headers``, ``url``, ``command``/``args``,
 provider base URLs, workspace-absolute paths from Settings, goals, attachment
@@ -38,7 +40,7 @@ from synapse.runtime.service.runtime_config import (
 )
 from synapse.runtime.sessions.ref import SessionRef
 
-__all__ = ["build_config_view"]
+__all__ = ["build_config_view", "resolve_thinking_levels"]
 
 
 def _attr(settings: Any, name: str, default: Any = None) -> Any:
@@ -62,6 +64,40 @@ def _model_text(value: Any) -> str | None:
     if size > MAX_RUNTIME_CONFIG_TEXT_BYTES:
         raise ConfigOverflowError("runtime model setting exceeds the length limit")
     return text
+
+
+def resolve_thinking_levels(settings: Any, model: str | None = None) -> tuple[str, ...]:
+    """Thinking-level whitelist advertised for one model.
+
+    Shared by the read-only config projection and the reasoning-level write path
+    (``runtime.session.thinking.set``), so the levels a client is *offered* are
+    exactly the levels a write *accepts*.  Falls back to the registry-level list
+    and then to the shared default catalog when a registry reports no levels for
+    the model, mirroring the projection.
+    """
+    registry = registry_from_settings(settings)
+    if registry is None:
+        raise ConfigOverflowError("model registry is unavailable")
+    target = (
+        _model_text(model)
+        or _model_text(_attr(settings, "active_model"))
+        or _model_text(getattr(registry, "default", None))
+        or _model_text(_attr(settings, "model"))
+    )
+    if target is None:
+        raise ConfigOverflowError("no model is selected for this session")
+    try:
+        allowed = list(registry.allowed_thinking_levels(target))
+    except Exception:  # noqa: BLE001 - registry quirks degrade to the shared list
+        allowed = list(getattr(registry, "thinking_levels", None) or ())
+    if not allowed:
+        allowed = list(DEFAULT_THINKING_LEVELS)
+    if len(allowed) > MAX_RUNTIME_CONFIG_THINKING_LEVELS:
+        raise ConfigOverflowError("thinking levels exceed the level count limit")
+    levels = tuple(_model_text(level) for level in allowed)
+    if any(level is None for level in levels):
+        raise ConfigOverflowError("thinking levels contain an invalid level")
+    return levels
 
 
 def build_config_view(settings: Any, *, session: SessionRef) -> RuntimeConfigView:
@@ -94,17 +130,7 @@ def build_config_view(settings: Any, *, session: SessionRef) -> RuntimeConfigVie
     if any(name is None for name in available):
         raise ConfigOverflowError("model registry contains an invalid model name")
 
-    try:
-        allowed = list(registry.allowed_thinking_levels(current))
-    except Exception:  # noqa: BLE001 - registry quirks degrade to the shared list
-        allowed = list(getattr(registry, "thinking_levels", None) or ())
-    if not allowed:
-        allowed = list(DEFAULT_THINKING_LEVELS)
-    if len(allowed) > MAX_RUNTIME_CONFIG_THINKING_LEVELS:
-        raise ConfigOverflowError("thinking levels exceed the level count limit")
-    thinking_levels = tuple(_model_text(level) for level in allowed)
-    if any(level is None for level in thinking_levels):
-        raise ConfigOverflowError("thinking levels contain an invalid level")
+    thinking_levels = resolve_thinking_levels(settings, current)
 
     enable_thinking = bool(_attr(settings, "enable_thinking", True))
     effort = _model_text(_attr(settings, "reasoning_effort"))
@@ -151,7 +177,10 @@ def build_config_view(settings: Any, *, session: SessionRef) -> RuntimeConfigVie
             thinking_levels=thinking_levels,
             mcp_servers=tuple(server_views),
             mcp_enabled=mcp_enabled,
-            can_set_thinking=False,
+            # A real session-scoped write port now exists
+            # (`runtime.session.thinking.set`), so clients may render an
+            # editable reasoning-level control.
+            can_set_thinking=True,
             can_toggle_mcp_global=False,
         )
     except ValueError as exc:

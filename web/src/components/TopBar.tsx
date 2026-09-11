@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { ArtifactsPanel } from './ArtifactsPanel.tsx';
 
 function Panel({
   title,
@@ -56,7 +57,7 @@ export const TopBar: React.FC = () => {
     loadRuntimeDiagnostics,
   } = useConsoleStore();
 
-  const [openPanel, setOpenPanel] = useState<'info' | 'diagnostics' | null>(null);
+  const [openPanel, setOpenPanel] = useState<'info' | 'diagnostics' | 'artifacts' | null>(null);
 
   useEffect(() => {
     if (openPanel === null) return;
@@ -107,6 +108,13 @@ export const TopBar: React.FC = () => {
             className="material-symbols-outlined text-[18px] cursor-pointer hover:text-gray-900 transition-colors"
           >
             layers
+          </button>
+          <button
+            onClick={() => setOpenPanel((v) => (v === 'artifacts' ? null : 'artifacts'))}
+            title="工作区文件（只读，按块读取）"
+            className="material-symbols-outlined text-[18px] cursor-pointer hover:text-gray-900 transition-colors"
+          >
+            folder_open
           </button>
           <button
             onClick={() => {
@@ -164,6 +172,8 @@ export const TopBar: React.FC = () => {
               </p>
             </Panel>
           )}
+
+          {openPanel === 'artifacts' && <ArtifactsPanel onClose={() => setOpenPanel(null)} />}
         </div>
       </div>
     </header>

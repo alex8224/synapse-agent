@@ -39,6 +39,8 @@ from synapse.runtime.service.commands import (
     RebindSessionResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetThinkingLevelCommand,
+    SetThinkingLevelResult,
     SteerTurnCommand,
     SteerTurnResult,
     SubmitTurnCommand,
@@ -1249,6 +1251,7 @@ class RuntimeWebSocketClient:
     async def _request_with_retry(self, method: str, params: dict[str, Any]) -> object:
         retry_safe = method in {
             "runtime.session.get",
+            "runtime.session.goal",
             "runtime.session.list",
             "runtime.session.history",
             "runtime.events.read",
@@ -1346,6 +1349,44 @@ class RuntimeWebSocketClient:
                 _ref(result["session"]),
                 result["model"],
                 _view(result["view"]),
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def set_thinking_level(
+        self, command: SetThinkingLevelCommand
+    ) -> SetThinkingLevelResult:
+        """Session-scoped reasoning-level write (never retried blindly).
+
+        Strict result decoding: exactly the four documented keys, a matching
+        ``command_id`` and a string level; the nested config view goes through
+        the same whitelist decoder as ``runtime.config.get``.
+        """
+        result = await self._command(
+            "runtime.session.thinking.set",
+            {
+                "session": _wire_session(command.session),
+                "level": command.level,
+                "command_id": command.command_id,
+            },
+            command.command_id,
+        )
+        if not isinstance(result, dict) or set(result) != {
+            "command_id",
+            "session",
+            "level",
+            "view",
+        }:
+            raise ProtocolTransportError()
+        try:
+            if result["command_id"] != command.command_id or type(result["level"]) is not str:
+                raise ProtocolTransportError()
+            return SetThinkingLevelResult(
+                result["command_id"],
+                _ref(result["session"]),
+                result["level"],
+                _runtime_config_view(result["view"]),
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None

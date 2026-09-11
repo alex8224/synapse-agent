@@ -10,6 +10,7 @@
 | **M6: 端到端联调测试** | 对接本地后台守护进程，验证流式输出与 Steer 插话 | **Completed** | 静态构建校验通过（`dist/` 产物正常构建）；当时为浏览器直连 daemon，现已被切片 2 的宿主中继 + 配对认证取代 |
 | **M7: 正式宿主（第五阶段切片 1）** | `synapse-web-console` loopback 薄宿主（静态 + bootstrap + WS 中继）；移除前端硬编码 token/project/workspace 与 test_token 运行依赖 | **Superseded** | `GET /api/bootstrap` 自动签发会话已在切片 2 被一次性配对码取代；见 `formal-host.md` |
 | **M8: 配对认证与部署收口（第五阶段切片 2）** | 一次性配对码 + 同源会话 cookie（`POST /api/pair` / `GET /api/session` / `POST /api/logout`）；前端配对界面与未认证禁 RPC；真实 daemon 纵向测试；文档与部署收口 | **Completed（切片整体口径：有条件可验收）** | Python 102 项（宿主 25 + 安全负向 45 + 真实 daemon 纵向 32）与前端 67 项通过；`uv build`、`mkdocs build`、`ruff` 通过。用例数引自第五阶段 D3/F2 交接（`.tmp/phase5-d3-scope-reverify-handoff.md`、`.tmp/phase5-f2-final-acceptance-handoff.md`），文档同步轮次未重跑；未闭合项与明确不承诺项见 `formal-host.md` §4、§9 |
+| **M9: 遗留项收尾** | 补完目标（goal）前端展示；新增**会话级**推理级别写端口（协议 + 服务 + ACL 能力位 + 前端 + 文档）；artifacts 工作区文件树与差异浏览；LaTeX / Mermaid 无依赖显式呈现；底栏中区居中定稿 | **Completed（工程口径）** | 后端新增 `runtime.session.thinking.set`（独立写能力位 `session.thinking`，`can_set_thinking` 转为 `true`）；前端新增 goalView / thinkingLevelWrite / artifactsView / mathBlocks / bottomBarLayout 用例；实测数字与未闭合项见 `.tmp/web-console-remaining-handoff.md` |
 
 > **验收口径**：本切片是「**有条件可验收**」，不构成「安全验收通过」「背压已完整实现」
 > 「多项目越权已完整验证」「全量回归通过」等结论；未闭合清单与不承诺项见

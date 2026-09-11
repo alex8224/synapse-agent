@@ -261,7 +261,9 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
     assert view.current_model == "openai:b"  # registry default wins over model fallback
     assert view.available_models == ("openai:a", "openai:b")
     assert view.thinking_level == "high"
-    assert view.can_set_thinking is False
+    # The session-scoped reasoning-level write port now exists, so the view
+    # advertises the capability as editable; the global MCP toggle stays False.
+    assert view.can_set_thinking is True
     assert view.can_toggle_mcp_global is False
     assert len(view.mcp_servers) == 1
     mcp = view.mcp_servers[0]

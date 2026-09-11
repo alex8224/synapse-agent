@@ -51,6 +51,8 @@ import {
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
 import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
 import type { UsageView } from './usageView.ts';
+import { parseSessionGoal } from './goalView.ts';
+import type { SessionGoalView } from './goalView.ts';
 
 // Re-exported for callers that imported these from the store in earlier phases.
 export type { TranscriptMessage, SessionItem } from './historyMapper';
@@ -336,6 +338,8 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     activity: null,
     usage: null,
     metricsLabel: '',
+    goal: null,
+    thinkingLevelError: null,
   });
   void connectAuthenticatedRuntime(client, project, epoch);
 }
@@ -551,7 +555,14 @@ interface ConsoleStore {
   thinkingLevel: string | null;
   thinkingLevels: string[];
   setModel: (m: string) => Promise<void>;
-  setThinkingLevel: (l: string) => Promise<void>;
+  /**
+   * Write one session's reasoning level. Resolves true only when the runtime
+   * accepted and persisted it; a refusal or failure rolls the optimistic value
+   * back and publishes a visible reason in `thinkingLevelError`.
+   */
+  setThinkingLevel: (l: string) => Promise<boolean>;
+  /** User-facing reason the last reasoning-level write failed (null when fine). */
+  thinkingLevelError: string | null;
   fetchRuntimeConfig: () => Promise<void>;
   mcpStatus: string;
   runtimeStatus: 'idle' | 'running';
@@ -559,6 +570,8 @@ interface ConsoleStore {
   activity: ActivityView | null;
   /** Latest `usage_updated` metrics, also rendered as `metricsLabel`. */
   usage: UsageView | null;
+  /** Current session's long-running goal, or null when it has none. */
+  goal: SessionGoalView | null;
 
   // Timeline Transcript
   messages: TranscriptMessage[];
@@ -668,6 +681,40 @@ async function refreshRuntimeConfig(epoch: number): Promise<void> {
 }
 
 /**
+ * Refresh the attached session's long-running goal (`runtime.session.goal`).
+ *
+ * Read-only and non-fatal: a peer that predates the method, a thread without a
+ * goal, and any transport failure all degrade to "no goal" instead of breaking
+ * the attach that triggered the read.  Stale responses (a newer attach/switch
+ * bumped the session epoch, or the project/thread changed while the request was
+ * in flight) are discarded, mirroring `refreshRuntimeConfig`.
+ */
+async function refreshSessionGoal(epoch: number): Promise<void> {
+  const store = useConsoleStore;
+  const { client, currentSession } = store.getState();
+  if (!client || client.getState() !== 'connected') return;
+  const target = {
+    project_id: currentSession.project_id,
+    thread_id: currentSession.thread_id,
+  };
+  const stillCurrent = (): boolean => {
+    const latest = store.getState().currentSession;
+    return (
+      latest.project_id === target.project_id && latest.thread_id === target.thread_id
+    );
+  };
+  try {
+    const payload = await client.getSessionGoal(currentSession);
+    if (epoch !== sessionEpoch || !stillCurrent()) return;
+    store.setState({ goal: parseSessionGoal(payload) });
+  } catch (err) {
+    if (epoch !== sessionEpoch || !stillCurrent()) return;
+    console.warn('fetchSessionGoal note:', err);
+    store.setState({ goal: null });
+  }
+}
+
+/**
  * Open + attach the live watch for a session and load its newest history page.
  * Live events are buffered while history loads, then merged on top, so nothing
  * is dropped and history messages are never over-written by live deltas.
@@ -702,6 +749,8 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     activity: null,
     usage: null,
     metricsLabel: '',
+    goal: null,
+    thinkingLevelError: null,
   });
   if (!client) return;
   try {
@@ -723,6 +772,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     store.setState({ activeSubscriptionId: watch.subscription_id });
     markAttached(session, epoch);
     await captureLiveEpoch(epoch);
+    void refreshSessionGoal(epoch);
     await loadInitialHistory(epoch);
     await refreshRuntimeConfig(epoch);
   } catch (err) {
@@ -1009,6 +1059,8 @@ async function activateProject(projectId: string): Promise<boolean> {
     activity: null,
     usage: null,
     metricsLabel: '',
+    goal: null,
+    thinkingLevelError: null,
     historyLoading: false,
     historyHasMore: false,
     historyAvailable: null,
@@ -1110,6 +1162,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       activity: null,
       usage: null,
       metricsLabel: '',
+      thinkingLevelError: null,
     }));
     if (client) {
       try {
@@ -1319,6 +1372,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   runtimeStatus: 'idle',
   activity: null,
   usage: null,
+  goal: null,
+  thinkingLevelError: null,
   fetchRuntimeConfig: async () => {
     // RPC-backed read only; the session model is resolved from open.view and
     // preserved across the refresh (see refreshRuntimeConfig).
@@ -1410,12 +1465,62 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     }
   },
   setThinkingLevel: async (l: string) => {
-    // No real write path exists: the runtime config surface is read-only.
+    // The capability flag is the backend's own answer to "does a write port
+    // exist"; while it is false the console must refuse instead of pretending
+    // a save could succeed.
     if (!get().canSetThinking) {
       console.warn('runtime config is read-only: thinking level is unavailable');
-      return;
+      return false;
     }
-    set({ thinkingLevel: l });
+    const client = requireRuntimeClient();
+    if (!client) return false;
+    const { currentSession, thinkingLevel } = get();
+    if (l === thinkingLevel) return true;
+    const epoch = sessionEpoch;
+    const target = {
+      project_id: currentSession.project_id,
+      thread_id: currentSession.thread_id,
+    };
+    const previous = thinkingLevel;
+    // Optimistic: the level flips immediately, and a failure rolls it back with
+    // a visible reason (never a silent no-op).
+    set({ thinkingLevel: l, thinkingLevelError: null });
+    try {
+      if (client.getState() !== 'connected') {
+        await client.connect();
+      }
+      // A session that was never opened has no binding to rebind.
+      await client.openSession(currentSession);
+      const result = await client.setThinkingLevel(currentSession, l);
+      // Stale-response guard: a write that resolves after the user switched
+      // sessions belongs to the previous session and must not touch the newly
+      // attached one (mirrors setModel / refreshRuntimeConfig).
+      if (epoch !== sessionEpoch) return false;
+      const latest = get().currentSession;
+      if (
+        latest.project_id !== target.project_id ||
+        latest.thread_id !== target.thread_id
+      ) {
+        return false;
+      }
+      set({
+        ...mapRuntimeConfig(result.view, { preserveModel: true }),
+        thinkingLevelError: null,
+      });
+      return true;
+    } catch (e) {
+      if (epoch === sessionEpoch) {
+        const latest = get().currentSession;
+        if (
+          latest.project_id === target.project_id &&
+          latest.thread_id === target.thread_id
+        ) {
+          set({ thinkingLevel: previous, thinkingLevelError: describeError(e) });
+        }
+      }
+      console.warn('Failed to switch reasoning level:', e);
+      return false;
+    }
   },
   activeTurnId: null,
   pendingApproval: null,
@@ -1518,6 +1623,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       activity: null,
       usage: null,
       metricsLabel: '',
+      goal: null,
+      thinkingLevelError: null,
       historyLoading: false,
       historyHasMore: false,
       historyAvailable: null,

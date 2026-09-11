@@ -2,6 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { turnStatSegments, usageSegments, usageTooltip } from '../stores/usageView.ts';
+import { goalLabel, goalTooltip } from '../stores/goalView.ts';
+
+/** Goal status label -> text colour, mirroring the TUI goal indicator styles. */
+const GOAL_STATUS_CLASS: Record<string, string> = {
+  active: 'font-medium text-gray-900',
+  paused: 'text-gray-400',
+  stalled: 'text-yellow-600',
+  'usage limited': 'text-yellow-600',
+  'limited by budget': 'text-yellow-600',
+  complete: 'text-green-600',
+};
 
 /** Full shortcut list for the F1 dialog. */
 const HELP_ROWS: Array<{ keys: string; label: string }> = [
@@ -23,6 +34,7 @@ export const BottomBar: React.FC = () => {
     thinkingLevel,
     thinkingLevels,
     setThinkingLevel,
+    thinkingLevelError,
     mcpStatus,
     mcpServers,
     mcpEnabled,
@@ -32,6 +44,7 @@ export const BottomBar: React.FC = () => {
     toggleMcpGlobal,
     runtimeStatus,
     usage,
+    goal,
   } = useConsoleStore();
 
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -61,6 +74,9 @@ export const BottomBar: React.FC = () => {
   // Every usage metric now lives here: the token totals and the speed/latency/
   // step telemetry of the current turn.
   const telemetry = [...usageSegments(usage), ...turnStatSegments(usage)];
+  // An absent goal renders nothing at all (never a placeholder).
+  const goalText = goalLabel(goal);
+  const goalClass = goal === null ? '' : (GOAL_STATUS_CLASS[goal.label] ?? 'text-gray-600');
   const closeOthers = () => {
     setShowModelPicker(false);
     setShowThinkingPicker(false);
@@ -69,6 +85,15 @@ export const BottomBar: React.FC = () => {
 
   return (
     <>
+      {/*
+        Layout decision (kept deliberately): three tracks `1fr auto 1fr` keep the
+        telemetry block in the exact horizontal centre of the bar, because both
+        flexible tracks resolve to the same leftover width. The left column
+        carries activity + model / reasoning / MCP / goal, the centre carries the
+        current turn's telemetry, and the right track stays an empty, symmetric
+        spacer (F1 opens the full shortcut list). Do not switch the centre to a
+        right-aligned column: the bar must stay centre-weighted.
+      */}
       <footer className="fixed bottom-0 left-0 z-40 grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
         {/* Left: activity + configuration */}
         <div className="flex min-w-0 items-center gap-2.5">
@@ -141,7 +166,7 @@ export const BottomBar: React.FC = () => {
 
           <span className="text-gray-200">|</span>
 
-          {/* Thinking level (read-only today) */}
+          {/* Thinking level (session-scoped write: runtime.session.thinking.set) */}
           <div className="relative">
             <button
               type="button"
@@ -170,7 +195,7 @@ export const BottomBar: React.FC = () => {
                 </div>
                 {!canSetThinking && (
                   <div className="px-2 py-1 text-[10px] leading-relaxed text-gray-500">
-                    当前只读：运行时配置面没有写端口，等级由服务端设置决定。
+                    当前只读：该会话未开放推理等级写端口，等级由服务端设置决定。
                   </div>
                 )}
                 {thinkingLevels.map((lvl) => (
@@ -178,8 +203,11 @@ export const BottomBar: React.FC = () => {
                     key={lvl}
                     onClick={() => {
                       if (!canSetThinking) return;
-                      setThinkingLevel(lvl);
-                      setShowThinkingPicker(false);
+                      // Keep the popover open on failure so the reason below the
+                      // list stays readable instead of flashing away.
+                      void setThinkingLevel(lvl).then((ok) => {
+                        if (ok) setShowThinkingPicker(false);
+                      });
                     }}
                     className={`rounded px-2 py-1 text-xs ${
                       canSetThinking
@@ -190,6 +218,11 @@ export const BottomBar: React.FC = () => {
                     {lvl}
                   </div>
                 ))}
+                {thinkingLevelError !== null && (
+                  <div className="border-t border-gray-100 px-2 py-1 text-[10px] leading-relaxed text-red-600">
+                    切换失败：{thinkingLevelError}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -274,11 +307,27 @@ export const BottomBar: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Goal: only rendered while the session actually has one. */}
+          {goalText !== '' && (
+            <>
+              <span className="text-gray-200">|</span>
+              <span
+                className={`flex min-w-0 items-center gap-1 ${goalClass}`}
+                title={goalTooltip(goal)}
+              >
+                <span className="material-symbols-outlined text-[14px] text-gray-500">
+                  flag
+                </span>
+                <span className="max-w-[18rem] truncate">{goalText}</span>
+              </span>
+            </>
+          )}
         </div>
 
         {/* Centre: all turn telemetry (tokens + speed / latency / steps) */}
         <div
-          className="flex shrink-0 items-center gap-2 tabular-nums"
+          className="flex shrink-0 items-center justify-self-center gap-2 tabular-nums"
           title={telemetry.length > 0 ? usageTooltip(usage) : undefined}
         >
           {telemetry.length === 0 ? (
@@ -302,8 +351,8 @@ export const BottomBar: React.FC = () => {
           )}
         </div>
 
-        {/* Right slot intentionally empty: F1 opens the full shortcut list. */}
-        <div />
+        {/* Right slot intentionally empty (symmetric spacer): F1 opens the list. */}
+        <div className="min-w-0" />
       </footer>
 
       {showHelp && (

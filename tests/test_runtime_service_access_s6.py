@@ -27,6 +27,7 @@ from synapse.runtime.service import (
     SESSION_OPEN,
     SESSION_READ,
     SESSION_REBIND,
+    SESSION_THINKING,
     TURN_APPROVAL_READ,
     TURN_APPROVAL_RESUME,
     TURN_CANCEL,
@@ -52,6 +53,7 @@ from synapse.runtime.service import (
     RebindSessionCommand,
     ReloadMcpCommand,
     ResumeTurnCommand,
+    SetThinkingLevelCommand,
     StatArtifactQuery,
     SteerTurnCommand,
     SubmitTurnCommand,
@@ -101,6 +103,9 @@ class SpyDelegate:
 
     async def rebind_session(self, command: RebindSessionCommand) -> Any:
         return await self._call("rebind")
+
+    async def set_thinking_level(self, command: SetThinkingLevelCommand) -> Any:
+        return await self._call("set_thinking_level")
 
     async def reload_mcp(self, command: ReloadMcpCommand) -> Any:
         return await self._call("reload_mcp")
@@ -187,6 +192,7 @@ def test_capabilities_and_error_codes_are_stable_and_exported() -> None:
             SESSION_CLOSE,
             SESSION_READ,
             SESSION_REBIND,
+            SESSION_THINKING,
             SESSION_LIST,
             SESSION_MCP_RELOAD,
             EVENTS_READ,
@@ -277,6 +283,7 @@ def test_authorizer_is_exact_scope_default_deny_and_thread_safe() -> None:
         ("submit_turn", SubmitTurnCommand(REF, "text"), TURN_SUBMIT),
         ("open_session", OpenSessionCommand(REF), SESSION_OPEN),
         ("rebind_session", RebindSessionCommand(REF, "model-a"), SESSION_REBIND),
+        ("set_thinking_level", SetThinkingLevelCommand(REF, "high"), SESSION_THINKING),
         ("reload_mcp", ReloadMcpCommand(REF, "search", True), SESSION_MCP_RELOAD),
         ("reload_mcp", ReloadMcpCommand(REF, "search", True), SESSION_MCP_RELOAD),
         ("rebind_session", RebindSessionCommand(REF, "model-a"), SESSION_REBIND),

@@ -11,9 +11,11 @@ from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
     "ApprovalActionView",
+    "GetSessionGoalQuery",
     "GetSessionQuery",
     "PendingApprovalQuery",
     "PendingApprovalView",
+    "SessionGoalView",
     "SessionView",
     "UsageView",
 ]
@@ -62,6 +64,34 @@ class GetSessionQuery:
     """Read the current view of one session without opening it."""
 
     session: SessionRef
+
+
+@dataclass(frozen=True, slots=True)
+class GetSessionGoalQuery:
+    """Read one session's persisted long-running goal without opening it."""
+
+    session: SessionRef
+
+
+@dataclass(frozen=True, slots=True)
+class SessionGoalView:
+    """Whitelisted projection of one thread goal.
+
+    Carries only what a status bar renders.  The runtime goal object (store
+    handles, listeners, internal accounting) is never exposed, and a thread
+    without a goal is reported as no result at all rather than an empty one.
+    ``token_budget`` is ``None`` when the goal has no budget, which is a fact
+    about the goal, not an unknown value.
+    """
+
+    thread_id: str
+    goal_id: str
+    status: str
+    label: str
+    objective: str
+    token_budget: int | None
+    tokens_used: int
+    time_used_seconds: int
 
 
 @dataclass(frozen=True, slots=True)

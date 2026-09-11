@@ -35,7 +35,12 @@ export interface SpanLink {
   href: string;
   spans: Span[];
 }
-export type Span = SpanText | SpanCode | SpanStrong | SpanEm | SpanDel | SpanLink;
+/** Inline math (`$...$`), carried as raw TeX with no delimiters. */
+export interface SpanMath {
+  type: 'math';
+  tex: string;
+}
+export type Span = SpanText | SpanCode | SpanStrong | SpanEm | SpanDel | SpanLink | SpanMath;
 
 export interface BlockParagraph {
   type: 'paragraph';
@@ -66,6 +71,13 @@ export interface BlockQuote {
 export interface BlockRule {
   type: 'rule';
 }
+/** Display math (`$$...$$`), carried as raw TeX with no delimiters. */
+export interface BlockMath {
+  type: 'math';
+  tex: string;
+  /** False while a streamed display-math block has not been closed yet. */
+  closed: boolean;
+}
 export interface BlockTable {
   type: 'table';
   header: Span[][];
@@ -78,6 +90,7 @@ export type Block =
   | BlockList
   | BlockQuote
   | BlockRule
+  | BlockMath
   | BlockTable;
 
 const ESCAPABLE = '\\`*_{}[]()#+-.!~|>';
@@ -86,6 +99,8 @@ const HEADING_RE = /^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
 const RULE_RE = /^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const QUOTE_RE = /^\s{0,3}>/;
 const ITEM_RE = /^(\s*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
+/** Display-math opener: `$$` plus whatever follows it on the same line. */
+const DISPLAY_MATH_RE = /^\s{0,3}\$\$(.*)$/;
 
 /**
  * Keep only targets that cannot execute script.  A bare relative path is
@@ -182,6 +197,33 @@ export function parseInline(text: string): Span[] {
       continue;
     }
 
+    if (ch === '$') {
+      // Math is recognized conservatively so ordinary prose about money
+      // ("$5 and $6") stays text: the content must be non-empty, must not span
+      // a newline, and must not touch whitespace on either side of the pair.
+      const display = text.startsWith('$$', i);
+      const open = display ? 2 : 1;
+      const close = text.indexOf(display ? '$$' : '$', i + open);
+      const inner = close === -1 ? '' : text.slice(i + open, close);
+      const after = text[i + open] ?? '';
+      const before = text[close - 1] ?? '';
+      if (
+        close !== -1 &&
+        inner.trim() !== '' &&
+        !inner.includes('\n') &&
+        !/\s/.test(after) &&
+        !/\s/.test(before)
+      ) {
+        flush();
+        spans.push({ type: 'math', tex: display ? inner.trim() : inner });
+        i = close + open;
+        continue;
+      }
+      buffer += ch;
+      i += 1;
+      continue;
+    }
+
     if (ch === '[') {
       // One level of parentheses is allowed inside the target, so
       // `[x](javascript:alert(1))` is consumed whole instead of leaving a
@@ -254,6 +296,7 @@ function isTableDelimiter(line: string): boolean {
 function startsBlock(lines: string[], index: number): boolean {
   const line = lines[index];
   if (FENCE_RE.test(line)) return true;
+  if (DISPLAY_MATH_RE.test(line)) return true;
   if (HEADING_RE.test(line)) return true;
   if (RULE_RE.test(line)) return true;
   if (QUOTE_RE.test(line)) return true;
@@ -301,6 +344,41 @@ function parseLines(lines: string[]): Block[] {
         closed,
       });
       i = closed ? j + 1 : j;
+      continue;
+    }
+
+    const math = DISPLAY_MATH_RE.exec(line);
+    if (math) {
+      const opener = math[1];
+      // Single-line `$$ ... $$`.
+      if (opener.trim() !== '' && opener.trimEnd().endsWith('$$')) {
+        blocks.push({
+          type: 'math',
+          tex: opener.trimEnd().slice(0, -2).trim(),
+          closed: true,
+        });
+        i += 1;
+        continue;
+      }
+      const body: string[] = opener.trim() === '' ? [] : [opener];
+      let j = i + 1;
+      let closed = false;
+      while (j < lines.length) {
+        const current = lines[j];
+        const trimmed = current.trimEnd();
+        if (trimmed.endsWith('$$') && trimmed.trim() !== '') {
+          body.push(trimmed.slice(0, -2));
+          closed = true;
+          j += 1;
+          break;
+        }
+        body.push(current);
+        j += 1;
+      }
+      // A streamed answer can be cut mid-formula: the block stays visible as a
+      // formula instead of vanishing (same rule as an unterminated fence).
+      blocks.push({ type: 'math', tex: body.join('\n').trim(), closed });
+      i = j;
       continue;
     }
 

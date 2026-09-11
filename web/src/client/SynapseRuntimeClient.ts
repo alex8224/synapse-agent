@@ -25,8 +25,17 @@ import type {
   RuntimeConfigResult,
   ReconcileSessionParams,
   SessionRecoverabilityResult,
+  SetThinkingLevelResult,
 } from './types.ts';
 import { parseRecoverabilityResult } from './recoverability.ts';
+import {
+  ARTIFACT_CHUNK_BYTES,
+  ARTIFACT_LIST_LIMIT,
+  parseArtifactChunk,
+  parseArtifactMetadata,
+  parseArtifactPage,
+} from './artifacts.ts';
+import type { ArtifactChunkView, ArtifactEntry, ArtifactPageView } from './artifacts.ts';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -259,6 +268,75 @@ export class SynapseRuntimeClient {
 
   public async rebindSession(params: RebindSessionParams): Promise<RebindSessionResult> {
     return this.call<RebindSessionResult>('runtime.session.rebind', params);
+  }
+
+  /**
+   * Set one session's reasoning level (`runtime.session.thinking.set`).
+   *
+   * Session-scoped write: the level is validated server-side against the target
+   * session's thinking-level whitelist, and only that thread's binding changes.
+   * The reply carries the refreshed config view.
+   */
+  public async setThinkingLevel(
+    session: SessionRef,
+    level: string,
+  ): Promise<SetThinkingLevelResult> {
+    return this.call<SetThinkingLevelResult>('runtime.session.thinking.set', {
+      session,
+      level,
+    });
+  }
+
+  /**
+   * Read one artifact's metadata (`runtime.artifacts.stat`).
+   *
+   * The result goes through a strict whitelist decoder, so an unexpected field
+   * set surfaces as a typed error instead of reaching the UI.
+   */
+  public async statArtifact(session: SessionRef, path: string): Promise<ArtifactEntry> {
+    return parseArtifactMetadata(
+      await this.call('runtime.artifacts.stat', { ref: { session, path } }),
+    );
+  }
+
+  /**
+   * List one workspace directory (`runtime.artifacts.list`).
+   *
+   * Bounded by construction: one page per call, `limit` capped at the server's
+   * own page bound, and paging is driven explicitly by `next_cursor`.
+   */
+  public async listArtifacts(
+    session: SessionRef,
+    path: string,
+    cursor: string | null = null,
+    limit: number = ARTIFACT_LIST_LIMIT,
+  ): Promise<ArtifactPageView> {
+    return parseArtifactPage(
+      await this.call('runtime.artifacts.list', { session, path, cursor, limit }),
+    );
+  }
+
+  /**
+   * Read one bounded byte range of an artifact (`runtime.artifacts.read`).
+   *
+   * Never reads a whole file: `limit` is clamped to the transport's own chunk
+   * bound and the caller advances with `nextOffset` until `eof`.
+   */
+  public async readArtifact(
+    session: SessionRef,
+    path: string,
+    offset = 0,
+    limit: number = ARTIFACT_CHUNK_BYTES,
+    expectedRevision: string | null = null,
+  ): Promise<ArtifactChunkView> {
+    return parseArtifactChunk(
+      await this.call('runtime.artifacts.read', {
+        ref: { session, path },
+        offset,
+        limit,
+        expected_revision: expectedRevision,
+      }),
+    );
   }
 
   private setState(next: ConnectionState, reason?: string) {
@@ -680,5 +758,13 @@ export class SynapseRuntimeClient {
     return this.call('runtime.session.get', {
       session,
     });
+  }
+
+  /**
+   * Read one session's persisted long-running goal
+   * (`runtime.session.goal`); `null` means the thread has no goal.
+   */
+  public async getSessionGoal(session: SessionRef): Promise<unknown> {
+    return this.call('runtime.session.goal', { session });
   }
 }

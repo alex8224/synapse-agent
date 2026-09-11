@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from synapse.app.agent import build_coding_agent
+from synapse.models.helpers import apply_thinking_to_settings
 from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
 from synapse.runtime.daemon.auth import BearerTokenAuthenticator, load_token
@@ -150,6 +151,20 @@ class RuntimeDaemon:
                 settings,
             )
 
+        def build_thinking_rebinding(
+            thread_id: str, level: str, binding: Any, _shared: Any
+        ) -> tuple[Any, Any]:
+            # Session-scoped: copy the session's own settings so neither the
+            # project defaults nor another session's binding can be mutated.
+            settings = binding.settings.model_copy(deep=True)
+            # The whitelist is the same one `runtime.config.get` advertises, so a
+            # level the client was offered is exactly a level this accepts.
+            from synapse.runtime.service.config_source import resolve_thinking_levels
+
+            allowed = list(resolve_thinking_levels(settings))
+            apply_thinking_to_settings(settings, level, allowed=allowed)
+            return build_agent(settings, thread_id), settings
+
         from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
 
         # Headless/daemon-executed sessions get the same neutral per-project
@@ -174,6 +189,7 @@ class RuntimeDaemon:
             ),
             session_binding_factory=build_session_binding,
             agent_rebind_factory=build_model_rebinding,
+            thinking_rebind_factory=build_thinking_rebinding,
             mcp_rebind_factory=build_mcp_rebinding,
             max_concurrent_sessions=project_settings.max_concurrency,
             project_id=descriptor.project_id,

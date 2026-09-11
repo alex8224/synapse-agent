@@ -34,6 +34,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetThinkingLevelCommand,
+    SetThinkingLevelResult,
     SteerTurnCommand,
     SteerTurnResult,
     SubmitTurnCommand,
@@ -52,9 +54,11 @@ from synapse.runtime.service.history import (
 )
 from synapse.runtime.service.ports import AgentRuntimeService, EventWatch
 from synapse.runtime.service.queries import (
+    GetSessionGoalQuery,
     GetSessionQuery,
     PendingApprovalQuery,
     PendingApprovalView,
+    SessionGoalView,
     SessionView,
 )
 from synapse.runtime.service.recovery import (
@@ -82,6 +86,7 @@ __all__ = [
     "SESSION_CLOSE",
     "SESSION_READ",
     "SESSION_REBIND",
+    "SESSION_THINKING",
     "SESSION_LIST",
     "SESSION_MCP_RELOAD",
     "TURN_SUBMIT",
@@ -100,6 +105,7 @@ TURN_APPROVAL_RESUME = "turn.approval.resume"
 SESSION_CLOSE = "session.close"
 SESSION_READ = "session.read"
 SESSION_REBIND = "session.rebind"
+SESSION_THINKING = "session.thinking"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
 EVENTS_READ = "events.read"
@@ -119,6 +125,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_CLOSE,
         SESSION_READ,
         SESSION_REBIND,
+        SESSION_THINKING,
         SESSION_LIST,
         SESSION_MCP_RELOAD,
         EVENTS_READ,
@@ -419,6 +426,27 @@ class AccessControlledAgentRuntimeService:
         self._authorize(session, SESSION_REBIND)
         return await self._delegate.rebind_session(command)
 
+    async def set_thinking_level(
+        self, command: SetThinkingLevelCommand
+    ) -> SetThinkingLevelResult:
+        """Authorize the dedicated reasoning-level write capability, then delegate.
+
+        Deliberately *not* authorized by ``SESSION_READ``: this is a write, so a
+        read-only grant must not be able to change a session's reasoning level.
+        Optional delegate method (like ``get_runtime_config``): an older delegate
+        without it reports the feature as unavailable instead of failing the
+        whole wrapper at construction.  The ACL check happens before the
+        delegate is consulted.
+        """
+        session = self._session_from_dto(
+            command, SetThinkingLevelCommand, "thinking level command"
+        )
+        self._authorize(session, SESSION_THINKING)
+        delegate = getattr(self._delegate, "set_thinking_level", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session thinking level is unavailable")
+        return await delegate(command)
+
     async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult:
         session = self._session_from_dto(command, ReloadMcpCommand, "MCP reload command")
         self._authorize(session, SESSION_MCP_RELOAD)
@@ -446,6 +474,20 @@ class AccessControlledAgentRuntimeService:
         session = self._session_from_dto(query, GetSessionQuery, "session query")
         self._authorize(session, SESSION_READ)
         return await self._delegate.get_session(query)
+
+    async def get_session_goal(self, query: GetSessionGoalQuery) -> SessionGoalView | None:
+        """Authorize SESSION_READ per session, then delegate the read.
+
+        Optional delegate method (like ``get_runtime_config``): an older delegate
+        without it reports the feature as unavailable instead of failing the
+        whole wrapper at construction.
+        """
+        session = self._session_from_dto(query, GetSessionGoalQuery, "goal query")
+        self._authorize(session, SESSION_READ)
+        delegate = getattr(self._delegate, "get_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal is unavailable")
+        return await delegate(query)
 
     async def get_runtime_config(
         self, query: GetRuntimeConfigQuery

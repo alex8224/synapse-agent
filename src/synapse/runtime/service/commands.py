@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 from synapse.runtime.service.queries import SessionView
+from synapse.runtime.service.runtime_config import RuntimeConfigView
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
@@ -25,6 +26,8 @@ __all__ = [
     "ReloadMcpResult",
     "RebindSessionCommand",
     "RebindSessionResult",
+    "SetThinkingLevelCommand",
+    "SetThinkingLevelResult",
     "SteerTurnCommand",
     "SteerTurnResult",
     "SubmitTurnCommand",
@@ -205,6 +208,41 @@ class RebindSessionResult:
     session: SessionRef
     model: str
     view: SessionView
+
+
+@dataclass(frozen=True, slots=True)
+class SetThinkingLevelCommand:
+    """Set one session's reasoning level for future turns.
+
+    Session-scoped, exactly like :class:`RebindSessionCommand`: the level is
+    validated against the *session's* thinking-level whitelist by the service
+    (never against a global catalog), and the replacement agent/settings binding
+    is persisted for that thread only.  Project defaults are never mutated, so
+    the write never leaks into another session.
+    """
+
+    session: SessionRef
+    level: str
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if type(self.level) is not str or not self.level.strip():
+            raise ValueError("level must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class SetThinkingLevelResult:
+    """Confirmation that future turns use the replacement reasoning level.
+
+    ``level`` is the canonical applied label (``off`` when thinking was turned
+    off).  ``view`` is the refreshed read-only config projection, so a client
+    can render the new state without a second round trip.
+    """
+
+    command_id: str
+    session: SessionRef
+    level: str
+    view: RuntimeConfigView
 
 
 @dataclass(frozen=True, slots=True)

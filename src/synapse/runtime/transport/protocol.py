@@ -23,6 +23,7 @@ from synapse.runtime.service import (
     CloseSessionCommand,
     EventFilter,
     GetRuntimeConfigQuery,
+    GetSessionGoalQuery,
     GetSessionQuery,
     ListArtifactsQuery,
     ListSessionsQuery,
@@ -35,6 +36,7 @@ from synapse.runtime.service import (
     ReconcileSessionQuery,
     ReloadMcpCommand,
     ResumeTurnCommand,
+    SetThinkingLevelCommand,
     StatArtifactQuery,
     SteerTurnCommand,
     SubmitTurnCommand,
@@ -98,6 +100,7 @@ METHODS: Final = frozenset(
         "runtime.protocol.negotiate",
         "runtime.session.open",
         "runtime.session.rebind",
+        "runtime.session.thinking.set",
         "runtime.session.mcp.reload",
         "runtime.turn.submit",
         "runtime.turn.cancel",
@@ -106,6 +109,7 @@ METHODS: Final = frozenset(
         "runtime.turn.approval.resume",
         "runtime.session.close",
         "runtime.session.get",
+        "runtime.session.goal",
         "runtime.session.list",
         "runtime.session.history",
         "runtime.session.reconcile",
@@ -452,6 +456,17 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else uuid.uuid4().hex
             ),
         )
+    if method == "runtime.session.thinking.set":
+        _optional_fields(params, {"session", "level"}, {"command_id"})
+        return SetThinkingLevelCommand(
+            session=_session(params["session"]),
+            level=_session_text(params["level"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.turn.approval.get":
         _fields(params, {"session", "expected_turn_id"})
         return PendingApprovalQuery(
@@ -548,6 +563,9 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     if method == "runtime.session.get":
         _fields(params, {"session"})
         return GetSessionQuery(_session(params["session"]))
+    if method == "runtime.session.goal":
+        _fields(params, {"session"})
+        return GetSessionGoalQuery(_session(params["session"]))
     if method == "runtime.config.get":
         _fields(params, {"session"})
         return GetRuntimeConfigQuery(_session(params["session"]))
@@ -680,6 +698,8 @@ async def dispatch(
         return await service.open_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.rebind":
         return await service.rebind_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.thinking.set":
+        return await service.set_thinking_level(dto)  # type: ignore[arg-type]
     if method == "runtime.session.mcp.reload":
         return await service.reload_mcp(dto)  # type: ignore[arg-type]
     if method == "runtime.turn.submit":
@@ -696,6 +716,8 @@ async def dispatch(
         return await service.close_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.get":
         return await service.get_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal":
+        return await service.get_session_goal(dto)  # type: ignore[arg-type]
     if method == "runtime.config.get":
         return await service.get_runtime_config(dto)  # type: ignore[arg-type]
     if method == "runtime.events.read":

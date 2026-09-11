@@ -630,7 +630,9 @@ def build_coding_agent(
     if goals_enabled:
         try:
             if goal_service is None:
-                init_goal_service(settings.resolved_sessions_path())
+                # Bind to *this* project's store: a multi-project process (the
+                # runtime daemon) must not report another project's goals.
+                goal_service = init_goal_service(settings.resolved_sessions_path())
             else:
                 goals_enabled = True
         except Exception:  # noqa: BLE001 - goal 服务失败时降级为禁用

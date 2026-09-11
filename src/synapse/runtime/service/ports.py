@@ -32,6 +32,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetThinkingLevelCommand,
+    SetThinkingLevelResult,
     SteerTurnCommand,
     SteerTurnResult,
     SubmitTurnCommand,
@@ -50,9 +52,11 @@ from synapse.runtime.service.history import (
     SessionListPage,
 )
 from synapse.runtime.service.queries import (
+    GetSessionGoalQuery,
     GetSessionQuery,
     PendingApprovalQuery,
     PendingApprovalView,
+    SessionGoalView,
     SessionView,
 )
 from synapse.runtime.service.recovery import (
@@ -125,6 +129,19 @@ class AgentRuntimeService(Protocol):
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult: ...
 
+    async def set_thinking_level(
+        self, command: SetThinkingLevelCommand
+    ) -> SetThinkingLevelResult:
+        """Set one session's reasoning level for future turns.
+
+        Session-scoped write: the level must fall inside the target session's
+        thinking-level whitelist, and only that thread's binding changes.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
     async def reload_mcp(self, command: ReloadMcpCommand) -> ReloadMcpResult: ...
 
     async def cancel_turn(self, command: CancelTurnCommand) -> CancelTurnResult: ...
@@ -134,6 +151,15 @@ class AgentRuntimeService(Protocol):
     async def close_session(self, command: CloseSessionCommand) -> CloseSessionResult: ...
 
     async def get_session(self, query: GetSessionQuery) -> SessionView: ...
+
+    async def get_session_goal(self, query: GetSessionGoalQuery) -> SessionGoalView | None:
+        """Read one session's persisted goal, or ``None`` when it has none.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        The call never opens a session, builds an agent, or creates a database.
+        """
+        ...
 
     async def get_runtime_config(
         self, query: GetRuntimeConfigQuery

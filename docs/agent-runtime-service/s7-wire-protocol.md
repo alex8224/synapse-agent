@@ -21,6 +21,10 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.turn.steer` | `session`, `expected_turn_id`, `text`, optional `command_id` | `SteerTurnResult` |
 | `runtime.session.close` | `session`, optional `cancel_active/command_id` | `CloseSessionResult` |
 | `runtime.session.get` | `session` | `SessionView` |
+| `runtime.session.rebind` | `session`, `model`, optional `command_id` | `RebindSessionResult` |
+| `runtime.session.thinking.set` | `session`, `level`, optional `command_id` | `SetThinkingLevelResult` |
+| `runtime.session.goal` | `session` | `SessionGoalView` or `null` |
+| `runtime.config.get` | `session` | `RuntimeConfigView` |
 | `runtime.events.read` | `session`, optional `after/limit/scan_limit/filter/max_event_bytes` | `EventPage` |
 | `runtime.events.watch` | `session`, optional `after/queue_size/filter/max_event_bytes` | `{subscription_id,cursor}` then notifications |
 | `runtime.events.unwatch` | `subscription_id` | `{removed}` |
@@ -29,6 +33,13 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.artifacts.read` | `ref`, optional `offset/limit/expected_revision` | `ArtifactChunk` |
 
 `filter` 是 `{kinds: string[], turn_ids: string[]}`；read 还接受 `limit`、`scan_limit`、`max_event_bytes`，watch 不接受 read-only 分页字段。artifact `data_base64` 原样传输。attachments 没有 S7 wire 编码：缺省或空数组合法，非空数组为 invalid params。
+
+`runtime.session.rebind` 与 `runtime.session.thinking.set` 都是**会话级写**：只替换该
+thread 后续 turn 使用的 agent/settings 绑定并持久化到该会话的 model binding，绝不修改
+项目默认值。`thinking.set` 的 `level` 必须落在该会话 `runtime.config.get` 公布的
+`thinking_levels` 白名单内（否则 `invalid_request`），返回 `level` 为规范化后的实际等级
+（关闭思考时为 `off`）与刷新后的 `RuntimeConfigView`。授权上二者各自需要独立写能力位
+（`session.rebind` / `session.thinking`），`session.read` 不足以授权任一写操作。
 
 S9 增加 transport 控制方法 `runtime.protocol.negotiate`，严格参数为
 `{versions: string[], client?: {name: string, version: string}}`。当前仍只有

@@ -529,32 +529,47 @@ class GoalService:
 
 
 # ---------------------------------------------------------------------------
-# 进程级单例（agent 构建时初始化；工具/middleware/TUI 共享）
+# 进程级注册表（agent 构建时初始化；工具/middleware/TUI 共享）
+#
+# 按 sessions 路径分片：一个进程可以服务多个项目（runtime daemon 就是如此），
+# 单一全局 store 会让第二个项目读到第一个项目的 goal。
 # ---------------------------------------------------------------------------
+_services: dict[str, GoalService] = {}
+#: 最近一次初始化的服务；无会话上下文的调用方（如 CLI 命令）走它。
 _service: GoalService | None = None
 _service_lock = threading.RLock()
 
 
 def init_goal_service(sessions_path: Any) -> GoalService:
-    """初始化（或复用）进程级 GoalService。"""
+    """返回 ``sessions_path`` 对应的 GoalService（首次调用时创建）。
+
+    调用方应当使用返回值，而不是稍后调用 :func:`get_goal_service`：后者只知道
+    「最近一个」，在多项目进程里可能属于另一个项目。
+    """
     global _service
+    key = str(sessions_path)
     with _service_lock:
-        if _service is None:
-            _service = GoalService(GoalStore(str(sessions_path)))
-        return _service
+        service = _services.get(key)
+        if service is None:
+            service = GoalService(GoalStore(key))
+            _services[key] = service
+        _service = service
+        return service
 
 
 def get_goal_service() -> GoalService | None:
+    """最近一次初始化（或按路径查询）的 GoalService，没有则为 ``None``。"""
     return _service
 
 
 def reset_goal_service() -> None:
-    """测试用：清空单例。"""
+    """测试用：清空注册表。"""
     global _service
     with _service_lock:
-        if _service is not None:
+        for service in _services.values():
             try:
-                _service.store.close()
+                service.store.close()
             except Exception:  # noqa: BLE001
                 pass
-            _service = None
+        _services.clear()
+        _service = None

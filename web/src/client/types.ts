@@ -248,11 +248,13 @@ export interface McpServerView {
 /**
  * Read-only effective runtime configuration for one session context.
  *
- * `can_set_thinking` / `can_toggle_mcp_global` are capability flags that the
- * backend currently reports as `false`; clients must render those controls as
- * read-only instead of pretending a write path exists. The view never carries
- * goals, attachment state, API keys, env vars, headers, URLs, commands, or
- * args.
+ * `can_set_thinking` / `can_toggle_mcp_global` are capability flags: the backend
+ * reports `can_set_thinking = true` because the session-scoped
+ * `runtime.session.thinking.set` write port exists, while
+ * `can_toggle_mcp_global` stays `false` (no global write path). Clients must
+ * render a control as read-only whenever its flag is false instead of pretending
+ * a save could succeed. The view never carries goals, attachment state, API
+ * keys, env vars, headers, URLs, commands, or args.
  */
 export interface RuntimeConfigResult {
   current_model: string;
@@ -263,6 +265,21 @@ export interface RuntimeConfigResult {
   mcp_enabled: boolean;
   can_set_thinking: boolean;
   can_toggle_mcp_global: boolean;
+}
+
+/**
+ * Result of the session-scoped reasoning-level write
+ * (`runtime.session.thinking.set`).
+ *
+ * `level` is the canonical applied label (`off` when thinking was disabled) and
+ * `view` is the refreshed config projection, so the console can render the new
+ * state without a second round trip.
+ */
+export interface SetThinkingLevelResult {
+  command_id: string;
+  session: SessionRef;
+  level: string;
+  view: RuntimeConfigResult;
 }
 
 export interface GetRuntimeConfigParams {

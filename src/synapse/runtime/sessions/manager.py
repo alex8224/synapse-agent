@@ -77,6 +77,10 @@ class RuntimeManager:
             [str, str, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
         ]
         | None = None,
+        thinking_rebind_factory: Callable[
+            [str, str, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
+        ]
+        | None = None,
         mcp_rebind_factory: Callable[
             [str, str, bool, ExecutionBinding, ProjectSharedResources], tuple[Any, Any]
         ]
@@ -95,6 +99,7 @@ class RuntimeManager:
         self.agent_factory = agent_factory
         self.session_binding_factory = session_binding_factory
         self.agent_rebind_factory = agent_rebind_factory
+        self.thinking_rebind_factory = thinking_rebind_factory
         self.mcp_rebind_factory = mcp_rebind_factory
         self.shared_resources = shared_resources or ProjectSharedResources()
         self.max_concurrent_sessions = max(1, int(max_concurrent_sessions))
@@ -304,6 +309,23 @@ class RuntimeManager:
         if session is None:
             raise ValueError("session is not open")
         return factory(thread_id, server, enabled, session.binding, self.shared_resources)
+
+    def build_thinking_rebinding(self, ref: SessionRef, level: str) -> tuple[Any, Any]:
+        """Build a replacement agent/settings pair with a new reasoning level.
+
+        Session-scoped like :meth:`build_model_rebinding`: the project's default
+        settings are copied first, so a level change never mutates another
+        session.  The factory validates ``level`` against the session's model
+        whitelist and raises ``ValueError`` for an unknown/disallowed level.
+        """
+        thread_id = self._check_ref(ref)
+        factory = self.thinking_rebind_factory
+        if factory is None:
+            raise ValueError("session thinking rebind is unavailable")
+        session = self.get_session_ref(ref)
+        if session is None:
+            raise ValueError("session is not open")
+        return factory(thread_id, level, session.binding, self.shared_resources)
 
     def cancel_turn_ref(
         self, ref: SessionRef, expected_turn_id: str, reason: str = "user"

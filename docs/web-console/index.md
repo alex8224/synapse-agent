@@ -70,15 +70,18 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | Transcript | ◆ Thought for Xs 折叠思考链 | 按规范文案：`◆ Thought for 0.1s`（流式为 `◆ Thinking...`，历史投影无耗时为 `◆ Thought`），带展开/收起 | 已实现 |
 | Transcript | ▾ N tools executed 折叠工具栏 | 按规范文案 `N tools executed`（含 parallel 标注）；工具卡片状态徽章已中文化（运行中/等待/完成/失败/错误/已取消） | 已实现 |
 | Transcript | Markdown 代码块与流式输出 | 围栏代码块（语言标签 + 复制 + 横向滚动 + 按语言高亮）、标题/列表/引用/表格/行内代码/粗体/链接均正常 | 已实现 |
+| Transcript | LaTeX 公式（规范外，本轮新增） | `$$...$$` 渲染为居中、等宽、显式标注「公式 · LaTeX 源码（未排版）」的块；`$...$` 渲染为行内公式标签。**不引入 TeX 引擎**（保持零运行时依赖），只做「明确标注为数学」的源码呈现；未闭合的流式公式仍可见 | 已实现（无依赖显式呈现） |
+| Transcript | Mermaid（规范外，本轮新增） | mermaid 围栏仍是代码块（语言标签 `mermaid`），头部标注「终端图形渲染未实现」。**不引入 mermaid 运行时**；取舍见交接报告 | 已实现（无依赖显式呈现） |
 | CommandBar | 悬浮居中卡片 | 有 | 已实现 |
 | CommandBar | 运行中浮现 Steer queue 状态 | 有（`Steer queue: N queued`） | 已实现 |
 | CommandBar | 单一蓝色圆形发送按钮 ↑ | 空闲为蓝色 `↑` 发送（输入为空时禁用）；**运行中变为红色 `■` 停止键**，始终可用，点击调用 `runtime.turn.cancel`。与规范「忙碌自动转为 Steer 插队」有意不同：插话仍由 **Enter** 承担，顶部状态条显示 `运行中 · Steer 队列 N` | 已实现（按评审调整） |
 | BottomBar | 模型切换下拉 | 有（19 个可用，可过滤；F2） | 已实现 |
-| BottomBar | 推理级别选择 (high/medium/low) | **仍只读**：`runtime.config.get` 文档明确「无 command DTO、无 write port」，`config_overrides` 也不是已定义的推理级别契约 ⇒ 需要新增后端写端口。只读时以锁图标替代下拉箭头，不再有「可点击」假象 | 未实现（后端依赖） |
+| BottomBar | 推理级别选择 (high/medium/low) | **可写**：新增会话级写端口 `runtime.session.thinking.set`（需 `session.thinking` 能力位），`runtime.config.get` 的 `can_set_thinking` 现为 `true` 且 `thinking_level` 反映会话级设置。前端为乐观更新 + 失败回滚 + 失败原因可见（保留在弹层内）；服务端仍按该会话 `thinking_levels` 白名单校验 | 已实现 |
 | BottomBar | MCP 工具池状态 | 有面板与单服务器切换；全局开关只读（虚线边框 + `cursor-not-allowed`） | 部分实现 |
 | BottomBar | Agent 活跃态 (● 运行中/○ 空闲) | 有，置于底栏最左侧 | 已实现 |
-| BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」 | 已实现 |
-| BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**无「目标」**：`queries.py` 明确「the runtime goal object is never exposed」，wire 上无 goals 方法 ⇒ 需要新增后端只读方法 | 部分实现（后端依赖） |
+| BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」。**布局定为保持中区居中**：`grid-cols-[1fr_auto_1fr]` + 中区 `justify-self-center`，右列保留为空对称占位列（不改为右对齐） | 已实现 |
+| BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**目标已接入**：新增只读 `runtime.session.goal`，底栏左区按 TUI 语义渲染 `goal·active 250/1.0k` / `goal·active 42s`（无目标则整段不渲染，hover 出目标原文与用量） | 已实现 |
+| TopBar | 工作区文件面板（规范外，本轮新增） | `folder_open` 打开只读文件树 + 文本/差异查看，走 `runtime.artifacts.stat/list/read`：分页（`next_cursor` + 「加载更多」）、单块 64 KiB、单文件累计上限 256 KiB（达到即停读并标注）、二进制文件拒绝解码、错误全部可见；`diff` 开关只对已加载文本按 `+/-` 着色（不计算版本差异） | 已实现 |
 
 其它实测观察：
 

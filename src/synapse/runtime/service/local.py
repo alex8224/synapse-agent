@@ -45,6 +45,8 @@ from synapse.runtime.service.commands import (
     ReloadMcpResult,
     ResumeTurnCommand,
     ResumeTurnResult,
+    SetThinkingLevelCommand,
+    SetThinkingLevelResult,
     SteerTurnCommand,
     SteerTurnResult,
     SubmitTurnCommand,
@@ -94,9 +96,11 @@ from synapse.runtime.service.history_store import (
 from synapse.runtime.service.ports import EventWatch
 from synapse.runtime.service.queries import (
     ApprovalActionView,
+    GetSessionGoalQuery,
     GetSessionQuery,
     PendingApprovalQuery,
     PendingApprovalView,
+    SessionGoalView,
     SessionView,
     UsageView,
 )
@@ -134,6 +138,8 @@ _MIN_QUEUE_SIZE = 1
 _MAX_QUEUE_SIZE = 4096
 _READ_LIMIT_MIN = 1
 _READ_LIMIT_MAX = 1024
+#: Wire bound for one reasoning-level token (the shared catalog is tiny).
+_MAX_THINKING_LEVEL_BYTES = 64
 _SCAN_LIMIT_MIN = MIN_SCAN_LIMIT
 _SCAN_LIMIT_MAX = MAX_SCAN_LIMIT
 _DEFAULT_SCAN_LIMIT = DEFAULT_SCAN_LIMIT
@@ -350,6 +356,50 @@ class LocalAgentRuntimeService:
             view=_project_session(runtime.snapshot()),
         )
 
+    async def set_thinking_level(
+        self, command: SetThinkingLevelCommand
+    ) -> SetThinkingLevelResult:
+        """Set one session's reasoning level and refresh the config projection.
+
+        Session-scoped write with the same lifecycle as ``rebind_session``: the
+        replacement binding is built on a worker thread from a copy of the
+        session's settings, so project defaults and other sessions are untouched.
+        The level is validated inside the rebinding factory against the target
+        session's model whitelist (an unknown or disallowed level surfaces as
+        ``invalid_request``), and the applied binding is persisted through
+        ``rebind_session_ref`` before this returns.
+        """
+        if type(command) is not SetThinkingLevelCommand:
+            raise InvalidRequestError(
+                "thinking level command must be a SetThinkingLevelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        from synapse.models.helpers import settings_thinking_label
+        from synapse.runtime.service import config_source
+
+        self._validate_ref(command.session)
+        self._validate_thinking_level(command.level)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        self._resolve_session(manager, command.session)
+        try:
+            agent, settings = await asyncio.to_thread(
+                manager.build_thinking_rebinding, command.session, command.level
+            )
+            await manager.rebind_session_ref(command.session, agent, settings)
+        except KeyError as exc:
+            raise InvalidRequestError("unknown thinking level") from exc
+        except ValueError as exc:
+            raise InvalidRequestError("invalid thinking level") from exc
+        except RuntimeClosedError as exc:
+            raise ClosedError(str(exc)) from exc
+        return SetThinkingLevelResult(
+            command_id=command.command_id,
+            session=command.session,
+            level=settings_thinking_label(settings),
+            view=config_source.build_config_view(settings, session=command.session),
+        )
+
     async def resume_turn(self, command: ResumeTurnCommand) -> ResumeTurnResult:
         """Resume a waiting approval without exposing a runtime handle."""
         self._validate_ref(command.session)
@@ -471,6 +521,45 @@ class LocalAgentRuntimeService:
         self._check_project(manager, query.session)
         session = self._resolve_session(manager, query.session)
         return _project_session(session.snapshot())
+
+    async def get_session_goal(self, query: GetSessionGoalQuery) -> SessionGoalView | None:
+        """Read the session's persisted long-running goal, if it has one.
+
+        Pure read: the project's manager is resolved on a worker thread (the same
+        lazy path as the session list), and the goal is read from that project's
+        sessions database through :func:`read_goal_readonly`, which never creates
+        the file, the directory or the schema.  A thread without a goal, and a
+        project whose database does not exist yet, both report ``None``.
+        """
+        if type(query) is not GetSessionGoalQuery:
+            raise InvalidRequestError(
+                "goal query must be a GetSessionGoalQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+
+        def _read() -> SessionGoalView | None:
+            from synapse.goals.store import read_goal_readonly
+
+            manager = self._resolve_manager_project(query.session.project_id)
+            self._check_project(manager, query.session)
+            goal = read_goal_readonly(
+                manager.settings.resolved_sessions_path(), query.session.thread_id
+            )
+            if goal is None:
+                return None
+            return SessionGoalView(
+                thread_id=str(goal.thread_id),
+                goal_id=str(goal.goal_id),
+                status=goal.status.value,
+                label=goal.status.label(),
+                objective=str(goal.objective),
+                token_budget=goal.token_budget,
+                tokens_used=int(goal.tokens_used),
+                time_used_seconds=int(goal.time_used_seconds),
+            )
+
+        return await asyncio.to_thread(_read)
 
     async def get_runtime_config(self, query: GetRuntimeConfigQuery) -> RuntimeConfigView:
         """Project the effective read-only runtime configuration.
@@ -809,6 +898,18 @@ class LocalAgentRuntimeService:
     def _validate_model(self, model: str) -> None:
         if not isinstance(model, str) or not model.strip():
             raise InvalidRequestError("model must not be empty")
+
+    def _validate_thinking_level(self, level: str) -> None:
+        """Reject a malformed level token before any agent is rebuilt.
+
+        Membership in the session's thinking-level whitelist is checked by the
+        rebinding factory (which owns the model registry); this only guards the
+        shape and the wire length bound.
+        """
+        if not isinstance(level, str) or not level.strip():
+            raise InvalidRequestError("thinking level must not be empty")
+        if len(level.encode("utf-8", errors="surrogatepass")) > _MAX_THINKING_LEVEL_BYTES:
+            raise InvalidRequestError("thinking level exceeds the length limit")
 
     def _validate_cancel_active(self, cancel_active: bool) -> None:
         if not isinstance(cancel_active, bool):
