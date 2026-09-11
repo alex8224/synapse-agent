@@ -9,6 +9,8 @@ import type { SessionItem } from '../src/stores/historyMapper.ts';
 import {
   filterSessions,
   groupSessionsByTime,
+  matchesProject,
+  projectLabel,
   sessionGroupKey,
 } from '../src/stores/sessionList.ts';
 
@@ -108,4 +110,22 @@ test('filterSessions also matches a pasted thread id', () => {
 test('filterSessions returns nothing when nothing matches', () => {
   const items = [item('a', 'alpha', at(2026, 9, 11))];
   assert.deepEqual(filterSessions(items, 'zzz'), []);
+});
+
+test('projectLabel prefers the last path segment, then the name, then the path', () => {
+  assert.equal(
+    projectLabel({ workspace_path: 'F:\\project\\agent\\synapse', workspace_name: 'synapse' }),
+    'synapse',
+  );
+  assert.equal(projectLabel({ workspace_path: '/home/u/proj/', workspace_name: null }), 'proj');
+  assert.equal(projectLabel({ workspace_path: '', workspace_name: 'named' }), 'named');
+});
+
+test('matchesProject covers the label, the full path and the registered name', () => {
+  const entry = { workspace_path: 'F:\\project\\agent\\synapse', workspace_name: 'synapse-agent' };
+  assert.equal(matchesProject(entry, ''), true);
+  assert.equal(matchesProject(entry, '   '), true);
+  assert.equal(matchesProject(entry, 'SYNAPSE'), true);
+  assert.equal(matchesProject(entry, 'agent'), true);
+  assert.equal(matchesProject(entry, 'nope'), false);
 });

@@ -1,12 +1,37 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import { filterSessions, groupSessionsByTime } from '../stores/sessionList.ts';
+import {
+  filterSessions,
+  groupSessionsByTime,
+  matchesProject,
+  projectLabel,
+} from '../stores/sessionList.ts';
 import { SettingsDialog } from './SettingsDialog.tsx';
 
+/** Sessions shown per expanded project before the "show all" row (TUI parity). */
+const VISIBLE_SESSIONS = 5;
+
+/**
+ * Sidebar: a two-level project -> session tree, mirroring the TUI drawer.
+ *
+ * Level 1 is one row per switchable project (directory label, session count,
+ * current-project marker).  Level 2 lists that project's sessions grouped by
+ * relative time.  Only the active project is expanded on load; every other
+ * project fetches its page lazily the first time it is expanded, so opening the
+ * console never fans out into one RPC per registered project.
+ */
 export const SideBar: React.FC = () => {
   const {
     isSidebarCollapsed,
+    toggleSidebar,
+    projects,
+    activeProjectId,
+    expandedProjectIds,
+    projectSessions,
+    loadingProjectIds,
+    toggleProjectExpanded,
+    switchProject,
     sessions,
     sessionsTotal,
     sessionsNextOffset,
@@ -17,13 +42,13 @@ export const SideBar: React.FC = () => {
     requestSessionSearchFocus,
     loadMoreSessions,
     createNewSession,
-    toggleSidebar,
+    createSessionInProject,
     currentSession,
-    switchSession,
   } = useConsoleStore();
 
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showAllProjects, setShowAllProjects] = useState<string[]>([]);
 
   // Ctrl+K bumps a token instead of reaching into the DOM from the App shell,
   // so a collapsed sidebar is expanded by the same store update.
@@ -31,10 +56,21 @@ export const SideBar: React.FC = () => {
     if (searchFocusToken > 0) searchRef.current?.focus();
   }, [searchFocusToken]);
 
-  const groups = useMemo(
-    () => groupSessionsByTime(filterSessions(sessions, sessionQuery)),
-    [sessions, sessionQuery],
-  );
+  const query = sessionQuery.trim();
+
+  const visibleProjects = useMemo(() => {
+    if (query === '') return projects;
+    return projects.filter(
+      (project) =>
+        matchesProject(project, query) ||
+        filterSessions(
+          project.project_id === activeProjectId
+            ? sessions
+            : (projectSessions[project.project_id] ?? []),
+          query,
+        ).length > 0,
+    );
+  }, [projects, query, activeProjectId, sessions, projectSessions]);
 
   if (isSidebarCollapsed) {
     // Collapsed to a minimal rail: the workspace stays reachable instead of
@@ -50,7 +86,7 @@ export const SideBar: React.FC = () => {
         </button>
         <button
           onClick={() => createNewSession()}
-          title="新建会话 (Ctrl+N)"
+          title="在当前项目新建会话 (Ctrl+N)"
           className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
         >
           <span className="material-symbols-outlined text-[18px]">add</span>
@@ -63,31 +99,22 @@ export const SideBar: React.FC = () => {
           <span className="material-symbols-outlined text-[18px]">search</span>
         </button>
         <div
-          title={`已加载 ${sessions.length} / 共 ${sessionsTotal} 个会话`}
+          title={`${projects.length} 个项目 / 已加载 ${sessions.length} 个会话`}
           className="mt-auto mb-1 font-mono text-[10px] text-gray-400"
         >
-          {sessions.length}
+          {projects.length}
         </div>
       </nav>
     );
   }
 
-  const searching = sessionQuery.trim() !== '';
-
   return (
     <nav className="bg-[#f8f9fa] border-r border-[#e5e7eb] h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
       <div className="px-3">
-        <div className="flex items-center justify-between mb-2">
+        <div className="mb-2 px-1">
           <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider font-mono">
-            RECENT SESSIONS
+            PROJECTS
           </span>
-          <button
-            onClick={() => createNewSession()}
-            className="flex items-center justify-center w-5 h-5 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
-            title="新建会话 (Ctrl+N)"
-          >
-            <span className="material-symbols-outlined text-[15px]">add</span>
-          </button>
         </div>
         <div className="relative">
           <span className="material-symbols-outlined absolute left-1.5 top-1/2 -translate-y-1/2 text-[14px] text-gray-400">
@@ -98,12 +125,12 @@ export const SideBar: React.FC = () => {
             type="text"
             value={sessionQuery}
             onChange={(event) => setSessionQuery(event.target.value)}
-            placeholder="搜索会话"
-            title="搜索会话 (Ctrl+K)"
+            placeholder="搜索项目 / 会话"
+            title="搜索项目与会话 (Ctrl+K)"
             spellCheck={false}
             className="w-full rounded border border-gray-200 bg-white pl-6 pr-6 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
           />
-          {searching && (
+          {query !== '' && (
             <button
               type="button"
               onClick={() => setSessionQuery('')}
@@ -117,37 +144,140 @@ export const SideBar: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 mt-2">
-        {groups.length === 0 && (
+        {visibleProjects.length === 0 && (
           <div className="px-2 py-3 text-[11px] text-gray-400 font-mono">
-            {searching ? '没有匹配的会话' : '暂无会话'}
+            {query !== '' ? '没有匹配的项目或会话' : '暂无项目'}
           </div>
         )}
-        {groups.map((group) => (
-          <div key={group.key} className="mt-1 px-1">
-            <div className="px-1 mb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider font-mono">
-              {group.label} · {group.items.length}
+
+        {visibleProjects.map((project) => {
+          const expanded = expandedProjectIds.includes(project.project_id);
+          const isActive = project.project_id === activeProjectId;
+          const raw =
+            project.project_id === activeProjectId
+              ? sessions
+              : (projectSessions[project.project_id] ?? []);
+          const matching = filterSessions(raw, query);
+          // Cap the expanded subtree so one long project cannot push every other
+          // project off the sidebar (the TUI drawer caps at five as well).
+          const shown = showAllProjects.includes(project.project_id)
+            ? matching
+            : matching.slice(0, VISIBLE_SESSIONS);
+          const groups = groupSessionsByTime(shown);
+          const loading = loadingProjectIds.includes(project.project_id);
+          const sessionCount = isActive ? sessionsTotal || raw.length : project.session_count;
+
+          return (
+            <div key={project.project_id} className="mt-1">
+              <div
+                className={`group flex w-full items-center gap-0.5 rounded px-1 py-1 transition-colors hover:bg-gray-200/60 ${
+                  isActive ? 'text-gray-900' : 'text-gray-600'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    void toggleProjectExpanded(project.project_id);
+                  }}
+                  title={project.workspace_path}
+                  className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-gray-400">
+                    {expanded ? 'expand_more' : 'chevron_right'}
+                  </span>
+                  <span className="material-symbols-outlined text-[14px] text-gray-500">folder</span>
+                  <span className={`truncate ${isActive ? 'font-medium' : ''}`}>
+                    {projectLabel(project)}
+                  </span>
+                  {isActive && (
+                    <span
+                      className="material-symbols-outlined text-[12px] text-blue-600"
+                      title="当前项目"
+                    >
+                      check_circle
+                    </span>
+                  )}
+                </button>
+                {/* Row actions stay in the layout (so the label never jumps) but
+                    only surface on hover/focus — they are not status readouts. */}
+                <span className="shrink-0 font-mono text-[10px] text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                  {sessionCount}
+                </span>
+                {/* Per-project action: a session is always created in *this*
+                    project, so the row never depends on which one is active. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void createSessionInProject(project.project_id);
+                  }}
+                  title={`在 ${projectLabel(project)} 新建会话`}
+                  className="material-symbols-outlined shrink-0 cursor-pointer rounded text-[15px] text-gray-400 opacity-0 transition-opacity hover:bg-gray-300/60 hover:text-gray-900 group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  add
+                </button>
+              </div>
+
+              {expanded && (
+                <div className="ml-3 border-l border-gray-200 pl-2">
+                  {loading && raw.length === 0 && (
+                    <div className="px-1 py-1 font-mono text-[10px] text-gray-400">加载中…</div>
+                  )}
+                  {!loading && groups.length === 0 && (
+                    <div className="px-1 py-1 font-mono text-[10px] text-gray-400">
+                      {query !== '' ? '无匹配会话' : '暂无会话'}
+                    </div>
+                  )}
+                  {groups.map((group) => (
+                    <div key={group.key} className="mt-1">
+                      <div className="px-1 mb-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                        {group.label} · {group.items.length}
+                      </div>
+                      <ul className="space-y-1">
+                        {group.items.map((sess) => {
+                          const selected =
+                            isActive && sess.thread_id === currentSession.thread_id;
+                          return (
+                            <li
+                              key={sess.thread_id}
+                              onClick={() => {
+                                void switchProject(project.project_id, sess.thread_id);
+                              }}
+                              title={`${sess.title}\n${sess.thread_id}`}
+                              className={`cursor-pointer truncate rounded px-1.5 py-1 transition-colors hover:bg-gray-200/60 ${
+                                selected
+                                  ? 'bg-gray-200/80 font-medium text-gray-900 shadow-2xs'
+                                  : 'text-gray-600'
+                              }`}
+                            >
+                              {sess.title}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ))}
+                  {matching.length > VISIBLE_SESSIONS && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setShowAllProjects((ids) =>
+                          ids.includes(project.project_id)
+                            ? ids.filter((id) => id !== project.project_id)
+                            : [...ids, project.project_id],
+                        )
+                      }
+                      className="mt-1 w-full rounded px-1 py-0.5 text-left font-mono text-[10px] text-gray-400 transition-colors hover:bg-gray-200/60 hover:text-gray-700"
+                    >
+                      {showAllProjects.includes(project.project_id)
+                        ? '收起'
+                        : `显示全部 ${matching.length} 条`}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-            <ul className="space-y-1 text-gray-600 text-xs">
-              {group.items.map((sess) => {
-                const isSelected = sess.thread_id === currentSession.thread_id;
-                return (
-                  <li
-                    key={sess.thread_id}
-                    onClick={() => switchSession(sess.thread_id, sess.title)}
-                    title={`${sess.title}\n${sess.thread_id}`}
-                    className={`cursor-pointer px-1.5 py-1 rounded hover:bg-gray-200/60 transition-colors truncate ${
-                      isSelected
-                        ? 'font-medium text-gray-900 bg-gray-200/80 shadow-2xs'
-                        : 'text-gray-600'
-                    }`}
-                  >
-                    {sess.title}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="px-3 pt-2">
@@ -163,9 +293,9 @@ export const SideBar: React.FC = () => {
             {sessionsLoading ? '加载中…' : '加载更多'}
           </button>
         )}
-        <div className="mt-1 text-[10px] font-mono text-gray-400">
-          已加载 {sessions.length} / {sessionsTotal}
-          {searching && sessionsNextOffset !== null ? '（搜索仅覆盖已加载）' : ''}
+        <div className="mt-1 font-mono text-[10px] text-gray-400">
+          当前项目已加载 {sessions.length} / {sessionsTotal}
+          {query !== '' && sessionsNextOffset !== null ? '（搜索仅覆盖已加载）' : ''}
         </div>
       </div>
 

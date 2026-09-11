@@ -89,3 +89,31 @@ export function filterSessions(items: SessionItem[], query: string): SessionItem
       item.title.toLowerCase().includes(needle) || item.thread_id.toLowerCase().includes(needle),
   );
 }
+
+/** Minimal project shape the sidebar tree needs (kept structural for tests). */
+export interface ProjectLabelSource {
+  workspace_path: string;
+  workspace_name: string | null;
+}
+
+/**
+ * Level-1 label of the tree: the last path segment of the workspace, mirroring
+ * the TUI drawer's `_dir_label`.  Falls back to the registered name, then to the
+ * raw path, so a row is never blank.
+ */
+export function projectLabel(entry: ProjectLabelSource): string {
+  const trimmed = entry.workspace_path.replace(/[\\/]+$/, '');
+  const last = trimmed.split(/[\\/]/).pop() ?? '';
+  return last || entry.workspace_name || entry.workspace_path;
+}
+
+/** True when the project itself matches the search text (name or path). */
+export function matchesProject(entry: ProjectLabelSource, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return true;
+  return (
+    entry.workspace_path.toLowerCase().includes(needle) ||
+    (entry.workspace_name ?? '').toLowerCase().includes(needle) ||
+    projectLabel(entry).toLowerCase().includes(needle)
+  );
+}

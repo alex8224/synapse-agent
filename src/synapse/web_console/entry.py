@@ -43,6 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-dir", type=Path, help="Daemon state dir (discovery + token)")
     parser.add_argument("--token-file", type=Path, help="Daemon token file (server-side only)")
     parser.add_argument("--catalog-path", type=Path, help="Project catalog database path")
+    parser.add_argument(
+        "--project-scope",
+        choices=("workspace", "all"),
+        default="all",
+        help=(
+            "Projects the console may switch to: 'workspace' keeps the single-project "
+            "boundary, 'all' allows every project in the same user catalog (default)"
+        ),
+    )
     parser.add_argument("--runtime-host", default="127.0.0.1", help="Daemon WS host")
     parser.add_argument("--runtime-port", type=int, help="Daemon WS port (default: daemon.json)")
     parser.add_argument(
@@ -98,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             state_dir=state_dir,
             token_file=Path(args.token_file) if args.token_file else None,
             catalog_path=Path(args.catalog_path) if args.catalog_path else None,
+            project_scope=args.project_scope,
             runtime_host=args.runtime_host,
             runtime_port=args.runtime_port,
             max_message_bytes=args.max_message_bytes,

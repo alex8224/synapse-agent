@@ -4,11 +4,16 @@ import {
   ConsoleAuthRequiredError,
   deriveRuntimeSocketUrl,
   fetchConsoleSession,
+  fetchProjects,
   normalizePairingCode,
   pairConsole,
   requestConsoleLogout,
 } from '../client/bootstrap.ts';
-import type { ConsoleProject, ConsoleSession } from '../client/bootstrap.ts';
+import type {
+  ConsoleProject,
+  ConsoleProjectEntry,
+  ConsoleSession,
+} from '../client/bootstrap.ts';
 import {
   ConnectionLostError,
   RpcCallError,
@@ -318,6 +323,11 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     sessionsNextOffset: null,
     sessionsTotal: 0,
     sessionQuery: '',
+    projects: [],
+    activeProjectId: project.project_id,
+    expandedProjectIds: [project.project_id],
+    projectSessions: {},
+    loadingProjectIds: [],
     messages: [],
     activeTurnId: null,
     runtimeStatus: 'idle',
@@ -355,6 +365,9 @@ async function connectAuthenticatedRuntime(
     return;
   }
   if (epoch !== authEpoch || store.getState().client !== client) return;
+  // The switchable project list is a read-only host endpoint, not a runtime RPC:
+  // it is fetched once per pairing (and re-fetched on demand from the sidebar).
+  void store.getState().loadProjects();
   await store.getState().fetchSessions();
   if (epoch !== authEpoch || store.getState().client !== client) return;
   const first = store.getState().sessions[0];
@@ -479,6 +492,21 @@ interface ConsoleStore {
   /** Monotonic signal asking the sidebar to focus its search box (Ctrl+K). */
   searchFocusToken: number;
   requestSessionSearchFocus: () => void;
+
+  // Multi-project sidebar (project -> session tree, mirroring the TUI drawer)
+  projects: ConsoleProjectEntry[];
+  /** Project the console is currently attached to. */
+  activeProjectId: string;
+  /** Projects whose session list is expanded in the sidebar. */
+  expandedProjectIds: string[];
+  /** Lazily fetched session lists for expanded, non-active projects. */
+  projectSessions: Record<string, SessionItem[]>;
+  loadingProjectIds: string[];
+  loadProjects: () => Promise<void>;
+  toggleProjectExpanded: (projectId: string) => Promise<void>;
+  switchProject: (projectId: string, threadId?: string) => Promise<void>;
+  /** Create a fresh session in a specific project (per-project "+" button). */
+  createSessionInProject: (projectId: string) => Promise<void>;
 
   // History pagination / availability state.
   historyLoading: boolean;
@@ -909,6 +937,88 @@ async function loadInitialHistory(epoch: number): Promise<void> {
   }
 }
 
+/**
+ * Fetch one project's session page for the sidebar tree.
+ *
+ * Only *expanded, non-active* projects are fetched this way — the active
+ * project's list already lives in `sessions` — so opening the console never
+ * fans out into one RPC per registered project.
+ */
+async function loadProjectSessions(projectId: string): Promise<void> {
+  const store = useConsoleStore;
+  const client = requireRuntimeClient();
+  if (!client) return;
+  store.setState((s) => ({ loadingProjectIds: [...s.loadingProjectIds, projectId] }));
+  try {
+    const view = toSessionListView(await client.listSessions({ project_id: projectId }));
+    store.setState((s) => ({
+      projectSessions: { ...s.projectSessions, [projectId]: view.items },
+      loadingProjectIds: s.loadingProjectIds.filter((id) => id !== projectId),
+    }));
+  } catch (err) {
+    console.error('Failed to load project sessions:', err);
+    store.setState((s) => ({
+      loadingProjectIds: s.loadingProjectIds.filter((id) => id !== projectId),
+    }));
+  }
+}
+
+/**
+ * Point the console at another project: header context, session list and a
+ * cleared transcript, without attaching to any session (callers decide what to
+ * open next).  Returns `false` when a newer switch superseded this one, so a
+ * caller never attaches a session to the wrong project.
+ */
+async function activateProject(projectId: string): Promise<boolean> {
+  const store = useConsoleStore;
+  if (!requireRuntimeClient()) return false;
+  if (projectId === store.getState().activeProjectId) return true;
+  const entry = store.getState().projects.find((item) => item.project_id === projectId);
+  // Keep the project we are leaving browsable: its loaded page moves into the
+  // per-project cache instead of vanishing with the active list.
+  const previousProjectId = store.getState().activeProjectId;
+  const previousSessions = store.getState().sessions;
+  const cachedSessions = { ...store.getState().projectSessions };
+  if (previousProjectId !== '' && previousSessions.length > 0) {
+    cachedSessions[previousProjectId] = previousSessions;
+  }
+  // Expanding the project we just moved to keeps the result of the switch (or of
+  // the per-project "+") visible instead of leaving a collapsed row behind.
+  const expanded = store.getState().expandedProjectIds;
+  // The header context follows the switch, and the transcript is cleared in the
+  // same update so the previous project's conversation is never shown under the
+  // new project's header.  `fetchSessions`/`createNewSession` read
+  // `currentSession.project_id`, so it must be set before they run.
+  store.setState({
+    activeProjectId: projectId,
+    projectSessions: cachedSessions,
+    expandedProjectIds: expanded.includes(projectId) ? expanded : [...expanded, projectId],
+    workspacePath: entry?.workspace_path ?? '',
+    gitBranch: entry?.git_branch ?? '',
+    gitDirty: false,
+    currentSession: { project_id: projectId, thread_id: '' },
+    sessionTitle: '',
+    sessions: [],
+    sessionsNextOffset: null,
+    sessionsTotal: 0,
+    messages: [],
+    activeTurnId: null,
+    runtimeStatus: 'idle',
+    steerQueueCount: 0,
+    pendingApproval: null,
+    activity: null,
+    usage: null,
+    metricsLabel: '',
+    historyLoading: false,
+    historyHasMore: false,
+    historyAvailable: null,
+    historyError: null,
+    activeSubscriptionId: null,
+  });
+  await store.getState().fetchSessions();
+  return store.getState().activeProjectId === projectId;
+}
+
 export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   connectionState: 'disconnected',
   recoveryState: 'idle',
@@ -934,6 +1044,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   sessionsLoading: false,
   sessionQuery: '',
   searchFocusToken: 0,
+  projects: [],
+  activeProjectId: '',
+  expandedProjectIds: [],
+  projectSessions: {},
+  loadingProjectIds: [],
   isSidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ isSidebarCollapsed: !s.isSidebarCollapsed })),
 
@@ -970,6 +1085,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const epoch = ++sessionEpoch;
     set((s) => ({
       sessions: [newItem, ...s.sessions],
+      // The session exists server-side the moment it is opened, so the total has
+      // to follow the prepended row (otherwise the footer reads "loaded 7 / 6").
+      sessionsTotal: s.sessionsTotal + 1,
       currentSession: nextSession,
       sessionTitle: newTitle,
       messages: [],
@@ -1069,6 +1187,49 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   setSessionQuery: (query) => set({ sessionQuery: query }),
   requestSessionSearchFocus: () =>
     set((s) => ({ searchFocusToken: s.searchFocusToken + 1, isSidebarCollapsed: false })),
+  loadProjects: async () => {
+    if (get().pairingState !== 'paired') return;
+    try {
+      const projects = await fetchProjects();
+      set({ projects });
+    } catch (err) {
+      console.error('Failed to load projects:', err);
+    }
+  },
+  toggleProjectExpanded: async (projectId) => {
+    const { expandedProjectIds, activeProjectId, projectSessions } = get();
+    if (expandedProjectIds.includes(projectId)) {
+      set({ expandedProjectIds: expandedProjectIds.filter((id) => id !== projectId) });
+      return;
+    }
+    set({ expandedProjectIds: [...expandedProjectIds, projectId] });
+    if (projectId === activeProjectId) return; // the active list is already loaded
+    if (projectSessions[projectId] !== undefined) return; // served from cache
+    await loadProjectSessions(projectId);
+  },
+  switchProject: async (projectId, threadId) => {
+    if (!requireRuntimeClient()) return;
+    if (projectId === get().activeProjectId) {
+      if (threadId !== undefined) await get().switchSession(threadId);
+      return;
+    }
+    if (!(await activateProject(projectId))) return; // a newer switch won
+    const target = threadId ?? get().sessions[0]?.thread_id;
+    if (target === undefined) {
+      // Registered but never used: create its first session through the runtime.
+      await get().createNewSession();
+      return;
+    }
+    const title = get().sessions.find((item) => item.thread_id === target)?.title;
+    await attachToSession({ project_id: projectId, thread_id: target }, title);
+  },
+  createSessionInProject: async (projectId) => {
+    // Per-project "+" in the sidebar: point the console at that project first,
+    // then open a fresh session in it — never a session in the project the
+    // console happened to be attached to.
+    if (projectId !== get().activeProjectId && !(await activateProject(projectId))) return;
+    await get().createNewSession();
+  },
   cancelActiveTurn: async () => {
     const client = requireRuntimeClient();
     if (!client) return;
@@ -1344,6 +1505,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       sessionsNextOffset: null,
       sessionsTotal: 0,
       sessionQuery: '',
+      projects: [],
+      activeProjectId: '',
+      expandedProjectIds: [],
+      projectSessions: {},
+      loadingProjectIds: [],
       messages: [],
       activeTurnId: null,
       runtimeStatus: 'idle',

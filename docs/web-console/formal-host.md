@@ -76,6 +76,7 @@ synapse-web-console --workspace . --static-dir web/dist \
 | `--state-dir PATH` | `~/.synapse/runtime` | daemon 状态目录（`daemon.json` 发现 + token 读取） |
 | `--token-file PATH` | `<state-dir>/token` | daemon token 文件；**只读**，缺失即启动失败且绝不创建 |
 | `--catalog-path PATH` | 无（用用户层 catalog） | 覆盖项目 catalog 数据库路径 |
+| `--project-scope {workspace,all}` | `all` | 中继可寻址的项目范围：`workspace` 只允许本工作区（原单项目边界），`all` 允许**同一用户 catalog 内**的全部项目（见 §4.1）。无法读取 catalog 时降级为仅本工作区（绝不因失败而放宽） |
 | `--runtime-host HOST` | `127.0.0.1` | daemon WS host；只允许 loopback，远程 daemon 不支持 |
 | `--runtime-port PORT` | 无（读 `daemon.json`） | 覆盖 daemon 端口；必须 `1..65535`（拒绝 `0`） |
 | `--max-message-bytes INT` | `1048576` | 单帧上限；`1024..8388608` |
@@ -124,6 +125,7 @@ synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0
 | `POST` | `/api/pair` | 用配对码换会话（体 `{"code":"XXXXXXXX"}`） | 200 `{"project":{…}}` + `Set-Cookie` | 400 体不合法 / 401 码无效 / 403 CSRF 链 / 405 方法错 / 413 体过大 / 415 Content-Type / 429 限速 |
 | `GET` | `/api/session` | 查询当前会话与项目上下文 | 200 `{"project":{…},"expires_in":<int 秒>}` | 401 无/无效会话 |
 | `GET` | `/api/runtime-status` | **只读** daemon 状态（daemon 不可用时给出可操作提示） | 200 `{"runtime":{"endpoint":{"host":…,"port":…}\|null,"state_dir":…,"hint":"start synapse-runtime --state-dir …"}}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
+| `GET` | `/api/projects` | **只读** 可切换项目列表（`--project-scope` 决定范围） | 200 `{"projects":[{"project_id","workspace_path","workspace_name","git_branch","session_count","last_active_at"}]}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
 | `POST` | `/api/logout` | 作废全部会话（体 `{}`） | 204（无体） | 401 / 403 / 405 |
 | `GET`/`POST` | `/api/bootstrap` | 已删除：恒 405 | — | 405 `{"error":"method not allowed"}`，且绝不 `Set-Cookie` |
 
@@ -211,10 +213,16 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 
 这是本切片**唯一**一处对「中继原样转发」的例外，属安全相关行为变更，如实披露如下。
 
+> **v5 切片 3 修订**：守卫的允许集合由「宿主自身那**一个**项目」放宽为
+> **`--project-scope` 决定的项目集合**（默认 `all` = 同一用户 catalog 内的全部已注册
+> 项目；`workspace` = 原来的单项目边界）。这是为了让侧栏提供「项目 → 会话」两级导航。
+> 放宽的只是**同一用户自己的**项目范围，不跨用户；单项目语义可用
+> `--project-scope workspace` 恢复。下方「例外范围」「不是存在性 oracle」两条不变。
+
 | 项 | 现状 |
 |---|---|
-| 行为 | 浏览器发出的、指向**非宿主自身项目**的 JSON-RPC 请求，由宿主直接以 typed 错误拒绝：`code=-32000`、`data.service_code="not_found"`、`meta.wire_version="1"`（复用 daemon 自己的 `protocol.encode_error`，不自行拼信封）。**拒绝帧不进入 daemon**，因此 daemon 侧不会为该项目建立 manager/session |
-| 为什么需要 | daemon 用一个 bearer 认证宿主，并按**精确 project_id** 解析 catalog 中**任意**已注册项目（`CatalogProjectProvider` + 无 project 维度的 `DaemonAuthorizer`，协商期也没有项目维度）。下游没有任何机制把这条中继连接限制到宿主自己的项目；没有该守卫时，为项目 A 配对的浏览器可以打开项目 B 的会话 |
+| 行为 | 浏览器发出的、指向**允许集合之外**项目的 JSON-RPC 请求，由宿主直接以 typed 错误拒绝：`code=-32000`、`data.service_code="not_found"`、`meta.wire_version="1"`（复用 daemon 自己的 `protocol.encode_error`，不自行拼信封）。**拒绝帧不进入 daemon**，因此 daemon 侧不会为该项目建立 manager/session |
+| 为什么需要 | daemon 用一个 bearer 认证宿主，并按**精确 project_id** 解析 catalog 中**任意**已注册项目（`CatalogProjectProvider` + 无 project 维度的 `DaemonAuthorizer`，协商期也没有项目维度）。下游没有任何机制把这条中继连接限制到允许集合；没有该守卫时，为项目 A 配对的浏览器可以打开**任何**已注册项目的会话 |
 | 例外范围（压到最小） | ① 只检查**浏览器 → daemon** 一个方向，daemon → 浏览器完全不动；② 只读取请求 `id` 与白名单位置 `session.project_id`、`project_id`、`ref.session.project_id`（即 `protocol.decode_params` 中全部会参与路由的 project_id 位置）；③ 不做递归扫描、不改写任何字段，被接受的帧仍**逐字节**转发 |
 | 不是存在性 oracle | 对任何非宿主项目（无论是否已注册）返回同一个 `not_found`；拒绝响应不含其它项目的 project_id / workspace 路径 / token |
 
@@ -377,8 +385,12 @@ pytest**，含单文件与 `--collect-only`）：
 - 已做但范围有限：真实浏览器（Chrome 152）CDP 实测仅覆盖跨站 WS cookie 与 dev 代理
   `Origin` 重写、以及经代理/直连访问真实宿主的同码同体校验；结论不可移植到
   Firefox/Safari，也无 DOM 级前端渲染测试。
-- 未做（超出本切片范围）：反向代理/TLS 部署文档、多项目切换 UI、会话注册表持久化、
-  发布与 scratch/图片清理。
+- 未做（超出本切片范围）：反向代理/TLS 部署文档、会话注册表持久化、发布与
+  scratch/图片清理。
+- 多项目导航（v5 切片 3）：侧栏为「项目 → 会话」两级树（对齐 TUI 的 `ProjectDrawer`），
+  宿主提供只读 `GET /api/projects`，中继允许集合由 `--project-scope` 决定（见 §4.1）。
+  切换项目只改前端 `project_id` 并重新附着，**不重启宿主**；会话列表按项目懒加载，
+  每个展开的项目默认只显示最近 5 条。
 - 前端事件消费已与 TUI 对齐：`web/src/stores/liveEventReducer.ts` 归约
   activity / reasoning / answer / tool_* / subagent / usage / info / approval /
   terminal 事件（覆盖表见 `index.md` §4）；`GET /api/runtime-status` 也已由前端消费

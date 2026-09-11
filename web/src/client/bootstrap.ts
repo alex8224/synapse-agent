@@ -243,3 +243,70 @@ export function deriveRuntimeSocketUrl(location: { protocol: string; host: strin
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${scheme}//${location.host}/runtime-ws`;
 }
+
+/** One switchable project as the host reports it (`GET /api/projects`). */
+export interface ConsoleProjectEntry {
+  project_id: string;
+  workspace_path: string;
+  workspace_name: string | null;
+  git_branch: string | null;
+  session_count: number;
+  last_active_at: string | null;
+}
+
+/**
+ * Strict whitelist copy of one `projects[]` entry, with the same discipline as
+ * `requireProject`: unknown fields (including any accidental credential) are
+ * dropped instead of being forwarded into UI state.
+ */
+function requireProjectEntry(payload: unknown): ConsoleProjectEntry {
+  if (payload === null || typeof payload !== 'object') {
+    throw new BootstrapError('project entry is not an object');
+  }
+  const source = payload as Record<string, unknown>;
+  const count = source['session_count'];
+  return {
+    project_id: requireString(source['project_id'], 'project_id'),
+    workspace_path: requireString(source['workspace_path'], 'workspace_path'),
+    workspace_name: optionalString(source['workspace_name']),
+    git_branch: optionalString(source['git_branch']),
+    session_count:
+      typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0,
+    last_active_at: optionalString(source['last_active_at']),
+  };
+}
+
+/** Strict parse of the whole `GET /api/projects` body. */
+export function parseProjects(payload: unknown): ConsoleProjectEntry[] {
+  if (payload === null || typeof payload !== 'object') {
+    throw new BootstrapError('projects payload is not an object');
+  }
+  const projects = (payload as { projects?: unknown }).projects;
+  if (!Array.isArray(projects)) {
+    throw new BootstrapError('projects payload is missing projects');
+  }
+  return projects.map(requireProjectEntry);
+}
+
+/** Read-only project list: every project this console may switch to. */
+export async function fetchProjects(
+  fetchImpl: FetchLike = fetch,
+): Promise<ConsoleProjectEntry[]> {
+  let response: Response;
+  try {
+    response = await fetchImpl('/api/projects', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+  } catch (err) {
+    throw networkFailure('project lookup', err);
+  }
+  if (response.status === 401) throw new ConsoleAuthRequiredError();
+  if (!response.ok) {
+    throw new BootstrapError(
+      `project lookup failed with HTTP ${response.status}`,
+      response.status,
+    );
+  }
+  return parseProjects(await readJson(response, 'project lookup'));
+}

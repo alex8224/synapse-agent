@@ -92,6 +92,10 @@ def make_config(
     max_body_bytes: int = 4096,
     max_concurrent_sockets: int = 16,
     send_timeout_seconds: float = 30.0,
+    # Hermetic default: the original single-project boundary.  Tests that cover
+    # the wider `all` scope pass an explicit temp catalog.
+    project_scope: str = "workspace",
+    catalog_path: Path | None = None,
 ) -> WebConsoleConfig:
     """Console config; ``session_ttl_seconds=None`` keeps the dataclass default."""
     workspace = tmp_path / "workspace"
@@ -117,6 +121,8 @@ def make_config(
         max_body_bytes=max_body_bytes,
         max_concurrent_sockets=max_concurrent_sockets,
         send_timeout_seconds=send_timeout_seconds,
+        project_scope=project_scope,
+        catalog_path=catalog_path,
         **knobs,
     )
 
@@ -445,6 +451,17 @@ def test_web_console_config_rejects_unsafe_values(tmp_path: Path) -> None:
         WebConsoleConfig(workspace=workspace, ws_heartbeat_seconds=-1)
     with pytest.raises(ValueError, match="pair_ttl_seconds"):
         WebConsoleConfig(workspace=workspace, pair_ttl_seconds=0)
+    with pytest.raises(ValueError, match="project_scope"):
+        WebConsoleConfig(workspace=workspace, project_scope="everything")
+
+
+def test_web_console_config_defaults_to_the_all_project_scope(tmp_path: Path) -> None:
+    workspace = tmp_path / "w"
+    workspace.mkdir()
+    assert WebConsoleConfig(workspace=workspace).project_scope == "all"
+    assert WebConsoleConfig(workspace=workspace, project_scope="workspace").project_scope == (
+        "workspace"
+    )
 
 
 # --- integration: pairing and session -------------------------------------
@@ -524,6 +541,135 @@ def test_pair_cookie_default_max_age_matches_the_config_default(tmp_path: Path) 
         finally:
             await host.close()
             await daemon.close()
+
+    _run(run())
+
+
+# --- project scope: the switchable project list --------------------------------
+
+
+def _register_projects(catalog_path: Path, workspaces: list[Path]) -> list[str]:
+    """Register workspaces in a temp catalog; returns their generated ids."""
+    from synapse.projects.catalog import ProjectCatalog
+
+    catalog = ProjectCatalog(catalog_path)
+    try:
+        ids: list[str] = []
+        for workspace in workspaces:
+            workspace.mkdir(parents=True, exist_ok=True)
+            ids.append(catalog.register_project(workspace, detect_git=False).project_id)
+        return ids
+    finally:
+        catalog.close()
+
+
+def _scope_frame(project_id: str) -> str:
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "runtime.session.list",
+            "params": {"project_id": project_id},
+        }
+    )
+
+
+def test_project_scope_workspace_keeps_the_single_project_boundary(tmp_path: Path) -> None:
+    """The opt-out scope must behave exactly like the original host."""
+    guard = RelayProjectScopeGuard(PROJECT_ID)
+    assert guard.rejection(_scope_frame(PROJECT_ID)) is None
+    assert guard.rejection(_scope_frame("some-other-project")) is not None
+    assert guard.rejected == 1
+
+
+def test_project_scope_all_allows_every_catalog_project(tmp_path: Path) -> None:
+    """The default scope admits the catalog's projects, still nothing else."""
+    catalog_path = tmp_path / "catalog.sqlite"
+    other_id = _register_projects(catalog_path, [tmp_path / "other-project"])[0]
+    config = make_config(
+        tmp_path,
+        runtime_port=None,
+        static_dir=static_root(tmp_path),
+        project_scope="all",
+        catalog_path=catalog_path,
+    )
+    host = WebConsoleHost(config, project_view(config.workspace))
+    ids = {entry["project_id"] for entry in host._switchable_projects}
+    assert other_id in ids, "a registered catalog project is switchable"
+    assert PROJECT_ID in ids, "the console's own project stays reachable"
+    assert host._scope_guard.rejection(_scope_frame(other_id)) is None
+    assert host._scope_guard.rejection(_scope_frame("unregistered-project")) is not None
+
+
+def test_project_scope_workspace_lists_only_the_own_project(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "catalog.sqlite"
+    _register_projects(catalog_path, [tmp_path / "other-project"])
+    config = make_config(
+        tmp_path,
+        runtime_port=None,
+        static_dir=static_root(tmp_path),
+        project_scope="workspace",
+        catalog_path=catalog_path,
+    )
+    host = WebConsoleHost(config, project_view(config.workspace))
+    assert [entry["project_id"] for entry in host._switchable_projects] == [PROJECT_ID]
+
+
+def test_project_scope_all_degrades_to_the_own_project_when_the_catalog_is_broken(
+    tmp_path: Path,
+) -> None:
+    """A catalog that cannot be read must never widen the scope."""
+    broken = tmp_path / "not-a-directory"
+    broken.write_text("nope", encoding="utf-8")
+    config = make_config(
+        tmp_path,
+        runtime_port=None,
+        static_dir=static_root(tmp_path),
+        project_scope="all",
+        catalog_path=broken / "catalog.sqlite",
+    )
+    host = WebConsoleHost(config, project_view(config.workspace))
+    assert [entry["project_id"] for entry in host._switchable_projects] == [PROJECT_ID]
+
+
+def test_projects_endpoint_is_session_gated_and_read_only(tmp_path: Path) -> None:
+    static = static_root(tmp_path)
+
+    async def run() -> None:
+        config = make_config(tmp_path, runtime_port=None, static_dir=static)
+        host = WebConsoleHost(config, project_view(config.workspace))
+        metadata = await host.start()
+        port = metadata["port"]
+        try:
+            async with ClientSession() as session:
+                url = f"http://127.0.0.1:{port}/api/projects"
+                # Host allow-list first, then the session (read-only endpoint).
+                raw = await raw_request(
+                    port,
+                    "GET",
+                    "/api/projects",
+                    extra_headers=(("Host", "127.0.0.1:9999"),),
+                )
+                assert "403" in raw.split("\r\n", 1)[0]
+                async with session.get(url) as response:
+                    assert response.status == 401
+                cookie = await pair_session(session, port, host)
+                async with session.get(url, headers=_cookie_header(cookie)) as response:
+                    assert response.status == 200
+                    assert response.headers["Cache-Control"] == "no-store"
+                    body = await response.json()
+                projects = body["projects"]
+                assert [entry["project_id"] for entry in projects] == [PROJECT_ID]
+                assert projects[0]["workspace_path"] == str(config.workspace)
+                assert projects[0]["workspace_name"] == "synapse-workspace"
+                blob = json.dumps(body)
+                assert TOKEN not in blob
+                assert "token" not in blob.lower()
+                # Wrong method on a known /api path stays an explicit 405.
+                async with session.post(url, headers=_cookie_header(cookie)) as response:
+                    assert response.status == 405
+        finally:
+            await host.close()
 
     _run(run())
 

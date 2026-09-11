@@ -33,6 +33,11 @@ class WebConsoleConfig:
     state_dir: Path = _DEFAULT_STATE_DIR
     token_file: Path | None = None
     catalog_path: Path | None = None
+    #: Which projects the relay may address.  ``workspace`` keeps the original
+    #: single-project boundary; ``all`` widens it to every project registered in
+    #: the same user-layer catalog the daemon resolves from (see
+    #: ``docs/web-console/formal-host.md`` §4.1).
+    project_scope: str = "all"
     runtime_host: str = "127.0.0.1"
     runtime_port: int | None = None
     max_message_bytes: int = DEFAULT_MESSAGE_BYTES
@@ -78,6 +83,8 @@ class WebConsoleConfig:
             raise ValueError("max_message_bytes must be between 1024 and 8388608")
         if type(self.session_ttl_seconds) is not int or self.session_ttl_seconds <= 0:
             raise ValueError("session_ttl_seconds must be a positive integer")
+        if self.project_scope not in ("workspace", "all"):
+            raise ValueError("project_scope must be 'workspace' or 'all'")
         if type(self.pair_ttl_seconds) not in (int, float) or self.pair_ttl_seconds <= 0:
             raise ValueError("pair_ttl_seconds must be positive")
         if (

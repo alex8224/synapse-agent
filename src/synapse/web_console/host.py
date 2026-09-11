@@ -11,18 +11,22 @@ HTTP surface (frozen contract, see the phase-5 auth contract handoff):
 
 ``POST /api/pair``    state change: code -> session cookie (full CSRF chain)
 ``GET  /api/session`` read-only: current project + ``expires_in``
+``GET  /api/projects`` read-only: the projects the relay may address (``--project-scope``)
 ``GET  /api/runtime-status`` read-only: discovered daemon endpoint + hint
 ``POST /api/logout``  state change: invalidate every session (single user)
 ``GET  /api/bootstrap`` intentionally removed: always 405, never a cookie
 ``GET  /runtime-ws``  WebSocket upgrade: Host + Origin + session + concurrency
 ``GET  /*``           static build (traversal/symlink guarded, no-store shell)
 
-The relay is a verbatim pipe with exactly one documented exception: the host is
-started for a single project, and nothing downstream scopes a relay to it, so
-the browser -> daemon direction passes through :class:`RelayProjectScopeGuard`.
-That guard reads the request ``id`` and the whitelisted ``project_id`` values and
-rejects a request that addresses another project; it never rewrites an accepted
-frame (see the class docstring for the full justification).
+The relay is a verbatim pipe with exactly one documented exception: nothing
+downstream scopes a relay to a project (the daemon authenticates this host with
+one bearer and resolves *any* catalog-registered project), so the browser ->
+daemon direction passes through :class:`RelayProjectScopeGuard`.  That guard
+reads the request ``id`` and the whitelisted ``project_id`` values and rejects a
+request that addresses a project outside its allow-set — the console's own
+project under ``--project-scope workspace``, every project of the same user
+catalog under the default ``all``; it never rewrites an accepted frame (see the
+class docstring for the full justification).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -141,6 +146,9 @@ SCOPE_PROJECT_POSITIONS = ("session.project_id", "project_id", "ref.session.proj
 #: the console is not an oracle for "that other project exists".
 SCOPE_REJECTION_SERVICE_CODE = "not_found"
 
+#: Bound on the switchable project list (the catalog itself caps at 500).
+MAX_SCOPE_PROJECTS = 200
+
 
 def _append_project_id(found: list[str], value: object) -> None:
     if type(value) is str and value:
@@ -207,17 +215,21 @@ def _encode_typed_error(request_id: str | int, service_code: str) -> str:
 
 
 class RelayProjectScopeGuard:
-    """Reject relay requests that address a project other than the host's own.
+    """Reject relay requests that address a project outside the console's allow-set.
+
+    The allow-set is ``--project-scope``-derived: ``workspace`` keeps the original
+    single-project boundary, while the default ``all`` covers every project of the
+    same user-layer catalog (one user's projects, never another user's).
 
     **This is an intentional exception to the A6 boundary.**  A6 freezes the relay
     as a verbatim pipe (frames forwarded unchanged, never parsed, never injected)
     and that remains the rule for every other frame.  The exception exists because
-    the console is started for exactly one project while the runtime daemon
-    authenticates this host with one bearer token and resolves *any*
-    catalog-registered project (``CatalogProjectProvider`` + ``DaemonAuthorizer``,
-    which has no project dimension and no negotiation-time project binding), so
-    nothing downstream confines the relay to the console's own project.  Without
-    this guard a browser paired for project A can open sessions of project B.
+    the runtime daemon authenticates this host with one bearer token and resolves
+    *any* catalog-registered project (``CatalogProjectProvider`` +
+    ``DaemonAuthorizer``, which has no project dimension and no negotiation-time
+    project binding), so nothing downstream confines the relay to the console's
+    allow-set.  Without this guard a browser paired for project A can open
+    sessions of any registered project.
 
     The exception is kept as small as it can be:
 
@@ -238,12 +250,25 @@ class RelayProjectScopeGuard:
     instead of silent).
     """
 
-    __slots__ = ("project_id", "rejected", "unreadable")
+    __slots__ = ("allowed_project_ids", "rejected", "unreadable")
 
-    def __init__(self, project_id: str) -> None:
-        if type(project_id) is not str or not project_id:
-            raise ValueError("project_id must be a non-empty string")
-        self.project_id = project_id
+    def __init__(self, allowed_project_ids: str | Iterable[str]) -> None:
+        """One project id, or the explicit allow-set the relay may address.
+
+        ``--project-scope workspace`` passes a single id (the original
+        boundary); ``--project-scope all`` passes every project registered in
+        the same user-layer catalog.  A bare string is treated as a one-element
+        set rather than iterated character by character.
+        """
+        candidates: Iterable[str]
+        if type(allowed_project_ids) is str:
+            candidates = (allowed_project_ids,)
+        else:
+            candidates = allowed_project_ids
+        allowed = frozenset(value for value in candidates if type(value) is str and value)
+        if not allowed:
+            raise ValueError("allowed_project_ids must contain at least one project id")
+        self.allowed_project_ids = allowed
         #: Number of browser requests rejected so far (evidence for tests/logs).
         self.rejected = 0
         #: Number of browser text frames the guard could not read and therefore
@@ -259,7 +284,7 @@ class RelayProjectScopeGuard:
             self.unreadable += 1
             return None
         request_id, project_ids = scoped
-        if all(project_id == self.project_id for project_id in project_ids):
+        if all(project_id in self.allowed_project_ids for project_id in project_ids):
             return None
         self.rejected += 1
         return _encode_typed_error(request_id, SCOPE_REJECTION_SERVICE_CODE)
@@ -299,9 +324,12 @@ class WebConsoleHost:
         )
         self._static_root = config.resolved_static_dir()
         self._active_sockets = 0
-        # One guard per host: it is bound to this console's own project and only
-        # ever rejects requests addressed to a different one (see the class).
-        self._scope_guard = RelayProjectScopeGuard(project.project_id)
+        # Projects this console may list and address, resolved once at startup.
+        # One guard per host rejects every request outside that set (see the class).
+        self._switchable_projects = self._resolve_switchable_projects(project)
+        self._scope_guard = RelayProjectScopeGuard(
+            frozenset(entry["project_id"] for entry in self._switchable_projects)
+        )
         # High-water marks of the bounded relay buffers; tests assert the bound
         # on a real slow consumer (see ``RELAY_MAX_PENDING_*``).
         self.relay_stats = RelayBackpressureStats()
@@ -321,6 +349,8 @@ class WebConsoleHost:
         app.router.add_post("/api/session", _method_not_allowed("GET"))
         app.router.add_get("/api/runtime-status", self._handle_runtime_status)
         app.router.add_post("/api/runtime-status", _method_not_allowed("GET"))
+        app.router.add_get("/api/projects", self._handle_projects)
+        app.router.add_post("/api/projects", _method_not_allowed("GET"))
         app.router.add_post("/api/logout", self._handle_logout)
         app.router.add_get("/api/logout", _method_not_allowed("POST"))
         # Kept as an explicit 405 (not a 404) so "GET must not mint a session"
@@ -471,6 +501,61 @@ class WebConsoleHost:
             }
         }
 
+    def _resolve_switchable_projects(self, project: ProjectView) -> tuple[dict[str, Any], ...]:
+        """Projects the console may list and switch to (bounded, never a secret).
+
+        ``project_scope=workspace`` returns only the console's own project, which
+        is the original single-project behaviour.  ``project_scope=all`` adds
+        every project registered in the same user-layer catalog the daemon
+        resolves from — still one user's projects, never another user's.
+
+        A catalog that cannot be read degrades to the own project only: the scope
+        never *widens* on a failure.
+        """
+        own = {
+            "project_id": project.project_id,
+            "workspace_path": project.workspace_path,
+            "workspace_name": project.name,
+            "git_branch": project.git_branch,
+            "session_count": 0,
+            "last_active_at": "",
+        }
+        if self.config.project_scope != "all":
+            return (own,)
+        try:
+            from synapse.projects.catalog import ProjectCatalog
+
+            catalog_path = self.config.catalog_path
+            if catalog_path is None:
+                catalog_path = load_global_settings().resolved_catalog_path()
+            catalog = ProjectCatalog(catalog_path)
+            try:
+                infos = catalog.list_projects(limit=MAX_SCOPE_PROJECTS)
+            finally:
+                catalog.close()
+        except Exception:  # noqa: BLE001 - a broken catalog must not widen the scope
+            return (own,)
+        rows: list[dict[str, Any]] = [
+            {
+                "project_id": info.project_id,
+                "workspace_path": info.workspace_path,
+                "workspace_name": info.name,
+                "git_branch": info.git_branch,
+                "session_count": int(info.session_count),
+                "last_active_at": info.last_active_at,
+            }
+            for info in infos
+        ]
+        if not any(row["project_id"] == own["project_id"] for row in rows):
+            # The console's own project must always be reachable, even when the
+            # catalog listing is capped before reaching it.
+            rows.append(own)
+        return tuple(rows)
+
+    def _projects_payload(self) -> dict[str, Any]:
+        """The switchable project list (the same bounded fields as ``/api/session``)."""
+        return {"projects": list(self._switchable_projects)}
+
     def _state_change_guard(self, request: web.Request) -> web.Response | None:
         """A3 steps 2-6: the CSRF chain shared by ``pair`` and ``logout``."""
         bound_port = self._bound_port()
@@ -612,6 +697,23 @@ class WebConsoleHost:
     async def _handle_bootstrap_removed(self, request: web.Request) -> web.Response:
         """``GET /api/bootstrap`` is gone: 405 and *never* a ``Set-Cookie``."""
         return _reject(405, "method not allowed", json_body=True)
+
+    async def _handle_projects(self, request: web.Request) -> web.Response:
+        """``GET /api/projects``: the projects this console may switch to.
+
+        Read-only and session-gated, like ``/api/runtime-status``: it exposes the
+        same bounded project fields ``/api/session`` already returns for the
+        console's own project, for every project the relay is allowed to address.
+        It carries no token and no path outside the user catalog, and never
+        changes any state (so it needs no CSRF chain).
+        """
+        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+            return _reject(403, "forbidden host", json_body=True)
+        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+            return _reject(401, "missing or invalid console session", json_body=True)
+        response = web.json_response(self._projects_payload())
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     async def _handle_runtime_ws(self, request: web.Request) -> web.StreamResponse:
         bound_port = self._bound_port()
