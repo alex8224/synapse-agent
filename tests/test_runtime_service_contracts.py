@@ -180,6 +180,10 @@ def test_session_view_never_exposes_goal() -> None:
         "usage",
         "last_error",
         "last_activity_at",
+        # Session display fields added with session model rebinding (kept in
+        # the projection by design; the runtime goal object is never exposed).
+        "active_model",
+        "model",
     }
 
 

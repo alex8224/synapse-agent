@@ -16,8 +16,10 @@ __all__ = [
     "ArtifactUnavailableError",
     "ClosedError",
     "ConflictError",
+    "ConfigOverflowError",
     "EventOverflowError",
     "EventTooLargeError",
+    "HistoryTooLargeError",
     "InvalidCursorError",
     "InvalidArtifactCursorError",
     "InvalidArtifactPathError",
@@ -120,6 +122,17 @@ class ConflictError(RuntimeServiceError):
     code = "conflict"
 
 
+class ConfigOverflowError(RuntimeServiceError):
+    """A read-only runtime config projection exceeded its safety bound.
+
+    Raised instead of silently truncating an unbounded model list, thinking
+    level list, MCP server list, or whitelisted text field when projecting the
+    effective runtime configuration.
+    """
+
+    code = "config_overflow"
+
+
 class NoActiveTurnError(RuntimeServiceError):
     """A turn-scoped operation found no live turn to target."""
 
@@ -169,6 +182,12 @@ class EventTooLargeError(RuntimeServiceError):
     """A projected runtime event exceeds the configured byte limit."""
 
     code = "event_too_large"
+
+
+class HistoryTooLargeError(RuntimeServiceError):
+    """A session history page exceeds the bounded byte or row limit."""
+
+    code = "history_too_large"
 
 
 class InvalidCursorError(RuntimeServiceError):

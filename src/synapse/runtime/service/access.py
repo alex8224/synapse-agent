@@ -44,6 +44,12 @@ from synapse.runtime.service.errors import (
     PermissionDeniedError,
 )
 from synapse.runtime.service.events import EventFilter, EventPage, ReadEventsQuery
+from synapse.runtime.service.history import (
+    ListSessionsQuery,
+    ReadSessionHistoryQuery,
+    SessionHistoryPage,
+    SessionListPage,
+)
 from synapse.runtime.service.ports import AgentRuntimeService, EventWatch
 from synapse.runtime.service.queries import (
     GetSessionQuery,
@@ -51,6 +57,11 @@ from synapse.runtime.service.queries import (
     PendingApprovalView,
     SessionView,
 )
+from synapse.runtime.service.recovery import (
+    ReconcileSessionQuery,
+    SessionRecoverabilityView,
+)
+from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
@@ -71,6 +82,7 @@ __all__ = [
     "SESSION_CLOSE",
     "SESSION_READ",
     "SESSION_REBIND",
+    "SESSION_LIST",
     "SESSION_MCP_RELOAD",
     "TURN_SUBMIT",
     "TURN_CANCEL",
@@ -89,6 +101,7 @@ SESSION_CLOSE = "session.close"
 SESSION_READ = "session.read"
 SESSION_REBIND = "session.rebind"
 SESSION_MCP_RELOAD = "session.mcp.reload"
+SESSION_LIST = "session.list"
 EVENTS_READ = "events.read"
 EVENTS_WATCH = "events.watch"
 ARTIFACTS_STAT = "artifacts.stat"
@@ -106,6 +119,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_CLOSE,
         SESSION_READ,
         SESSION_REBIND,
+        SESSION_LIST,
         SESSION_MCP_RELOAD,
         EVENTS_READ,
         EVENTS_WATCH,
@@ -281,6 +295,31 @@ class AclAuthorizer:
                 return
         raise PermissionDeniedError()
 
+    def authorize_project(
+        self, principal: Principal, capability: str, project_id: str
+    ) -> None:
+        """Authorize a project-scoped operation for the given principal.
+
+        Project-level capabilities (e.g. listing sessions) never apply to a
+        thread grant: only grants with ``thread_ids=None`` authorize them.
+        """
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        try:
+            project = _validate_access_text(project_id, "project_id")
+        except (AttributeError, TypeError, UnicodeError, ValueError):
+            raise _invalid_context() from None
+        if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
+            raise ValueError("unknown capability")
+        for grant in self._grants:
+            if grant.subject != principal.subject or grant.project_id != project:
+                continue
+            if capability not in grant.capabilities:
+                continue
+            if grant.thread_ids is None:
+                return
+        raise PermissionDeniedError()
+
 
 class DaemonAuthorizer:
     """Authorize the fixed daemon principal for every exact session scope."""
@@ -290,6 +329,21 @@ class DaemonAuthorizer:
     def authorize(self, principal: Principal, capability: str, session: SessionRef) -> None:
         if not _is_valid_principal(principal) or not _is_valid_ref(session):
             raise _invalid_context()
+        if principal.subject != "runtime-daemon":
+            raise PermissionDeniedError()
+        if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
+            raise ValueError("unknown capability")
+
+    def authorize_project(
+        self, principal: Principal, capability: str, project_id: str
+    ) -> None:
+        """Authorize any project-scoped runtime capability for the daemon."""
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        try:
+            _validate_access_text(project_id, "project_id")
+        except (AttributeError, TypeError, UnicodeError, ValueError):
+            raise _invalid_context() from None
         if principal.subject != "runtime-daemon":
             raise PermissionDeniedError()
         if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
@@ -393,6 +447,22 @@ class AccessControlledAgentRuntimeService:
         self._authorize(session, SESSION_READ)
         return await self._delegate.get_session(query)
 
+    async def get_runtime_config(
+        self, query: GetRuntimeConfigQuery
+    ) -> RuntimeConfigView:
+        """Authorize SESSION_READ per session, then delegate the read.
+
+        ``get_runtime_config`` is an optional delegate method for backwards
+        compatibility: an older delegate without it reports the feature as
+        unavailable instead of failing the whole wrapper at construction.
+        """
+        session = self._session_from_dto(query, GetRuntimeConfigQuery, "config query")
+        self._authorize(session, SESSION_READ)
+        delegate = getattr(self._delegate, "get_runtime_config", None)
+        if not callable(delegate):
+            raise InvalidRequestError("runtime config is unavailable")
+        return await delegate(query)
+
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView:
         session = self._session_from_dto(query, PendingApprovalQuery, "approval query")
         self._authorize(session, TURN_APPROVAL_READ)
@@ -417,6 +487,50 @@ class AccessControlledAgentRuntimeService:
         session = self._session_from_dto(query, ReadEventsQuery, "events query")
         self._authorize(session, EVENTS_READ)
         return await self._delegate.read_events(query)
+
+    async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage:
+        if type(query) is not ListSessionsQuery:
+            raise InvalidRequestError(
+                "list sessions query must be a ListSessionsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        if type(query.project_id) is not str or not query.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._authorizer.authorize_project(
+            self._principal, SESSION_LIST, query.project_id
+        )
+        delegate = getattr(self._delegate, "list_sessions", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session list is unavailable")
+        return await delegate(query)
+
+    async def read_session_history(
+        self, query: ReadSessionHistoryQuery
+    ) -> SessionHistoryPage:
+        session = self._session_from_dto(query, ReadSessionHistoryQuery, "history query")
+        self._authorize(session, SESSION_READ)
+        delegate = getattr(self._delegate, "read_session_history", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session history is unavailable")
+        return await delegate(query)
+
+    async def reconcile_session(
+        self, query: ReconcileSessionQuery
+    ) -> SessionRecoverabilityView:
+        """Authorize SESSION_READ, then delegate the read-only recovery snapshot.
+
+        ``reconcile_session`` is an optional delegate method for backwards
+        compatibility: an older delegate without it reports the feature as
+        unavailable instead of failing the whole wrapper at construction.
+        ACL check happens before the delegate is consulted, so a caller
+        without ``session.read`` is denied even against an old delegate.
+        """
+        session = self._session_from_dto(query, ReconcileSessionQuery, "reconcile query")
+        self._authorize(session, SESSION_READ)
+        delegate = getattr(self._delegate, "reconcile_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session recovery is unavailable")
+        return await delegate(query)
 
     def watch_events(
         self,

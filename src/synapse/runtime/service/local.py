@@ -75,6 +75,17 @@ from synapse.runtime.service.events import (
     matches_event,
     project_payload,
 )
+from synapse.runtime.service.history import (
+    ListSessionsQuery,
+    ReadSessionHistoryQuery,
+    SessionHistoryPage,
+    SessionListPage,
+)
+from synapse.runtime.service.history_store import (
+    list_sessions_page,
+    read_session_history_page,
+    read_transcript_coverage,
+)
 from synapse.runtime.service.ports import EventWatch
 from synapse.runtime.service.queries import (
     ApprovalActionView,
@@ -84,7 +95,12 @@ from synapse.runtime.service.queries import (
     SessionView,
     UsageView,
 )
+from synapse.runtime.service.recovery import (
+    ReconcileSessionQuery,
+    SessionRecoverabilityView,
+)
 from synapse.runtime.service.routing import RouterClosedError, RuntimeManagerRouter
+from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
 from synapse.runtime.sessions import (
     NoActiveTurnError as SessionNoActiveTurnError,
 )
@@ -444,6 +460,32 @@ class LocalAgentRuntimeService:
         session = self._resolve_session(manager, query.session)
         return _project_session(session.snapshot())
 
+    async def get_runtime_config(self, query: GetRuntimeConfigQuery) -> RuntimeConfigView:
+        """Project the effective read-only runtime configuration.
+
+        The manager generation is resolved on a worker thread (the same lazy
+        path used by session list/history reads), and an already-open session
+        prefers its session-bound settings over the project settings.  This is
+        a pure read: it never builds an agent and never opens a session.
+        """
+        if type(query) is not GetRuntimeConfigQuery:
+            raise InvalidRequestError(
+                "config query must be a GetRuntimeConfigQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+
+        def _read() -> RuntimeConfigView:
+            from synapse.runtime.service import config_source
+
+            manager = self._resolve_manager_project(query.session.project_id)
+            self._check_project(manager, query.session)
+            session = manager.get_session_ref(query.session)
+            settings = session.settings if session is not None else manager.settings
+            return config_source.build_config_view(settings, session=query.session)
+
+        return await asyncio.to_thread(_read)
+
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView:
         self._validate_ref(query.session)
         manager = self._resolve_manager(query.session)
@@ -460,6 +502,113 @@ class LocalAgentRuntimeService:
             actions=tuple(
                 ApprovalActionView(i, name, args) for i, (name, args) in enumerate(actions)
             ),
+        )
+
+    # -- history port ------------------------------------------------------
+
+    async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage:
+        """List session metadata for one project without opening sessions.
+
+        The manager generation is resolved on a worker thread.  A registered
+        project may be built lazily from its descriptor/settings so a cold
+        daemon can list before any session was opened.  This never constructs
+        agents, opens sessions, creates databases, or migrates schemas;
+        manager factories are expected to stay lightweight (settings only).
+        The project session SQLite is read with neutral read-only queries on a
+        filesystem worker thread.
+        """
+        if not isinstance(query, ListSessionsQuery):
+            raise InvalidRequestError(
+                "list sessions query must be a ListSessionsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        if not isinstance(query.project_id, str) or not query.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, query.project_id
+        )
+        return await asyncio.to_thread(list_sessions_page, manager.settings, query)
+
+    async def read_session_history(
+        self, query: ReadSessionHistoryQuery
+    ) -> SessionHistoryPage:
+        """Read paginated transcript history from the projection store.
+
+        Never deserializes full LangGraph checkpoints and never touches the
+        projection through a writing client.  Sessions without a transcript
+        projection return ``available=False``.
+
+        Like :meth:`list_sessions`, the manager lookup runs on a worker thread
+        and may lazily build a lightweight manager (descriptor/settings only)
+        for a registered project on a cold daemon.  Reading history never
+        constructs an agent or opens a session.
+        """
+        if not isinstance(query, ReadSessionHistoryQuery):
+            raise InvalidRequestError(
+                "read session history query must be a ReadSessionHistoryQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, query.session.project_id
+        )
+        self._check_project(manager, query.session)
+        return await asyncio.to_thread(
+            read_session_history_page, manager.settings, query
+        )
+
+    async def reconcile_session(
+        self, query: ReconcileSessionQuery
+    ) -> SessionRecoverabilityView:
+        """Return one read-only history/live recovery snapshot for an open session.
+
+        This is the server half of the explicit reconcile protocol: it reports
+        durable transcript coverage (availability, settled-turn count, and
+        coverage membership of the bounded ``probe_turn_ids``) together with
+        the live broker stream identity and retention bounds.  It never opens
+        a session, creates an agent, or cancels a turn - the session must
+        already be open so a live stream actually exists.
+
+        The live broker state is sampled first and the durable coverage read
+        second (on a filesystem worker thread).  The two stores are
+        independent and the snapshot is *not* atomic across them: a turn may
+        settle between the two reads.  Recovery clients must therefore treat
+        this as an explicit precondition, start or resume the live watch
+        immediately afterwards, and never claim cross-store atomicity.
+        """
+        if not isinstance(query, ReconcileSessionQuery):
+            raise InvalidRequestError(
+                "reconcile query must be a ReconcileSessionQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, query.session.project_id
+        )
+        self._check_project(manager, query.session)
+        session = self._resolve_session(manager, query.session)
+        broker_state, active_turn_id = session.live_recovery()
+        available, total_turns, probes = await asyncio.to_thread(
+            read_transcript_coverage,
+            manager.settings,
+            query.session.thread_id,
+            query.probe_turn_ids,
+        )
+        return SessionRecoverabilityView(
+            project_id=query.session.project_id,
+            thread_id=query.session.thread_id,
+            history_available=available,
+            history_total_turns=total_turns,
+            live_epoch=broker_state.epoch,
+            live_latest_sequence=broker_state.latest_sequence,
+            live_oldest_sequence=broker_state.oldest_sequence,
+            live_dropped_through=broker_state.dropped_through,
+            active_turn_id=active_turn_id,
+            latest_turn_id=broker_state.latest_turn_id,
+            latest_turn_first_sequence=broker_state.latest_turn_start,
+            latest_turn_retained_from=broker_state.latest_turn_retained_from,
+            latest_turn_intact=broker_state.latest_turn_intact,
+            probe=tuple(probes),
         )
 
     # -- artifact port -----------------------------------------------------
@@ -583,6 +732,30 @@ class LocalAgentRuntimeService:
         )
 
     # -- internals ---------------------------------------------------------
+
+    def _resolve_manager_project(self, project_id: str) -> RuntimeManager:
+        """Resolve the manager generation for one project id.
+
+        For a ``RuntimeManagerRouter`` the lookup may lazily build a
+        lightweight manager (descriptor + settings) when the project has not
+        been published yet; it never constructs agents or opens sessions.
+        Plain callable providers keep their existing semantics.  Callers run
+        this on a worker thread so provider and factory I/O never blocks the
+        event loop.  Router shutdown maps to the stable ``closed`` service
+        error; unknown projects and mismatched identities map to
+        ``not_found``.
+        """
+        try:
+            manager = self._manager_provider(project_id)
+        except RouterClosedError as exc:
+            raise ClosedError("runtime service is closed") from exc
+        if manager is None:
+            raise NotFoundError(f"no runtime manager for project {project_id!r}")
+        if not isinstance(manager, RuntimeManager):
+            raise RuntimeError("runtime manager provider returned an invalid object")
+        if manager.project_id is not None and manager.project_id != project_id:
+            raise NotFoundError(f"project {project_id!r} not found")
+        return manager
 
     def _validate_ref(self, ref: SessionRef) -> None:
         """Reject malformed refs before any lookup happens."""

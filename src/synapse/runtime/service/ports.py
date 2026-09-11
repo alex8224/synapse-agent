@@ -43,11 +43,25 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.history import (
+    ListSessionsQuery,
+    ReadSessionHistoryQuery,
+    SessionHistoryPage,
+    SessionListPage,
+)
 from synapse.runtime.service.queries import (
     GetSessionQuery,
     PendingApprovalQuery,
     PendingApprovalView,
     SessionView,
+)
+from synapse.runtime.service.recovery import (
+    ReconcileSessionQuery,
+    SessionRecoverabilityView,
+)
+from synapse.runtime.service.runtime_config import (
+    GetRuntimeConfigQuery,
+    RuntimeConfigView,
 )
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -120,6 +134,28 @@ class AgentRuntimeService(Protocol):
     async def close_session(self, command: CloseSessionCommand) -> CloseSessionResult: ...
 
     async def get_session(self, query: GetSessionQuery) -> SessionView: ...
+
+    async def get_runtime_config(
+        self, query: GetRuntimeConfigQuery
+    ) -> RuntimeConfigView: ...
+
+    async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage: ...
+
+    async def read_session_history(
+        self, query: ReadSessionHistoryQuery
+    ) -> SessionHistoryPage: ...
+
+    async def reconcile_session(
+        self, query: ReconcileSessionQuery
+    ) -> SessionRecoverabilityView:
+        """Read-only recovery snapshot (durable coverage + live stream state).
+
+        Optional delegate method: older delegates that lack it keep the
+        wrapper constructible and report the feature as unavailable (see the
+        ACL layer).  The call never opens sessions, builds agents, or cancels
+        turns.
+        """
+        ...
 
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView: ...
 
