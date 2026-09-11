@@ -277,8 +277,6 @@ def _resolve_launch_target(
     overrides: dict = {"debug": debug}
     overrides["model"] = model
     overrides["workspace"] = workspace
-    if model is not None:
-        overrides["active_model"] = model
     if require_approval is not None:
         overrides["require_approval"] = require_approval
     if readonly is not None:

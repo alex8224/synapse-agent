@@ -1,11 +1,12 @@
 """UI-independent ``stream_agent`` semantic parser.
 
 The token/reasoning/tool/usage parsing loop for one agent turn. Rendering is
-pluggable via the ``StreamSink`` protocol:
+pluggable via the legacy ``StreamSink`` protocol when a renderer is supplied:
 - CLI: ``synapse.ui.stream.RichStreamSink`` (default sink supplied by the UI
   wrapper, not by this module)
 - TUI: ``synapse.ui.textual_stream_sink.TextualStreamSink``
-- headless: no-op renderer + semantic event sink
+- headless: no renderer at all; structured semantic events flow through the
+  ``event_sink`` (tool lifecycle included).
 
 This module never imports ``synapse.ui`` or ``textual``.
 """
@@ -14,7 +15,6 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
 from typing import Any
 
 from synapse.runtime.cancellation import cancel_reason_from_event
@@ -63,45 +63,6 @@ from synapse.runtime.timeline import (
 from synapse.runtime.token_rate import TokenRateTracker
 
 
-class _NoopRenderer:
-    """Runtime-side no-op renderer used when no sink is supplied.
-
-    Rich/Textual sinks are chosen at the CLI/TUI assembly layer; the headless
-    runtime intentionally renders nothing while still emitting semantic events
-    through the event sink.
-    """
-
-    streamed_answer = False
-    streamed_reasoning = False
-
-    def __init__(self) -> None:
-        self.answer_buf: list[str] = []
-        self.reasoning_buf: list[str] = []
-
-    def __getattr__(self, name: str) -> Callable[..., None]:
-        if name in {
-            "activity_start",
-            "activity_update",
-            "activity_stop",
-            "write_reasoning",
-            "close_reasoning",
-            "write_answer_token",
-            "write_answer_complete",
-            "finalize_line",
-            "tool_calls_started",
-            "tool_result",
-            "tool_item_started",
-            "tool_item_updated",
-            "tool_item_finished",
-            "tool_group_closed",
-            "turn_finished",
-            "info",
-            "note_usage",
-        }:
-            return lambda *args, **kwargs: None
-        raise AttributeError(name)
-
-
 def stream_agent(
     agent,
     payload: Any,
@@ -121,8 +82,10 @@ def stream_agent(
 
     Args:
         payload: User message dict or LangGraph ``Command`` (HITL resume).
-        sink: Optional rendering consumer. Defaults to a no-op renderer; CLI/TUI
-            assembly layers supply their Rich/Textual sink.
+        sink: Optional legacy rendering consumer. ``None`` (default) means the
+            run is renderer-free: structured semantic events (including tool
+            lifecycle) flow through ``event_sink`` only. CLI/TUI assembly
+            layers supply their Rich/Textual sink.
         event_sink: Optional UI-independent semantic event consumer.
         show_reasoning_placeholders: Render a synthetic thought when only reasoning
             token counts are available and the gateway hides the reasoning text.
@@ -155,15 +118,23 @@ def stream_agent(
     model_call_count = 0  # completed model calls in this turn (step count)
     rate_tracker = TokenRateTracker()
     rate_tracker.model_started()
-    renderer = sink or _NoopRenderer()
+    # ``sink`` is the optional legacy renderer. When it is absent the run is
+    # headless: no renderer object is constructed and events are emitted into
+    # the event sink only.
+    renderer = sink
+    runtime_only = renderer is None
+    thread_id = InstrumentedStreamSink.thread_id_from_config(config)
     sink = InstrumentedStreamSink(
         renderer,
-        thread_id=InstrumentedStreamSink.thread_id_from_config(config),
+        thread_id=thread_id,
         event_sink=event_sink,
         turn_id=turn_id,
     )
     active_tools: list[str] = []
-    use_tool_items = sink_supports_tool_items(sink)
+    # Structured tool lifecycle is runtime state, not a renderer concern: a
+    # headless run must still emit it. Legacy sinks that lack the per-item API
+    # keep the bulk ``tool_result`` path for their own rendering.
+    use_tool_items = runtime_only or sink_supports_tool_items(sink)
     pending_tool_items: list[Any] = []
     tool_group_seq = 0
     # Nested subagent events are interleaved. Keep labels, pending items, and

@@ -256,3 +256,160 @@ def test_single_loop_helper_ast_has_one_asyncio_run():
         )
         == 1
     )
+
+
+# ---------------------------------------------------------------------------
+# LocalProjectRuntimeConsumer.close lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+class FakeManager:
+    """Minimal fake matching the RuntimeManager interface for close tests."""
+
+    def __init__(
+        self,
+        *,
+        shutdown_error: BaseException | None = None,
+        shutdown_delay_event: asyncio.Event | None = None,
+    ) -> None:
+        self.shutdown_count = 0
+        self.started = asyncio.Event()
+        self.shutdown_error = shutdown_error
+        self.shutdown_delay_event = shutdown_delay_event
+        self.project_id = "p"
+
+    async def shutdown(self) -> None:
+        self.shutdown_count += 1
+        self.started.set()
+        if self.shutdown_delay_event is not None:
+            await self.shutdown_delay_event.wait()
+        if self.shutdown_error is not None:
+            raise self.shutdown_error
+
+
+class FakeCatalog:
+    """Minimal fake matching ProjectCatalog.close()."""
+
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+def _make_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    manager: FakeManager | None = None,
+    catalog: FakeCatalog | None = None,
+) -> LocalProjectRuntimeConsumer:
+    monkeypatch.setattr(
+        "synapse.runtime.consumer.RuntimeManager", lambda **kwargs: manager or FakeManager()
+    )
+    consumer = LocalProjectRuntimeConsumer(
+        settings=SimpleNamespace(max_concurrent_sessions=1, model="test"),
+        project_id="p",
+        agent_factory=lambda tid, _s: SimpleNamespace(thread_id=tid),
+        catalog=catalog,
+    )
+    return consumer
+
+
+def test_close_calls_shutdown_and_catalog_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = FakeManager()
+    cat = FakeCatalog()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=cat)
+    run(consumer.close())
+    assert mgr.shutdown_count == 1
+    assert cat.close_count == 1
+
+
+def test_repeated_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = FakeManager()
+    cat = FakeCatalog()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=cat)
+    run(consumer.close())
+    run(consumer.close())
+    run(consumer.close())
+    assert mgr.shutdown_count == 1
+    assert cat.close_count == 1
+
+
+def test_concurrent_close_runs_cleanup_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    mgr = FakeManager(shutdown_delay_event=gate)
+    cat = FakeCatalog()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=cat)
+
+    async def body():
+        t1 = asyncio.create_task(consumer.close())
+        t2 = asyncio.create_task(consumer.close())
+        await asyncio.wait_for(mgr.started.wait(), timeout=5)
+        gate.set()
+        await asyncio.gather(t1, t2)
+
+    run(asyncio.wait_for(body(), timeout=5))
+    assert mgr.shutdown_count == 1
+    assert cat.close_count == 1
+
+
+def test_close_waits_for_cleanup_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    mgr = FakeManager(shutdown_delay_event=gate)
+    consumer = _make_consumer(monkeypatch, manager=mgr)
+
+    done = False
+
+    async def body():
+        nonlocal done
+        task = asyncio.create_task(consumer.close())
+        await asyncio.wait_for(mgr.started.wait(), timeout=5)
+        assert not task.done(), "close should block until shutdown completes"
+        gate.set()
+        await task
+        done = True
+
+    run(asyncio.wait_for(body(), timeout=5))
+    assert done
+
+
+def test_caller_cancel_does_not_cancel_shield_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    mgr = FakeManager(shutdown_delay_event=gate)
+    cat = FakeCatalog()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=cat)
+
+    async def body():
+        task = asyncio.create_task(consumer.close())
+        await asyncio.wait_for(mgr.started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Cleanup should still be running in the shielded task.
+        assert cat.close_count == 0
+        gate.set()
+        await consumer.close()
+
+    run(asyncio.wait_for(body(), timeout=5))
+    # The cleanup task ran despite caller cancellation.
+    assert mgr.shutdown_count == 1
+    assert cat.close_count == 1
+
+
+def test_shutdown_failure_still_releases_catalog_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = FakeManager(shutdown_error=RuntimeError("boom"))
+    cat = FakeCatalog()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=cat)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run(consumer.close())
+    assert cat.close_count == 1
+
+
+def test_close_without_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = FakeManager()
+    consumer = _make_consumer(monkeypatch, manager=mgr, catalog=None)
+    run(consumer.close())
+    assert mgr.shutdown_count == 1

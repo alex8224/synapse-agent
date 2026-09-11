@@ -14,7 +14,7 @@
       {"mode": "messages", "message": {"type": "ai", "id": "r1", "content": "done", "reasoning": "then "}, "meta": {"langgraph_node": "model"}},
       {"mode": "updates", "node": "model", "messages": [{"type": "ai", "id": "r1", "content": "done", "reasoning": "think then"}]}
     ],
-    "expected_trace": ["reasoning_delta", "reasoning_delta", "answer_delta", "reasoning_completed", "answer_completed", "turn_completed"],
+    "expected_trace": ["reasoning_delta", "reasoning_delta", "reasoning_completed", "answer_delta", "answer_completed", "turn_completed"],
     "expected_result": {"final_text": "done", "reasoning_text": "think then", "tool_calls": 0, "compact_events": 0, "interrupted": false}
   },
   "tool_round": {

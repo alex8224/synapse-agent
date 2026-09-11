@@ -6,7 +6,6 @@ import asyncio
 import concurrent.futures
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 from synapse.runtime.agent_loop.model import (
@@ -33,60 +32,23 @@ class _SafeEventSink:
             pass
 
 
-class _HeadlessRenderer:
-    """No-op renderer that still enables the parser's enhanced tool-item path."""
-
-    streamed_answer = False
-    streamed_reasoning = False
-
-    def __init__(self) -> None:
-        self.answer_buf: list[str] = []
-        self.reasoning_buf: list[str] = []
-
-    def __getattr__(self, name: str) -> Callable[..., None]:
-        if name in {
-            "activity_start",
-            "activity_update",
-            "activity_stop",
-            "write_reasoning",
-            "close_reasoning",
-            "write_answer_token",
-            "write_answer_complete",
-            "finalize_line",
-            "tool_calls_started",
-            "tool_result",
-            "tool_item_started",
-            "tool_item_updated",
-            "tool_item_finished",
-            "tool_group_closed",
-            "turn_finished",
-            "info",
-            "note_usage",
-        }:
-            return lambda *args, **kwargs: None
-        raise AttributeError(name)
-
-
-@dataclass(frozen=True, slots=True)
-class StreamRunnerOptions:
-    """Optional compatibility renderer settings supplied by app assembly."""
-
-    renderer: Any | None = None
-
-
 class AgentTurnRuntime:
-    """Execute exactly one frozen TurnContext without any UI dependency."""
+    """Execute exactly one frozen TurnContext without any UI dependency.
+
+    The runtime only consumes the execution request, the cancellation signal
+    and an event sink.  It never touches a renderer: display sinks belong to
+    the UI wrapper (``synapse.ui.stream.stream_agent``), which callers may
+    inject explicitly as the stream runner with their own renderer closure.
+    """
 
     def __init__(
         self,
         async_runtime: AsyncRuntime | None = None,
         *,
         stream_runner: Callable[..., Any] | None = None,
-        runner_options: StreamRunnerOptions | None = None,
     ) -> None:
         self._async_runtime = async_runtime or get_async_runtime()
         self._stream_runner = stream_runner
-        self._runner_options = runner_options or StreamRunnerOptions()
         self._run_lock = threading.Lock()
         self._running_turns: set[str] = set()
 
@@ -128,7 +90,6 @@ class AgentTurnRuntime:
                 sink,
                 token,
                 stream_runner,
-                self._runner_options,
             )
         finally:
             self._release(context.turn_id)
@@ -187,7 +148,6 @@ class AgentTurnRuntime:
         sink: AgentEventSink | None,
         token: CancelToken,
         stream_runner: Callable[..., Any],
-        runner_options: StreamRunnerOptions,
     ) -> TurnResult:
         settings = context.settings
         safe_sink = _SafeEventSink(sink) if sink is not None else None
@@ -208,7 +168,6 @@ class AgentTurnRuntime:
                 token_stream=bool(getattr(settings, "token_stream", True)),
                 prefer_async=True,
                 max_concurrency=int(getattr(settings, "max_concurrency", 4)),
-                sink=runner_options.renderer or _HeadlessRenderer(),
                 event_sink=safe_sink,
                 turn_id=context.turn_id,
                 cancel_event=token.event,

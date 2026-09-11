@@ -230,6 +230,42 @@ def test_resolve_launch_target_no_args_still_has_workspace_key(tmp_path):
     assert root is None
 
 
+def test_resolve_launch_target_model_forwarding_into_settings(tmp_path, monkeypatch):
+    """Regression: _resolve_launch_target must not leak ``active_model``.
+
+    ``_resolve_launch_target(model=...)`` returned an ``overrides`` dict that
+    contained ``active_model``, which ``_resolve_settings`` does not accept;
+    ``synapse tui --model <alias>`` therefore crashed with a TypeError on
+    ``_resolve_settings(**overrides)``.  The alias forwarding belongs to
+    ``_resolve_settings``, which maps ``model`` to both ``model`` and
+    ``active_model`` overrides.
+    """
+    from synapse.cli import _resolve_launch_target, _resolve_settings
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "synapse.cli.load_settings",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    overrides, thread_id, root = _resolve_launch_target(
+        workspace=tmp_path,
+        session=None,
+        project=None,
+        model="deepseek-v4-flash",
+        require_approval=False,
+        readonly=False,
+        debug=False,
+    )
+    # The overrides dict must stay a subset of _resolve_settings' parameters.
+    settings = _resolve_settings(**overrides)
+    assert settings is not None
+    assert captured["model"] == "deepseek-v4-flash"
+    assert captured["active_model"] == "deepseek-v4-flash"
+    assert thread_id is None
+    assert root == tmp_path.resolve()
+
+
 def test_launch_tui_restarts_for_drawer_project_and_session(monkeypatch, tmp_path):
     calls: list[dict[str, object]] = []
 

@@ -159,7 +159,11 @@ def test_cancel_reason_survives_event_compatibility_boundary() -> None:
         runtime_loop.close()
 
 
-def test_headless_renderer_enables_structured_tool_item_events() -> None:
+def test_headless_pure_sink_emits_structured_tool_item_events() -> None:
+    """Headless (default runtime parser) emits tool lifecycle events without a
+    renderer: the structured tool-item path is runtime state, not renderer
+    capability."""
+
     class _ToolAgent:
         def stream(self, payload: Any, config: Any = None, **kwargs: Any):
             del payload, config, kwargs
@@ -242,6 +246,27 @@ def test_headless_renderer_enables_structured_tool_item_events() -> None:
         assert result.tool_calls == 2
     finally:
         runtime_loop.close()
+
+
+def test_headless_runtime_never_contacts_a_renderer() -> None:
+    """Headless execution forwards only the event sink, never a renderer."""
+    captured: dict[str, Any] = {}
+
+    def spy_runner(*args: Any, **kwargs: Any) -> StreamResult:
+        del args
+        captured["kwargs"] = kwargs
+        return _completed_result()
+
+    runtime_loop = AsyncRuntime(name="test-turn-no-renderer")
+    try:
+        runtime = AgentTurnRuntime(runtime_loop, stream_runner=spy_runner)
+        result = runtime.run(_context(turn_id="no-renderer-turn"), timeout=3)
+        assert result.status is TurnStatus.COMPLETED
+    finally:
+        runtime_loop.close()
+    assert "sink" not in captured["kwargs"], "headless must not pass any renderer sink"
+    assert "renderer" not in captured["kwargs"], "headless must not reference a renderer"
+    assert "event_sink" in captured["kwargs"], "events flow through the event sink only"
 
 
 def test_runtime_passes_frozen_turn_id_to_stream_runner() -> None:
