@@ -72,6 +72,69 @@ uses a held lock in the state directory, runs in the foreground, and stops on
 SIGINT/SIGTERM. It does not provide install/start/stop/status controls and does
 not migrate the CLI, TUI, or ACP consumers.
 
+## Web 控制台（React，正式宿主）
+
+`web/` 是 React + TypeScript 单页控制台。生产路径使用独立正式宿主
+`synapse-web-console`（薄 aiohttp 进程：静态产物 + 配对 API + WebSocket 中继），
+不依赖 Vite 开发中间件承担业务；Vite 只在开发时做静态热更新与受控代理。旧的
+`synapse-web`（textual-serve 把 TUI 放进浏览器）入口保持不变、仍可用，与正式宿主
+语义不同。
+
+先构建前端产物再启动（终端 1 跑前台 daemon，终端 2 跑宿主）：
+
+```bash
+cd web && npm ci && npm run build && cd ..
+# 1) 启动 runtime daemon（前台进程；--port 0 = 内核分配端口）
+synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
+# 2) 启动 Web 控制台宿主（产物目录需显式指定；wheel 不内置 web/dist）
+synapse-web-console --workspace . --static-dir web/dist \
+  --state-dir ~/.synapse/runtime --port 8080
+```
+
+宿主启动时 stdout 恰好一行 JSON 元数据，配对码只出现在 stderr：
+
+```
+synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
+```
+
+打开 <http://127.0.0.1:8080/> 输入该 8 位配对码完成配对（单次使用，默认 300s
+过期）。会话 cookie 只在 `POST /api/pair` 成功时签发；`GET /api/bootstrap` 已删除，
+恒返回 405 且不签发 cookie。
+
+宿主默认且仅支持 loopback（127.0.0.1/localhost/::1，配置层强制），是 loopback
+单用户工具，不是公网多租户安全产品。已建立的边界：浏览器始终拿不到 daemon
+bearer token/env/model secret——宿主服务端持有 token 并以 `Authorization: Bearer`
+连接 daemon，再中继 JSON-RPC 帧（唯一例外：指向非宿主自身项目的请求由宿主以 typed
+`not_found` 拒绝、**不进入 daemon**，边界与残余风险见
+`docs/web-console/formal-host.md` §4.1）；URL 不再携带 token，前端也不再硬编码
+token/project/workspace。配对码只存在于宿主进程内存与 stderr，不落盘、不进 stdout
+JSON。`/runtime-ws` 中继在升级前要求 Host 与 Origin 精确匹配（含端口）+ 有效会话
+cookie；浏览器断线不会取消 daemon 中仍在运行的 turn。静态服务带路径遍历/符号
+链接逃逸防护、帧大小上界、SPA 回退与 no-store/asset immutable 缓存规则；中继出站
+缓冲另有显式上界（64 帧 / 8 MiB，取先到者），超限即断开并计数。已配对浏览器可只读
+`GET /api/runtime-status` 获取 daemon 端点、state dir 与 `start synapse-runtime` 提示
+（响应不含 token；`POST` → 405）。
+
+**明确不承诺**（详见 `docs/web-console/formal-host.md` §4、§9）：`Host`/`Origin`/
+`Sec-Fetch-Site` 都是客户端可伪造的头，只算纵深防御，真正的门是配对码；本切片
+不支持 TLS/反向代理（外部端口 ≠ 绑定端口）；会话不持久化，宿主重启后需重新配对；
+会话 TTL 到期不主动断开已建立的中继；中继缓冲上界是**进程内**上界（不含
+aiohttp/内核 socket 缓冲，**不等于进程 RSS 上界**）；跨项目拒绝对不可读/非文本帧
+fail-open，且白名单与 `protocol.decode_params` 无源码级绑定，安全性依赖 daemon 的
+严格校验；历史投影与实时 broker 之间不承诺跨存储原子一致（见 `docs/sessions.md`）。
+
+开发模式（仅热更新与受控代理，不经中间件读 token）：
+
+```bash
+synapse-web-console --workspace . --static-dir web/dist --port 8080 &
+cd web && npm run dev     # 打开 http://127.0.0.1:5173
+```
+
+Vite 只把 `/api` 与 `/runtime-ws` 代理到宿主，并把转发请求的 `Origin` 重写为宿主
+origin；它不直连 daemon、不注入任何凭据、不读 token 文件，`server.host` 保持
+loopback 默认值，因此不构成认证旁路，宿主也不因 dev 放宽任何校验。dev 下同样需要
+配对码（从宿主 stderr 读取）。完整命令与参数见 `docs/web-console/formal-host.md`。
+
 Open a session in any registered project from the global catalog:
 
 ```bash

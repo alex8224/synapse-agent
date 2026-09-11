@@ -10,6 +10,7 @@ authors = [
 requires-python = ">=3.12"
 
 dependencies = [
+    "aiohttp==3.14.3",
     "synapse-core-tool>=0.1.0,<0.2.0",
     "synapse-tool-compress-core>=0.1.2,<0.2.0",
     "aiosqlite==0.22.1",
@@ -46,6 +47,7 @@ Changelog = "https://github.com/alex8224/synapse-agent/blob/main/CHANGELOG.md"
 [project.scripts]
 synapse = "synapse.entry:main"
 synapse-web = "synapse.web:main"
+synapse-web-console = "synapse.web_console.entry:main"
 synapse-acp = "synapse.acp.server:main"
 synapse-runtime = "synapse.runtime.daemon.entry:main"
 

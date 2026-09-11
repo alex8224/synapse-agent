@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #f8f9fa;
+  color: #191c1d;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+@layer utilities {
+  .font-kbd { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 12px; font-weight: 500; }
+  .font-code-md { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 450; }
+  .font-body-md { font-family: 'Inter', sans-serif; font-size: 14px; line-height: 20px; font-weight: 400; }
+  .font-code-sm { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 16px; font-weight: 450; }
+  .font-body-sm { font-family: 'Inter', sans-serif; font-size: 13px; line-height: 18px; font-weight: 400; }
+  .font-label-caps { font-family: 'Inter', sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
+}

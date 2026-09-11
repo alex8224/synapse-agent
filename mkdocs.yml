@@ -102,5 +102,9 @@ nav:
   - 会话管理: sessions.md
   - Skills 插件: skills.md
   - 权限与安全: permissions.md
+  - Web 控制台:
+      - 总体方案: web-console/index.md
+      - 实施进度: web-console/progress.md
+      - 正式宿主、配对认证与部署: web-console/formal-host.md
   - 原生核心工具: native-core-tool.md
   - Docker Web TUI: docker-web.md
