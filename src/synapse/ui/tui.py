@@ -413,6 +413,9 @@ class CodingAgentApp(App[None]):
         self._project_switch_generation = 0
         # Global project catalog (projection) and per-turn summary persistence.
         self._project_catalog: Any = None
+        # Memoized (project_root, catalog override) -> project id; see
+        # _current_project_id.
+        self._project_id_cache: tuple[Any, str] | None = None
         self._summary_store: Any = None
         self._session_store: Any = None
         self._context_tokens = 0
@@ -1373,27 +1376,53 @@ class CodingAgentApp(App[None]):
         project drawer would classify same-workspace sessions as cross-project
         and restart the whole TUI (cancelling every running session) instead
         of switching in place.
+
+        A successful catalog lookup is memoized because a catalog row is
+        immutable for a workspace path (``register_project`` preserves it) and
+        the chrome renders call this several times per repaint (bottombar
+        model/mcp/codex/key-hints plus the topbar title). Every uncached lookup
+        opens, bootstraps and closes the SQLite catalog, which dominated the
+        TUI thread while a turn was streaming. The memo key is exactly the
+        lookup input, so a project switch (``project_root``) or a
+        catalog-override change invalidates it implicitly. The one way to break
+        that immutability is ``ProjectCatalog.delete_project`` followed by a
+        re-register of the same path (a fresh id); no app path does that today,
+        so a future "forget project" action must clear
+        ``self._project_id_cache``.
+
+        The ``project.json`` fallback is deliberately left uncached: the
+        startup catalog worker registers this workspace only after the first
+        frames have rendered, so an id minted from ``project.json`` can still be
+        superseded by the catalog id. Not caching it makes it impossible for the
+        memo to pin a pre-registration id, at the cost of one small file read
+        per call instead of a database open.
         """
+        key = (self.project_root, getattr(self.settings, "project_catalog_path", None))
+        cached = self.__dict__.get("_project_id_cache")
+        if cached is not None and cached[0] == key:
+            return cached[1]
         try:
             from synapse.projects.catalog import ProjectCatalog
             from synapse.runtime.projects.identity import (
                 ensure_project_identity,
                 read_project_identity,
+                reconcile_project_identity,
             )
 
             catalog = ProjectCatalog(self.settings.resolved_catalog_path())
             try:
                 info = catalog.get_project(workspace=self.project_root)
                 if info is not None:
-                    # Reconcile project.json so a later ensure_project_identity
-                    # can never mint a second id for the same workspace.
+                    # The catalog row is keyed by this exact workspace path, so
+                    # it wins: rewrite a stale project.json rather than let it
+                    # keep a second id for the same workspace. This has to be
+                    # `reconcile_`, not `ensure_`, because the latter returns the
+                    # existing project.json id unchanged.
                     try:
-                        ensure_project_identity(
-                            self.project_root,
-                            catalog_project_id=info.project_id,
-                        )
+                        reconcile_project_identity(self.project_root, info.project_id)
                     except Exception:  # noqa: BLE001 - cache write is optional
                         pass
+                    self.__dict__["_project_id_cache"] = (key, info.project_id)
                     return info.project_id
             finally:
                 try:

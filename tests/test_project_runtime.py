@@ -13,6 +13,7 @@ from synapse.runtime.projects.identity import (
     ensure_project_identity,
     project_file_for,
     read_project_identity,
+    reconcile_project_identity,
 )
 from synapse.runtime.projects.runtime import (
     ProjectRegistry,
@@ -135,6 +136,34 @@ def test_ensure_project_identity_uses_catalog_id(tmp_path: Path) -> None:
         ensure_project_identity(tmp_path, catalog_project_id="catalog-id") == "catalog-id"
     )
     assert read_project_identity(tmp_path)["project_id"] == "catalog-id"
+
+
+def test_reconcile_project_identity_rewrites_stale_file(tmp_path: Path) -> None:
+    """A catalog id resolved for this path wins over a stale project.json."""
+    file = project_file_for(tmp_path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps({"schema_version": 1, "project_id": "stale-id", "name": "kept"}))
+
+    data = reconcile_project_identity(tmp_path, "catalog-id")
+
+    assert data["project_id"] == "catalog-id"
+    assert data["name"] == "kept"  # unrelated keys survive the rewrite
+    assert read_project_identity(tmp_path)["project_id"] == "catalog-id"
+
+
+def test_reconcile_project_identity_leaves_matching_file_untouched(tmp_path: Path) -> None:
+    file = project_file_for(tmp_path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps({"schema_version": 1, "project_id": "same-id"}))
+    before = file.stat().st_mtime_ns
+
+    assert reconcile_project_identity(tmp_path, "same-id")["project_id"] == "same-id"
+    assert file.stat().st_mtime_ns == before  # no rewrite
+
+
+def test_reconcile_project_identity_creates_missing_file(tmp_path: Path) -> None:
+    assert reconcile_project_identity(tmp_path, "fresh-id")["project_id"] == "fresh-id"
+    assert read_project_identity(tmp_path)["project_id"] == "fresh-id"
 
 
 # ---------------------------------------------------------------------------
