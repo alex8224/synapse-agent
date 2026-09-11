@@ -71,8 +71,8 @@ export const TopBar: React.FC = () => {
   const diagnostics = runtimeDiagnostics;
 
   return (
-    <header className="bg-white border-b border-[#e5e7eb] flex justify-between items-center h-10 px-4 w-full shrink-0 z-20 select-none text-xs font-mono">
-      <div className="flex items-center space-x-3">
+    <header className="bg-white border-b border-[#e5e7eb] grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 h-10 px-4 w-full shrink-0 z-20 select-none text-xs font-mono">
+      <div className="flex min-w-0 items-center space-x-3">
         <button
           onClick={toggleSidebar}
           className="text-gray-700 hover:bg-gray-100 p-1 rounded transition-colors flex items-center"
@@ -81,25 +81,32 @@ export const TopBar: React.FC = () => {
           <span className="material-symbols-outlined text-[18px]">dock_to_left</span>
         </button>
 
-        <div className="flex items-center space-x-1.5 text-gray-800">
+        <div className="flex min-w-0 items-center space-x-1.5 text-gray-800">
           <span className="material-symbols-outlined text-[16px] text-gray-600">folder</span>
-          <span>{workspacePath}</span>
+          <span className="truncate">{workspacePath}</span>
         </div>
 
-        <span className="text-gray-300 mx-1">|</span>
-
-        <div className="flex items-center space-x-1.5 text-gray-800">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-          <span className="material-symbols-outlined text-[15px] text-gray-600">fork_right</span>
-          <span>{gitBranch}</span>
-        </div>
-
-        <span className="text-gray-300 mx-1">|</span>
-
-        <div className="text-blue-600 font-medium">{sessionTitle}</div>
+        {/* Branch context only exists for a git-managed workspace: a non-git
+            project renders no chip (and no orphan separator) at all. */}
+        {gitBranch !== '' && (
+          <>
+            <span className="text-gray-300 mx-1">|</span>
+            <div className="flex min-w-0 items-center space-x-1.5 text-gray-800">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+              <span className="material-symbols-outlined text-[15px] text-gray-600">
+                fork_right
+              </span>
+              <span className="truncate">{gitBranch}</span>
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="flex items-center text-gray-600 text-xs">
+      {/* Session label: centred in the header by the symmetric grid, so it never
+          hangs off the branch chip. */}
+      <div className="justify-self-center truncate font-medium text-blue-600">{sessionTitle}</div>
+
+      <div className="flex items-center justify-self-end text-gray-600 text-xs">
         {/* Telemetry lives in the bottom status bar; the header keeps context + panels. */}
         <div className="relative flex items-center space-x-2 text-gray-600">
           <button
