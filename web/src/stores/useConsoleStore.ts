@@ -31,10 +31,12 @@ import {
 } from './runtimeDiagnosticsView.ts';
 import type { RuntimeDiagnosticsSnapshot } from './runtimeDiagnosticsView.ts';
 import {
-  mapHistoryEvents,
-  toSessionListView,
-  latestHistoryParams,
+  describeHistoryFailure,
   earlierHistoryParams,
+  latestHistoryParams,
+  mapHistoryEvents,
+  readHistoryPage,
+  toSessionListView,
 } from './historyMapper.ts';
 import type { TranscriptMessage, SessionItem } from './historyMapper.ts';
 import {
@@ -42,6 +44,8 @@ import {
   mcpStatusLabel,
 } from './runtimeConfigMapper.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
+import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
+import type { UsageView } from './usageView.ts';
 
 // Re-exported for callers that imported these from the store in earlier phases.
 export type { TranscriptMessage, SessionItem } from './historyMapper';
@@ -313,11 +317,15 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     sessions: [],
     sessionsNextOffset: null,
     sessionsTotal: 0,
+    sessionQuery: '',
     messages: [],
     activeTurnId: null,
     runtimeStatus: 'idle',
     steerQueueCount: 0,
     pendingApproval: null,
+    activity: null,
+    usage: null,
+    metricsLabel: '',
   });
   void connectAuthenticatedRuntime(client, project, epoch);
 }
@@ -460,14 +468,24 @@ interface ConsoleStore {
   loadEarlierHistory: () => Promise<void>;
   createNewSession: () => Promise<void>;
   fetchSessions: () => Promise<void>;
-  // Session list pagination (first page only; no unbounded auto paging).
+  // Session list pagination (explicit paging; no unbounded auto paging).
   sessionsNextOffset: number | null;
   sessionsTotal: number;
+  sessionsLoading: boolean;
+  loadMoreSessions: () => Promise<void>;
+  /** Sidebar search text; only the sessions loaded so far are searched. */
+  sessionQuery: string;
+  setSessionQuery: (query: string) => void;
+  /** Monotonic signal asking the sidebar to focus its search box (Ctrl+K). */
+  searchFocusToken: number;
+  requestSessionSearchFocus: () => void;
 
   // History pagination / availability state.
   historyLoading: boolean;
   historyHasMore: boolean;
   historyAvailable: boolean | null;
+  /** User-facing reason the last history read failed (null when it succeeded). */
+  historyError: string | null;
   historyStartTurn: number;
   historyEndTurn: number;
   historyTotalTurns: number;
@@ -509,12 +527,16 @@ interface ConsoleStore {
   fetchRuntimeConfig: () => Promise<void>;
   mcpStatus: string;
   runtimeStatus: 'idle' | 'running';
+  /** Transient "what the agent is doing now" line, driven by activity_* events. */
+  activity: ActivityView | null;
+  /** Latest `usage_updated` metrics, also rendered as `metricsLabel`. */
+  usage: UsageView | null;
 
   // Timeline Transcript
   messages: TranscriptMessage[];
   steerQueueCount: number;
   addUserMessage: (text: string) => void;
-  toggleThoughtExpand: (id: string) => void;
+  toggleMessageExpand: (id: string) => void;
 }
 
 // Monotonic epoch guarding every async session attach/load so a stale response
@@ -553,100 +575,6 @@ let lastLiveEpoch: string | null = null;
  */
 let attachCoverage: SessionRecoverabilityResult | null = null;
 
-interface LiveReducibleState {
-  messages: TranscriptMessage[];
-  activeTurnId: string | null;
-  runtimeStatus: 'idle' | 'running';
-  steerQueueCount: number;
-  pendingApproval: PendingApprovalView | null;
-}
-
-/**
- * Pure reducer for one live runtime event against the transcript state.
- * Used both for events delivered in real time and for the replay of events
- * that were buffered while a history page was being loaded.
- */
-function reduceRuntimeEvent(
-  s: LiveReducibleState,
-  event: RuntimeEvent,
-  now: () => Date = () => new Date(),
-): Partial<LiveReducibleState> {
-  const kind = event.kind;
-  const payload = event.payload || {};
-  const next: Partial<LiveReducibleState> = {};
-
-  if (event.turn_id) {
-    next.activeTurnId = event.turn_id;
-  }
-
-  if (kind === 'activity_started') {
-    next.runtimeStatus = 'running';
-  } else if (kind === 'reasoning_delta' && payload.text) {
-    const lastMsg = s.messages[s.messages.length - 1];
-    if (lastMsg && lastMsg.type === 'thought' && lastMsg.id === `thought-${event.turn_id}`) {
-      next.messages = s.messages.map((m) =>
-        m.id === lastMsg.id ? { ...m, content: (m.content || '') + payload.text } : m
-      );
-    } else {
-      next.messages = [
-        ...s.messages,
-        {
-          id: `thought-${event.turn_id}`,
-          type: 'thought',
-          timestamp: now().toLocaleTimeString().slice(0, 5),
-          content: payload.text,
-          duration: 'streaming',
-          expanded: true,
-        },
-      ];
-    }
-  } else if (kind === 'answer_delta' && payload.text) {
-    const lastMsg = s.messages[s.messages.length - 1];
-    if (lastMsg && lastMsg.type === 'assistant' && lastMsg.id === `ans-${event.turn_id}`) {
-      next.messages = s.messages.map((m) =>
-        m.id === lastMsg.id ? { ...m, content: (m.content || '') + payload.text } : m
-      );
-    } else {
-      next.messages = [
-        ...s.messages,
-        {
-          id: `ans-${event.turn_id}`,
-          type: 'assistant',
-          timestamp: now().toLocaleTimeString().slice(0, 5),
-          content: payload.text,
-        },
-      ];
-    }
-  } else if (kind === 'tool_started') {
-    const toolItem = { name: payload.name || 'tool', icon: 'build', duration: '...' };
-    const lastMsg = s.messages[s.messages.length - 1];
-    if (lastMsg && lastMsg.type === 'tool_group' && lastMsg.id === `tools-${event.turn_id}`) {
-      next.messages = s.messages.map((m) =>
-        m.id === lastMsg.id ? { ...m, tools: [...(m.tools || []), toolItem] } : m
-      );
-    } else {
-      next.messages = [
-        ...s.messages,
-        {
-          id: `tools-${event.turn_id}`,
-          type: 'tool_group',
-          timestamp: now().toLocaleTimeString().slice(0, 5),
-          tools: [toolItem],
-        },
-      ];
-    }
-  } else if (kind === 'approval_required') {
-    next.pendingApproval = {
-      turn_id: event.turn_id,
-      actions: payload.actions || [],
-    };
-  } else if (kind === 'turn_completed' || kind === 'turn_cancelled' || kind === 'turn_failed') {
-    next.runtimeStatus = 'idle';
-    next.steerQueueCount = 0;
-  }
-
-  return next;
-}
 
 /**
  * Apply buffered live events that belong to the current subscription.
@@ -734,6 +662,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     historyLoading: true,
     historyHasMore: false,
     historyAvailable: null,
+    historyError: null,
     historyStartTurn: 0,
     historyEndTurn: 0,
     historyTotalTurns: 0,
@@ -742,6 +671,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     runtimeStatus: 'idle',
     steerQueueCount: 0,
     pendingApproval: null,
+    activity: null,
+    usage: null,
+    metricsLabel: '',
   });
   if (!client) return;
   try {
@@ -931,13 +863,18 @@ async function loadInitialHistory(epoch: number): Promise<void> {
   if (!client) return;
   const historyRef = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
   try {
-    const res = await client.readSessionHistory(latestHistoryParams(historyRef));
+    // A content-rich session can exceed the runtime's per-page cap; walk down
+    // to a smaller page instead of leaving the transcript looking empty.
+    const res = await readHistoryPage((limit) =>
+      client.readSessionHistory(latestHistoryParams(historyRef, limit)),
+    );
     if (epoch !== sessionEpoch) return;
     if (res.available) {
       store.setState({
         messages: mapHistoryEvents(res.events, { startTurn: res.start_turn, pageTag: 'latest' }),
         historyLoading: false,
         historyAvailable: true,
+        historyError: null,
         historyHasMore: res.has_more,
         historyStartTurn: res.start_turn,
         historyEndTurn: res.end_turn,
@@ -949,6 +886,7 @@ async function loadInitialHistory(epoch: number): Promise<void> {
       store.setState({
         historyLoading: false,
         historyAvailable: false,
+        historyError: null,
         historyHasMore: false,
         historyStartTurn: 0,
         historyEndTurn: 0,
@@ -961,7 +899,11 @@ async function loadInitialHistory(epoch: number): Promise<void> {
   } catch (err) {
     if (epoch === sessionEpoch) {
       console.error('loadSessionHistory error:', err);
-      store.setState({ historyLoading: false });
+      // Never leave the user staring at an empty transcript with no reason.
+      store.setState({
+        historyLoading: false,
+        historyError: describeHistoryFailure(err),
+      });
       flushBufferedLiveEvents(true);
     }
   }
@@ -983,11 +925,15 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   historyLoading: false,
   historyHasMore: false,
   historyAvailable: null,
+  historyError: null,
   historyStartTurn: 0,
   historyEndTurn: 0,
   historyTotalTurns: 0,
   sessionsNextOffset: null,
   sessionsTotal: 0,
+  sessionsLoading: false,
+  sessionQuery: '',
+  searchFocusToken: 0,
   isSidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ isSidebarCollapsed: !s.isSidebarCollapsed })),
 
@@ -1034,6 +980,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       historyLoading: false,
       historyHasMore: false,
       historyAvailable: null,
+      historyError: null,
       historyStartTurn: 0,
       historyEndTurn: 0,
       historyTotalTurns: 0,
@@ -1042,6 +989,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       runtimeStatus: 'idle',
       steerQueueCount: 0,
       pendingApproval: null,
+      activity: null,
+      usage: null,
+      metricsLabel: '',
     }));
     if (client) {
       try {
@@ -1090,6 +1040,35 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       console.error('Failed to fetch sessions:', e);
     }
   },
+  loadMoreSessions: async () => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    const { currentSession, sessions, sessionsNextOffset, sessionsLoading } = get();
+    if (sessionsLoading || sessionsNextOffset === null) return;
+    set({ sessionsLoading: true });
+    try {
+      const view = toSessionListView(
+        await client.listSessions({
+          project_id: currentSession.project_id,
+          offset: sessionsNextOffset,
+        }),
+      );
+      set((s) => ({
+        // A refresh that landed while this page was in flight wins: never append
+        // a page onto a list it was not read from.
+        sessions: s.sessions === sessions ? [...s.sessions, ...view.items] : s.sessions,
+        sessionsNextOffset: view.next_offset,
+        sessionsTotal: view.total,
+        sessionsLoading: false,
+      }));
+    } catch (e) {
+      console.error('Failed to load more sessions:', e);
+      set({ sessionsLoading: false });
+    }
+  },
+  setSessionQuery: (query) => set({ sessionQuery: query }),
+  requestSessionSearchFocus: () =>
+    set((s) => ({ searchFocusToken: s.searchFocusToken + 1, isSidebarCollapsed: false })),
   cancelActiveTurn: async () => {
     const client = requireRuntimeClient();
     if (!client) return;
@@ -1127,12 +1106,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const historyRef = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
     set({ historyLoading: true });
     try {
-      const res = await client.readSessionHistory(
-        earlierHistoryParams(historyRef, historyStartTurn),
+      const res = await readHistoryPage((limit) =>
+        client.readSessionHistory(earlierHistoryParams(historyRef, historyStartTurn, limit)),
       );
       if (epoch !== sessionEpoch) return;
       if (!res.available) {
-        set({ historyLoading: false, historyAvailable: false, historyHasMore: false });
+        set({
+          historyLoading: false,
+          historyAvailable: false,
+          historyError: null,
+          historyHasMore: false,
+        });
         return;
       }
       const earlier = mapHistoryEvents(res.events, {
@@ -1143,6 +1127,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         messages: [...earlier, ...s.messages],
         historyLoading: false,
         historyAvailable: true,
+        historyError: null,
         historyHasMore: res.has_more,
         historyStartTurn: res.start_turn,
         historyEndTurn: res.end_turn,
@@ -1152,7 +1137,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     } catch (err) {
       if (epoch === sessionEpoch) {
         console.error('loadEarlierHistory error:', err);
-        set({ historyLoading: false });
+        set({ historyLoading: false, historyError: describeHistoryFailure(err) });
         flushBufferedLiveEvents();
       }
     }
@@ -1171,6 +1156,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   canSetThinking: false,
   canToggleMcpGlobal: false,
   runtimeStatus: 'idle',
+  activity: null,
+  usage: null,
   fetchRuntimeConfig: async () => {
     // RPC-backed read only; the session model is resolved from open.view and
     // preserved across the refresh (see refreshRuntimeConfig).
@@ -1356,14 +1343,19 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       sessions: [],
       sessionsNextOffset: null,
       sessionsTotal: 0,
+      sessionQuery: '',
       messages: [],
       activeTurnId: null,
       runtimeStatus: 'idle',
       steerQueueCount: 0,
       pendingApproval: null,
+      activity: null,
+      usage: null,
+      metricsLabel: '',
       historyLoading: false,
       historyHasMore: false,
       historyAvailable: null,
+      historyError: null,
       historyStartTurn: 0,
       historyEndTurn: 0,
       historyTotalTurns: 0,
@@ -1502,6 +1494,6 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     };
     set((s) => ({ messages: [...s.messages, newMsg] }));
   },
-  toggleThoughtExpand: (id) =>
+  toggleMessageExpand: (id) =>
     set((s) => ({ messages: s.messages.map((m) => (m.id === id ? { ...m, expanded: !m.expanded } : m)) })),
 }));

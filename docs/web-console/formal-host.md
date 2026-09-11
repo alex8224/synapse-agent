@@ -327,7 +327,8 @@ pytest**，含单文件与 `--collect-only`）：
 | `pytest tests/test_web_console_vertical.py -q` | `32 passed` 连续 2 次（63.66s / 61.36s），0 xfailed | 同上 |
 | `pytest tests/test_web_console_host.py tests/test_web_console_security.py -q` | `70 passed in 97.54s` | `.tmp/phase5-f2-final-acceptance-handoff.md` §4.1 |
 | 全量 `pytest -q` | `2875 passed, 2 skipped`（退出码 0） | `.tmp/phase5-d3-scope-reverify-handoff.md` §4.1；**本轮未复核** |
-| `cd web && npm test` / `npm run lint` | 67 passed / 0 fail；`Found 0 warnings and 0 errors.` | `.tmp/phase5-f2-final-acceptance-handoff.md` §4.1 |
+| `cd web && npm test` / `npm run lint` | `144 passed` / 0 fail；`Found 0 warnings and 0 errors.`（事件消费补齐 + 文本渲染轮次实测；更早的 67 项见交接） | 本文件 §8（本轮实测） |
+| `cd web && npm run build` | `tsc -b` 无类型错误，`vite build` 成功（42 modules） | 本文件 §8（本轮实测） |
 | `uv build` | `Successfully built dist\synapse_cli_agent-0.1.44.tar.gz` / `dist\synapse_cli_agent-0.1.44-py3-none-any.whl`；wheel 含 `synapse/web_console/*.py` 与 5 个 console script，不含 `web/dist` | 同上（§4.1 第 6 条） |
 
 > 口径：本切片是「**有条件可验收**」，不是「安全验收通过」「全量回归通过」；
@@ -377,5 +378,12 @@ pytest**，含单文件与 `--collect-only`）：
   `Origin` 重写、以及经代理/直连访问真实宿主的同码同体校验；结论不可移植到
   Firefox/Safari，也无 DOM 级前端渲染测试。
 - 未做（超出本切片范围）：反向代理/TLS 部署文档、多项目切换 UI、会话注册表持久化、
-  前端消费 `/api/runtime-status`（宿主侧已完成，UI 仍只显示冻结的通用关闭文案）、
   发布与 scratch/图片清理。
+- 前端事件消费已与 TUI 对齐：`web/src/stores/liveEventReducer.ts` 归约
+  activity / reasoning / answer / tool_* / subagent / usage / info / approval /
+  terminal 事件（覆盖表见 `index.md` §4）；`GET /api/runtime-status` 也已由前端消费
+  （`web/src/client/runtimeStatus.ts` + `RuntimeDiagnosticsBanner`，仅在 relay 不可用时
+  显示，读取失败则完全不渲染）。助手/思考内容已按 Markdown 渲染，围栏代码块带语言标签、
+  复制与按语言高亮（`web/src/markdown/`，无第三方依赖、不生成 HTML，见 `index.md` §5）。
+  仍未实现：`runtime.artifacts.*` 文件树与差异浏览、工具**完整**输出（事件流只带有界
+  `preview`）、LaTeX/Mermaid 图形渲染（web 端按普通代码块显示）。

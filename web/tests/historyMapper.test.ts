@@ -10,9 +10,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  describeHistoryFailure,
   earlierHistoryParams,
+  historyToolItem,
+  isHistoryTooLarge,
   latestHistoryParams,
   mapHistoryEvents,
+  readHistoryPage,
   timeLabelFromIso,
   toSessionItem,
   toSessionListView,
@@ -96,7 +100,8 @@ test('mapHistoryEvents renders user/answer/thought/tools and skips meta and empt
   assert.deepEqual(messages.map((m) => m.type), ['user', 'tool_group', 'assistant']);
   assert.equal(messages[0].content, 'fix the build');
   assert.equal(messages[0].timestamp, 'Turn 7');
-  assert.deepEqual(messages[1].tools, [{ name: 'read', icon: 'build', duration: 'done' }]);
+  assert.deepEqual(messages[1].tools, [historyToolItem('hist-x-latest-2-0', 'read')]);
+  assert.equal(messages[1].finished, true);
   assert.equal(messages[2].content, 'done');
   assert.equal(messages[2].timestamp, 'Turn 7'); // answer stays on the same turn
 });
@@ -144,4 +149,70 @@ test('earlier pages use distinct ids so prepending never collides on React keys'
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(older[0].timestamp, 'Turn 1');
   assert.equal(newer[0].timestamp, 'Turn 21');
+});
+
+function tooLarge(): Error {
+  return Object.assign(new Error('runtime service error'), {
+    service_code: 'history_too_large',
+  });
+}
+
+test('readHistoryPage shrinks the page while the runtime reports history_too_large', async () => {
+  const seen: number[] = [];
+  const result = await readHistoryPage(async (limit) => {
+    seen.push(limit);
+    if (limit > 2) throw tooLarge();
+    return `page:${limit}`;
+  });
+  assert.deepEqual(seen, [20, 10, 5, 2]);
+  assert.equal(result, 'page:2');
+});
+
+test('readHistoryPage rethrows the size rejection when even the smallest page fails', async () => {
+  const seen: number[] = [];
+  await assert.rejects(
+    () =>
+      readHistoryPage(async (limit) => {
+        seen.push(limit);
+        throw tooLarge();
+      }),
+    (err: unknown) => isHistoryTooLarge(err),
+  );
+  assert.deepEqual(seen, [20, 10, 5, 2, 1]);
+});
+
+test('readHistoryPage propagates a non-size failure immediately', async () => {
+  const seen: number[] = [];
+  await assert.rejects(
+    () =>
+      readHistoryPage(async (limit) => {
+        seen.push(limit);
+        throw Object.assign(new Error('missing session'), { service_code: 'not_found' });
+      }),
+    /missing session/,
+  );
+  assert.deepEqual(seen, [20], 'a non-size error must not trigger a smaller retry');
+});
+
+test('history request builders carry an explicit page size', () => {
+  assert.equal(latestHistoryParams(SESSION).limit, 20);
+  assert.equal(latestHistoryParams(SESSION, 3).limit, 3);
+  assert.deepEqual(earlierHistoryParams(SESSION, 5, 2), {
+    session: SESSION,
+    before_turn: 5,
+    limit: 2,
+  });
+});
+
+test('history failure helpers recognise the size rejection and stay value-free', () => {
+  assert.equal(isHistoryTooLarge(tooLarge()), true);
+  assert.equal(isHistoryTooLarge(new Error('x')), false);
+  assert.equal(isHistoryTooLarge(null), false);
+  assert.equal(isHistoryTooLarge('history_too_large'), false);
+  assert.match(describeHistoryFailure(tooLarge()), /history_too_large/);
+  assert.equal(
+    describeHistoryFailure(Object.assign(new Error('x'), { service_code: 'not_found' })),
+    '历史加载失败（not_found）。',
+  );
+  assert.equal(describeHistoryFailure(new Error('plain failure')), '历史加载失败：plain failure');
 });

@@ -1,0 +1,233 @@
+/**
+ * Pure formatting for the `usage_updated` runtime event.
+ *
+ * The runtime reports token/rate metrics on every usage update; the console
+ * renders them as one compact TopBar label while keeping the raw numbers in the
+ * store.  Deliberately dependency-free so it is exercised directly by the Node
+ * built-in test runner (`node --test`), like `historyMapper` / `recoveryDecider`.
+ */
+
+export interface UsageView {
+  turnInput: number;
+  turnOutput: number;
+  turnCache: number;
+  lastInput: number;
+  lastOutput: number;
+  lastCache: number;
+  outputTokensPerSecond: number | null;
+  ttftS: number | null;
+  rateBasis: string;
+  rateEstimated: boolean;
+  contextSize: number | null;
+  modelCalls: number;
+}
+
+export const EMPTY_USAGE: UsageView = {
+  turnInput: 0,
+  turnOutput: 0,
+  turnCache: 0,
+  lastInput: 0,
+  lastOutput: 0,
+  lastCache: 0,
+  outputTokensPerSecond: null,
+  ttftS: null,
+  rateBasis: 'end_to_end',
+  rateEstimated: false,
+  contextSize: null,
+  modelCalls: 0,
+};
+
+function int(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0;
+}
+
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Normalize one `UsagePayload` JSON object into the console view model. */
+export function parseUsagePayload(payload: Record<string, unknown>): UsageView {
+  const context = num(payload.context_size);
+  return {
+    turnInput: int(payload.turn_input),
+    turnOutput: int(payload.turn_output),
+    turnCache: int(payload.turn_cache),
+    lastInput: int(payload.last_input),
+    lastOutput: int(payload.last_output),
+    lastCache: int(payload.last_cache),
+    outputTokensPerSecond: num(payload.output_tokens_per_second),
+    ttftS: num(payload.ttft_s),
+    rateBasis: typeof payload.rate_basis === 'string' ? payload.rate_basis : 'end_to_end',
+    rateEstimated: payload.rate_estimated === true,
+    contextSize: context === null ? null : Math.trunc(context),
+    modelCalls: int(payload.model_calls),
+  };
+}
+
+/** `1234` -> `1.2k`, `1234567` -> `1.2M` (token counts are always >= 0). */
+export function compactCount(value: number): string {
+  const n = Math.max(0, Math.trunc(value));
+  if (n < 1000) return String(n);
+  if (n < 1000000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1000000).toFixed(1)}M`;
+}
+
+/**
+ * Compact metrics label for the TopBar, e.g.
+ * `up 12.3k down 4.5k - ctx 45.0k - 32.1 tok/s - 3 steps`.
+ *
+ * Returns `''` when there is nothing real to show, so the header renders no
+ * placeholder (same rule as the pre-existing `metricsLabel !== ''` guard).
+ */
+export function formatUsageMetrics(usage: UsageView | null): string {
+  if (usage === null) return '';
+  const parts: string[] = [];
+  if (usage.turnInput > 0 || usage.turnOutput > 0) {
+    parts.push(`up ${compactCount(usage.turnInput)} down ${compactCount(usage.turnOutput)}`);
+  }
+  if (usage.turnCache > 0) {
+    parts.push(`cache ${compactCount(usage.turnCache)}`);
+  }
+  if (usage.contextSize !== null && usage.contextSize > 0) {
+    parts.push(`ctx ${compactCount(usage.contextSize)}`);
+  }
+  if (usage.outputTokensPerSecond !== null && usage.outputTokensPerSecond > 0) {
+    parts.push(`${usage.outputTokensPerSecond.toFixed(1)} tok/s${usage.rateEstimated ? '~' : ''}`);
+  }
+  if (usage.modelCalls > 0) {
+    parts.push(`${usage.modelCalls} steps`);
+  }
+  return parts.join(' - ');
+}
+
+/** One compact metric in the TopBar usage bar. */
+export interface UsageSegment {
+  key: 'tokens' | 'context' | 'rate' | 'ttft' | 'steps';
+  /** Short Chinese label rendered before the value (empty when the unit speaks). */
+  label: string;
+  /** Compact value for the bar. */
+  value: string;
+  /** True for the metric the header emphasizes (context occupancy). */
+  emphasis: boolean;
+}
+
+/** `20612` -> `20,612`; deterministic grouping (no locale/ICU dependency). */
+export function fullCount(value: number): string {
+  return Math.max(0, Math.trunc(value))
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/**
+ * Structured segments for the TopBar usage bar.
+ *
+ * Replaces the single `up X down Y - ...` log line: each metric becomes its own
+ * segment so the header can group, separate and emphasize them, and so the
+ * compact bar can omit the numbers that only matter on hover.
+ */
+export function usageSegments(usage: UsageView | null): UsageSegment[] {
+  if (usage === null) return [];
+  const contextSize = usage.contextSize !== null && usage.contextSize > 0 ? usage.contextSize : null;
+  const hasContext = contextSize !== null;
+  const segments: UsageSegment[] = [];
+
+  if (usage.turnInput > 0 || usage.turnOutput > 0) {
+    segments.push({
+      key: 'tokens',
+      label: '',
+      value: `↑${compactCount(usage.turnInput)} ↓${compactCount(usage.turnOutput)}`,
+      // The runtime does not currently report `context_size` at all, so the
+      // token pair is the context-occupancy proxy and carries the emphasis
+      // whenever no explicit context metric is available.
+      emphasis: !hasContext,
+    });
+  }
+
+  if (contextSize !== null) {
+    segments.push({
+      key: 'context',
+      label: '上下文',
+      value: compactCount(contextSize),
+      emphasis: true,
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * This-turn latency/throughput segments for the status bar centre.
+ *
+ * Split from `usageSegments` on purpose: the header reports the *cumulative*
+ * token/context picture, the footer reports the *current turn's* telemetry
+ * (matching the TUI, whose bottom bar owns `turn_stats`).  Showing the same
+ * `tok/s` in both places would just be noise.
+ */
+export function turnStatSegments(usage: UsageView | null): UsageSegment[] {
+  if (usage === null) return [];
+  const segments: UsageSegment[] = [];
+
+  if (usage.outputTokensPerSecond !== null && usage.outputTokensPerSecond > 0) {
+    segments.push({
+      key: 'rate',
+      label: '',
+      value: `${usage.outputTokensPerSecond.toFixed(1)} tok/s${usage.rateEstimated ? '~' : ''}`,
+      emphasis: true,
+    });
+  }
+
+  if (usage.modelCalls > 0) {
+    segments.push({
+      key: 'steps',
+      label: '',
+      value: `${usage.modelCalls} 步`,
+      emphasis: false,
+    });
+  }
+
+  if (usage.ttftS !== null) {
+    segments.push({
+      key: 'ttft',
+      label: '首字',
+      value: `${usage.ttftS.toFixed(2)}s`,
+      emphasis: false,
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * Full-precision hover breakdown for the usage bar.
+ *
+ * Carries every number the compact bar compresses, including the cache share
+ * the bar deliberately omits.  Newline-separated: it is used as a native
+ * `title`, which renders the line breaks.
+ */
+export function usageTooltip(usage: UsageView | null): string {
+  if (usage === null) return '';
+  const lines: string[] = [`输入 ${fullCount(usage.turnInput)} · 输出 ${fullCount(usage.turnOutput)}`];
+  if (usage.turnCache > 0) {
+    const share =
+      usage.turnInput > 0 ? `（占输入 ${((usage.turnCache / usage.turnInput) * 100).toFixed(1)}%）` : '';
+    lines.push(`缓存 ${fullCount(usage.turnCache)}${share}`);
+  }
+  if (usage.contextSize !== null && usage.contextSize > 0) {
+    lines.push(`上下文 ${fullCount(usage.contextSize)}`);
+  }
+  if (usage.outputTokensPerSecond !== null && usage.outputTokensPerSecond > 0) {
+    lines.push(
+      `速率 ${usage.outputTokensPerSecond.toFixed(1)} tok/s${usage.rateEstimated ? '（估算）' : ''}`,
+    );
+  }
+  if (usage.ttftS !== null) {
+    lines.push(`首字 ${usage.ttftS.toFixed(2)}s`);
+  }
+  if (usage.lastInput > 0 || usage.lastOutput > 0) {
+    lines.push(`上次调用 in ${fullCount(usage.lastInput)} / out ${fullCount(usage.lastOutput)}`);
+  }
+  if (usage.modelCalls > 0) {
+    lines.push(`${usage.modelCalls} 步`);
+  }
+  return lines.join('\n');
+}

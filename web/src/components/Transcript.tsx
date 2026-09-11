@@ -1,15 +1,19 @@
 import React, { useEffect, useRef } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { expandHint, thoughtLabel, toolGroupLabel, toolStatusLabel } from '../stores/transcriptLabels.ts';
+import { Markdown } from './Markdown.tsx';
 
 export const Transcript: React.FC = () => {
   const {
     messages,
-    toggleThoughtExpand,
+    activity,
+    toggleMessageExpand,
     pendingApproval,
     resolveApproval,
     historyLoading,
     historyHasMore,
     historyAvailable,
+    historyError,
     loadEarlierHistory,
   } = useConsoleStore();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -39,6 +43,16 @@ export const Transcript: React.FC = () => {
           </div>
         )}
 
+        {historyError !== null && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-200 bg-red-50/70 p-3 text-xs text-red-800 font-mono leading-relaxed"
+          >
+            {historyError}
+            以下只显示建立连接后的实时内容，不回退到 checkpoint。
+          </div>
+        )}
+
         {historyHasMore && messages.length > 0 && (
           <div className="flex justify-center pt-1">
             <button
@@ -56,7 +70,10 @@ export const Transcript: React.FC = () => {
           <div className="py-6 text-center text-gray-400 text-xs font-mono select-none">正在加载历史…</div>
         )}
 
-        {messages.length === 0 && !historyLoading && historyAvailable !== false && (
+        {messages.length === 0 &&
+          !historyLoading &&
+          historyAvailable !== false &&
+          historyError === null && (
           <div className="py-16 text-center text-gray-400 text-xs font-mono select-none">
             当前会话已建立长连接，在下方输入指令即可开始与 Synapse Agent 对话
           </div>
@@ -81,16 +98,15 @@ export const Transcript: React.FC = () => {
             return (
               <div key={m.id}>
                 <div
-                  onClick={() => toggleThoughtExpand(m.id)}
+                  onClick={() => toggleMessageExpand(m.id)}
                   className="inline-flex items-center space-x-2 px-3 py-1.5 rounded bg-[#f3f4f5] border border-gray-200 text-gray-700 text-xs cursor-pointer hover:bg-gray-200/80 transition-colors select-none font-mono"
                 >
-                  <span className="material-symbols-outlined text-[15px] text-gray-600">psychology</span>
-                  <span>{m.duration ? `Thought (${m.duration})` : 'Thinking...'}</span>
-                  <span className="text-gray-400">{m.expanded ? '(收起)' : '(展开)'}</span>
+                  <span>{thoughtLabel(m.duration)}</span>
+                  <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
                 </div>
                 {m.expanded && (
-                  <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded text-xs font-mono text-gray-600 whitespace-pre-wrap">
-                    {m.content}
+                  <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600">
+                    <Markdown text={m.content ?? ''} />
                   </div>
                 )}
               </div>
@@ -98,25 +114,79 @@ export const Transcript: React.FC = () => {
           }
           if (m.type === 'tool_group') {
             const toolList = m.tools || [];
-            const maxShow = 4;
-            const shownTools = toolList.slice(0, maxShow);
-            const remainingCount = toolList.length - maxShow;
+            const failed = toolList.filter((t) => t.error || t.status === 'failed').length;
+            const running = toolList.filter(
+              (t) => t.status === 'running' || t.status === 'pending',
+            ).length;
+            const expanded = m.expanded === true;
             return (
               <div key={m.id} className="py-1">
-                <div className="inline-flex items-center space-x-2 px-3 py-1.5 rounded bg-[#f3f4f5] border border-gray-200 text-gray-700 text-xs select-none font-mono">
-                  <span className="material-symbols-outlined text-[15px] text-gray-500">arrow_drop_down</span>
-                  <span>{toolList.length} tools executed:</span>
-                  {shownTools.map((t, idx) => (
-                    <span key={idx} className="inline-flex items-center space-x-1">
-                      <span className="material-symbols-outlined text-[13px] text-gray-500">search</span>
-                      <span className="text-blue-600 font-medium">{t.name}</span>
-                      {idx < shownTools.length - 1 && <span className="text-gray-300">·</span>}
+                <div
+                  onClick={() => toggleMessageExpand(m.id)}
+                  title={expanded ? '收起工具详情' : '展开工具详情'}
+                  className="inline-flex items-center space-x-2 px-3 py-1.5 rounded bg-[#f3f4f5] border border-gray-200 text-gray-700 text-xs cursor-pointer hover:bg-gray-200/80 transition-colors select-none font-mono"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-gray-500">
+                    {expanded ? 'arrow_drop_down' : 'arrow_right'}
+                  </span>
+                  <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
+                  {running > 0 && (
+                    <span className="text-blue-600 font-medium">{running} running</span>
+                  )}
+                  {failed > 0 && <span className="text-red-600 font-medium">{failed} failed</span>}
+                  {!expanded && toolList.length > 0 && (
+                    <span className="text-gray-400 truncate">
+                      {toolList.slice(0, 4).map((t) => t.name).join(' · ')}
+                      {toolList.length > 4 ? ` +${toolList.length - 4}` : ''}
                     </span>
-                  ))}
-                  {remainingCount > 0 && (
-                    <span className="text-gray-400 font-medium">+{remainingCount} more</span>
                   )}
                 </div>
+                {expanded && (
+                  <div className="mt-2 space-y-1.5">
+                    {toolList.map((t) => (
+                      <div
+                        key={t.id}
+                        className={`rounded border px-2.5 py-1.5 font-mono text-[11px] ${
+                          t.error ? 'border-red-200 bg-red-50/60' : 'border-gray-200 bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2">
+                          <span className="material-symbols-outlined text-[13px] text-gray-500">
+                            {t.icon}
+                          </span>
+                          <span className="font-medium text-gray-900">{t.label || t.name}</span>
+                          {t.sub && (
+                            <span className="rounded bg-gray-100 px-1 text-[10px] text-gray-500">
+                              sub
+                            </span>
+                          )}
+                          {t.subagentName && (
+                            <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
+                          )}
+                          {t.path && <span className="truncate text-gray-500">{t.path}</span>}
+                          <span
+                            className={`ml-auto shrink-0 rounded px-1 text-[10px] ${
+                              t.error
+                                ? 'bg-red-100 text-red-700'
+                                : t.status === 'completed'
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-blue-50 text-blue-600'
+                            }`}
+                          >
+                            {t.subagentStatus
+                              ? `${toolStatusLabel(t.status)} · ${t.subagentStatus}`
+                              : toolStatusLabel(t.status)}
+                          </span>
+                        </div>
+                        {t.preview && (
+                          <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
+                            {t.preview}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           }
@@ -127,9 +197,27 @@ export const Transcript: React.FC = () => {
                   <span className="font-bold text-gray-900 text-sm">Assistant</span>
                   <span className="text-gray-400 font-mono text-xs">{m.timestamp}</span>
                 </div>
-                <div className="text-gray-900 text-sm leading-relaxed whitespace-pre-wrap font-sans bg-white p-4 rounded-lg border border-gray-200/80 shadow-2xs">
-                  {m.content}
+                <div className="text-gray-900 text-sm leading-relaxed font-sans bg-white p-4 rounded-lg border border-gray-200/80 shadow-2xs">
+                  <Markdown text={m.content ?? ''} />
                 </div>
+              </div>
+            );
+          }
+          if (m.type === 'info') {
+            const warning = m.infoLevel === 'warning';
+            return (
+              <div
+                key={m.id}
+                className={`rounded border px-3 py-1.5 font-mono text-[11px] leading-relaxed ${
+                  warning
+                    ? 'border-amber-200 bg-amber-50/70 text-amber-800'
+                    : 'border-gray-200 bg-gray-50/70 text-gray-600'
+                }`}
+              >
+                <span className="material-symbols-outlined align-middle text-[13px]">
+                  {warning ? 'warning' : 'info'}
+                </span>{' '}
+                <span className="whitespace-pre-wrap break-all">{m.content}</span>
               </div>
             );
           }
@@ -165,6 +253,13 @@ export const Transcript: React.FC = () => {
                 拒绝
               </button>
             </div>
+          </div>
+        )}
+        {activity && activity.active && (
+          <div className="flex items-center space-x-2 font-mono text-xs text-gray-500 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse" />
+            <span>{activity.phase}</span>
+            {activity.detail && <span className="text-gray-400">{activity.detail}</span>}
           </div>
         )}
         <div ref={bottomRef} />

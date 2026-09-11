@@ -15,6 +15,7 @@ export function App() {
   const cancelActiveTurn = useConsoleStore((s) => s.cancelActiveTurn);
   const createNewSession = useConsoleStore((s) => s.createNewSession);
   const runtimeStatus = useConsoleStore((s) => s.runtimeStatus);
+  const requestSessionSearchFocus = useConsoleStore((s) => s.requestSessionSearchFocus);
 
   useEffect(() => {
     initClient();
@@ -28,6 +29,9 @@ export function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         createNewSession();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        requestSessionSearchFocus();
       } else if (e.ctrlKey && e.key.toLowerCase() === 'c' && runtimeStatus === 'running') {
         e.preventDefault();
         cancelActiveTurn();
@@ -35,7 +39,13 @@ export function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleSidebar, cancelActiveTurn, createNewSession, runtimeStatus]);
+  }, [
+    toggleSidebar,
+    cancelActiveTurn,
+    createNewSession,
+    requestSessionSearchFocus,
+    runtimeStatus,
+  ]);
 
   // Unauthenticated: the pairing gate is the only reachable surface. The
   // workspace UI (and therefore every runtime RPC entry point) stays unmounted
