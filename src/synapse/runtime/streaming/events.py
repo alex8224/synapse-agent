@@ -205,6 +205,10 @@ class UsagePayload:
     rate_basis: str = "end_to_end"
     rate_estimated: bool = False
     context_size: int | None = None
+    # Completed model calls in the turn so far (the bottombar "N steps").
+    # Carried on the usage event because the step count is only known to the
+    # streaming parser, while the chrome that renders it is fed by usage events.
+    model_calls: int = 0
 
 
 @dataclass(frozen=True, slots=True)

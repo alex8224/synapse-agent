@@ -191,6 +191,7 @@ def stream_agent(
                 ttft_s=ttft,
                 rate_basis=basis,
                 rate_estimated=estimated,
+                model_calls=model_call_count,
             )
         except Exception:  # noqa: BLE001
             pass

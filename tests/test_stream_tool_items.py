@@ -168,6 +168,79 @@ def test_stream_agent_reports_completed_output_rate() -> None:
     assert usage_events[0][1]["output_tokens_per_second"] == (
         result.last_output_tokens_per_second
     )
+    # The bottombar step count rides the same usage note.
+    assert usage_events[0][1]["model_calls"] == 1
+
+
+class _TwoStepAgent:
+    """Two completed model calls in one turn."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        yield (
+            "messages",
+            (_Chunk(type="ai", content="first", id="m1"), {"langgraph_node": "model"}),
+        )
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="first",
+                            id="m1",
+                            usage_metadata={
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                                "total_tokens": 15,
+                            },
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "messages",
+            (_Chunk(type="ai", content="second", id="m2"), {"langgraph_node": "model"}),
+        )
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="second",
+                            id="m2",
+                            usage_metadata={
+                                "input_tokens": 12,
+                                "output_tokens": 6,
+                                "total_tokens": 18,
+                            },
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_reports_completed_step_count() -> None:
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _TwoStepAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    usage_events = [event for event in sink.events if event[0] == "usage"]
+    assert [event[1]["model_calls"] for event in usage_events] == [1, 2]
+    assert result.model_calls == 2
 
 
 class _HiddenReasoningToolAgent:

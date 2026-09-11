@@ -21,6 +21,7 @@ from synapse.runtime.streaming import (
     TurnEvent,
     TurnEventKind,
     TurnTerminalPayload,
+    UsagePayload,
 )
 from synapse.ui.turn.controller import TurnController
 from synapse.ui.turn.event_bridge import TextualTurnEventBridge
@@ -157,6 +158,66 @@ def test_event_renderer_maps_answer_and_terminal() -> None:
     assert answers[-1][1] == ("hello",)
     assert renderer.closed is True
     assert renderer.last_sequence == 4
+
+
+def test_event_renderer_forwards_step_count_from_usage_payload() -> None:
+    """The turn's completed model-call count reaches the chrome as ``model_calls``."""
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.emit(
+        _event(
+            1,
+            TurnEventKind.USAGE_UPDATED,
+            UsagePayload(
+                turn_input=10,
+                turn_output=20,
+                last_input=8,
+                last_output=12,
+                output_tokens_per_second=42.0,
+                ttft_s=1.5,
+                model_calls=3,
+            ),
+        )
+    )
+
+    usage = [call for call in host.calls if call[0] == "apply_turn_usage"]
+    assert len(usage) == 1
+    assert usage[0][2]["model_calls"] == 3
+    assert usage[0][2]["output_tokens_per_second"] == 42.0
+    assert usage[0][2]["ttft_s"] == 1.5
+
+
+def test_event_renderer_forwards_step_count_from_projected_usage_event() -> None:
+    """The service's JSON projection keeps ``model_calls`` (bottombar step count)."""
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.render_runtime_event(
+        RuntimeEvent(
+            sequence=1,
+            turn_sequence=1,
+            turn_id="turn",
+            kind="usage_updated",
+            payload={
+                "turn_input": 10,
+                "turn_output": 20,
+                "last_input": 8,
+                "last_output": 12,
+                "output_tokens_per_second": 42.0,
+                "ttft_s": 1.5,
+                "rate_basis": "generation",
+                "rate_estimated": False,
+                "model_calls": 3,
+            },
+            version=EVENT_VERSION,
+        )
+    )
+
+    usage = [call for call in host.calls if call[0] == "apply_turn_usage"]
+    assert len(usage) == 1
+    assert usage[0][2]["model_calls"] == 3
+    assert usage[0][2]["output_tokens_per_second"] == 42.0
 
 
 def test_event_renderer_forwards_subagent_status_changes() -> None:

@@ -206,6 +206,7 @@ class TextualTurnEventRenderer:
             self._sink.note_usage(**{key: payload[key] for key in (
                 "turn_input", "turn_output", "turn_cache", "last_input", "last_output",
                 "last_cache", "output_tokens_per_second", "ttft_s", "rate_basis", "rate_estimated",
+                "model_calls",
             ) if key in payload})
         elif kind in {"warning", "info"}:
             self._sink.info(str(payload.get("message", payload.get("text", ""))))
@@ -336,6 +337,7 @@ class TextualTurnEventRenderer:
                 ttft_s=payload.ttft_s,
                 rate_basis=payload.rate_basis,
                 rate_estimated=payload.rate_estimated,
+                model_calls=payload.model_calls,
             )
         elif kind is TurnEventKind.APPROVAL_REQUIRED and isinstance(
             payload, ApprovalPayload

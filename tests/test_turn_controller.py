@@ -342,6 +342,69 @@ def test_apply_stream_result_updates_usage_once() -> None:
     assert usage_calls[0][2]["turn_output"] == 20
 
 
+def test_apply_consumer_result_applies_final_usage_snapshot() -> None:
+    """The service path settles the bottombar (rate/TTFT/steps) at turn end."""
+    app = _FakeApp()
+    controller = TurnController(app)
+    result = SimpleNamespace(
+        status="completed",
+        final_text="",
+        already_streamed=True,
+        usage={
+            "turn_input": 10,
+            "turn_output": 20,
+            "last_input": 8,
+            "last_output": 12,
+            "output_tokens_per_second": 42.0,
+            "ttft_s": 1.5,
+            "rate_basis": "generation",
+            "rate_estimated": False,
+            "model_calls": 3,
+            # A wider service projection must not reach UI state.
+            "context_size": 1234,
+        },
+    )
+
+    assert controller.apply_consumer_result(result, transcript_generation=1) is False
+
+    usage_calls = [c for c in app.calls if c[0] == "apply_turn_usage"]
+    assert len(usage_calls) == 1
+    assert usage_calls[0][2] == {
+        "turn_input": 10,
+        "turn_output": 20,
+        "last_input": 8,
+        "last_output": 12,
+        "output_tokens_per_second": 42.0,
+        "ttft_s": 1.5,
+        "rate_basis": "generation",
+        "rate_estimated": False,
+        "model_calls": 3,
+    }
+
+
+def test_apply_consumer_result_skips_usage_for_cancelled_turn() -> None:
+    app = _FakeApp()
+    controller = TurnController(app)
+    result = SimpleNamespace(
+        status="cancelled",
+        final_text="",
+        already_streamed=True,
+        usage={"output_tokens_per_second": 42.0, "model_calls": 3},
+    )
+
+    assert controller.apply_consumer_result(result, transcript_generation=1) is True
+    assert not [c for c in app.calls if c[0] == "apply_turn_usage"]
+
+
+def test_apply_consumer_result_ignores_missing_usage() -> None:
+    app = _FakeApp()
+    controller = TurnController(app)
+    result = SimpleNamespace(status="completed", final_text="", already_streamed=True)
+
+    assert controller.apply_consumer_result(result, transcript_generation=1) is False
+    assert not [c for c in app.calls if c[0] == "apply_turn_usage"]
+
+
 def test_maybe_continue_goal_pushes_continuation_once(tmp_path) -> None:
     from synapse.goals.model import ThreadGoalStatus
     from synapse.goals.steering import GOAL_STEER_PREFIX

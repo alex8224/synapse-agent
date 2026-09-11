@@ -317,6 +317,7 @@ class InstrumentedStreamSink:
                 if kwargs.get("context_size") is not None
                 else None
             ),
+            model_calls=max(0, int(kwargs.get("model_calls") or 0)),
         )
         self.accumulator.note_usage(usage)
         self.accumulator.emit(TurnEventKind.USAGE_UPDATED, usage)

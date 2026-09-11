@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,22 @@ from synapse.ui.turn.service_session import TUIRuntimeSessionFacade, TUISessionB
 
 #: Maximum rows shown in the Ctrl+Tab recent-sessions switcher.
 MAX_RECENT_SESSION_ITEMS = 10
+
+#: Chrome usage fields the service may hand back at turn end. Anything else in
+#: a (possibly wider) service payload is ignored instead of reaching UI state.
+_FINAL_USAGE_KEYS = (
+    "turn_input",
+    "turn_output",
+    "turn_cache",
+    "last_input",
+    "last_output",
+    "last_cache",
+    "output_tokens_per_second",
+    "ttft_s",
+    "rate_basis",
+    "rate_estimated",
+    "model_calls",
+)
 
 
 #: Statuses that mean a turn actually finished.  ``WAITING_APPROVAL`` is
@@ -1556,6 +1572,7 @@ class TurnController:
                 "Terminated (context preserved). You can keep typing.", "yellow",
             )
             return True
+        self.apply_final_usage(result, transcript_generation=transcript_generation)
         if getattr(result, "final_text", "") and not getattr(result, "already_streamed", False):
             self._app._call_for_transcript(
                 transcript_generation, self._app.commit_answer, result.final_text
@@ -1566,6 +1583,25 @@ class TurnController:
                 "HITL: use /approve or /reject", "yellow",
             )
         return False
+
+    def apply_final_usage(self, result: Any, *, transcript_generation: int | None) -> None:
+        """Apply the turn's last usage snapshot to the chrome (rate/TTFT/steps).
+
+        Live ``usage_updated`` events already drive the chrome while the turn
+        runs; this end-of-turn apply is authoritative for the settled values and
+        keeps the bottombar correct even when a live usage event was dropped
+        (coalescing/queue pressure). ``apply_turn_usage`` writes absolute values,
+        so re-applying the same snapshot is idempotent.
+        """
+        usage = getattr(result, "usage", None)
+        if not isinstance(usage, Mapping):
+            return
+        kwargs = {key: usage[key] for key in _FINAL_USAGE_KEYS if key in usage}
+        if not kwargs:
+            return
+        self._app._call_for_transcript(
+            transcript_generation, self._app.apply_turn_usage, **kwargs
+        )
 
     def clear_turn_context(self) -> None:
         """Compatibility no-op; the service owns immutable turn context."""

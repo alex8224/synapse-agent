@@ -521,6 +521,7 @@ class RichStreamSink:
         ttft_s: float | None = None,
         rate_basis: str = "end_to_end",
         rate_estimated: bool = False,
+        model_calls: int = 0,
     ) -> None:
         """Optional live token chrome (TUI overrides)."""
         del (
@@ -534,6 +535,7 @@ class RichStreamSink:
             ttft_s,
             rate_basis,
             rate_estimated,
+            model_calls,
         )
 
 
