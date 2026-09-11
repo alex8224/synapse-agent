@@ -38,7 +38,18 @@ class LocalProjectRuntimeConsumer:
         catalog: ProjectCatalog | None = None,
         max_concurrent_sessions: int | None = None,
         on_status_change: Callable[[Any], None] | None = None,
+        persist_result: Callable[..., Any] | None = None,
+        persist_resources: Any | None = None,
     ) -> None:
+        if persist_resources is None and persist_result is None:
+            from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
+
+            binder = RuntimeProjectPersistence(
+                settings, project_catalog=catalog, workspace=getattr(settings, "workspace", None)
+            )
+            if binder.enabled:
+                persist_result = binder.persist_result
+                persist_resources = binder
         self.manager = RuntimeManager(
             settings=settings,
             project_id=project_id,
@@ -49,6 +60,8 @@ class LocalProjectRuntimeConsumer:
                 else getattr(settings, "max_concurrent_sessions", 2)
             ),
             on_status_change=on_status_change,
+            persist_result=persist_result,
+            persist_resources=persist_resources,
         )
         self.service = LocalAgentRuntimeService(
             lambda requested_project_id: self.manager
@@ -56,6 +69,7 @@ class LocalProjectRuntimeConsumer:
             else None
         )
         self._catalog = catalog
+        self._persist_resources = persist_resources
         self._close_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._closed = False

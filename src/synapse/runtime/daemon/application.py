@@ -150,6 +150,23 @@ class RuntimeDaemon:
                 settings,
             )
 
+        from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
+
+        # Headless/daemon-executed sessions get the same neutral per-project
+        # persistence the TUI uses (transcript + session metadata + summary +
+        # optional catalog).  Resource ownership follows the manager: the
+        # RuntimeManager closes ``persist_resources`` exactly once after its
+        # sessions settle, so router/daemon shutdown never leaks the SQLite
+        # handles.  ``checkpoint_backend=memory`` / missing sessions path
+        # disable the binder (no file is created).
+        persistence = RuntimeProjectPersistence(
+            project_settings,
+            project_catalog=self.catalog,
+            workspace=descriptor.workspace,
+        )
+        persist_result = (
+            persistence.persist_result if persistence.enabled else None
+        )
         return RuntimeManager(
             settings=project_settings,
             agent_factory=lambda thread_id, _shared: build_agent(
@@ -161,6 +178,8 @@ class RuntimeDaemon:
             max_concurrent_sessions=project_settings.max_concurrency,
             project_id=descriptor.project_id,
             persist_model_binding=persist_session_binding,
+            persist_result=persist_result,
+            persist_resources=persistence if persistence.enabled else None,
         )
 
     def _make_service(self, principal: Principal) -> Any:

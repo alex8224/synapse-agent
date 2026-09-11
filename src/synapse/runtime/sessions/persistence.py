@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -212,6 +213,147 @@ def _subagent_args(payload: ToolItemPayload, *, intent: str) -> dict[str, Any]:
     args["subagent_model_inherited"] = payload.subagent_model_inherited
     args["subagent_reasoning_inherited"] = payload.subagent_reasoning_inherited
     return args
+
+
+class RuntimeProjectPersistence:
+    """Neutral per-project persistence owner for runtime-executed sessions.
+
+    The TUI wires ``SessionPersistence`` through its own controller/app
+    resources; headless/daemon sessions executed through
+    :class:`synapse.runtime.consumer.LocalProjectRuntimeConsumer` or the
+    runtime daemon previously had no ``persist_result`` on their
+    ``RuntimeManager``, so completed turns never reached ``transcript.sqlite``
+    or the session-metadata store.  This binder reuses the same neutral domain
+    logic (``SessionPersistence`` + ``TranscriptProjection`` + ``SessionStore``)
+    without importing any UI module, and owns exactly one project's lazy
+    resources that are closed once after the owning manager settles.
+
+    Policy:
+    - resources open lazily on the first settled turn (never on construction);
+    - a missing/unresolvable ``resolved_sessions_path`` or a
+      ``checkpoint_backend == "memory"`` configuration disables persistence
+      (no file is created and ``persist()`` is a bounded no-op);
+    - ``close()`` is idempotent and safe to call from any thread.
+    """
+
+    def __init__(
+        self,
+        settings: Any,
+        *,
+        project_catalog: Any | None = None,
+        workspace: Any | None = None,
+    ) -> None:
+        self._settings = settings
+        self._project_catalog = project_catalog
+        self._workspace = workspace if workspace is not None else getattr(
+            settings, "workspace", None
+        )
+        self._store: Any = None
+        self._projection: Any = None
+        self._closed = False
+        self._lock = threading.RLock()
+
+    @property
+    def enabled(self) -> bool:
+        """True when a durable project path exists and checkpoint backend is sqlite."""
+        if str(getattr(self._settings, "checkpoint_backend", "sqlite") or "sqlite") == "memory":
+            return False
+        resolver = getattr(self._settings, "resolved_sessions_path", None)
+        if not callable(resolver):
+            return False
+        try:
+            path = resolver()
+        except Exception:
+            return False
+        return bool(path)
+
+    def _activate(self) -> None:
+        if self._closed:
+            raise RuntimeError("project persistence is closed")
+        if self._store is not None:
+            return
+        from synapse.sessions.store import SessionStore
+        from synapse.sessions.transcript_projection import (
+            TranscriptProjection,
+            default_transcript_projection_path,
+        )
+
+        path = self._settings.resolved_sessions_path()
+        self._store = SessionStore(path)
+        self._projection = TranscriptProjection(
+            default_transcript_projection_path(path)
+        )
+
+    def persist_result(self, context: Any, result: Any) -> None:
+        """``RuntimeManager.persist_result`` binding for one settled turn."""
+        if not self.enabled:
+            return
+        status = getattr(result, "status", None)
+        allowed = {
+            "completed",
+            "waiting_approval",
+            "cancelled",
+            "failed",
+        }
+        raw = getattr(status, "value", None) if status is not None else None
+        if raw not in allowed and str(status) not in allowed:
+            return
+        with self._lock:
+            self._activate()
+            store = self._store
+            projection = self._projection
+        thread_id = str(getattr(context, "thread_id", "") or "")
+        if not thread_id:
+            return
+        resume = bool(getattr(getattr(context, "request", None), "resume", False))
+        request = getattr(context, "request", None)
+        user_text = "" if resume else str(getattr(request, "input", "") or "")
+        settings = getattr(context, "settings", None) or self._settings
+        try:
+            model = str(getattr(settings, "model", "") or "") or None
+            active_model = str(getattr(settings, "active_model", "") or "") or None
+            thinking = str(getattr(settings, "thinking", "") or "") or None
+            store.touch(
+                thread_id,
+                title_hint=user_text or None,
+                model=model,
+                active_model=active_model,
+                thinking=thinking,
+            )
+            SessionPersistence(
+                transcript_projection=projection,
+                summary_store=store,
+                project_catalog=self._project_catalog,
+                workspace=self._workspace,
+                summary_mode=str(getattr(settings, "session_summary_mode", "local")),
+                summary_max_chars=int(
+                    getattr(settings, "session_summary_max_chars", 600) or 600
+                ),
+                catalog_enabled=bool(getattr(settings, "project_catalog_enabled", True)),
+            ).persist(context, result)
+        except Exception:
+            raise
+
+    def close(self) -> None:
+        """Idempotently close the lazily opened store and projection."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            store, projection = self._store, self._projection
+            self._store = None
+            self._projection = None
+        first_error: BaseException | None = None
+        for resource in (projection, store):
+            if resource is None:
+                continue
+            try:
+                resource.close()
+            except Exception as exc:  # noqa: BLE001 - report first close failure
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise RuntimeError("project persistence close failed") from first_error
 
 
 def _annotate_tool_calls_with_subagent_snapshots(

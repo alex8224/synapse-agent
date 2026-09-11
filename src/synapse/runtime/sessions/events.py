@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -57,6 +58,35 @@ class SessionEventWindow:
     oldest_sequence: int
     latest_sequence: int
     gap: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerRecoveryState:
+    """Live-stream identity and retention bounds for one broker instance.
+
+    ``epoch`` identifies this broker instance and changes whenever a new
+    ``SessionEventBroker`` is created (session reopened, daemon restarted), so
+    a client can detect that a stored sequence cursor belongs to a different
+    stream and must not be resumed silently (cursor collision across restarts).
+
+    ``latest_turn_id``/``latest_turn_start`` record the newest turn observed by
+    this broker and the broker sequence of its first event.  A turn is only
+    ever the newest while the runtime executes it serially, so this is the
+    "active turn" replay boundary.  ``latest_turn_intact`` is False as soon as
+    any event of that turn has been evicted (its prefix can no longer be
+    replayed contiguously); preview deltas of a very long running turn are
+    allowed to drop under retention pressure, so an intact value of False is an
+    explicit, observable signal - never a silent loss.
+    """
+
+    epoch: str
+    latest_sequence: int
+    oldest_sequence: int
+    dropped_through: int
+    latest_turn_id: str | None
+    latest_turn_start: int | None
+    latest_turn_retained_from: int | None
+    latest_turn_intact: bool
 
 
 class _SubscriberRecord:
@@ -135,10 +165,21 @@ class SessionEventBroker:
             self._hard_cap = max(self.max_events * 4, 1024)
         self._events: deque[SessionEventEnvelope] = deque()
         self._sequence = 0
+        #: Durable-per-instance stream identity.  A new broker (new session
+        #: runtime, daemon restart) gets a fresh epoch so a stale client cursor
+        #: from an earlier stream can never collide with the new sequence
+        #: space and silently skip events.
+        self._epoch = uuid.uuid4().hex
         #: Highest sequence number ever evicted from ``_events``.  A cursor
         #: strictly below this value means events after it were dropped and
         #: the stream cannot be resumed without an explicit gap.
         self._dropped_through = 0
+        #: Newest turn id observed and the broker sequence of its first event.
+        #: Session turns are serial, so once a newer turn id appears the older
+        #: turn has settled and is durable in the transcript projection; only
+        #: the newest (potentially still-running) turn needs a replay boundary.
+        self._latest_turn_id: str | None = None
+        self._latest_turn_start: int | None = None
         self._lock = threading.Lock()
         self._subscribers: dict[int, _SubscriberRecord] = {}
         self._next_subscription_id = 0
@@ -199,6 +240,9 @@ class SessionEventBroker:
                 event=event,
             )
             self._make_room_locked(event.kind)
+            if envelope.turn_id != self._latest_turn_id:
+                self._latest_turn_id = envelope.turn_id
+                self._latest_turn_start = envelope.sequence
             self._events.append(envelope)
             records = tuple(self._subscribers.values())
             if not records:
@@ -209,6 +253,55 @@ class SessionEventBroker:
                 dispatch = True
         if dispatch:
             self._dispatch()
+
+    @property
+    def epoch(self) -> str:
+        """Stream identity token; changes whenever a broker instance is rebuilt."""
+        with self._lock:
+            return self._epoch
+
+    def first_retained_sequence_for(self, turn_id: str) -> int | None:
+        """Return the earliest retained broker sequence for one turn id."""
+        with self._lock:
+            for envelope in self._events:
+                if envelope.turn_id == turn_id:
+                    return envelope.sequence
+            return None
+
+    def recovery_state(self) -> BrokerRecoveryState:
+        """Snapshot stream identity, retention bounds, and latest-turn replay data.
+
+        Runs under the broker lock and never calls external callbacks.  The
+        caller interprets ``latest_turn_intact`` together with the durable
+        transcript coverage (see the recovery protocol) to decide whether an
+        active turn can be replayed from its start or must be marked
+        incomplete until it settles.
+        """
+        with self._lock:
+            oldest = self._events[0].sequence if self._events else self._sequence
+            latest_turn_id = self._latest_turn_id
+            retained_from: int | None = None
+            if latest_turn_id is not None:
+                for envelope in self._events:
+                    if envelope.turn_id == latest_turn_id:
+                        retained_from = envelope.sequence
+                        break
+            start = self._latest_turn_start
+            intact = (
+                start is not None
+                and retained_from is not None
+                and self._dropped_through < start
+            )
+            return BrokerRecoveryState(
+                epoch=self._epoch,
+                latest_sequence=self._sequence,
+                oldest_sequence=oldest,
+                dropped_through=self._dropped_through,
+                latest_turn_id=latest_turn_id,
+                latest_turn_start=start,
+                latest_turn_retained_from=retained_from,
+                latest_turn_intact=intact,
+            )
 
     def _dispatch(self) -> None:
         """Serial drainer: deliver queued callbacks in sequence order.

@@ -31,6 +31,7 @@ from synapse.runtime.sessions.errors import (
     TurnMismatchError,
 )
 from synapse.runtime.sessions.events import (
+    BrokerRecoveryState,
     SessionEventBroker,
     SessionEventWindow,
     SessionSubscription,
@@ -831,6 +832,29 @@ class SessionRuntime:
                 active_model=getattr(self._binding.settings, "active_model", None),
                 model=getattr(self._binding.settings, "model", None),
             )
+
+    def live_recovery(self) -> tuple[BrokerRecoveryState, str | None]:
+        """Return the live stream recovery snapshot plus the active turn id.
+
+        The broker state (stream epoch, retention bounds, latest-turn replay
+        boundary) is sampled first, then the active turn id is read under the
+        session lock.  The two reads are not one atomic instant: a turn may
+        start or settle between them.  The recovery protocol treats this as an
+        advisory precondition and closes any residual window by subscribing to
+        live events immediately afterwards, never as a claim of cross-store
+        atomicity (the durable transcript and the in-memory broker remain two
+        independent stores reconciled explicitly by turn id).
+        """
+        broker_state = self.broker.recovery_state()
+        with self._lock:
+            handle = self._active_handle
+            active_turn_id = (
+                handle.turn_id
+                if handle is not None
+                and (not handle.done() or handle in self._settling_handles)
+                else None
+            )
+        return broker_state, active_turn_id
 
     def subscribe(
         self,

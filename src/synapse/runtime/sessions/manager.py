@@ -87,6 +87,7 @@ class RuntimeManager:
         async_runtime: AsyncRuntime | None = None,
         project_id: str | None = None,
         persist_result: Callable[..., Any] | None = None,
+        persist_resources: Any | None = None,
         on_status_change: Callable[[SessionSnapshot], None] | None = None,
         persist_model_binding: Callable[[str, Any], None] | None = None,
     ) -> None:
@@ -100,6 +101,7 @@ class RuntimeManager:
         self.session_factory = session_factory
         self.project_id = project_id
         self.persist_result = persist_result
+        self.persist_resources = persist_resources
         self.on_status_change = on_status_change
         self.persist_model_binding = persist_model_binding
         self._async_runtime = async_runtime or get_async_runtime()
@@ -706,6 +708,7 @@ class RuntimeManager:
             self._closed = True
             sessions = tuple(self._sessions.values())
             owners = tuple(self._queued_owners.values())
+            resources = self.persist_resources
         # Release queued submits first so their own cleanup frees the submit
         # locks before the sessions are closed (ADR-S-010).
         for owner in owners:
@@ -729,6 +732,11 @@ class RuntimeManager:
             self._sessions.clear()
             self._submit_locks.clear()
             self._queued_owners.clear()
+        if resources is not None:
+            try:
+                resources.close()
+            except Exception:  # noqa: BLE001 - surface as shutdown failure below
+                raise
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
