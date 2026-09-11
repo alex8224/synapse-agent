@@ -88,6 +88,26 @@ def test_token_rate_live_snapshot_is_estimated_in_real_time() -> None:
     assert snapshot.estimated is True
 
 
+def test_token_rate_zero_token_report_keeps_the_window_open() -> None:
+    """A report with no output tokens must not consume the timing window.
+
+    Providers emit such a report for a reasoning-only or intermediate message;
+    consuming the window there made every later rate of the turn ``None``.
+    """
+    tracker = TokenRateTracker()
+    tracker.model_started(now=10.0)
+    tracker.output_observed("think", now=11.0, reasoning=True)
+
+    assert tracker.model_finished(0, now=12.0).tokens_per_second is None
+
+    snapshot = tracker.model_finished(100, now=18.0, hidden_reasoning_tokens=40)
+
+    # The window still starts at the first streamed reasoning delta (11.0).
+    assert snapshot.tokens_per_second == 100 / 7
+    assert snapshot.ttft_s == 1.0
+    assert snapshot.basis is TokenRateBasis.GENERATION
+
+
 def test_token_rate_single_output_uses_decode_duration() -> None:
     tracker = TokenRateTracker()
     tracker.model_started(now=10.0)
@@ -136,7 +156,15 @@ def test_token_rate_handles_zero_duration_and_invalid_tokens() -> None:
 
     assert snapshot.output_tokens == 0
     assert snapshot.tokens_per_second is None
-    assert snapshot.basis is TokenRateBasis.GENERATION
+    assert snapshot.basis is TokenRateBasis.END_TO_END
+
+    # Nothing was measurable, so the window stays open for the next report:
+    # it still measures from the preserved first-output timestamp (10.0).
+    later = tracker.model_finished(100, now=20.0)
+
+    assert later.tokens_per_second == 10.0
+    assert later.ttft_s == 0.0
+    assert later.basis is TokenRateBasis.GENERATION
 
 
 def test_token_rate_finished_without_start_is_empty() -> None:

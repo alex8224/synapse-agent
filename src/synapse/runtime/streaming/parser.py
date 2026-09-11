@@ -661,9 +661,15 @@ def stream_agent(
                             last_input_tokens = int(u["input_tokens"] or 0)
                             last_output_tokens = int(u["output_tokens"] or 0)
                             last_cache_tokens = int(u.get("cache_tokens", 0) or 0)
+                            reasoning_tokens = _reasoning_token_count(msg) or 0
                             rate_snapshot = rate_tracker.model_finished(
-                                last_output_tokens,
-                                hidden_reasoning_tokens=_reasoning_token_count(msg) or 0,
+                                # A gateway that reports reasoning tokens
+                                # separately leaves ``output_tokens`` at 0 for a
+                                # reasoning-only response; measure the reasoning
+                                # work so the turn still reports a rate instead
+                                # of none at all.
+                                last_output_tokens or reasoning_tokens,
+                                hidden_reasoning_tokens=reasoning_tokens,
                             )
                             model_call_count += 1
                             if rate_snapshot.tokens_per_second is not None:

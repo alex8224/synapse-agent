@@ -243,6 +243,70 @@ def test_stream_agent_reports_completed_step_count() -> None:
     assert result.model_calls == 2
 
 
+class _ReasoningOnlyAgent:
+    """Reasoning-only response: provider reports 0 output tokens + reasoning."""
+
+    def stream(self, payload, config=None, **kwargs):  # noqa: ANN001
+        del payload, config, kwargs
+        for index in range(2):
+            yield (
+                "messages",
+                (
+                    _Chunk(
+                        type="ai",
+                        content="",
+                        id="m1",
+                        additional_kwargs={"reasoning_content": f"think{index} "},
+                    ),
+                    {"langgraph_node": "model"},
+                ),
+            )
+            time.sleep(0.01)
+        yield (
+            "updates",
+            {
+                "model": {
+                    "messages": [
+                        _Chunk(
+                            type="ai",
+                            content="",
+                            id="m1",
+                            usage_metadata={
+                                "input_tokens": 20,
+                                "output_tokens": 0,
+                                "total_tokens": 20,
+                                "output_token_details": {"reasoning": 30},
+                            },
+                        )
+                    ]
+                }
+            },
+        )
+
+
+def test_stream_agent_reports_rate_for_reasoning_only_response() -> None:
+    """A reasoning-only turn still reports throughput (measured on reasoning)."""
+    sink = _ItemSink()
+
+    result = stream_agent(
+        _ReasoningOnlyAgent(),
+        payload={"messages": []},
+        config={},
+        token_stream=True,
+        prefer_async=False,
+        subgraphs=False,
+        sink=sink,
+    )
+
+    assert result.last_output_tokens_per_second is not None
+    assert result.last_rate_basis == "generation"
+    usage_events = [event for event in sink.events if event[0] == "usage"]
+    assert usage_events[-1][1]["output_tokens_per_second"] == (
+        result.last_output_tokens_per_second
+    )
+    assert result.model_calls == 1
+
+
 class _HiddenReasoningToolAgent:
     """Stream a short tool call; provider reports hidden reasoning tokens."""
 
