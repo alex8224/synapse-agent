@@ -1270,6 +1270,7 @@ TextualStreamSink  # 把事件翻译成 UI 更新
 | `Ctrl+E` | 展开/收起思考过程 |
 | `Ctrl+C` | 取消当前 Agent 运行 |
 | `Ctrl+L` | 清屏 |
+| `Ctrl+End` | 跳转到 transcript 最新输出（恢复自动跟随） |
 | `↑/↓` | 浏览输入历史 |
 | `Alt+V` | 粘贴剪贴板内容（文本或图片） |
 

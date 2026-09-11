@@ -237,6 +237,9 @@ class CodingAgentApp(App[None]):
         Binding("escape", "cancel_run", "Cancel", show=False, priority=True),
         Binding("up", "history_up", "HistoryUp", show=False, priority=True),
         Binding("down", "history_down", "HistoryDown", show=False, priority=True),
+        # Ctrl+End: jump the transcript to the newest output. priority so the
+        # prompt Input (which binds end/ctrl+e to cursor movement) cannot eat it.
+        Binding("ctrl+end", "scroll_to_bottom", "Bottom", show=False, priority=True),
         # Dialog shortcuts (F-keys)
         Binding("f2", "dialog_model", "Model", show=False),
         Binding("f3", "dialog_theme", "Theme", show=False),
@@ -268,11 +271,12 @@ class CodingAgentApp(App[None]):
     ]
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Yield Esc/Up/Down to modal dialogs (App priority bindings run first)."""
+        """Yield Esc/Up/Down/Ctrl+End to modal dialogs (App priority bindings run first)."""
         if isinstance(self.screen, ModalScreen) and action in {
             "cancel_run",
             "history_up",
             "history_down",
+            "scroll_to_bottom",
         }:
             return False
         return True
@@ -1815,6 +1819,10 @@ class CodingAgentApp(App[None]):
 
     def jump_to_user_turn(self, target: UserTurnBlock) -> None:
         self._transcript.jump_to_user_turn(target)
+
+    def action_scroll_to_bottom(self) -> None:
+        """Ctrl+End: jump the transcript to the newest output."""
+        self._transcript.scroll_to_bottom()
 
     def action_copy_selection(self) -> None:
         self._transcript.action_copy_selection()

@@ -14,6 +14,7 @@ class _FakeTimeline:
         self.children: list[Any] = []
         self.max_scroll_y = 0
         self.scroll_y = 0
+        self.scroll_end_calls: list[bool] = []
 
     def mount(self, block: Any) -> None:
         try:
@@ -24,7 +25,8 @@ class _FakeTimeline:
         block.remove = lambda: self.children.remove(block)
 
     def scroll_end(self, animate: bool = False) -> None:
-        pass
+        self.scroll_end_calls.append(animate)
+        self.scroll_y = self.max_scroll_y
 
 
 class _FakeStream:
@@ -250,3 +252,20 @@ def test_append_event_ignores_missing_log_during_unmount() -> None:
 
     assert controller.state.current_turn_blocks == []
 
+
+def test_scroll_to_bottom_lands_on_true_bottom_without_animation() -> None:
+    """Ctrl+End must jump instantly so the follow heuristic re-arms."""
+    controller, app = _make()
+    app.timeline.max_scroll_y = 400
+    app.timeline.scroll_y = 0
+
+    controller.scroll_to_bottom()
+
+    assert app.timeline.scroll_end_calls == [False]
+    assert app.timeline.scroll_y == app.timeline.max_scroll_y
+
+
+def test_scroll_to_bottom_is_safe_when_transcript_is_unmounted() -> None:
+    controller = TranscriptController(_UnmountedApp())
+
+    controller.scroll_to_bottom()
