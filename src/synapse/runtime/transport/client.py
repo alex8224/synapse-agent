@@ -50,6 +50,14 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.history import (
+    HistoryEvent,
+    ListSessionsQuery,
+    ReadSessionHistoryQuery,
+    SessionHistoryPage,
+    SessionListPage,
+    SessionMetadataItem,
+)
 from synapse.runtime.service.queries import (
     ApprovalActionView,
     GetSessionQuery,
@@ -57,6 +65,22 @@ from synapse.runtime.service.queries import (
     PendingApprovalView,
     SessionView,
     UsageView,
+)
+from synapse.runtime.service.recovery import (
+    MAX_RECONCILE_PROBE_TURNS,
+    MAX_RECONCILE_TURN_ID_BYTES,
+    ReconcileSessionQuery,
+    SessionRecoverabilityView,
+    TurnCoverageProbe,
+)
+from synapse.runtime.service.runtime_config import (
+    MAX_RUNTIME_CONFIG_MCP_SERVERS,
+    MAX_RUNTIME_CONFIG_MODELS,
+    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+    MAX_RUNTIME_CONFIG_THINKING_LEVELS,
+    GetRuntimeConfigQuery,
+    McpServerView,
+    RuntimeConfigView,
 )
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.streaming.events import TurnEventKind
@@ -112,6 +136,32 @@ class AmbiguousCommandError(TransportError):
 
 class ReplayGapError(TransportError):
     pass
+
+
+class TransportServiceError(TransportError):
+    """A JSON-RPC service error whose wire ``code``/``service_code`` are kept."""
+
+    def __init__(
+        self,
+        message: str = _MAX_ERROR_TEXT,
+        *,
+        code: int | None = None,
+        service_code: str | None = None,
+    ) -> None:
+        self.code = code
+        self.service_code = service_code
+        super().__init__(message)
+
+
+class RecoveryUnavailableError(TransportError):
+    """The peer predates session recovery (old wire server or old delegate)."""
+
+    def __init__(
+        self, *, code: int | None = None, service_code: str | None = None
+    ) -> None:
+        self.code = code
+        self.service_code = service_code
+        super().__init__("session recovery is unavailable")
 
 
 class ClientEventOverflow(TransportError):
@@ -359,6 +409,103 @@ def _view(value: object) -> SessionView:
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
+def _mcp_server_view(value: object) -> McpServerView:
+    if not isinstance(value, dict) or set(value) != {
+        "name", "transport", "enabled", "tool_prefix",
+    }:
+        raise ProtocolTransportError()
+    if (
+        type(value["enabled"]) is not bool
+        or (value["tool_prefix"] is not None and type(value["tool_prefix"]) is not str)
+    ):
+        raise ProtocolTransportError()
+    try:
+        return McpServerView(
+            name=_text(value["name"], "mcp server name", MAX_RUNTIME_CONFIG_TEXT_BYTES),
+            transport=_text(
+                value["transport"], "mcp server transport", MAX_RUNTIME_CONFIG_TEXT_BYTES
+            ),
+            enabled=value["enabled"],
+            tool_prefix=(
+                _text(
+                    value["tool_prefix"],
+                    "mcp server tool_prefix",
+                    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+                )
+                if value["tool_prefix"] is not None
+                else None
+            ),
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _runtime_config_view(value: object) -> RuntimeConfigView:
+    """Strictly decode a ``runtime.config.get`` result into the DTO."""
+    if not isinstance(value, dict) or set(value) != {
+        "current_model",
+        "available_models",
+        "thinking_level",
+        "thinking_levels",
+        "mcp_servers",
+        "mcp_enabled",
+        "can_set_thinking",
+        "can_toggle_mcp_global",
+    }:
+        raise ProtocolTransportError()
+    names = value["available_models"]
+    levels = value["thinking_levels"]
+    servers = value["mcp_servers"]
+    if (
+        type(value["current_model"]) is not str
+        or not isinstance(names, list)
+        or not isinstance(levels, list)
+        or not isinstance(servers, list)
+        or len(names) > MAX_RUNTIME_CONFIG_MODELS
+        or len(levels) > MAX_RUNTIME_CONFIG_THINKING_LEVELS
+        or len(servers) > MAX_RUNTIME_CONFIG_MCP_SERVERS
+        or (
+            value["thinking_level"] is not None
+            and type(value["thinking_level"]) is not str
+        )
+        or any(type(item) is not str for item in names)
+        or any(type(item) is not str for item in levels)
+        or any(
+            type(value[flag]) is not bool
+            for flag in ("mcp_enabled", "can_set_thinking", "can_toggle_mcp_global")
+        )
+    ):
+        raise ProtocolTransportError()
+    try:
+        return RuntimeConfigView(
+            current_model=_text(
+                value["current_model"], "current_model", MAX_RUNTIME_CONFIG_TEXT_BYTES
+            ),
+            available_models=tuple(
+                _text(name, "available model", MAX_RUNTIME_CONFIG_TEXT_BYTES)
+                for name in names
+            ),
+            thinking_level=(
+                _text(
+                    value["thinking_level"],
+                    "thinking_level",
+                    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+                )
+                if value["thinking_level"] is not None
+                else None
+            ),
+            thinking_levels=tuple(
+                _text(level, "thinking level", MAX_RUNTIME_CONFIG_TEXT_BYTES)
+                for level in levels
+            ),
+            mcp_servers=tuple(_mcp_server_view(item) for item in servers),
+            mcp_enabled=value["mcp_enabled"],
+            can_set_thinking=value["can_set_thinking"],
+            can_toggle_mcp_global=value["can_toggle_mcp_global"],
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
 def _dataclass(value: object, cls: type[Any]) -> Any:
     if not isinstance(value, dict):
         raise ProtocolTransportError()
@@ -397,6 +544,248 @@ def _session_dataclass(value: object, cls: type[Any]) -> Any:
             raise ProtocolTransportError()
         result["session"] = _ref(result["session"])
         return _dataclass(result, cls)
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+_HISTORY_KINDS = frozenset({"user", "answer", "thought", "tools", "meta"})
+
+
+def _session_item(value: object) -> SessionMetadataItem:
+    if not isinstance(value, dict) or set(value) != {
+        "thread_id",
+        "title",
+        "model",
+        "active_model",
+        "created_at",
+        "updated_at",
+        "summary",
+    }:
+        raise ProtocolTransportError()
+    try:
+        for name in ("model", "active_model", "summary"):
+            if value[name] is not None and type(value[name]) is not str:
+                raise ProtocolTransportError()
+        return SessionMetadataItem(
+            thread_id=_text(value["thread_id"], "thread_id", 256),
+            title=_text(value["title"], "title", 256),
+            model=value["model"],
+            active_model=value["active_model"],
+            created_at=_text(value["created_at"], "created_at", 256),
+            updated_at=_text(value["updated_at"], "updated_at", 256),
+            summary=value["summary"],
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _history_event(value: object) -> HistoryEvent:
+    if not isinstance(value, dict) or set(value) != {
+        "kind",
+        "text",
+        "tool_calls",
+        "tool_results",
+    }:
+        raise ProtocolTransportError()
+    try:
+        kind = value["kind"]
+        text = value["text"]
+        if (
+            type(kind) is not str
+            or kind not in _HISTORY_KINDS
+            or type(text) is not str
+            or "\x00" in text
+        ):
+            raise ProtocolTransportError()
+        calls = value["tool_calls"]
+        results = value["tool_results"]
+        if (
+            not isinstance(calls, list)
+            or not isinstance(results, list)
+            or not all(isinstance(item, dict) for item in calls)
+            or not all(isinstance(item, dict) for item in results)
+        ):
+            raise ProtocolTransportError()
+        _validate_tree(text)
+        _validate_tree(calls)
+        _validate_tree(results)
+        return HistoryEvent(
+            kind=kind,
+            text=text,
+            tool_calls=tuple(dict(item) for item in calls),
+            tool_results=tuple(dict(item) for item in results),
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _session_list_page(value: object) -> SessionListPage:
+    if not isinstance(value, dict) or set(value) != {"items", "next_offset", "total"}:
+        raise ProtocolTransportError()
+    items = value["items"]
+    next_offset = value["next_offset"]
+    total = value["total"]
+    if (
+        not isinstance(items, list)
+        or type(total) is not int
+        or total < 0
+        or (
+            next_offset is not None
+            and (type(next_offset) is not int or next_offset < 0)
+        )
+    ):
+        raise ProtocolTransportError()
+    try:
+        return SessionListPage(
+            items=tuple(_session_item(item) for item in items),
+            next_offset=next_offset,
+            total=total,
+        )
+    except ProtocolTransportError:
+        raise
+
+
+def _session_history_page(value: object) -> SessionHistoryPage:
+    if not isinstance(value, dict) or set(value) != {
+        "events",
+        "start_turn",
+        "end_turn",
+        "total_turns",
+        "has_more",
+        "available",
+    }:
+        raise ProtocolTransportError()
+    events = value["events"]
+    start_turn = value["start_turn"]
+    end_turn = value["end_turn"]
+    total_turns = value["total_turns"]
+    has_more = value["has_more"]
+    available = value["available"]
+    if (
+        not isinstance(events, list)
+        or type(start_turn) is not int
+        or start_turn < 0
+        or type(end_turn) is not int
+        or end_turn < 0
+        or type(total_turns) is not int
+        or total_turns < 0
+        or type(has_more) is not bool
+        or type(available) is not bool
+    ):
+        raise ProtocolTransportError()
+    try:
+        return SessionHistoryPage(
+            events=tuple(_history_event(item) for item in events),
+            start_turn=start_turn,
+            end_turn=end_turn,
+            total_turns=total_turns,
+            has_more=has_more,
+            available=available,
+        )
+    except ProtocolTransportError:
+        raise
+
+
+_RECOVERABILITY_FIELDS = frozenset(
+    {
+        "project_id",
+        "thread_id",
+        "history_available",
+        "history_total_turns",
+        "live_epoch",
+        "live_latest_sequence",
+        "live_oldest_sequence",
+        "live_dropped_through",
+        "active_turn_id",
+        "latest_turn_id",
+        "latest_turn_first_sequence",
+        "latest_turn_retained_from",
+        "latest_turn_intact",
+        "probe",
+    }
+)
+
+
+def _turn_coverage_probe(value: object) -> TurnCoverageProbe:
+    """Strictly decode one durable coverage probe from a reconcile result."""
+    if not isinstance(value, dict) or set(value) != {"turn_id", "covered"}:
+        raise ProtocolTransportError()
+    if type(value["covered"]) is not bool or type(value["turn_id"]) is not str:
+        raise ProtocolTransportError()
+    try:
+        return TurnCoverageProbe(
+            turn_id=_text(value["turn_id"], "probe turn id", MAX_RECONCILE_TURN_ID_BYTES),
+            covered=value["covered"],
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ProtocolTransportError() from None
+
+
+def _recoverability_view(value: object) -> SessionRecoverabilityView:
+    """Strictly decode a ``runtime.session.reconcile`` result into the DTO.
+
+    The wire result is the exact projection of ``SessionRecoverabilityView``:
+    durable coverage fields plus live broker state (epoch, retention bounds,
+    newest observed turn replay boundary).  Every field is type- and
+    bound-checked so a malformed or truncated server response never escapes as
+    a plausible recovery decision.
+    """
+    if not isinstance(value, dict) or set(value) != _RECOVERABILITY_FIELDS:
+        raise ProtocolTransportError()
+    try:
+        for name in ("history_available", "latest_turn_intact"):
+            if type(value[name]) is not bool:
+                raise ProtocolTransportError()
+        for name in (
+            "history_total_turns",
+            "live_latest_sequence",
+            "live_oldest_sequence",
+            "live_dropped_through",
+        ):
+            if type(value[name]) is not int or value[name] < 0:
+                raise ProtocolTransportError()
+        for name in (
+            "live_epoch",
+            "project_id",
+            "thread_id",
+        ):
+            if type(value[name]) is not str or not value[name]:
+                raise ProtocolTransportError()
+        for name in (
+            "active_turn_id",
+            "latest_turn_id",
+            "latest_turn_first_sequence",
+            "latest_turn_retained_from",
+        ):
+            if value[name] is not None and (
+                type(value[name]) is not str
+                if name.endswith("turn_id")
+                else type(value[name]) is not int or value[name] < 0
+            ):
+                raise ProtocolTransportError()
+        probes = value["probe"]
+        if (
+            not isinstance(probes, list)
+            or len(probes) > MAX_RECONCILE_PROBE_TURNS
+            or not all(isinstance(item, dict) for item in probes)
+        ):
+            raise ProtocolTransportError()
+        return SessionRecoverabilityView(
+            project_id=_text(value["project_id"], "project_id", 256),
+            thread_id=_text(value["thread_id"], "thread_id", 256),
+            history_available=value["history_available"],
+            history_total_turns=value["history_total_turns"],
+            live_epoch=_text(value["live_epoch"], "live_epoch", 256),
+            live_latest_sequence=value["live_latest_sequence"],
+            live_oldest_sequence=value["live_oldest_sequence"],
+            live_dropped_through=value["live_dropped_through"],
+            active_turn_id=value["active_turn_id"],
+            latest_turn_id=value["latest_turn_id"],
+            latest_turn_first_sequence=value["latest_turn_first_sequence"],
+            latest_turn_retained_from=value["latest_turn_retained_from"],
+            latest_turn_intact=value["latest_turn_intact"],
+            probe=tuple(_turn_coverage_probe(item) for item in probes),
+        )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
@@ -845,7 +1234,9 @@ class RuntimeWebSocketClient:
                 raise ProtocolTransportError()
             if data["service_code"] == "replay_gap":
                 raise ReplayGapError()
-            raise TransportError()
+            raise TransportServiceError(
+                code=error["code"], service_code=data["service_code"]
+            )
         if set(value) != {"jsonrpc", "id", "meta", "result"}:
             raise ProtocolTransportError()
         return value["result"]
@@ -858,6 +1249,8 @@ class RuntimeWebSocketClient:
     async def _request_with_retry(self, method: str, params: dict[str, Any]) -> object:
         retry_safe = method in {
             "runtime.session.get",
+            "runtime.session.list",
+            "runtime.session.history",
             "runtime.events.read",
             "runtime.artifacts.stat",
             "runtime.artifacts.list",
@@ -1037,6 +1430,84 @@ class RuntimeWebSocketClient:
                 "runtime.session.get", {"session": _wire_session(query.session)}
             )
         )
+
+    @_fence_on_protocol_failure
+    async def get_runtime_config(
+        self, query: GetRuntimeConfigQuery
+    ) -> RuntimeConfigView:
+        if type(query) is not GetRuntimeConfigQuery:
+            raise ValueError("query must be a GetRuntimeConfigQuery")
+        result = await self._request_with_retry(
+            "runtime.config.get", {"session": _wire_session(query.session)}
+        )
+        return _runtime_config_view(result)
+
+    @_fence_on_protocol_failure
+    async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage:
+        if type(query) is not ListSessionsQuery:
+            raise ValueError("query must be a ListSessionsQuery")
+        result = await self._request_with_retry(
+            "runtime.session.list",
+            {
+                "project_id": _text(query.project_id, "project_id", 256),
+                "limit": query.limit,
+                "offset": query.offset,
+            },
+        )
+        return _session_list_page(result)
+
+    @_fence_on_protocol_failure
+    async def read_session_history(
+        self, query: ReadSessionHistoryQuery
+    ) -> SessionHistoryPage:
+        if type(query) is not ReadSessionHistoryQuery:
+            raise ValueError("query must be a ReadSessionHistoryQuery")
+        result = await self._request_with_retry(
+            "runtime.session.history",
+            {
+                "session": _wire_session(query.session),
+                "before_turn": query.before_turn,
+                "limit": query.limit,
+            },
+        )
+        return _session_history_page(result)
+
+    @_fence_on_protocol_failure
+    async def reconcile_session(
+        self, query: ReconcileSessionQuery
+    ) -> SessionRecoverabilityView:
+        """Request one read-only history/live recovery snapshot (phase-4 A).
+
+        The call is only meaningful on a connection that already negotiated
+        successfully (the client never sends business frames before the
+        handshake), and it returns a strictly validated snapshot: durable
+        coverage (``history_available`` / ``history_total_turns`` / ``probe``)
+        plus live broker state (``live_epoch``, retention bounds, newest turn
+        replay boundary).  A peer that predates recovery surfaces as
+        :class:`RecoveryUnavailableError` instead of a silent fallback: an old
+        wire server rejects the method (``method_not_found``) and an old
+        delegate reports ``invalid_request`` through the access wrapper.
+        """
+        if type(query) is not ReconcileSessionQuery:
+            raise ValueError("query must be a ReconcileSessionQuery")
+        try:
+            result = await self._request_with_retry(
+                "runtime.session.reconcile",
+                {
+                    "session": _wire_session(query.session),
+                    "probe_turn_ids": list(query.probe_turn_ids),
+                },
+            )
+        except TransportServiceError as error:
+            if error.code == -32601 or error.service_code in {
+                "method_not_found",
+                "invalid_request",
+            }:
+                raise RecoveryUnavailableError(
+                    code=error.code, service_code=error.service_code
+                ) from None
+            raise
+        return _recoverability_view(result)
 
     @_fence_on_protocol_failure
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView:

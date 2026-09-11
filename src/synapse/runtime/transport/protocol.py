@@ -22,13 +22,17 @@ from synapse.runtime.service import (
     CancelTurnCommand,
     CloseSessionCommand,
     EventFilter,
+    GetRuntimeConfigQuery,
     GetSessionQuery,
     ListArtifactsQuery,
+    ListSessionsQuery,
     OpenSessionCommand,
     PendingApprovalQuery,
     ReadArtifactQuery,
     ReadEventsQuery,
+    ReadSessionHistoryQuery,
     RebindSessionCommand,
+    ReconcileSessionQuery,
     ReloadMcpCommand,
     ResumeTurnCommand,
     StatArtifactQuery,
@@ -49,6 +53,19 @@ from synapse.runtime.service.events import (
     MAX_EVENT_BYTES,
     MAX_SCAN_LIMIT,
     MIN_EVENT_BYTES,
+)
+from synapse.runtime.service.history import (
+    HISTORY_LIMIT_DEFAULT,
+    HISTORY_LIMIT_MAX,
+    HISTORY_LIMIT_MIN,
+    SESSION_LIST_LIMIT_DEFAULT,
+    SESSION_LIST_LIMIT_MAX,
+    SESSION_LIST_LIMIT_MIN,
+    SESSION_LIST_OFFSET_MAX,
+)
+from synapse.runtime.service.recovery import (
+    MAX_RECONCILE_PROBE_TURNS,
+    MAX_RECONCILE_TURN_ID_BYTES,
 )
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -89,6 +106,10 @@ METHODS: Final = frozenset(
         "runtime.turn.approval.resume",
         "runtime.session.close",
         "runtime.session.get",
+        "runtime.session.list",
+        "runtime.session.history",
+        "runtime.session.reconcile",
+        "runtime.config.get",
         "runtime.events.read",
         "runtime.events.watch",
         "runtime.events.unwatch",
@@ -527,6 +548,9 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     if method == "runtime.session.get":
         _fields(params, {"session"})
         return GetSessionQuery(_session(params["session"]))
+    if method == "runtime.config.get":
+        _fields(params, {"session"})
+        return GetRuntimeConfigQuery(_session(params["session"]))
     if method == "runtime.events.read":
         _optional_fields(
             params,
@@ -592,6 +616,54 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             ),
             expected_revision=revision,
         )
+    if method == "runtime.session.list":
+        _optional_fields(params, {"project_id"}, {"limit", "offset"})
+        return ListSessionsQuery(
+            project_id=_session_text(params["project_id"]),
+            limit=_bounded_integer(
+                params.get("limit", SESSION_LIST_LIMIT_DEFAULT),
+                minimum=SESSION_LIST_LIMIT_MIN,
+                maximum=SESSION_LIST_LIMIT_MAX,
+            ),
+            offset=_bounded_integer(
+                params.get("offset", 0),
+                minimum=0,
+                maximum=SESSION_LIST_OFFSET_MAX,
+            ),
+        )
+    if method == "runtime.session.history":
+        _optional_fields(params, {"session"}, {"before_turn", "limit"})
+        before_turn = params.get("before_turn")
+        if before_turn is not None:
+            before_turn = _integer(before_turn, minimum=1)
+        return ReadSessionHistoryQuery(
+            session=_session(params["session"]),
+            before_turn=before_turn,
+            limit=_bounded_integer(
+                params.get("limit", HISTORY_LIMIT_DEFAULT),
+                minimum=HISTORY_LIMIT_MIN,
+                maximum=HISTORY_LIMIT_MAX,
+            ),
+        )
+    if method == "runtime.session.reconcile":
+        _optional_fields(params, {"session"}, {"probe_turn_ids"})
+        raw_probes = params.get("probe_turn_ids", [])
+        if not isinstance(raw_probes, list) or len(raw_probes) > MAX_RECONCILE_PROBE_TURNS:
+            raise ProtocolError(-32602, "invalid_params")
+        probes: list[str] = []
+        for item in raw_probes:
+            probe = _bounded_text(item, MAX_RECONCILE_TURN_ID_BYTES)
+            if probe not in probes:
+                probes.append(probe)
+        if len(probes) > MAX_RECONCILE_PROBE_TURNS:
+            raise ProtocolError(-32602, "invalid_params")
+        try:
+            return ReconcileSessionQuery(
+                session=_session(params["session"]),
+                probe_turn_ids=tuple(probes),
+            )
+        except ValueError:
+            raise ProtocolError(-32602, "invalid_params") from None
     raise ProtocolError(-32601, "method_not_found")
 
 
@@ -624,6 +696,8 @@ async def dispatch(
         return await service.close_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.get":
         return await service.get_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.config.get":
+        return await service.get_runtime_config(dto)  # type: ignore[arg-type]
     if method == "runtime.events.read":
         return await service.read_events(dto)  # type: ignore[arg-type]
     if method == "runtime.artifacts.stat":
@@ -632,6 +706,12 @@ async def dispatch(
         return await service.list_artifacts(dto)  # type: ignore[arg-type]
     if method == "runtime.artifacts.read":
         return await service.read_artifact(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.list":
+        return await service.list_sessions(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.history":
+        return await service.read_session_history(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.reconcile":
+        return await service.reconcile_session(dto)  # type: ignore[arg-type]
     raise ProtocolError(-32601, "method_not_found")
 
 
