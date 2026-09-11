@@ -30,10 +30,12 @@ from synapse.runtime.service import (
     AclGrant,
     GetRuntimeConfigQuery,
     InvalidRequestError,
+    OpenSessionCommand,
     Principal,
     RuntimeConfigView,
     SetProjectThinkingLevelCommand,
     SetProjectThinkingLevelResult,
+    SetThinkingLevelCommand,
     bind_access,
 )
 from synapse.runtime.service.access import _REQUIRED_DELEGATE_METHODS
@@ -438,10 +440,40 @@ def test_service_reports_no_project_capability_without_a_writer(
     # The project default is still reported: it comes from the project settings.
     assert view.project_thinking_level == "high"
 
-    with pytest.raises(InvalidRequestError):
-        asyncio.run(
-            service.set_project_thinking_level(SetProjectThinkingLevelCommand(PROJECT, "low"))
-        )
+
+def test_session_thinking_write_keeps_advertising_the_project_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session-level write must not degrade the project row to unknown/read-only.
+
+    The console maps ``SetThinkingLevelResult.view`` straight into its state, so
+    that refreshed view has to carry the same project-scoped fields as
+    ``runtime.config.get``.  Regression: the write built the view without the
+    project settings, so any reasoning-level change flipped the settings dialog
+    to "unknown + read-only" even though the write port exists.
+    """
+    _patch_registry(monkeypatch, ("off", "low", "high"))
+    settings = _settings(workspace=tmp_path)
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(),
+        thinking_rebind_factory=lambda thread_id, level, binding, shared: (
+            SimpleNamespace(),
+            SimpleNamespace(**{**vars(settings), "reasoning_effort": level}),
+        ),
+        project_id=PROJECT,
+        project_thinking_writer=lambda level, current: apply_project_thinking_default(
+            current, level, workspace=tmp_path
+        ),
+    )
+    service = LocalAgentRuntimeService(lambda project_id: manager)
+    ref = SessionRef(PROJECT, "t")
+    asyncio.run(service.open_session(OpenSessionCommand(ref)))
+
+    result = asyncio.run(service.set_thinking_level(SetThinkingLevelCommand(ref, "low")))
+
+    assert result.view.project_thinking_level == "high"
+    assert result.view.can_set_project_thinking is True
 
 
 # ---------------------------------------------------------------------------

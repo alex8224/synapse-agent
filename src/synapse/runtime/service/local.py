@@ -399,7 +399,17 @@ class LocalAgentRuntimeService:
             command_id=command.command_id,
             session=command.session,
             level=settings_thinking_label(settings),
-            view=config_source.build_config_view(settings, session=command.session),
+            # The refreshed view is mapped straight into the console's state, so it
+            # must keep advertising the project-scoped surface (same source as
+            # `get_runtime_config`): without these two arguments the project
+            # default and its capability flag degrade to "unknown + read-only"
+            # after any session-level write, even though the port exists.
+            view=config_source.build_config_view(
+                settings,
+                session=command.session,
+                project_settings=manager.settings,
+                can_set_project_thinking=manager.project_thinking_writer is not None,
+            ),
         )
 
     async def set_project_thinking_level(
