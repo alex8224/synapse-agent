@@ -128,6 +128,12 @@ def load_global_settings() -> Any:
 #: for ``runtime.session.list`` and ``params.ref.session.project_id`` for the
 #: artifact queries.  An explicit whitelist, never a recursive scan of the
 #: payload: the guard must not start guessing which nested key is a scope.
+#:
+#: This tuple is *bound to the protocol source*: the whitelist is derived from
+#: ``protocol.decode_params`` by
+#: ``tests/test_web_console_host.py::test_scope_whitelist_is_bound_to_the_protocol_decoder``,
+#: so a protocol evolution that moves or adds a routing position fails that test
+#: instead of silently widening the guard's blind spot.
 SCOPE_PROJECT_POSITIONS = ("session.project_id", "project_id", "ref.session.project_id")
 
 #: Service code of the typed rejection used for a cross-project relay request.
@@ -163,6 +169,16 @@ def _scoped_request(payload: str) -> tuple[str | int, list[str]] | None:
     deliberately *not* validated here: the runtime daemon stays the authority on
     request validity, and anything this function cannot read (not JSON, no id,
     no params object) is forwarded unchanged.
+
+    Returning ``None`` is the guard's documented *fail-open* branch.  It is safe
+    because the daemon's ``parse_request`` is strictly stricter than this reader
+    on every dimension this reader relies on (``type(message) is str``, strict
+    UTF-8, ``max_bytes``, duplicate keys and constants rejected, key set exactly
+    ``{jsonrpc,id,method,params}``, id exactly ``int``/``str``, ``params`` a
+    dict): a frame the daemon *accepts* is always readable here, and both
+    parsers then see identical structures, so the guard can never miss a scope
+    the daemon would resolve.  Fail-open events are counted by
+    ``RelayProjectScopeGuard.unreadable`` instead of passing silently.
     """
     try:
         frame = json.loads(payload)
@@ -214,9 +230,15 @@ class RelayProjectScopeGuard:
     * a rejected request is answered with the typed ``not_found`` error the
       runtime already returns for an unresolvable project, so the console leaks
       neither the other project's identity/path nor whether it exists.
+
+    The guard is *not* fail-closed: a frame it cannot read is forwarded and left
+    to the daemon, which refuses it before any project is resolved (see
+    :func:`_scoped_request` for why that is not exploitable, and
+    :attr:`unreadable` for the counter that makes the boundary observable
+    instead of silent).
     """
 
-    __slots__ = ("project_id", "rejected")
+    __slots__ = ("project_id", "rejected", "unreadable")
 
     def __init__(self, project_id: str) -> None:
         if type(project_id) is not str or not project_id:
@@ -224,11 +246,17 @@ class RelayProjectScopeGuard:
         self.project_id = project_id
         #: Number of browser requests rejected so far (evidence for tests/logs).
         self.rejected = 0
+        #: Number of browser text frames the guard could not read and therefore
+        #: forwarded unchanged (the documented fail-open branch).  Counted so the
+        #: boundary stays measurable; the daemon rejects every such frame before
+        #: it can resolve a project (see :func:`_scoped_request`).
+        self.unreadable = 0
 
     def rejection(self, payload: str) -> str | None:
         """The typed rejection frame for a cross-project request, else ``None``."""
         scoped = _scoped_request(payload)
         if scoped is None:
+            self.unreadable += 1
             return None
         request_id, project_ids = scoped
         if all(project_id == self.project_id for project_id in project_ids):
@@ -392,6 +420,16 @@ class WebConsoleHost:
     def scope_rejections(self) -> int:
         """How many browser requests the project-scope guard rejected."""
         return self._scope_guard.rejected
+
+    @property
+    def unreadable_frames(self) -> int:
+        """How many browser text frames the guard could not read (fail-open).
+
+        These frames are relayed unchanged and rejected by the daemon's strict
+        request parser before any project is resolved; the counter exists so the
+        fail-open boundary is observable instead of silent.
+        """
+        return self._scope_guard.unreadable
 
     def rotate_pairing_code(self) -> str:
         """Force a fresh code (used by tests and by the expiry maintenance loop)."""

@@ -27,6 +27,11 @@ from websockets.asyncio.server import serve as ws_serve
 
 from synapse.projects.catalog import ProjectCatalog
 from synapse.runtime.daemon.auth import TokenFileError, read_existing_token
+from synapse.runtime.transport.protocol import (
+    ProtocolError,
+    encode_error,
+    parse_request,
+)
 from synapse.web_console.config import WebConsoleConfig
 from synapse.web_console.host import (
     ProjectDiscoveryError,
@@ -220,13 +225,55 @@ class CountingDaemon:
             self.connections -= 1
 
 
+class StrictCountingDaemon(CountingDaemon):
+    """Counting daemon whose receive rule and refusals come from the real codec.
+
+    Mirrors ``src/synapse/runtime/transport/websocket.py`` (``_Connection.run``):
+    binary frames close the socket with ``1003`` and are never parsed, text frames
+    go through the real ``parse_request``, and a refusal is answered with the real
+    ``encode_error`` envelope.  ``parsed`` therefore lists exactly the frames a real
+    daemon would hand to a project manager, which is what the H1 case asserts on.
+    """
+
+    def __init__(self, *, max_message_bytes: int = 1024 * 1024) -> None:
+        super().__init__()
+        self.max_message_bytes = max_message_bytes
+        self.parsed: list[Any] = []
+        self.close_codes: list[int] = []
+
+    async def _handle(self, connection: Any) -> None:
+        if connection.request.headers.get("Authorization") != f"Bearer {TOKEN}":
+            await connection.close(code=1008, reason="bad auth")
+            return
+        self.connections += 1
+        self.total_connections += 1
+        try:
+            async for raw in connection:
+                self.frames.append(raw)
+                if isinstance(raw, bytes):
+                    self.close_codes.append(1003)
+                    await connection.close(code=1003, reason="binary frames are not accepted")
+                    break
+                try:
+                    request = parse_request(raw, max_bytes=self.max_message_bytes)
+                except ProtocolError as error:
+                    await connection.send(
+                        encode_error(error.request_id, error.code, error.service_code)
+                    )
+                    continue
+                self.parsed.append(request)
+                await connection.send(encode_error(request.id, -32000, "not_found"))
+        finally:
+            self.connections -= 1
+
+
 class Console:
     """A started console host plus its counting daemon."""
 
-    def __init__(self, tmp_path: Path, **overrides: Any) -> None:
+    def __init__(self, tmp_path: Path, *, daemon: Any = None, **overrides: Any) -> None:
         self.tmp_path = tmp_path
         self.overrides = overrides
-        self.daemon = CountingDaemon()
+        self.daemon = CountingDaemon() if daemon is None else daemon
         self.host: WebConsoleHost | None = None
         self.port = 0
         self.metadata: dict[str, Any] = {}
@@ -1410,3 +1457,77 @@ def test_b_a8_05_invalid_knobs_fail_startup(
         assert captured.out == "", extra
         assert PAIR_LINE_PREFIX not in captured.err, extra
         assert "unable to start" in captured.err, extra
+
+
+def test_h1_fail_open_frames_never_serve_another_project(tmp_path: Path) -> None:
+    """H1-4 (security view): every fail-open shape is refused before any routing.
+
+    The guard cannot read these frames, so it relays them unchanged; the daemon's
+    strict parser refuses each one before a project is resolved (``parsed`` stays
+    empty, so no project manager is ever built), and no response carries the other
+    project's identity, its workspace or the daemon token.
+    """
+    other_project = "project-registered-elsewhere"
+    other_workspace = str(tmp_path / "elsewhere")
+    cross = {"session": {"project_id": other_project, "thread_id": "b-1"}}
+    text_shapes = (
+        json.dumps({"jsonrpc": "2.0", "id": 51, "params": json.dumps(cross)}),
+        json.dumps(
+            {"jsonrpc": "2.0", "id": True, "method": "runtime.session.open", "params": cross}
+        ),
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 1.5, "method": "runtime.session.open", "params": cross}
+        ),
+        json.dumps({"jsonrpc": "2.0", "id": 52, "params": [cross]}),
+        "not json",
+    )
+    binary = json.dumps(
+        {"jsonrpc": "2.0", "id": 53, "method": "runtime.session.open", "params": cross}
+    ).encode("utf-8")
+
+    async def run() -> None:
+        daemon = StrictCountingDaemon()
+        async with Console(tmp_path, daemon=daemon) as console:
+            async with ClientSession() as session:
+                cookie = await console.pair(session)
+                async with session.ws_connect(
+                    console.ws_url, origin=console.base, headers=cookie_header(cookie)
+                ) as ws:
+                    for payload in text_shapes:
+                        await ws.send_str(payload)
+                        reply = await asyncio.wait_for(ws.receive(), 5)
+                        assert reply.type == WSMsgType.TEXT, reply.type
+                        error = json.loads(reply.data)["error"]
+                        assert error["code"] in (-32600, -32700), reply.data
+                        for secret in (other_project, other_workspace, TOKEN):
+                            assert secret not in reply.data
+                    # Control: a *readable* cross-project request is stopped by the
+                    # guard itself, so the relay never carries it.
+                    await ws.send_str(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 54,
+                                "method": "runtime.session.open",
+                                "params": cross,
+                            }
+                        )
+                    )
+                    blocked = await asyncio.wait_for(ws.receive(), 5)
+                    assert json.loads(blocked.data)["error"]["data"]["service_code"] == "not_found"
+                    assert daemon.frames == list(text_shapes)
+                    # A binary frame is relayed as bytes and closed by the daemon.
+                    await ws.send_bytes(binary)
+                    closing = await asyncio.wait_for(ws.receive(), 5)
+                    assert closing.type == WSMsgType.CLOSE, closing.type
+                    assert closing.data == 1000, closing.data
+                assert console.host is not None
+                assert console.host.scope_rejections == 1
+                assert console.host.unreadable_frames == len(text_shapes)
+                # Nothing was ever handed to a project manager...
+                assert daemon.parsed == []
+                # ...and every fail-open frame reached the daemon verbatim.
+                assert daemon.frames == [*text_shapes, binary]
+                assert daemon.close_codes == [1003]
+
+    _run(run())
