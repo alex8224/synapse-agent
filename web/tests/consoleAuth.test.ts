@@ -106,6 +106,7 @@ function fakeStorage(name: string): unknown {
 (globalThis as any).sessionStorage = fakeStorage('session');
 
 const { RUNTIME_RPC_NOT_READY, useConsoleStore } = await import('../src/stores/useConsoleStore.ts');
+const { RUNTIME_STATUS_PATH } = await import('../src/client/runtimeStatus.ts');
 
 /** The pristine state of the store, captured before any test mutates it. */
 const initialState = { ...useConsoleStore.getState() };
@@ -231,12 +232,15 @@ test('C-04 concurrent and repeated initClient calls take effect exactly once', a
   const second = useConsoleStore.getState().initClient();
   await muted(() => Promise.all([first, second]));
 
-  assert.equal(requests.length, 1, 'only one session probe may be issued');
+  const probes = () => requests.filter((call) => call.url === '/api/session');
+  assert.equal(probes().length, 1, 'only one session probe may be issued');
   assert.equal(sockets.length, 1, 'only one runtime socket may be opened');
   assert.equal(useConsoleStore.getState().pairingState, 'paired');
 
+  const before = requests.length;
   await muted(() => useConsoleStore.getState().initClient());
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, before, 'a repeated initClient must issue nothing new');
+  assert.equal(probes().length, 1);
   assert.equal(sockets.length, 1);
 });
 
@@ -315,7 +319,19 @@ test('C-01 a successful pairing authenticates the console and opens one socket',
   const ok = await muted(() => useConsoleStore.getState().submitPairingCode('abcd-efgh'));
 
   assert.equal(ok, true);
-  assert.deepEqual(requests.map((call) => call.url), ['/api/pair']);
+  // Pairing itself issues exactly one request.  This fake socket fails its
+  // handshake, which is a connect failure: since C3 that (and only that) also
+  // triggers the read-only diagnostics read of `GET /api/runtime-status`.
+  const urls = requests.map((call) => call.url);
+  assert.equal(urls.filter((url) => url === '/api/pair').length, 1);
+  assert.deepEqual(
+    [...new Set(urls)].filter((url) => url !== RUNTIME_STATUS_PATH),
+    ['/api/pair'],
+  );
+  const diagnostics = requests.find((call) => call.url === RUNTIME_STATUS_PATH);
+  assert.ok(diagnostics, 'the connect failure must trigger the read-only diagnostics read');
+  assert.equal(diagnostics?.init?.method, 'GET');
+  assert.equal(diagnostics?.init?.body, undefined);
   assert.equal(headersOf(requests[0].init)['Content-Type'], 'application/json');
   assert.equal(headersOf(requests[0].init)['X-Synapse-Console'], '1');
   assert.equal(requests[0].init?.credentials, 'same-origin');

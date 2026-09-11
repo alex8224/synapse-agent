@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { TopBar } from './components/TopBar';
 import { SideBar } from './components/SideBar';
 import { Transcript } from './components/Transcript';
+import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner';
 import { CommandInput } from './components/CommandInput';
 import { BottomBar } from './components/BottomBar';
 import { PairingGate } from './components/PairingGate';
@@ -49,6 +50,9 @@ export function App() {
       <div className="flex flex-1 overflow-hidden relative">
         <SideBar />
         <main className="flex-1 flex flex-col relative bg-surface-container overflow-hidden">
+          {/* Only rendered when the relay is down and the read-only diagnostics
+              read succeeded; see the component for the degradation rules. */}
+          <RuntimeDiagnosticsBanner />
           <Transcript />
           <CommandInput />
         </main>

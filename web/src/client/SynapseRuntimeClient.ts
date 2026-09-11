@@ -85,7 +85,13 @@ export interface SocketLike {
   onopen: (() => void) | null;
   onmessage: ((ev: { data: any }) => void) | null;
   onerror: (() => void) | null;
-  onclose: (() => void) | null;
+  /**
+   * Browsers call this with the CloseEvent (`code` / `reason`); a fake socket
+   * may call it with nothing at all.  The console host closes a relay it cannot
+   * attach with `1011` and the frozen reason `runtime daemon unavailable`, so
+   * the code/reason is the only transport-level diagnostic the browser gets.
+   */
+  onclose: ((ev?: { code?: number; reason?: string }) => void) | null;
 }
 
 export interface ClientOptions {
@@ -106,6 +112,25 @@ export interface ClientOptions {
 }
 
 const OPEN = 1;
+
+/** Longest close reason copied into user-visible copy (bounded, never a secret). */
+const CLOSE_REASON_LIMIT = 120;
+
+/**
+ * Bounded, user-facing description of one socket close.  Only the numeric close
+ * code and the server-supplied reason string are used; a missing code/reason
+ * degrades to the generic wording so nothing is invented.
+ */
+export function describeSocketClose(ev?: { code?: number; reason?: string }): string {
+  const code = typeof ev?.code === 'number' ? ev.code : null;
+  const rawReason = typeof ev?.reason === 'string' ? ev.reason.trim() : '';
+  const reason =
+    rawReason.length > CLOSE_REASON_LIMIT ? rawReason.slice(0, CLOSE_REASON_LIMIT) : rawReason;
+  if (code === null && reason === '') return 'connection closed';
+  if (reason === '') return `connection closed (code ${code})`;
+  if (code === null) return `connection closed (${reason})`;
+  return `connection closed (code ${code}: ${reason})`;
+}
 
 /**
  * One persistent JSON-RPC WebSocket connection with:
@@ -331,23 +356,24 @@ export class SynapseRuntimeClient {
           fail(new ConnectionLostError('connection error', false));
         }
       };
-      socket.onclose = () => {
+      socket.onclose = (ev?: { code?: number; reason?: string }) => {
         if (socket !== this.ws || gen !== this.generation) {
           // Late close from a replaced socket generation: fence it entirely.
           return;
         }
+        const detail = describeSocketClose(ev);
         this.ws = null;
         if (!settled) {
           settled = true;
           this.openReject = null;
-          this.setState('error', 'connection closed during connect');
-          reject(new ConnectionLostError('connection closed during connect', false));
+          this.setState('error', detail);
+          reject(new ConnectionLostError(detail, false));
         }
-        this.rejectPendingForGeneration(gen, 'connection closed');
+        this.rejectPendingForGeneration(gen, detail);
         if (this.armed) {
           // Only a connection that was healthy at least once triggers the
           // bounded recovery budget; a failed first connect does not.
-          this.handleUnexpectedClose('connection closed');
+          this.handleUnexpectedClose(detail);
         }
       };
     });

@@ -23,6 +23,14 @@ import type {
 } from '../client/types.ts';
 import { isCoveredTurn } from '../client/recoverability.ts';
 import {
+  RuntimeStatusUnavailableError,
+  fetchRuntimeStatus,
+} from '../client/runtimeStatus.ts';
+import {
+  RUNTIME_DIAGNOSTICS_IDLE,
+} from './runtimeDiagnosticsView.ts';
+import type { RuntimeDiagnosticsSnapshot } from './runtimeDiagnosticsView.ts';
+import {
   mapHistoryEvents,
   toSessionListView,
   latestHistoryParams,
@@ -62,6 +70,74 @@ let initPromise: Promise<void> | null = null;
 /** Bumped on logout so an in-flight authentication attempt cannot re-arm. */
 let authEpoch = 0;
 
+/**
+ * Single-flight guard for the read-only runtime diagnostics read
+ * (`GET /api/runtime-status`, phase-5 C3).
+ *
+ * A relay failure can trip several triggers at once (state change + connect
+ * rejection) and repeated failures must not turn into a request storm, so at
+ * most one read is issued per pairing lifetime; only an explicit user refresh
+ * (`force`) bypasses the latch.  `runtimeDiagnosticsEpoch` fences a read that
+ * was started before a logout/new pairing so its late result can never be
+ * written into the next session's state.
+ */
+let runtimeDiagnosticsPromise: Promise<void> | null = null;
+let runtimeDiagnosticsAttempted = false;
+let runtimeDiagnosticsEpoch = 0;
+
+/** Options of one diagnostics read. */
+export interface RuntimeDiagnosticsRequest {
+  /** What asked for the read (`relay_unavailable` / `connect_failed` / `manual`). */
+  trigger?: string;
+  /** Bounded connection detail to display next to the host's facts. */
+  detail?: string | null;
+  /** Explicit user refresh: allowed to bypass the once-per-pairing latch. */
+  force?: boolean;
+}
+
+/**
+ * Drop the diagnostics latch (new pairing / logout) so the next failure starts
+ * a fresh read instead of being suppressed by the previous session's attempt.
+ *
+ * Exported because it is the only way to observe the latch from outside the
+ * store (the pairing and logout paths above call it, and the offline tests use
+ * it to isolate one diagnostics scenario from the next).
+ */
+export function resetRuntimeDiagnostics(): void {
+  runtimeDiagnosticsEpoch += 1;
+  runtimeDiagnosticsAttempted = false;
+  runtimeDiagnosticsPromise = null;
+}
+
+/**
+ * One read of `GET /api/runtime-status` into the store.
+ *
+ * A successful read publishes the host's facts; every failure publishes only a
+ * typed reason and leaves the existing copy untouched (silent degradation).
+ * A read whose epoch was superseded (logout / new pairing) writes nothing.
+ */
+async function readRuntimeDiagnostics(
+  trigger: string,
+  detail: string | null,
+  epoch: number,
+): Promise<void> {
+  const store = useConsoleStore;
+  store.setState({
+    runtimeDiagnostics: { status: 'loading', view: null, reason: null, trigger, detail },
+  });
+  try {
+    const view = await fetchRuntimeStatus();
+    if (epoch !== runtimeDiagnosticsEpoch) return;
+    store.setState({ runtimeDiagnostics: { status: 'ready', view, reason: null, trigger, detail } });
+  } catch (err) {
+    if (epoch !== runtimeDiagnosticsEpoch) return;
+    const reason = err instanceof RuntimeStatusUnavailableError ? err.reason : 'unknown';
+    store.setState({
+      runtimeDiagnostics: { status: 'unavailable', view: null, reason, trigger, detail },
+    });
+  }
+}
+
 function describeError(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   return String(err);
@@ -92,6 +168,9 @@ function requireRuntimeClient(): SynapseRuntimeClient | null {
 function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void {
   if (epoch !== authEpoch) return;
   const store = useConsoleStore;
+  // A new authenticated runtime starts from a clean diagnostics slate: the
+  // previous pairing's read (and its once-per-pairing latch) must not leak in.
+  resetRuntimeDiagnostics();
   const targetUrl = deriveRuntimeSocketUrl(window.location);
   const client = new SynapseRuntimeClient({
     url: targetUrl,
@@ -103,6 +182,20 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         // by onRecovery below; a plain transition back to connected with no
         // prior drop stays idle.
         return;
+      }
+      if (state === 'error' || state === 'disconnected') {
+        // Relay unavailable / connection failure (including the host's frozen
+        // `1011` + `runtime daemon unavailable` close, whose code and reason are
+        // carried in `reason`).  Read the host's read-only diagnostics so the
+        // user sees the daemon endpoint / state dir / start hint instead of only
+        // the frozen close copy.  The action is gated (paired only) and
+        // single-flight, so this can never become a request storm.
+        if (reason !== 'closed by user') {
+          void store.getState().loadRuntimeDiagnostics({
+            trigger: prev === 'connected' ? 'relay_unavailable' : 'connect_failed',
+            detail: reason ?? null,
+          });
+        }
       }
       if (prev === 'connected' && !(reason === 'closed by user')) {
         // Unexpected drop: the old subscription id is dead. Clear it so live
@@ -210,6 +303,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     pairingError: null,
     rpcBlockedReason: null,
     connectionState: 'connecting',
+    runtimeDiagnostics: RUNTIME_DIAGNOSTICS_IDLE,
     workspacePath: project.workspace_path,
     // No silent fallback to a previously rendered branch: the value is exactly
     // what the authenticated host reported (empty when it reported none).
@@ -243,6 +337,13 @@ async function connectAuthenticatedRuntime(
     await client.connect();
   } catch (err) {
     console.warn('Runtime transport connect note:', err);
+    // Safety net for a connect that failed without any state-change callback
+    // (e.g. the socket constructor itself threw).  The diagnostics action is
+    // single-flight, so the usual path (onStateChange above) is not duplicated.
+    void store.getState().loadRuntimeDiagnostics({
+      trigger: 'connect_failed',
+      detail: describeError(err),
+    });
     return;
   }
   if (epoch !== authEpoch || store.getState().client !== client) return;
@@ -326,6 +427,13 @@ interface ConsoleStore {
     | 'unknown'
     | 'failed';
   recoveryDetail: string | null;
+
+  // Read-only runtime diagnostics (phase-5 C3): the facts served by the host's
+  // `GET /api/runtime-status`.  Read only on a relay failure path, only after a
+  // successful pairing, and at most once per pairing lifetime (see the latch).
+  runtimeDiagnostics: RuntimeDiagnosticsSnapshot;
+  /** Read the host's read-only runtime diagnostics (gated, single-flight). */
+  loadRuntimeDiagnostics: (options?: RuntimeDiagnosticsRequest) => Promise<void>;
 
   pendingApproval: PendingApprovalView | null;
   resolveApproval: (decision: 'allow_once' | 'reject_once') => Promise<void>;
@@ -863,6 +971,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   connectionState: 'disconnected',
   recoveryState: 'idle',
   recoveryDetail: null,
+  runtimeDiagnostics: RUNTIME_DIAGNOSTICS_IDLE,
   client: null,
   // Unauthenticated until proven otherwise: no project, no session, no socket.
   pairingState: 'checking',
@@ -1225,6 +1334,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (client) client.disconnect();
     clearAttached();
     sessionEpoch++;
+    // The next pairing gets a fresh diagnostics read and a fresh latch.
+    resetRuntimeDiagnostics();
     set({
       client: null,
       pairingState: 'unpaired',
@@ -1233,6 +1344,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       connectionState: 'disconnected',
       recoveryState: 'idle',
       recoveryDetail: null,
+      runtimeDiagnostics: RUNTIME_DIAGNOSTICS_IDLE,
       activeSubscriptionId: null,
       liveEventBuffer: [],
       liveBufferDroppedCount: 0,
@@ -1281,6 +1393,26 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       recoveryDetail: null,
       activeSubscriptionId: null,
     });
+  },
+  loadRuntimeDiagnostics: async (options) => {
+    const trigger = options?.trigger ?? 'manual';
+    const detail = options?.detail ?? null;
+    // Gate (C3-2): an unpaired browser must never touch this endpoint.  The
+    // pairing state is the same gate every other console call uses, so no new
+    // authentication path is introduced here.
+    if (get().pairingState !== 'paired') return;
+    // Single-flight + once-per-pairing latch: a burst of failure triggers (or a
+    // repeated failure) issues exactly one request.  Only an explicit user
+    // refresh (`force`) reads again.
+    if (runtimeDiagnosticsPromise) return runtimeDiagnosticsPromise;
+    if (options?.force !== true && runtimeDiagnosticsAttempted) return;
+    const epoch = runtimeDiagnosticsEpoch;
+    const attempt = readRuntimeDiagnostics(trigger, detail, epoch).finally(() => {
+      runtimeDiagnosticsAttempted = true;
+      if (runtimeDiagnosticsPromise === attempt) runtimeDiagnosticsPromise = null;
+    });
+    runtimeDiagnosticsPromise = attempt;
+    return attempt;
   },
   resolveApproval: async (kind: 'allow_once' | 'reject_once') => {
     const client = requireRuntimeClient();
