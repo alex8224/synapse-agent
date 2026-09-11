@@ -26,6 +26,20 @@ from synapse.runtime.service.events import RuntimeEvent
 from synapse.runtime.service.queries import SessionView
 from synapse.runtime.sessions.ref import SessionRef
 
+#: Event-watch bound requested for every TUI session subscription.
+#:
+#: ``LocalEventWatch`` treats ``queue_size`` as a *kill* threshold rather than
+#: as backpressure: the subscription is terminated — and every accepted event
+#: dropped with it — as soon as that many matching events are accepted without
+#: being consumed by ``__anext__``.  The service default (128) therefore only
+#: tolerates a consumer-loop stall of ``128 / events_per_second`` seconds
+#: (~0.1-0.4s at realistic streaming rates), so one slow callback on the
+#: runtime loop loses the rest of the turn's event stream.  The TUI asks for the
+#: largest bound the service accepts (``_MAX_QUEUE_SIZE`` in
+#: ``synapse.runtime.service.local``) to widen that window ~32x while the stall
+#: source is identified; overflow is still absorbing, never recovered.
+_TUI_EVENT_QUEUE_SIZE = 4096
+
 
 class TUISessionOwner(Protocol):
     """Project-level owner; session close deliberately does not call it."""
@@ -77,7 +91,11 @@ class TUIRuntimeSessionFacade:
     def watch(self, *, after: int | None = None) -> Any:
         """Return a lease; leaving it closes only the subscription."""
         cursor = self.state.last_sequence if after is None else after
-        return self.binding.service.watch_events(self.binding.session, after=cursor)
+        return self.binding.service.watch_events(
+            self.binding.session,
+            after=cursor,
+            queue_size=_TUI_EVENT_QUEUE_SIZE,
+        )
 
     def _track_event(
         self,

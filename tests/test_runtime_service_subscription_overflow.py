@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -164,6 +166,70 @@ def test_default_queue_size_is_the_overflow_threshold_for_a_non_yielding_consume
         session = manager.get_session("a")
         assert session is not None
         assert session.broker._subscribers == {}
+
+        factory.turns["a"].future.set_result(_result("a", receipt.turn_id))
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_overflow_logs_stalled_consumer_loop_diagnostics(caplog) -> None:
+    """The absorbing overflow logs the bound, the rate and the stalled loop stack.
+
+    A drain gap far larger than the stall threshold proves the consumer loop was
+    blocked rather than merely slow, so the loop thread's stack is captured;
+    without it the production symptom ("subscription terminated") cannot be
+    attributed to whatever starved the consumer.
+    """
+
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+        manager = _manager(factory, project_id="p1")
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+        receipt = await service.submit_turn(SubmitTurnCommand(session=ref, text="hello"))
+        sink = factory.turns["a"].sink
+
+        watcher = service.watch_events(ref, after=0)
+        stream = await watcher.__aenter__()
+
+        def emit_slowly() -> None:
+            # Spread the burst over ~260ms so the overflow lands while the
+            # consumer loop is still blocked below.
+            for sequence in range(1, _DEFAULT_QUEUE_SIZE + 2):
+                sink.emit(_event("a", receipt.turn_id, sequence, f"tok{sequence}"))
+                time.sleep(0.002)
+
+        producer = threading.Thread(target=emit_slowly, daemon=True)
+        with caplog.at_level(logging.WARNING, logger="synapse.runtime.service.local"):
+            producer.start()
+            time.sleep(0.4)  # block the consumer loop (this coroutine's thread)
+            producer.join(timeout=30.0)
+        assert not producer.is_alive()
+        assert watcher.closed is True
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "synapse.runtime.service.local"
+        ]
+        assert len(messages) == 1
+        message = messages[0]
+        assert message.startswith("event watch overflow:")
+        assert "session=p1:a" in message
+        assert f"pending={_DEFAULT_QUEUE_SIZE}" in message
+        assert f"queue_size={_DEFAULT_QUEUE_SIZE}" in message
+        assert "rate=" in message
+        assert "drain_gap_ms=" in message
+        # The loop thread is parked inside this coroutine: the stack names it.
+        assert "loop_thread_stack=" in message
+        assert "run@test_runtime_service_subscription_overflow.py" in message
+
+        with pytest.raises(EventOverflowError) as excinfo:
+            await stream.__anext__()
+        assert excinfo.value.code == "event_overflow"
+        with pytest.raises(StopAsyncIteration):
+            await stream.__anext__()
 
         factory.turns["a"].future.set_result(_result("a", receipt.turn_id))
         await manager.shutdown()

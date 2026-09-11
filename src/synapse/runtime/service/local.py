@@ -10,7 +10,12 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
+import os
+import sys
 import threading
+import time
+import traceback
 from collections import deque
 from collections.abc import Callable
 from typing import Any, Self
@@ -135,6 +140,13 @@ _DEFAULT_SCAN_LIMIT = DEFAULT_SCAN_LIMIT
 _DEFAULT_MAX_EVENT_BYTES = DEFAULT_MAX_EVENT_BYTES
 _MIN_EVENT_BYTES = MIN_EVENT_BYTES
 _MAX_EVENT_BYTES = MAX_EVENT_BYTES
+
+_LOGGER = logging.getLogger(__name__)
+
+#: A drain gap larger than this at overflow time means the consumer loop was
+#: stalled rather than merely slow; its thread stack is then captured as
+#: evidence of what blocked it.
+_OVERFLOW_STALL_THRESHOLD_S = 0.05
 
 
 def _to_runtime_event(
@@ -1020,6 +1032,15 @@ class LocalEventStream:
         self._cursor = after
         self._scanned_cursor = after
         self._pending_matches: set[int] = set()
+        # Overflow diagnostics: how many events this watch accepted, when it
+        # opened, when the consumer loop last ran a drain, and which thread that
+        # loop is (``__init__`` resolves the running loop, so it is the loop
+        # thread).  Cheap scalars only; nothing here touches asyncio objects
+        # from the producer thread.
+        self._accepted = 0
+        self._opened_at = time.monotonic()
+        self._last_drain_at = self._opened_at
+        self._loop_thread_id = threading.get_ident()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1068,6 +1089,9 @@ class LocalEventStream:
         the registered subscription before propagating unchanged, so a failed
         enter never leaks a broker subscriber.
         """
+        now = time.monotonic()
+        self._opened_at = now
+        self._last_drain_at = now
         try:
             window, subscription = self._session.subscribe_from(
                 self._ingest,
@@ -1241,6 +1265,65 @@ class LocalEventStream:
         self._replay.clear()
         self._pending = 0
 
+    def _log_overflow(
+        self,
+        now: float,
+        pending: int,
+        accepted: int,
+        opened_at: float,
+        last_drain_at: float,
+    ) -> None:
+        """Log the overflow site so a consumer-loop stall can be diagnosed.
+
+        Best effort by design: the caller invokes this *after* releasing the
+        ingress lock, and every step is guarded, so diagnostics can never mask
+        or delay the terminal ``EventOverflowError``.  A large drain gap proves
+        the consumer loop was stalled rather than merely slow, which is the only
+        way to reach the bound given the watch's measured ~20k events/s
+        service rate.
+        """
+        try:
+            elapsed = max(now - opened_at, 1e-9)
+            drain_gap = now - last_drain_at
+            parts = [
+                "event watch overflow:",
+                f"session={self._session.project_id}:{self._session.thread_id}",
+                f"pending={pending}",
+                f"queue_size={self._queue_size}",
+                f"accepted={accepted}",
+                f"elapsed_s={elapsed:.2f}",
+                f"rate={accepted / elapsed:.0f}/s",
+                f"drain_gap_ms={drain_gap * 1000:.1f}",
+                f"loop_debug={self._loop.get_debug()}",
+            ]
+            if drain_gap > _OVERFLOW_STALL_THRESHOLD_S:
+                parts.append(f"loop_thread_stack={self._loop_thread_stack()}")
+            _LOGGER.warning(" ".join(parts))
+        except Exception:  # noqa: BLE001 - diagnostics never mask the overflow
+            pass
+
+    def _loop_thread_stack(self, limit: int = 8) -> str:
+        """Return the consumer loop thread's frames as one line, outermost first.
+
+        The last entry is the frame the loop is parked on, i.e. the blocking
+        call that starved the consumer.
+        """
+        current_frames = getattr(sys, "_current_frames", None)
+        if current_frames is None:
+            return "<unavailable>"
+        try:
+            frame = current_frames().get(self._loop_thread_id)
+            if frame is None:
+                return "<loop thread not running>"
+            # ``extract_stack`` yields the innermost ``limit`` frames ordered
+            # outermost-first, so the last entry is where the loop is parked.
+            return " <- ".join(
+                f"{entry.name}@{os.path.basename(entry.filename)}:{entry.lineno}"
+                for entry in traceback.extract_stack(frame, limit=limit)
+            )
+        except Exception:  # noqa: BLE001 - diagnostics never mask the overflow
+            return "<unavailable>"
+
     # -- delivery ----------------------------------------------------------
 
     def _ingest(self, envelope: SessionEventEnvelope) -> None:
@@ -1251,6 +1334,7 @@ class LocalEventStream:
         drain pending per watcher.
         """
         schedule = False
+        diagnostics: tuple[float, int, int, float, float] | None = None
         with self._ingress_lock:
             if self._overflowed or self._closed or self._broker_closed:
                 return
@@ -1259,6 +1343,13 @@ class LocalEventStream:
                 return
             self._record_scan_locked(envelope.sequence, matched=True)
             if self._pending >= self._queue_size:
+                diagnostics = (
+                    time.monotonic(),
+                    self._pending,
+                    self._accepted,
+                    self._opened_at,
+                    self._last_drain_at,
+                )
                 self._fail_locked(
                     EventOverflowError(
                         f"event queue overflow for session "
@@ -1269,10 +1360,15 @@ class LocalEventStream:
                 schedule = not self._drain_scheduled
                 self._drain_scheduled = True
             else:
+                self._accepted += 1
                 self._ingress.append(envelope)
                 self._pending += 1
                 schedule = not self._drain_scheduled
                 self._drain_scheduled = True
+        if diagnostics is not None:
+            # Outside the ingress lock: the terminal error is already committed
+            # and the producer must never be delayed by logging.
+            self._log_overflow(*diagnostics)
         if schedule:
             self._schedule_drain()
 
@@ -1326,6 +1422,7 @@ class LocalEventStream:
         close_subscription = False
         with self._ingress_lock:
             self._drain_scheduled = False
+            self._last_drain_at = time.monotonic()
             if self._overflowed:
                 self._ingress.clear()
                 self._live.clear()

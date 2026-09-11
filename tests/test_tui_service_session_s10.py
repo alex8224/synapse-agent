@@ -118,3 +118,29 @@ def test_submit_with_pre_set_cancel_event_closes_without_submitting():
     assert [name for name, _command in calls] == ["open", "close"]
     assert isinstance(calls[-1][1], CloseSessionCommand)
     assert calls[-1][1].cancel_active is True
+
+
+def test_watch_widens_the_overflow_kill_threshold() -> None:
+    """The TUI asks for the service's largest watch bound instead of the default.
+
+    ``LocalEventWatch`` kills the whole subscription (dropping every accepted
+    event) once ``queue_size`` matching events are unconsumed, so the default
+    128 only tolerates a ~0.1-0.4s consumer-loop stall.
+    """
+    from synapse.runtime.service.local import _MAX_QUEUE_SIZE
+    from synapse.ui.turn.service_session import _TUI_EVENT_QUEUE_SIZE
+
+    calls: list[tuple[object, int, int]] = []
+
+    class Service:
+        def watch_events(self, session, *, after=0, queue_size=0):
+            calls.append((session, after, queue_size))
+            return object()
+
+    facade = TUIRuntimeSessionFacade(TUISessionBinding(REF, Service()))
+    facade.state.last_sequence = 42
+
+    facade.watch()
+
+    assert calls == [(REF, 42, _TUI_EVENT_QUEUE_SIZE)]
+    assert _TUI_EVENT_QUEUE_SIZE == _MAX_QUEUE_SIZE
