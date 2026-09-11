@@ -45,11 +45,16 @@ npm run build
 cd ..
 ```
 
+两个 console script（`synapse-runtime`、`synapse-web-console`）由安装步骤生成：源码
+检出先 `uv sync`，否则脚本不存在、下面的 script 形式直接失败。未同步时用紧随其后的
+`python -m ...` 等价形式（测试同样使用该形式，见 `tests/test_web_console_security.py`）。
+
 终端 1（前台 daemon）：
 
 ```bash
+uv sync   # 源码检出必做
 synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
-# 或：python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime --port 0
+# 或（不依赖 console script）：python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime --port 0
 ```
 
 终端 2（正式宿主）：
@@ -57,8 +62,14 @@ synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
 ```bash
 synapse-web-console --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
-# 或：python -m synapse.web_console.entry --workspace . --static-dir web/dist
+# 或（不依赖 console script）：python -m synapse.web_console.entry --workspace . --static-dir web/dist
 ```
+
+两者都是前台常驻进程，前台启动会占住调用它的终端。交互使用各开一个终端；脚本/自动化
+（含 agent）必须非阻塞启动——让子进程脱离调用方进程树并把 stdout/stderr 重定向到文件。
+PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承 stdout 管道而
+卡住调用方（直到进程退出才返回），可行做法是 `cmd.exe /c` 包一层带重定向的脚本、再经
+`Win32_Process.Create` 脱离启动（完整示例见 `README.md` §Web 控制台）。
 
 然后打开 <http://127.0.0.1:8080/> 并输入宿主 stderr 打印的配对码。
 
@@ -263,6 +274,9 @@ synapse-web-console --workspace . --static-dir web/dist --port 8080 &
 cd web
 SYNAPSE_WEB_CONSOLE_URL=http://127.0.0.1:8080 npm run dev   # http://127.0.0.1:5173
 ```
+
+（`&` 是 POSIX shell 的后台写法；Windows PowerShell 不支持，需另开终端或用上面的
+脱离启动方式。）
 
 Vite 配置（`web/vite.config.ts`）的边界：
 

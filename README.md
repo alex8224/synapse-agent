@@ -80,9 +80,10 @@ not migrate the CLI, TUI, or ACP consumers.
 `synapse-web`（textual-serve 把 TUI 放进浏览器）入口保持不变、仍可用，与正式宿主
 语义不同。
 
-先构建前端产物再启动（终端 1 跑前台 daemon，终端 2 跑宿主）：
+先同步依赖与前端产物再启动（终端 1 跑前台 daemon，终端 2 跑宿主）：
 
 ```bash
+uv sync                                   # 源码检出必做：console script 由安装步骤生成
 cd web && npm ci && npm run build && cd ..
 # 1) 启动 runtime daemon（前台进程；--port 0 = 内核分配端口）
 synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
@@ -90,6 +91,35 @@ synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
 synapse-web-console --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
 ```
+
+`synapse-runtime` 与 `synapse-web-console` 两个 console script 由安装步骤（`uv sync`）
+生成：未同步的源码检出里不存在，上面两条命令会直接失败。此时改用等价的模块形式，
+不依赖 console script（测试亦用该形式，见 `tests/test_web_console_security.py`）：
+
+```bash
+uv run --no-sync python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime \
+  --host 127.0.0.1 --port 0
+uv run --no-sync python -m synapse.web_console.entry --workspace . --static-dir web/dist \
+  --state-dir ~/.synapse/runtime --port 8080
+```
+
+两者都是前台常驻进程，前台启动会占住调用它的终端：交互使用各开一个终端；脚本/自动化
+（含 agent）必须非阻塞启动——让子进程脱离调用方进程树，并把 stdout/stderr 重定向到
+文件。PowerShell 下从 shell 直接 `Start-Process -RedirectStandardOutput ...` 会因
+子进程继承 stdout 管道而卡住调用方（直到进程退出才返回），可行做法是 `cmd.exe /c`
+包一层带重定向的脚本，再经 `Win32_Process.Create` 脱离启动：
+
+```powershell
+$log = "$env:TEMP\synapse-webui"; New-Item -ItemType Directory -Force $log | Out-Null
+# $log\start-console.cmd 内一行（@echo off 之后）：
+#   "<repo>\.venv\Scripts\python.exe" -m synapse.web_console.entry --workspace "<repo>" ^
+#     --static-dir "<repo>\web\dist" --state-dir "%USERPROFILE%\.synapse\runtime" --port 8080 ^
+#     > "%TEMP%\synapse-webui\console.out" 2> "%TEMP%\synapse-webui\console.err"
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+  CommandLine = "cmd.exe /c `"$log\start-console.cmd`""; CurrentDirectory = "$PWD" }
+```
+
+配对码随后从 `$log\console.err` 读取（前台运行时直接出现在宿主 stderr）。
 
 宿主启动时 stdout 恰好一行 JSON 元数据，配对码只出现在 stderr：
 
