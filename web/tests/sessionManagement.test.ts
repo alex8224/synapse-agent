@@ -570,10 +570,14 @@ function fakeImage(name: string, bytes: Uint8Array, type = 'image/png') {
 }
 
 test('an attachment-only submit sends attachment_refs and clears the composer', async () => {
-  await useConsoleStore.getState().addAttachments([fakeImage('shot.png', new Uint8Array([1, 2, 3]))]);
+  const pick = fakeImage('shot.png', new Uint8Array([1, 2, 3]));
+  await useConsoleStore.getState().addAttachments([pick]);
   const row = useConsoleStore.getState().attachments[0];
   assert.equal(row.status, 'ready');
   assert.equal(row.attachmentId, ATTACHMENT_ID);
+  // The pre-submit preview renders the local pick, so the row keeps it; the
+  // store only holds the reference and never touches a DOM API on it.
+  assert.equal(row.source, pick);
 
   await useConsoleStore.getState().submitPrompt('');
 
@@ -587,6 +591,8 @@ test('an attachment-only submit sends attachment_refs and clears the composer', 
     stubCalls.filter((call) => call.method === 'runtime.attachments.abort').length,
     0,
   );
+  // Submitting drops the rows, which is what releases the preview blob.
+  assert.equal(useConsoleStore.getState().attachments.length, 0);
   // The live user message renders the uploaded metadata with empty text.
   const user = useConsoleStore.getState().messages.find((message) => message.type === 'user');
   assert.ok(user);

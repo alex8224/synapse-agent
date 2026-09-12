@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { AttachmentPreview } from './AttachmentPreview.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { formatBytes } from '../runtime-client/artifacts.ts';
 import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
@@ -12,11 +13,15 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
  * was empty, with no way to interrupt from the UI).  Typing while busy still
  * queues a steer — that path is Enter, not the button.
  *
- * Images are added with the paperclip (file picker) or by dropping them onto
- * the card.  Only the image types the runtime accepts are taken, at most eight
- * per submit and 4 MB each; every refusal is shown next to the composer instead
- * of being silently dropped.  A chunk still uploading disables sending, and an
- * attachment-only turn may be submitted with empty text.
+ * Images are added with the paperclip (file picker), by pasting them into the
+ * card, or by dropping them onto it — all three end in the same `handleFiles`
+ * path.  Only the image types the runtime accepts are taken, at most eight per
+ * submit and 4 MB each; every refusal is shown next to the composer instead of
+ * being silently dropped.  A chunk still uploading disables sending, and an
+ * attachment-only turn may be submitted with empty text.  Each pending row is the
+ * picked image itself (`AttachmentPreview`) rather than a file-name chip, and
+ * hovering it enlarges the copy, so what will be sent is verifiable before the
+ * turn is submitted.
  */
 export const CommandInput: React.FC = () => {
   const [text, setText] = useState('');
@@ -70,6 +75,14 @@ export const CommandInput: React.FC = () => {
           setDragging(false);
           handleFiles(e.dataTransfer?.files ?? null);
         }}
+        onPaste={(e) => {
+          // Only an image paste is intercepted: a text paste keeps its default
+          // behaviour, because the composer is an ordinary text input.
+          const files = e.clipboardData?.files;
+          if (!files || files.length === 0) return;
+          e.preventDefault();
+          handleFiles(files);
+        }}
         className={`w-full max-w-3xl pointer-events-auto bg-white border rounded-lg shadow-sm flex flex-col focus-within:border-blue-500 transition-colors ${
           dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-[#e5e7eb]'
         }`}
@@ -103,37 +116,33 @@ export const CommandInput: React.FC = () => {
               return (
                 <div
                   key={entry.localId}
-                  className={`flex items-center gap-2 rounded border px-2 py-1 font-mono text-[11px] ${
-                    failed
-                      ? 'border-red-200 bg-red-50/70 text-red-700'
-                      : 'border-gray-200 bg-[#f8f9fa] text-gray-600'
+                  // The chip is the image, not a file row: the name, type and size
+                  // live in the tooltip and the hover preview, and a failure is
+                  // still spelled out in the alert below the composer.
+                  className={`relative rounded border p-1 ${
+                    failed ? 'border-red-200 bg-red-50/70' : 'border-gray-200 bg-[#f8f9fa]'
                   }`}
-                  title={entry.error ?? entry.name}
+                  title={entry.error ?? `${entry.name} · ${entry.mime} · ${formatBytes(entry.size)}`}
                 >
-                  <span className="material-symbols-outlined text-[14px]">
-                    {failed ? 'broken_image' : 'image'}
-                  </span>
-                  <span className="max-w-[160px] truncate">{entry.name}</span>
-                  <span className="tabular-nums text-gray-400">{formatBytes(entry.size)}</span>
+                  <AttachmentPreview
+                    source={entry.source}
+                    label={entry.name}
+                    mime={entry.mime}
+                    size={entry.size}
+                    failed={failed}
+                  />
                   {entry.status === 'uploading' && (
-                    <>
-                      <span className="tabular-nums text-blue-600">{percent}%</span>
-                      <span className="h-1 w-10 overflow-hidden rounded bg-gray-200">
-                        <span
-                          className="block h-full bg-blue-500"
-                          style={{ width: `${percent}%` }}
-                        />
-                      </span>
-                    </>
+                    <span className="pointer-events-none absolute inset-1 flex items-center justify-center rounded bg-white/70 font-mono text-[10px] tabular-nums text-blue-700">
+                      {percent}%
+                    </span>
                   )}
-                  {failed && <span className="text-red-600">上传失败</span>}
                   <button
                     type="button"
                     onClick={() => removeAttachment(entry.localId)}
                     title={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    className="cursor-pointer text-gray-400 hover:text-gray-700"
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:text-gray-900"
                   >
-                    <span className="material-symbols-outlined text-[14px]">
+                    <span className="material-symbols-outlined text-[12px]">
                       {entry.status === 'uploading' ? 'cancel' : 'close'}
                     </span>
                   </button>
@@ -188,7 +197,7 @@ export const CommandInput: React.FC = () => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            title={`添加图片附件（最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
+            title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
             className="ml-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
           >
             <span className="material-symbols-outlined text-[16px]">attach_file</span>

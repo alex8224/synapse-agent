@@ -802,6 +802,14 @@ export interface PendingAttachment {
   uploadedBytes: number;
   attachmentId: string | null;
   error: string | null;
+  /**
+   * The local pick this row came from, kept so the composer can show the image
+   * *before* the turn is submitted (a `File`/`Blob` in the browser).
+   *
+   * This module stays DOM-free on purpose: it only holds the reference, while
+   * `AttachmentPreview` creates and revokes the object URL.
+   */
+  source: AttachmentUploadSource;
 }
 
 /** Local id sequence for composer rows (never sent over the wire). */
@@ -2780,6 +2788,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       uploadedBytes: 0,
       attachmentId: null,
       error: null,
+      source: candidate.source,
     }));
     if (rows.length > 0) {
       set((s) => ({ attachments: [...s.attachments, ...rows] }));

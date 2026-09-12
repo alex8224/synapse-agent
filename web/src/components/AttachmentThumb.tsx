@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { formatBytes } from '../runtime-client/artifacts.ts';
+import { ImageLightbox } from './ImageLightbox.tsx';
 import {
   createAttachmentLoader,
   type AttachmentResource,
@@ -54,35 +55,61 @@ function useAttachmentResource(attachment: TranscriptAttachment): AttachmentReso
   return resolved !== null && resolved.key === key ? resolved.resource : null;
 }
 
-/** One read-only thumbnail of a user turn's image attachment. */
+/**
+ * One read-only thumbnail of a user turn's image attachment.
+ *
+ * The image keeps its aspect ratio (`object-contain`, bounded) instead of being
+ * cropped into a square: a wide screenshot is unreadable once cropped, and the
+ * whole point of the thumbnail is to show *which* image was sent.  Clicking it
+ * opens the same blob full size in `ImageLightbox`.
+ */
 export const AttachmentThumb: React.FC<{ attachment: TranscriptAttachment }> = ({
   attachment,
 }) => {
   const resource = useAttachmentResource(attachment);
+  const [open, setOpen] = useState(false);
   const label = attachment.name || `image#${attachment.imageId ?? '?'}`;
-  const title = `${label} · ${attachment.mime} · ${formatBytes(attachment.size)}`;
+  const meta = `${attachment.mime} · ${formatBytes(attachment.size)}`;
+  const title = `${label} · ${meta}`;
+  const ready = resource !== null && resource.status === 'ready' ? resource : null;
 
   return (
-    <div
-      className="flex h-16 w-16 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50"
-      title={title}
-    >
-      {resource?.status === 'ready' ? (
-        <img src={resource.url} alt={label} className="h-full w-full object-cover" />
-      ) : (
-        <span
-          className="material-symbols-outlined text-[18px] text-gray-400"
-          aria-label={
-            resource?.status === 'error' || resource?.status === 'unsupported'
-              ? '附件不可预览'
-              : '附件加载中'
-          }
+    <>
+      {ready !== null ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={`${title}（点击放大）`}
+          className="block cursor-zoom-in overflow-hidden rounded border border-gray-200 bg-gray-50 transition-colors hover:border-gray-300"
         >
-          {resource?.status === 'error' || resource?.status === 'unsupported'
-            ? 'broken_image'
-            : 'image'}
-        </span>
+          <img
+            src={ready.url}
+            alt={label}
+            className="min-h-16 min-w-16 max-h-40 max-w-[22rem] object-contain"
+          />
+        </button>
+      ) : (
+        <div
+          className="flex h-16 w-16 items-center justify-center rounded border border-gray-200 bg-gray-50"
+          title={title}
+        >
+          <span
+            className="material-symbols-outlined text-[18px] text-gray-400"
+            aria-label={
+              resource?.status === 'error' || resource?.status === 'unsupported'
+                ? '附件不可预览'
+                : '附件加载中'
+            }
+          >
+            {resource?.status === 'error' || resource?.status === 'unsupported'
+              ? 'broken_image'
+              : 'image'}
+          </span>
+        </div>
       )}
-    </div>
+      {open && ready !== null && (
+        <ImageLightbox src={ready.url} label={label} meta={meta} onClose={() => setOpen(false)} />
+      )}
+    </>
   );
 };
