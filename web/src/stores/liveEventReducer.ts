@@ -16,9 +16,28 @@
  * `diff_updated` are intentionally not rendered here either (the TUI ignores
  * them too, for lack of a sink representation).
  */
-import type { ApprovalActionView, PendingApprovalView, RuntimeEvent } from '../client/types.ts';
+import type { RuntimeEvent } from '../client/types.ts';
+import type { ApprovalActionPayload } from '../runtime-client/contract.generated.ts';
 import type { ToolItemView, TranscriptMessage } from './historyMapper.ts';
 import { formatUsageMetrics, parseUsagePayload, type UsageView } from './usageView.ts';
+
+/**
+ * Console view of one HITL approval action.
+ *
+ * The `approval_required` event carries the producer's full
+ * `ApprovalActionPayload`; the reducer adds the display index the payload does
+ * not carry.  (The `runtime.turn.approval.get` result view is a different,
+ * narrower wire shape and is not what this state is built from.)
+ */
+export interface ApprovalAction extends ApprovalActionPayload {
+  index: number;
+}
+
+/** Pending HITL approval as the console holds it, built from the live event. */
+export interface PendingApproval {
+  turn_id: string;
+  actions: ApprovalAction[];
+}
 
 /** Transient "what the agent is doing right now" state. */
 export interface ActivityView {
@@ -35,7 +54,7 @@ export interface LiveReducibleState {
   activeTurnId: string | null;
   runtimeStatus: 'idle' | 'running';
   steerQueueCount: number;
-  pendingApproval: PendingApprovalView | null;
+  pendingApproval: PendingApproval | null;
   activity: ActivityView | null;
   usage: UsageView | null;
   metricsLabel: string;
@@ -213,13 +232,13 @@ function appendToAnswer(
   );
 }
 
-function normalizeApprovalActions(value: unknown): ApprovalActionView[] {
+function normalizeApprovalActions(value: unknown): ApprovalAction[] {
   if (!Array.isArray(value)) return [];
   return value.map((raw, index) => {
     const action = asRecord(raw);
     const decisions = Array.isArray(action.allowed_decisions)
       ? action.allowed_decisions.filter((d: unknown): d is string => typeof d === 'string')
-      : undefined;
+      : [];
     return {
       index,
       name: asText(action.name),

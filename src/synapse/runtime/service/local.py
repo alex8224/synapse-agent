@@ -20,6 +20,12 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any, Final, Self
 
+import synapse.runtime.service.attachment_store as attachment_store
+from synapse.runtime.service.artifact_filesystem import (
+    list_artifacts_filesystem,
+    read_artifact_filesystem,
+    stat_artifact_filesystem,
+)
 from synapse.runtime.service.artifacts import (
     ArtifactChunk,
     ArtifactMetadata,
@@ -27,9 +33,21 @@ from synapse.runtime.service.artifacts import (
     ListArtifactsQuery,
     ReadArtifactQuery,
     StatArtifactQuery,
-    list_artifacts_filesystem,
-    read_artifact_filesystem,
-    stat_artifact_filesystem,
+)
+from synapse.runtime.service.attachments import (
+    AbortAttachmentCommand,
+    AbortAttachmentResult,
+    AppendAttachmentChunkCommand,
+    AppendAttachmentChunkResult,
+    AttachmentChunk,
+    AttachmentMetadata,
+    AttachmentRef,
+    BeginAttachmentCommand,
+    BeginAttachmentResult,
+    FinishAttachmentCommand,
+    FinishAttachmentResult,
+    ReadAttachmentQuery,
+    StatAttachmentQuery,
 )
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
@@ -85,6 +103,15 @@ from synapse.runtime.service.events import (
     matches_event,
     project_payload,
 )
+from synapse.runtime.service.goal_commands import GoalLedger, SessionGoalService
+from synapse.runtime.service.goal_management import (
+    ClearSessionGoalCommand,
+    EditSessionGoalCommand,
+    PauseSessionGoalCommand,
+    ResumeSessionGoalCommand,
+    SessionGoalResult,
+    SetSessionGoalCommand,
+)
 from synapse.runtime.service.history import (
     ListSessionsQuery,
     ReadSessionHistoryQuery,
@@ -97,6 +124,11 @@ from synapse.runtime.service.history_store import (
     read_transcript_coverage,
 )
 from synapse.runtime.service.ports import EventWatch
+from synapse.runtime.service.project_list import (
+    ListProjectsQuery,
+    ProjectListPage,
+    ProjectListProvider,
+)
 from synapse.runtime.service.queries import (
     ApprovalActionView,
     GetSessionGoalQuery,
@@ -113,6 +145,18 @@ from synapse.runtime.service.recovery import (
 )
 from synapse.runtime.service.routing import RouterClosedError, RuntimeManagerRouter
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
+from synapse.runtime.service.session_management import (
+    CreateSessionCommand,
+    CreateSessionResult,
+    DeleteSessionCommand,
+    DeleteSessionResult,
+    RenameSessionCommand,
+    RenameSessionResult,
+    SearchSessionsQuery,
+    SessionProjectContext,
+    SessionSearchPage,
+)
+from synapse.runtime.service.session_metadata import SessionMetadataService
 from synapse.runtime.sessions import (
     NoActiveTurnError as SessionNoActiveTurnError,
 )
@@ -278,13 +322,46 @@ class LocalAgentRuntimeService:
         *,
         session_rebinder: Callable[[RuntimeManager, SessionRef, str], tuple[Any, Any]]
         | None = None,
+        project_list_provider: ProjectListProvider | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
+        # A read-only, bounded project enumerator supplied by the composition
+        # root.  The service layer never imports the project catalog, so the
+        # daemon injects a catalog-backed adapter; without one the optional
+        # ``list_projects`` method reports itself as unavailable.
+        self._project_list_provider = project_list_provider
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
         self._strict_manager_identity = isinstance(manager_provider, RuntimeManagerRouter)
+        # Session management (create/rename/delete/search) resolves its project
+        # context from the same provider as every other port: the project's
+        # settings come from the resolved manager generation, so a caller never
+        # supplies a metadata path over the wire.  The router publishes one
+        # immutable manager per project, so repeated calls reuse that generation
+        # instead of racing a rebuild.
+        self._session_metadata = SessionMetadataService(self._session_project_context)
+        # Session-goal writes resolve the *session's own* goal ledger through the
+        # same manager provider (never the process-wide goal singleton), so one
+        # project can never write another project's goal.
+        self._session_goal = SessionGoalService(self._goal_ledger)
+
+    def _session_project_context(self, project_id: str) -> SessionProjectContext:
+        """Resolve one project's settings and live manager for session management.
+
+        Runs on the caller's worker thread (``SessionMetadataService`` moves it
+        off the event loop).  A cold project may lazily build a *lightweight*
+        manager generation (descriptor + settings only); that is recorded here
+        deliberately: building settings never constructs an agent, opens a
+        session, or creates a database, so search stays a pure metadata read.
+        """
+        manager = self._resolve_manager_project(project_id)
+        return SessionProjectContext(
+            project_id=project_id,
+            settings=manager.settings,
+            manager=manager,
+        )
 
     # -- command port ------------------------------------------------------
 
@@ -299,16 +376,61 @@ class LocalAgentRuntimeService:
         session queries and events.
         """
         self._validate_ref(command.session)
-        self._validate_text(command.text)
+        if not isinstance(command.text, str):
+            raise InvalidRequestError(
+                f"text must be a string, got type {type(command.text).__name__!r}"
+            )
+        # At least one of text / in-process attachments / durable refs must be
+        # present; an empty turn is rejected before any runtime work.
+        if not command.text.strip() and not command.attachments and not command.attachment_refs:
+            raise InvalidRequestError("submit requires text, attachments, or attachment_refs")
+        # The two attachment sources are mutually exclusive: mixing in-process
+        # objects with durable refs would make the persisted ids ambiguous.
+        if command.attachments and command.attachment_refs:
+            raise InvalidRequestError(
+                "submit must not mix in-process attachments with attachment_refs"
+            )
+        if not command.text.strip() and command.attachments:
+            raise InvalidRequestError("text must not be empty for in-process attachments")
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
+        attachments = tuple(command.attachments)
+        attachment_refs: tuple[Any, ...] = ()
+        if command.attachment_refs:
+            workspace = self._attachment_workspace(manager)
+            refs = tuple(
+                AttachmentRef(session=command.session, attachment_id=attachment_id)
+                for attachment_id in command.attachment_refs
+            )
+            # ``resolve_attachments`` renumbers ids 1..N in reference order so the
+            # ``[image#N]`` placeholders of one turn stay stable; the durable id is
+            # attached to each resolved image and never enters the LangGraph
+            # payload.
+            resolved = await asyncio.to_thread(
+                attachment_store.resolve_attachments, workspace, refs
+            )
+            attachments = tuple(
+                dataclasses.replace(image, durable_id=ref.attachment_id)
+                for image, ref in zip(resolved, refs, strict=True)
+            )
+            attachment_refs = tuple(
+                {
+                    "image_id": image.id,
+                    "attachment_id": image.durable_id,
+                    "name": image.name,
+                    "mime": image.mime,
+                    "size": image.size,
+                }
+                for image in attachments
+            )
         try:
             handle = await manager.submit_ref(
                 command.session,
                 UserTurn(
                     text=command.text,
-                    attachments=command.attachments,
+                    attachments=attachments,
                     config_overrides=dict(command.config_overrides),
+                    attachment_refs=attachment_refs,
                 ),
             )
         except SessionBusyError as exc:
@@ -672,6 +794,34 @@ class LocalAgentRuntimeService:
 
         return await asyncio.to_thread(_read)
 
+    async def set_session_goal(self, command: SetSessionGoalCommand) -> SessionGoalResult:
+        """Create one session's goal; an unfinished goal is never overwritten."""
+        return await self._session_goal.set(command)
+
+    async def edit_session_goal(
+        self, command: EditSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Rewrite the current goal objective (``expected_goal_id`` guarded)."""
+        return await self._session_goal.edit(command)
+
+    async def clear_session_goal(
+        self, command: ClearSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Remove the current goal (``expected_goal_id`` guarded)."""
+        return await self._session_goal.clear(command)
+
+    async def pause_session_goal(
+        self, command: PauseSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Pause the current goal and cancel this session's own live turn."""
+        return await self._session_goal.pause(command)
+
+    async def resume_session_goal(
+        self, command: ResumeSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Return the current goal to ``active`` (status-only, no auto loop)."""
+        return await self._session_goal.resume(command)
+
     async def get_runtime_config(self, query: GetRuntimeConfigQuery) -> RuntimeConfigView:
         """Project the effective read-only runtime configuration.
 
@@ -749,6 +899,62 @@ class LocalAgentRuntimeService:
             self._resolve_manager_project, query.project_id
         )
         return await asyncio.to_thread(list_sessions_page, manager.settings, query)
+
+    # -- session management port -------------------------------------------
+
+    async def create_session(self, command: CreateSessionCommand) -> CreateSessionResult:
+        """Persist one session's metadata row; never opens a runtime.
+
+        Deliberately distinct from :meth:`open_session`: this writes the
+        metadata row (and allocates the thread id through the store when the
+        caller omits it) without opening a session, building an agent, or
+        starting a turn.  The returned ref is the real persisted identity, so a
+        client never invents a thread id of its own.
+        """
+        return await self._session_metadata.create(command)
+
+    async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:
+        """Rewrite one session's title; a missing session is ``not_found``."""
+        return await self._session_metadata.rename(command)
+
+    async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
+        """Delete one session's metadata row and thread goal (busy rejected).
+
+        A running turn is refused atomically by the manager's lifecycle gate and
+        is never cancelled here.  The result reports ``retained_history``: only
+        the metadata row and the thread goal are removed, while checkpoints and
+        the transcript projection are kept, so no caller may claim the
+        conversation was erased.
+        """
+        return await self._session_metadata.delete(command)
+
+    async def search_sessions(self, query: SearchSessionsQuery) -> SessionSearchPage:
+        """Search one project's persisted session metadata (bounded page).
+
+        Strictly read-only and metadata-only: it matches the same metadata
+        columns the store's own search matches and never reads the transcript,
+        creates a database, or builds an agent.
+        """
+        return await self._session_metadata.search(query)
+
+    async def list_projects(self, query: ListProjectsQuery) -> ProjectListPage:
+        """Enumerate registered projects from the injected bounded provider.
+
+        This never resolves a manager, opens a session, builds an agent, or
+        registers a project: it reads the already-registered catalog rows through
+        the provider and applies the server-computed visibility filter before
+        pagination (the provider contract).  The blocking read runs on a worker
+        thread so the event loop is never held by SQLite I/O.
+        """
+        if type(query) is not ListProjectsQuery:
+            raise InvalidRequestError(
+                "list projects query must be a ListProjectsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        provider = self._project_list_provider
+        if provider is None:
+            raise InvalidRequestError("project list is unavailable")
+        return await asyncio.to_thread(provider, query)
 
     async def read_session_history(
         self, query: ReadSessionHistoryQuery
@@ -872,6 +1078,116 @@ class LocalAgentRuntimeService:
         self._check_project(manager, query.ref.session)
         session = self._resolve_session(manager, query.ref.session)
         return await asyncio.to_thread(read_artifact_filesystem, query, session)
+
+    # -- attachment port ---------------------------------------------------
+
+    def _attachment_workspace(self, manager: RuntimeManager) -> Any:
+        """Resolve the trusted workspace for one project's attachment store.
+
+        The workspace always comes from the project's own settings (never from a
+        transport payload), so no caller can select an arbitrary store path.  The
+        store resolves and validates the directory itself; a missing workspace is
+        reported as a typed ``attachment_unavailable`` error there.
+        """
+        return getattr(manager.settings, "workspace", None)
+
+    async def begin_attachment(
+        self, command: BeginAttachmentCommand
+    ) -> BeginAttachmentResult:
+        """Reserve one session-scoped upload in the trusted workspace store."""
+        if not isinstance(command, BeginAttachmentCommand):
+            raise InvalidRequestError(
+                "begin attachment command must be a BeginAttachmentCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.begin_attachment, workspace, command
+        )
+
+    async def append_attachment_chunk(
+        self, command: AppendAttachmentChunkCommand
+    ) -> AppendAttachmentChunkResult:
+        """Append one bounded chunk at the expected offset."""
+        if not isinstance(command, AppendAttachmentChunkCommand):
+            raise InvalidRequestError(
+                "append attachment command must be an AppendAttachmentChunkCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.ref.session)
+        manager = self._resolve_manager(command.ref.session)
+        self._check_project(manager, command.ref.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.append_attachment_chunk, workspace, command
+        )
+
+    async def finish_attachment(
+        self, command: FinishAttachmentCommand
+    ) -> FinishAttachmentResult:
+        """Finalize one upload after verifying its bytes."""
+        if not isinstance(command, FinishAttachmentCommand):
+            raise InvalidRequestError(
+                "finish attachment command must be a FinishAttachmentCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.ref.session)
+        manager = self._resolve_manager(command.ref.session)
+        self._check_project(manager, command.ref.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.finish_attachment, workspace, command
+        )
+
+    async def abort_attachment(
+        self, command: AbortAttachmentCommand
+    ) -> AbortAttachmentResult:
+        """Discard one upload and its partial bytes (idempotent)."""
+        if not isinstance(command, AbortAttachmentCommand):
+            raise InvalidRequestError(
+                "abort attachment command must be an AbortAttachmentCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.ref.session)
+        manager = self._resolve_manager(command.ref.session)
+        self._check_project(manager, command.ref.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.abort_attachment, workspace, command
+        )
+
+    async def stat_attachment(self, query: StatAttachmentQuery) -> AttachmentMetadata:
+        """Read one attachment's durable metadata from the trusted workspace."""
+        if not isinstance(query, StatAttachmentQuery):
+            raise InvalidRequestError(
+                "stat attachment query must be a StatAttachmentQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.ref.session)
+        manager = self._resolve_manager(query.ref.session)
+        self._check_project(manager, query.ref.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.stat_attachment, workspace, query
+        )
+
+    async def read_attachment(self, query: ReadAttachmentQuery) -> AttachmentChunk:
+        """Read one bounded window of a finalized attachment (restart-safe)."""
+        if not isinstance(query, ReadAttachmentQuery):
+            raise InvalidRequestError(
+                "read attachment query must be a ReadAttachmentQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.ref.session)
+        manager = self._resolve_manager(query.ref.session)
+        self._check_project(manager, query.ref.session)
+        workspace = self._attachment_workspace(manager)
+        return await asyncio.to_thread(
+            attachment_store.read_attachment, workspace, query
+        )
 
     # -- event port --------------------------------------------------------
 
@@ -1089,6 +1405,32 @@ class LocalAgentRuntimeService:
                 f"queue_size must be between {_MIN_QUEUE_SIZE} and "
                 f"{_MAX_QUEUE_SIZE}, got {queue_size!r}"
             )
+
+    def _goal_ledger(self, ref: SessionRef) -> GoalLedger:
+        """Resolve one session's goal ledger for the goal write surface.
+
+        A live session is used through the ``GoalService`` its agent was assembled
+        with -- never the process-wide ``get_goal_service()`` singleton, which only
+        remembers the last initialised project.  A live session whose agent has no
+        ledger reports the feature as unavailable instead of quietly building a
+        second one.  A cold session (no live runtime) gets a short-lived ledger over
+        the project's own sessions database; the returned lease closes that store
+        again, so the service never leaks an unowned store.
+        """
+        self._validate_ref(ref)
+        manager = self._resolve_manager(ref)
+        self._check_project(manager, ref)
+        session = manager.get_session_ref(ref)
+        if session is not None:
+            service = getattr(session, "goal_service", None)
+            if service is None:
+                raise InvalidRequestError("session goal management is unavailable")
+            return GoalLedger(service=service, session=session)
+        from synapse.goals.runtime import GoalService
+        from synapse.goals.store import GoalStore
+
+        store = GoalStore(manager.settings.resolved_sessions_path())
+        return GoalLedger(service=GoalService(store), session=None, release=store.close)
 
     def _resolve_manager(self, ref: SessionRef) -> RuntimeManager:
         try:

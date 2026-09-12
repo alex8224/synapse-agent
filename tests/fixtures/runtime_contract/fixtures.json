@@ -1,0 +1,119 @@
+{
+  "description": "Language-neutral runtime contract v1 samples shared by the Python and TypeScript gates. Every wire value is a real projection: the Python gate re-derives it from the production projection code and checks it against the declared manifest schema, the TypeScript gate checks the same file against the generated contract module.",
+  "contract_version": 1,
+  "wire_version": "1",
+  "events": [
+    {
+      "name": "info_string_payload",
+      "kind": "info",
+      "payload_schema": "str",
+      "notes": "The info producer sends a bare JSON string; v1 introduces no InfoPayload wrapper.",
+      "producer_payload": "a plain string payload",
+      "wire": {
+        "sequence": 7,
+        "turn_sequence": 2,
+        "turn_id": "turn-1",
+        "kind": "info",
+        "payload": "a plain string payload",
+        "version": 1
+      }
+    },
+    {
+      "name": "answer_delta_text_payload",
+      "kind": "answer_delta",
+      "payload_schema": "TextPayload",
+      "notes": "Known kind with a structured payload; every declared field is present.",
+      "producer_payload": {
+        "message_id": "m1",
+        "text": "hello"
+      },
+      "wire": {
+        "sequence": 8,
+        "turn_sequence": 3,
+        "turn_id": "turn-1",
+        "kind": "answer_delta",
+        "payload": {
+          "message_id": "m1",
+          "text": "hello"
+        },
+        "version": 1
+      }
+    },
+    {
+      "name": "future_unknown_kind_and_fields",
+      "kind": "future_kind",
+      "payload_schema": null,
+      "notes": "A kind a newer server may add within the frozen v1 envelope (same-version additive): the envelope keeps the six v1 keys and the real v1 version, and the payload carries fields no v1 client knows, so a client must fall back to JsonValue without dropping the unknown fields.",
+      "producer_payload": {
+        "summary": "future",
+        "details": {
+          "count": 2,
+          "tags": [
+            "a",
+            "b"
+          ]
+        },
+        "unknown": true
+      },
+      "wire": {
+        "sequence": 9,
+        "turn_sequence": 4,
+        "turn_id": "turn-1",
+        "kind": "future_kind",
+        "payload": {
+          "summary": "future",
+          "details": {
+            "count": 2,
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          "unknown": true
+        },
+        "version": 1
+      }
+    }
+  ],
+  "session_read": {
+    "method": "runtime.session.get",
+    "request": {
+      "session": {
+        "project_id": "p1",
+        "thread_id": "t1"
+      }
+    },
+    "result_schema": "SessionView",
+    "notes": "Real projection of a session snapshot: no runtime handle, no goal object, and no wall-clock field is carried.",
+    "snapshot": {
+      "project_id": "p1",
+      "thread_id": "t1",
+      "status": "idle",
+      "active_turn_id": null,
+      "latest_sequence": 12,
+      "input_tokens": 10,
+      "output_tokens": 20,
+      "cache_tokens": 0,
+      "last_error": null,
+      "last_activity_at": "2026-01-02T03:04:05+00:00",
+      "active_model": "gpt-5",
+      "model": "gpt-5"
+    },
+    "result": {
+      "project_id": "p1",
+      "thread_id": "t1",
+      "status": "idle",
+      "active_turn_id": null,
+      "latest_sequence": 12,
+      "usage": {
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "cache_tokens": 0
+      },
+      "last_error": null,
+      "last_activity_at": "2026-01-02T03:04:05+00:00",
+      "active_model": "gpt-5",
+      "model": "gpt-5"
+    }
+  }
+}

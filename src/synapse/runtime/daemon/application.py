@@ -10,25 +10,33 @@ import logging
 import os
 import signal
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from synapse.app.agent import build_coding_agent
 from synapse.models.helpers import apply_thinking_to_settings
 from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
-from synapse.runtime.daemon.auth import BearerTokenAuthenticator, load_token
+from synapse.runtime.daemon.auth import (
+    BearerTokenAuthenticator,
+    ScopedConnectionAuthenticator,
+    load_token,
+)
 from synapse.runtime.daemon.config import DaemonConfig
 from synapse.runtime.daemon.lease import DaemonLease
 from synapse.runtime.service import (
+    AclAuthorizer,
+    CatalogProjectListProvider,
     CatalogProjectProvider,
     DaemonAuthorizer,
     LocalAgentRuntimeService,
     Principal,
+    ProjectScopeAuthorizer,
     RuntimeManagerRouter,
     bind_access,
 )
 from synapse.runtime.sessions import RuntimeManager
-from synapse.runtime.transport import RuntimeWebSocketServer
+from synapse.runtime.transport import ConnectionAuthenticator, RuntimeWebSocketServer
 from synapse.sessions.store import (
     SessionStore,
     apply_binding_to_settings,
@@ -41,6 +49,15 @@ from synapse.settings.config_paths import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Trusted per-connection project scope.  The scope-aware authenticator sets it
+#: from the host-private handshake header, and the per-connection service factory
+#: reads it inside the same connection task, so a value never leaks between
+#: connections.  ``None`` means "no scope": the connection keeps the daemon's own
+#: visibility (the stock deployment).
+_CONNECTION_PROJECT_SCOPE: ContextVar[str | None] = ContextVar(
+    "synapse_runtime_connection_project_scope", default=None
+)
 
 
 def _mcp_tool_prefix(config: Any) -> str:
@@ -254,6 +271,8 @@ class RuntimeDaemon:
         server_factory: Callable[..., Any] = RuntimeWebSocketServer,
         manager_factory: Callable[[Any], RuntimeManager] | None = None,
         service_factory: Callable[[Any], Any] | None = None,
+        authenticator_factory: Callable[[str], ConnectionAuthenticator] | None = None,
+        authorizer_factory: Callable[[Principal], AclAuthorizer | DaemonAuthorizer] | None = None,
         settings_factory: Callable[[], Any] | None = None,
         catalog_factory: Callable[[Any], Any] = ProjectCatalog,
         router_factory: Callable[[Any, Callable[[Any], RuntimeManager]], Any]
@@ -268,6 +287,8 @@ class RuntimeDaemon:
         self._server_factory = server_factory
         self._manager_factory_override = manager_factory
         self._service_factory_override = service_factory
+        self._authenticator_factory = authenticator_factory
+        self._authorizer_factory = authorizer_factory
         self._settings_factory = settings_factory
         self._catalog_factory = catalog_factory
         self._router_factory = router_factory
@@ -407,11 +428,48 @@ class RuntimeDaemon:
         )
 
     def _make_service(self, principal: Principal) -> Any:
+        """Bind one authenticated principal to a delegate and a trusted policy.
+
+        Authorization assembly stays explicit and separate from authentication:
+        ``authorizer_factory`` (server composition only) selects the trusted
+        policy snapshot for the already-authenticated principal, and defaults to
+        the fixed daemon policy, so the stock Bearer deployment is unchanged.
+        The wrapper still accepts only the built-in strategies plus the
+        subtractive :class:`ProjectScopeAuthorizer`, so this is not an arbitrary
+        plug-in point and no global authentication policy moves here.
+
+        The trusted connection scope (a host-private handshake header, read only
+        after authentication) is overlaid *on top of* the selected policy, so it
+        can only narrow it.  The same scope reaches ``runtime.project.list``
+        through ``visible_project_ids``, which is applied before pagination.
+        """
         if self._service_factory_override is not None:
             delegate = self._service_factory_override(principal)
         else:
-            delegate = LocalAgentRuntimeService(self.router)
-        return bind_access(delegate, principal, DaemonAuthorizer())
+            delegate = LocalAgentRuntimeService(
+                self.router,
+                project_list_provider=self._project_list_provider(),
+            )
+        authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
+            self._authorizer_factory(principal)
+            if self._authorizer_factory is not None
+            else DaemonAuthorizer()
+        )
+        scope = _CONNECTION_PROJECT_SCOPE.get()
+        if scope is not None:
+            authorizer = ProjectScopeAuthorizer(authorizer, scope)
+        return bind_access(delegate, principal, authorizer)
+
+    def _project_list_provider(self) -> CatalogProjectListProvider | None:
+        """A bounded, read-only project enumerator over the daemon catalog.
+
+        ``None`` before the catalog exists keeps the optional delegate method
+        reporting itself as unavailable instead of failing the service build.
+        """
+        catalog = self.catalog
+        if catalog is None:
+            return None
+        return CatalogProjectListProvider(catalog)
 
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:
@@ -445,7 +503,20 @@ class RuntimeDaemon:
                 if self._token_loader is not None
                 else load_token(token_path)
             )
-            authenticator = BearerTokenAuthenticator(token)
+            # Authentication assembly: the composition root (never a client or
+            # a wire parameter) decides how an inbound connection is turned into
+            # a ``Principal``.  Default stays the exact single-token Bearer
+            # authenticator, so the stock deployment keeps its full-privilege
+            # daemon policy.  The scope decorator only *records* the trusted
+            # host-private project header after authentication succeeds.
+            base_authenticator = (
+                self._authenticator_factory(token)
+                if self._authenticator_factory is not None
+                else BearerTokenAuthenticator(token)
+            )
+            authenticator = ScopedConnectionAuthenticator(
+                base_authenticator, _CONNECTION_PROJECT_SCOPE
+            )
             self.catalog = self._catalog_factory(self.settings.resolved_catalog_path())
             provider = CatalogProjectProvider(self.catalog)
             self.router = (

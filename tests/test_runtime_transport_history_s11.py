@@ -194,6 +194,7 @@ def test_wire_projection_of_pages() -> None:
                 "text": "hi",
                 "tool_calls": [{"id": "c1", "name": "bash"}],
                 "tool_results": [{"id": "c1", "ok": True}],
+                "attachments": [],
             }
         ],
         "start_turn": 1,

@@ -13,9 +13,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from synapse.runtime.service.project_list import (
+    PROJECT_LIST_VISIBILITY_MAX,
+    ListProjectsQuery,
+    ProjectListItem,
+    ProjectListPage,
+)
 from synapse.runtime.sessions.manager import RuntimeManager
 
 __all__ = [
+    "CatalogProjectListProvider",
     "CatalogProjectProvider",
     "ManagerFactory",
     "ProjectProvider",
@@ -70,6 +77,61 @@ class CatalogProjectProvider:
         ):
             return None
         return RuntimeProject(project_id=row_project_id, workspace=workspace)
+
+
+class CatalogProjectListProvider:
+    """Enumerate a catalog-like object with a bounded pre-pagination filter.
+
+    ``lookup`` is a catalog-like object exposing ``list_projects(limit=...)``
+    (the same duck-typed boundary :class:`CatalogProjectProvider` uses), so the
+    service layer never imports the catalog package.  The provider applies
+    ``query.visible_project_ids`` *before* slicing ``offset``/``limit``, so a
+    page always describes the caller's own visible slice; it never opens a
+    session, builds an agent, registers a project, or creates a database.
+    """
+
+    def __init__(self, lookup: Any, *, scan_limit: int = PROJECT_LIST_VISIBILITY_MAX) -> None:
+        if type(scan_limit) is not int or not 1 <= scan_limit <= PROJECT_LIST_VISIBILITY_MAX:
+            raise ValueError("scan_limit must be within the visibility limit")
+        self._lookup = lookup
+        self._scan_limit = scan_limit
+
+    def __call__(self, query: ListProjectsQuery) -> ProjectListPage:
+        if type(query) is not ListProjectsQuery:
+            raise ValueError("query must be a ListProjectsQuery")
+        list_projects = getattr(self._lookup, "list_projects", None)
+        if not callable(list_projects):
+            raise ValueError("catalog does not support project enumeration")
+        rows = list_projects(limit=self._scan_limit)
+        allowed = frozenset(query.visible_project_ids)
+        items: list[ProjectListItem] = []
+        for row in rows:
+            project_id = getattr(row, "project_id", None)
+            if type(project_id) is not str or not project_id:
+                continue
+            if allowed and project_id not in allowed:
+                continue
+            workspace_path = getattr(row, "workspace_path", None)
+            if type(workspace_path) is not str or not workspace_path:
+                continue
+            name = getattr(row, "name", None)
+            branch = getattr(row, "git_branch", None)
+            items.append(
+                ProjectListItem(
+                    project_id=project_id,
+                    workspace_name=name if type(name) is str and name else None,
+                    git_branch=branch if type(branch) is str and branch else None,
+                    workspace_path=workspace_path,
+                )
+            )
+        total = len(items)
+        page = tuple(items[query.offset : query.offset + query.limit])
+        consumed = query.offset + len(page)
+        return ProjectListPage(
+            projects=page,
+            next_offset=consumed if consumed < total else None,
+            total=total,
+        )
 
 
 class RouterClosedError(RuntimeError):

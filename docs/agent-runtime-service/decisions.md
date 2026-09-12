@@ -158,3 +158,7 @@ S6 的 ACL、fail-closed wrapper、固定拒绝消息、scope 模型、watch sna
 - 决策：list cursor 是带 session、directory、directory revision 和 last path 的不透明 base64url token，cursor 与目录或 revision 不匹配时报 `invalid_artifact_cursor`/`artifact_changed`。扫描最多 10000 个 entry，超限返回 `artifact_overflow`；分页在一次稳定扫描结果上 best-effort，目录并发变化返回 `artifact_changed`。
 - 原因：应用端口需要将 session identity 与 workspace authority 绑定，避免把 host filesystem 或任意路径暴露给未来消费者，同时为网络/鉴权阶段保留稳定 DTO 与错误边界。
 - 影响：S4 是进程内只读 workspace scope，不是用户 ACL；真正的用户鉴权/授权属于 S6。S4 不实现写入、上传、网络、daemon 或消费者迁移。
+
+## ADR-S-019：事件与 DTO 契约冻结（v1）
+
+S10 之后的事件与 DTO 契约冻结（24 个 kind、22 个 service + 2 个连接态 wire 方法、单向生成的 JSON manifest / TS 模块与 T1–T7 门禁）见 [ADR-S-019](adr-s-019-contract-freeze.md)。本 ADR 只冻结形状、兼容规则与门禁，不改变 daemon 授权默认策略（仍属 ADR-S-014 后续）。

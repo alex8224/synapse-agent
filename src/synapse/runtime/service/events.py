@@ -15,8 +15,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from synapse.runtime.service.errors import InvalidEventPayloadError, InvalidRequestError
+from synapse.runtime.service.event_types import TurnEventKind
 from synapse.runtime.sessions.ref import SessionRef
-from synapse.runtime.streaming import TurnEventKind
 
 __all__ = [
     "JSONValue",

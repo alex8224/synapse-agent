@@ -128,6 +128,10 @@ class RuntimeManager:
         self._release_tasks: set[asyncio.Task[None]] = set()
         self._release_tasks_by_thread: dict[str, asyncio.Task[None]] = {}
         self._closing: dict[str, asyncio.Future[tuple[bool, str | None, bool]]] = {}
+        #: Threads whose delete holds the lifecycle coordinator.  Synchronous
+        #: ``register_session`` does not take the coordinator, so it consults
+        #: this marker to refuse resurrecting a session mid-delete.
+        self._deleting: set[str] = set()
         self._closed = False
 
     # -- SessionRef routing -------------------------------------------------
@@ -254,6 +258,15 @@ class RuntimeManager:
         # project identity for OpenSessionResult.view projection.
         if self.session_factory is SessionRuntime:
             runtime_kwargs["project_id"] = self.project_id or ""
+            # The goal write surface resolves the *session's own* ledger through
+            # ``SessionRuntime.goal_service``; expose the very ledger this agent
+            # was assembled with.  It is the per-project ``GoalService`` (or
+            # ``None`` when goals are disabled) -- never the process-wide
+            # ``get_goal_service()`` singleton, which only knows the last project
+            # a process initialised and would let one project write another's.
+            goal_service = getattr(agent, "_coding_goal_service", None)
+            if goal_service is not None:
+                runtime_kwargs["goal_service"] = goal_service
         return self.session_factory(**runtime_kwargs)
 
     async def rebind_session_ref(
@@ -478,6 +491,71 @@ class RuntimeManager:
             if not result_future.done():
                 result_future.set_exception(exc)
 
+    async def delete_session_ref(
+        self,
+        ref: SessionRef,
+        *,
+        delete_metadata: Callable[[], bool],
+    ) -> bool:
+        """Atomically delete one session's runtime and its metadata row.
+
+        The check/detach/delete critical section runs under the per-thread
+        lifecycle coordinator that also serializes :meth:`open_session_ref` and
+        :meth:`submit`, so a concurrent open or submit linearizes against the
+        delete instead of racing it.  A runtime that still owns a
+        turn/reservation/settlement is rejected atomically with
+        :class:`SessionBusyError` (never a check-then-delete TOCTOU); otherwise
+        the runtime is closed and detached and, still holding the coordinator,
+        ``delete_metadata`` runs so a submit that already passed its generation
+        check cannot recreate the row afterwards.
+
+        ``delete_metadata`` performs the actual row deletion (metadata + goal)
+        and returns whether a row existed; it never touches checkpoints or the
+        transcript projection.  That value is returned unchanged.
+        """
+        thread_id = self._check_ref(ref)
+        with self._lock:
+            if self._closed:
+                raise RuntimeClosedError("RuntimeManager is closed")
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+            self._submit_locks.setdefault(thread_id, asyncio.Lock())
+        while True:
+            join: asyncio.Future[tuple[bool, str | None, bool]] | None = None
+            async with lock:
+                with self._lock:
+                    if self._closed:
+                        raise RuntimeClosedError("RuntimeManager is closed")
+                    closing = self._closing.get(thread_id)
+                    session = self._sessions.get(thread_id)
+                    self._deleting.add(thread_id)
+                try:
+                    if closing is not None:
+                        # A close is in flight: record its future and join it
+                        # after releasing the coordinator (awaiting it while
+                        # owning the coordinator could deadlock against a
+                        # queued submit that must release the same lock), then
+                        # retry the delete on the next iteration.
+                        join = closing
+                    else:
+                        if session is not None:
+                            if session.claimed():
+                                raise SessionBusyError(
+                                    "cannot delete a session with an active turn"
+                                )
+                            await session.close(
+                                cancel_active=False, _strict_busy=True
+                            )
+                            with self._lock:
+                                if self._sessions.get(thread_id) is session:
+                                    self._sessions.pop(thread_id, None)
+                                    self._submit_locks.pop(thread_id, None)
+                        return bool(delete_metadata())
+                finally:
+                    with self._lock:
+                        self._deleting.discard(thread_id)
+            if join is not None:
+                await asyncio.shield(join)
+
     def submit_threadsafe(self, thread_id: str, message: UserTurn) -> TurnHandle:
         """Submit from Textual workers onto the process Agent loop."""
         future = self._async_runtime.submit(self.submit(thread_id, message))
@@ -488,6 +566,10 @@ class RuntimeManager:
         with self._lock:
             if self._closed:
                 raise RuntimeClosedError("RuntimeManager is closed")
+            if runtime.thread_id in self._deleting:
+                # A delete holds the lifecycle coordinator; registering now
+                # would resurrect the session the delete is removing.
+                raise RuntimeClosedError("session is being deleted")
             existing = self._sessions.get(runtime.thread_id)
             if existing is not None:
                 if existing is runtime:

@@ -196,15 +196,26 @@ class GoalStore:
             ).fetchone()
         return _goal_from_row(fresh) if fresh is not None else None
 
-    def clear(self, thread_id: str) -> ThreadGoal | None:
-        """删除并返回被清除的 goal。"""
+    def clear(
+        self, thread_id: str, *, expected_goal_id: str | None = None
+    ) -> ThreadGoal | None:
+        """删除并返回被清除的 goal。
+
+        ``expected_goal_id`` 不匹配时不删除（返回 ``None``），因此调用方传入的
+        goal 身份与并发替换在同一个锁临界区内比较，绝不会误删新 goal。
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM thread_goals WHERE thread_id = ?", (thread_id,)
             ).fetchone()
+            if row is None:
+                return None
+            goal = _goal_from_row(row)
+            if expected_goal_id is not None and goal.goal_id != expected_goal_id:
+                return None
             self._conn.execute("DELETE FROM thread_goals WHERE thread_id = ?", (thread_id,))
             self._conn.commit()
-        return _goal_from_row(row) if row is not None else None
+        return goal
 
     # ------------------------------------------------------------------
     # 用量记账（token + 时间），与 Codex ``account_thread_goal_usage`` 对齐

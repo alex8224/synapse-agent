@@ -87,7 +87,7 @@ PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承
 | `--state-dir PATH` | `~/.synapse/runtime` | daemon 状态目录（`daemon.json` 发现 + token 读取） |
 | `--token-file PATH` | `<state-dir>/token` | daemon token 文件；**只读**，缺失即启动失败且绝不创建 |
 | `--catalog-path PATH` | 无（用用户层 catalog） | 覆盖项目 catalog 数据库路径 |
-| `--project-scope {workspace,all}` | `all` | 中继可寻址的项目范围：`workspace` 只允许本工作区（原单项目边界），`all` 允许**同一用户 catalog 内**的全部项目（见 §4.1）。无法读取 catalog 时降级为仅本工作区（绝不因失败而放宽） |
+| `--project-scope {workspace,all}` | `all` | 中继可寻址的项目范围：`workspace` 只允许本工作区（原单项目边界）并把该 `project_id` 作为**宿主私有握手头** `X-Synapse-Project-Scope` 发给 daemon（daemon 仅在 bearer 认证后读取，因此由 daemon 侧一并强制）；`all` 不发该头，宿主侧**不保留任何项目白名单**（只做协议 scope 形状检查），可寻址集合完全由 daemon 的精确 `project_id` 路由 + 授权决定，连接保持 daemon 自身**同一用户**可见集合（见 §4.1）。daemon 侧：握手头**缺失**才等于「无 scope」；头存在但不可用（重复大小写、空值、超长、控制字符等）直接**拒绝该次认证**，绝不退化成更宽的默认可见性 |
 | `--runtime-host HOST` | `127.0.0.1` | daemon WS host；只允许 loopback，远程 daemon 不支持 |
 | `--runtime-port PORT` | 无（读 `daemon.json`） | 覆盖 daemon 端口；必须 `1..65535`（拒绝 `0`） |
 | `--max-message-bytes INT` | `1048576` | 单帧上限；`1024..8388608` |
@@ -136,7 +136,7 @@ synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0
 | `POST` | `/api/pair` | 用配对码换会话（体 `{"code":"XXXXXXXX"}`） | 200 `{"project":{…}}` + `Set-Cookie` | 400 体不合法 / 401 码无效 / 403 CSRF 链 / 405 方法错 / 413 体过大 / 415 Content-Type / 429 限速 |
 | `GET` | `/api/session` | 查询当前会话与项目上下文 | 200 `{"project":{…},"expires_in":<int 秒>}` | 401 无/无效会话 |
 | `GET` | `/api/runtime-status` | **只读** daemon 状态（daemon 不可用时给出可操作提示） | 200 `{"runtime":{"endpoint":{"host":…,"port":…}\|null,"state_dir":…,"hint":"start synapse-runtime --state-dir …"}}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
-| `GET` | `/api/projects` | **只读** 可切换项目列表（`--project-scope` 决定范围） | 200 `{"projects":[{"project_id","workspace_path","workspace_name","git_branch","session_count","last_active_at"}]}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
+| `GET` | `/api/projects` | **deprecated 兼容**（不再是业务入口）：可切换项目列表 | 200 `{"projects":[{"project_id","workspace_path","workspace_name","git_branch","session_count","last_active_at"}]}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
 | `POST` | `/api/logout` | 作废全部会话（体 `{}`） | 204（无体） | 401 / 403 / 405 |
 | `GET`/`POST` | `/api/bootstrap` | 已删除：恒 405 | — | 405 `{"error":"method not allowed"}`，且绝不 `Set-Cookie` |
 
@@ -224,35 +224,44 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 
 这是本切片**唯一**一处对「中继原样转发」的例外，属安全相关行为变更，如实披露如下。
 
-> **v5 切片 3 修订**：守卫的允许集合由「宿主自身那**一个**项目」放宽为
-> **`--project-scope` 决定的项目集合**（默认 `all` = 同一用户 catalog 内的全部已注册
-> 项目；`workspace` = 原来的单项目边界）。这是为了让侧栏提供「项目 → 会话」两级导航。
-> 放宽的只是**同一用户自己的**项目范围，不跨用户；单项目语义可用
-> `--project-scope workspace` 恢复。下方「例外范围」「不是存在性 oracle」两条不变。
+> **v6 修订**：宿主侧守卫不再维护**静态项目白名单**。`workspace` 仍是严格单项目边界
+> （拒绝任何其它 project_id，并把该 id 作为握手头发给 daemon，由 daemon 一并强制）；默认
+> `all` 下守卫**只做协议 scope 形状检查、不做项目白名单**。原因是项目列表的业务入口已迁到
+> daemon 的 `runtime.project.list`：宿主启动时快照出的静态集合会**比服务端更严**，把宿主启动
+> 之后新注册的项目误拒。授权真源是**服务端**（daemon 的精确 `project_id` 路由 + 授权）；
+> `all` 只是**同一用户**的 console scope，**不是多用户隔离边界**。单项目语义可用
+> `--project-scope workspace` 恢复。下方「例外范围」「不是存在性 oracle」两条相应收窄到
+> `workspace` 模式。
 
 | 项 | 现状 |
 |---|---|
-| 行为 | 浏览器发出的、指向**允许集合之外**项目的 JSON-RPC 请求，由宿主直接以 typed 错误拒绝：`code=-32000`、`data.service_code="not_found"`、`meta.wire_version="1"`（复用 daemon 自己的 `protocol.encode_error`，不自行拼信封）。**拒绝帧不进入 daemon**，因此 daemon 侧不会为该项目建立 manager/session |
-| 为什么需要 | daemon 用一个 bearer 认证宿主，并按**精确 project_id** 解析 catalog 中**任意**已注册项目（`CatalogProjectProvider` + 无 project 维度的 `DaemonAuthorizer`，协商期也没有项目维度）。下游没有任何机制把这条中继连接限制到允许集合；没有该守卫时，为项目 A 配对的浏览器可以打开**任何**已注册项目的会话 |
-| 例外范围（压到最小） | ① 只检查**浏览器 → daemon** 一个方向，daemon → 浏览器完全不动；② 只读取请求 `id` 与白名单位置 `session.project_id`、`project_id`、`ref.session.project_id`（即 `protocol.decode_params` 中全部会参与路由的 project_id 位置）；③ 不做递归扫描、不改写任何字段，被接受的帧仍**逐字节**转发 |
-| 不是存在性 oracle | 对任何非宿主项目（无论是否已注册）返回同一个 `not_found`；拒绝响应不含其它项目的 project_id / workspace 路径 / token |
+| 行为 | `--project-scope workspace`：浏览器发出的、指向宿主项目以外任何 `project_id` 的 JSON-RPC 请求，由宿主直接以 typed 错误拒绝：`code=-32000`、`data.service_code="not_found"`、`meta.wire_version="1"`（复用 daemon 自己的 `protocol.encode_error`，不自行拼信封）。**拒绝帧不进入 daemon**，因此 daemon 侧不会为该项目建立 manager/session。`all`（默认）：宿主不做成员判定，请求原样转发，结果由 daemon 的精确 `project_id` 路由 + 授权决定（未注册/未授权同样得到 `not_found`） |
+| 为什么需要 | daemon 用一个 bearer 认证宿主，并按**精确 project_id** 解析 catalog 中**任意**已注册项目（`CatalogProjectProvider` + 无 project 维度的 `DaemonAuthorizer`，协商期也没有项目维度）。因此 `workspace` 模式下必须由宿主守卫把这一个项目之外的请求挡在 daemon 之前；`all` 模式下这条中继连接本来就代表同一用户，边界由 daemon 自己执行 |
+| 例外范围（压到最小） | ① 只检查**浏览器 → daemon** 一个方向，daemon → 浏览器完全不动；② 只读取请求 `id` 与白名单位置 `session.project_id`、`project_id`、`ref.session.project_id`（即 `protocol.decode_params` 中全部会参与路由的 project_id 位置）；③ 不做递归扫描、不改写任何字段，被接受的帧仍**逐字节**转发；④ 只有 `workspace` 模式才会产生拒绝帧 |
+| 不是存在性 oracle | 宿主拒绝（仅 `workspace` 模式）对任何非宿主项目（无论是否已注册）返回同一个 `not_found`；拒绝响应不含其它项目的 project_id / workspace 路径 / token |
+| 形状检查（两种模式都做） | 守卫按同一白名单读取各路由位置：位置缺失属正常形状；位置存在但不是非空字符串（或 `session`/`ref` 不是对象）时该帧**不算可读**（计入 `host.unreadable_frames`）并原样转发给 daemon 拒绝。但已解析出的 project_id 仍照常判定——不可解析的位置**不会**成为可读的跨项目 id 的绕过口 |
 
 **已知残余风险（不承诺已闭合）**：
 
 - **对不可读/非文本帧 fail-open**：不是 JSON、顶层不是对象、`id` 既非 `str` 也非
   `int`（`bool`/`float` 也落在这一类）、`params` 不是对象的帧一律原样转发；守卫只检查
-  `WSMsgType.TEXT`，二进制帧不检查。
+  `WSMsgType.TEXT`，二进制帧不检查。位置存在但形状不可解析的帧同样转发（见上表末行）。
+- **`all` 模式不做项目成员判定**：默认配置下宿主侧不存在任何项目白名单，可寻址范围
+  **完全**由 daemon 的精确 `project_id` 路由与授权决定。这是有意的：授权真源在服务端，
+  host 侧静态集合只会比服务端更严（把宿主启动后新注册的项目误拒）。需要宿主侧单项目
+  边界时必须显式 `--project-scope workspace`。
 - **白名单与协议无源码级绑定**：三个位置是手工维护的常量，没有任何测试把
   `SCOPE_PROJECT_POSITIONS` 与 `protocol.decode_params` 的方法表绑定；若协议新增一个把
   `project_id` 放在新位置的方法，守卫**不会**自动覆盖。
 - 因此「跨项目请求被拒」目前**依赖 daemon 侧的严格校验继续存在**：守卫 fail-open 的
   每一种形状都必须在到达 router/manager 之前被 daemon 以 `-32600`/`-32602`/`-32700`
   拒绝。若 daemon 将来放宽（接受 `bool`/`float` 型 `id`、允许 `params` 非对象、允许重复
-  键或额外字段），其中若干形状会立刻变成绕过路径。
+  键或额外字段），其中若干形状会立刻变成绕过路径；`all` 模式下这一依赖是**全部**。
 - 守卫用默认 `json.loads`（保留最后一个同名键），而 daemon 用
   `_reject_duplicate_keys` 拒绝重复键 ⇒ 重复键帧必定被 daemon 拒绝、不构成绕过，但两者
   解析器语义不完全一致。
-- `host.scope_rejections` 只是进程内计数（无持久化、无日志输出），仅供测试/调试观测。
+- `host.scope_rejections` / `host.unreadable_frames` 只是进程内计数（无持久化、无日志
+  输出），仅供测试/调试观测。
 
 **不承诺**：「多项目越权问题已端到端穷尽验证」。当前结论仅是「已覆盖的对抗形状中未
 发现可利用路径」，且依赖上述 daemon 侧严格校验继续成立。
@@ -402,9 +411,18 @@ pytest**，含单文件与 `--collect-only`）：
 - 未做（超出本切片范围）：反向代理/TLS 部署文档、会话注册表持久化、发布与
   scratch/图片清理。
 - 多项目导航（v5 切片 3）：侧栏为「项目 → 会话」两级树（对齐 TUI 的 `ProjectDrawer`），
-  宿主提供只读 `GET /api/projects`，中继允许集合由 `--project-scope` 决定（见 §4.1）。
+  中继边界由 `--project-scope` 决定（`workspace` = 宿主侧单项目守卫；默认 `all` = 无宿主
+  白名单、由 daemon 授权，见 §4.1）。
   切换项目只改前端 `project_id` 并重新附着，**不重启宿主**；会话列表按项目懒加载，
   每个展开的项目默认只显示最近 5 条。
+- **项目列表业务入口已迁到 daemon RPC**：前端改用共享 runtime client 的
+  `runtime.project.list`（有界分页，daemon 先按可见性过滤再分页；DTO 只含
+  `project_id` / `workspace_name` / `git_branch` / `workspace_path`，不含
+  `session_count` / `last_active_at`，侧栏计数改为按需拉取会话列表后计算）。
+  `GET /api/projects` 保留为 deprecated 兼容路由，不再是业务入口；bootstrap 的当前
+  项目标识仍由宿主控制面（`/api/session`）给出。`RelayProjectScopeGuard` 在 `workspace`
+  模式下仍作单项目纵深防御；默认 `all` 模式**不保留宿主侧项目白名单**，只做协议 scope
+  形状检查，可寻址集合由 daemon 的精确 `project_id` 路由 + 授权决定（见 §4.1）。
 - 前端事件消费已与 TUI 对齐：`web/src/stores/liveEventReducer.ts` 归约
   activity / reasoning / answer / tool_* / subagent / usage / info / approval /
   terminal 事件（覆盖表见 `index.md` §4）；`GET /api/runtime-status` 也已由前端消费

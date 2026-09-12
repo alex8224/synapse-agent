@@ -11,7 +11,8 @@ HTTP surface (frozen contract, see the phase-5 auth contract handoff):
 
 ``POST /api/pair``    state change: code -> session cookie (full CSRF chain)
 ``GET  /api/session`` read-only: current project + ``expires_in``
-``GET  /api/projects`` read-only: the projects the relay may address (``--project-scope``)
+``GET  /api/projects`` read-only **deprecated** listing (the business list is the
+                      daemon's ``runtime.project.list`` over the shared client)
 ``GET  /api/runtime-status`` read-only: discovered daemon endpoint + hint
 ``POST /api/logout``  state change: invalidate every session (single user)
 ``GET  /api/bootstrap`` intentionally removed: always 405, never a cookie
@@ -21,12 +22,13 @@ HTTP surface (frozen contract, see the phase-5 auth contract handoff):
 The relay is a verbatim pipe with exactly one documented exception: nothing
 downstream scopes a relay to a project (the daemon authenticates this host with
 one bearer and resolves *any* catalog-registered project), so the browser ->
-daemon direction passes through :class:`RelayProjectScopeGuard`.  That guard
-reads the request ``id`` and the whitelisted ``project_id`` values and rejects a
-request that addresses a project outside its allow-set — the console's own
-project under ``--project-scope workspace``, every project of the same user
-catalog under the default ``all``; it never rewrites an accepted frame (see the
-class docstring for the full justification).
+daemon direction passes through :class:`RelayProjectScopeGuard`.  Under
+``--project-scope workspace`` that guard rejects a request that addresses any
+project other than the console's own; under the default ``all`` it keeps no
+project whitelist at all and only checks the shape of the protocol's routing
+positions, leaving the daemon (exact ``project_id`` routing plus authorization)
+as the authority on what the connection may address.  It never rewrites an
+accepted frame (see the class docstring for the full justification).
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from urllib.parse import unquote
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 
+from synapse.runtime.daemon.auth import PROJECT_SCOPE_HEADER
 from synapse.web_console.config import (
     RuntimeDiscoveryError,
     WebConsoleConfig,
@@ -146,32 +149,78 @@ SCOPE_PROJECT_POSITIONS = ("session.project_id", "project_id", "ref.session.proj
 #: the console is not an oracle for "that other project exists".
 SCOPE_REJECTION_SERVICE_CODE = "not_found"
 
-#: Bound on the switchable project list (the catalog itself caps at 500).
-MAX_SCOPE_PROJECTS = 200
+#: Bound on the deprecated ``GET /api/projects`` listing.  The user-layer catalog
+#: is itself capped at 500 rows; the listing is a bounded convenience view only
+#: and never feeds the relay's project boundary (see
+#: ``WebConsoleHost._scope_allowed_project_ids``).
+MAX_SCOPE_PROJECTS = 500
 
 
-def _append_project_id(found: list[str], value: object) -> None:
+def _read_scope_position(container: dict[str, Any], key: str) -> tuple[bool, str | None]:
+    """``(present, usable_id)`` for one whitelisted scope position.
+
+    ``present`` is ``False`` when the position is absent, which is the normal
+    shape for every method that does not route on a project.  ``usable_id`` is
+    the project id the daemon's decoder would resolve, or ``None`` when the
+    position is present but does not carry a non-empty string: the guard must
+    not guess a scope out of a value the protocol rejects anyway.
+    """
+    if key not in container:
+        return False, None
+    value = container[key]
     if type(value) is str and value:
-        found.append(value)
+        return True, value
+    return True, None
 
 
-def _scoped_project_ids(params: dict[str, Any]) -> list[str]:
-    """The project ids the runtime would resolve from ``params`` (whitelist only)."""
+def _scoped_project_ids(params: dict[str, Any]) -> tuple[list[str], bool]:
+    """``(project_ids, shape_ok)`` for the whitelisted routing positions.
+
+    ``project_ids`` are exactly the ids the runtime would resolve from
+    ``params``; ``shape_ok`` is ``False`` when at least one whitelisted position
+    is present in a shape this reader cannot resolve (a non-object ``session`` /
+    ``ref`` container, or a non-empty-string project id).  Such a frame is *not*
+    a scope the guard can honour, so it is counted as unreadable and left to the
+    daemon's strict decoder — while any project id this reader *did* resolve is
+    still enforced, so a malformed position can never be used to smuggle a
+    readable cross-project id past the guard.
+    """
     found: list[str] = []
-    session = params.get("session")
-    if isinstance(session, dict):
-        _append_project_id(found, session.get("project_id"))
-    _append_project_id(found, params.get("project_id"))
-    ref = params.get("ref")
-    if isinstance(ref, dict):
-        ref_session = ref.get("session")
-        if isinstance(ref_session, dict):
-            _append_project_id(found, ref_session.get("project_id"))
-    return found
+    shape_ok = True
+
+    def read(container: dict[str, Any], key: str) -> None:
+        nonlocal shape_ok
+        present, usable = _read_scope_position(container, key)
+        if not present:
+            return
+        if usable is None:
+            shape_ok = False
+        else:
+            found.append(usable)
+
+    if "session" in params:
+        session = params["session"]
+        if isinstance(session, dict):
+            read(session, "project_id")
+        else:
+            shape_ok = False
+    read(params, "project_id")
+    if "ref" in params:
+        ref = params["ref"]
+        if isinstance(ref, dict):
+            if "session" in ref:
+                ref_session = ref["session"]
+                if isinstance(ref_session, dict):
+                    read(ref_session, "project_id")
+                else:
+                    shape_ok = False
+        else:
+            shape_ok = False
+    return found, shape_ok
 
 
-def _scoped_request(payload: str) -> tuple[str | int, list[str]] | None:
-    """``(request_id, project_ids)`` of one browser frame, else ``None``.
+def _scoped_request(payload: str) -> tuple[str | int, list[str], bool] | None:
+    """``(request_id, project_ids, shape_ok)`` of one browser frame, else ``None``.
 
     Only the request id and the whitelisted project ids are read.  The frame is
     deliberately *not* validated here: the runtime daemon stays the authority on
@@ -200,7 +249,8 @@ def _scoped_request(payload: str) -> tuple[str | int, list[str]] | None:
     params = frame.get("params")
     if not isinstance(params, dict):
         return None
-    return request_id, _scoped_project_ids(params)
+    project_ids, shape_ok = _scoped_project_ids(params)
+    return request_id, project_ids, shape_ok
 
 
 def _encode_typed_error(request_id: str | int, service_code: str) -> str:
@@ -215,21 +265,35 @@ def _encode_typed_error(request_id: str | int, service_code: str) -> str:
 
 
 class RelayProjectScopeGuard:
-    """Reject relay requests that address a project outside the console's allow-set.
+    """Enforce the console's project boundary on the relay's browser -> daemon side.
 
-    The allow-set is ``--project-scope``-derived: ``workspace`` keeps the original
-    single-project boundary, while the default ``all`` covers every project of the
-    same user-layer catalog (one user's projects, never another user's).
+    ``--project-scope`` selects the strategy:
 
-    **This is an intentional exception to the A6 boundary.**  A6 freezes the relay
-    as a verbatim pipe (frames forwarded unchanged, never parsed, never injected)
-    and that remains the rule for every other frame.  The exception exists because
-    the runtime daemon authenticates this host with one bearer token and resolves
-    *any* catalog-registered project (``CatalogProjectProvider`` +
-    ``DaemonAuthorizer``, which has no project dimension and no negotiation-time
-    project binding), so nothing downstream confines the relay to the console's
-    allow-set.  Without this guard a browser paired for project A can open
-    sessions of any registered project.
+    ``workspace`` (bounded)
+        Exactly one project id, the console's own.  Every request that addresses
+        any other project is rejected, which is the original single-project
+        boundary of the web console.
+
+    ``all`` (unrestricted, shape-only)
+        No project allow-set at all.  The host does not keep a *static* project
+        snapshot: ``runtime.project.list`` is served by the daemon, so a project
+        registered after this host started is a legitimate target, and a host-side
+        whitelist would reject a project the server itself authorizes.  The guard
+        therefore only checks the *shape* of the whitelisted routing positions
+        (:data:`SCOPE_PROJECT_POSITIONS`) and forwards every readable frame, so
+        the daemon stays the single authority on which projects a connection may
+        address (exact ``project_id`` routing plus authorization).  ``all`` is a
+        single-user console scope, never a multi-user isolation boundary.
+
+    **The bounded mode is an intentional exception to the A6 boundary.**  A6
+    freezes the relay as a verbatim pipe (frames forwarded unchanged, never
+    parsed, never injected) and that remains the rule for every other frame.  The
+    exception exists because the runtime daemon authenticates this host with one
+    bearer token and resolves *any* catalog-registered project
+    (``CatalogProjectProvider`` + ``DaemonAuthorizer``, which has no project
+    dimension and no negotiation-time project binding), so nothing downstream
+    confines the relay to one project.  Without this guard a browser paired for
+    project A could open sessions of any registered project.
 
     The exception is kept as small as it can be:
 
@@ -243,8 +307,9 @@ class RelayProjectScopeGuard:
       runtime already returns for an unresolvable project, so the console leaks
       neither the other project's identity/path nor whether it exists.
 
-    The guard is *not* fail-closed: a frame it cannot read is forwarded and left
-    to the daemon, which refuses it before any project is resolved (see
+    The guard is *not* fail-closed: a frame it cannot read, and a frame whose
+    routing position is present in a shape it cannot resolve, is forwarded and
+    left to the daemon, which refuses it before any project is resolved (see
     :func:`_scoped_request` for why that is not exploitable, and
     :attr:`unreadable` for the counter that makes the boundary observable
     instead of silent).
@@ -252,29 +317,35 @@ class RelayProjectScopeGuard:
 
     __slots__ = ("allowed_project_ids", "rejected", "unreadable")
 
-    def __init__(self, allowed_project_ids: str | Iterable[str]) -> None:
-        """One project id, or the explicit allow-set the relay may address.
+    def __init__(self, allowed_project_ids: str | Iterable[str] | None) -> None:
+        """The allow-set the relay may address, or ``None`` for shape-only mode.
 
-        ``--project-scope workspace`` passes a single id (the original
-        boundary); ``--project-scope all`` passes every project registered in
-        the same user-layer catalog.  A bare string is treated as a one-element
-        set rather than iterated character by character.
+        ``--project-scope workspace`` passes the single own project id (the
+        original boundary, treated as a one-element set rather than iterated
+        character by character).  ``--project-scope all`` passes ``None``: the
+        daemon is the authority on which projects the connection may address, so
+        the guard only checks the protocol scope shape and never rejects on
+        membership.
         """
-        candidates: Iterable[str]
-        if type(allowed_project_ids) is str:
-            candidates = (allowed_project_ids,)
+        if allowed_project_ids is None:
+            self.allowed_project_ids: frozenset[str] | None = None
         else:
-            candidates = allowed_project_ids
-        allowed = frozenset(value for value in candidates if type(value) is str and value)
-        if not allowed:
-            raise ValueError("allowed_project_ids must contain at least one project id")
-        self.allowed_project_ids = allowed
+            candidates: Iterable[str]
+            if type(allowed_project_ids) is str:
+                candidates = (allowed_project_ids,)
+            else:
+                candidates = allowed_project_ids
+            allowed = frozenset(value for value in candidates if type(value) is str and value)
+            if not allowed:
+                raise ValueError("allowed_project_ids must contain at least one project id")
+            self.allowed_project_ids = allowed
         #: Number of browser requests rejected so far (evidence for tests/logs).
         self.rejected = 0
-        #: Number of browser text frames the guard could not read and therefore
-        #: forwarded unchanged (the documented fail-open branch).  Counted so the
-        #: boundary stays measurable; the daemon rejects every such frame before
-        #: it can resolve a project (see :func:`_scoped_request`).
+        #: Number of browser text frames the guard could not read (or whose scope
+        #: shape it could not resolve) and therefore forwarded unchanged (the
+        #: documented fail-open branch).  Counted so the boundary stays
+        #: measurable; the daemon rejects every such frame before it can resolve
+        #: a project (see :func:`_scoped_request`).
         self.unreadable = 0
 
     def rejection(self, payload: str) -> str | None:
@@ -283,11 +354,19 @@ class RelayProjectScopeGuard:
         if scoped is None:
             self.unreadable += 1
             return None
-        request_id, project_ids = scoped
-        if all(project_id in self.allowed_project_ids for project_id in project_ids):
-            return None
-        self.rejected += 1
-        return _encode_typed_error(request_id, SCOPE_REJECTION_SERVICE_CODE)
+        request_id, project_ids, shape_ok = scoped
+        allowed = self.allowed_project_ids
+        if allowed is not None and not all(
+            project_id in allowed for project_id in project_ids
+        ):
+            # A resolved cross-project id is rejected even when another routing
+            # position was malformed: the unreadable position must never be a
+            # hole through which a readable one escapes.
+            self.rejected += 1
+            return _encode_typed_error(request_id, SCOPE_REJECTION_SERVICE_CODE)
+        if not shape_ok:
+            self.unreadable += 1
+        return None
 
 
 class WebConsoleHost:
@@ -324,12 +403,13 @@ class WebConsoleHost:
         )
         self._static_root = config.resolved_static_dir()
         self._active_sockets = 0
-        # Projects this console may list and address, resolved once at startup.
-        # One guard per host rejects every request outside that set (see the class).
+        # The deprecated ``GET /api/projects`` listing, resolved once at startup.
+        # It is a convenience listing only: the relay's project boundary is *not*
+        # derived from it (see ``_scope_allowed_project_ids``), because a project
+        # registered after this host started would otherwise be rejected even
+        # though the daemon's own ``runtime.project.list`` authorizes it.
         self._switchable_projects = self._resolve_switchable_projects(project)
-        self._scope_guard = RelayProjectScopeGuard(
-            frozenset(entry["project_id"] for entry in self._switchable_projects)
-        )
+        self._scope_guard = RelayProjectScopeGuard(self._scope_allowed_project_ids())
         # High-water marks of the bounded relay buffers; tests assert the bound
         # on a real slow consumer (see ``RELAY_MAX_PENDING_*``).
         self.relay_stats = RelayBackpressureStats()
@@ -502,15 +582,20 @@ class WebConsoleHost:
         }
 
     def _resolve_switchable_projects(self, project: ProjectView) -> tuple[dict[str, Any], ...]:
-        """Projects the console may list and switch to (bounded, never a secret).
+        """Projects the deprecated ``GET /api/projects`` listing reports.
 
-        ``project_scope=workspace`` returns only the console's own project, which
-        is the original single-project behaviour.  ``project_scope=all`` adds
-        every project registered in the same user-layer catalog the daemon
-        resolves from — still one user's projects, never another user's.
+        This is a *listing* for the console UI, not the relay's project boundary
+        (the business list now comes from the daemon's ``runtime.project.list``
+        over the shared runtime client).  ``project_scope=workspace`` returns only
+        the console's own project, which is the original single-project behaviour.
+        ``project_scope=all`` adds every project registered in the same user-layer
+        catalog the daemon resolves from — still one user's projects, never
+        another user's.
 
-        A catalog that cannot be read degrades to the own project only: the scope
-        never *widens* on a failure.
+        A catalog that cannot be read degrades this listing to the own project
+        only.  It never *widens* the relay: under ``all`` the guard keeps no
+        project allow-set at all (see :meth:`_scope_allowed_project_ids`), so a
+        failure here cannot turn into a wider boundary than the daemon grants.
         """
         own = {
             "project_id": project.project_id,
@@ -547,7 +632,7 @@ class WebConsoleHost:
             for info in infos
         ]
         if not any(row["project_id"] == own["project_id"] for row in rows):
-            # The console's own project must always be reachable, even when the
+            # The console's own project must always be listed, even when the
             # catalog listing is capped before reaching it.
             rows.append(own)
         return tuple(rows)
@@ -555,6 +640,36 @@ class WebConsoleHost:
     def _projects_payload(self) -> dict[str, Any]:
         """The switchable project list (the same bounded fields as ``/api/session``)."""
         return {"projects": list(self._switchable_projects)}
+
+    def _scope_allowed_project_ids(self) -> frozenset[str] | None:
+        """The relay's host-side project allow-set, or ``None`` for shape-only.
+
+        ``--project-scope workspace`` is a strictly single-project boundary: the
+        guard rejects every request that addresses any other project id.
+        ``--project-scope all`` returns ``None``: the host keeps no project
+        whitelist, so a project registered *after* this host started is not
+        rejected host-side.  Whether it may be addressed is decided by the
+        daemon's exact ``project_id`` routing plus its authorization, which is
+        the single source of truth for the connection's visibility.  ``all`` is
+        one user's console scope, not a multi-user isolation boundary.
+        """
+        if self.config.project_scope == "workspace":
+            return frozenset({self.project.project_id})
+        return None
+
+    def _daemon_scope_project_id(self) -> str | None:
+        """The trusted project scope to bind on the daemon handshake.
+
+        Only ``--project-scope workspace`` narrows the connection: it is the
+        original single-project boundary, and binding it means the daemon itself
+        (not just this host) refuses every other project for session methods and
+        for ``runtime.project.list``.  Under ``all`` no header is sent, so the
+        connection keeps the daemon's own same-user visibility, and the daemon
+        remains the authority the host's shape-only guard defers to.
+        """
+        if self.config.project_scope == "workspace":
+            return self.project.project_id
+        return None
 
     def _state_change_guard(self, request: web.Request) -> web.Response | None:
         """A3 steps 2-6: the CSRF chain shared by ``pair`` and ``logout``."""
@@ -699,13 +814,17 @@ class WebConsoleHost:
         return _reject(405, "method not allowed", json_body=True)
 
     async def _handle_projects(self, request: web.Request) -> web.Response:
-        """``GET /api/projects``: the projects this console may switch to.
+        """``GET /api/projects``: deprecated compat listing, not a business entry.
 
-        Read-only and session-gated, like ``/api/runtime-status``: it exposes the
-        same bounded project fields ``/api/session`` already returns for the
-        console's own project, for every project the relay is allowed to address.
-        It carries no token and no path outside the user catalog, and never
-        changes any state (so it needs no CSRF chain).
+        The console's project list now comes from the daemon's
+        ``runtime.project.list`` over the shared runtime client.  This route stays
+        for compatibility and reports the startup listing (bounded, same fields as
+        ``/api/session``); it is deliberately *not* what gates the relay, so a
+        stale or truncated listing cannot narrow or widen the new path.
+
+        Read-only and session-gated, like ``/api/runtime-status``: it carries no
+        token and no path outside the user catalog, and never changes any state
+        (so it needs no CSRF chain).
         """
         if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
             return _reject(403, "forbidden host", json_body=True)
@@ -749,6 +868,19 @@ class WebConsoleHost:
             try:
                 async with ClientSession(timeout=timeout) as session:
                     headers = {"Authorization": f"Bearer {self._daemon_token}"}
+                    # Host-private handshake header: the browser never opens this
+                    # socket, so only this process can set it.  It is sent only
+                    # for ``--project-scope workspace`` (the original single
+                    # project boundary), where the daemon then enforces the same
+                    # narrowing for session methods and ``runtime.project.list``;
+                    # the daemon reads it only after the bearer check.  Under
+                    # ``all`` no header is sent: the connection keeps the daemon's
+                    # own same-user visibility, which is exactly what
+                    # ``runtime.project.list`` reports and what the host-side
+                    # shape-only guard defers to.
+                    scope = self._daemon_scope_project_id()
+                    if scope is not None:
+                        headers[PROJECT_SCOPE_HEADER] = scope
                     async with session.ws_connect(
                         _daemon_ws_url(runtime_host, runtime_port),
                         headers=headers,

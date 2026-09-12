@@ -37,6 +37,7 @@ from typing import Any
 
 from synapse.runtime.service.errors import HistoryTooLargeError, InvalidRequestError
 from synapse.runtime.service.history import (
+    HistoryAttachment,
     HistoryEvent,
     ListSessionsQuery,
     ReadSessionHistoryQuery,
@@ -494,7 +495,53 @@ def _history_event(row: sqlite3.Row) -> HistoryEvent:
         text=str(parsed.get("text") or ""),
         tool_calls=_dict_tuple(parsed.get("tool_calls")),
         tool_results=_dict_tuple(parsed.get("tool_results")),
+        attachments=_attachment_tuple(parsed.get("attachments")),
     )
+
+
+def _attachment_tuple(value: object) -> tuple[HistoryAttachment, ...]:
+    """Parse persisted durable attachment metadata (missing -> empty).
+
+    A legacy row (written before attachment references existed) has no
+    ``attachments`` key, so it defaults to an empty tuple; a malformed entry is
+    skipped rather than failing the whole page.
+    """
+    if not isinstance(value, list):
+        return ()
+    items: list[HistoryAttachment] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        attachment_id = item.get("attachment_id")
+        image_id = item.get("image_id")
+        name = item.get("name")
+        mime = item.get("mime")
+        size = item.get("size")
+        revision = item.get("revision")
+        if (
+            not isinstance(attachment_id, str)
+            or not attachment_id
+            or not isinstance(image_id, int)
+            or isinstance(image_id, bool)
+            or not isinstance(name, str)
+            or not isinstance(mime, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+            or (revision is not None and not isinstance(revision, str))
+        ):
+            continue
+        items.append(
+            HistoryAttachment(
+                attachment_id=attachment_id,
+                image_id=image_id,
+                name=name,
+                mime=mime,
+                size=size,
+                revision=revision,
+            )
+        )
+    return tuple(items)
 
 
 def _dict_tuple(value: object) -> tuple[dict[str, Any], ...]:

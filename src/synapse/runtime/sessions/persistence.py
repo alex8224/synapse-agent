@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +35,40 @@ def _latest_checkpoint_id(context: TurnContext) -> str | None:
         return latest_checkpoint_id_from_sqlite_file(path, context.thread_id)
     except Exception:  # noqa: BLE001 - persistence must never fail on the watermark
         return None
+
+
+def _request_message_metadata(request: Any) -> Any:
+    """Return the frozen request's user-message ``additional_kwargs``."""
+    payload = getattr(request, "payload", None)
+    if not isinstance(payload, Mapping):
+        return None
+    messages = payload.get("messages")
+    if not isinstance(messages, (list, tuple)) or not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, Mapping):
+        return None
+    return last.get("additional_kwargs")
+
+
+def _durable_attachment_refs(request: Any) -> tuple[Any, ...]:
+    """Durable attachment refs for one settled turn, read from message metadata.
+
+    The frozen request payload is the exact user message that reaches the
+    checkpoint, so reading the refs here keeps the append path identical to a
+    later projection rebuild (which re-derives them from the checkpoint message).
+    Falls back to ``TurnRequest.attachment_refs`` for requests whose payload
+    carries no metadata (legacy or directly constructed).
+    """
+    try:
+        from synapse.content.multimodal import extract_attachment_refs
+
+        refs = extract_attachment_refs(_request_message_metadata(request))
+    except Exception:  # noqa: BLE001 - persistence must never fail on metadata
+        refs = []
+    if refs:
+        return tuple(refs)
+    return tuple(getattr(request, "attachment_refs", ()) or ())
 
 
 def _schedule_subagent_checkpoint_gc(context: TurnContext) -> None:
@@ -85,7 +120,15 @@ class SessionPersistence:
             return
         resume = bool(context.request.resume)
         user_text = "" if resume else context.request.input
-        events = self._events(user_text, result, turn_events=turn_events)
+        # Durable attachment metadata travels with the frozen request's user
+        # message metadata (never a process-global map), so a settled turn can
+        # persist the opaque ids even when the in-memory attachment objects are
+        # long gone.  Reading it from the same message the checkpoint stores keeps
+        # this projection identical to a later checkpoint-driven rebuild.
+        attachment_refs = () if resume else _durable_attachment_refs(context.request)
+        events = self._events(
+            user_text, result, turn_events=turn_events, attachments=attachment_refs
+        )
         if resume:
             # The original user turn is already projected. Resume may still run
             # the model after approval/rejection, so persist usage only.
@@ -117,8 +160,17 @@ class SessionPersistence:
         result: TurnResult,
         *,
         turn_events: list[TurnEvent] | None = None,
+        attachments: tuple[Any, ...] = (),
     ) -> list[UiTranscriptEvent]:
-        events = [UiTranscriptEvent(kind="user", text=user_text)] if user_text else []
+        events: list[UiTranscriptEvent] = []
+        if user_text or attachments:
+            events.append(
+                UiTranscriptEvent(
+                    kind="user",
+                    text=user_text,
+                    attachments=[dict(item) for item in attachments],
+                )
+            )
         if result.reasoning_text:
             events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
         state_events = fold_messages_for_ui(list(result.state.get("messages") or []))

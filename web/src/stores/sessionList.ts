@@ -8,6 +8,26 @@ import type { SessionItem } from './historyMapper.ts';
 
 export type SessionGroupKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'older';
 
+/**
+ * Server-side session-title bound (`runtime.session.rename` / create).
+ *
+ * Mirrored here so the sidebar can cap the input and reject a blank title before
+ * an RPC is issued; the server remains the authority and rejects the same values.
+ */
+export const SESSION_TITLE_MAX = 120;
+
+/**
+ * Trim a user-entered session title.
+ *
+ * Returns `null` when the server would reject it (blank or longer than
+ * `SESSION_TITLE_MAX` characters), so a caller never sends a doomed rename.
+ */
+export function normalizeSessionTitle(title: string): string | null {
+  const text = title.trim();
+  if (text === '' || text.length > SESSION_TITLE_MAX) return null;
+  return text;
+}
+
 export interface SessionGroup {
   key: SessionGroupKey;
   label: string;

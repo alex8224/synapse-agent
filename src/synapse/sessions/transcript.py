@@ -508,6 +508,9 @@ class UiTranscriptEvent:
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     # Optional inline images for user turns: (raw_bytes, mime)
     images: list[tuple[bytes, str]] = field(default_factory=list)
+    # Durable attachment references for a user turn (JSON-safe metadata only;
+    # never base64 bytes).  Empty for every non-user event and for legacy rows.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 
@@ -523,6 +526,28 @@ def _message_images(msg: Any) -> list[tuple[bytes, str]]:
     try:
         return extract_image_payloads(content)
     except Exception:  # noqa: BLE001
+        return []
+
+
+def _message_attachment_refs(msg: Any) -> list[dict[str, Any]]:
+    """Durable attachment refs carried on a human message's metadata.
+
+    The value is validated and bounded by
+    :func:`synapse.content.multimodal.extract_attachment_refs`: a foreign or
+    malformed checkpoint value can only contribute well-formed, capped refs
+    (opaque ids stay opaque - no bytes, no paths), and anything else is ignored
+    so replay never fails on message metadata.
+    """
+    metadata = getattr(msg, "additional_kwargs", None)
+    if metadata is None and isinstance(msg, dict):
+        metadata = msg.get("additional_kwargs")
+    try:
+        from synapse.content.multimodal import extract_attachment_refs
+    except Exception:  # noqa: BLE001 - optional metadata path
+        return []
+    try:
+        return extract_attachment_refs(metadata)
+    except Exception:  # noqa: BLE001 - replay must never fail on metadata
         return []
 
 
@@ -584,12 +609,14 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             except Exception:  # noqa: BLE001
                 pass
             images = _message_images(msg)
-            if text or images:
+            attachments = _message_attachment_refs(msg)
+            if text or images or attachments:
                 events.append(
                     UiTranscriptEvent(
                         kind="user",
-                        text=text or ("(image)" if images else ""),
+                        text=text or ("(image)" if (images or attachments) else ""),
                         images=images,
+                        attachments=attachments,
                     )
                 )
             continue

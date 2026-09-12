@@ -13,6 +13,11 @@
 > 只读诊断端点 `GET /api/runtime-status`（需有效会话 cookie + Host 允许表）见 `formal-host.md` 第 3 节。
 > 下文第 1 节的直连 Bearer 架构图与第 3 节协议表为 v4 前的设计叙述，生产
 > 部署以 v5 宿主说明为准。
+>
+> **会话管理 / goal 写 / 图片附件切片**：侧栏项目与会话树、F6 目标对话框、输入区图片
+> 上传与历史缩略图都改走 runtime RPC（§2.3），协议面见 §3 与 §3.2；仍未 wire 的后端
+> 能力见 `docs/agent-runtime-service/progress.md`（附件 `abort` 的 finalized 保护已由服务端
+> 强制，见该文「已修复」小节）。
 
 ## 1. 架构定位
 
@@ -123,36 +128,105 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 空数组＝清空白名单、结果新增 `tool_names` 与每服务器 `discovered`/`loaded` 等）
 见 `docs/mcp.md` 的「MCP 面板协议」。
 
+### 2.3 会话管理（侧栏）与图片附件（本轮新增）
+
+侧栏的项目 → 会话树与输入区图片附件都直接走 runtime RPC，不在前端拼装数据。
+
+| 面 | wire 方法 | 实测 |
+|---|---|---|
+| 项目列表 | `runtime.project.list` | 有界分页（`limit` 1..100）；`GET /api/projects` 保留为 deprecated 兼容路由，不再是业务入口 |
+| 新建会话 | `runtime.session.create` | 只写元数据行，`thread_id` 由服务端分配并返回；随后仍走 `runtime.session.open` + watch |
+| 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白/超长在本地与服务端都被拒 |
+| 删除 | `runtime.session.delete` | 只删元数据与 goal；确认框与提示明确写出 checkpoint/transcript 仍保留，不宣称「对话已删除」；运行中会话由服务端原子拒绝（`conflict`），前端不自动 cancel |
+| 搜索 | `runtime.session.search` | 服务端**元数据**搜索（title/summary/thread_id/model），不是全文检索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
+| 选择/拖放图片 | — | 回形针或拖放到输入卡片；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒文件名与原因显示在输入区 |
+| 上传 | `runtime.attachments.begin` / `.append` / `.finish` | 每个附件独立串流并显示进度；分块 ≤ 256 KiB（base64），`finish` 由服务端校验大小与 MIME |
+| 取消/移除 | `runtime.attachments.abort`（best-effort） | 只在 `finish` 之前取消/失败时中止；**不对已 finalize 的 ref 调 abort** |
+| 发送 | `runtime.turn.submit` 的 `attachment_refs` | 有附件仍在上传时禁止发送；仅附件（文本为空）可提交；单次最多 8 个不透明 id |
+| 历史缩略图 | `runtime.attachments.read` | 历史用户消息只带 metadata，缩略图按需分块读取（64 KiB 窗口）并生成 blob URL；卸载/切换会话时 revoke，> 4 MB 或非图片类型不加载 |
+
+切换会话/项目或退出配对会取消当前输入区的上传并 best-effort abort **未完成**的附件；
+已 finalize 的附件保留在服务端，刷新历史后仍显示。服务端 `runtime.attachments.abort`
+现在**有** finalized 保护：对已 `finish` 的附件（或 `finish` 崩溃窗口里已落盘的
+`data.bin`）调用只返回 `removed=False` 且不删除字节，未完成上传仍正常删除；见
+`docs/agent-runtime-service/progress.md` 的「已修复」小节。
+
 ---
 
 ## 3. 通信与协议层契约
 
-严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范：
+严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 40 个方法）。控制台涉及的子集：
 
 | 协议方法 | 方向 | 用途 |
 |---|---|---|
 | `runtime.protocol.negotiate` | Request -> Response | 版本协商（versions: [1]） |
 | `runtime.session.open` | Request -> Response | 打开或创建会话 {project_id, thread_id} |
-| `runtime.turn.submit` | Request -> Response | 提交对话轮次，获取 CommandReceipt |
+| `runtime.session.list` | Request -> Response | 项目内会话元数据分页（无查询参数，见 §3.2） |
+| `runtime.session.create` | Request -> Response | 新建会话元数据行（`thread_id` 由服务端分配并返回） |
+| `runtime.session.rename` | Request -> Response | 重命名会话标题（1–120 字符） |
+| `runtime.session.delete` | Request -> Response | 删除会话元数据与 goal（保留 checkpoint/transcript） |
+| `runtime.session.search` | Request -> Response | 会话**元数据**搜索（非全文检索） |
+| `runtime.session.history` | Request -> Response | 读取会话转录历史分页 |
+| `runtime.session.reconcile` | Request -> Response | 会话可恢复性快照（断线后核对） |
+| `runtime.session.get` | Request -> Response | 读取单个会话视图 |
+| `runtime.session.close` | Request -> Response | 关闭会话（可选取消活动轮次） |
+| `runtime.session.rebind` | Request -> Response | 会话级模型重绑 |
+| `runtime.session.thinking.set` | Request -> Response | 会话级推理等级写入 |
+| `runtime.project.thinking.set` | Request -> Response | 项目级默认推理等级写入（只影响新建会话） |
+| `runtime.project.list` | Request -> Response | 可见项目枚举（服务端计算可见集合、有界分页） |
+| `runtime.config.get` | Request -> Response | 运行时配置只读投影（模型/推理/MCP） |
+| `runtime.session.mcp.reload` | Request -> Response | MCP 会话附着/开关/工具白名单 |
+| `runtime.session.goal` | Request -> Response | 读取会话 goal（无目标返回 null） |
+| `runtime.session.goal.set` / `.edit` / `.clear` / `.pause` / `.resume` | Request -> Response | goal 写操作（独立 `session.goal` 能力位，`expected_goal_id` 乐观并发） |
+| `runtime.turn.submit` | Request -> Response | 提交对话轮次，获取 CommandReceipt（可带 `attachment_refs`） |
 | `runtime.turn.steer` | Request -> Response | 运行时插话，排队注入指令 |
 | `runtime.turn.cancel` | Request -> Response | 中断正在执行的任务 |
+| `runtime.turn.approval.get` | Request -> Response | 读取待审批项 |
+| `runtime.turn.approval.resume` | Request -> Response | 提交 HITL 审批决策 |
 | `runtime.events.watch` | Request -> Response + Notifications | 订阅会话事件流（支持带 `after` 游标重连回放） |
 | `runtime.events.unwatch` | Request -> Response | 取消事件监听 |
 | `runtime.events.read` | Request -> Response | 分页读取历史事件（游标/过滤/扫描上限） |
-| `runtime.artifacts.list / `read` | Request -> Response | 工作区文件树与代码差异对比浏览 |
 | `runtime.artifacts.stat` | Request -> Response | 单个 artifact 的元数据 |
-| `runtime.session.get` | Request -> Response | 读取单个会话视图 |
-| `runtime.session.close` | Request -> Response | 关闭会话（可选取消活动轮次） |
+| `runtime.artifacts.list` | Request -> Response | 工作区文件树分页枚举 |
+| `runtime.artifacts.read` | Request -> Response | 分块读取工作区文件（差异浏览的文本来源） |
+| `runtime.attachments.begin` / `.append` / `.finish` / `.abort` | Request -> Response | 图片上传（声明大小/MIME、分块、校验落盘、丢弃） |
+| `runtime.attachments.stat` / `.read` | Request -> Response | 已落盘附件的元数据与分块字节 |
 
 ### 3.1 控制台实际调用的方法
 
 正式宿主对 JSON-RPC 帧原样中继，控制台当前实际使用：`runtime.protocol.negotiate`、
-`runtime.session.open`、`runtime.session.list`、`runtime.session.history`、
-`runtime.session.reconcile`、`runtime.session.rebind`、`runtime.session.mcp.reload`、
-`runtime.session.thinking.set`、`runtime.project.thinking.set`、`runtime.session.goal`、
-`runtime.config.get`、`runtime.turn.submit`、`runtime.turn.steer`、`runtime.turn.cancel`、
-`runtime.turn.approval.resume`、`runtime.events.watch`、`runtime.events.unwatch`、
-`runtime.artifacts.stat`、`runtime.artifacts.list`、`runtime.artifacts.read`。
+`runtime.session.open`、`runtime.session.list`、`runtime.session.create`、
+`runtime.session.rename`、`runtime.session.delete`、`runtime.session.search`、
+`runtime.session.history`、`runtime.session.reconcile`、`runtime.session.rebind`、
+`runtime.session.mcp.reload`、`runtime.session.thinking.set`、`runtime.project.thinking.set`、
+`runtime.project.list`、`runtime.session.goal`、`runtime.session.goal.set` /
+`.edit` / `.clear` / `.pause` / `.resume`、`runtime.config.get`、`runtime.turn.submit`、
+`runtime.turn.steer`、`runtime.turn.cancel`、`runtime.turn.approval.resume`、
+`runtime.events.watch`、`runtime.events.unwatch`、
+`runtime.artifacts.stat`、`runtime.artifacts.list`、`runtime.artifacts.read`、
+`runtime.attachments.begin`、`runtime.attachments.append`、`runtime.attachments.finish`、
+`runtime.attachments.abort`、`runtime.attachments.read`。
+
+两个方法已在共享客户端实现但当前没有 UI 路径调用，因此不计入「实际使用」：
+`runtime.attachments.stat`（`statAttachment`）与 `runtime.turn.approval.get`
+（`getPendingApproval`，审批弹窗直接用事件流里的 `approval_required` 载荷）。
+`runtime.session.create` 只写元数据、随后仍走原有 `runtime.session.open` + watch 路径；
+`GET /api/projects` 与 `GET /api/bootstrap` 不再是业务入口（前者 deprecated，后者已删除）。
+
+### 3.2 明确不调用的面（不声称对等）
+
+- **没有 wire 方法、因此控制台不提供**：会话清理（`prune_empty`）、会话导出（JSON /
+  Markdown）、对话**全文**搜索、项目登记/更新、上下文压缩与上下文状态（TUI `/compact`、
+  `/context`）、safety / 权限策略读写、工具输出压缩设置（TUI `/compression`）。逐项真源与
+  状态见 `docs/agent-runtime-service/progress.md` 的「尚未 wire 的后端能力（真实矩阵）」。
+- **UI-only，不需要 RPC**：TUI 的 `/theme` 与 slash 命令解析/补全属终端外观与输入层；
+  控制台有自己的主题、输入区与快捷键。
+- `runtime.session.list` 没有查询参数，因此侧栏搜索只覆盖**已加载**会话（§2.1 已标注）；
+  `runtime.session.search` 才是服务端元数据搜索，且**不是**对话全文搜索。
+- 附件方面：控制台只在 `finish` 之前失败/取消时 best-effort `abort`，**从不**对已
+  finalize 的 ref 调 abort；服务端 `runtime.attachments.abort` 也有 finalized 保护
+  （见 progress.md 的「已修复」小节），因此「不会误删已完成附件」由服务端强制，客户端
+  约定只是第一道防线。
 
 ## 4. 事件消费
 

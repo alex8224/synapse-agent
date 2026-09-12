@@ -7,10 +7,97 @@
 ## 当前工作
 
 - S2 状态：已冻结；全部专项与回归门禁已完成。
-- 当前阶段：S10（消费者迁移，`completed`）。
-- 当前任务：S10 implementation 与 final gates 已完成；总体 S0-S10 `completed`。
-- 下一阶段：无。
+- 当前阶段：S10（消费者迁移，`completed`）；其上叠加「会话管理 / goal 写 / 附件 / project list / Web 接线」增量切片（`completed`）。
+- 当前任务：S10 implementation 与 final gates 已完成；总体 S0-S10 `completed`。增量切片 = `runtime.project.list`、会话 CRUD（create/rename/delete/search）、goal 五写方法、附件六方法 + `attachment_refs` + history refs 重建、Web 侧项目列表/会话管理/goal 对话框/图片上传与历史缩略图接线。
+- 下一阶段：无（增量切片）；仍未 wire 的后端能力见下文「尚未 wire 的后端能力（真实矩阵）」。
 - 当前阻塞：无。
+
+## 契约冻结与生成物门禁（ADR-S-019，已完成）
+
+- 权威：`service/contract_registry.py` 登记 **40 个 wire 方法**（38 个 `method_class="service"` + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个 `method_class="transport"` 连接态方法）、24 个 kind → payload schema、4 个协议功能 flag、**26 个授权 capability**（`service/access.py` 仍是常量真源）与 schema 清单；`transport/protocol.py` 从它派生 `METHODS` / `CAPABILITIES`，契约层运行时不回读任何生成物。计数可用 `service/contract_manifest.json` 交叉核对（`"class": "service"` 38 条、`"class": "transport"` 2 条、`authorization_capabilities` 26 条、`events` 24 条）。
+- 生成物：`src/synapse/runtime/service/contract_manifest.json` 与 `web/src/runtime-client/contract.generated.ts`，由 `scripts/export_contract_manifest.py` 经 `service/contract_export.py` 渲染；`--check` 对提交内容做逐字节校验，漂移即失败。
+- 事件契约：24 个 kind 与全部 payload dataclass 上移到 `service/event_types.py`，`runtime/streaming/events.py` 原样 re-export 同一批对象；`info` 保持裸 `str`，`RuntimeEvent.turn_sequence` 与 `ToolBatchPayload.items` 保留；影子 kind 不进枚举与 manifest，但 TUI/web 的历史兼容分支**保留**（未清理，也不声称已清理）。
+- 契约层边界：`CONTRACT_FILES` 补齐 `recovery.py` / `runtime_config.py` / `artifacts.py` / `access.py` / `event_types.py`；`artifacts.py`（纯 DTO）/ `artifact_filesystem.py`（FS 实现）拆分；`service/__init__.py` 改为 PEP 562 懒 re-export（导入子模块仍会执行父包，但不再拉入 `local` / `routing` / 会话执行栈）。
+- web：`web/src/runtime-client/` 是 DOM-free core（`SocketLike` 可注入；默认 `defaultSocketFactory` 在调用时经 `globalThis` 运行时守卫读取宿主 `WebSocket`，不直接引用浏览器 `WebSocket` 绑定，因此无需 DOM libs 即可类型检查/加载；无 `WebSocket` 的宿主必须注入 `socketFactory`），`web/src/client/*.ts` 是旧路径 re-export 薄壳；UI 文案与 store reducer 未全部迁移，不是已发布 SDK（`web/package.json` 为 `private`），也不支持桌面进程管理。
+- 未做（不声称完成）：远程身份 / 多用户 principal 管理（ADR-S-014 后续）。附件支持的**服务端**六方法已进契约，Web 侧接线已完成（见下）；远程身份仍完全未做。
+
+## `runtime.project.list` 与可信连接 scope（已完成）
+
+- **新 wire 方法**：`runtime.project.list`（契约冻结后 wire 表 40 个方法之一；`service/access.py` 仍是 capability 常量真源，授权 capability 现为 26 个）。请求/结果 DTO 是纯 DTO：`ListProjectsQuery`（`limit` 1..100、`offset` 0..100000，`visible_project_ids` 为服务端计算字段，wire decoder 显式拒绝）、`ProjectListItem`（`project_id` / `workspace_name` / `git_branch` / `workspace_path`；不含 `session_count` / `last_active_at` 等 catalog 聚合业务数据）、`ProjectListPage`（`projects` / `next_offset` / `total`）。契约层新增 `service/project_list.py`，provider port 由 composition root 注入，服务层不 import catalog。
+- **可见性**：枚举结果 = 已登记项目 ∩ 当前 principal 的项目可见集合（`AclAuthorizer.visible_project_ids` / `DaemonAuthorizer` 返回 `None` = 不限），空集合直接 `permission_denied`；`visible_project_ids` 在 provider 内**先过滤再分页**。不建 manager / agent、不开 session、不注册新项目（专项用会在被调用时失败的 manager provider 断言）。
+- **可信连接 scope**：host→daemon WS 握手携带宿主私有头 `X-Synapse-Project-Scope`（browser 不接触该 socket，只有 host 能设置；daemon 仅在 bearer 认证成功后读取，认证失败不重绑）。仅 `--project-scope workspace` 绑定当前 `project_id`；`all` 不发该头，连接保持 daemon 自身同用户可见集合。daemon 用 `ProjectScopeAuthorizer`（**只做减法**的限定 ACL wrapper）叠加在既有策略之上，因此不会扩大原 ACL；session / project 方法同样生效。`runtime.protocol.negotiate` 仍只接受 `versions` / `client`，browser 无法自报 scope。
+- **Web**：业务项目列表改走共享 runtime client（`SynapseRuntimeClient.listProjects` → `runtime.project.list`，有界分页），`GET /api/projects` 保留为 deprecated 兼容路由、不再是业务入口；bootstrap 的当前项目标识仍由 host 控制面给出（`/api/session`）。Cookie / CSRF / Origin / host guard 全部保留：`RelayProjectScopeGuard` 仍作纵深防御，其上限与 daemon 的 catalog 边界对齐（500），避免 host 侧静态集合比 daemon 列表更严。
+- **能力矩阵**：
+
+  | 项 | 状态 | 说明 |
+  |---|---|---|
+  | `runtime.project.list` + `project.list` capability | completed | 纯 DTO、分页有界、先过滤再分页、不建 manager/agent |
+  | 连接 scope + 限定 ACL wrapper（close wrapper） | completed | 宿主私有握手头、只做减法、session/project 方法同时生效 |
+  | 会话 CRUD（create / rename / delete / search） | completed | 四个方法进 wire 表与契约，各有独立 capability（`session.create` / `session.rename` / `session.delete` / `session.search`）；`create` 由服务端分配身份，`rename` / `delete` 走会话元数据层，`delete` 保留对话历史（检查点与转录）且 busy 会话以 `conflict` 拒绝、不取消回合；Web 端侧栏走 RPC |
+  | 会话 goal 管理写入（`set` / `edit` / `clear` / `pause` / `resume`） | completed | 五个写方法进 wire 表与契约；独立 `session.goal` capability（`session.read` 不授权写入）；`expected_goal_id` 防并发误改；`set` 拒绝覆盖未完成 goal；`pause` 只取消本会话 live turn；`resume` 仅状态转移、不自动续跑；写入用会话自身 ledger（非全局 `get_goal_service()` 单例）；Web 端 F6 目标对话框走 RPC |
+  | 附件支持（服务端六方法 + submit refs + history refs + Web 接线） | completed | 六个方法 `runtime.attachments.begin` / `append` / `finish` / `abort` / `stat` / `read` 进 wire 表与契约，按 `SessionRef` 分别由 `attachments.write` / `attachments.read` 授权；单块解码上限 `MAX_CHUNK_BYTES` = 256 KiB（base64 上限 `MAX_CHUNK_BASE64_CHARS`，落在 1 MiB frame 内）；`runtime.turn.submit` 新增可选 `attachment_refs`（不透明 id，最多 8 个，服务端从可信 session workspace 解析，旧 in-process `attachments` 对象仍被 wire 拒绝非空、两来源不可混用、至少 text 或 refs 之一）；durable 引用写入 transcript projection JSON（不含 base64），`read_session_history` 新增 additive `HistoryEvent.attachments` 元数据/引用以便 Web 经 read 方法加载；`SubmitTurnCommand.attachments` 仍被 wire 拒绝非空。Web 侧上传、取消与历史缩略图均已接线（见下） |
+  | 远程身份 / 多用户 principal 管理 | pending | 属 ADR-S-014 后续 |
+
+- **附件限额（读自 `service/attachments.py` 常量，非估算）**：
+
+  | 常量 | 值 | 语义 |
+  |---|---|---|
+  | `MAX_ATTACHMENT_BYTES` | 4_000_000（4 MB） | 单张图片上限（与 composer 图片库一致） |
+  | `MAX_ATTACHMENTS_PER_SUBMIT` | 8 | 单次 submit 的 `attachment_refs` 上限 |
+  | `MAX_ATTACHMENTS_PER_SESSION` | 8 | 同值别名（wire 用它约束 id 列表长度） |
+  | `MAX_STORED_ATTACHMENTS_PER_SESSION` | 128 | 单会话累计存储张数 |
+  | `MAX_ATTACHMENTS_PER_PROJECT` | 128 | 单项目累计存储张数 |
+  | `MAX_PROJECT_ATTACHMENT_BYTES` | 512_000_000 | 单项目累计字节上限 |
+  | `MAX_CHUNK_BYTES` | 256 KiB | 单块解码上限（base64 上限 `MAX_CHUNK_BASE64_CHARS`） |
+  | `DEFAULT_READ_BYTES` | 64 KiB | `attachments.read` 默认窗口（`MIN_READ_BYTES` 1 .. `MAX_READ_BYTES` 256 KiB） |
+  | `INCOMPLETE_TTL_SECONDS` | 3600（1h） | 未完成上传被清理前的静默时长 |
+
+  清理是**有界的按操作 sweep**（`DEFAULT_SWEEP_ENTRIES` = 256、`MAX_QUOTA_SCAN_ENTRIES` = 4096），没有后台清理线程；配额扫描越界 fail closed。
+
+- **`retained history` 语义**：`runtime.session.delete` 只删元数据行与 thread goal，LangGraph checkpoint 与 transcript projection 保留，结果里的 `retained_history` 显式报告这一点，Web 删除确认框据此写明「对话未被删除」。附件的 durable 引用同样存活在 projection 中，`read_session_history` 的 `HistoryEvent.attachments` 只带元数据（不含 base64），字节由 `runtime.attachments.read` 按需分块读取；projection 重建（`synapse.sessions.transcript._message_attachment_refs`）与 append 路径（`synapse.runtime.sessions.persistence._durable_attachment_refs`）从同一处 message metadata 重新导出 refs，因此重建结果与写入结果一致。
+
+- **已修复（不掩盖修复前的缺口）**：`runtime.attachments.abort` 曾经**没有 finalized 保护**——`attachment_store.abort_attachment` 读出 meta、校验 owner 后无条件 `_remove_tree(attachment_dir)`，对已 `finish` 的附件调用 abort 会返回 `removed=True` 并删除已落盘字节（此前的专项只覆盖「未完成上传 abort 幂等」，未覆盖 finalized 语义；**修复前这不是安全行为**）。现在 abort 在同一 session 锁内校验 owner 后：finalized 附件直接返回 `removed=False`（幂等，不删除）；`data.part` -> `data.bin` 崩溃窗口（meta 仍为 pending 但 `data.bin` 已存在）先 `_recover_finalized` 补齐 finalized 再返回 `removed=False`；meta 不可用但 `data.bin` 存在时同样不当作 partial 删除。未完成上传的 abort 语义不变（正常删除、二次调用幂等）。证据：`tests/test_runtime_attachments.py::test_abort_never_deletes_a_finalized_attachment`（abort 后 `removed=False`，`stat` / `read` / `resolve` 仍有效）、`::test_abort_recovers_a_payload_awaiting_finalize_instead_of_deleting`（崩溃窗口 abort 不删并补齐 finalized）、`::test_abort_leaves_an_unreadable_payload_whose_data_bin_exists`（meta 损坏 + `data.bin` 存在不删）。Web 端行为不变（`uploadAttachment` 只在 `finish` 之前失败/取消时 best-effort abort），但现在这条保证由**服务端**强制。
+
+- **定向验证（不跑全量；本切片）**：
+
+```powershell
+uv run --no-sync python scripts/export_contract_manifest.py --check
+uv run --no-sync pytest tests/test_runtime_contract_manifest.py tests/test_runtime_project_list.py tests/test_runtime_session_management.py tests/test_runtime_session_goal.py -q
+uv run --no-sync pytest tests/test_runtime_attachments.py tests/test_runtime_attachments_wire.py tests/test_runtime_attachment_rebuild.py -q
+uv run --no-sync pytest tests/test_runtime_service_history_s11.py tests/test_runtime_transport_history_s11.py tests/test_runtime_service_access_history_s11.py -q
+uv run --no-sync pytest tests/test_web_console_host.py -q
+```
+
+- 定向验证（契约/架构边界，不跑全量）：
+
+```powershell
+uv run --no-sync python scripts/export_contract_manifest.py --check
+uv run --no-sync pytest tests/test_runtime_contract_manifest.py tests/test_runtime_architecture_boundaries.py tests/test_runtime_service_import_purity.py tests/test_runtime_transport_client_compatibility.py -q
+Push-Location web; try { npx tsc -b; node --test tests/runtimeContractFixture.test.ts tests/runtimeClientBoundary.test.ts tests/sourceGuard.test.ts tests/sessionManagement.test.ts tests/attachmentTransfer.test.ts tests/historyAttachments.test.ts tests/goalDialog.test.ts } finally { Pop-Location }
+```
+
+## 尚未 wire 的后端能力（真实矩阵）
+
+> 下表是**已有后端实现、但没有 wire 方法**的能力：TUI/CLI 在进程内直接调用它们，远程调用方（Web 控制台 / 远程客户端）无法使用。本切片只完成上文矩阵列出的切片，下表列为后续项。**不声称 TUI 功能已对等。**
+
+| 后端能力 | 代码位置（真源） | wire 状态 | 说明 |
+|---|---|---|---|
+| 会话清理 `prune_empty` | `synapse.sessions.store.SessionStore.prune_empty` | 未 wire | 无 `runtime.session.prune`；只能进程内调用 |
+| 会话导出（JSON / Markdown） | `SessionStore.export_json` / `export_markdown`（TUI `/export`） | 未 wire | 无 `runtime.session.export` |
+| 对话全文搜索 | `synapse.sessions.search_index.SessionSearchIndex`（`search_session` 工具进程内使用） | 未 wire | 已有本地增量索引（`search-index.sqlite`）实现会话消息全文搜索，只是**没有 wire 方法暴露**；`runtime.session.search` **只是元数据搜索**（title / summary / thread_id / model / active_model），不是 transcript 全文检索 |
+| 项目登记 / 更新 | `synapse.projects.catalog.ProjectCatalog.register_project` / `touch_project` | 未 wire | `runtime.project.list` 是**只读**枚举：不建 manager、不开 session、不注册新项目 |
+| 上下文压缩 / 上下文状态 | `synapse.runtime.context_compact`（TUI `/compact`、`/context`） | 未 wire | 无 `runtime.context.compact` / `runtime.context.status` |
+| safety / 权限策略读写 | `synapse.runtime.safety`、`synapse.runtime.fs_permissions`、HITL 策略 | 未 wire | 只有审批面（`runtime.turn.approval.get` / `.resume`）进了 wire |
+| 工具输出压缩设置 | TUI `/compression`（`synapse.commands.compression.handle_compression`） | 未 wire | 无对应写方法 |
+| 远程身份 / 多用户 principal 管理 | — | 未 wire | 属 ADR-S-014 后续 |
+
+**已 wire 对照（本切片相关，说明哪些面已对等）**：会话列举与历史（`runtime.session.list` / `runtime.session.history` / `runtime.session.reconcile`）、项目列举（`runtime.project.list`）、会话 CRUD（`runtime.session.create` / `rename` / `delete` / `search`）、模型与会话重绑（`runtime.session.rebind`）、会话/项目思考等级（`runtime.session.thinking.set` / `runtime.project.thinking.set`）、MCP 重载（`runtime.session.mcp.reload`）、goal 读写（`runtime.session.goal` + 五个写方法）、附件六方法 + `attachment_refs`、artifacts 三方法。
+
+**UI-only，不是必须 RPC**（不计入「对等」缺口）：
+
+- TUI `/theme`（`synapse.commands.theme.handle_theme`）：纯本地外观设置，写 settings，没有远程需求；Web 有自己的主题。
+- TUI slash 命令解析与补全（`synapse.commands.slash_cmds` / `slash_complete`）：终端输入层；Web 有自己的输入区与快捷键，不需要 RPC。
+- 事件渲染取舍（`plan_updated` / `plan_removed` / `diff_updated` 的 `v1-ui-ignored`）：这是**消费方**决定，不是契约缺口，也不是缺失的 RPC。
 
 ## S3 当前实现
 

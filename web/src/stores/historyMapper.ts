@@ -13,6 +13,7 @@
 
 import { HISTORY_PAGE_SIZE } from '../client/types.ts';
 import type { HistoryEvent, SessionMetadataItem } from '../client/types.ts';
+import { mapHistoryAttachments, type TranscriptAttachment } from './historyAttachments.ts';
 
 /**
  * One tool invocation as rendered inside a transcript tool group.
@@ -62,6 +63,12 @@ export interface TranscriptMessage {
   startedAt?: number;
   /** Severity of an `info` row. */
   infoLevel?: 'info' | 'warning';
+  /**
+   * Image attachments of a `user` turn (durable metadata only, never bytes).
+   * Absent when the turn carried none, so an older server that omits the field
+   * simply renders no thumbnails.
+   */
+  attachments?: TranscriptAttachment[];
 }
 
 /** Minimal tool item for a projected history row (no live status/preview). */
@@ -227,8 +234,17 @@ export function mapHistoryEvents(
     if (ev.kind === 'user') {
       turn += 1;
       const content = (ev.text || '').trim();
-      if (content) {
-        out.push({ id: `hist-u-${tag}`, type: 'user', timestamp: `Turn ${turn}`, content });
+      // An attachment-only turn persists with empty text, so the row is kept
+      // whenever there is either text or at least one attachment to show.
+      const attachments = mapHistoryAttachments(ev.attachments);
+      if (content || attachments.length > 0) {
+        out.push({
+          id: `hist-u-${tag}`,
+          type: 'user',
+          timestamp: `Turn ${turn}`,
+          content,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        });
       }
     } else if (ev.kind === 'thought') {
       const content = ev.text || '';
@@ -254,12 +270,14 @@ export function mapHistoryEvents(
     } else if (ev.kind === 'tools') {
       const names: string[] = [];
       for (const call of ev.tool_calls) {
-        names.push((call && call.name) || 'tool');
+        const name = call?.name;
+        names.push(typeof name === 'string' && name !== '' ? name : 'tool');
       }
       if (names.length === 0) {
         // Projections may carry results without calls (e.g. very old rows).
         for (const result of ev.tool_results) {
-          names.push((result && result.name) || 'tool');
+          const name = result?.name;
+          names.push(typeof name === 'string' && name !== '' ? name : 'tool');
         }
       }
       if (names.length > 0 && turn >= startTurn) {

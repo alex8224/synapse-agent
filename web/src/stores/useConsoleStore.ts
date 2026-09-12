@@ -4,16 +4,11 @@ import {
   ConsoleAuthRequiredError,
   deriveRuntimeSocketUrl,
   fetchConsoleSession,
-  fetchProjects,
   normalizePairingCode,
   pairConsole,
   requestConsoleLogout,
 } from '../client/bootstrap.ts';
-import type {
-  ConsoleProject,
-  ConsoleProjectEntry,
-  ConsoleSession,
-} from '../client/bootstrap.ts';
+import type { ConsoleProject, ConsoleSession } from '../client/bootstrap.ts';
 import {
   ConnectionLostError,
   RpcCallError,
@@ -22,8 +17,8 @@ import type { ConnectionState } from '../client/SynapseRuntimeClient.ts';
 import type {
   RuntimeEvent,
   SessionRef,
-  PendingApprovalView,
   ApprovalDecision,
+  ProjectListItem,
   ReloadMcpResult,
   SessionRecoverabilityResult,
 } from '../client/types.ts';
@@ -53,8 +48,24 @@ import {
 import type { McpRuntimeServerState } from './mcpRuntimeView.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
 import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
+import type { PendingApproval } from './liveEventReducer.ts';
 import type { UsageView } from './usageView.ts';
-import { parseSessionGoal } from './goalView.ts';
+import {
+  AttachmentUploadCancelledError,
+  readUploadSource,
+  selectAttachmentCandidates,
+  uploadAttachment,
+} from '../runtime-client/attachments.ts';
+import type { AttachmentUploadSource } from '../runtime-client/attachments.ts';
+import type { TranscriptAttachment } from './historyAttachments.ts';
+import { SESSION_TITLE_MAX, normalizeSessionTitle } from './sessionList.ts';
+import {
+  GOAL_OBJECTIVE_MAX_CHARS,
+  normalizeGoalBudget,
+  normalizeGoalObjective,
+  parseSessionGoal,
+  parseSessionGoalResult,
+} from './goalView.ts';
 import type { SessionGoalView } from './goalView.ts';
 
 // Re-exported for callers that imported these from the store in earlier phases.
@@ -83,6 +94,22 @@ let initPromise: Promise<void> | null = null;
 
 /** Bumped on logout so an in-flight authentication attempt cannot re-arm. */
 let authEpoch = 0;
+
+/**
+ * Monotonic generation for the project-list enumeration
+ * (`runtime.project.list`).  A newer `loadProjects` (sidebar refresh) supersedes
+ * an in-flight one, and a logout / re-pairing bumps `authEpoch`; either way a
+ * stale page can never be published into the next pairing's state.
+ */
+let projectsGeneration = 0;
+
+/**
+ * Hard cap on the pages one project enumeration reads.  `runtime.project.list`
+ * is paginated (`PROJECT_LIST_PAGE_SIZE`, server cap 100) with monotonic
+ * offsets, but the loop is still bounded so a malformed cursor can never turn
+ * the console into an unbounded reader.
+ */
+const PROJECT_LIST_MAX_PAGES = 20;
 
 /**
  * Single-flight guard for the read-only runtime diagnostics read
@@ -328,6 +355,17 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     sessionsNextOffset: null,
     sessionsTotal: 0,
     sessionQuery: '',
+    sessionSearch: {
+      query: '',
+      items: [],
+      total: 0,
+      nextOffset: null,
+      loading: false,
+      error: null,
+      generation: 0,
+    },
+    sessionActionError: null,
+    sessionNotice: null,
     projects: [],
     activeProjectId: project.project_id,
     expandedProjectIds: [project.project_id],
@@ -342,6 +380,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     usage: null,
     metricsLabel: '',
     goal: null,
+    goalBusy: false,
+    goalActionError: null,
+    goalNotice: null,
     thinkingLevelError: null,
     projectThinkingLevel: null,
     canSetProjectThinking: false,
@@ -375,8 +416,10 @@ async function connectAuthenticatedRuntime(
     return;
   }
   if (epoch !== authEpoch || store.getState().client !== client) return;
-  // The switchable project list is a read-only host endpoint, not a runtime RPC:
-  // it is fetched once per pairing (and re-fetched on demand from the sidebar).
+  // The switchable project list is a runtime RPC (`runtime.project.list`), read
+  // once per pairing and re-read on demand from the sidebar.  The host's
+  // `GET /api/projects` survives only as a deprecated compatibility route and is
+  // never a business entry point (bootstrap is host identity/pairing only).
   void store.getState().loadProjects();
   await store.getState().fetchSessions();
   if (epoch !== authEpoch || store.getState().client !== client) return;
@@ -429,6 +472,61 @@ async function runConsoleInit(): Promise<void> {
   startAuthenticatedRuntime(session.project, epoch);
 }
 
+/**
+ * One server-side metadata search of the active project.
+ *
+ * `query` is the trimmed text the last issued request used (`''` while the box is
+ * empty), and `generation` fences the page: a response from an older query can
+ * never overwrite a newer result set.
+ */
+export interface SessionSearchState {
+  query: string;
+  items: SessionItem[];
+  total: number;
+  nextOffset: number | null;
+  loading: boolean;
+  error: string | null;
+  generation: number;
+}
+
+/**
+ * User-facing text for a failed session management RPC.
+ *
+ * A busy session is the one failure the user can act on, and it is reported as
+ * "stop the turn first" rather than as a generic error: the console never
+ * cancels a running turn to force a delete through.
+ */
+function describeSessionActionError(error: unknown, fallback: string): string {
+  if (error instanceof RpcCallError) {
+    if (error.service_code === 'conflict') {
+      return '该会话正在运行中，无法删除或修改：请先停止当前回合（不会自动取消）。';
+    }
+    if (error.service_code === 'not_found') return '会话不存在或已被删除。';
+    if (error.service_code === 'permission_denied') return '没有权限执行该会话操作。';
+    if (error.service_code === 'invalid_request') return '请求无效：请检查会话标题等参数。';
+  }
+  return fallback;
+}
+
+/**
+ * User-facing text for a failed goal write.
+ *
+ * `conflict` is the one failure with a specific fix: either the goal was replaced
+ * since it was read (refresh and retry) or an unfinished goal already exists
+ * (`set` never overwrites one).  `not_found` means there is no goal to act on.
+ */
+function describeGoalActionError(error: unknown, fallback: string): string {
+  if (error instanceof RpcCallError) {
+    if (error.service_code === 'conflict') {
+      return '目标状态已变化（可能已被替换或已存在未完成目标）：请刷新后重试。';
+    }
+    if (error.service_code === 'not_found') return '当前会话没有目标。';
+    if (error.service_code === 'permission_denied') return '没有权限管理该会话的目标。';
+    if (error.service_code === 'invalid_request') return '请求无效：请检查目标描述与 token 预算。';
+  }
+  return fallback;
+}
+
 interface ConsoleStore {
   // Connection
   connectionState: ConnectionState;
@@ -466,12 +564,26 @@ interface ConsoleStore {
   /** Read the host's read-only runtime diagnostics (gated, single-flight). */
   loadRuntimeDiagnostics: (options?: RuntimeDiagnosticsRequest) => Promise<void>;
 
-  pendingApproval: PendingApprovalView | null;
+  pendingApproval: PendingApproval | null;
   resolveApproval: (decision: 'allow_once' | 'reject_once') => Promise<void>;
   submitPrompt: (text: string) => Promise<void>;
   cancelActiveTurn: () => Promise<void>;
   /** Explicit user close: cancel reconnect budget and detach the watch. */
   closeRuntime: () => void;
+
+  // Image attachments of the composer (bound to the session that was active
+  // when they were picked).  A session/project switch or a logout cancels the
+  // in-flight uploads and aborts their partial bytes best-effort; finalized
+  // refs are never deleted by the console.
+  attachments: PendingAttachment[];
+  /** Visible reason the last attachment pick/upload failed (null when fine). */
+  attachmentError: string | null;
+  /** Validate + upload picked/dropped files for the current session. */
+  addAttachments: (sources: AttachmentUploadSource[]) => Promise<void>;
+  /** Drop one composer row; an in-flight upload is cancelled (partial aborted). */
+  removeAttachment: (localId: string) => void;
+  /** Cancel every in-flight upload and clear the composer (switch / logout). */
+  cancelAttachments: () => void;
 
   // Layout
   isSidebarCollapsed: boolean;
@@ -496,15 +608,29 @@ interface ConsoleStore {
   sessionsTotal: number;
   sessionsLoading: boolean;
   loadMoreSessions: () => Promise<void>;
-  /** Sidebar search text; only the sessions loaded so far are searched. */
+  /** Sidebar search text; it drives a server-side metadata search. */
   sessionQuery: string;
   setSessionQuery: (query: string) => void;
+  /** Server-side metadata search of the active project (`runtime.session.search`). */
+  sessionSearch: SessionSearchState;
+  runSessionSearch: () => Promise<void>;
+  loadMoreSessionSearch: () => Promise<void>;
+  /** Last session-management failure (rename/delete), cleared on success. */
+  sessionActionError: string | null;
+  /** Explicit notice for the last session-management write (e.g. retained history). */
+  sessionNotice: string | null;
+  /** Dismiss the session-management banner (failure or notice). */
+  dismissSessionAlert: () => void;
+  /** Rename one session's title; returns whether the server accepted it. */
+  renameSession: (threadId: string, title: string) => Promise<boolean>;
+  /** Delete one session's metadata row and goal; returns whether it succeeded. */
+  deleteSession: (threadId: string) => Promise<boolean>;
   /** Monotonic signal asking the sidebar to focus its search box (Ctrl+K). */
   searchFocusToken: number;
   requestSessionSearchFocus: () => void;
 
   // Multi-project sidebar (project -> session tree, mirroring the TUI drawer)
-  projects: ConsoleProjectEntry[];
+  projects: ProjectListItem[];
   /** Project the console is currently attached to. */
   activeProjectId: string;
   /** Projects whose session list is expanded in the sidebar. */
@@ -614,11 +740,38 @@ interface ConsoleStore {
   usage: UsageView | null;
   /** Current session's long-running goal, or null when it has none. */
   goal: SessionGoalView | null;
+  /** True while a goal write (`runtime.session.goal.*`) is in flight. */
+  goalBusy: boolean;
+  /** User-facing reason the last goal write failed (null when fine). */
+  goalActionError: string | null;
+  /** Notice for the last goal write, e.g. that pausing asked a turn to stop. */
+  goalNotice: string | null;
+  /** Dismiss the goal alert (failure or notice). */
+  dismissGoalAlert: () => void;
+  /**
+   * Create the session's goal (`runtime.session.goal.set`). Resolves true only
+   * when the server accepted it; an unfinished goal is refused with a visible
+   * reason instead of being silently replaced.
+   */
+  setGoal: (objective: string, tokenBudget?: number | null) => Promise<boolean>;
+  /** Rewrite the current goal's objective (`runtime.session.goal.edit`). */
+  editGoal: (objective: string) => Promise<boolean>;
+  /**
+   * Remove the current goal (`runtime.session.goal.clear`).  The optional
+   * `expectedGoalId` binds the clear to the goal the caller displayed, so a goal
+   * replaced since then is refused (`conflict`) instead of clearing the wrong
+   * one; omitting it clears whatever goal is current.
+   */
+  clearGoal: (expectedGoalId?: string) => Promise<boolean>;
+  /** Pause the current goal (`runtime.session.goal.pause`). */
+  pauseGoal: () => Promise<boolean>;
+  /** Resume the current goal (`runtime.session.goal.resume`, status-only). */
+  resumeGoal: () => Promise<boolean>;
 
   // Timeline Transcript
   messages: TranscriptMessage[];
   steerQueueCount: number;
-  addUserMessage: (text: string) => void;
+  addUserMessage: (text: string, attachments?: TranscriptAttachment[]) => void;
   toggleMessageExpand: (id: string) => void;
 }
 
@@ -634,6 +787,124 @@ let lastAttachedEpoch = 0;
 
 /** Maximum number of live events held while a history page is loading. */
 const MAX_LIVE_BUFFER = 2000;
+
+/**
+ * One image in the composer, bound to the session that was active when it was
+ * picked.  `uploading` rows are cancellable; `ready` rows carry the finalized
+ * opaque attachment id that a submit references.
+ */
+export interface PendingAttachment {
+  localId: string;
+  name: string;
+  mime: string;
+  size: number;
+  status: 'uploading' | 'ready' | 'failed';
+  uploadedBytes: number;
+  attachmentId: string | null;
+  error: string | null;
+}
+
+/** Local id sequence for composer rows (never sent over the wire). */
+let attachmentLocalSeq = 0;
+
+/**
+ * Rows the user removed / cancelled (or that a session switch abandoned).  The
+ * in-flight upload polls this between chunks, so a cancel aborts the partial
+ * upload best-effort instead of streaming the rest into a dead session.
+ */
+const cancelledAttachments = new Set<string>();
+
+/** Whether any composer row is still streaming bytes. */
+export function hasPendingUploads(pending: readonly PendingAttachment[]): boolean {
+  return pending.some((entry) => entry.status === 'uploading');
+}
+
+/** Finalized attachment ids of the composer, in pick order (submit refs). */
+export function attachmentRefsOf(pending: readonly PendingAttachment[]): string[] {
+  const refs: string[] = [];
+  for (const entry of pending) {
+    if (entry.status === 'ready' && entry.attachmentId) refs.push(entry.attachmentId);
+  }
+  return refs;
+}
+
+/** Finalized composer rows as transcript metadata (live user message display). */
+export function attachmentDisplaysOf(pending: readonly PendingAttachment[]): TranscriptAttachment[] {
+  const out: TranscriptAttachment[] = [];
+  for (const entry of pending) {
+    if (entry.status !== 'ready' || !entry.attachmentId) continue;
+    out.push({
+      attachmentId: entry.attachmentId,
+      imageId: null,
+      name: entry.name,
+      mime: entry.mime,
+      size: entry.size,
+      revision: null,
+    });
+  }
+  return out;
+}
+
+/** Normalized MIME of one picked file (`image/jpg` stays as the server allows it). */
+function normalizeAttachmentMime(mime: string): string {
+  return (mime || '').split(';')[0].trim().toLowerCase();
+}
+
+/**
+ * Stream one composer row, patching its progress into the store.
+ *
+ * A cancelled row (or one whose session was switched away) removes itself and
+ * lets `uploadAttachment` abort the partial upload; a real failure keeps the
+ * row with an explicit reason — the filename is never turned into prompt text.
+ */
+async function uploadPendingAttachment(
+  entry: PendingAttachment,
+  source: AttachmentUploadSource,
+): Promise<void> {
+  const store = useConsoleStore;
+  const epoch = sessionEpoch;
+  const session = store.getState().currentSession;
+  const patch = (next: Partial<PendingAttachment>): void => {
+    store.setState((state) => ({
+      attachments: state.attachments.map((row) =>
+        row.localId === entry.localId ? { ...row, ...next } : row,
+      ),
+    }));
+  };
+  const isGone = (): boolean =>
+    epoch !== sessionEpoch || cancelledAttachments.has(entry.localId);
+  try {
+    const bytes = await readUploadSource(source);
+    if (isGone()) throw new AttachmentUploadCancelledError();
+    const client = store.getState().client;
+    if (!client) throw new Error('runtime client unavailable');
+    const finished = await uploadAttachment(client, {
+      session,
+      bytes,
+      mime: entry.mime,
+      displayName: entry.name,
+      onProgress: (uploaded) => {
+        if (isGone()) return;
+        patch({ uploadedBytes: uploaded });
+      },
+      isCancelled: isGone,
+    });
+    if (epoch !== sessionEpoch) return; // the switch flow already dropped the row
+    patch({ status: 'ready', attachmentId: finished.attachmentId, uploadedBytes: entry.size, error: null });
+  } catch (err) {
+    if (err instanceof AttachmentUploadCancelledError || epoch !== sessionEpoch) {
+      store.setState((state) => ({
+        attachments: state.attachments.filter((row) => row.localId !== entry.localId),
+      }));
+      return;
+    }
+    const reason = describeError(err);
+    patch({ status: 'failed', error: reason });
+    store.setState({ attachmentError: `附件「${entry.name}」上传失败：${reason}` });
+  } finally {
+    cancelledAttachments.delete(entry.localId);
+  }
+}
 
 function markAttached(session: SessionRef, epoch: number): void {
   lastAttachedSession = { project_id: session.project_id, thread_id: session.thread_id };
@@ -883,6 +1154,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
   const store = useConsoleStore;
   const client = store.getState().client;
   const epoch = ++sessionEpoch;
+  // The composer is bound to the session being left: cancel any in-flight
+  // upload (aborting its partial bytes best-effort) before the new attach.
+  store.getState().cancelAttachments();
   clearAttached();
   store.setState({
     currentSession: session,
@@ -908,6 +1182,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     usage: null,
     metricsLabel: '',
     goal: null,
+    goalBusy: false,
+    goalActionError: null,
+    goalNotice: null,
     thinkingLevelError: null,
     projectThinkingLevel: null,
     canSetProjectThinking: false,
@@ -1194,6 +1471,9 @@ async function activateProject(projectId: string): Promise<boolean> {
   const store = useConsoleStore;
   if (!requireRuntimeClient()) return false;
   if (projectId === store.getState().activeProjectId) return true;
+  // The composer belongs to the project being left; a cross-project switch must
+  // not carry (or keep uploading) its images into the new project.
+  store.getState().cancelAttachments();
   const entry = store.getState().projects.find((item) => item.project_id === projectId);
   // Keep the project we are leaving browsable: its loaded page moves into the
   // per-project cache instead of vanishing with the active list.
@@ -1231,6 +1511,9 @@ async function activateProject(projectId: string): Promise<boolean> {
     usage: null,
     metricsLabel: '',
     goal: null,
+    goalBusy: false,
+    goalActionError: null,
+    goalNotice: null,
     thinkingLevelError: null,
     projectThinkingLevel: null,
     canSetProjectThinking: false,
@@ -1258,6 +1541,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   activeSubscriptionId: null,
   liveEventBuffer: [],
   liveBufferDroppedCount: 0,
+  attachments: [],
+  attachmentError: null,
   historyLoading: false,
   historyHasMore: false,
   historyAvailable: null,
@@ -1269,6 +1554,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   sessionsTotal: 0,
   sessionsLoading: false,
   sessionQuery: '',
+  sessionSearch: {
+    query: '',
+    items: [],
+    total: 0,
+    nextOffset: null,
+    loading: false,
+    error: null,
+    generation: 0,
+  },
+  sessionActionError: null,
+  sessionNotice: null,
   searchFocusToken: 0,
   projects: [],
   activeProjectId: '',
@@ -1290,6 +1586,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   createNewSession: async () => {
     const client = requireRuntimeClient();
     if (!client) return;
+    // A brand-new session starts with an empty composer: cancel any upload that
+    // was still bound to the session being left.
+    get().cancelAttachments();
     const { currentSession } = get();
     // Generate clean 12-char hex session thread_id (matching Synapse standard format)
     const chars = '0123456789abcdef';
@@ -1414,15 +1713,347 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       set({ sessionsLoading: false });
     }
   },
-  setSessionQuery: (query) => set({ sessionQuery: query }),
+  setSessionQuery: (query) => {
+    set({ sessionQuery: query });
+    void get().runSessionSearch();
+  },
+  runSessionSearch: async () => {
+    const client = requireRuntimeClient();
+    const { currentSession, sessionQuery } = get();
+    if (!client || currentSession.project_id === '') return;
+    const query = sessionQuery.trim();
+    if (query === '') {
+      // An empty box returns to the plain list: no RPC is issued, and any page
+      // still in flight from the previous query is fenced out by the bumped
+      // generation instead of landing on the cleared state.
+      set((s) => ({
+        sessionSearch: {
+          query: '',
+          items: [],
+          total: 0,
+          nextOffset: null,
+          loading: false,
+          error: null,
+          generation: s.sessionSearch.generation + 1,
+        },
+      }));
+      return;
+    }
+    const generation = get().sessionSearch.generation + 1;
+    set((s) => ({
+      sessionSearch: { ...s.sessionSearch, query, loading: true, error: null, generation },
+    }));
+    try {
+      const page = await client.searchSessions({
+        project_id: currentSession.project_id,
+        text: query,
+      });
+      // A stale page from an older query never overwrites the newer result set.
+      if (get().sessionSearch.generation !== generation) return;
+      const view = toSessionListView(page);
+      set({
+        sessionSearch: {
+          query,
+          items: view.items,
+          total: view.total,
+          nextOffset: view.next_offset,
+          loading: false,
+          error: null,
+          generation,
+        },
+      });
+    } catch (e) {
+      if (get().sessionSearch.generation !== generation) return;
+      console.error('Failed to search sessions:', e);
+      set({
+        sessionSearch: {
+          query,
+          items: [],
+          total: 0,
+          nextOffset: null,
+          loading: false,
+          error: '会话搜索失败',
+          generation,
+        },
+      });
+    }
+  },
+  loadMoreSessionSearch: async () => {
+    const client = requireRuntimeClient();
+    const { currentSession, sessionSearch } = get();
+    if (!client || currentSession.project_id === '') return;
+    if (sessionSearch.loading || sessionSearch.nextOffset === null) return;
+    const generation = sessionSearch.generation;
+    set({ sessionSearch: { ...sessionSearch, loading: true, error: null } });
+    try {
+      const page = await client.searchSessions({
+        project_id: currentSession.project_id,
+        text: sessionSearch.query,
+        offset: sessionSearch.nextOffset,
+      });
+      const current = get().sessionSearch;
+      if (current.generation !== generation) return;
+      const view = toSessionListView(page);
+      set({
+        sessionSearch: {
+          query: current.query,
+          items: [...current.items, ...view.items],
+          total: view.total,
+          nextOffset: view.next_offset,
+          loading: false,
+          error: null,
+          generation,
+        },
+      });
+    } catch (e) {
+      const current = get().sessionSearch;
+      if (current.generation !== generation) return;
+      console.error('Failed to load more search results:', e);
+      set({ sessionSearch: { ...current, loading: false, error: '会话搜索失败' } });
+    }
+  },
+  dismissSessionAlert: () => set({ sessionActionError: null, sessionNotice: null }),
+  renameSession: async (threadId, title) => {
+    const client = requireRuntimeClient();
+    const { currentSession } = get();
+    const normalized = normalizeSessionTitle(title);
+    if (!client || currentSession.project_id === '') return false;
+    if (normalized === null) {
+      set({ sessionActionError: `标题需为 1-${SESSION_TITLE_MAX} 个字符（不能全为空白）。` });
+      return false;
+    }
+    const session: SessionRef = { project_id: currentSession.project_id, thread_id: threadId };
+    try {
+      const result = await client.renameSession({ session, title: normalized });
+      // The server echoes the stored title, which is what every list must show.
+      const stored = result.title;
+      const renamed = (item: SessionItem): SessionItem =>
+        item.thread_id === threadId ? { ...item, title: stored } : item;
+      set((s) => ({
+        sessions: s.sessions.map(renamed),
+        projectSessions: Object.fromEntries(
+          Object.entries(s.projectSessions).map(([projectId, items]) => [
+            projectId,
+            items.map(renamed),
+          ]),
+        ),
+        sessionSearch: { ...s.sessionSearch, items: s.sessionSearch.items.map(renamed) },
+        sessionTitle:
+          s.currentSession.thread_id === threadId ? stored : s.sessionTitle,
+        sessionActionError: null,
+      }));
+      return true;
+    } catch (e) {
+      console.error('Failed to rename session:', e);
+      set({ sessionActionError: describeSessionActionError(e, '重命名会话失败') });
+      return false;
+    }
+  },
+  deleteSession: async (threadId) => {
+    const client = requireRuntimeClient();
+    const { currentSession } = get();
+    if (!client || currentSession.project_id === '') return false;
+    const projectId = currentSession.project_id;
+    const session: SessionRef = { project_id: projectId, thread_id: threadId };
+    try {
+      const result = await client.deleteSession({ session });
+      // ``retained_history`` is always true today: only the metadata row and the
+      // thread goal are gone.  The notice says exactly that instead of claiming
+      // the conversation was erased.
+      const notice = result.retained_history
+        ? '已删除该会话的记录（元数据与目标）。对话历史（检查点与转录）仍保留在磁盘上，未被删除。'
+        : '已删除该会话。';
+      const without = (items: SessionItem[]): SessionItem[] =>
+        items.filter((item) => item.thread_id !== threadId);
+      set((s) => ({
+        sessions: without(s.sessions),
+        sessionsTotal: Math.max(0, s.sessionsTotal - 1),
+        projectSessions: Object.fromEntries(
+          Object.entries(s.projectSessions).map(([key, items]) => [key, without(items)]),
+        ),
+        sessionSearch: {
+          ...s.sessionSearch,
+          items: without(s.sessionSearch.items),
+          total: Math.max(0, s.sessionSearch.total - 1),
+        },
+        sessionActionError: null,
+        sessionNotice: notice,
+      }));
+      if (get().currentSession.thread_id === threadId) {
+        // Never leave the console attached to a session that no longer exists:
+        // switch to the next listed session, or create one (the existing path).
+        const next = get().sessions[0];
+        if (next) {
+          await attachToSession({ project_id: projectId, thread_id: next.thread_id }, next.title);
+        } else {
+          await get().createNewSession();
+        }
+      }
+      return true;
+    } catch (e) {
+      console.error('Failed to delete session:', e);
+      set({ sessionActionError: describeSessionActionError(e, '删除会话失败') });
+      return false;
+    }
+  },
+  dismissGoalAlert: () => set({ goalActionError: null, goalNotice: null }),
+  setGoal: async (objective, tokenBudget) => {
+    const client = requireRuntimeClient();
+    const { currentSession } = get();
+    if (!client || currentSession.project_id === '') return false;
+    const text = normalizeGoalObjective(objective);
+    if (text === null) {
+      set({
+        goalActionError: `目标描述需为 1-${GOAL_OBJECTIVE_MAX_CHARS} 个字符（不能全为空白）。`,
+      });
+      return false;
+    }
+    if (tokenBudget !== null && tokenBudget !== undefined && !Number.isSafeInteger(tokenBudget)) {
+      set({ goalActionError: 'token 预算需为正整数。' });
+      return false;
+    }
+    set({ goalBusy: true });
+    try {
+      const result = await client.setSessionGoal({
+        session: currentSession,
+        objective: text,
+        token_budget: tokenBudget ?? null,
+      });
+      const parsed = parseSessionGoalResult(result);
+      set({ goal: parsed.goal, goalBusy: false, goalActionError: null, goalNotice: '已设置目标。' });
+      return true;
+    } catch (e) {
+      console.error('Failed to set goal:', e);
+      set({ goalBusy: false, goalActionError: describeGoalActionError(e, '设置目标失败') });
+      return false;
+    }
+  },
+  editGoal: async (objective) => {
+    const client = requireRuntimeClient();
+    const { currentSession, goal } = get();
+    if (!client || currentSession.project_id === '' || goal === null) return false;
+    const text = normalizeGoalObjective(objective);
+    if (text === null) {
+      set({
+        goalActionError: `目标描述需为 1-${GOAL_OBJECTIVE_MAX_CHARS} 个字符（不能全为空白）。`,
+      });
+      return false;
+    }
+    set({ goalBusy: true });
+    try {
+      const result = await client.editSessionGoal({
+        session: currentSession,
+        expected_goal_id: goal.goal_id,
+        objective: text,
+      });
+      const parsed = parseSessionGoalResult(result);
+      set({ goal: parsed.goal, goalBusy: false, goalActionError: null, goalNotice: '已更新目标。' });
+      return true;
+    } catch (e) {
+      console.error('Failed to edit goal:', e);
+      set({ goalBusy: false, goalActionError: describeGoalActionError(e, '更新目标失败') });
+      return false;
+    }
+  },
+  clearGoal: async (expectedGoalId) => {
+    const client = requireRuntimeClient();
+    const { currentSession, goal } = get();
+    if (!client || currentSession.project_id === '' || goal === null) return false;
+    // Bind the clear to the goal the caller displayed.  A goal replaced since
+    // the confirmation was shown is refused by the server (`conflict`) instead
+    // of silently clearing a goal the user never confirmed.
+    const expected = expectedGoalId ?? goal.goal_id;
+    set({ goalBusy: true });
+    try {
+      const result = await client.clearSessionGoal({
+        session: currentSession,
+        expected_goal_id: expected,
+      });
+      // ``clear`` always answers with no goal: the thread has none any more.
+      const parsed = parseSessionGoalResult(result);
+      set({ goal: parsed.goal, goalBusy: false, goalActionError: null, goalNotice: '已清除目标。' });
+      return true;
+    } catch (e) {
+      console.error('Failed to clear goal:', e);
+      set({ goalBusy: false, goalActionError: describeGoalActionError(e, '清除目标失败') });
+      return false;
+    }
+  },
+  pauseGoal: async () => {
+    const client = requireRuntimeClient();
+    const { currentSession, goal } = get();
+    if (!client || currentSession.project_id === '' || goal === null) return false;
+    set({ goalBusy: true });
+    try {
+      const result = await client.pauseSessionGoal({
+        session: currentSession,
+        expected_goal_id: goal.goal_id,
+      });
+      const parsed = parseSessionGoalResult(result);
+      set({
+        goal: parsed.goal,
+        goalBusy: false,
+        goalActionError: null,
+        // The pause itself always succeeds here; the flag only reports whether
+        // this session's own live turn was asked to stop.
+        goalNotice: parsed.cancellationRequested
+          ? '已暂停目标，并请求取消该会话当前回合（不会影响其他会话）。'
+          : '已暂停目标。',
+      });
+      return true;
+    } catch (e) {
+      console.error('Failed to pause goal:', e);
+      set({ goalBusy: false, goalActionError: describeGoalActionError(e, '暂停目标失败') });
+      return false;
+    }
+  },
+  resumeGoal: async () => {
+    const client = requireRuntimeClient();
+    const { currentSession, goal } = get();
+    if (!client || currentSession.project_id === '' || goal === null) return false;
+    set({ goalBusy: true });
+    try {
+      const result = await client.resumeSessionGoal({
+        session: currentSession,
+        expected_goal_id: goal.goal_id,
+      });
+      const parsed = parseSessionGoalResult(result);
+      set({
+        goal: parsed.goal,
+        goalBusy: false,
+        goalActionError: null,
+        // Status-only: resuming does not start a follow-up turn.
+        goalNotice: '已恢复目标（不会自动续跑，需要继续请提交一条消息）。',
+      });
+      return true;
+    } catch (e) {
+      console.error('Failed to resume goal:', e);
+      set({ goalBusy: false, goalActionError: describeGoalActionError(e, '恢复目标失败') });
+      return false;
+    }
+  },
   requestSessionSearchFocus: () =>
     set((s) => ({ searchFocusToken: s.searchFocusToken + 1, isSidebarCollapsed: false })),
   loadProjects: async () => {
-    if (get().pairingState !== 'paired') return;
+    const client = requireRuntimeClient();
+    if (!client) return;
+    // Fence this enumeration: a logout / re-pairing (authEpoch) or a newer
+    // loadProjects (generation) makes every later page stale.
+    const epoch = authEpoch;
+    const generation = ++projectsGeneration;
     try {
-      const projects = await fetchProjects();
-      set({ projects });
+      const collected: ProjectListItem[] = [];
+      let offset = 0;
+      for (let page = 0; page < PROJECT_LIST_MAX_PAGES; page += 1) {
+        const result = await client.listProjects({ offset });
+        if (epoch !== authEpoch || generation !== projectsGeneration) return;
+        collected.push(...result.projects);
+        if (result.next_offset === null) break;
+        offset = result.next_offset;
+      }
+      set({ projects: collected });
     } catch (err) {
+      if (epoch !== authEpoch || generation !== projectsGeneration) return;
       console.error('Failed to load projects:', err);
     }
   },
@@ -1559,6 +2190,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   activity: null,
   usage: null,
   goal: null,
+  goalBusy: false,
+  goalActionError: null,
+  goalNotice: null,
   thinkingLevelError: null,
   fetchRuntimeConfig: async () => {
     // RPC-backed read only; the session model is resolved from open.view and
@@ -1845,6 +2479,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (epoch !== authEpoch) return;
     if (client) client.disconnect();
     clearAttached();
+    // Every upload is bound to the authenticated session; cancel the in-flight
+    // ones (best-effort abort) and drop the composer before the state reset.
+    get().cancelAttachments();
     sessionEpoch++;
     // The next pairing gets a fresh diagnostics read and a fresh latch.
     resetRuntimeDiagnostics();
@@ -1869,6 +2506,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       sessionsNextOffset: null,
       sessionsTotal: 0,
       sessionQuery: '',
+      sessionSearch: {
+        query: '',
+        items: [],
+        total: 0,
+        nextOffset: null,
+        loading: false,
+        error: null,
+        generation: 0,
+      },
+      sessionActionError: null,
+      sessionNotice: null,
       projects: [],
       activeProjectId: '',
       expandedProjectIds: [],
@@ -1961,16 +2609,37 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // Refused before authentication: no local transcript mutation and no RPC.
     const client = requireRuntimeClient();
     if (!client) return;
-    const { currentSession, runtimeStatus, activeTurnId } = get();
-    get().addUserMessage(text);
+    const state = get();
+    const pending = state.attachments;
+    const refs = attachmentRefsOf(pending);
+    const body = text.trim();
+    // A submit while a chunk stream is still in flight would reference an id the
+    // server has not finalized yet, so it is refused outright (never silently
+    // dropped and never sent without the attachment).
+    if (hasPendingUploads(pending)) {
+      set({ attachmentError: '仍有附件正在上传，请等待完成或取消后再发送。' });
+      return;
+    }
+    // An attachment-only turn is legal (the wire allows empty text when refs are
+    // present); a fully empty submit still does nothing.
+    if (body === '' && refs.length === 0) return;
+    const { currentSession, runtimeStatus, activeTurnId } = state;
 
     if (runtimeStatus === 'running' && activeTurnId) {
+      if (refs.length > 0) {
+        // `runtime.turn.steer` has no attachment_refs field: silently dropping
+        // the images would be worse than refusing, so the composer keeps them.
+        set({ attachmentError: '运行中无法携带附件插话：请等待当前轮次结束后再发送图片。' });
+        return;
+      }
+      set({ attachmentError: null });
+      get().addUserMessage(body);
       set((s) => ({ steerQueueCount: s.steerQueueCount + 1 }));
       try {
         await client.steerTurn({
           session: currentSession,
           expected_turn_id: activeTurnId,
-          text,
+          text: body,
         });
       } catch (err) {
         if (err instanceof ConnectionLostError && err.unknownOutcome) {
@@ -1984,48 +2653,112 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           throw err;
         }
       }
-    } else {
-      set({ runtimeStatus: 'running' });
-      try {
-        const opened = await client.openSession(currentSession);
-        if (!get().activeSubscriptionId) {
-          const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
-          set({ activeSubscriptionId: watch.subscription_id });
-        }
-      } catch (err) {
-        console.warn('Ensure open session note:', err);
+      return;
+    }
+
+    set({ attachmentError: null });
+    get().addUserMessage(body, attachmentDisplaysOf(pending));
+    set({ runtimeStatus: 'running' });
+    try {
+      const opened = await client.openSession(currentSession);
+      if (!get().activeSubscriptionId) {
+        const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
+        set({ activeSubscriptionId: watch.subscription_id });
       }
-      try {
-        const receipt = await client.submitTurn({
-          session: currentSession,
-          text,
+    } catch (err) {
+      console.warn('Ensure open session note:', err);
+    }
+    try {
+      const receipt = await client.submitTurn({
+        session: currentSession,
+        text: body,
+        // Optional key omitted rather than sent as an empty list: the daemon
+        // reads "absent" as "no attachments" and rejects an explicit null.
+        ...(refs.length > 0 ? { attachment_refs: refs } : {}),
+      });
+      if (receipt.turn_id) {
+        set({ activeTurnId: receipt.turn_id, recoveryState: 'idle', recoveryDetail: null });
+      }
+      // The turn was accepted, so the composer no longer owns these rows. The
+      // finalized attachments stay server-side (never auto-deleted) and the
+      // history projection renders them again after a refresh.
+      set({ attachments: [] });
+    } catch (err) {
+      if (err instanceof ConnectionLostError && err.unknownOutcome) {
+        // The submit may have reached the daemon and started a turn; the
+        // receipt was lost in the drop. Do NOT re-submit (duplicate tool
+        // execution). Surface an explicit unknown and let the user query the
+        // session state after reconnect. The composer rows are kept so nothing
+        // is lost and nothing is re-sent automatically.
+        set({
+          recoveryState: 'unknown',
+          recoveryDetail: 'submit sent but connection dropped before the receipt; outcome unknown',
         });
-        if (receipt.turn_id) {
-          set({ activeTurnId: receipt.turn_id, recoveryState: 'idle', recoveryDetail: null });
-        }
-      } catch (err) {
-        if (err instanceof ConnectionLostError && err.unknownOutcome) {
-          // The submit may have reached the daemon and started a turn; the
-          // receipt was lost in the drop. Do NOT re-submit (duplicate tool
-          // execution). Surface an explicit unknown and let the user query the
-          // session state after reconnect.
-          set({
-            recoveryState: 'unknown',
-            recoveryDetail: 'submit sent but connection dropped before the receipt; outcome unknown',
-          });
-        } else {
-          set({ runtimeStatus: 'idle', recoveryState: 'failed', recoveryDetail: String((err as Error)?.message ?? err) });
-          console.error('submit failed:', err);
-        }
+      } else {
+        const reason = String((err as Error)?.message ?? err);
+        set({
+          runtimeStatus: 'idle',
+          recoveryState: 'failed',
+          recoveryDetail: reason,
+          attachmentError: `发送失败：${reason}`,
+        });
+        console.error('submit failed:', err);
       }
     }
   },
-  addUserMessage: (text: string) => {
+  addAttachments: async (sources) => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    const { currentSession } = get();
+    if (!currentSession.project_id || !currentSession.thread_id) return;
+    const candidates = sources.map((source) => ({
+      name: source.name || 'image',
+      mime: normalizeAttachmentMime(source.type),
+      size: source.size,
+      source,
+    }));
+    const { accepted, errors } = selectAttachmentCandidates(get().attachments.length, candidates);
+    const rows: PendingAttachment[] = accepted.map((candidate) => ({
+      localId: `att-${++attachmentLocalSeq}`,
+      name: candidate.name,
+      mime: candidate.mime,
+      size: candidate.size,
+      status: 'uploading',
+      uploadedBytes: 0,
+      attachmentId: null,
+      error: null,
+    }));
+    if (rows.length > 0) {
+      set((s) => ({ attachments: [...s.attachments, ...rows] }));
+    }
+    set({ attachmentError: errors.length > 0 ? errors.join('；') : null });
+    // Rows stream in parallel but each one is bounded and independently
+    // cancellable; a failure of one never blocks the others.
+    await Promise.all(
+      rows.map((row, index) => uploadPendingAttachment(row, accepted[index].source)),
+    );
+  },
+  removeAttachment: (localId) => {
+    const entry = get().attachments.find((row) => row.localId === localId);
+    if (!entry) return;
+    // Only an in-flight upload is aborted; a finalized attachment is left
+    // server-side (the console never deletes a ref it already created).
+    if (entry.status === 'uploading') cancelledAttachments.add(localId);
+    set((s) => ({ attachments: s.attachments.filter((row) => row.localId !== localId) }));
+  },
+  cancelAttachments: () => {
+    for (const entry of get().attachments) {
+      if (entry.status === 'uploading') cancelledAttachments.add(entry.localId);
+    }
+    set({ attachments: [], attachmentError: null });
+  },
+  addUserMessage: (text: string, attachments?: TranscriptAttachment[]) => {
     const newMsg: TranscriptMessage = {
       id: `usr-${Date.now()}`,
       type: 'user',
       timestamp: new Date().toLocaleTimeString().slice(0, 5),
       content: text,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     };
     set((s) => ({ messages: [...s.messages, newMsg] }));
   },

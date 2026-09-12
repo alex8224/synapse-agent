@@ -89,6 +89,14 @@ class SubmitTurnCommand:
     ``config_overrides`` is copy-isolated at construction and read-only at the
     top level, but ``attachments`` and some nested override values remain
     in-process objects.  No full-DTO remote/transport encoding is promised.
+
+    ``attachment_refs`` is the transport-safe alternative to ``attachments``: a
+    tuple of opaque, server-generated attachment ids already finalized for this
+    session.  The two sources are mutually exclusive (a caller must not mix
+    in-process objects with durable refs), and the service resolves the ids from
+    the trusted session workspace.  At least one of ``text`` / ``attachments`` /
+    ``attachment_refs`` must be present.
+
     The optional ``command_id`` defaults to a stable unique string generated
     once at construction so callers can correlate receipts without exposing
     any runtime handle.
@@ -97,6 +105,7 @@ class SubmitTurnCommand:
     session: SessionRef
     text: str
     attachments: tuple[Any, ...] = ()
+    attachment_refs: tuple[str, ...] = ()
     config_overrides: Mapping[str, Any] = field(
         default_factory=lambda: _EMPTY_OVERRIDES
     )
@@ -113,6 +122,9 @@ class SubmitTurnCommand:
             "config_overrides",
             MappingProxyType(copy.deepcopy(dict(self.config_overrides))),
         )
+        # Normalize the opaque-id tuple so a caller passing a list cannot mutate
+        # the command after construction.
+        object.__setattr__(self, "attachment_refs", tuple(self.attachment_refs))
 
 
 @dataclass(frozen=True, slots=True)

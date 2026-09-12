@@ -21,6 +21,8 @@ from synapse.runtime.service import (
     ArtifactRef,
     CancelTurnCommand,
     CloseSessionCommand,
+    CreateSessionCommand,
+    DeleteSessionCommand,
     EventFilter,
     GetRuntimeConfigQuery,
     GetSessionGoalQuery,
@@ -35,7 +37,9 @@ from synapse.runtime.service import (
     RebindSessionCommand,
     ReconcileSessionQuery,
     ReloadMcpCommand,
+    RenameSessionCommand,
     ResumeTurnCommand,
+    SearchSessionsQuery,
     SetProjectThinkingLevelCommand,
     SetThinkingLevelCommand,
     StatArtifactQuery,
@@ -51,11 +55,42 @@ from synapse.runtime.service.artifacts import (
     MAX_PATH_BYTES,
     MIN_CHUNK_BYTES,
 )
-from synapse.runtime.service.errors import RuntimeServiceError
+from synapse.runtime.service.attachments import (
+    DEFAULT_READ_BYTES,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS_PER_SESSION,
+    MAX_CHUNK_BASE64_CHARS,
+    MAX_DISPLAY_NAME_BYTES,
+    MAX_READ_BYTES,
+    MIN_READ_BYTES,
+    AbortAttachmentCommand,
+    AppendAttachmentChunkCommand,
+    AttachmentRef,
+    BeginAttachmentCommand,
+    FinishAttachmentCommand,
+    ReadAttachmentQuery,
+    StatAttachmentQuery,
+    normalize_mime,
+    validate_attachment_id,
+)
+from synapse.runtime.service.contract_registry import (
+    PROTOCOL_FEATURES,
+    WIRE_METHODS,
+    WIRE_VERSION,
+)
+from synapse.runtime.service.errors import InvalidRequestError, RuntimeServiceError
 from synapse.runtime.service.events import (
     MAX_EVENT_BYTES,
     MAX_SCAN_LIMIT,
     MIN_EVENT_BYTES,
+)
+from synapse.runtime.service.goal_management import (
+    MAX_SESSION_GOAL_OBJECTIVE_CHARS,
+    ClearSessionGoalCommand,
+    EditSessionGoalCommand,
+    PauseSessionGoalCommand,
+    ResumeSessionGoalCommand,
+    SetSessionGoalCommand,
 )
 from synapse.runtime.service.history import (
     HISTORY_LIMIT_DEFAULT,
@@ -66,25 +101,39 @@ from synapse.runtime.service.history import (
     SESSION_LIST_LIMIT_MIN,
     SESSION_LIST_OFFSET_MAX,
 )
+from synapse.runtime.service.project_list import (
+    PROJECT_LIST_LIMIT_DEFAULT,
+    PROJECT_LIST_LIMIT_MAX,
+    PROJECT_LIST_LIMIT_MIN,
+    PROJECT_LIST_OFFSET_MAX,
+    ListProjectsQuery,
+)
 from synapse.runtime.service.recovery import (
     MAX_RECONCILE_PROBE_TURNS,
     MAX_RECONCILE_TURN_ID_BYTES,
 )
+from synapse.runtime.service.session_management import (
+    SESSION_SEARCH_LIMIT_DEFAULT,
+    SESSION_SEARCH_LIMIT_MAX,
+    SESSION_SEARCH_LIMIT_MIN,
+    SESSION_SEARCH_OFFSET_MAX,
+    SESSION_SEARCH_TEXT_MAX,
+    SESSION_TITLE_MAX,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 JSONRPC_VERSION: Final = "2.0"
-RUNTIME_WIRE_VERSION: Final = "1"
+#: The wire version, the protocol feature flags, and the method table are declared
+#: once in ``service/contract_registry.py``; this module derives the wire surface
+#: from that registry so the protocol cannot drift from the declared contract.
+RUNTIME_WIRE_VERSION: Final = WIRE_VERSION
 SUPPORTED_WIRE_VERSIONS: Final = (RUNTIME_WIRE_VERSION,)
 MAX_NEGOTIATION_VERSIONS: Final = 16
 MAX_VERSION_TOKEN_BYTES: Final = 32
 MAX_CLIENT_NAME_BYTES: Final = 128
 MAX_CLIENT_VERSION_BYTES: Final = 64
-CAPABILITIES: Final = {
-    "legacy_v1": True,
-    "raw_cursor": True,
-    "watch_resume": True,
-    "approval_resume": True,
-}
+#: Protocol feature flags (never authorization capabilities) as negotiated.
+CAPABILITIES: Final = dict(PROTOCOL_FEATURES)
 MAX_FRAME_BYTES: Final = 1024 * 1024
 MAX_OUTPUT_BYTES: Final = 8 * 1024 * 1024
 MAX_NESTING_DEPTH: Final = 64
@@ -98,35 +147,13 @@ MAX_INTEGER_ABS: Final = 2**63 - 1
 # One MCP server's tool whitelist is a human-sized selection, not a bulk
 # payload: bound it well below ``MAX_COLLECTION_ITEMS``.
 MAX_MCP_INCLUDE_TOOLS: Final = 512
+#: An image MIME type is a short token; bound it well below ``MAX_STRING_BYTES``.
+MAX_ATTACHMENT_MIME_BYTES: Final = 256
 
-METHODS: Final = frozenset(
-    {
-        "runtime.protocol.negotiate",
-        "runtime.project.thinking.set",
-        "runtime.session.open",
-        "runtime.session.rebind",
-        "runtime.session.thinking.set",
-        "runtime.session.mcp.reload",
-        "runtime.turn.submit",
-        "runtime.turn.cancel",
-        "runtime.turn.steer",
-        "runtime.turn.approval.get",
-        "runtime.turn.approval.resume",
-        "runtime.session.close",
-        "runtime.session.get",
-        "runtime.session.goal",
-        "runtime.session.list",
-        "runtime.session.history",
-        "runtime.session.reconcile",
-        "runtime.config.get",
-        "runtime.events.read",
-        "runtime.events.watch",
-        "runtime.events.unwatch",
-        "runtime.artifacts.stat",
-        "runtime.artifacts.list",
-        "runtime.artifacts.read",
-    }
-)
+#: The 24 wire methods: 22 service methods (including ``runtime.events.watch``)
+#: plus the two connection-state methods ``runtime.protocol.negotiate`` and
+#: ``runtime.events.unwatch``.
+METHODS: Final = frozenset(method.method for method in WIRE_METHODS)
 
 
 class ProtocolError(Exception):
@@ -365,6 +392,20 @@ def _session_text(value: object) -> str:
     return text
 
 
+def _session_title(value: object) -> str:
+    """Decode a session title: non-empty, at most ``SESSION_TITLE_MAX`` characters.
+
+    The bound is in characters (not bytes) to match the store's own title limit,
+    so a CJK title of legal length is not rejected as "too long".
+    """
+    if type(value) is not str or "\x00" in value:
+        raise ProtocolError(-32602, "invalid_params")
+    text = value.strip()
+    if not text or len(text) > SESSION_TITLE_MAX:
+        raise ProtocolError(-32602, "invalid_params")
+    return text
+
+
 def _integer(value: object, *, minimum: int | None = None) -> int:
     if (
         type(value) is not int
@@ -394,6 +435,20 @@ def _session(value: object) -> SessionRef:
     return SessionRef(
         _session_text(value["project_id"]), _session_text(value["thread_id"])
     )
+
+
+def _goal_objective(value: object) -> str:
+    """Decode a goal objective: non-empty and bounded like the goal domain.
+
+    The bound counts characters (not bytes) exactly as
+    ``synapse.goals.model.validate_goal_objective`` does, so the wire and the
+    domain can never disagree about which objective is legal.
+    """
+    text = _text(value)
+    stripped = text.strip()
+    if not stripped or len(stripped) > MAX_SESSION_GOAL_OBJECTIVE_CHARS:
+        raise ProtocolError(-32602, "invalid_params")
+    return text
 
 
 def _command_id(value: object) -> str:
@@ -429,6 +484,43 @@ def _artifact_ref(params: Mapping[str, Any]) -> ArtifactRef:
         _session(params["ref"]["session"]),
         _bounded_text(params["ref"]["path"], MAX_PATH_BYTES),
     )
+
+
+def _attachment_id(value: object) -> str:
+    """Validate one opaque, server-generated attachment id (never a path)."""
+    try:
+        return validate_attachment_id(value)
+    except InvalidRequestError:
+        raise ProtocolError(-32602, "invalid_params") from None
+
+
+def _attachment_ref(params: Mapping[str, Any]) -> AttachmentRef:
+    """Decode ``{ref: {session, attachment_id}}`` into an ``AttachmentRef``."""
+    if not isinstance(params.get("ref"), dict) or set(params["ref"]) != {
+        "session",
+        "attachment_id",
+    }:
+        raise ProtocolError(-32602, "invalid_params")
+    return AttachmentRef(
+        _session(params["ref"]["session"]),
+        _attachment_id(params["ref"]["attachment_id"]),
+    )
+
+
+def _attachment_ids(value: object) -> tuple[str, ...]:
+    """Decode the bounded submit-time list of opaque attachment ids."""
+    if not isinstance(value, list) or len(value) > MAX_ATTACHMENTS_PER_SESSION:
+        raise ProtocolError(-32602, "invalid_params")
+    return tuple(_attachment_id(item) for item in value)
+
+
+def _attachment_mime(value: object) -> str:
+    """Decode and allow-list one image MIME type (``image/jpg`` becomes jpeg)."""
+    text = _bounded_text(value, MAX_ATTACHMENT_MIME_BYTES)
+    try:
+        return normalize_mime(text)
+    except InvalidRequestError:
+        raise ProtocolError(-32602, "invalid_params") from None
 
 
 def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
@@ -546,10 +638,20 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
         _optional_fields(
             params,
             {"session", "text"},
-            {"command_id", "config_overrides", "attachments"},
+            {"command_id", "config_overrides", "attachments", "attachment_refs"},
         )
+        # ``attachments`` stays the in-process-only field: the wire accepts only
+        # an absent or empty list and rejects anything else.
         attachments = params.get("attachments", [])
         if not isinstance(attachments, list) or attachments:
+            raise ProtocolError(-32602, "invalid_params")
+        # ``attachment_refs`` is the transport-safe source: a bounded list of
+        # opaque ids already finalized for this session.
+        attachment_refs = _attachment_ids(params.get("attachment_refs", []))
+        text = _text(params["text"], nonempty=False)
+        # At least one of text / attachment_refs must be present; the two
+        # sources can never be mixed (``attachments`` is empty on the wire).
+        if not text.strip() and not attachment_refs:
             raise ProtocolError(-32602, "invalid_params")
         overrides = params.get("config_overrides", {})
         if not isinstance(overrides, dict):
@@ -559,7 +661,8 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
 
         return SubmitTurnCommand(
             session=_session(params["session"]),
-            text=_text(params["text"]),
+            text=text,
+            attachment_refs=attachment_refs,
             config_overrides=copy.deepcopy(overrides),
             command_id=(
                 _command_id(params["command_id"])
@@ -612,6 +715,67 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     if method == "runtime.session.goal":
         _fields(params, {"session"})
         return GetSessionGoalQuery(_session(params["session"]))
+    if method == "runtime.session.goal.set":
+        _optional_fields(params, {"session", "objective"}, {"token_budget", "command_id"})
+        return SetSessionGoalCommand(
+            session=_session(params["session"]),
+            objective=_goal_objective(params["objective"]),
+            token_budget=(
+                _bounded_integer(params["token_budget"], minimum=1, maximum=MAX_INTEGER_ABS)
+                if "token_budget" in params
+                else None
+            ),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.goal.edit":
+        _optional_fields(params, {"session", "expected_goal_id", "objective"}, {"command_id"})
+        return EditSessionGoalCommand(
+            session=_session(params["session"]),
+            expected_goal_id=_command_id(params["expected_goal_id"]),
+            objective=_goal_objective(params["objective"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.goal.clear":
+        _optional_fields(params, {"session", "expected_goal_id"}, {"command_id"})
+        return ClearSessionGoalCommand(
+            session=_session(params["session"]),
+            expected_goal_id=_command_id(params["expected_goal_id"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.goal.pause":
+        _optional_fields(params, {"session", "expected_goal_id"}, {"command_id"})
+        return PauseSessionGoalCommand(
+            session=_session(params["session"]),
+            expected_goal_id=_command_id(params["expected_goal_id"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.goal.resume":
+        _optional_fields(params, {"session", "expected_goal_id"}, {"command_id"})
+        return ResumeSessionGoalCommand(
+            session=_session(params["session"]),
+            expected_goal_id=_command_id(params["expected_goal_id"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.config.get":
         _fields(params, {"session"})
         return GetRuntimeConfigQuery(_session(params["session"]))
@@ -680,6 +844,52 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             ),
             expected_revision=revision,
         )
+    if method == "runtime.attachments.begin":
+        _optional_fields(params, {"session", "size", "mime"}, {"display_name"})
+        display_name = params.get("display_name")
+        if display_name is not None:
+            display_name = _bounded_text(display_name, MAX_DISPLAY_NAME_BYTES, nonempty=False)
+        return BeginAttachmentCommand(
+            session=_session(params["session"]),
+            size=_bounded_integer(
+                params["size"], minimum=1, maximum=MAX_ATTACHMENT_BYTES
+            ),
+            mime=_attachment_mime(params["mime"]),
+            display_name=display_name or "",
+        )
+    if method == "runtime.attachments.append":
+        _fields(params, {"ref", "expected_offset", "data_base64"})
+        return AppendAttachmentChunkCommand(
+            ref=_attachment_ref(params),
+            expected_offset=_integer(params["expected_offset"], minimum=0),
+            data_base64=_bounded_text(params["data_base64"], MAX_CHUNK_BASE64_CHARS),
+        )
+    if method == "runtime.attachments.finish":
+        _fields(params, {"ref", "expected_size", "expected_mime"})
+        return FinishAttachmentCommand(
+            ref=_attachment_ref(params),
+            expected_size=_bounded_integer(
+                params["expected_size"], minimum=1, maximum=MAX_ATTACHMENT_BYTES
+            ),
+            expected_mime=_attachment_mime(params["expected_mime"]),
+        )
+    if method == "runtime.attachments.abort":
+        _fields(params, {"ref"})
+        return AbortAttachmentCommand(ref=_attachment_ref(params))
+    if method == "runtime.attachments.stat":
+        _fields(params, {"ref"})
+        return StatAttachmentQuery(ref=_attachment_ref(params))
+    if method == "runtime.attachments.read":
+        _optional_fields(params, {"ref"}, {"offset", "limit"})
+        return ReadAttachmentQuery(
+            ref=_attachment_ref(params),
+            offset=_integer(params.get("offset", 0), minimum=0),
+            limit=_bounded_integer(
+                params.get("limit", DEFAULT_READ_BYTES),
+                minimum=MIN_READ_BYTES,
+                maximum=MAX_READ_BYTES,
+            ),
+        )
     if method == "runtime.session.list":
         _optional_fields(params, {"project_id"}, {"limit", "offset"})
         return ListSessionsQuery(
@@ -693,6 +903,79 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 params.get("offset", 0),
                 minimum=0,
                 maximum=SESSION_LIST_OFFSET_MAX,
+            ),
+        )
+    if method == "runtime.session.create":
+        # ``thread_id`` is optional: when omitted the server allocates the real
+        # id (a client never invents one).  ``title`` is optional too; the store
+        # derives the default title from the allocated id.
+        _optional_fields(params, {"project_id"}, {"title", "thread_id", "command_id"})
+        title = params.get("title")
+        thread_id = params.get("thread_id")
+        return CreateSessionCommand(
+            project_id=_session_text(params["project_id"]),
+            title=None if title is None else _session_title(title),
+            thread_id=None if thread_id is None else _session_text(thread_id),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.rename":
+        _optional_fields(params, {"session", "title"}, {"command_id"})
+        return RenameSessionCommand(
+            session=_session(params["session"]),
+            title=_session_title(params["title"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.delete":
+        _optional_fields(params, {"session"}, {"command_id"})
+        return DeleteSessionCommand(
+            session=_session(params["session"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.session.search":
+        _optional_fields(params, {"project_id"}, {"text", "limit", "offset"})
+        raw_text = params.get("text", "")
+        if type(raw_text) is not str or len(raw_text) > SESSION_SEARCH_TEXT_MAX:
+            raise ProtocolError(-32602, "invalid_params")
+        return SearchSessionsQuery(
+            project_id=_session_text(params["project_id"]),
+            text=raw_text,
+            limit=_bounded_integer(
+                params.get("limit", SESSION_SEARCH_LIMIT_DEFAULT),
+                minimum=SESSION_SEARCH_LIMIT_MIN,
+                maximum=SESSION_SEARCH_LIMIT_MAX,
+            ),
+            offset=_bounded_integer(
+                params.get("offset", 0),
+                minimum=0,
+                maximum=SESSION_SEARCH_OFFSET_MAX,
+            ),
+        )
+    if method == "runtime.project.list":
+        # No project position and no client-supplied visibility: the server
+        # computes the visible set and applies it before pagination.
+        _optional_fields(params, set(), {"limit", "offset"})
+        return ListProjectsQuery(
+            limit=_bounded_integer(
+                params.get("limit", PROJECT_LIST_LIMIT_DEFAULT),
+                minimum=PROJECT_LIST_LIMIT_MIN,
+                maximum=PROJECT_LIST_LIMIT_MAX,
+            ),
+            offset=_bounded_integer(
+                params.get("offset", 0),
+                minimum=0,
+                maximum=PROJECT_LIST_OFFSET_MAX,
             ),
         )
     if method == "runtime.session.history":
@@ -766,6 +1049,16 @@ async def dispatch(
         return await service.get_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.goal":
         return await service.get_session_goal(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal.set":
+        return await service.set_session_goal(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal.edit":
+        return await service.edit_session_goal(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal.clear":
+        return await service.clear_session_goal(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal.pause":
+        return await service.pause_session_goal(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.goal.resume":
+        return await service.resume_session_goal(dto)  # type: ignore[arg-type]
     if method == "runtime.config.get":
         return await service.get_runtime_config(dto)  # type: ignore[arg-type]
     if method == "runtime.events.read":
@@ -776,8 +1069,30 @@ async def dispatch(
         return await service.list_artifacts(dto)  # type: ignore[arg-type]
     if method == "runtime.artifacts.read":
         return await service.read_artifact(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.begin":
+        return await service.begin_attachment(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.append":
+        return await service.append_attachment_chunk(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.finish":
+        return await service.finish_attachment(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.abort":
+        return await service.abort_attachment(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.stat":
+        return await service.stat_attachment(dto)  # type: ignore[arg-type]
+    if method == "runtime.attachments.read":
+        return await service.read_attachment(dto)  # type: ignore[arg-type]
     if method == "runtime.session.list":
         return await service.list_sessions(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.create":
+        return await service.create_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.rename":
+        return await service.rename_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.delete":
+        return await service.delete_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.search":
+        return await service.search_sessions(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.list":
+        return await service.list_projects(dto)  # type: ignore[arg-type]
     if method == "runtime.session.history":
         return await service.read_session_history(dto)  # type: ignore[arg-type]
     if method == "runtime.session.reconcile":

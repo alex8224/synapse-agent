@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { expandHint, thoughtLabel, toolGroupLabel, toolStatusLabel } from '../stores/transcriptLabels.ts';
 import { Markdown } from './Markdown.tsx';
+import { AttachmentThumb } from './AttachmentThumb.tsx';
 
 export const Transcript: React.FC = () => {
   const {
@@ -87,10 +88,19 @@ export const Transcript: React.FC = () => {
                   <span className="font-bold text-gray-900 text-sm">User</span>
                   <span className="text-gray-400 font-mono text-xs">{m.timestamp}</span>
                 </div>
-                <div className="text-gray-900 text-sm leading-relaxed flex items-start bg-gray-50/70 p-3 rounded-lg border border-gray-100">
-                  <span className="text-xs mr-2 text-blue-600">●</span>
-                  <span>{m.content}</span>
-                </div>
+                {m.content !== '' && (
+                  <div className="text-gray-900 text-sm leading-relaxed flex items-start bg-gray-50/70 p-3 rounded-lg border border-gray-100">
+                    <span className="text-xs mr-2 text-blue-600">●</span>
+                    <span>{m.content}</span>
+                  </div>
+                )}
+                {m.attachments !== undefined && m.attachments.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {m.attachments.map((attachment) => (
+                      <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
+                    ))}
+                  </div>
+                )}
               </div>
             );
           }

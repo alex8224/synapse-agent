@@ -27,6 +27,21 @@ from synapse.runtime.service.artifacts import (
     ReadArtifactQuery,
     StatArtifactQuery,
 )
+from synapse.runtime.service.attachments import (
+    AbortAttachmentCommand,
+    AbortAttachmentResult,
+    AppendAttachmentChunkCommand,
+    AppendAttachmentChunkResult,
+    AttachmentChunk,
+    AttachmentMetadata,
+    AttachmentRef,
+    BeginAttachmentCommand,
+    BeginAttachmentResult,
+    FinishAttachmentCommand,
+    FinishAttachmentResult,
+    ReadAttachmentQuery,
+    StatAttachmentQuery,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -47,6 +62,7 @@ from synapse.runtime.service.commands import (
     SteerTurnResult,
     SubmitTurnCommand,
 )
+from synapse.runtime.service.event_types import EVENT_VERSION
 from synapse.runtime.service.events import (
     EventCursor,
     EventFilter,
@@ -55,12 +71,18 @@ from synapse.runtime.service.events import (
     RuntimeEvent,
 )
 from synapse.runtime.service.history import (
+    HistoryAttachment,
     HistoryEvent,
     ListSessionsQuery,
     ReadSessionHistoryQuery,
     SessionHistoryPage,
     SessionListPage,
     SessionMetadataItem,
+)
+from synapse.runtime.service.project_list import (
+    ListProjectsQuery,
+    ProjectListItem,
+    ProjectListPage,
 )
 from synapse.runtime.service.queries import (
     ApprovalActionView,
@@ -86,10 +108,18 @@ from synapse.runtime.service.runtime_config import (
     McpServerView,
     RuntimeConfigView,
 )
+from synapse.runtime.service.session_management import (
+    CreateSessionCommand,
+    CreateSessionResult,
+    DeleteSessionCommand,
+    DeleteSessionResult,
+    RenameSessionCommand,
+    RenameSessionResult,
+    SearchSessionsQuery,
+    SessionSearchPage,
+)
 from synapse.runtime.sessions.ref import SessionRef
-from synapse.runtime.streaming.events import TurnEventKind
 from synapse.runtime.transport.protocol import (
-    CAPABILITIES,
     JSONRPC_VERSION,
     MAX_FRAME_BYTES,
     METHODS,
@@ -99,6 +129,25 @@ from synapse.runtime.transport.protocol import (
 
 MAX_CLIENT_REQUEST_ID = 2**63 - 1
 MAX_ACTIVE_WATCHES = 32
+
+# Protocol feature flags (not authorization capabilities) this client's wire
+# behavior depends on: ``legacy_v1`` is the v1 envelope, ``raw_cursor`` the
+# sequence cursors used by ``runtime.events.read``/``watch``, ``watch_resume``
+# the resumable watch lease and ``approval_resume`` the approval-resume write.
+#
+# This is an explicit literal on purpose.  Deriving it from
+# ``protocol.CAPABILITIES`` would make every flag a newer registry adds to the
+# advertised map silently mandatory for this client the moment it grows one; the
+# required set is the v1 four, and extra advertised flags stay additive.
+_REQUIRED_PROTOCOL_FEATURES: tuple[str, ...] = (
+    "approval_resume",
+    "legacy_v1",
+    "raw_cursor",
+    "watch_resume",
+)
+_NEGOTIATION_FIELDS = frozenset(
+    {"wire_version", "supported_versions", "capabilities"}
+)
 _MAX_ERROR_TEXT = "runtime transport failure"
 
 
@@ -235,6 +284,34 @@ def _safe_json(value: object) -> object:
         raise ValueError("params must be bounded JSON data") from None
 
 
+def _required_fields(value: object, required: frozenset[str]) -> dict[str, Any]:
+    """Validate that a response object carries every required v1 field.
+
+    Compatibility policy (v1 only grows, see ADR-S-019):
+
+    * A response payload that carries read data is validated by *required
+      fields* plus the per-field type/bound checks at its call site, so a
+      newer peer may add optional members and this client ignores them
+      instead of tearing down the connection generation.
+    * A missing required member, a non-object payload and a wrong field type
+      stay protocol failures.
+    * Command receipts and the recovery snapshot follow the same rule: their
+      known fields are still required and strictly typed (a write is never
+      reported as accepted under a wrong ``accepted``/``command_id`` and a
+      recovery decision is still made only from known fields), but an
+      additive member is ignored rather than rejected.  The runtime-config and
+      MCP-server views additionally reject a fixed deny-list of leak-prone
+      member names (``command``/``env``/``url``/...): the server projection is
+      the real guarantee, this is only a belt-and-suspenders check.
+    * Not every key check is relaxed.  JSON-RPC frames (``jsonrpc``/``id``/
+      ``meta``/``result``/``error``), request ids and cursor routing keep
+      their exact v1 shape and fail closed.
+    """
+    if not isinstance(value, dict) or not required.issubset(value):
+        raise ProtocolTransportError()
+    return value
+
+
 def _decode_json(message: object, *, max_bytes: int = MAX_FRAME_BYTES) -> dict[str, Any]:
     if not isinstance(message, str):
         raise ProtocolTransportError()
@@ -315,138 +392,117 @@ def _wire_filter(value: EventFilter) -> dict[str, list[str]]:
     return {"kinds": sorted(value.kinds), "turn_ids": sorted(value.turn_ids)}
 
 
+_SESSION_REF_FIELDS = frozenset({"project_id", "thread_id"})
+
+
 def _ref(value: object) -> SessionRef:
-    if not isinstance(value, dict) or set(value) != {"project_id", "thread_id"}:
-        raise ProtocolTransportError()
+    ref = _required_fields(value, _SESSION_REF_FIELDS)
     return SessionRef(
-        _text(value["project_id"], "project_id", 256), _text(value["thread_id"], "thread_id", 256)
+        _text(ref["project_id"], "project_id", 256), _text(ref["thread_id"], "thread_id", 256)
     )
+
+
+_EVENT_FIELDS = frozenset(
+    {"sequence", "turn_sequence", "turn_id", "kind", "payload", "version"}
+)
 
 
 def _event(value: object) -> RuntimeEvent:
-    if not isinstance(value, dict) or set(value) != {
-        "sequence",
-        "turn_sequence",
-        "turn_id",
-        "kind",
-        "payload",
-        "version",
-    }:
-        raise ProtocolTransportError()
+    event = _required_fields(value, _EVENT_FIELDS)
+    sequence = event["sequence"]
+    turn_sequence = event["turn_sequence"]
+    version = event["version"]
+    turn_id = event["turn_id"]
+    kind = event["kind"]
     if (
-        type(value["sequence"]) is not int
-        or value["sequence"] < 0
-        or type(value["turn_sequence"]) is not int
-        or value["turn_sequence"] < 0
-    ):
-        raise ProtocolTransportError()
-    if (
-        type(value["version"]) is not int
-        or type(value["turn_id"]) is not str
-        or type(value["kind"]) is not str
-        or value["kind"] not in {kind.value for kind in TurnEventKind}
-        or value["version"] < 0
+        type(sequence) is not int
+        or sequence < 0
+        or type(turn_sequence) is not int
+        or turn_sequence < 0
+        or type(version) is not int
+        or version != EVENT_VERSION
+        or type(turn_id) is not str
+        # A kind is a non-empty string, not a naming convention: the v1 contract
+        # only grows, so an unknown kind (namespaced, hyphenated, longer than the
+        # current enum) must reach the consumer (which ignores what it cannot
+        # render) instead of failing the whole watch generation.  Only the
+        # generic JSON string boundary below bounds it; no invented token shape.
+        or type(kind) is not str
+        or not kind
     ):
         raise ProtocolTransportError()
     try:
-        _validate_tree(value["payload"])
+        _validate_tree(kind)
+        _validate_tree(event["payload"])
     except (KeyError, ValueError, TypeError, UnicodeError):
         raise ProtocolTransportError() from None
     return RuntimeEvent(
-        value["sequence"],
-        value["turn_sequence"],
-        value["turn_id"],
-        value["kind"],
-        value["payload"],
-        value["version"],
+        sequence,
+        turn_sequence,
+        turn_id,
+        kind,
+        event["payload"],
+        version,
     )
+
+
+# ``active_model``/``model`` stay optional; any other unknown member is
+# additive and ignored.
+_VIEW_REQUIRED_FIELDS = frozenset(
+    {
+        "project_id",
+        "thread_id",
+        "status",
+        "active_turn_id",
+        "latest_sequence",
+        "usage",
+        "last_error",
+        "last_activity_at",
+    }
+)
+_USAGE_FIELDS = frozenset({"input_tokens", "output_tokens", "cache_tokens"})
 
 
 def _view(value: object) -> SessionView:
     try:
-        required = {
-            "project_id", "thread_id", "status", "active_turn_id", "latest_sequence",
-            "usage", "last_error", "last_activity_at",
-        }
-        optional = {"active_model", "model"}
+        view = _required_fields(value, _VIEW_REQUIRED_FIELDS)
+        usage = _required_fields(view["usage"], _USAGE_FIELDS)
         if (
-            not isinstance(value, dict)
-            or not required.issubset(value)
-            or set(value) - required - optional
-        ):
-            raise ProtocolTransportError()
-        usage = value["usage"]
-        if not isinstance(usage, dict) or set(usage) != {
-            "input_tokens", "output_tokens", "cache_tokens",
-        }:
-            raise ProtocolTransportError()
-        if (
-            any(type(usage[name]) is not int or usage[name] < 0 for name in usage)
-            or type(value["latest_sequence"]) is not int
-            or value["latest_sequence"] < 0
-            or (value["active_turn_id"] is not None and type(value["active_turn_id"]) is not str)
-            or (value["last_error"] is not None and type(value["last_error"]) is not str)
+            any(type(usage[name]) is not int or usage[name] < 0 for name in _USAGE_FIELDS)
+            or type(view["latest_sequence"]) is not int
+            or view["latest_sequence"] < 0
+            or (view["active_turn_id"] is not None and type(view["active_turn_id"]) is not str)
+            or (view["last_error"] is not None and type(view["last_error"]) is not str)
             or (
-                value.get("active_model") is not None
-                and type(value.get("active_model")) is not str
+                view.get("active_model") is not None
+                and type(view.get("active_model")) is not str
             )
-            or (value.get("model") is not None and type(value.get("model")) is not str)
+            or (view.get("model") is not None and type(view.get("model")) is not str)
         ):
             raise ProtocolTransportError()
-        if value["status"] not in {
+        if view["status"] not in {
             "cold", "idle", "queued", "starting", "running", "cancelling",
             "cancelled", "waiting_approval", "failed", "closed",
         }:
             raise ProtocolTransportError()
         return SessionView(
-            _text(value["project_id"], "project_id", 256),
-            _text(value["thread_id"], "thread_id", 256),
-            _text(value["status"], "status", 128),
-            value["active_turn_id"],
-            value["latest_sequence"],
+            _text(view["project_id"], "project_id", 256),
+            _text(view["thread_id"], "thread_id", 256),
+            _text(view["status"], "status", 128),
+            view["active_turn_id"],
+            view["latest_sequence"],
             UsageView(usage["input_tokens"], usage["output_tokens"], usage["cache_tokens"]),
-            value["last_error"],
-            _text(value["last_activity_at"], "last_activity_at", 256),
-            value.get("active_model"),
-            value.get("model"),
+            view["last_error"],
+            _text(view["last_activity_at"], "last_activity_at", 256),
+            view.get("active_model"),
+            view.get("model"),
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
-def _mcp_server_view(value: object) -> McpServerView:
-    if not isinstance(value, dict) or set(value) != {
-        "name", "transport", "enabled", "tool_prefix",
-    }:
-        raise ProtocolTransportError()
-    if (
-        type(value["enabled"]) is not bool
-        or (value["tool_prefix"] is not None and type(value["tool_prefix"]) is not str)
-    ):
-        raise ProtocolTransportError()
-    try:
-        return McpServerView(
-            name=_text(value["name"], "mcp server name", MAX_RUNTIME_CONFIG_TEXT_BYTES),
-            transport=_text(
-                value["transport"], "mcp server transport", MAX_RUNTIME_CONFIG_TEXT_BYTES
-            ),
-            enabled=value["enabled"],
-            tool_prefix=(
-                _text(
-                    value["tool_prefix"],
-                    "mcp server tool_prefix",
-                    MAX_RUNTIME_CONFIG_TEXT_BYTES,
-                )
-                if value["tool_prefix"] is not None
-                else None
-            ),
-        )
-    except (KeyError, TypeError, ValueError, ProtocolTransportError):
-        raise ProtocolTransportError() from None
-
-
-def _runtime_config_view(value: object) -> RuntimeConfigView:
-    """Strictly decode a ``runtime.config.get`` result into the DTO."""
-    if not isinstance(value, dict) or set(value) != {
+_MCP_SERVER_FIELDS = frozenset({"name", "transport", "enabled", "tool_prefix"})
+_RUNTIME_CONFIG_FIELDS = frozenset(
+    {
         "current_model",
         "available_models",
         "thinking_level",
@@ -457,13 +513,77 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
         "can_toggle_mcp_global",
         "project_thinking_level",
         "can_set_project_thinking",
-    }:
+    }
+)
+#: Leak-prone member names a config payload must never smuggle through an
+#: additive member.  This is a deny-list, not the boundary: the server-side
+#: projection is what guarantees secrets never reach the wire, and an unknown
+#: *benign* member is still tolerated.
+_SENSITIVE_CONFIG_MEMBERS = frozenset(
+    {
+        "api_key",
+        "args",
+        "command",
+        "env",
+        "headers",
+        "password",
+        "secret",
+        "token",
+        "url",
+    }
+)
+
+
+def _reject_sensitive_members(value: Mapping[str, Any]) -> None:
+    if not _SENSITIVE_CONFIG_MEMBERS.isdisjoint(value):
         raise ProtocolTransportError()
-    names = value["available_models"]
-    levels = value["thinking_levels"]
-    servers = value["mcp_servers"]
+
+
+def _mcp_server_view(value: object) -> McpServerView:
+    # Additive-tolerant like the rest of the read surface, but a config payload
+    # must never smuggle a raw command line / env / secret through an extra
+    # member, so those names stay explicitly rejected.
+    server = _required_fields(value, _MCP_SERVER_FIELDS)
+    _reject_sensitive_members(server)
     if (
-        type(value["current_model"]) is not str
+        type(server["enabled"]) is not bool
+        or (server["tool_prefix"] is not None and type(server["tool_prefix"]) is not str)
+    ):
+        raise ProtocolTransportError()
+    try:
+        return McpServerView(
+            name=_text(server["name"], "mcp server name", MAX_RUNTIME_CONFIG_TEXT_BYTES),
+            transport=_text(
+                server["transport"], "mcp server transport", MAX_RUNTIME_CONFIG_TEXT_BYTES
+            ),
+            enabled=server["enabled"],
+            tool_prefix=(
+                _text(
+                    server["tool_prefix"],
+                    "mcp server tool_prefix",
+                    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+                )
+                if server["tool_prefix"] is not None
+                else None
+            ),
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _runtime_config_view(value: object) -> RuntimeConfigView:
+    """Decode a ``runtime.config.get`` result into the DTO.
+
+    Every known field stays required and type-checked; an additive member is
+    ignored (never passed to the DTO), except the sensitive-name deny-list.
+    """
+    view = _required_fields(value, _RUNTIME_CONFIG_FIELDS)
+    _reject_sensitive_members(view)
+    names = view["available_models"]
+    levels = view["thinking_levels"]
+    servers = view["mcp_servers"]
+    if (
+        type(view["current_model"]) is not str
         or not isinstance(names, list)
         or not isinstance(levels, list)
         or not isinstance(servers, list)
@@ -471,17 +591,17 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
         or len(levels) > MAX_RUNTIME_CONFIG_THINKING_LEVELS
         or len(servers) > MAX_RUNTIME_CONFIG_MCP_SERVERS
         or (
-            value["thinking_level"] is not None
-            and type(value["thinking_level"]) is not str
+            view["thinking_level"] is not None
+            and type(view["thinking_level"]) is not str
         )
         or (
-            value["project_thinking_level"] is not None
-            and type(value["project_thinking_level"]) is not str
+            view["project_thinking_level"] is not None
+            and type(view["project_thinking_level"]) is not str
         )
         or any(type(item) is not str for item in names)
         or any(type(item) is not str for item in levels)
         or any(
-            type(value[flag]) is not bool
+            type(view[flag]) is not bool
             for flag in (
                 "mcp_enabled",
                 "can_set_thinking",
@@ -494,7 +614,7 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
     try:
         return RuntimeConfigView(
             current_model=_text(
-                value["current_model"], "current_model", MAX_RUNTIME_CONFIG_TEXT_BYTES
+                view["current_model"], "current_model", MAX_RUNTIME_CONFIG_TEXT_BYTES
             ),
             available_models=tuple(
                 _text(name, "available model", MAX_RUNTIME_CONFIG_TEXT_BYTES)
@@ -502,11 +622,11 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
             ),
             thinking_level=(
                 _text(
-                    value["thinking_level"],
+                    view["thinking_level"],
                     "thinking_level",
                     MAX_RUNTIME_CONFIG_TEXT_BYTES,
                 )
-                if value["thinking_level"] is not None
+                if view["thinking_level"] is not None
                 else None
             ),
             thinking_levels=tuple(
@@ -514,30 +634,32 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
                 for level in levels
             ),
             mcp_servers=tuple(_mcp_server_view(item) for item in servers),
-            mcp_enabled=value["mcp_enabled"],
-            can_set_thinking=value["can_set_thinking"],
-            can_toggle_mcp_global=value["can_toggle_mcp_global"],
+            mcp_enabled=view["mcp_enabled"],
+            can_set_thinking=view["can_set_thinking"],
+            can_toggle_mcp_global=view["can_toggle_mcp_global"],
             project_thinking_level=(
                 _text(
-                    value["project_thinking_level"],
+                    view["project_thinking_level"],
                     "project_thinking_level",
                     MAX_RUNTIME_CONFIG_TEXT_BYTES,
                 )
-                if value["project_thinking_level"] is not None
+                if view["project_thinking_level"] is not None
                 else None
             ),
-            can_set_project_thinking=value["can_set_project_thinking"],
+            can_set_project_thinking=view["can_set_project_thinking"],
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
+
 def _dataclass(value: object, cls: type[Any]) -> Any:
+    """Decode a write result into its DTO, ignoring additive unknown members."""
     if not isinstance(value, dict):
         raise ProtocolTransportError()
-    fields = {field.name for field in dataclasses.fields(cls)}
-    if set(value) != fields:
+    names = {field.name for field in dataclasses.fields(cls)}
+    if not names.issubset(value):
         raise ProtocolTransportError()
-    return cls(**value)
+    return cls(**{name: value[name] for name in names})
 
 
 def _session_dataclass(value: object, cls: type[Any]) -> Any:
@@ -574,47 +696,47 @@ def _session_dataclass(value: object, cls: type[Any]) -> Any:
 
 
 _HISTORY_KINDS = frozenset({"user", "answer", "thought", "tools", "meta"})
+_SESSION_ITEM_FIELDS = frozenset(
+    {"thread_id", "title", "model", "active_model", "created_at", "updated_at", "summary"}
+)
+_HISTORY_EVENT_FIELDS = frozenset({"kind", "text", "tool_calls", "tool_results"})
+_HISTORY_ATTACHMENT_FIELDS = frozenset(
+    {"attachment_id", "image_id", "name", "mime", "size", "revision"}
+)
+_SESSION_LIST_PAGE_FIELDS = frozenset({"items", "next_offset", "total"})
+_SESSION_HISTORY_PAGE_FIELDS = frozenset(
+    {"events", "start_turn", "end_turn", "total_turns", "has_more", "available"}
+)
+_PENDING_APPROVAL_FIELDS = frozenset({"turn_id", "actions"})
+_APPROVAL_ACTION_FIELDS = frozenset({"index", "name", "args"})
 
 
 def _session_item(value: object) -> SessionMetadataItem:
-    if not isinstance(value, dict) or set(value) != {
-        "thread_id",
-        "title",
-        "model",
-        "active_model",
-        "created_at",
-        "updated_at",
-        "summary",
-    }:
-        raise ProtocolTransportError()
+    item = _required_fields(value, _SESSION_ITEM_FIELDS)
     try:
         for name in ("model", "active_model", "summary"):
-            if value[name] is not None and type(value[name]) is not str:
+            if item[name] is not None and type(item[name]) is not str:
                 raise ProtocolTransportError()
         return SessionMetadataItem(
-            thread_id=_text(value["thread_id"], "thread_id", 256),
-            title=_text(value["title"], "title", 256),
-            model=value["model"],
-            active_model=value["active_model"],
-            created_at=_text(value["created_at"], "created_at", 256),
-            updated_at=_text(value["updated_at"], "updated_at", 256),
-            summary=value["summary"],
+            thread_id=_text(item["thread_id"], "thread_id", 256),
+            title=_text(item["title"], "title", 256),
+            model=item["model"],
+            active_model=item["active_model"],
+            created_at=_text(item["created_at"], "created_at", 256),
+            updated_at=_text(item["updated_at"], "updated_at", 256),
+            summary=item["summary"],
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
 
 def _history_event(value: object) -> HistoryEvent:
-    if not isinstance(value, dict) or set(value) != {
-        "kind",
-        "text",
-        "tool_calls",
-        "tool_results",
-    }:
-        raise ProtocolTransportError()
+    # ``kind`` stays a closed rendering vocabulary here (unlike wire event
+    # kinds): the transcript renderer only understands these five.
+    event = _required_fields(value, _HISTORY_EVENT_FIELDS)
     try:
-        kind = value["kind"]
-        text = value["text"]
+        kind = event["kind"]
+        text = event["text"]
         if (
             type(kind) is not str
             or kind not in _HISTORY_KINDS
@@ -622,8 +744,8 @@ def _history_event(value: object) -> HistoryEvent:
             or "\x00" in text
         ):
             raise ProtocolTransportError()
-        calls = value["tool_calls"]
-        results = value["tool_results"]
+        calls = event["tool_calls"]
+        results = event["tool_results"]
         if (
             not isinstance(calls, list)
             or not isinstance(results, list)
@@ -634,22 +756,58 @@ def _history_event(value: object) -> HistoryEvent:
         _validate_tree(text)
         _validate_tree(calls)
         _validate_tree(results)
+        # Additive field: an older server omits it, in which case the event
+        # simply carries no durable attachment references.
+        raw_attachments = event.get("attachments", [])
+        if not isinstance(raw_attachments, list):
+            raise ProtocolTransportError()
+        attachments = tuple(_history_attachment(item) for item in raw_attachments)
         return HistoryEvent(
             kind=kind,
             text=text,
             tool_calls=tuple(dict(item) for item in calls),
             tool_results=tuple(dict(item) for item in results),
+            attachments=attachments,
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _history_attachment(value: object) -> HistoryAttachment:
+    """Decode one durable attachment reference carried by a history event."""
+    item = _required_fields(value, _HISTORY_ATTACHMENT_FIELDS)
+    try:
+        attachment_id = _text(item["attachment_id"], "attachment_id", 64)
+        image_id = item["image_id"]
+        name = _text(item["name"], "name", 256)
+        mime = _text(item["mime"], "mime", 256)
+        size = item["size"]
+        revision = item["revision"]
+        if (
+            type(image_id) is not int
+            or image_id < 0
+            or type(size) is not int
+            or size < 0
+            or (revision is not None and type(revision) is not str)
+        ):
+            raise ProtocolTransportError()
+        return HistoryAttachment(
+            attachment_id=attachment_id,
+            image_id=image_id,
+            name=name,
+            mime=mime,
+            size=size,
+            revision=revision,
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
 
 def _session_list_page(value: object) -> SessionListPage:
-    if not isinstance(value, dict) or set(value) != {"items", "next_offset", "total"}:
-        raise ProtocolTransportError()
-    items = value["items"]
-    next_offset = value["next_offset"]
-    total = value["total"]
+    page = _required_fields(value, _SESSION_LIST_PAGE_FIELDS)
+    items = page["items"]
+    next_offset = page["next_offset"]
+    total = page["total"]
     if (
         not isinstance(items, list)
         or type(total) is not int
@@ -670,22 +828,70 @@ def _session_list_page(value: object) -> SessionListPage:
         raise
 
 
-def _session_history_page(value: object) -> SessionHistoryPage:
-    if not isinstance(value, dict) or set(value) != {
-        "events",
-        "start_turn",
-        "end_turn",
-        "total_turns",
-        "has_more",
-        "available",
-    }:
+def _session_search_page(value: object) -> SessionSearchPage:
+    """Decode one metadata search page (same shape as a session list page)."""
+    page = _required_fields(value, _SESSION_SEARCH_PAGE_FIELDS)
+    items = page["items"]
+    next_offset = page["next_offset"]
+    total = page["total"]
+    if (
+        not isinstance(items, list)
+        or type(total) is not int
+        or total < 0
+        or (next_offset is not None and (type(next_offset) is not int or next_offset < 0))
+    ):
         raise ProtocolTransportError()
-    events = value["events"]
-    start_turn = value["start_turn"]
-    end_turn = value["end_turn"]
-    total_turns = value["total_turns"]
-    has_more = value["has_more"]
-    available = value["available"]
+    return SessionSearchPage(
+        items=tuple(_session_item(item) for item in items),
+        next_offset=next_offset,
+        total=total,
+    )
+
+
+def _project_list_item(value: object) -> ProjectListItem:
+    item = _required_fields(value, _PROJECT_LIST_ITEM_FIELDS)
+    try:
+        for name in ("workspace_name", "git_branch"):
+            if item[name] is not None and type(item[name]) is not str:
+                raise ProtocolTransportError()
+        return ProjectListItem(
+            project_id=_text(item["project_id"], "project_id", 256),
+            workspace_name=item["workspace_name"],
+            git_branch=item["git_branch"],
+            workspace_path=_text(item["workspace_path"], "workspace_path", 4096),
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _project_list_page(value: object) -> ProjectListPage:
+    """Decode one bounded project page (identity only, no client-side filter)."""
+    page = _required_fields(value, _PROJECT_LIST_PAGE_FIELDS)
+    projects = page["projects"]
+    next_offset = page["next_offset"]
+    total = page["total"]
+    if (
+        not isinstance(projects, list)
+        or type(total) is not int
+        or total < 0
+        or (next_offset is not None and (type(next_offset) is not int or next_offset < 0))
+    ):
+        raise ProtocolTransportError()
+    return ProjectListPage(
+        projects=tuple(_project_list_item(item) for item in projects),
+        next_offset=next_offset,
+        total=total,
+    )
+
+
+def _session_history_page(value: object) -> SessionHistoryPage:
+    page = _required_fields(value, _SESSION_HISTORY_PAGE_FIELDS)
+    events = page["events"]
+    start_turn = page["start_turn"]
+    end_turn = page["end_turn"]
+    total_turns = page["total_turns"]
+    has_more = page["has_more"]
+    available = page["available"]
     if (
         not isinstance(events, list)
         or type(start_turn) is not int
@@ -729,34 +935,32 @@ _RECOVERABILITY_FIELDS = frozenset(
         "probe",
     }
 )
+_TURN_COVERAGE_PROBE_FIELDS = frozenset({"turn_id", "covered"})
 
 
 def _turn_coverage_probe(value: object) -> TurnCoverageProbe:
-    """Strictly decode one durable coverage probe from a reconcile result."""
-    if not isinstance(value, dict) or set(value) != {"turn_id", "covered"}:
-        raise ProtocolTransportError()
-    if type(value["covered"]) is not bool or type(value["turn_id"]) is not str:
+    """Decode one durable coverage probe, ignoring additive members."""
+    probe = _required_fields(value, _TURN_COVERAGE_PROBE_FIELDS)
+    if type(probe["covered"]) is not bool or type(probe["turn_id"]) is not str:
         raise ProtocolTransportError()
     try:
         return TurnCoverageProbe(
-            turn_id=_text(value["turn_id"], "probe turn id", MAX_RECONCILE_TURN_ID_BYTES),
-            covered=value["covered"],
+            turn_id=_text(probe["turn_id"], "probe turn id", MAX_RECONCILE_TURN_ID_BYTES),
+            covered=probe["covered"],
         )
     except (KeyError, TypeError, ValueError):
         raise ProtocolTransportError() from None
 
 
 def _recoverability_view(value: object) -> SessionRecoverabilityView:
-    """Strictly decode a ``runtime.session.reconcile`` result into the DTO.
+    """Decode a ``runtime.session.reconcile`` result into the DTO.
 
-    The wire result is the exact projection of ``SessionRecoverabilityView``:
-    durable coverage fields plus live broker state (epoch, retention bounds,
-    newest observed turn replay boundary).  Every field is type- and
-    bound-checked so a malformed or truncated server response never escapes as
-    a plausible recovery decision.
+    Every known field is required and type-/bound-checked so a malformed or
+    truncated server response never escapes as a plausible recovery decision;
+    an additive member is ignored, so a newer peer's extra field can never
+    change the resume/rescan decision made from the known fields.
     """
-    if not isinstance(value, dict) or set(value) != _RECOVERABILITY_FIELDS:
-        raise ProtocolTransportError()
+    value = _required_fields(value, _RECOVERABILITY_FIELDS)
     try:
         for name in ("history_available", "latest_turn_intact"):
             if type(value[name]) is not bool:
@@ -815,7 +1019,32 @@ def _recoverability_view(value: object) -> SessionRecoverabilityView:
         raise ProtocolTransportError() from None
 
 
-class RuntimeWebSocketClient:
+# Write-receipt result shapes: every documented member stays required and typed,
+# while an additive member a newer peer adds is ignored (never passed to the DTO).
+_OPEN_SESSION_RESULT_FIELDS = frozenset({"command_id", "session", "created", "view"})
+_REBIND_RESULT_FIELDS = frozenset({"command_id", "session", "model", "view"})
+_SET_THINKING_RESULT_FIELDS = frozenset({"command_id", "session", "level", "view"})
+_SET_PROJECT_THINKING_RESULT_FIELDS = frozenset({"command_id", "project_id", "level"})
+_ACCEPTED_RECEIPT_FIELDS = frozenset({"command_id", "session", "turn_id", "accepted"})
+_CREATE_SESSION_RESULT_FIELDS = frozenset({"command_id", "session", "created", "title"})
+_RENAME_SESSION_RESULT_FIELDS = frozenset({"command_id", "session", "title", "renamed"})
+_DELETE_SESSION_RESULT_FIELDS = frozenset(
+    {"command_id", "session", "deleted", "retained_history"}
+)
+_SESSION_SEARCH_PAGE_FIELDS = frozenset({"items", "next_offset", "total"})
+_PROJECT_LIST_ITEM_FIELDS = frozenset(
+    {"project_id", "workspace_name", "git_branch", "workspace_path"}
+)
+_PROJECT_LIST_PAGE_FIELDS = frozenset({"projects", "next_offset", "total"})
+
+# The additive session-goal surface lives in its own mixin module.  Importing it
+# here -- after every helper it needs is defined and just before the class -- is
+# the one-line wiring that mixin documents.  It imports this module's helpers one
+# way only, so no import cycle is introduced.
+from synapse.runtime.transport.client_goal import GoalClientMixin  # noqa: E402
+
+
+class RuntimeWebSocketClient(GoalClientMixin):
     """One persistent request connection plus bounded independent watch leases."""
 
     def __init__(
@@ -1022,24 +1251,36 @@ class RuntimeWebSocketClient:
             or meta["wire_version"] != RUNTIME_WIRE_VERSION
         ):
             raise VersionNegotiationError()
-        if not isinstance(result, dict) or set(result) != {
-            "wire_version",
-            "supported_versions",
-            "capabilities",
-        }:
-            raise ProtocolTransportError()
+        negotiation = _required_fields(result, _NEGOTIATION_FIELDS)
+        wire_version = negotiation["wire_version"]
         if (
-            type(result["wire_version"]) is not str
-            or result["wire_version"] not in self.supported_versions
-            or result["wire_version"] not in SUPPORTED_WIRE_VERSIONS
+            type(wire_version) is not str
+            or wire_version not in self.supported_versions
+            or wire_version not in SUPPORTED_WIRE_VERSIONS
         ):
+            # The selected version must be one this client offered *and* one it
+            # implements; anything else cannot be spoken.
             raise VersionNegotiationError()
-        if (
-            result["supported_versions"] != list(SUPPORTED_WIRE_VERSIONS)
-            or result["capabilities"] != CAPABILITIES
+        offered = negotiation["supported_versions"]
+        if not isinstance(offered, list) or any(type(item) is not str for item in offered):
+            raise ProtocolTransportError()
+        if wire_version not in offered:
+            # The selection must sit in the intersection of what this client
+            # offered and what the peer still reports it supports.  A peer that
+            # advertises *more* versions (additive growth) is fine.
+            raise VersionNegotiationError()
+        capabilities = negotiation["capabilities"]
+        if not isinstance(capabilities, dict) or any(
+            type(name) is not str for name in capabilities
         ):
             raise ProtocolTransportError()
-        return result["wire_version"]
+        for feature in _REQUIRED_PROTOCOL_FEATURES:
+            if capabilities.get(feature) is not True:
+                # Protocol feature flags are not authorization capabilities:
+                # only the features this client's wire behavior depends on must
+                # be advertised, and flags a newer peer adds are ignored.
+                raise VersionNegotiationError()
+        return wire_version
 
     def _allocate_id(self) -> int:
         self._next_id += 1
@@ -1277,10 +1518,13 @@ class RuntimeWebSocketClient:
             "runtime.session.goal",
             "runtime.session.list",
             "runtime.session.history",
+            "runtime.project.list",
             "runtime.events.read",
             "runtime.artifacts.stat",
             "runtime.artifacts.list",
             "runtime.artifacts.read",
+            "runtime.attachments.stat",
+            "runtime.attachments.read",
         }
         attempts = self.max_attempts if retry_safe else 1
         for attempt in range(1, attempts + 1):
@@ -1329,10 +1573,7 @@ class RuntimeWebSocketClient:
             {"session": _wire_session(command.session), "command_id": command.command_id},
             command.command_id,
         )
-        if not isinstance(result, dict):
-            raise ProtocolTransportError()
-        if set(result) != {"command_id", "session", "created", "view"}:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _OPEN_SESSION_RESULT_FIELDS)
         try:
             if (
                 type(result["command_id"]) is not str
@@ -1357,13 +1598,7 @@ class RuntimeWebSocketClient:
             },
             command.command_id,
         )
-        if not isinstance(result, dict) or set(result) != {
-            "command_id",
-            "session",
-            "model",
-            "view",
-        }:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _REBIND_RESULT_FIELDS)
         try:
             if result["command_id"] != command.command_id or type(result["model"]) is not str:
                 raise ProtocolTransportError()
@@ -1395,13 +1630,7 @@ class RuntimeWebSocketClient:
             },
             command.command_id,
         )
-        if not isinstance(result, dict) or set(result) != {
-            "command_id",
-            "session",
-            "level",
-            "view",
-        }:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _SET_THINKING_RESULT_FIELDS)
         try:
             if result["command_id"] != command.command_id or type(result["level"]) is not str:
                 raise ProtocolTransportError()
@@ -1434,12 +1663,7 @@ class RuntimeWebSocketClient:
             },
             command.command_id,
         )
-        if not isinstance(result, dict) or set(result) != {
-            "command_id",
-            "project_id",
-            "level",
-        }:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _SET_PROJECT_THINKING_RESULT_FIELDS)
         try:
             if (
                 result["command_id"] != command.command_id
@@ -1458,21 +1682,20 @@ class RuntimeWebSocketClient:
     async def submit_turn(self, command: SubmitTurnCommand) -> CommandReceipt:
         if command.attachments:
             raise ValueError("attachments are not supported by the runtime wire protocol")
+        if not command.text.strip() and not command.attachment_refs:
+            raise ValueError("submit requires text or attachment_refs")
         params = {
             "session": _wire_session(command.session),
             "text": command.text,
             "command_id": command.command_id,
             "config_overrides": dict(command.config_overrides),
             "attachments": [],
+            "attachment_refs": [
+                _text(ref, "attachment_ref", 64) for ref in command.attachment_refs
+            ],
         }
         result = await self._command("runtime.turn.submit", params, command.command_id)
-        if not isinstance(result, dict) or set(result) != {
-            "command_id",
-            "session",
-            "turn_id",
-            "accepted",
-        }:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _ACCEPTED_RECEIPT_FIELDS)
         if (
             any(type(result[name]) is not str for name in ("command_id", "turn_id"))
             or result["command_id"] != command.command_id
@@ -1561,6 +1784,138 @@ class RuntimeWebSocketClient:
         return _session_list_page(result)
 
     @_fence_on_protocol_failure
+    async def list_projects(self, query: ListProjectsQuery) -> ProjectListPage:
+        """Enumerate the projects this connection may see (bounded page).
+
+        ``visible_project_ids`` is a server-side input only.  It is never sent
+        on the wire: the daemon computes it from the principal's grants
+        (narrowed by any trusted connection scope) and applies it before
+        paginating, so this client can neither supply nor widen the visible
+        set.  Only the bounded pagination pair travels.
+        """
+        if type(query) is not ListProjectsQuery:
+            raise ValueError("query must be a ListProjectsQuery")
+        result = await self._request_with_retry(
+            "runtime.project.list",
+            {"limit": query.limit, "offset": query.offset},
+        )
+        return _project_list_page(result)
+
+    @_fence_on_protocol_failure
+    async def create_session(self, command: CreateSessionCommand) -> CreateSessionResult:
+        """Persist one session's metadata row without opening a runtime.
+
+        ``thread_id`` is optional in the command: when it is omitted the server
+        allocates the real id and returns it, so the caller uses the identity the
+        server persisted instead of inventing one.  The result is decoded
+        strictly: a matching ``command_id``, a real session ref, and the title
+        the store actually wrote.
+        """
+        if type(command) is not CreateSessionCommand:
+            raise ValueError("command must be a CreateSessionCommand")
+        params: dict[str, object] = {
+            "project_id": _text(command.project_id, "project_id", 256),
+            "command_id": command.command_id,
+        }
+        if command.thread_id is not None:
+            params["thread_id"] = _text(command.thread_id, "thread_id", 256)
+        if command.title is not None:
+            params["title"] = command.title
+        result = await self._command("runtime.session.create", params, command.command_id)
+        result = _required_fields(result, _CREATE_SESSION_RESULT_FIELDS)
+        try:
+            if (
+                type(result["command_id"]) is not str
+                or result["command_id"] != command.command_id
+                or type(result["created"]) is not bool
+                or type(result["title"]) is not str
+            ):
+                raise ProtocolTransportError()
+            session = _ref(result["session"])
+            if session.project_id != command.project_id:
+                raise ProtocolTransportError()
+            return CreateSessionResult(
+                result["command_id"], session, result["created"], result["title"]
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:
+        """Rewrite one session's title (never a blind retry of a write)."""
+        if type(command) is not RenameSessionCommand:
+            raise ValueError("command must be a RenameSessionCommand")
+        result = await self._command(
+            "runtime.session.rename",
+            {
+                "session": _wire_session(command.session),
+                "title": command.title,
+                "command_id": command.command_id,
+            },
+            command.command_id,
+        )
+        result = _required_fields(result, _RENAME_SESSION_RESULT_FIELDS)
+        try:
+            if (
+                result["command_id"] != command.command_id
+                or type(result["title"]) is not str
+                or type(result["renamed"]) is not bool
+                or _ref(result["session"]) != command.session
+            ):
+                raise ProtocolTransportError()
+            return RenameSessionResult(
+                result["command_id"], command.session, result["title"], result["renamed"]
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
+        """Delete one session's metadata row and thread goal.
+
+        ``retained_history`` is required to be ``True``: this operation never
+        erases the conversation, and a peer that claimed otherwise would be a
+        protocol violation rather than a "better" delete.
+        """
+        if type(command) is not DeleteSessionCommand:
+            raise ValueError("command must be a DeleteSessionCommand")
+        result = await self._command(
+            "runtime.session.delete",
+            {"session": _wire_session(command.session), "command_id": command.command_id},
+            command.command_id,
+        )
+        result = _required_fields(result, _DELETE_SESSION_RESULT_FIELDS)
+        try:
+            if (
+                result["command_id"] != command.command_id
+                or type(result["deleted"]) is not bool
+                or result["retained_history"] is not True
+                or _ref(result["session"]) != command.session
+            ):
+                raise ProtocolTransportError()
+            return DeleteSessionResult(
+                result["command_id"], command.session, result["deleted"], True
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def search_sessions(self, query: SearchSessionsQuery) -> SessionSearchPage:
+        """Search one project's persisted session metadata (bounded page)."""
+        if type(query) is not SearchSessionsQuery:
+            raise ValueError("query must be a SearchSessionsQuery")
+        result = await self._request_with_retry(
+            "runtime.session.search",
+            {
+                "project_id": _text(query.project_id, "project_id", 256),
+                "text": query.text,
+                "limit": query.limit,
+                "offset": query.offset,
+            },
+        )
+        return _session_search_page(result)
+
+    @_fence_on_protocol_failure
     async def read_session_history(
         self, query: ReadSessionHistoryQuery
     ) -> SessionHistoryPage:
@@ -1619,20 +1974,20 @@ class RuntimeWebSocketClient:
             "runtime.turn.approval.get",
             {"session": _wire_session(query.session), "expected_turn_id": query.expected_turn_id},
         )
-        if not isinstance(result, dict) or set(result) != {"turn_id", "actions"}:
-            raise ProtocolTransportError()
+        approval = _required_fields(result, _PENDING_APPROVAL_FIELDS)
         try:
-            actions = result["actions"]
+            actions = approval["actions"]
             if not isinstance(actions, list):
                 raise ProtocolTransportError()
-            decoded = tuple(
-                ApprovalActionView(item["index"], item["name"], item["args"])
-                for item in actions
-                if isinstance(item, dict) and set(item) == {"index", "name", "args"}
+            decoded = []
+            for item in actions:
+                action = _required_fields(item, _APPROVAL_ACTION_FIELDS)
+                decoded.append(
+                    ApprovalActionView(action["index"], action["name"], action["args"])
+                )
+            return PendingApprovalView(
+                _text(approval["turn_id"], "turn_id", 256), tuple(decoded)
             )
-            if len(decoded) != len(actions):
-                raise ProtocolTransportError()
-            return PendingApprovalView(_text(result["turn_id"], "turn_id", 256), decoded)
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None
 
@@ -1651,8 +2006,7 @@ class RuntimeWebSocketClient:
             },
             command.command_id,
         )
-        if not isinstance(result, dict) or set(result) != {"command_id", "session", "turn_id", "accepted"}:
-            raise ProtocolTransportError()
+        result = _required_fields(result, _ACCEPTED_RECEIPT_FIELDS)
         if type(result["accepted"]) is not bool or result["command_id"] != command.command_id:
             raise ProtocolTransportError()
         try:
@@ -1676,38 +2030,31 @@ class RuntimeWebSocketClient:
                 "max_event_bytes": query.max_event_bytes,
             },
         )
-        if not isinstance(result, dict):
-            raise ProtocolTransportError()
-        if set(result) != {
-            "session", "events", "cursor", "latest_sequence", "has_more", "scanned_through"
-        }:
-            raise ProtocolTransportError()
+        page = _required_fields(result, _EVENT_PAGE_FIELDS)
         if (
-            not isinstance(result["events"], list)
-            or type(result["latest_sequence"]) is not int
-            or type(result["has_more"]) is not bool
+            not isinstance(page["events"], list)
+            or type(page["latest_sequence"]) is not int
+            or type(page["has_more"]) is not bool
         ):
             raise ProtocolTransportError()
         try:
-            cursor = result["cursor"]
-            scanned = result["scanned_through"]
+            cursor = _required_fields(page["cursor"], _CURSOR_FIELDS)
+            scanned = (
+                None
+                if page["scanned_through"] is None
+                else _required_fields(page["scanned_through"], _CURSOR_FIELDS)
+            )
             if (
-                not isinstance(cursor, dict)
-                or set(cursor) != {"sequence"}
-                or type(cursor["sequence"]) is not int
-                or (scanned is not None and (
-                    not isinstance(scanned, dict)
-                    or set(scanned) != {"sequence"}
-                    or type(scanned["sequence"]) is not int
-                ))
+                type(cursor["sequence"]) is not int
+                or (scanned is not None and type(scanned["sequence"]) is not int)
             ):
                 raise ProtocolTransportError()
             return EventPage(
-                _ref(result["session"]),
-                tuple(_event(item) for item in result["events"]),
+                _ref(page["session"]),
+                tuple(_event(item) for item in page["events"]),
                 EventCursor(cursor["sequence"]),
-                result["latest_sequence"],
-                result["has_more"],
+                page["latest_sequence"],
+                page["has_more"],
                 EventCursor(scanned["sequence"]) if scanned is not None else None,
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
@@ -1732,22 +2079,19 @@ class RuntimeWebSocketClient:
                 "limit": query.limit,
             },
         )
-        if not isinstance(result, dict) or set(result) != {
-            "session", "path", "entries", "next_cursor"
-        }:
-            raise ProtocolTransportError()
+        page = _required_fields(result, _ARTIFACT_PAGE_FIELDS)
         if (
-            type(result["path"]) is not str
-            or not isinstance(result["entries"], list)
-            or (result["next_cursor"] is not None and type(result["next_cursor"]) is not str)
+            type(page["path"]) is not str
+            or not isinstance(page["entries"], list)
+            or (page["next_cursor"] is not None and type(page["next_cursor"]) is not str)
         ):
             raise ProtocolTransportError()
         try:
             return ArtifactPage(
-                _ref(result["session"]),
-                result["path"],
-                tuple(_artifact_metadata(item) for item in result["entries"]),
-                result["next_cursor"],
+                _ref(page["session"]),
+                page["path"],
+                tuple(_artifact_metadata(item) for item in page["entries"]),
+                page["next_cursor"],
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None
@@ -1763,27 +2107,189 @@ class RuntimeWebSocketClient:
                 "expected_revision": query.expected_revision,
             },
         )
-        if not isinstance(result, dict) or set(result) != {
-            "ref", "offset", "data_base64", "byte_length", "next_offset", "eof", "metadata"
-        }:
-            raise ProtocolTransportError()
+        chunk = _required_fields(result, _ARTIFACT_CHUNK_FIELDS)
         if (
-            type(result["offset"]) is not int
-            or type(result["data_base64"]) is not str
-            or type(result["byte_length"]) is not int
-            or type(result["next_offset"]) is not int
-            or type(result["eof"]) is not bool
+            type(chunk["offset"]) is not int
+            or type(chunk["data_base64"]) is not str
+            or type(chunk["byte_length"]) is not int
+            or type(chunk["next_offset"]) is not int
+            or type(chunk["eof"]) is not bool
         ):
             raise ProtocolTransportError()
         try:
             return ArtifactChunk(
-                _artifact_ref(result["ref"]),
-                result["offset"],
-                result["data_base64"],
-                result["byte_length"],
-                result["next_offset"],
-                result["eof"],
-                _artifact_metadata(result["metadata"]),
+                _artifact_ref(chunk["ref"]),
+                chunk["offset"],
+                chunk["data_base64"],
+                chunk["byte_length"],
+                chunk["next_offset"],
+                chunk["eof"],
+                _artifact_metadata(chunk["metadata"]),
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def begin_attachment(
+        self, command: BeginAttachmentCommand
+    ) -> BeginAttachmentResult:
+        """Reserve one session-scoped upload (a write: never blindly retried)."""
+        if type(command) is not BeginAttachmentCommand:
+            raise ValueError("command must be a BeginAttachmentCommand")
+        params = {
+            "session": _wire_session(command.session),
+            "size": command.size,
+            "mime": command.mime,
+        }
+        if command.display_name:
+            params["display_name"] = command.display_name
+        result = await self._command(
+            "runtime.attachments.begin", params, "runtime.attachments.begin"
+        )
+        result = _required_fields(result, _BEGIN_ATTACHMENT_RESULT_FIELDS)
+        try:
+            if (
+                type(result["chunk_bytes"]) is not int
+                or type(result["chunk_base64_chars"]) is not int
+                or type(result["expires_at"]) is not str
+                or type(result["next_offset"]) is not int
+            ):
+                raise ProtocolTransportError()
+            return BeginAttachmentResult(
+                ref=_attachment_ref(result["ref"]),
+                chunk_bytes=result["chunk_bytes"],
+                chunk_base64_chars=result["chunk_base64_chars"],
+                expires_at=result["expires_at"],
+                next_offset=result["next_offset"],
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def append_attachment_chunk(
+        self, command: AppendAttachmentChunkCommand
+    ) -> AppendAttachmentChunkResult:
+        """Append one bounded chunk at the expected offset (a write)."""
+        if type(command) is not AppendAttachmentChunkCommand:
+            raise ValueError("command must be an AppendAttachmentChunkCommand")
+        result = await self._command(
+            "runtime.attachments.append",
+            {
+                "ref": _wire_attachment_ref(command.ref),
+                "expected_offset": command.expected_offset,
+                "data_base64": command.data_base64,
+            },
+            "runtime.attachments.append",
+        )
+        result = _required_fields(result, _APPEND_ATTACHMENT_RESULT_FIELDS)
+        try:
+            if (
+                type(result["received_bytes"]) is not int
+                or type(result["next_offset"]) is not int
+            ):
+                raise ProtocolTransportError()
+            return AppendAttachmentChunkResult(
+                ref=_attachment_ref(result["ref"]),
+                received_bytes=result["received_bytes"],
+                next_offset=result["next_offset"],
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def finish_attachment(
+        self, command: FinishAttachmentCommand
+    ) -> FinishAttachmentResult:
+        """Finalize one upload (a write: never blindly retried)."""
+        if type(command) is not FinishAttachmentCommand:
+            raise ValueError("command must be a FinishAttachmentCommand")
+        result = await self._command(
+            "runtime.attachments.finish",
+            {
+                "ref": _wire_attachment_ref(command.ref),
+                "expected_size": command.expected_size,
+                "expected_mime": command.expected_mime,
+            },
+            "runtime.attachments.finish",
+        )
+        result = _required_fields(result, _FINISH_ATTACHMENT_RESULT_FIELDS)
+        try:
+            if (
+                type(result["size"]) is not int
+                or type(result["mime"]) is not str
+                or type(result["revision"]) is not str
+            ):
+                raise ProtocolTransportError()
+            return FinishAttachmentResult(
+                ref=_attachment_ref(result["ref"]),
+                size=result["size"],
+                mime=result["mime"],
+                revision=result["revision"],
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def abort_attachment(self, command: AbortAttachmentCommand) -> AbortAttachmentResult:
+        """Discard one upload (a write: never blindly retried)."""
+        if type(command) is not AbortAttachmentCommand:
+            raise ValueError("command must be an AbortAttachmentCommand")
+        result = await self._command(
+            "runtime.attachments.abort",
+            {"ref": _wire_attachment_ref(command.ref)},
+            "runtime.attachments.abort",
+        )
+        result = _required_fields(result, _ABORT_ATTACHMENT_RESULT_FIELDS)
+        try:
+            if type(result["removed"]) is not bool:
+                raise ProtocolTransportError()
+            return AbortAttachmentResult(
+                ref=_attachment_ref(result["ref"]), removed=result["removed"]
+            )
+        except (KeyError, TypeError, ValueError, ProtocolTransportError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def stat_attachment(self, query: StatAttachmentQuery) -> AttachmentMetadata:
+        """Read one attachment's durable metadata (a read-only retry-safe call)."""
+        if type(query) is not StatAttachmentQuery:
+            raise ValueError("query must be a StatAttachmentQuery")
+        result = await self._request_with_retry(
+            "runtime.attachments.stat", {"ref": _wire_attachment_ref(query.ref)}
+        )
+        return _attachment_metadata(result)
+
+    @_fence_on_protocol_failure
+    async def read_attachment(self, query: ReadAttachmentQuery) -> AttachmentChunk:
+        """Read one bounded window of a finalized attachment (retry-safe)."""
+        if type(query) is not ReadAttachmentQuery:
+            raise ValueError("query must be a ReadAttachmentQuery")
+        result = await self._request_with_retry(
+            "runtime.attachments.read",
+            {
+                "ref": _wire_attachment_ref(query.ref),
+                "offset": query.offset,
+                "limit": query.limit,
+            },
+        )
+        chunk = _required_fields(result, _ATTACHMENT_CHUNK_FIELDS)
+        if (
+            type(chunk["offset"]) is not int
+            or type(chunk["data_base64"]) is not str
+            or type(chunk["byte_length"]) is not int
+            or type(chunk["next_offset"]) is not int
+            or type(chunk["eof"]) is not bool
+        ):
+            raise ProtocolTransportError()
+        try:
+            return AttachmentChunk(
+                ref=_attachment_ref(chunk["ref"]),
+                offset=chunk["offset"],
+                data_base64=chunk["data_base64"],
+                byte_length=chunk["byte_length"],
+                next_offset=chunk["next_offset"],
+                eof=chunk["eof"],
+                metadata=_attachment_metadata(chunk["metadata"]),
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None
@@ -1865,50 +2371,117 @@ class RuntimeWebSocketClient:
             pass
 
 
+_EVENT_PAGE_FIELDS = frozenset(
+    {"session", "events", "cursor", "latest_sequence", "has_more", "scanned_through"}
+)
+_CURSOR_FIELDS = frozenset({"sequence"})
+_ARTIFACT_REF_FIELDS = frozenset({"session", "path"})
+_ARTIFACT_METADATA_FIELDS = frozenset(
+    {"ref", "path", "kind", "size", "modified_at", "media_type", "revision"}
+)
+_ARTIFACT_PAGE_FIELDS = frozenset({"session", "path", "entries", "next_cursor"})
+_ARTIFACT_CHUNK_FIELDS = frozenset(
+    {"ref", "offset", "data_base64", "byte_length", "next_offset", "eof", "metadata"}
+)
+_ATTACHMENT_REF_FIELDS = frozenset({"session", "attachment_id"})
+_ATTACHMENT_METADATA_FIELDS = frozenset(
+    {"ref", "size", "mime", "revision", "display_name", "created_at", "finalized"}
+)
+_ATTACHMENT_CHUNK_FIELDS = frozenset(
+    {"ref", "offset", "data_base64", "byte_length", "next_offset", "eof", "metadata"}
+)
+_BEGIN_ATTACHMENT_RESULT_FIELDS = frozenset(
+    {"ref", "chunk_bytes", "chunk_base64_chars", "expires_at", "next_offset"}
+)
+_APPEND_ATTACHMENT_RESULT_FIELDS = frozenset({"ref", "received_bytes", "next_offset"})
+_FINISH_ATTACHMENT_RESULT_FIELDS = frozenset({"ref", "size", "mime", "revision"})
+_ABORT_ATTACHMENT_RESULT_FIELDS = frozenset({"ref", "removed"})
+_WATCH_RESULT_FIELDS = frozenset({"subscription_id", "cursor"})
+_EVENT_NOTIFICATION_FIELDS = frozenset({"subscription_id", "event", "cursor"})
+_SUBSCRIPTION_COMPLETE_FIELDS = frozenset({"subscription_id", "cursor"})
+_SUBSCRIPTION_ERROR_FIELDS = frozenset({"subscription_id", "error"})
+
+
 def _artifact_ref(value: object) -> ArtifactRef:
-    if not isinstance(value, dict) or set(value) != {"session", "path"}:
-        raise ProtocolTransportError()
+    ref = _required_fields(value, _ARTIFACT_REF_FIELDS)
     try:
-        return ArtifactRef(_ref(value["session"]), _text(value["path"], "path", 4096))
+        return ArtifactRef(_ref(ref["session"]), _text(ref["path"], "path", 4096))
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
 
 
 def _artifact_metadata(value: object) -> ArtifactMetadata:
-    if not isinstance(value, dict) or set(value) != {
-        "ref",
-        "path",
-        "kind",
-        "size",
-        "modified_at",
-        "media_type",
-        "revision",
-    }:
-        raise ProtocolTransportError()
+    metadata = _required_fields(value, _ARTIFACT_METADATA_FIELDS)
     if (
-        type(value["path"]) is not str
-        or type(value["kind"]) is not str
-        or type(value["size"]) is not int
-        or value["size"] < 0
-        or (value["modified_at"] is not None and type(value["modified_at"]) is not str)
-        or type(value["media_type"]) is not str
-        or (value["revision"] is not None and type(value["revision"]) is not str)
+        type(metadata["path"]) is not str
+        or type(metadata["kind"]) is not str
+        or type(metadata["size"]) is not int
+        or metadata["size"] < 0
+        or (metadata["modified_at"] is not None and type(metadata["modified_at"]) is not str)
+        or type(metadata["media_type"]) is not str
+        or (metadata["revision"] is not None and type(metadata["revision"]) is not str)
     ):
         raise ProtocolTransportError()
     try:
-        ref = _artifact_ref(value["ref"])
+        ref = _artifact_ref(metadata["ref"])
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
-    if value["kind"] not in {"file", "directory"}:
+    if metadata["kind"] not in {"file", "directory"}:
         raise ProtocolTransportError()
     return ArtifactMetadata(
         ref,
-        value["path"],
-        value["kind"],
-        value["size"],
-        value["modified_at"],
-        value["media_type"],
-        value["revision"],
+        metadata["path"],
+        metadata["kind"],
+        metadata["size"],
+        metadata["modified_at"],
+        metadata["media_type"],
+        metadata["revision"],
+    )
+
+
+def _wire_attachment_ref(ref: AttachmentRef) -> dict[str, object]:
+    """Encode one opaque attachment ref for the wire (id only, never a path)."""
+    return {
+        "session": _wire_session(ref.session),
+        "attachment_id": _text(ref.attachment_id, "attachment_id", 64),
+    }
+
+
+def _attachment_ref(value: object) -> AttachmentRef:
+    ref = _required_fields(value, _ATTACHMENT_REF_FIELDS)
+    try:
+        return AttachmentRef(
+            _ref(ref["session"]),
+            _text(ref["attachment_id"], "attachment_id", 64),
+        )
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
+
+def _attachment_metadata(value: object) -> AttachmentMetadata:
+    metadata = _required_fields(value, _ATTACHMENT_METADATA_FIELDS)
+    if (
+        type(metadata["size"]) is not int
+        or metadata["size"] < 0
+        or type(metadata["mime"]) is not str
+        or (metadata["revision"] is not None and type(metadata["revision"]) is not str)
+        or type(metadata["display_name"]) is not str
+        or type(metadata["created_at"]) is not str
+        or type(metadata["finalized"]) is not bool
+    ):
+        raise ProtocolTransportError()
+    try:
+        ref = _attachment_ref(metadata["ref"])
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+    return AttachmentMetadata(
+        ref=ref,
+        size=metadata["size"],
+        mime=metadata["mime"],
+        revision=metadata["revision"],
+        display_name=metadata["display_name"],
+        created_at=metadata["created_at"],
+        finalized=metadata["finalized"],
     )
 
 
@@ -2026,11 +2599,9 @@ class _RemoteEventWatch:
                 raise ProtocolTransportError()
             if response["meta"] != {"wire_version": wire_version}:
                 raise ProtocolTransportError()
-            result = response["result"]
+            result = _required_fields(response["result"], _WATCH_RESULT_FIELDS)
             if (
-                not isinstance(result, dict)
-                or set(result) != {"subscription_id", "cursor"}
-                or type(result["subscription_id"]) is not str
+                type(result["subscription_id"]) is not str
                 or type(result["cursor"]) is not int
                 or result["cursor"] != self._last_cursor
             ):
@@ -2125,14 +2696,16 @@ class _RemoteEventWatch:
         if not isinstance(method, str) or not isinstance(params, dict):
             raise ProtocolTransportError()
         if method == "runtime.event":
+            # Notification *payloads* grow additively (the frame envelope stays
+            # exact); subscription identity and cursor routing stay strict.
+            payload = _required_fields(params, _EVENT_NOTIFICATION_FIELDS)
             if (
-                set(params) != {"subscription_id", "event", "cursor"}
-                or params["subscription_id"] != self._subscription_id
-                or type(params["cursor"]) is not int
+                payload["subscription_id"] != self._subscription_id
+                or type(payload["cursor"]) is not int
             ):
                 raise ProtocolTransportError()
-            event = _event(params["event"])
-            cursor = params["cursor"]
+            event = _event(payload["event"])
+            cursor = payload["cursor"]
             if cursor <= self._last_cursor or event.sequence != cursor:
                 raise ProtocolTransportError()
             try:
@@ -2145,21 +2718,20 @@ class _RemoteEventWatch:
             self._last_cursor = cursor
             return
         if method == "runtime.subscription.complete":
+            payload = _required_fields(params, _SUBSCRIPTION_COMPLETE_FIELDS)
             if (
-                set(params) != {"subscription_id", "cursor"}
-                or params["subscription_id"] != self._subscription_id
-                or type(params["cursor"]) is not int
-                or params["cursor"] < self._last_cursor
+                payload["subscription_id"] != self._subscription_id
+                or type(payload["cursor"]) is not int
+                or payload["cursor"] < self._last_cursor
             ):
                 raise ProtocolTransportError()
             await self._terminal_eof()
             return
         if method == "runtime.subscription.error":
-            if set(params) != {"subscription_id", "error"}:
+            payload = _required_fields(params, _SUBSCRIPTION_ERROR_FIELDS)
+            if payload["subscription_id"] != self._subscription_id:
                 raise ProtocolTransportError()
-            if params["subscription_id"] != self._subscription_id:
-                raise ProtocolTransportError()
-            error = params["error"]
+            error = payload["error"]
             if (
                 not isinstance(error, dict)
                 or set(error) != {"code", "message", "data"}

@@ -288,7 +288,15 @@ export function parseProjects(payload: unknown): ConsoleProjectEntry[] {
   return projects.map(requireProjectEntry);
 }
 
-/** Read-only project list: every project this console may switch to. */
+/**
+ * Read-only project list: every project this console may switch to.
+ *
+ * @deprecated The console business list now goes through the shared runtime
+ * client (`SynapseRuntimeClient.listProjects`, wire method
+ * `runtime.project.list`), which the daemon filters and paginates server-side.
+ * This host endpoint is kept only as a compatibility route for older builds and
+ * is no longer a business entry point.
+ */
 export async function fetchProjects(
   fetchImpl: FetchLike = fetch,
 ): Promise<ConsoleProjectEntry[]> {

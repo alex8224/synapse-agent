@@ -537,13 +537,27 @@ def test_client_roundtrips_the_project_thinking_write() -> None:
     }
 
 
+def test_client_ignores_additive_project_thinking_fields() -> None:
+    async def body() -> None:
+        command = SetProjectThinkingLevelCommand(PROJECT, "high", "cmd-1")
+        client, _ = _client(
+            {"command_id": "cmd-1", "project_id": PROJECT, "level": "high", "path": "/x"}
+        )
+        try:
+            assert await client.set_project_thinking_level(command) == (
+                SetProjectThinkingLevelResult("cmd-1", PROJECT, "high")
+            )
+        finally:
+            await client.close()
+    asyncio.run(body())
+
+
 def test_client_rejects_malformed_project_thinking_results() -> None:
     from synapse.runtime.transport.client import ProtocolTransportError
 
     command = SetProjectThinkingLevelCommand(PROJECT, "high", "cmd-1")
     for result in (
         {"command_id": "cmd-1", "project_id": PROJECT},
-        {"command_id": "cmd-1", "project_id": PROJECT, "level": "high", "path": "/x"},
         {"command_id": "other", "project_id": PROJECT, "level": "high"},
         {"command_id": "cmd-1", "project_id": "other", "level": "high"},
         {"command_id": "cmd-1", "project_id": PROJECT, "level": ""},

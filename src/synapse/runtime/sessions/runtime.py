@@ -104,6 +104,10 @@ class UserTurn:
     request: TurnRequest | None = None
     cancel_token: CancelToken | None = None
     approval_resume: bool = False
+    #: JSON-safe durable attachment metadata for this turn (opaque ids only).
+    #: It never enters the LangGraph payload; it is carried to persistence so a
+    #: settled turn can record the durable references.
+    attachment_refs: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +376,7 @@ class SessionRuntime:
                     thread_id=self.thread_id,
                     max_concurrency=int(getattr(binding.settings, "max_concurrency", 4)),
                     config_overrides=message.config_overrides,
+                    attachment_refs=message.attachment_refs,
                 )
                 if request.thread_id != self.thread_id:
                     raise ValueError("UserTurn request thread_id does not match SessionRuntime")
@@ -809,6 +814,19 @@ class SessionRuntime:
             turn_id = handle.turn_id
         queue.dispatch_pending()
         return turn_id, True, pending
+
+    @property
+    def goal_service(self) -> Any | None:
+        """The goal ledger this session's agent was assembled with.
+
+        Read-only ownership exposure for the runtime service's goal writes: they
+        must use the very ledger this session accounts against, never the
+        process-wide ``get_goal_service()`` singleton (which knows nothing about
+        which project the caller addresses).  ``None`` means the agent was built
+        without a goal ledger, so the write surface reports itself unavailable
+        instead of quietly creating a second one.
+        """
+        return self._goal_service
 
     def snapshot(self) -> SessionSnapshot:
         with self._lock:

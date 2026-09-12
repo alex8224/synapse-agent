@@ -2,8 +2,12 @@
 
 Validates that core runtime packages (agent_loop, service, streaming) do not
 import presentation-layer modules (synapse.ui, synapse.cli, synapse.acp, or
-textual), and that service contract files (ports, commands, errors, events,
-queries) do not import transport, LangGraph, langchain, or deepagents.
+textual), and that the service contract files (ports, commands, errors, events,
+event_types, queries, history, recovery, runtime_config, artifacts, access) do
+not import transport, LangGraph, langchain, deepagents, the session execution
+stack, the workspace ignore matcher, the streaming runtime, or the local/routing
+implementation modules.  The matching import-closure purity gates (subprocess)
+live in ``tests/test_runtime_service_import_purity.py``.
 """
 
 from __future__ import annotations
@@ -87,12 +91,28 @@ CONTRACT_FILES = {
     "commands.py",
     "errors.py",
     "events.py",
+    "event_types.py",
     "queries.py",
     "history.py",
+    "recovery.py",
     "runtime_config.py",
+    "artifacts.py",
+    "access.py",
+    "project_list.py",
 }
 CONTRACT_FORBIDDEN = {
     "synapse.runtime.transport",
+    # Contract files may use the pure identity value object but must not pull in
+    # the session execution stack, the workspace ignore matcher, the streaming
+    # runtime, or the local/routing implementation modules.
+    "synapse.runtime.sessions.runtime",
+    "synapse.runtime.sessions.manager",
+    "synapse.runtime.sessions.persistence",
+    "synapse.runtime.tool_ignore",
+    "synapse.runtime.streaming",
+    "synapse.runtime.service.local",
+    "synapse.runtime.service.routing",
+    "synapse.runtime.service.history_store",
     "langgraph",
     "langchain",
     "langchain_core",

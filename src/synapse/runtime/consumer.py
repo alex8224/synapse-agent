@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from synapse.projects.catalog import ProjectCatalog
+from synapse.runtime.async_runtime import AsyncRuntime
 from synapse.runtime.projects.identity import ensure_project_identity
 from synapse.runtime.service import (
     AgentRuntimeService,
@@ -88,6 +89,80 @@ class LocalProjectRuntimeConsumer:
         await self.manager.rebind_session_ref(
             SessionRef(self.manager.project_id or "", thread_id), agent, settings
         )
+
+    def rebind_agent_threadsafe(
+        self, thread_id: str, agent: Any, settings: Any
+    ) -> None:
+        """Synchronously rebind one open session from a worker thread.
+
+        The manager's asyncio primitives live on the runtime owning loop, so a
+        worker thread schedules the coroutine there and blocks until it settles.
+        Errors propagate unchanged: the composition owner adds no degradation
+        boundary of its own, so the caller keeps its own best-effort handling.
+        """
+        self._reject_blocking_on_runtime_loop("rebind_agent_threadsafe", "rebind_agent")
+        self._runtime_loop().submit(self.rebind_agent(thread_id, agent, settings)).result()
+
+    async def close_session(
+        self, thread_id: str, *, cancel_active: bool = True
+    ) -> bool:
+        """Close one session exclusively through the service DTO port.
+
+        ``CloseSessionCommand`` preserves the manager's close/cancel semantics
+        (``cancel_active``) while keeping the caller on the application port
+        instead of the manager implementation.  Missing sessions stay
+        idempotent (``closed=False``).
+        """
+        result = await self.service.close_session(
+            CloseSessionCommand(
+                SessionRef(self.manager.project_id or "", thread_id),
+                cancel_active=cancel_active,
+            )
+        )
+        return bool(result.closed)
+
+    def close_session_threadsafe(
+        self, thread_id: str, *, cancel_active: bool = True, timeout: float = 5.0
+    ) -> bool:
+        """Synchronously close one session from a worker thread.
+
+        Blocks on the runtime owning loop for at most ``timeout`` seconds and
+        propagates failures unchanged, leaving the caller's own best-effort
+        boundary intact.
+        """
+        self._reject_blocking_on_runtime_loop("close_session_threadsafe", "close_session")
+        return bool(
+            self._runtime_loop()
+            .submit(self.close_session(thread_id, cancel_active=cancel_active))
+            .result(timeout=timeout)
+        )
+
+    def _runtime_loop(self) -> AsyncRuntime:
+        """Return the loop that owns this project manager's asyncio primitives."""
+        return self.manager._async_runtime
+
+    def _reject_blocking_on_runtime_loop(self, sync_name: str, async_name: str) -> None:
+        """Refuse a blocking worker wrapper that already runs on the runtime loop.
+
+        Both wrappers schedule their async port on the runtime owning loop and
+        then block on the result.  Called *from* that loop the result can never
+        arrive, so the call would deadlock; the guard runs before the coroutine
+        is created, so no coroutine is ever left unawaited either.  Callers
+        already inside the runtime loop await the async method instead.
+
+        Off the runtime loop (including "no running loop at all") the wrapper
+        keeps its original semantics.
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        owning = getattr(self._runtime_loop(), "loop", None)
+        if owning is not None and running is owning:
+            raise RuntimeError(
+                f"{sync_name}() cannot be called from the runtime owning event loop "
+                f"(it would deadlock); await {async_name}() instead"
+            )
 
     async def _cleanup(self) -> None:
         first_error: BaseException | None = None

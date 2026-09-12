@@ -20,6 +20,21 @@ from synapse.runtime.service.artifacts import (
     ReadArtifactQuery,
     StatArtifactQuery,
 )
+from synapse.runtime.service.attachments import (
+    AbortAttachmentCommand,
+    AbortAttachmentResult,
+    AppendAttachmentChunkCommand,
+    AppendAttachmentChunkResult,
+    AttachmentChunk,
+    AttachmentMetadata,
+    AttachmentRef,
+    BeginAttachmentCommand,
+    BeginAttachmentResult,
+    FinishAttachmentCommand,
+    FinishAttachmentResult,
+    ReadAttachmentQuery,
+    StatAttachmentQuery,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -48,6 +63,14 @@ from synapse.runtime.service.errors import (
     PermissionDeniedError,
 )
 from synapse.runtime.service.events import EventFilter, EventPage, ReadEventsQuery
+from synapse.runtime.service.goal_management import (
+    ClearSessionGoalCommand,
+    EditSessionGoalCommand,
+    PauseSessionGoalCommand,
+    ResumeSessionGoalCommand,
+    SessionGoalResult,
+    SetSessionGoalCommand,
+)
 from synapse.runtime.service.history import (
     ListSessionsQuery,
     ReadSessionHistoryQuery,
@@ -55,6 +78,10 @@ from synapse.runtime.service.history import (
     SessionListPage,
 )
 from synapse.runtime.service.ports import AgentRuntimeService, EventWatch
+from synapse.runtime.service.project_list import (
+    ListProjectsQuery,
+    ProjectListPage,
+)
 from synapse.runtime.service.queries import (
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -68,6 +95,16 @@ from synapse.runtime.service.recovery import (
     SessionRecoverabilityView,
 )
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
+from synapse.runtime.service.session_management import (
+    CreateSessionCommand,
+    CreateSessionResult,
+    DeleteSessionCommand,
+    DeleteSessionResult,
+    RenameSessionCommand,
+    RenameSessionResult,
+    SearchSessionsQuery,
+    SessionSearchPage,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
@@ -78,20 +115,29 @@ __all__ = [
     "DaemonAuthorizer",
     "AccessRequest",
     "Principal",
+    "ProjectScopeAuthorizer",
     "bind_access",
     "EVENTS_READ",
     "EVENTS_WATCH",
     "ARTIFACTS_STAT",
     "ARTIFACTS_LIST",
     "ARTIFACTS_READ",
+    "ATTACHMENTS_READ",
+    "ATTACHMENTS_WRITE",
     "SESSION_OPEN",
     "SESSION_CLOSE",
     "SESSION_READ",
     "SESSION_REBIND",
     "SESSION_THINKING",
+    "SESSION_GOAL",
     "PROJECT_THINKING",
+    "PROJECT_LIST",
+    "SESSION_CREATE",
+    "SESSION_DELETE",
     "SESSION_LIST",
     "SESSION_MCP_RELOAD",
+    "SESSION_RENAME",
+    "SESSION_SEARCH",
     "TURN_SUBMIT",
     "TURN_CANCEL",
     "TURN_STEER",
@@ -109,14 +155,41 @@ SESSION_CLOSE = "session.close"
 SESSION_READ = "session.read"
 SESSION_REBIND = "session.rebind"
 SESSION_THINKING = "session.thinking"
+#: Manage one session's long-running goal (set / edit / clear / pause / resume).
+#: A write surface with its own blast radius (it can pause work and cancel the
+#: session's live turn), so ``session.read`` -- which only authorizes reading the
+#: goal projection -- must never authorize it.
+SESSION_GOAL = "session.goal"
 PROJECT_THINKING = "project.thinking"
+#: Enumerate the projects the principal may see.  A project-level capability
+#: (never a thread-scoped one): only a project-wide grant authorizes it, and the
+#: visible set it derives is the ACL visibility the list is filtered by.
+PROJECT_LIST = "project.list"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
+#: Persist a new session's metadata row.  Project-level (there is no thread yet
+#: when the server allocates the id) and never opens a runtime or builds an agent.
+SESSION_CREATE = "session.create"
+#: Rewrite one existing session's human-facing title.
+SESSION_RENAME = "session.rename"
+#: Remove one session's metadata row and thread goal.  Checkpoints and the
+#: transcript projection are retained, so this is not "erase the conversation".
+SESSION_DELETE = "session.delete"
+#: Search one project's persisted session *metadata* (title/summary/model/ids).
+#: It is never a full-text transcript search and never creates a database.
+SESSION_SEARCH = "session.search"
 EVENTS_READ = "events.read"
 EVENTS_WATCH = "events.watch"
 ARTIFACTS_STAT = "artifacts.stat"
 ARTIFACTS_LIST = "artifacts.list"
 ARTIFACTS_READ = "artifacts.read"
+#: Read one session's durable image attachments (stat + bounded read).  Session
+#: scoped: the grant is bound to one ``SessionRef`` and never to a project.
+ATTACHMENTS_READ = "attachments.read"
+#: Stream / finalize / discard one session's image attachment upload.  A write
+#: surface with its own blast radius (it reserves quota and stores bytes), so
+#: ``attachments.read`` must never authorize it.
+ATTACHMENTS_WRITE = "attachments.write"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -130,18 +203,36 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_READ,
         SESSION_REBIND,
         SESSION_THINKING,
+        SESSION_GOAL,
         PROJECT_THINKING,
+        PROJECT_LIST,
+        SESSION_CREATE,
+        SESSION_DELETE,
         SESSION_LIST,
         SESSION_MCP_RELOAD,
+        SESSION_RENAME,
+        SESSION_SEARCH,
         EVENTS_READ,
         EVENTS_WATCH,
         ARTIFACTS_STAT,
         ARTIFACTS_LIST,
         ARTIFACTS_READ,
+        ATTACHMENTS_READ,
+        ATTACHMENTS_WRITE,
     }
 )
 
 _MAX_ACCESS_TEXT_BYTES = 256
+#: Attachment commands/queries addressed by an ``AttachmentRef`` (the ACL scope
+#: is the ref's session).  ``BeginAttachmentCommand`` is absent: it carries the
+#: session directly because no id exists yet.
+_ATTACHMENT_REF_DTOS: tuple[type[Any], ...] = (
+    AppendAttachmentChunkCommand,
+    FinishAttachmentCommand,
+    AbortAttachmentCommand,
+    StatAttachmentQuery,
+    ReadAttachmentQuery,
+)
 _REQUIRED_DELEGATE_METHODS = (
     "submit_turn",
     "open_session",
@@ -193,6 +284,14 @@ def _is_valid_ref(ref: object) -> bool:
 def _is_valid_authorizer(authorizer: object) -> bool:
     if type(authorizer) is DaemonAuthorizer:
         return True
+    if type(authorizer) is ProjectScopeAuthorizer:
+        # The scope wrapper only ever narrows a built-in strategy; a nested
+        # wrapper is rejected so the chain stays shallow and auditable.
+        try:
+            inner = authorizer._inner  # type: ignore[attr-defined]
+        except AttributeError:
+            return False
+        return type(inner) in (AclAuthorizer, DaemonAuthorizer) and _is_valid_authorizer(inner)
     if type(authorizer) is not AclAuthorizer:
         return False
     try:
@@ -332,6 +431,27 @@ class AclAuthorizer:
                 return
         raise PermissionDeniedError()
 
+    def visible_project_ids(
+        self, principal: Principal, capability: str
+    ) -> frozenset[str]:
+        """The projects this principal holds ``capability`` on, project-wide.
+
+        A thread-scoped grant never authorizes a project-level capability, so it
+        contributes nothing here.  The result is an explicit (possibly empty)
+        set: an empty set means "no project is visible", never "unrestricted".
+        """
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
+            raise ValueError("unknown capability")
+        return frozenset(
+            grant.project_id
+            for grant in self._grants
+            if grant.subject == principal.subject
+            and grant.thread_ids is None
+            and capability in grant.capabilities
+        )
+
 
 class DaemonAuthorizer:
     """Authorize the fixed daemon principal for every exact session scope."""
@@ -361,6 +481,87 @@ class DaemonAuthorizer:
         if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
             raise ValueError("unknown capability")
 
+    def visible_project_ids(
+        self, principal: Principal, capability: str
+    ) -> None:
+        """The daemon principal sees every registered project (``None``)."""
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
+            raise ValueError("unknown capability")
+        if principal.subject != "runtime-daemon":
+            raise PermissionDeniedError()
+        return None
+
+
+class ProjectScopeAuthorizer:
+    """Narrow an existing authorizer to one trusted project id.
+
+    This is the connection-scope boundary: the composition root wraps the
+    already-selected policy with the project id the *server* bound to the
+    connection (a host-private handshake header, never a wire parameter and never
+    a browser declaration).  The wrapper is strictly subtractive -- it can only
+    deny, and it can never grant a capability the inner authorizer would refuse
+    -- so overlaying it cannot widen the original ACL.
+
+    ``visible_project_ids`` intersects the inner visibility with the scope, and
+    an unrestricted inner authorizer (the daemon) becomes exactly the scoped
+    project instead of "everything".
+    """
+
+    __slots__ = ("_inner", "_scope")
+
+    def __init__(
+        self,
+        inner: AclAuthorizer | DaemonAuthorizer,
+        project_id: str,
+    ) -> None:
+        if type(inner) not in (AclAuthorizer, DaemonAuthorizer):
+            raise TypeError("inner must be an AclAuthorizer or DaemonAuthorizer")
+        try:
+            scope = _validate_access_text(project_id, "project_id")
+        except (AttributeError, TypeError, UnicodeError, ValueError):
+            raise ValueError("project scope is invalid") from None
+        self._inner = inner
+        self._scope = scope
+
+    @property
+    def project_id(self) -> str:
+        """The single project id this connection is confined to."""
+        return self._scope
+
+    def authorize(self, principal: Principal, capability: str, session: SessionRef) -> None:
+        if not _is_valid_principal(principal) or not _is_valid_ref(session):
+            raise _invalid_context()
+        if session.project_id != self._scope:
+            raise PermissionDeniedError()
+        self._inner.authorize(principal, capability, session)
+
+    def authorize_project(
+        self, principal: Principal, capability: str, project_id: str
+    ) -> None:
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        try:
+            project = _validate_access_text(project_id, "project_id")
+        except (AttributeError, TypeError, UnicodeError, ValueError):
+            raise _invalid_context() from None
+        if project != self._scope:
+            raise PermissionDeniedError()
+        self._inner.authorize_project(principal, capability, project)
+
+    def visible_project_ids(
+        self, principal: Principal, capability: str
+    ) -> frozenset[str]:
+        """The scoped project, intersected with the inner visibility."""
+        if not _is_valid_principal(principal):
+            raise _invalid_context()
+        if type(capability) is not str or capability not in ALL_RUNTIME_CAPABILITIES:
+            raise ValueError("unknown capability")
+        inner = self._inner.visible_project_ids(principal, capability)
+        scope = frozenset({self._scope})
+        return scope if inner is None else inner & scope
+
 
 class AccessControlledAgentRuntimeService:
     """Fail-closed ACL wrapper around every Agent Runtime Service port."""
@@ -373,14 +574,14 @@ class AccessControlledAgentRuntimeService:
         self,
         delegate: AgentRuntimeService,
         principal: Principal,
-        authorizer: AclAuthorizer,
+        authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer,
     ) -> None:
         if type(principal) is not Principal or not _is_valid_principal(principal):
             raise TypeError("principal must be a Principal")
-        if type(authorizer) not in (AclAuthorizer, DaemonAuthorizer) or not _is_valid_authorizer(
-            authorizer
-        ):
-            raise TypeError("authorizer must be an AclAuthorizer or DaemonAuthorizer")
+        if not _is_valid_authorizer(authorizer):
+            raise TypeError(
+                "authorizer must be an AclAuthorizer, DaemonAuthorizer, or ProjectScopeAuthorizer"
+            )
         for method in _REQUIRED_DELEGATE_METHODS:
             try:
                 candidate = getattr_static(delegate, method)
@@ -403,6 +604,14 @@ class AccessControlledAgentRuntimeService:
             path = getattr(ref, "path", None) if type(ref) is ArtifactRef else None
             if type(ref) is not ArtifactRef or type(path) is not str or not path:
                 raise InvalidRequestError(f"{field} must contain a valid ArtifactRef")
+            session = getattr(ref, "session", None)
+        if expected in _ATTACHMENT_REF_DTOS:
+            # Every attachment command/query except ``begin`` is addressed by an
+            # ``AttachmentRef``; the session (and thus the ACL scope) comes from
+            # that ref, never from a bare field.
+            ref = getattr(dto, "ref", None)
+            if type(ref) is not AttachmentRef:
+                raise InvalidRequestError(f"{field} must contain a valid AttachmentRef")
             session = getattr(ref, "session", None)
         if not _is_valid_ref(session):
             raise InvalidRequestError(f"{field} must contain a valid SessionRef")
@@ -427,9 +636,20 @@ class AccessControlledAgentRuntimeService:
         return await self._delegate.open_session(command)
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
+        """Authorize SESSION_REBIND, then delegate the model rebind.
+
+        Optional delegate method (like ``set_thinking_level``): an older
+        delegate without ``rebind_session`` reports the feature as unavailable
+        instead of failing the whole wrapper at construction.  The ACL check
+        still runs before the delegate is consulted, so a caller without
+        ``session.rebind`` is denied even against an old delegate.
+        """
         session = self._session_from_dto(command, RebindSessionCommand, "rebind command")
         self._authorize(session, SESSION_REBIND)
-        return await self._delegate.rebind_session(command)
+        delegate = getattr(self._delegate, "rebind_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session rebind is unavailable")
+        return await delegate(command)
 
     async def set_thinking_level(
         self, command: SetThinkingLevelCommand
@@ -521,6 +741,92 @@ class AccessControlledAgentRuntimeService:
             raise InvalidRequestError("session goal is unavailable")
         return await delegate(query)
 
+    async def set_session_goal(self, command: SetSessionGoalCommand) -> SessionGoalResult:
+        """Authorize ``session.goal``, then delegate the goal write.
+
+        Deliberately *not* authorized by ``session.read``: reading a goal
+        projection and creating one are different permissions.  Optional delegate
+        method (like ``get_session_goal``): an older delegate without it reports the
+        feature as unavailable instead of failing the whole wrapper at
+        construction.  The ACL check still runs before the delegate is consulted.
+        """
+        session = self._session_from_dto(command, SetSessionGoalCommand, "set goal command")
+        self._authorize(session, SESSION_GOAL)
+        delegate = getattr(self._delegate, "set_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal management is unavailable")
+        return await delegate(command)
+
+    async def edit_session_goal(
+        self, command: EditSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Authorize ``session.goal``, then delegate the objective rewrite.
+
+        Uses the same dedicated write capability as ``set_session_goal``: a
+        read-only grant must not rewrite a goal.  Optional delegate method; the ACL
+        check runs before the delegate is consulted.
+        """
+        session = self._session_from_dto(
+            command, EditSessionGoalCommand, "edit goal command"
+        )
+        self._authorize(session, SESSION_GOAL)
+        delegate = getattr(self._delegate, "edit_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal management is unavailable")
+        return await delegate(command)
+
+    async def clear_session_goal(
+        self, command: ClearSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Authorize ``session.goal``, then delegate the goal removal.
+
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        session = self._session_from_dto(
+            command, ClearSessionGoalCommand, "clear goal command"
+        )
+        self._authorize(session, SESSION_GOAL)
+        delegate = getattr(self._delegate, "clear_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal management is unavailable")
+        return await delegate(command)
+
+    async def pause_session_goal(
+        self, command: PauseSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Authorize ``session.goal``, then delegate the pause.
+
+        Pausing can cancel the session's live turn, so it is a write: a read-only
+        grant must not be able to stop a running turn.  Optional delegate method;
+        the ACL check runs before the delegate is consulted.
+        """
+        session = self._session_from_dto(
+            command, PauseSessionGoalCommand, "pause goal command"
+        )
+        self._authorize(session, SESSION_GOAL)
+        delegate = getattr(self._delegate, "pause_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal management is unavailable")
+        return await delegate(command)
+
+    async def resume_session_goal(
+        self, command: ResumeSessionGoalCommand
+    ) -> SessionGoalResult:
+        """Authorize ``session.goal``, then delegate the status-only resume.
+
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        session = self._session_from_dto(
+            command, ResumeSessionGoalCommand, "resume goal command"
+        )
+        self._authorize(session, SESSION_GOAL)
+        delegate = getattr(self._delegate, "resume_session_goal", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session goal management is unavailable")
+        return await delegate(command)
+
     async def get_runtime_config(
         self, query: GetRuntimeConfigQuery
     ) -> RuntimeConfigView:
@@ -557,6 +863,80 @@ class AccessControlledAgentRuntimeService:
         self._authorize(session, ARTIFACTS_READ)
         return await self._delegate.read_artifact(query)
 
+    async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:
+        """Authorize ``attachments.write`` per session, then reserve an upload.
+
+        Optional delegate method (like ``rebind_session``): an older delegate
+        without it keeps the wrapper constructible and reports the feature as
+        unavailable.  The ACL check runs before the delegate is consulted, so a
+        caller without ``attachments.write`` is denied even against an old
+        delegate.
+        """
+        session = self._session_from_dto(command, BeginAttachmentCommand, "begin command")
+        self._authorize(session, ATTACHMENTS_WRITE)
+        delegate = getattr(self._delegate, "begin_attachment", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment upload is unavailable")
+        return await delegate(command)
+
+    async def append_attachment_chunk(
+        self, command: AppendAttachmentChunkCommand
+    ) -> AppendAttachmentChunkResult:
+        """Authorize ``attachments.write`` for the ref's session, then append."""
+        session = self._session_from_dto(
+            command, AppendAttachmentChunkCommand, "append command"
+        )
+        self._authorize(session, ATTACHMENTS_WRITE)
+        delegate = getattr(self._delegate, "append_attachment_chunk", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment upload is unavailable")
+        return await delegate(command)
+
+    async def finish_attachment(
+        self, command: FinishAttachmentCommand
+    ) -> FinishAttachmentResult:
+        """Authorize ``attachments.write`` for the ref's session, then finalize."""
+        session = self._session_from_dto(
+            command, FinishAttachmentCommand, "finish command"
+        )
+        self._authorize(session, ATTACHMENTS_WRITE)
+        delegate = getattr(self._delegate, "finish_attachment", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment upload is unavailable")
+        return await delegate(command)
+
+    async def abort_attachment(self, command: AbortAttachmentCommand) -> AbortAttachmentResult:
+        """Authorize ``attachments.write`` for the ref's session, then discard."""
+        session = self._session_from_dto(command, AbortAttachmentCommand, "abort command")
+        self._authorize(session, ATTACHMENTS_WRITE)
+        delegate = getattr(self._delegate, "abort_attachment", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment upload is unavailable")
+        return await delegate(command)
+
+    async def stat_attachment(self, query: StatAttachmentQuery) -> AttachmentMetadata:
+        """Authorize ``attachments.read`` for the ref's session, then stat.
+
+        Deliberately a distinct capability from ``attachments.write``: reading
+        durable metadata is not an upload, so a write-only grant must not
+        authorize it.
+        """
+        session = self._session_from_dto(query, StatAttachmentQuery, "stat query")
+        self._authorize(session, ATTACHMENTS_READ)
+        delegate = getattr(self._delegate, "stat_attachment", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment read is unavailable")
+        return await delegate(query)
+
+    async def read_attachment(self, query: ReadAttachmentQuery) -> AttachmentChunk:
+        """Authorize ``attachments.read`` for the ref's session, then read."""
+        session = self._session_from_dto(query, ReadAttachmentQuery, "read query")
+        self._authorize(session, ATTACHMENTS_READ)
+        delegate = getattr(self._delegate, "read_attachment", None)
+        if not callable(delegate):
+            raise InvalidRequestError("attachment read is unavailable")
+        return await delegate(query)
+
     async def read_events(self, query: ReadEventsQuery) -> EventPage:
         session = self._session_from_dto(query, ReadEventsQuery, "events query")
         self._authorize(session, EVENTS_READ)
@@ -576,6 +956,115 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "list_sessions", None)
         if not callable(delegate):
             raise InvalidRequestError("session list is unavailable")
+        return await delegate(query)
+
+    async def create_session(self, command: CreateSessionCommand) -> CreateSessionResult:
+        """Authorize project-scoped session creation, then delegate.
+
+        Uses ``session.create``: the operation persists a metadata row and never
+        opens a runtime, so it is deliberately *not* ``session.open``.  It is
+        project-scoped because the caller supplies no thread when the server
+        allocates the id, and a thread-scoped grant must never authorize it.
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        if type(command) is not CreateSessionCommand:
+            raise InvalidRequestError(
+                "create command must be a CreateSessionCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        if type(command.project_id) is not str or not command.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._authorizer.authorize_project(
+            self._principal, SESSION_CREATE, command.project_id
+        )
+        delegate = getattr(self._delegate, "create_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session create is unavailable")
+        return await delegate(command)
+
+    async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:
+        """Authorize ``session.rename`` per session, then delegate.
+
+        A write, so a read-only grant must not authorize it.  Optional delegate
+        method; the ACL check runs before the delegate is consulted.
+        """
+        session = self._session_from_dto(command, RenameSessionCommand, "rename command")
+        self._authorize(session, SESSION_RENAME)
+        delegate = getattr(self._delegate, "rename_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session rename is unavailable")
+        return await delegate(command)
+
+    async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
+        """Authorize ``session.delete`` per session, then delegate.
+
+        The capability is session-scoped: it removes that session's metadata row
+        and thread goal only, never its checkpoints or transcript projection.
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        session = self._session_from_dto(command, DeleteSessionCommand, "delete command")
+        self._authorize(session, SESSION_DELETE)
+        delegate = getattr(self._delegate, "delete_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session delete is unavailable")
+        return await delegate(command)
+
+    async def search_sessions(self, query: SearchSessionsQuery) -> SessionSearchPage:
+        """Authorize project-scoped metadata search, then delegate.
+
+        Uses ``session.search`` and, like ``list_sessions``, only a project-wide
+        grant authorizes it.  It is a read of persisted metadata (never the
+        transcript) that creates no database and builds no agent.  Optional
+        delegate method; the ACL check runs before the delegate is consulted.
+        """
+        if type(query) is not SearchSessionsQuery:
+            raise InvalidRequestError(
+                "search query must be a SearchSessionsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        if type(query.project_id) is not str or not query.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._authorizer.authorize_project(
+            self._principal, SESSION_SEARCH, query.project_id
+        )
+        delegate = getattr(self._delegate, "search_sessions", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session search is unavailable")
+        return await delegate(query)
+
+    async def list_projects(self, query: ListProjectsQuery) -> ProjectListPage:
+        """Authorize project enumeration and apply the server-side visibility set.
+
+        The wire decoder never sets ``visible_project_ids``; the wrapper fills it
+        in from the trusted policy (ACL visibility intersected with any
+        connection scope) so the provider filters *before* paginating and a
+        caller can never widen -- or narrow -- its own visible set.  An empty
+        visibility set denies outright instead of degrading to "unrestricted".
+        """
+        if type(query) is not ListProjectsQuery:
+            raise InvalidRequestError(
+                "list projects query must be a ListProjectsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        visible = self._authorizer.visible_project_ids(self._principal, PROJECT_LIST)
+        requested = frozenset(query.visible_project_ids)
+        if visible is None:
+            effective = requested
+        else:
+            if not visible:
+                raise PermissionDeniedError()
+            effective = visible if not requested else visible & requested
+        if effective != requested:
+            query = ListProjectsQuery(
+                limit=query.limit,
+                offset=query.offset,
+                visible_project_ids=tuple(effective),
+            )
+        delegate = getattr(self._delegate, "list_projects", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project list is unavailable")
         return await delegate(query)
 
     async def read_session_history(
@@ -638,7 +1127,7 @@ class AccessControlledAgentRuntimeService:
 def bind_access(
     delegate: AgentRuntimeService,
     principal: Principal,
-    authorizer: AclAuthorizer,
+    authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer,
 ) -> AccessControlledAgentRuntimeService:
     """Bind one authenticated principal and ACL snapshot to a service."""
 

@@ -447,10 +447,19 @@ def test_client_reconcile_parses_snapshot_after_negotiation() -> None:
 def test_client_reconcile_strict_decode_rejects_malformed(malformed: dict[str, object]) -> None:
     async def body() -> None:
         fake = _ReconcileFake(malformed)
-        with pytest.raises(ProtocolTransportError):
-            await _reconcile_client(fake).reconcile_session(
-                ReconcileSessionQuery(session=SessionRef("p1", "t1"))
-            )
+        runtime_client = _reconcile_client(fake)
+        query = ReconcileSessionQuery(session=SessionRef("p1", "t1"))
+        try:
+            if "extra" in malformed:
+                # Ordinary additions are discarded; known fields still drive recovery.
+                result = await runtime_client.reconcile_session(query)
+                assert result.live_epoch == "e"
+                assert not hasattr(result, "extra")
+            else:
+                with pytest.raises(ProtocolTransportError):
+                    await runtime_client.reconcile_session(query)
+        finally:
+            await runtime_client.close()
 
     run(body())
 

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import concurrent.futures
+import gc
+import inspect
+import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,7 +17,7 @@ from synapse.runtime.consumer import (
     LocalProjectRuntimeConsumer,
     execute_consumer_turn,
 )
-from synapse.runtime.service import OpenSessionCommand
+from synapse.runtime.service import CloseSessionCommand, OpenSessionCommand
 from synapse.runtime.service.events import RuntimeEvent
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -413,3 +418,212 @@ def test_close_without_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     consumer = _make_consumer(monkeypatch, manager=mgr, catalog=None)
     run(consumer.close())
     assert mgr.shutdown_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Worker-safe composition wrappers (ADR-S-018: the UI never touches
+# ``owner.manager``; the composition owner owns loop scheduling + waiting).
+# ---------------------------------------------------------------------------
+
+
+class ImmediateRuntimeLoop:
+    """Inline stand-in for the process async runtime that owns the manager."""
+
+    def __init__(self, *, error: BaseException | None = None) -> None:
+        self.error = error
+        self.submitted: list[Any] = []
+
+    def submit(self, coro: Any) -> concurrent.futures.Future:
+        self.submitted.append(coro)
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        if self.error is not None:
+            coro.close()
+            future.set_exception(self.error)
+            return future
+        try:
+            future.set_result(asyncio.run(coro))
+        except BaseException as exc:  # noqa: BLE001 - mirror run_coroutine_threadsafe
+            future.set_exception(exc)
+        return future
+
+
+class FakeCloseService:
+    """Records the DTO close commands a worker wrapper submits."""
+
+    def __init__(self, *, closed: bool = True) -> None:
+        self.commands: list[Any] = []
+        self.closed = closed
+
+    async def close_session(self, command: Any) -> Any:
+        self.commands.append(command)
+        return SimpleNamespace(closed=self.closed)
+
+
+def _worker_consumer(loop: Any, service: Any) -> LocalProjectRuntimeConsumer:
+    consumer = LocalProjectRuntimeConsumer(
+        settings=SimpleNamespace(max_concurrent_sessions=1, model="test"),
+        project_id="p",
+        agent_factory=lambda thread_id, _shared: SimpleNamespace(thread_id=thread_id),
+        persist_resources=SimpleNamespace(close=lambda: None),
+    )
+    consumer.manager._async_runtime = loop
+    consumer.service = service
+    return consumer
+
+
+def test_runtime_loop_is_the_manager_owning_loop() -> None:
+    consumer = _worker_consumer(ImmediateRuntimeLoop(), FakeCloseService())
+    assert consumer._runtime_loop() is consumer.manager._async_runtime
+
+
+def test_public_rebind_agent_stays_async() -> None:
+    assert inspect.iscoroutinefunction(LocalProjectRuntimeConsumer.rebind_agent)
+
+
+def test_rebind_agent_threadsafe_schedules_public_rebind() -> None:
+    loop = ImmediateRuntimeLoop()
+    consumer = _worker_consumer(loop, FakeCloseService())
+    seen: list[Any] = []
+
+    async def fake_rebind(thread_id: str, agent: Any, settings: Any) -> None:
+        seen.append((thread_id, agent, settings))
+
+    consumer.rebind_agent = fake_rebind
+    agent, settings = object(), object()
+
+    consumer.rebind_agent_threadsafe("t", agent, settings)
+
+    assert seen == [("t", agent, settings)]
+    assert len(loop.submitted) == 1
+
+
+def test_close_session_threadsafe_uses_service_close_command() -> None:
+    loop = ImmediateRuntimeLoop()
+    service = FakeCloseService()
+    consumer = _worker_consumer(loop, service)
+
+    assert consumer.close_session_threadsafe("t") is True
+
+    assert len(loop.submitted) == 1
+    command = service.commands[0]
+    assert isinstance(command, CloseSessionCommand)
+    assert command.session == SessionRef("p", "t")
+    assert command.cancel_active is True
+
+
+def test_close_session_threadsafe_forwards_cancel_active() -> None:
+    service = FakeCloseService()
+    consumer = _worker_consumer(ImmediateRuntimeLoop(), service)
+    consumer.close_session_threadsafe("t", cancel_active=False, timeout=1.0)
+    assert service.commands[0].cancel_active is False
+
+
+def test_close_session_threadsafe_returns_closed_flag() -> None:
+    consumer = _worker_consumer(ImmediateRuntimeLoop(), FakeCloseService(closed=False))
+    assert consumer.close_session_threadsafe("t") is False
+
+
+def test_worker_wrappers_propagate_errors() -> None:
+    consumer = _worker_consumer(
+        ImmediateRuntimeLoop(error=RuntimeError("runtime down")), FakeCloseService()
+    )
+    with pytest.raises(RuntimeError, match="runtime down"):
+        consumer.close_session_threadsafe("t")
+    with pytest.raises(RuntimeError, match="runtime down"):
+        consumer.rebind_agent_threadsafe("t", object(), object())
+
+
+class RunningLoopStandIn:
+    """Runtime-loop stand-in whose ``loop`` *is* the caller's running loop."""
+
+    def __init__(self) -> None:
+        self.submitted: list[Any] = []
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return asyncio.get_running_loop()
+
+    def submit(self, coro: Any) -> concurrent.futures.Future:
+        self.submitted.append(coro)
+        raise AssertionError("a deadlocking wrapper must not schedule anything")
+
+
+class DeferredLoopStandIn:
+    """Runtime-loop stand-in for a *foreign* running loop (never the owner)."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.submitted: list[Any] = []
+
+    def submit(self, coro: Any) -> concurrent.futures.Future:
+        self.submitted.append(coro)
+        coro.close()
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        future.set_result(True)
+        return future
+
+
+def _assert_no_unawaited_coroutine(caught: list[warnings.WarningMessage]) -> None:
+    assert not [warning for warning in caught if "never awaited" in str(warning.message)]
+
+
+def test_rebind_agent_threadsafe_refuses_runtime_loop_before_creating_coroutine() -> None:
+    loop = RunningLoopStandIn()
+    consumer = _worker_consumer(loop, FakeCloseService())
+    rebinds: list[Any] = []
+
+    async def fake_rebind(thread_id: str, agent: Any, settings: Any) -> None:
+        rebinds.append((thread_id, agent, settings))
+
+    consumer.rebind_agent = fake_rebind
+
+    async def body() -> None:
+        with pytest.raises(RuntimeError, match="rebind_agent_threadsafe") as caught:
+            consumer.rebind_agent_threadsafe("t", object(), object())
+        assert "await rebind_agent()" in str(caught.value)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(body())
+        gc.collect()
+
+    assert loop.submitted == []
+    assert rebinds == []
+    _assert_no_unawaited_coroutine(caught)
+
+
+def test_close_session_threadsafe_refuses_runtime_loop_before_creating_coroutine() -> None:
+    loop = RunningLoopStandIn()
+    service = FakeCloseService()
+    consumer = _worker_consumer(loop, service)
+
+    async def body() -> None:
+        with pytest.raises(RuntimeError, match="close_session_threadsafe") as caught:
+            consumer.close_session_threadsafe("t")
+        assert "await close_session()" in str(caught.value)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run(body())
+        gc.collect()
+
+    assert loop.submitted == []
+    assert service.commands == []
+    _assert_no_unawaited_coroutine(caught)
+
+
+def test_threadsafe_wrappers_keep_scheduling_from_a_foreign_running_loop() -> None:
+    loop = DeferredLoopStandIn()
+    service = FakeCloseService()
+    consumer = _worker_consumer(loop, service)
+
+    async def body() -> bool:
+        return consumer.close_session_threadsafe("t", timeout=1.0)
+
+    try:
+        assert run(body()) is True
+    finally:
+        loop.loop.close()
+
+    assert len(loop.submitted) == 1
+    assert service.commands == []

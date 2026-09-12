@@ -219,6 +219,18 @@ def test_client_get_runtime_config_roundtrip() -> None:
     run(body())
 
 
+def test_client_ignores_additive_runtime_config_fields() -> None:
+    async def body() -> None:
+        runtime_client = client(Fake({**_config_result(), "project_id": "p"}))
+        try:
+            result = await runtime_client.get_runtime_config(GetRuntimeConfigQuery(SESSION))
+            assert not hasattr(result, "project_id")
+        finally:
+            await runtime_client.close()
+
+    run(body())
+
+
 def test_client_rejects_invalid_runtime_config_results() -> None:
     for label, result in (
         (
@@ -230,7 +242,6 @@ def test_client_rejects_invalid_runtime_config_results() -> None:
             },
         ),
         ("current model null", _config_result(current_model=None)),
-        ("extra field", {**_config_result(), "project_id": "p"}),
         ("models not list", _config_result(available_models="openai:alpha")),
         ("model not str", _config_result(available_models=["openai:alpha", 3])),
         ("empty current model", _config_result(current_model="")),

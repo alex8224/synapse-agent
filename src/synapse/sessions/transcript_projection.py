@@ -608,6 +608,7 @@ def compact_transcript_events(events: list[UiTranscriptEvent]) -> list[UiTranscr
                     kind=event.kind,
                     text=event.text,
                     images=list(event.images),
+                    attachments=[dict(item) for item in event.attachments],
                 )
             )
             continue
@@ -651,10 +652,14 @@ def _event_payload_json(event: UiTranscriptEvent) -> str:
 
 def _event_from_row(row: sqlite3.Row) -> UiTranscriptEvent:
     payload = json.loads(str(row["payload_json"]))
+    attachments = payload.get("attachments")
     return UiTranscriptEvent(
         kind=str(row["kind"]),
         text=str(payload.get("text") or ""),
         tool_calls=list(payload.get("tool_calls") or []),
         tool_results=list(payload.get("tool_results") or []),
         images=[],
+        # Legacy rows have no ``attachments`` key: default to empty so an old
+        # projection stays readable.
+        attachments=[dict(item) for item in attachments] if isinstance(attachments, list) else [],
     )

@@ -1,0 +1,6324 @@
+{
+  "approval_decision_kinds": [
+    "allow_once",
+    "allow_always",
+    "reject_once",
+    "reject_always"
+  ],
+  "authorization_capabilities": [
+    "artifacts.list",
+    "artifacts.read",
+    "artifacts.stat",
+    "attachments.read",
+    "attachments.write",
+    "events.read",
+    "events.watch",
+    "project.list",
+    "project.thinking",
+    "session.close",
+    "session.create",
+    "session.delete",
+    "session.goal",
+    "session.list",
+    "session.mcp.reload",
+    "session.open",
+    "session.read",
+    "session.rebind",
+    "session.rename",
+    "session.search",
+    "session.thinking",
+    "turn.approval.read",
+    "turn.approval.resume",
+    "turn.cancel",
+    "turn.steer",
+    "turn.submit"
+  ],
+  "contract_version": 1,
+  "event_version": 1,
+  "events": [
+    {
+      "kind": "activity_started",
+      "legacy": false,
+      "payload": "ActivityPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "activity_stopped",
+      "legacy": false,
+      "payload": "ActivityPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "activity_updated",
+      "legacy": false,
+      "payload": "ActivityPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "answer_completed",
+      "legacy": false,
+      "payload": "TextPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "answer_delta",
+      "legacy": false,
+      "payload": "TextPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "approval_required",
+      "legacy": false,
+      "payload": "ApprovalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "diff_updated",
+      "legacy": false,
+      "payload": "DiffPayload",
+      "status": "v1-ui-ignored",
+      "transient": false
+    },
+    {
+      "kind": "info",
+      "legacy": false,
+      "notes": [
+        "Payload is a bare JSON string in v1 (the producer sends str(message)); no",
+        "InfoPayload wrapper is introduced."
+      ],
+      "payload": "str",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "plan_removed",
+      "legacy": false,
+      "payload": "PlanRemovedPayload",
+      "status": "v1-ui-ignored",
+      "transient": false
+    },
+    {
+      "kind": "plan_updated",
+      "legacy": false,
+      "payload": "PlanPayload",
+      "status": "v1-ui-ignored",
+      "transient": false
+    },
+    {
+      "kind": "reasoning_completed",
+      "legacy": false,
+      "payload": "TextPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "reasoning_delta",
+      "legacy": false,
+      "payload": "TextPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "subagent_status_changed",
+      "legacy": false,
+      "notes": [
+        "Transient stage of a running subagent row; never persisted and may be absent."
+      ],
+      "payload": "SubagentStatusPayload",
+      "status": "v1",
+      "transient": true
+    },
+    {
+      "kind": "tool_batch_finished",
+      "legacy": false,
+      "payload": "ToolBatchFinishedPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "tool_batch_started",
+      "legacy": false,
+      "payload": "ToolBatchPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "tool_finished",
+      "legacy": false,
+      "payload": "ToolFinishedPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "tool_result",
+      "legacy": true,
+      "notes": [
+        "Legacy per-item fallback used when per-item events are unavailable; every",
+        "shell still renders it, so it is not deprecated in v1."
+      ],
+      "payload": "ToolResultPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "tool_started",
+      "legacy": false,
+      "payload": "ToolItemPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "tool_updated",
+      "legacy": false,
+      "payload": "ToolItemPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "turn_cancelled",
+      "legacy": false,
+      "payload": "TurnTerminalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "turn_completed",
+      "legacy": false,
+      "payload": "TurnTerminalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "turn_failed",
+      "legacy": false,
+      "payload": "TurnTerminalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "turn_waiting_approval",
+      "legacy": false,
+      "payload": "TurnTerminalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "usage_updated",
+      "legacy": false,
+      "payload": "UsagePayload",
+      "status": "v1",
+      "transient": false
+    }
+  ],
+  "limits": {
+    "default_chunk_bytes": 65536,
+    "default_max_event_bytes": 1048576,
+    "default_scan_limit": 1024,
+    "default_session_list_limit": 50,
+    "history_limit_default": 20,
+    "history_limit_max": 100,
+    "history_limit_min": 1,
+    "max_chunk_bytes": 1048576,
+    "max_cursor_bytes": 4096,
+    "max_event_bytes": 8388608,
+    "max_expected_revision_bytes": 256,
+    "max_list_limit": 1000,
+    "max_path_bytes": 4096,
+    "max_reconcile_probe_turns": 32,
+    "max_reconcile_turn_id_bytes": 256,
+    "max_runtime_config_mcp_servers": 128,
+    "max_runtime_config_models": 256,
+    "max_runtime_config_text_bytes": 256,
+    "max_runtime_config_thinking_levels": 32,
+    "max_scan_limit": 4096,
+    "max_session_goal_objective_chars": 10000,
+    "min_chunk_bytes": 1024,
+    "min_event_bytes": 1024,
+    "min_scan_limit": 1,
+    "session_list_limit_max": 100,
+    "session_list_limit_min": 1,
+    "session_list_offset_max": 100000,
+    "session_search_limit_default": 50,
+    "session_search_limit_max": 100,
+    "session_search_limit_min": 1,
+    "session_search_offset_max": 100000,
+    "session_search_text_max": 200,
+    "session_title_max": 120
+  },
+  "methods": [
+    {
+      "capability": "artifacts.list",
+      "class": "service",
+      "method": "runtime.artifacts.list",
+      "notes": [
+        "``cursor`` is optional; ``limit`` is bounded to 1..1000 by the wire decoder."
+      ],
+      "request": "ListArtifactsQuery",
+      "result": "ArtifactPage",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "list_artifacts",
+      "wire_defaults": {
+        "limit": 100,
+        "path": "."
+      }
+    },
+    {
+      "capability": "artifacts.read",
+      "class": "service",
+      "method": "runtime.artifacts.read",
+      "notes": [
+        "``limit`` is bounded to the chunk range 1024..1048576 by the wire decoder;",
+        "``expected_revision`` is optional."
+      ],
+      "request": "ReadArtifactQuery",
+      "result": "ArtifactChunk",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "read_artifact",
+      "wire_defaults": {
+        "limit": 65536,
+        "offset": 0
+      }
+    },
+    {
+      "capability": "artifacts.stat",
+      "class": "service",
+      "method": "runtime.artifacts.stat",
+      "request": "StatArtifactQuery",
+      "result": "ArtifactMetadata",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "stat_artifact",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "attachments.write",
+      "class": "service",
+      "method": "runtime.attachments.abort",
+      "notes": [
+        "Discards one upload and its partial bytes; aborting twice is not an error."
+      ],
+      "request": "AbortAttachmentCommand",
+      "result": "AbortAttachmentResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "abort_attachment",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "attachments.write",
+      "class": "service",
+      "method": "runtime.attachments.append",
+      "notes": [
+        "Streams one bounded base64 chunk at ``expected_offset``; an out-of-order or",
+        "oversized chunk is rejected with a typed attachment error."
+      ],
+      "request": "AppendAttachmentChunkCommand",
+      "result": "AppendAttachmentChunkResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "append_attachment_chunk",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "attachments.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.attachments.begin",
+      "notes": [
+        "Reserves one session-scoped image upload and returns the opaque id plus the",
+        "bounded chunk budget; no bytes travel in the request."
+      ],
+      "request": "BeginAttachmentCommand",
+      "result": "BeginAttachmentResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "begin_attachment",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "attachments.write",
+      "class": "service",
+      "method": "runtime.attachments.finish",
+      "notes": [
+        "Finalizes an upload, verifying the received bytes against the declared size",
+        "and MIME type; the finalized attachment is durable across a restart."
+      ],
+      "request": "FinishAttachmentCommand",
+      "result": "FinishAttachmentResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "finish_attachment",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "attachments.read",
+      "class": "service",
+      "method": "runtime.attachments.read",
+      "notes": [
+        "Reads a bounded base64 window of a finalized attachment from the trusted",
+        "session workspace; the same ref stays readable after a process restart."
+      ],
+      "request": "ReadAttachmentQuery",
+      "result": "AttachmentChunk",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "read_attachment",
+      "wire_defaults": {
+        "limit": 65536,
+        "offset": 0
+      }
+    },
+    {
+      "capability": "attachments.read",
+      "class": "service",
+      "method": "runtime.attachments.stat",
+      "notes": [
+        "Reads durable metadata for one attachment of the calling session."
+      ],
+      "request": "StatAttachmentQuery",
+      "result": "AttachmentMetadata",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.ref.session",
+      "service_method": "stat_attachment",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.config.get",
+      "params_alias": "GetRuntimeConfigParams",
+      "request": "GetRuntimeConfigQuery",
+      "result": "RuntimeConfigView",
+      "result_alias": "RuntimeConfigResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_runtime_config",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "events.read",
+      "class": "service",
+      "method": "runtime.events.read",
+      "notes": [
+        "``limit`` is bounded to 1..1024, ``scan_limit`` to 1..4096, and",
+        "``max_event_bytes`` to 1024..8388608 by the wire decoder."
+      ],
+      "request": "ReadEventsQuery",
+      "result": "EventPage",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "read_events",
+      "wire_defaults": {
+        "after": 0,
+        "filter": {
+          "kinds": [],
+          "turn_ids": []
+        },
+        "limit": 256,
+        "max_event_bytes": 1048576,
+        "scan_limit": 1024
+      }
+    },
+    {
+      "capability": "events.watch",
+      "class": "service",
+      "in_process": "In-process ``watch_events`` returns an EventWatch lease (async context manager) whose stream yields RuntimeEvent values; the wire answers with {subscription_id, cursor} and then pushes runtime.event notifications.",
+      "method": "runtime.events.watch",
+      "notes": [
+        "``queue_size`` is bounded to 1..4096 by the wire decoder."
+      ],
+      "params_alias": "WatchEventsParams",
+      "request": "WatchSpec",
+      "result": "WatchStartResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "watch_events",
+      "wire_defaults": {
+        "after": 0,
+        "filter": {
+          "kinds": [],
+          "turn_ids": []
+        },
+        "max_event_bytes": 1048576,
+        "queue_size": 128
+      }
+    },
+    {
+      "capability": "project.list",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  The visible set is server-computed (ACL visibility intersected with any trusted connection scope) and applied before pagination; the call never opens a session, builds an agent, or registers a project.",
+      "method": "runtime.project.list",
+      "notes": [
+        "A catalog-scoped method: it has no per-request project position, so the server decides which registered projects are visible.",
+        "``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire decoder; ``visible_project_ids`` is never accepted from the wire."
+      ],
+      "params_alias": "ListProjectsParams",
+      "request": "ListProjectsQuery",
+      "result": "ProjectListPage",
+      "result_alias": "ProjectListResult",
+      "result_nullable": false,
+      "scope": "catalog",
+      "scope_location": null,
+      "service_method": "list_projects",
+      "wire_defaults": {
+        "limit": 50,
+        "offset": 0
+      }
+    },
+    {
+      "capability": "project.thinking",
+      "class": "service",
+      "in_process": "Optional delegate method; authorization is project-wide only (a thread scoped grant never authorizes it).",
+      "method": "runtime.project.thinking.set",
+      "request": "SetProjectThinkingLevelCommand",
+      "result": "SetProjectThinkingLevelResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "set_project_thinking_level",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.close",
+      "class": "service",
+      "method": "runtime.session.close",
+      "request": "CloseSessionCommand",
+      "result": "CloseSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "close_session",
+      "wire_defaults": {
+        "cancel_active": false
+      }
+    },
+    {
+      "capability": "session.create",
+      "class": "service",
+      "in_process": "Optional delegate method; authorization is project-wide only, so a thread scoped grant never authorizes it.  This is deliberately not ``runtime.session.open``: it writes metadata and never opens a runtime.",
+      "method": "runtime.session.create",
+      "notes": [
+        "``thread_id`` is optional; when it is absent the server allocates the real id and returns it in the result, so a client never invents one.",
+        "``title`` is optional, non-empty, and bounded to 120 characters."
+      ],
+      "params_alias": "CreateSessionParams",
+      "request": "CreateSessionCommand",
+      "result": "CreateSessionResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "create_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.delete",
+      "class": "service",
+      "in_process": "Optional delegate method.  A running turn is refused atomically with ``conflict`` and is never cancelled; only the metadata row and the thread goal are removed.",
+      "method": "runtime.session.delete",
+      "notes": [
+        "The result always reports ``retained_history``: checkpoints and the transcript projection are kept, so a UI must not claim the conversation was erased.",
+        "``command_id`` is generated (uuid4 hex) when omitted."
+      ],
+      "params_alias": "DeleteSessionParams",
+      "request": "DeleteSessionCommand",
+      "result": "DeleteSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "delete_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.read",
+      "class": "service",
+      "method": "runtime.session.get",
+      "request": "GetSessionQuery",
+      "result": "SessionView",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": "Optional delegate method; a thread without a goal is reported as no result (null on the wire) rather than an empty view.",
+      "method": "runtime.session.goal",
+      "request": "GetSessionGoalQuery",
+      "result": "SessionGoalView",
+      "result_nullable": true,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.goal",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.",
+      "method": "runtime.session.goal.clear",
+      "notes": [
+        "``expected_goal_id`` is required; the result always carries ``goal: null`` because the thread has no goal afterwards."
+      ],
+      "params_alias": "ClearSessionGoalParams",
+      "request": "ClearSessionGoalCommand",
+      "result": "SessionGoalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "clear_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.goal",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.",
+      "method": "runtime.session.goal.edit",
+      "notes": [
+        "``expected_goal_id`` is required: a goal replaced in the meantime answers ``conflict`` instead of being rewritten."
+      ],
+      "params_alias": "EditSessionGoalParams",
+      "request": "EditSessionGoalCommand",
+      "result": "SessionGoalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "edit_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.goal",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.",
+      "method": "runtime.session.goal.pause",
+      "notes": [
+        "``expected_goal_id`` is required.  Pausing also asks this session's own live turn to cancel and reports it through ``cancellation_requested``; no other session is cancelled."
+      ],
+      "params_alias": "PauseSessionGoalParams",
+      "request": "PauseSessionGoalCommand",
+      "result": "SessionGoalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "pause_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.goal",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.",
+      "method": "runtime.session.goal.resume",
+      "notes": [
+        "``expected_goal_id`` is required.  Status-only: no follow-up turn is started automatically."
+      ],
+      "params_alias": "ResumeSessionGoalParams",
+      "request": "ResumeSessionGoalCommand",
+      "result": "SessionGoalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "resume_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.goal",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.  The ledger is the one the session's agent was assembled with, so one project never writes another project's goal.",
+      "method": "runtime.session.goal.set",
+      "notes": [
+        "``objective`` is required and bounded; ``token_budget`` is optional and must be a positive integer.",
+        "An unfinished goal is never overwritten (``conflict``)."
+      ],
+      "params_alias": "SetSessionGoalParams",
+      "request": "SetSessionGoalCommand",
+      "result": "SessionGoalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "set_session_goal",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it reports the feature as unavailable.",
+      "method": "runtime.session.history",
+      "notes": [
+        "``before_turn`` is optional and must be >= 1; ``limit`` is bounded to",
+        "1..100 by the wire decoder."
+      ],
+      "params_alias": "ReadSessionHistoryParams",
+      "request": "ReadSessionHistoryQuery",
+      "result": "SessionHistoryPage",
+      "result_alias": "SessionHistoryResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "read_session_history",
+      "wire_defaults": {
+        "limit": 20
+      }
+    },
+    {
+      "capability": "session.list",
+      "class": "service",
+      "in_process": "Optional delegate method; authorization is project-wide only, so a thread scoped grant never authorizes it.",
+      "method": "runtime.session.list",
+      "notes": [
+        "``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire decoder."
+      ],
+      "params_alias": "ListSessionsParams",
+      "request": "ListSessionsQuery",
+      "result": "SessionListPage",
+      "result_alias": "SessionListResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "list_sessions",
+      "wire_defaults": {
+        "limit": 50,
+        "offset": 0
+      }
+    },
+    {
+      "capability": "session.mcp.reload",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it reports the feature as unavailable.",
+      "method": "runtime.session.mcp.reload",
+      "notes": [
+        "``enabled`` / ``include_tools`` require ``server``; see the request schema."
+      ],
+      "params_alias": "ReloadMcpParams",
+      "request": "ReloadMcpCommand",
+      "result": "ReloadMcpResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "reload_mcp",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.open",
+      "class": "service",
+      "method": "runtime.session.open",
+      "notes": [
+        "``command_id`` is generated (uuid4 hex) when omitted; it never deduplicates."
+      ],
+      "request": "OpenSessionCommand",
+      "result": "OpenSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "open_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.rebind",
+      "class": "service",
+      "method": "runtime.session.rebind",
+      "notes": [
+        "``command_id`` is generated (uuid4 hex) when omitted."
+      ],
+      "params_alias": "RebindSessionParams",
+      "request": "RebindSessionCommand",
+      "result": "RebindSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "rebind_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it reports the feature as unavailable.",
+      "method": "runtime.session.reconcile",
+      "notes": [
+        "``probe_turn_ids`` is bounded to 32 deduplicated ids by the wire decoder."
+      ],
+      "params_alias": "ReconcileSessionParams",
+      "request": "ReconcileSessionQuery",
+      "result": "SessionRecoverabilityView",
+      "result_alias": "SessionRecoverabilityResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "reconcile_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.rename",
+      "class": "service",
+      "in_process": "Optional delegate method; a missing session is ``not_found`` and never creates a database file or schema.",
+      "method": "runtime.session.rename",
+      "notes": [
+        "``title`` is required, non-empty, and bounded to 120 characters.",
+        "``command_id`` is generated (uuid4 hex) when omitted."
+      ],
+      "params_alias": "RenameSessionParams",
+      "request": "RenameSessionCommand",
+      "result": "RenameSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "rename_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.search",
+      "class": "service",
+      "in_process": "Optional delegate method; authorization is project-wide only, so a thread scoped grant never authorizes it.  Strictly read-only: it never creates a database or builds an agent.",
+      "method": "runtime.session.search",
+      "notes": [
+        "Metadata search only (title / summary / thread_id / model / active_model); it is never a full-text transcript search.",
+        "``text`` is bounded to 200 characters, ``limit`` to 1..100, and ``offset`` to 0..100000 by the wire decoder."
+      ],
+      "params_alias": "SearchSessionsParams",
+      "request": "SearchSessionsQuery",
+      "result": "SessionSearchPage",
+      "result_alias": "SessionSearchResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "search_sessions",
+      "wire_defaults": {
+        "limit": 50,
+        "offset": 0,
+        "text": ""
+      }
+    },
+    {
+      "capability": "session.thinking",
+      "class": "service",
+      "in_process": "Optional delegate method; a read-only grant must not authorize this write.",
+      "method": "runtime.session.thinking.set",
+      "notes": [
+        "``command_id`` is generated (uuid4 hex) when omitted."
+      ],
+      "request": "SetThinkingLevelCommand",
+      "result": "SetThinkingLevelResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "set_thinking_level",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "turn.approval.read",
+      "class": "service",
+      "method": "runtime.turn.approval.get",
+      "request": "PendingApprovalQuery",
+      "result": "PendingApprovalView",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "pending_approval",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "turn.approval.resume",
+      "class": "service",
+      "method": "runtime.turn.approval.resume",
+      "notes": [
+        "``decisions`` is required, non-empty, and bounded to 256 entries; each item",
+        "is exactly {kind} or {kind, message}."
+      ],
+      "request": "ResumeTurnCommand",
+      "result": "ResumeTurnResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "resume_turn",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "turn.cancel",
+      "class": "service",
+      "method": "runtime.turn.cancel",
+      "notes": [
+        "``expected_turn_id`` must match the live turn or the call fails with turn_mismatch."
+      ],
+      "params_alias": "CancelTurnParams",
+      "request": "CancelTurnCommand",
+      "result": "CancelTurnResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "cancel_turn",
+      "wire_defaults": {
+        "reason": "user"
+      }
+    },
+    {
+      "capability": "turn.steer",
+      "class": "service",
+      "method": "runtime.turn.steer",
+      "params_alias": "SteerTurnParams",
+      "request": "SteerTurnCommand",
+      "result": "SteerTurnResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "steer_turn",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "turn.submit",
+      "class": "service",
+      "in_process": "In-process only extras: ``attachments`` carries live objects and ``config_overrides`` values stay in-process; neither has a promised wire schema.",
+      "method": "runtime.turn.submit",
+      "notes": [
+        "``attachment_refs`` is the transport-safe image source: a bounded list of",
+        "opaque ids already finalized for this session; the in-process ``attachments``",
+        "list must stay absent or empty, and at least one of ``text`` /",
+        "``attachment_refs`` is required."
+      ],
+      "params_alias": "SubmitTurnParams",
+      "request": "SubmitTurnCommand",
+      "result": "CommandReceipt",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "submit_turn",
+      "wire_defaults": {}
+    }
+  ],
+  "protocol_features": {
+    "approval_resume": true,
+    "legacy_v1": true,
+    "raw_cursor": true,
+    "watch_resume": true
+  },
+  "schemas": {
+    "AbortAttachmentCommand": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "AbortAttachmentResult": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "removed",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ActivityPayload": {
+      "fields": [
+        {
+          "name": "phase",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "detail",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "reset_timer",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "AppendAttachmentChunkCommand": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "data_base64",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``data_base64`` is bounded to 349528 characters",
+        "(a 256 KiB chunk) so one chunk always fits inside the 1 MiB frame cap."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "AppendAttachmentChunkResult": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "received_bytes",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ApprovalActionPayload": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "dict",
+          "default_kind": "factory",
+          "name": "args",
+          "note": "Arbitrary JSON object copied from the HITL interrupt; no field schema is promised.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "dict[str, Any]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "description",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "allowed_decisions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ApprovalActionView": {
+      "fields": [
+        {
+          "name": "index",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "args",
+          "note": "Arbitrary JSON object supplied by the approval producer; the value is deep-copied and must be JSON-serializable, but no field schema is promised.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Any",
+          "required": true,
+          "ts_type": "JsonValue",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ApprovalDecision": {
+      "fields": [
+        {
+          "name": "kind",
+          "note": "One of APPROVAL_DECISION_KINDS; anything else is invalid_params.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "ApprovalDecisionKind",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "message",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``kind`` is one of APPROVAL_DECISION_KINDS; ``message`` is optional and",
+        "bounded to 256 bytes by the wire decoder."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ApprovalPayload": {
+      "fields": [
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "actions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ApprovalActionPayload, ...]",
+          "required": true,
+          "ts_type": "ApprovalActionPayload[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ArtifactChunk": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ArtifactRef",
+          "required": true,
+          "ts_type": "ArtifactRef",
+          "wire": "json"
+        },
+        {
+          "name": "offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "data_base64",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "byte_length",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "eof",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "metadata",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ArtifactMetadata",
+          "required": true,
+          "ts_type": "ArtifactMetadata",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ArtifactMetadata": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ArtifactRef",
+          "required": true,
+          "ts_type": "ArtifactRef",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "kind",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "modified_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "media_type",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "revision",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ArtifactPage": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "entries",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ArtifactMetadata, ...]",
+          "required": true,
+          "ts_type": "ArtifactMetadata[]",
+          "wire": "json"
+        },
+        {
+          "name": "next_cursor",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ArtifactRef": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Session-scoped workspace-relative POSIX path; ``path`` is logical, never absolute."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "AttachmentChunk": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "data_base64",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "byte_length",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "eof",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "metadata",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentMetadata",
+          "required": true,
+          "ts_type": "AttachmentMetadata",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "AttachmentMetadata": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "revision",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "display_name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "created_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "finalized",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "AttachmentRef": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "attachment_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Session-scoped opaque attachment id (<project, thread, 128-bit hex id>);",
+        "the id is server-generated and is never used as a path segment."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "BeginAttachmentCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "display_name",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``size`` is bounded to 1..4000000 bytes and",
+        "``mime`` must be an allowed image type; ``display_name`` is optional and",
+        "display-only (it never becomes a path segment)."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "BeginAttachmentResult": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "chunk_bytes",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "chunk_base64_chars",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "expires_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "next_offset",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CancelTurnCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "user",
+          "default_kind": "value",
+          "name": "reason",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "CancelTurnResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "cancellation_requested",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ClearSessionGoalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_goal_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``expected_goal_id`` must still be the persisted goal (otherwise ``conflict``)."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "CloseSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "cancel_active",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "CloseSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "closed",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "active_turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "cancellation_requested",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CommandReceipt": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "accepted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "A receipt is returned only after the turn actually started; it never",
+        "carries a runtime handle.  There is no ``accepted_at`` field."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CreateSessionCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "title",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "thread_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Metadata-only create: it persists the session row and never opens a runtime or builds an agent.",
+        "``thread_id`` is optional; when it is absent the server allocates the real id and returns it, so a client never invents one.",
+        "``title`` is optional, non-empty, and at most 120 characters."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "CreateSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "created",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``session`` carries the real persisted identity (server-allocated when the request omitted ``thread_id``); ``created`` is false for an idempotent re-create of an existing row."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "DeleteSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Removes the metadata row and the thread goal only; LangGraph checkpoints and the transcript projection are retained."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "DeleteSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "deleted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "retained_history",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``retained_history`` is always true: checkpoints and the transcript projection are kept, so a UI must not claim the conversation was erased."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "DiffPayload": {
+      "fields": [
+        {
+          "name": "call_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "new_text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "old_text",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "EditSessionGoalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_goal_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "objective",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``expected_goal_id`` must still be the persisted goal (otherwise ``conflict``); ``objective`` follows the same bounds as ``set``."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "EventCursor": {
+      "fields": [
+        {
+          "name": "sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "EventFilter": {
+      "fields": [
+        {
+          "name": "kinds",
+          "nullable": false,
+          "optional": false,
+          "python_type": "frozenset[str]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "turn_ids",
+          "nullable": false,
+          "optional": false,
+          "python_type": "frozenset[str]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Request-only AND filter: when ``filter`` is present the wire requires both",
+        "``kinds`` and ``turn_ids``; each is a list of strings."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "EventNotification": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "event",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "RuntimeEvent",
+          "wire": "json"
+        },
+        {
+          "name": "cursor",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Params of the runtime.event notification pushed for one live event."
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "EventNotificationMeta": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "cursor",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Consumer-side view of the runtime.event notification context."
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "EventPage": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "events",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[RuntimeEvent, ...]",
+          "required": true,
+          "ts_type": "RuntimeEvent[]",
+          "wire": "json"
+        },
+        {
+          "name": "cursor",
+          "nullable": false,
+          "optional": false,
+          "python_type": "EventCursor",
+          "required": true,
+          "ts_type": "EventCursor",
+          "wire": "json"
+        },
+        {
+          "name": "latest_sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "has_more",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "scanned_through",
+          "nullable": true,
+          "optional": false,
+          "python_type": "EventCursor | None",
+          "required": true,
+          "ts_type": "EventCursor | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "FinishAttachmentCommand": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "expected_mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "FinishAttachmentResult": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "revision",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "GetRuntimeConfigQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GetSessionGoalQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GetSessionQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "HistoryAttachment": {
+      "fields": [
+        {
+          "name": "attachment_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "image_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "revision",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Durable metadata for one image attached to a persisted user turn: the",
+        "opaque ``attachment_id`` is loaded through ``runtime.attachments.read``",
+        "and ``image_id`` is the per-turn ``[image#N]`` placeholder.  No base64",
+        "image bytes are ever carried here."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "HistoryEvent": {
+      "fields": [
+        {
+          "name": "kind",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "tool_calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[dict[str, Any], ...]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>[]",
+          "wire": "json"
+        },
+        {
+          "name": "tool_results",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[dict[str, Any], ...]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "attachments",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[HistoryAttachment, ...]",
+          "required": true,
+          "ts_type": "HistoryAttachment[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``kind`` is one of user / answer / thought / tools / meta;",
+        "``tool_calls`` / ``tool_results`` are plain JSON dicts, never LangChain objects."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "JsonRpcError": {
+      "fields": [
+        {
+          "name": "code",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "message",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "data",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "JsonRpcErrorData",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "JsonRpcErrorData": {
+      "fields": [
+        {
+          "name": "service_code",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "JsonRpcMeta": {
+      "fields": [
+        {
+          "name": "wire_version",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "JsonRpcNotification": {
+      "fields": [
+        {
+          "name": "jsonrpc",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "'2.0'",
+          "wire": "json"
+        },
+        {
+          "name": "method",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "params",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "T",
+          "wire": "json"
+        },
+        {
+          "name": "meta",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "JsonRpcMeta",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value",
+      "type_params": [
+        "T = JsonValue"
+      ]
+    },
+    "JsonRpcRequest": {
+      "fields": [
+        {
+          "name": "jsonrpc",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "'2.0'",
+          "wire": "json"
+        },
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string | number",
+          "wire": "json"
+        },
+        {
+          "name": "method",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "params",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "T",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value",
+      "type_params": [
+        "T = JsonValue"
+      ]
+    },
+    "JsonRpcResponse": {
+      "fields": [
+        {
+          "name": "jsonrpc",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "'2.0'",
+          "wire": "json"
+        },
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string | number",
+          "wire": "json"
+        },
+        {
+          "name": "result",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "T",
+          "wire": "json"
+        },
+        {
+          "name": "error",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "JsonRpcError",
+          "wire": "json"
+        },
+        {
+          "name": "meta",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "JsonRpcMeta",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "value",
+      "type_params": [
+        "T = JsonValue"
+      ]
+    },
+    "ListArtifactsQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": ".",
+          "default_kind": "value",
+          "name": "path",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "cursor",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": 100,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListProjectsQuery": {
+      "fields": [
+        {
+          "default": 50,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "visible_project_ids",
+          "note": "Server-computed visibility filter: the principal's ACL visibility intersected with the trusted connection scope. The wire decoder rejects an explicit value, so a client can never widen the projects it may enumerate.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "never[]",
+          "wire": "unsupported"
+        }
+      ],
+      "notes": [
+        "``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire",
+        "decoder; the visibility filter is applied before pagination."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListSessionsQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 50,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "McpServerStateView": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "attached",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "include_tools",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "discovered",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "loaded",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "McpServerView": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "transport",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "tool_prefix",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Whitelisted projection: command / args / env / url / headers / API keys and",
+        "per-tool include-exclude lists are never carried."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "NegotiateResult": {
+      "fields": [
+        {
+          "name": "wire_version",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "supported_versions",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "capabilities",
+          "note": "The PROTOCOL_FEATURES map.",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "Record<string, boolean>",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``capabilities`` carries protocol feature flags only, never authorization capabilities."
+      ],
+      "origin": "transport",
+      "role": "result"
+    },
+    "Negotiation": {
+      "fields": [
+        {
+          "name": "versions",
+          "note": "1..16 unique ASCII version tokens matching ^[A-Za-z0-9][A-Za-z0-9._~-]*$",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "client",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "NegotiationClient",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Connection-state request: no service DTO and no authorization capability."
+      ],
+      "origin": "transport",
+      "role": "request"
+    },
+    "NegotiationClient": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "version",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Client identity in the negotiate request; never used for authorization."
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "OpenSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "OpenSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "created",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "view",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionView",
+          "required": true,
+          "ts_type": "SessionView",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "There is no ``opened_at`` field; ``created`` reports first-open only."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "PauseSessionGoalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_goal_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``expected_goal_id`` must still be the persisted goal (otherwise ``conflict``).",
+        "Pausing also asks this session's own live turn to cancel; no other session is touched."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "PendingApprovalQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "PendingApprovalView": {
+      "fields": [
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "actions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ApprovalActionView, ...]",
+          "required": true,
+          "ts_type": "ApprovalActionView[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "There is no ``description`` / ``allowed_decisions`` field on an approval action."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "PlanEntryPayload": {
+      "fields": [
+        {
+          "name": "content",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "medium",
+          "default_kind": "value",
+          "name": "priority",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "pending",
+          "default_kind": "value",
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "PlanPayload": {
+      "fields": [
+        {
+          "name": "plan_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "entries",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[PlanEntryPayload, ...]",
+          "required": true,
+          "ts_type": "PlanEntryPayload[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "PlanRemovedPayload": {
+      "fields": [
+        {
+          "name": "plan_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ProjectListItem": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "workspace_name",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "git_branch",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "workspace_path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Project identity only: id, workspace name, git branch, and the workspace",
+        "path the loopback console already exposes for its own project."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ProjectListPage": {
+      "fields": [
+        {
+          "name": "projects",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ProjectListItem, ...]",
+          "required": true,
+          "ts_type": "ProjectListItem[]",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ReadArtifactQuery": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ArtifactRef",
+          "required": true,
+          "ts_type": "ArtifactRef",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 65536,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "expected_revision",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ReadAttachmentQuery": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 65536,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``limit`` is bounded to 1..262144 bytes."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ReadEventsQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "after",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 256,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": "EventFilter",
+          "default_kind": "opaque",
+          "name": "filter",
+          "nullable": false,
+          "optional": true,
+          "python_type": "EventFilter",
+          "required": false,
+          "ts_type": "EventFilter",
+          "wire": "json"
+        },
+        {
+          "default": 1024,
+          "default_kind": "value",
+          "name": "scan_limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 1048576,
+          "default_kind": "value",
+          "name": "max_event_bytes",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ReadSessionHistoryQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "before_turn",
+          "nullable": true,
+          "optional": true,
+          "python_type": "int | None",
+          "required": false,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": 20,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "RebindSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "RebindSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "view",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionView",
+          "required": true,
+          "ts_type": "SessionView",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ReconcileSessionQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "probe_turn_ids",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ReloadMcpCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "server",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "enabled",
+          "nullable": true,
+          "optional": true,
+          "python_type": "bool | None",
+          "required": false,
+          "ts_type": "boolean | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "include_tools",
+          "nullable": true,
+          "optional": true,
+          "python_type": "tuple[str, ...] | None",
+          "required": false,
+          "ts_type": "string[] | null",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Three wire shapes: ``server`` omitted attaches every enabled server (and",
+        "then ``enabled`` / ``include_tools`` must be absent); ``server`` +",
+        "``enabled`` persists the on/off flag; ``server`` + ``include_tools``",
+        "persists the tool whitelist."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ReloadMcpResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "server",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "enabled",
+          "nullable": true,
+          "optional": false,
+          "python_type": "bool | None",
+          "required": true,
+          "ts_type": "boolean | null",
+          "wire": "json"
+        },
+        {
+          "name": "attached",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "active_servers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "tool_count",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "warnings",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "tool_names",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "servers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[McpServerStateView, ...]",
+          "required": true,
+          "ts_type": "McpServerStateView[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "RenameSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``title`` is required, non-empty, and at most 120 characters."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "RenameSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "renamed",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ResumeSessionGoalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_goal_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``expected_goal_id`` must still be the persisted goal (otherwise ``conflict``).",
+        "Status-only: resuming does not start a follow-up turn."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ResumeTurnCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "decisions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ApprovalDecision, ...]",
+          "required": true,
+          "ts_type": "ApprovalDecision[]",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``decisions`` is a non-empty list of 1..256 ApprovalDecision objects."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ResumeTurnResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "accepted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "RuntimeConfigView": {
+      "fields": [
+        {
+          "name": "current_model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "available_models",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "thinking_level",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "thinking_levels",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "mcp_servers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[McpServerView, ...]",
+          "required": true,
+          "ts_type": "McpServerView[]",
+          "wire": "json"
+        },
+        {
+          "name": "mcp_enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "can_set_thinking",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "can_toggle_mcp_global",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "project_thinking_level",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "can_set_project_thinking",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "RuntimeEvent": {
+      "fields": [
+        {
+          "name": "sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "turn_sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "kind",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "payload",
+          "nullable": false,
+          "optional": false,
+          "python_type": "JSONValue",
+          "required": true,
+          "ts_type": "JsonValue",
+          "wire": "json"
+        },
+        {
+          "name": "version",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``sequence`` is the session cursor and ``turn_sequence`` the turn-local",
+        "sequence (both frozen in v1).  ``payload`` is a strict JSON projection; there",
+        "is no ``timestamp`` field."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SearchSessionsQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "text",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 50,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Metadata search only (title / summary / thread_id / model / active_model); it is never a full-text transcript search and creates no database.",
+        "``text`` is optional and bounded to 200 characters; ``limit``/``offset`` bound the page."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SessionGoalResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "goal",
+          "nullable": true,
+          "optional": false,
+          "python_type": "SessionGoalView | None",
+          "required": true,
+          "ts_type": "SessionGoalView | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "cancellation_requested",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Outcome of one goal write: ``goal`` is the refreshed projection (null only after ``clear``, when the thread has no goal any more) and ``cancellation_requested`` is true only when ``pause`` asked this session's live turn to stop."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionGoalView": {
+      "fields": [
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "goal_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "objective",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "token_budget",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "tokens_used",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "time_used_seconds",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``token_budget`` is null when the goal has no budget; the goal object is not exposed."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionHistoryPage": {
+      "fields": [
+        {
+          "name": "events",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[HistoryEvent, ...]",
+          "required": true,
+          "ts_type": "HistoryEvent[]",
+          "wire": "json"
+        },
+        {
+          "name": "start_turn",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "end_turn",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "total_turns",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "has_more",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "available",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionListPage": {
+      "fields": [
+        {
+          "name": "items",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[SessionMetadataItem, ...]",
+          "required": true,
+          "ts_type": "SessionMetadataItem[]",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionMetadataItem": {
+      "fields": [
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "active_model",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "created_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "updated_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "summary",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionRecoverabilityView": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "history_available",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "history_total_turns",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "live_epoch",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "live_latest_sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "live_oldest_sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "live_dropped_through",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "active_turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "latest_turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "latest_turn_first_sequence",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "latest_turn_retained_from",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "latest_turn_intact",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "probe",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[TurnCoverageProbe, ...]",
+          "required": true,
+          "ts_type": "TurnCoverageProbe[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionRef": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Shared session identity (<project_id, thread_id>); both keys are required."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "SessionSearchPage": {
+      "fields": [
+        {
+          "name": "items",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[SessionMetadataItem, ...]",
+          "required": true,
+          "ts_type": "SessionMetadataItem[]",
+          "wire": "json"
+        },
+        {
+          "name": "next_offset",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SessionView": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "active_turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "latest_sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "usage",
+          "nullable": false,
+          "optional": false,
+          "python_type": "UsageView",
+          "required": true,
+          "ts_type": "UsageView",
+          "wire": "json"
+        },
+        {
+          "name": "last_error",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "last_activity_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "active_model",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "model",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The runtime goal object and any runtime handle are never projected."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SetProjectThinkingLevelCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "level",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SetProjectThinkingLevelResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "level",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SetSessionGoalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "objective",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "token_budget",
+          "nullable": true,
+          "optional": true,
+          "python_type": "int | None",
+          "required": false,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``objective`` is required, non-empty, and bounded to 10000 characters; ``token_budget`` is optional and must be a positive integer.",
+        "An unfinished goal is never overwritten: the call is refused with ``conflict`` instead of replacing it."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SetThinkingLevelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "level",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SetThinkingLevelResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "level",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "view",
+          "nullable": false,
+          "optional": false,
+          "python_type": "RuntimeConfigView",
+          "required": true,
+          "ts_type": "RuntimeConfigView",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "StatArtifactQuery": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ArtifactRef",
+          "required": true,
+          "ts_type": "ArtifactRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "StatAttachmentQuery": {
+      "fields": [
+        {
+          "name": "ref",
+          "nullable": false,
+          "optional": false,
+          "python_type": "AttachmentRef",
+          "required": true,
+          "ts_type": "AttachmentRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SteerTurnCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SteerTurnResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "accepted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "pending_count",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SubagentStatusPayload": {
+      "fields": [
+        {
+          "name": "parent_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "status",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Transient stage marker: never persisted and legitimately absent from a replay."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SubmitTurnCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "attachments",
+          "note": "v1 does not support in-process attachment objects: the wire accepts only an absent or empty list and rejects anything else with invalid_params.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[Any, ...]",
+          "required": false,
+          "ts_type": "never[]",
+          "wire": "unsupported"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "attachment_refs",
+          "note": "Opaque, server-generated attachment ids already finalized for this session; bounded to 8 ids.  The service resolves them from the trusted session workspace.  Mutually exclusive with the in-process ``attachments`` field.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "config_overrides",
+          "note": "The wire accepts a JSON object, but no key/value schema is promised: values stay in-process objects and only a deep copy is kept by the service.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "Mapping[str, Any]",
+          "required": false,
+          "ts_type": "Record<string, JsonValue>",
+          "wire": "restricted"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``text`` is required (may be empty only when ``attachment_refs`` is present);",
+        "at least one of ``text`` / ``attachment_refs`` must be supplied and",
+        "``command_id`` is generated when omitted."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SubscriptionComplete": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "cursor",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Params of the runtime.subscription.complete notification."
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "SubscriptionError": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "error",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "JsonRpcError",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Params of the runtime.subscription.error notification."
+      ],
+      "origin": "transport",
+      "role": "value"
+    },
+    "TextPayload": {
+      "fields": [
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "message_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolBatchFinishedPayload": {
+      "fields": [
+        {
+          "name": "group_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolBatchPayload": {
+      "fields": [
+        {
+          "name": "calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ToolCallPayload, ...]",
+          "required": true,
+          "ts_type": "ToolCallPayload[]",
+          "wire": "json"
+        },
+        {
+          "name": "parallel",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "group_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "items",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ToolItemPayload, ...]",
+          "required": true,
+          "ts_type": "ToolItemPayload[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``items`` is part of the frozen v1 shape even though producers currently send it empty."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolCallPayload": {
+      "fields": [
+        {
+          "name": "call_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "args_preview",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolFinishedPayload": {
+      "fields": [
+        {
+          "name": "item_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "preview",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "error",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolItemPayload": {
+      "fields": [
+        {
+          "name": "item_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "call_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "category",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "preview",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "error",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "sub",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "parent_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "workspace_changed",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "subagent_name",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "subagent_model",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "subagent_reasoning_effort",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "subagent_model_inherited",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "subagent_reasoning_inherited",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ToolResultPayload": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "sub",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "call_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Legacy per-item fallback; still emitted and rendered by every shell, so not deprecated."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "TurnCoverageProbe": {
+      "fields": [
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "covered",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "TurnTerminalPayload": {
+      "fields": [
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "final_text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "error",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "interrupted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "tool_calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "input_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "output_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "cache_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "compact_events",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0.0,
+          "default_kind": "value",
+          "name": "elapsed_s",
+          "nullable": false,
+          "optional": false,
+          "python_type": "float",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Bounded terminal summary emitted exactly once per turn."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "UnwatchRequest": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "request"
+    },
+    "UnwatchResult": {
+      "fields": [
+        {
+          "name": "removed",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Idempotent: an unknown subscription id is answered with removed=false."
+      ],
+      "origin": "transport",
+      "role": "result"
+    },
+    "UsagePayload": {
+      "fields": [
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "turn_input",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "turn_output",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "turn_cache",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "last_input",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "last_output",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "last_cache",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "output_tokens_per_second",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "ttft_s",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": "end_to_end",
+          "default_kind": "value",
+          "name": "rate_basis",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "rate_estimated",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "context_size",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "model_calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "UsageView": {
+      "fields": [
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "input_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "output_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "cache_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Result-only projection; every field is always present on the wire."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WatchSpec": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "after",
+          "note": "wire default 0",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "queue_size",
+          "note": "wire default 128, range 1..4096",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "filter",
+          "note": "wire default {kinds: [], turn_ids: []}",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "EventFilter",
+          "wire": "json"
+        },
+        {
+          "name": "max_event_bytes",
+          "note": "wire default 1048576",
+          "nullable": false,
+          "optional": true,
+          "python_type": null,
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Transport-only request: the in-process port takes these arguments directly",
+        "and returns a lease, while the wire returns a subscription id and streams",
+        "notifications."
+      ],
+      "origin": "transport",
+      "role": "request"
+    },
+    "WatchStartResult": {
+      "fields": [
+        {
+          "name": "subscription_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "cursor",
+          "nullable": false,
+          "optional": false,
+          "python_type": null,
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "transport",
+      "role": "result"
+    }
+  },
+  "standalone_schemas": [
+    "EventNotificationMeta",
+    "JsonRpcNotification",
+    "JsonRpcRequest",
+    "JsonRpcResponse"
+  ],
+  "transport_methods": [
+    {
+      "class": "transport",
+      "in_process": "No service DTO: the in-process port expresses the same thing by exiting the EventWatch lease.",
+      "method": "runtime.events.unwatch",
+      "notes": [
+        "Connection-state method: it only drops the caller's own subscription."
+      ],
+      "request": "UnwatchRequest",
+      "result": "UnwatchResult",
+      "result_nullable": false,
+      "scope": "subscription",
+      "scope_location": "params.subscription_id",
+      "wire_defaults": {}
+    },
+    {
+      "class": "transport",
+      "in_process": "Connection-state method: it has no service DTO, no authorization capability, and it is idempotent only for the identical proposal.",
+      "method": "runtime.protocol.negotiate",
+      "notes": [
+        "An unsupported proposal answers -32002 and a second, different proposal",
+        "answers -32003; the response never carries authorization capabilities."
+      ],
+      "params_alias": "NegotiateParams",
+      "request": "Negotiation",
+      "result": "NegotiateResult",
+      "result_nullable": false,
+      "scope": "connection",
+      "scope_location": null,
+      "wire_defaults": {}
+    }
+  ],
+  "transport_notifications": [
+    {
+      "method": "runtime.event",
+      "notes": [
+        "One live event per notification; ``cursor`` is the session cursor after it."
+      ],
+      "params": "EventNotification"
+    },
+    {
+      "method": "runtime.subscription.complete",
+      "notes": [
+        "The watch stream ended normally (session closed or cancelled)."
+      ],
+      "params": "SubscriptionComplete"
+    },
+    {
+      "method": "runtime.subscription.error",
+      "notes": [
+        "The watch stream ended with a bounded error; the payload never carries producer text."
+      ],
+      "params": "SubscriptionError"
+    }
+  ],
+  "type_aliases": {
+    "HistoryToolCall": "Record<string, JsonValue>",
+    "HistoryToolResult": "Record<string, JsonValue>",
+    "McpServerState": "McpServerStateView"
+  },
+  "wire_version": "1"
+}

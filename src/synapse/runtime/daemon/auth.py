@@ -3,16 +3,125 @@
 from __future__ import annotations
 
 import hmac
+import inspect
 import os
 import secrets
 import stat
 from collections.abc import Mapping
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from synapse.runtime.daemon.config import ensure_directory
 from synapse.runtime.service import Principal
 
 _MAX_TOKEN_BYTES = 1024
+
+#: Host-private handshake header that binds one loopback relay connection to a
+#: single project.  Only a trusted server-side peer can set it: the browser never
+#: opens this socket, so the header can never be forged by a wire parameter or a
+#: ``runtime.protocol.negotiate`` declaration.  The daemon reads it *after* the
+#: bearer authenticator has accepted the connection, and only an *absent* header
+#: means "no scope": a header that is present but unusable refuses the handshake
+#: (see :func:`read_project_scope_header`).
+PROJECT_SCOPE_HEADER = "X-Synapse-Project-Scope"
+MAX_PROJECT_SCOPE_BYTES = 256
+
+
+class ProjectScopeHeaderError(ValueError):
+    """The trusted scope header is present but not a usable project id.
+
+    Raised instead of silently degrading to "no scope": a malformed *narrowing*
+    hint that is dropped widens the connection to the daemon's own visibility, so
+    an unusable value has to refuse the handshake.  The message never echoes the
+    offending value (it may be attacker-influenced and must not be reflected).
+    """
+
+
+def _project_scope_candidates(headers: Mapping[str, str]) -> list[object]:
+    """Every value carried under the scope header name (case-insensitive)."""
+    name = PROJECT_SCOPE_HEADER.lower()
+    return [value for key, value in headers.items() if str(key).lower() == name]
+
+
+def read_project_scope_header(headers: Mapping[str, str]) -> str | None:
+    """Return the validated scope header value, or ``None`` when it is absent.
+
+    ``None`` means "the header was not sent": the connection keeps the daemon's
+    own visibility, which is the documented default.  A header that *is* present
+    but unusable (repeated under different casings, empty, non-string, carrying
+    control characters, non-UTF-8 encodable, or longer than
+    :data:`MAX_PROJECT_SCOPE_BYTES`) raises :class:`ProjectScopeHeaderError` and
+    therefore refuses authentication: the header is a narrowing hint, and a hint
+    that cannot be honoured must not be replaced by the wider default.
+
+    Callers must invoke this only *after* authentication succeeded, so an
+    unauthenticated peer can never influence the outcome.
+    """
+    values = _project_scope_candidates(headers)
+    if not values:
+        return None
+    if len(values) != 1:
+        # Two spellings of the same header is a request-smuggling shape: the
+        # daemon cannot tell which one a downstream component would have used.
+        raise ProjectScopeHeaderError("scope header must not be repeated")
+    value = values[0]
+    if type(value) is not str:
+        raise ProjectScopeHeaderError("scope header must be a string")
+    if not value:
+        raise ProjectScopeHeaderError("scope header must not be empty")
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        raise ProjectScopeHeaderError("scope header contains control characters")
+    if value != value.strip():
+        raise ProjectScopeHeaderError("scope header must not be padded with whitespace")
+    try:
+        size = len(value.encode("utf-8", errors="strict"))
+    except UnicodeEncodeError:
+        raise ProjectScopeHeaderError("scope header is not valid UTF-8") from None
+    if size > MAX_PROJECT_SCOPE_BYTES:
+        raise ProjectScopeHeaderError("scope header is too long")
+    return value
+
+
+class ScopedConnectionAuthenticator:
+    """Wrap a connection authenticator and publish the trusted project scope.
+
+    The scope header is read *only* after the wrapped authenticator accepted the
+    connection, so an unauthenticated peer can never influence it.  The value is
+    published through the injected :class:`ContextVar`, which the per-connection
+    service factory reads inside the same connection task; a value therefore
+    never leaks into another connection.
+
+    A present-but-unusable header (:class:`ProjectScopeHeaderError`) propagates
+    out of :meth:`__call__`, so the handshake is refused before the service
+    factory runs and the scope variable keeps its previous value: the connection
+    is never silently promoted to the daemon's wider default visibility.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        scope_var: ContextVar[str | None],
+    ) -> None:
+        if not callable(inner):
+            raise ValueError("inner authenticator must be callable")
+        if type(scope_var) is not ContextVar:
+            raise ValueError("scope_var must be a ContextVar")
+        #: The wrapped authenticator.  Exposed so the composition root and its
+        #: tests can still assert which *authentication* strategy is installed;
+        #: this decorator only adds the trusted scope record on top.
+        self.inner = inner
+        self._inner = inner
+        self._scope_var = scope_var
+
+    async def __call__(self, headers: Mapping[str, str]) -> Principal:
+        principal = self._inner(headers)
+        if inspect.isawaitable(principal):
+            principal = await principal
+        if type(principal) is not Principal:
+            raise ValueError("inner authenticator did not return Principal")
+        self._scope_var.set(read_project_scope_header(headers))
+        return principal
 
 
 class TokenFileError(ValueError):

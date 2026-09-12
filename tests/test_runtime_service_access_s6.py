@@ -21,13 +21,19 @@ from synapse.runtime.service import (
     ARTIFACTS_STAT,
     EVENTS_READ,
     EVENTS_WATCH,
+    PROJECT_LIST,
     PROJECT_THINKING,
     SESSION_CLOSE,
+    SESSION_CREATE,
+    SESSION_DELETE,
+    SESSION_GOAL,
     SESSION_LIST,
     SESSION_MCP_RELOAD,
     SESSION_OPEN,
     SESSION_READ,
     SESSION_REBIND,
+    SESSION_RENAME,
+    SESSION_SEARCH,
     SESSION_THINKING,
     TURN_APPROVAL_READ,
     TURN_APPROVAL_RESUME,
@@ -41,6 +47,7 @@ from synapse.runtime.service import (
     ApprovalDecision,
     CancelTurnCommand,
     CloseSessionCommand,
+    DaemonAuthorizer,
     GetSessionQuery,
     InvalidAccessContextError,
     InvalidRequestError,
@@ -183,29 +190,56 @@ def test_access_dtos_are_frozen_slotted_copy_isolated_and_json_projectable() -> 
         AclGrant("s", "p", frozenset(), frozenset())
 
 
+#: The capability surface frozen before session management and the session-goal
+#: write were added.  Recorded literally so growth is asserted *against* it: a new
+#: capability must be named in ``_ADDITIVE_CAPABILITIES`` instead of quietly
+#: rewriting this baseline (or dropping a capability that already shipped).
+_V1_CAPABILITIES = frozenset(
+    {
+        SESSION_OPEN,
+        TURN_SUBMIT,
+        TURN_CANCEL,
+        TURN_STEER,
+        SESSION_CLOSE,
+        SESSION_READ,
+        SESSION_REBIND,
+        SESSION_THINKING,
+        PROJECT_THINKING,
+        PROJECT_LIST,
+        SESSION_LIST,
+        SESSION_MCP_RELOAD,
+        EVENTS_READ,
+        EVENTS_WATCH,
+        ARTIFACTS_STAT,
+        ARTIFACTS_LIST,
+        ARTIFACTS_READ,
+        TURN_APPROVAL_READ,
+        TURN_APPROVAL_RESUME,
+    }
+)
+
+#: Capabilities added on top of the frozen baseline: session management
+#: (create / rename / delete / search) and the dedicated session-goal write.
+#: Named here so the surface only ever grows additively and a shipped capability
+#: cannot silently disappear.
+_ADDITIVE_CAPABILITIES = frozenset(
+    {
+        SESSION_CREATE,
+        SESSION_DELETE,
+        SESSION_RENAME,
+        SESSION_SEARCH,
+        SESSION_GOAL,
+        "attachments.read",
+        "attachments.write",
+    }
+)
+
+
 def test_capabilities_and_error_codes_are_stable_and_exported() -> None:
-    assert ALL_RUNTIME_CAPABILITIES == frozenset(
-        {
-            SESSION_OPEN,
-            TURN_SUBMIT,
-            TURN_CANCEL,
-            TURN_STEER,
-            SESSION_CLOSE,
-            SESSION_READ,
-            SESSION_REBIND,
-            SESSION_THINKING,
-            PROJECT_THINKING,
-            SESSION_LIST,
-            SESSION_MCP_RELOAD,
-            EVENTS_READ,
-            EVENTS_WATCH,
-            ARTIFACTS_STAT,
-            ARTIFACTS_LIST,
-            ARTIFACTS_READ,
-            TURN_APPROVAL_READ,
-            TURN_APPROVAL_RESUME,
-        }
-    )
+    assert ALL_RUNTIME_CAPABILITIES == _V1_CAPABILITIES | _ADDITIVE_CAPABILITIES
+    # The frozen baseline stays fully covered and the set only grew additively.
+    assert _V1_CAPABILITIES <= ALL_RUNTIME_CAPABILITIES
+    assert ALL_RUNTIME_CAPABILITIES - _V1_CAPABILITIES == _ADDITIVE_CAPABILITIES
     assert PermissionDeniedError().code == "permission_denied"
     assert PermissionDeniedError("secret", code="not_found").code == "permission_denied"
     assert InvalidAccessContextError("safe").code == "invalid_access_context"
@@ -888,3 +922,79 @@ def test_watch_session_malformed_ref_is_invalid_request_not_permission() -> None
             await wrapper.get_session(GetSessionQuery(None))  # type: ignore[arg-type]
 
     asyncio.run(run())
+
+
+def test_rebind_session_is_an_optional_delegate_method_authorized_first() -> None:
+    """An older delegate without ``rebind_session`` stays constructible.
+
+    The wrapper reports the feature as unavailable *after* the ACL check, so a
+    caller without ``session.rebind`` still gets a denial rather than a probe of
+    the delegate's surface.
+    """
+    methods = {
+        name: value for name, value in SpyDelegate.__dict__.items() if name != "rebind_session"
+    }
+    OldDelegate = type("OldDelegate", (object,), methods)
+
+    async def run() -> None:
+        old = OldDelegate()
+        denied = bind_access(old, PRINCIPAL, AclAuthorizer([]))
+        with pytest.raises(PermissionDeniedError):
+            await denied.rebind_session(RebindSessionCommand(REF, "model-a"))
+
+        allowed = bind_access(old, PRINCIPAL, _authorizer(SESSION_REBIND))
+        with pytest.raises(InvalidRequestError, match="session rebind is unavailable"):
+            await allowed.rebind_session(RebindSessionCommand(REF, "model-a"))
+
+        assert await bind_access(
+            SpyDelegate(), PRINCIPAL, _authorizer(SESSION_REBIND)
+        ).rebind_session(RebindSessionCommand(REF, "model-a")) == "rebind"
+
+    asyncio.run(run())
+
+
+def test_bind_access_accepts_only_the_two_builtin_authorizers() -> None:
+    """The composition boundary stays a closed set of trusted strategies.
+
+    ``DaemonAuthorizer`` is a first-class (typed) choice; anything else -- for
+    example a plug-in that would authorize everything -- is rejected before any
+    request is served.
+    """
+
+    class PluginAuthorizer:
+        def authorize(self, principal: Any, capability: str, session: Any) -> None:
+            return None
+
+        def authorize_project(self, principal: Any, capability: str, project_id: str) -> None:
+            return None
+
+    async def run() -> None:
+        delegate = SpyDelegate()
+        daemon = bind_access(delegate, Principal("runtime-daemon"), DaemonAuthorizer())
+        assert await daemon.get_session(GetSessionQuery(REF)) == "get"
+        assert delegate.calls == ["get"]
+
+        for authorizer in (PluginAuthorizer(), None, object()):
+            with pytest.raises(TypeError):
+                bind_access(  # type: ignore[arg-type]
+                    SpyDelegate(), PRINCIPAL, authorizer
+                )
+
+    asyncio.run(run())
+
+
+def test_bind_access_authorizer_annotation_admits_the_daemon_policy() -> None:
+    annotation = inspect.signature(bind_access).parameters["authorizer"].annotation
+    assert {part.strip() for part in annotation.split("|")} == {
+        "AclAuthorizer",
+        "DaemonAuthorizer",
+        "ProjectScopeAuthorizer",
+    }
+    inner = inspect.signature(AccessControlledAgentRuntimeService.__init__).parameters[
+        "authorizer"
+    ].annotation
+    assert {part.strip() for part in inner.split("|")} == {
+        "AclAuthorizer",
+        "DaemonAuthorizer",
+        "ProjectScopeAuthorizer",
+    }

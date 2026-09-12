@@ -110,6 +110,31 @@ function responseFor(socket: FakeSocket): { jsonrpc: '2.0'; id: number } {
   return req;
 }
 
+/**
+ * One live `runtime.event` frame.  The daemon pushes the event's own session
+ * sequence as the cursor (`cursor = stream.cursor.sequence`), so the helper
+ * keeps them equal; `version` is overridable to build an unconsumable frame.
+ */
+function liveEvent(cursor: number, subscriptionId: string, version = 1) {
+  return {
+    jsonrpc: '2.0',
+    meta: { wire_version: '1' },
+    method: 'runtime.event',
+    params: {
+      subscription_id: subscriptionId,
+      cursor,
+      event: {
+        sequence: cursor,
+        turn_id: 'turn-1',
+        turn_sequence: 1,
+        kind: 'activity_started',
+        payload: {},
+        version,
+      },
+    },
+  };
+}
+
 test('late response from a replaced socket never resolves a new-generation request', async () => {
   const { client, socket, factory } = await openClient();
   const probe = client.getSession(SESSION).catch(() => undefined);
@@ -185,7 +210,7 @@ test('watch reconnects from the last cursor: no silent after=0', async () => {
     jsonrpc: '2.0',
     meta: { wire_version: '1' },
     method: 'runtime.event',
-    params: { subscription_id: 'sub1', event: { sequence: 6, turn_id: 't', turn_sequence: 1, kind: 'activity_started', timestamp: '', payload: {} }, cursor: 6 },
+    params: { subscription_id: 'sub1', event: { sequence: 6, turn_id: 't', turn_sequence: 1, kind: 'activity_started', timestamp: '', payload: {}, version: 1 }, cursor: 6 },
   });
   await tick();
   assert.equal(client.getWatchCursor(), 6);
@@ -305,5 +330,122 @@ test('subscription complete/error notices are routed with service_code', async (
       ['complete', null, 3],
     ],
   );
+  client.disconnect();
+});
+
+test('a fenced watch survives a reconnect and resumes from the last good cursor', async () => {
+  const factory = new Factory();
+  const notices: any[] = [];
+  const client = new SynapseRuntimeClient({
+    url: 'ws://loopback',
+    socketFactory: factory.make,
+    reconnect: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 5 },
+    onSubscriptionNotice: (n) => notices.push(n),
+  });
+  const cp = client.connect();
+  await tick();
+  const s1 = factory.sockets[0];
+  s1.serverOpen();
+  await cp;
+
+  const watchPromise = client.watchEvents(SESSION, 0);
+  await tick();
+  const watchReq = responseFor(s1);
+  s1.push({ jsonrpc: '2.0', id: watchReq.id, meta: { wire_version: '1' }, result: { subscription_id: 'sub1', cursor: 0 } });
+  await watchPromise;
+
+  s1.push(liveEvent(4, 'sub1'));
+  await tick();
+  assert.equal(client.getWatchCursor(), 4);
+
+  // A frame this client cannot consume fences the subscription: the last good
+  // cursor (4) is kept and the unreplayed sequence (5) is never jumped over.
+  s1.push(liveEvent(5, 'sub1', 2));
+  s1.push(liveEvent(6, 'sub1'));
+  await tick();
+  assert.equal(client.getWatchCursor(), 4, 'the fenced watch may not cross the gap');
+  assert.deepEqual(
+    notices.map((n) => [n.type, n.service_code]),
+    [['error', 'unsupported_event_version']],
+  );
+
+  // The drop changes nothing: the gap is still open, and a late frame from the
+  // replaced socket cannot revive the dead subscription.
+  s1.serverDrop();
+  await tickN(30);
+  assert.equal(factory.calls, 2);
+  const s2 = factory.sockets[1];
+  s2.serverOpen();
+  await tickN(40);
+  assert.equal(client.getWatchCursor(), 4, 'the fence keeps the last good cursor across the drop');
+  s1.push(liveEvent(6, 'sub1'));
+  await tick();
+  assert.equal(client.getWatchCursor(), 4, 'a late frame from the dead socket stays fenced');
+
+  // Re-attaching resumes from the last good cursor, so the daemon replays the
+  // gap instead of skipping it, and the fresh subscription delivers again.
+  const rewatch = client.watchEvents(SESSION, client.getWatchCursor() ?? 0);
+  await tick();
+  const rewatchReq = responseFor(s2);
+  assert.equal(rewatchReq.params.after, 4, 'the re-attach must resume from the last good cursor');
+  s2.push({ jsonrpc: '2.0', id: rewatchReq.id, meta: { wire_version: '1' }, result: { subscription_id: 'sub2', cursor: 4 } });
+  await rewatch;
+
+  // The fresh watch owns the cursor: neither the dead subscription id nor a
+  // frame from the replaced socket generation may touch it.
+  s2.push(liveEvent(6, 'sub1'));
+  s1.push(liveEvent(6, 'sub2'));
+  await tick();
+  assert.equal(client.getWatchCursor(), 4, 'only the fresh subscription may advance the cursor');
+
+  s2.push(liveEvent(5, 'sub2'));
+  s2.push(liveEvent(6, 'sub2'));
+  await tick();
+  assert.equal(client.getWatchCursor(), 6, 'the replayed gap advances the cursor again');
+  client.disconnect();
+});
+
+test('a fenced subscription reports no second failure and no late completion', async () => {
+  const notices: any[] = [];
+  const { client, socket } = await openClient({ onNotice: (n) => notices.push(n) });
+  const watchPromise = client.watchEvents(SESSION, 0);
+  await tick();
+  const req = responseFor(socket);
+  socket.push({ jsonrpc: '2.0', id: req.id, meta: { wire_version: '1' }, result: { subscription_id: 'subX', cursor: 0 } });
+  await watchPromise;
+
+  socket.push({
+    jsonrpc: '2.0',
+    meta: { wire_version: '1' },
+    method: 'runtime.event',
+    params: { subscription_id: 'subX', cursor: 5, event: { sequence: 5, turn_sequence: 1, kind: 'activity_started', payload: {}, version: 1 } },
+  });
+  await tick();
+  assert.deepEqual(
+    notices.map((n) => [n.type, n.service_code]),
+    [['error', 'malformed_runtime_event']],
+  );
+
+  // The dead subscription may not speak again: neither a server-side error nor
+  // a completion may re-arm the console while the unreplayed gap is open.
+  socket.push({
+    jsonrpc: '2.0',
+    meta: { wire_version: '1' },
+    method: 'runtime.subscription.error',
+    params: { subscription_id: 'subX', error: { code: -32000, message: 'overflow', data: { service_code: 'event_overflow' } } },
+  });
+  socket.push({
+    jsonrpc: '2.0',
+    meta: { wire_version: '1' },
+    method: 'runtime.subscription.complete',
+    params: { subscription_id: 'subX', cursor: 9 },
+  });
+  await tick();
+  assert.deepEqual(
+    notices.map((n) => [n.type, n.service_code]),
+    [['error', 'malformed_runtime_event']],
+    'a fenced subscription reports its failure exactly once',
+  );
+  assert.equal(client.getWatchCursor(), 0, 'a late completion may not advance the fenced watch');
   client.disconnect();
 });

@@ -29,6 +29,7 @@ from websockets.asyncio.server import serve as ws_serve
 
 from synapse.projects.catalog import ProjectCatalog
 from synapse.runtime.daemon.auth import (
+    PROJECT_SCOPE_HEADER,
     TokenFileError,
     load_token,
     read_existing_token,
@@ -221,15 +222,22 @@ class FakeDaemon:
 
     Deliberately mirrors daemon semantics for the relay tests: the daemon never
     cancels a running turn when a client socket drops; only an explicit
-    ``runtime.turn.cancel`` cancels it.
+    ``runtime.turn.cancel`` cancels it.  ``authorized_project_ids`` models the
+    daemon's own authority over which projects a connection may address (a test
+    may reassign it at runtime), so a test can prove that a relayed request is
+    decided by the server rather than by the console host.
     """
 
     def __init__(self, token: str = TOKEN) -> None:
         self.token = token
+        self.authorized_project_ids = frozenset({PROJECT_ID})
         self.connections = 0
         self.turn_active = False
         self.turn_cancelled = False
         self.received: list[str] = []
+        #: Handshake headers of every accepted relay connection, so tests can
+        #: assert which host-private headers the console bound to the daemon.
+        self.handshake_headers: list[dict[str, str]] = []
         self._server: Any = None
 
     async def start(self) -> int:
@@ -254,6 +262,9 @@ class FakeDaemon:
         if self._bearer(connection.request.headers) != f"Bearer {self.token}":
             await connection.close(code=1008, reason="bad auth")
             return
+        self.handshake_headers.append(
+            {str(key).lower(): str(value) for key, value in connection.request.headers.items()}
+        )
         self.connections += 1
         try:
             async for raw in connection:
@@ -274,7 +285,7 @@ class FakeDaemon:
                     }
                 elif method == "runtime.session.list":
                     params = message.get("params", {}) or {}
-                    if params.get("project_id") != PROJECT_ID:
+                    if params.get("project_id") not in self.authorized_project_ids:
                         response["error"] = {
                             "code": -32601,
                             "message": "unknown project",
@@ -577,13 +588,76 @@ def _scope_frame(project_id: str) -> str:
 def test_project_scope_workspace_keeps_the_single_project_boundary(tmp_path: Path) -> None:
     """The opt-out scope must behave exactly like the original host."""
     guard = RelayProjectScopeGuard(PROJECT_ID)
+    assert guard.rejected == 0
     assert guard.rejection(_scope_frame(PROJECT_ID)) is None
     assert guard.rejection(_scope_frame("some-other-project")) is not None
     assert guard.rejected == 1
 
 
+def test_project_scope_workspace_rejects_a_cross_project_id_beside_a_malformed_position(
+    tmp_path: Path,
+) -> None:
+    """A position the guard cannot resolve must never hide a readable cross-project id."""
+    other = "some-other-project"
+    frame = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "runtime.session.list",
+            "params": {"project_id": other, "session": {"project_id": 7}},
+        }
+    )
+    guard = RelayProjectScopeGuard(PROJECT_ID)
+    rejection = guard.rejection(frame)
+    assert rejection is not None
+    assert json.loads(rejection)["error"]["data"]["service_code"] == SCOPE_REJECTION_SERVICE_CODE
+    assert other not in rejection
+    assert guard.rejected == 1
+    # A rejected frame is counted as rejected, never as fail-open: it is answered
+    # host-side and never forwarded to the daemon.
+    assert guard.unreadable == 0
+
+
+def test_project_scope_all_keeps_no_project_whitelist(tmp_path: Path) -> None:
+    """The default scope defers to the daemon: no host-side project allow-set."""
+    guard = RelayProjectScopeGuard(None)
+    assert guard.allowed_project_ids is None
+    # Any project id is relayed, including one this host never saw at startup.
+    for project_id in (PROJECT_ID, "registered-later", "never-registered"):
+        assert guard.rejection(_scope_frame(project_id)) is None, project_id
+    assert guard.rejected == 0
+    # Shape-only mode still reads the protocol scope positions, so a frame whose
+    # routing position it cannot resolve is counted instead of passing silently.
+    malformed = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "runtime.session.list",
+            "params": {"project_id": 7},
+        }
+    )
+    assert guard.rejection(malformed) is None
+    assert guard.unreadable == 1
+    assert guard.rejected == 0
+
+
+def test_project_scope_workspace_ignores_a_non_whitelisted_project_key(tmp_path: Path) -> None:
+    """The guard reads the whitelist only; the daemon stays the validity authority."""
+    guard = RelayProjectScopeGuard(PROJECT_ID)
+    frame = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "runtime.echo",
+            "params": {"project_id_nested": "other-project"},
+        }
+    )
+    assert guard.rejection(frame) is None
+    assert guard.rejected == 0 and guard.unreadable == 0
+
+
 def test_project_scope_all_allows_every_catalog_project(tmp_path: Path) -> None:
-    """The default scope admits the catalog's projects, still nothing else."""
+    """The default scope admits every project the daemon authorizes, nothing less."""
     catalog_path = tmp_path / "catalog.sqlite"
     other_id = _register_projects(catalog_path, [tmp_path / "other-project"])[0]
     config = make_config(
@@ -595,10 +669,78 @@ def test_project_scope_all_allows_every_catalog_project(tmp_path: Path) -> None:
     )
     host = WebConsoleHost(config, project_view(config.workspace))
     ids = {entry["project_id"] for entry in host._switchable_projects}
-    assert other_id in ids, "a registered catalog project is switchable"
-    assert PROJECT_ID in ids, "the console's own project stays reachable"
+    assert other_id in ids, "a registered catalog project is listed"
+    assert PROJECT_ID in ids, "the console's own project stays listed"
+    # The relay is not gated by that listing: the guard keeps no whitelist, so the
+    # daemon decides (exact project_id routing + authorization).
+    assert host._scope_guard.allowed_project_ids is None
     assert host._scope_guard.rejection(_scope_frame(other_id)) is None
-    assert host._scope_guard.rejection(_scope_frame("unregistered-project")) is not None
+    assert host._scope_guard.rejection(_scope_frame("unregistered-project")) is None
+    assert host.scope_rejections == 0
+
+
+def test_project_scope_all_relays_a_project_registered_after_startup(tmp_path: Path) -> None:
+    """A project registered later is served: the daemon, not the host, authorizes.
+
+    The host's startup catalog snapshot cannot contain a project registered
+    afterwards, which is exactly why the relay must not be gated by a static
+    host-side project list.  Here the fake daemon authorizes the new project, so
+    the request is relayed verbatim and answered; a project the daemon does not
+    authorize is relayed too and answered with the daemon's own ``not_found``.
+    """
+    catalog_path = tmp_path / "catalog.sqlite"
+
+    async def run() -> None:
+        daemon = FakeDaemon()
+        runtime_port = await daemon.start()
+        config = make_config(
+            tmp_path,
+            runtime_port=runtime_port,
+            static_dir=static_root(tmp_path),
+            project_scope="all",
+            catalog_path=catalog_path,
+        )
+        host = WebConsoleHost(config, project_view(config.workspace))
+        metadata = await host.start()
+        port = metadata["port"]
+        try:
+            # Registered *after* the host resolved its startup listing, so the
+            # listing cannot know these ids; the relay must not care.
+            registered = _register_projects(catalog_path, [tmp_path / "registered-later"])[0]
+            other_id = _register_projects(catalog_path, [tmp_path / "not-authorized"])[0]
+            listed = {entry["project_id"] for entry in host._switchable_projects}
+            assert registered not in listed and other_id not in listed
+            # The daemon is the authority on what the connection may address.
+            daemon.authorized_project_ids = frozenset({PROJECT_ID, registered})
+            async with ClientSession() as session:
+                cookie = await pair_session(session, port, host)
+                async with session.ws_connect(
+                    f"ws://127.0.0.1:{port}/runtime-ws",
+                    origin=f"http://127.0.0.1:{port}",
+                    headers=_cookie_header(cookie),
+                ) as ws:
+                    await ws.send_str(_scope_frame(registered))
+                    served = await asyncio.wait_for(ws.receive(), 5)
+                    assert json.loads(served.data)["result"] == {
+                        "items": [],
+                        "next_offset": None,
+                        "total": 0,
+                    }
+                    assert host.scope_rejections == 0
+                    # The daemon's own authorization is what refuses the rest.
+                    await ws.send_str(_scope_frame(other_id))
+                    refused = await asyncio.wait_for(ws.receive(), 5)
+                    error = json.loads(refused.data)["error"]
+                    assert error["code"] == -32601
+                    assert error["data"]["service_code"] == "not_found"
+                    assert other_id not in refused.data
+                    assert host.scope_rejections == 0
+                    assert daemon.received == [_scope_frame(registered), _scope_frame(other_id)]
+        finally:
+            await host.close()
+            await daemon.close()
+
+    _run(run())
 
 
 def test_project_scope_workspace_lists_only_the_own_project(tmp_path: Path) -> None:
@@ -613,12 +755,13 @@ def test_project_scope_workspace_lists_only_the_own_project(tmp_path: Path) -> N
     )
     host = WebConsoleHost(config, project_view(config.workspace))
     assert [entry["project_id"] for entry in host._switchable_projects] == [PROJECT_ID]
+    assert host._scope_guard.allowed_project_ids == frozenset({PROJECT_ID})
 
 
 def test_project_scope_all_degrades_to_the_own_project_when_the_catalog_is_broken(
     tmp_path: Path,
 ) -> None:
-    """A catalog that cannot be read must never widen the scope."""
+    """A broken catalog only shortens the deprecated listing, never the boundary."""
     broken = tmp_path / "not-a-directory"
     broken.write_text("nope", encoding="utf-8")
     config = make_config(
@@ -630,6 +773,9 @@ def test_project_scope_all_degrades_to_the_own_project_when_the_catalog_is_broke
     )
     host = WebConsoleHost(config, project_view(config.workspace))
     assert [entry["project_id"] for entry in host._switchable_projects] == [PROJECT_ID]
+    # The relay keeps no whitelist either way, so the failure cannot narrow or
+    # widen it: the daemon stays the authority.
+    assert host._scope_guard.allowed_project_ids is None
 
 
 def test_projects_endpoint_is_session_gated_and_read_only(tmp_path: Path) -> None:
@@ -670,6 +816,58 @@ def test_projects_endpoint_is_session_gated_and_read_only(tmp_path: Path) -> Non
                     assert response.status == 405
         finally:
             await host.close()
+
+    _run(run())
+
+
+def test_relay_binds_the_trusted_scope_header_only_under_workspace_scope(
+    tmp_path: Path,
+) -> None:
+    """The daemon learns the console's project scope from a host-private header.
+
+    The browser never opens the daemon socket, so only the host can set this
+    header.  It is sent for ``--project-scope workspace`` (the original single
+    project boundary) and omitted for ``all``, which keeps the daemon's own
+    same-user visibility.
+    """
+    static = static_root(tmp_path)
+    scope_header = PROJECT_SCOPE_HEADER.lower()
+
+    async def run() -> None:
+        for scope, expected in (("workspace", PROJECT_ID), ("all", None)):
+            daemon = FakeDaemon()
+            runtime_port = await daemon.start()
+            config = make_config(
+                tmp_path,
+                runtime_port=runtime_port,
+                static_dir=static,
+                project_scope=scope,
+            )
+            host = WebConsoleHost(config, project_view(config.workspace))
+            metadata = await host.start()
+            port = metadata["port"]
+            try:
+                async with ClientSession() as session:
+                    cookie = await pair_session(session, port, host)
+                    async with session.ws_connect(
+                        f"ws://127.0.0.1:{port}/runtime-ws",
+                        origin=f"http://127.0.0.1:{port}",
+                        headers=_cookie_header(cookie),
+                    ) as ws:
+                        assert not ws.closed
+                        for _ in range(100):
+                            if daemon.handshake_headers:
+                                break
+                            await asyncio.sleep(0.02)
+                        assert daemon.handshake_headers, "the relay never reached the daemon"
+                    headers = daemon.handshake_headers[-1]
+                    assert headers.get(scope_header) == expected, scope
+                    # The bearer stays a host secret: it is never echoed to the
+                    # browser, and the browser cannot influence the scope.
+                    assert headers.get("authorization") == f"Bearer {TOKEN}"
+            finally:
+                await host.close()
+                await daemon.close()
 
     _run(run())
 

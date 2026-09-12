@@ -346,38 +346,70 @@ class GoalService:
         return goal, None
 
     def edit_goal(
-        self, thread_id: str | None, objective: str
+        self,
+        thread_id: str | None,
+        objective: str,
+        *,
+        expected_goal_id: str | None = None,
     ) -> tuple[ThreadGoal | None, str | None]:
+        """编辑当前目标文本；``expected_goal_id`` 不匹配时返回冲突而不改写。"""
         if not thread_id:
             return None, "session must start before editing a goal"
-        goal = self.store.update(str(thread_id), objective=objective)
+        goal = self.store.update(
+            str(thread_id), objective=objective, expected_goal_id=expected_goal_id
+        )
         if goal is None:
-            return None, "no goal is currently set"
+            current = self.store.get(str(thread_id))
+            if current is None:
+                return None, "no goal is currently set"
+            return current, "goal changed since it was read"
         self.notify(str(thread_id), goal)
         return goal, None
 
-    def clear_goal(self, thread_id: str | None) -> tuple[ThreadGoal | None, str | None]:
+    def clear_goal(
+        self, thread_id: str | None, *, expected_goal_id: str | None = None
+    ) -> tuple[ThreadGoal | None, str | None]:
+        """清除目标；``expected_goal_id`` 不匹配时返回冲突而不删除。"""
         if not thread_id:
             return None, "session must start before clearing a goal"
-        goal = self.store.clear(str(thread_id))
+        goal = self.store.clear(str(thread_id), expected_goal_id=expected_goal_id)
         if goal is None:
-            return None, "no goal is currently set"
+            current = self.store.get(str(thread_id))
+            if current is None:
+                return None, "no goal is currently set"
+            return current, "goal changed since it was read"
         self.runtime(str(thread_id)).clear_active_goal()
         self.notify(str(thread_id), None)
         return goal, None
 
-    def pause_goal(self, thread_id: str | None) -> tuple[ThreadGoal | None, str | None]:
+    def pause_goal(
+        self, thread_id: str | None, *, expected_goal_id: str | None = None
+    ) -> tuple[ThreadGoal | None, str | None]:
+        """暂停目标；``expected_goal_id`` 不匹配时返回冲突而不暂停。"""
         if not thread_id:
             return None, "session must start before pausing a goal"
+        current = self.store.get(str(thread_id))
+        if current is None:
+            return None, "no goal is currently set"
+        if expected_goal_id is not None and current.goal_id != expected_goal_id:
+            return current, "goal changed since it was read"
         goal = self.runtime(str(thread_id)).pause()
         if goal is None:
             return None, "no goal is currently set"
         self.notify(str(thread_id), goal)
         return goal, None
 
-    def resume_goal(self, thread_id: str | None) -> tuple[ThreadGoal | None, str | None]:
+    def resume_goal(
+        self, thread_id: str | None, *, expected_goal_id: str | None = None
+    ) -> tuple[ThreadGoal | None, str | None]:
+        """恢复目标；``expected_goal_id`` 不匹配时返回冲突而不恢复。"""
         if not thread_id:
             return None, "session must start before resuming a goal"
+        current = self.store.get(str(thread_id))
+        if current is None:
+            return None, "no goal is currently set"
+        if expected_goal_id is not None and current.goal_id != expected_goal_id:
+            return current, "goal changed since it was read"
         goal = self.runtime(str(thread_id)).resume()
         if goal is None:
             return None, "no goal is currently set"

@@ -753,7 +753,9 @@ class TurnController:
         ``LocalProjectRuntimeConsumer`` is an in-process composition control
         plane, not a DTO service port.  This helper is therefore intentionally
         usable only by worker code that may block while the runtime owner loop
-        performs the atomic operation.
+        performs the atomic operation.  The owning-loop scheduling lives in the
+        composition owner's typed wrapper, so the UI never reaches into the
+        owner's manager (ADR-S-018).
         """
         project_id = str(project_id or self._current_project_id() or "")
         # Update the factory metadata first.  Cold sessions have no runtime to
@@ -767,9 +769,7 @@ class TurnController:
         binding_settings = settings or self._service_settings.get(
             (project_id, thread_id), getattr(self._app, "settings", None)
         )
-        owner.manager._async_runtime.submit(
-            owner.rebind_agent(thread_id, agent, binding_settings)
-        ).result()
+        owner.rebind_agent_threadsafe(thread_id, agent, binding_settings)
 
     def close_session_worker(
         self, thread_id: str, *, project_id: str | None = None
@@ -783,20 +783,20 @@ class TurnController:
         facade = self._service_sessions.pop(facade_key, None)
         owner = self._service_owners.get(project_id)
         if owner is not None:
+            # The owner closes through the service CloseSessionCommand port; a
+            # failed close during a session switch stays best effort.
             try:
-                owner.manager._async_runtime.submit(
-                    owner.manager.close_session_ref(
-                        SessionRef(project_id, thread_id), cancel_active=True
-                    )
-                ).result(timeout=5.0)
-            except Exception:
+                owner.close_session_threadsafe(
+                    thread_id, cancel_active=True, timeout=5.0
+                )
+            except Exception:  # noqa: BLE001 - session switch close is best effort
                 pass
         elif facade is not None:
             try:
                 get_async_runtime().submit(
                     facade.close(cancel_active=True)
                 ).result(timeout=5.0)
-            except Exception:
+            except Exception:  # noqa: BLE001 - session switch close is best effort
                 pass
         with self._status_track_lock:
             self._last_known_status.pop((project_id, thread_id), None)

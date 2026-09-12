@@ -14,6 +14,7 @@ from typing import Any
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
+    "HistoryAttachment",
     "HistoryEvent",
     "HISTORY_LIMIT_DEFAULT",
     "HISTORY_LIMIT_MAX",
@@ -105,11 +106,32 @@ class SessionListPage:
 
 
 @dataclass(frozen=True, slots=True)
+class HistoryAttachment:
+    """Durable metadata for one image attached to a persisted user turn.
+
+    ``attachment_id`` is the opaque server id the runtime persisted into the
+    transcript projection; a client loads the bytes through
+    ``runtime.attachments.read`` with an ``AttachmentRef`` built from this
+    session and that id.  ``image_id`` is the per-turn ``[image#N]`` placeholder
+    the user text refers to.  No image bytes (base64) are ever carried here.
+    """
+
+    attachment_id: str
+    image_id: int
+    name: str
+    mime: str
+    size: int
+    revision: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class HistoryEvent:
     """One structured, transport-safe transcript event.
 
     ``kind`` is one of ``user``, ``answer``, ``thought``, ``tools``, ``meta``.
     ``tool_calls`` and ``tool_results`` are plain dicts safe for JSON encoding.
+    ``attachments`` is empty for every non-user event and for a user event that
+    carried no durable attachment references (legacy rows default to empty).
     No LangChain message objects are ever exposed.
     """
 
@@ -117,6 +139,7 @@ class HistoryEvent:
     text: str
     tool_calls: tuple[dict[str, Any], ...]
     tool_results: tuple[dict[str, Any], ...]
+    attachments: tuple[HistoryAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -332,6 +332,17 @@ For a zero-config Codex experience, use the OAuth profile — see [Models](docs/
 | [Permissions](docs/permissions.md) | Read-only mode and approval flows |
 | [Install](docs/install.md) | All installation methods |
 | [ACP adapter](docs/acp-adapter/index.md) | ACP v1 setup, capability matrix, limitations, and verification status |
+| [Runtime contract](docs/agent-runtime-service/adr-s-019-contract-freeze.md) | v1 wire/DTO contract: generated manifest and TS types, compatibility rules, gates |
+
+The runtime contract (wire method table, event kinds, DTO schemas) is generated
+from `src/synapse/runtime/service/contract_registry.py` into
+`src/synapse/runtime/service/contract_manifest.json` and
+`web/src/runtime-client/contract.generated.ts`. Do not hand-edit either artifact:
+
+```bash
+uv run --no-sync python scripts/export_contract_manifest.py         # regenerate
+uv run --no-sync python scripts/export_contract_manifest.py --check # verify committed output
+```
 
 ## Repository layout
 

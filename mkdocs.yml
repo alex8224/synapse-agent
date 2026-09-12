@@ -82,6 +82,7 @@ nav:
       - S9 Compatibility Matrix: agent-runtime-service/s9-compatibility-matrix.md
       - ADR-S-017 Reconnect and version negotiation: agent-runtime-service/adr-s-017-reconnect-version-negotiation.md
       - ADR-S-018 Consumer cutover: agent-runtime-service/adr-s-018-consumer-cutover.md
+      - ADR-S-019 Contract freeze: agent-runtime-service/adr-s-019-contract-freeze.md
       - S2 生命周期专项验证: agent-runtime-service/s2-lifecycle-verification.md
   - ACP 完整语义适配计划:
       - 总体方案: acp-adapter/index.md

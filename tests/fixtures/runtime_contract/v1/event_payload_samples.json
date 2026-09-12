@@ -1,0 +1,199 @@
+{
+  "activity_started": {
+    "detail": "planning",
+    "phase": "thinking",
+    "reset_timer": false
+  },
+  "activity_stopped": {
+    "detail": "",
+    "phase": "idle",
+    "reset_timer": false
+  },
+  "activity_updated": {
+    "detail": "planning",
+    "phase": "thinking",
+    "reset_timer": false
+  },
+  "answer_completed": {
+    "message_id": "m1",
+    "text": "hello"
+  },
+  "answer_delta": {
+    "message_id": "m1",
+    "text": "hello"
+  },
+  "approval_required": {
+    "actions": [
+      {
+        "allowed_decisions": [
+          "allow_once",
+          "reject_once"
+        ],
+        "args": {
+          "command": "ls"
+        },
+        "description": "list files",
+        "name": "run_shell"
+      }
+    ]
+  },
+  "diff_updated": {
+    "call_id": "c1",
+    "new_text": "b",
+    "old_text": null,
+    "path": "a.txt"
+  },
+  "info": "a plain string payload",
+  "plan_removed": {
+    "plan_id": "pl1"
+  },
+  "plan_updated": {
+    "entries": [
+      {
+        "content": "step",
+        "priority": "medium",
+        "status": "pending"
+      }
+    ],
+    "plan_id": "pl1"
+  },
+  "reasoning_completed": {
+    "message_id": null,
+    "text": "thought"
+  },
+  "reasoning_delta": {
+    "message_id": null,
+    "text": "thinking"
+  },
+  "subagent_status_changed": {
+    "parent_id": "p1",
+    "status": null
+  },
+  "tool_batch_finished": {
+    "group_id": "g1"
+  },
+  "tool_batch_started": {
+    "calls": [
+      {
+        "args_preview": "{}",
+        "call_id": "c1",
+        "name": "read_file"
+      }
+    ],
+    "group_id": null,
+    "items": [],
+    "parallel": false
+  },
+  "tool_finished": {
+    "error": false,
+    "item_id": "i1",
+    "preview": null,
+    "status": "ok"
+  },
+  "tool_result": {
+    "call_id": "c1",
+    "name": "read_file",
+    "status": "ok",
+    "sub": false
+  },
+  "tool_started": {
+    "call_id": "c1",
+    "category": "filesystem",
+    "error": false,
+    "item_id": "i1",
+    "label": "read a.txt",
+    "name": "read_file",
+    "parent_id": null,
+    "path": "a.txt",
+    "preview": null,
+    "status": "running",
+    "sub": false,
+    "subagent_model": null,
+    "subagent_model_inherited": false,
+    "subagent_name": null,
+    "subagent_reasoning_effort": null,
+    "subagent_reasoning_inherited": false,
+    "workspace_changed": false
+  },
+  "tool_updated": {
+    "call_id": "c1",
+    "category": "filesystem",
+    "error": false,
+    "item_id": "i1",
+    "label": "read a.txt",
+    "name": "read_file",
+    "parent_id": null,
+    "path": "a.txt",
+    "preview": null,
+    "status": "running",
+    "sub": false,
+    "subagent_model": null,
+    "subagent_model_inherited": false,
+    "subagent_name": null,
+    "subagent_reasoning_effort": null,
+    "subagent_reasoning_inherited": false,
+    "workspace_changed": false
+  },
+  "turn_cancelled": {
+    "cache_tokens": 0,
+    "compact_events": 0,
+    "elapsed_s": 1.5,
+    "error": null,
+    "final_text": "done",
+    "input_tokens": 10,
+    "interrupted": false,
+    "output_tokens": 20,
+    "status": "cancelled",
+    "tool_calls": 1
+  },
+  "turn_completed": {
+    "cache_tokens": 0,
+    "compact_events": 0,
+    "elapsed_s": 1.5,
+    "error": null,
+    "final_text": "done",
+    "input_tokens": 10,
+    "interrupted": false,
+    "output_tokens": 20,
+    "status": "completed",
+    "tool_calls": 1
+  },
+  "turn_failed": {
+    "cache_tokens": 0,
+    "compact_events": 0,
+    "elapsed_s": 1.5,
+    "error": "boom",
+    "final_text": "done",
+    "input_tokens": 10,
+    "interrupted": false,
+    "output_tokens": 20,
+    "status": "failed",
+    "tool_calls": 1
+  },
+  "turn_waiting_approval": {
+    "cache_tokens": 0,
+    "compact_events": 0,
+    "elapsed_s": 1.5,
+    "error": null,
+    "final_text": "done",
+    "input_tokens": 10,
+    "interrupted": false,
+    "output_tokens": 20,
+    "status": "waiting_approval",
+    "tool_calls": 1
+  },
+  "usage_updated": {
+    "context_size": null,
+    "last_cache": 0,
+    "last_input": 5,
+    "last_output": 6,
+    "model_calls": 2,
+    "output_tokens_per_second": 12.5,
+    "rate_basis": "end_to_end",
+    "rate_estimated": false,
+    "ttft_s": 0.25,
+    "turn_cache": 0,
+    "turn_input": 10,
+    "turn_output": 20
+  }
+}

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import synapse.runtime.service.artifact_filesystem as artifact_fs_module
 import synapse.runtime.service.artifacts as artifact_module
 from synapse.runtime.service import (
     ArtifactForbiddenError,
@@ -171,14 +172,14 @@ def test_broken_symlink_is_not_found_and_open_races_are_redacted(
             await service.stat_artifact(StatArtifactQuery(ArtifactRef(REF, "broken")))
         assert "broken" not in str(missing.value)
 
-        original_open = artifact_module.open
+        original_open = artifact_fs_module.open
 
         def replace_before_open(path: object, *args: object, **kwargs: object) -> object:
             Path(path).unlink()
             Path(path).write_bytes(b"replacement")
             return original_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(artifact_module, "open", replace_before_open)
+        monkeypatch.setattr(artifact_fs_module, "open", replace_before_open)
         with pytest.raises(ArtifactChangedError) as changed:
             await service.read_artifact(ReadArtifactQuery(ArtifactRef(REF, "data")))
         assert "data" not in str(changed.value)
@@ -335,7 +336,7 @@ def test_read_requests_exactly_limit_plus_one_bytes(
         def recording_open(*args: object, **kwargs: object) -> RecordingFile:
             return RecordingFile(original_open(*args, **kwargs))
 
-        monkeypatch.setattr(artifact_module, "open", recording_open)
+        monkeypatch.setattr(artifact_fs_module, "open", recording_open)
         await service.read_artifact(
             ReadArtifactQuery(ArtifactRef(REF, "data"), limit=1024)
         )
@@ -352,14 +353,16 @@ def test_blocked_filesystem_work_is_offloaded(
         service = await _opened_service(tmp_path)
         entered = threading.Event()
         release = threading.Event()
-        original_stat = artifact_module.os.stat
+        original_stat = artifact_fs_module.os.stat
 
         def blocked_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
             entered.set()
             release.wait(timeout=2)
             return original_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(artifact_module, "_stat_path", lambda path: blocked_stat(path))
+        monkeypatch.setattr(
+            artifact_fs_module, "_stat_path", lambda path: blocked_stat(path)
+        )
         operation = asyncio.create_task(
             service.stat_artifact(StatArtifactQuery(ArtifactRef(REF, "data")))
         )
@@ -381,7 +384,7 @@ def test_read_detects_post_fstat_revision_without_returning_chunk(
     async def run() -> None:
         (tmp_path / "data").write_bytes(b"data")
         service = await _opened_service(tmp_path)
-        original_fstat = artifact_module.os.fstat
+        original_fstat = artifact_fs_module.os.fstat
         calls = 0
 
         def changing_fstat(fd: int) -> os.stat_result:
@@ -394,7 +397,7 @@ def test_read_detects_post_fstat_revision_without_returning_chunk(
                 return os.stat_result(values)
             return result
 
-        monkeypatch.setattr(artifact_module.os, "fstat", changing_fstat)
+        monkeypatch.setattr(artifact_fs_module.os, "fstat", changing_fstat)
         with pytest.raises(ArtifactChangedError):
             await service.read_artifact(ReadArtifactQuery(ArtifactRef(REF, "data")))
 

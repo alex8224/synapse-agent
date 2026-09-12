@@ -82,3 +82,80 @@ export function parseSessionGoal(payload: unknown): SessionGoalView | null {
     time_used_seconds: Number(fields['time_used_seconds'] ?? 0) || 0,
   };
 }
+
+/**
+ * Goal objective bound, mirroring `MAX_GOAL_OBJECTIVE_CHARS` in the goal domain.
+ * The wire rejects a longer objective, so the panel refuses it before sending.
+ */
+export const GOAL_OBJECTIVE_MAX_CHARS = 10000;
+
+/** The four goal mutations the panel can send. */
+export type GoalAction = 'edit' | 'pause' | 'resume' | 'clear';
+
+/**
+ * Actions a status allows, mirroring the TUI's `/goal` command hint: a paused or
+ * stalled goal offers resume, a budget-limited or complete one does not, and every
+ * goal can be edited or cleared.
+ */
+export function goalActions(status: string): GoalAction[] {
+  switch (status) {
+    case 'active':
+      return ['edit', 'pause', 'clear'];
+    case 'paused':
+    case 'blocked':
+    case 'usage_limited':
+      return ['edit', 'resume', 'clear'];
+    default:
+      return ['edit', 'clear'];
+  }
+}
+
+/** Trimmed objective, or `null` when empty / longer than the domain bound. */
+export function normalizeGoalObjective(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > GOAL_OBJECTIVE_MAX_CHARS) return null;
+  return trimmed;
+}
+
+/**
+ * Budget input for `runtime.session.goal.set`.
+ *
+ * `''` means "no budget" (`null`), a positive decimal integer is that budget, and
+ * anything else (zero, negative, non-numeric, unsafe) is `'invalid'` — the wire
+ * requires a positive integer, so the panel never sends a rejected value.
+ */
+export function normalizeGoalBudget(value: string): number | null | 'invalid' {
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  if (!/^[0-9]+$/.test(trimmed)) return 'invalid';
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return 'invalid';
+  return parsed;
+}
+
+/** One goal-write outcome: the refreshed projection plus the pause flag. */
+export interface SessionGoalMutationResult {
+  /** `null` only after `clear`, when the thread has no goal any more. */
+  goal: SessionGoalView | null;
+  /** True only when `pause` asked this session's live turn to stop. */
+  cancellationRequested: boolean;
+}
+
+/**
+ * Strict whitelist copy of a goal-write result.
+ *
+ * `goal` is either the refreshed projection or `null` (the documented `clear`
+ * answer); `cancellation_requested` is only ever the boolean the server sent, so
+ * the UI cannot claim a turn was stopped when it was not.
+ */
+export function parseSessionGoalResult(payload: unknown): SessionGoalMutationResult {
+  if (payload === null || typeof payload !== 'object') {
+    return { goal: null, cancellationRequested: false };
+  }
+  const fields = payload as Record<string, unknown>;
+  const goal = fields['goal'];
+  return {
+    goal: goal === null || goal === undefined ? null : parseSessionGoal(goal),
+    cancellationRequested: fields['cancellation_requested'] === true,
+  };
+}

@@ -3,6 +3,7 @@
 > 文档状态：Completed（S10 consumer implementation 与 final gates complete）<br>
 > 实施状态：`completed`；实际门禁证据与进程内测试说明见 [progress.md](progress.md)<br>
 > 架构决策记录：[decisions.md](decisions.md)<br>
+> 事件/DTO 契约冻结（v1）：[ADR-S-019](adr-s-019-contract-freeze.md)<br>
 > 与既有解耦计划的关系：本服务位于 [Agent Runtime 解耦](../agent-runtime-decoupling/index.md) 之上，复用其 RuntimeManager/SessionRuntime 执行栈（ADR-011）。
 
 ## 1. 结论
@@ -74,6 +75,17 @@ flowchart LR
 | S8 | daemon 进程与生命周期管理 | 完成 |
 | S9 | 重连、版本协商与兼容矩阵 | 已完成（门禁验证见 progress） |
 | S10 | 迁移 CLI/TUI/ACP 消费者并删除过渡路径 | completed；legacy stream utility 保留兼容 |
+
+### S10 之后的 wire 增量（会话管理 / goal / 附件 / project list）
+
+契约冻结（v1）后 wire 表继续**只做 additive** 扩展，当前共 40 个 wire 方法（38 个 service + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）与 26 个授权 capability，权威仍是 `service/contract_registry.py` / `service/access.py`：
+
+- **会话管理**：`runtime.session.create` / `rename` / `delete` / `search`（各自独立 capability）；`create` 由服务端分配身份，`delete` 只删元数据行与 thread goal 并在结果里报告 `retained_history`（checkpoint 与 transcript projection 保留），`search` 是**元数据搜索**而非全文检索。
+- **会话 goal 写**：`runtime.session.goal.set` / `edit` / `clear` / `pause` / `resume`（独立 `session.goal` capability，`session.read` 不授权写入；`expected_goal_id` 做乐观并发）。
+- **附件**：`runtime.attachments.begin` / `append` / `finish` / `abort` / `stat` / `read`（`attachments.write` / `attachments.read`），以及 `runtime.turn.submit` 的可选 `attachment_refs`；`read_session_history` 的 `HistoryEvent.attachments` 只带 durable 元数据。
+- **项目列举**：`runtime.project.list`（`project.list`，只读、服务端计算可见集合、先过滤再分页）。
+
+实际门禁数字、附件限额常量、`retained history` 语义与**仍未 wire 的后端能力矩阵**见 [progress.md](progress.md)；逐方法参数/结果见 [S7 wire 协议表](s7-wire-protocol.md)。
 
 ### S2 交付与门禁
 
@@ -183,10 +195,15 @@ S1 门禁（全部通过，含硬化后新增用例）：
 11. `forward_to` replay 与 live 共用有序 dispatcher：并发 emit 不越过 replay（严格 sequence 顺序）；callback 锁外可重入；callback 内 close 不死锁且 accepted replay 先投递。
 12. ordered dispatcher 对 observer `BaseException` 的确定性恢复：非进程级 `BaseException` 不永久 `_dispatching=True`、不丢已接受 delivery/close notification（第一者重抛给认领 emitter，同 envelope 后续 subscriber 继续投递）；`KeyboardInterrupt`/`SystemExit` 终止当前 delivery 且剩余 queue 可由后续 drainer 接管；broker 已关闭时 close work 恰一次完成；普通 `Exception` 隔离与多 subscriber 顺序仍通过。
 
-## 5. 明确不实现（本阶段）
+## 5. 明确不实现（S1 基线范围）
 
-- 网络传输与 daemon：S7/S8 之前不引入进程外通信（ADR-010 仍有效）。
-- 远程 DTO 编码：`SubmitTurnCommand.attachments` 及部分嵌套值明确仅进程内兼容。
-- 现有消费者迁移：CLI/TUI/ACP 默认路径保持不变。
+> 下列条目描述 **S1 基线时**的边界；后续阶段的落地情况以 [progress.md](progress.md)
+> 为准（网络传输 = S7、daemon = S8、消费者迁移 = S10 均已完成，**仍未 wire 的后端能力**
+> 在 progress.md 的「尚未 wire 的后端能力（真实矩阵）」列出）。本服务至今**不承诺**：
+> 会话清理 / 导出 / 对话全文搜索、项目登记、上下文压缩与 safety 策略读写等能力有对应 RPC。
+
+- 网络传输与 daemon：S1 不引入进程外通信（ADR-010 仍有效）；S7/S8 已交付传输与 daemon，见 [ADR-S-015](adr-s-015-json-rpc-websocket.md)、[ADR-S-016](adr-s-016-daemon.md)。
+- 远程 DTO 编码：`SubmitTurnCommand.attachments` 及部分嵌套值明确仅进程内兼容（wire 拒绝非空 `attachments`，远程图片走 `attachment_refs`）。
+- 现有消费者迁移：S1 时 CLI/TUI/ACP 默认路径保持不变；S10 已完成迁移，legacy `ui.stream.stream_agent` 仅作为兼容 utility 保留。
 - S4 安全审阅修复、专项门禁与回归结果已完成；S5 的实现与当前验证状态见
   [progress.md](progress.md)。

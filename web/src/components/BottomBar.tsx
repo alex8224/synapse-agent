@@ -4,6 +4,7 @@ import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { turnStatSegments, usageSegments, usageTooltip } from '../stores/usageView.ts';
 import { goalLabel, goalTooltip } from '../stores/goalView.ts';
 import { McpPanel } from './McpPanel.tsx';
+import { GoalDialog } from './GoalDialog.tsx';
 
 /** Goal status label -> text colour, mirroring the TUI goal indicator styles. */
 const GOAL_STATUS_CLASS: Record<string, string> = {
@@ -25,6 +26,7 @@ const HELP_ROWS: Array<{ keys: string; label: string }> = [
   { keys: 'F1', label: '打开快捷键帮助' },
   { keys: 'F2', label: '切换大语言模型' },
   { keys: 'F5', label: 'MCP 服务器' },
+  { keys: 'F6', label: '目标管理 (Goal)' },
 ];
 
 export const BottomBar: React.FC = () => {
@@ -47,6 +49,7 @@ export const BottomBar: React.FC = () => {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showThinkingPicker, setShowThinkingPicker] = useState(false);
   const [showMcpPanel, setShowMcpPanel] = useState(false);
+  const [showGoalDialog, setShowGoalDialog] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [showHelp, setShowHelp] = useState(false);
 
@@ -80,11 +83,16 @@ export const BottomBar: React.FC = () => {
         e.preventDefault();
         closeOthers();
         setShowMcpPanel((v) => !v);
+      } else if (e.key === 'F6') {
+        e.preventDefault();
+        closeOthers();
+        setShowGoalDialog((v) => !v);
       } else if (e.key === 'Escape') {
         // The popover titles promise "关闭 (Esc)": honour it here as well as in
         // the top bar, so every advertised dismissal path really works.
         closeOthers();
         setShowHelp(false);
+        setShowGoalDialog(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -286,21 +294,25 @@ export const BottomBar: React.FC = () => {
             )}
           </div>
 
-          {/* Goal: only rendered while the session actually has one. */}
-          {goalText !== '' && (
-            <>
-              <span className="text-gray-200">|</span>
-              <span
-                className={`flex min-w-0 items-center gap-1 ${goalClass}`}
-                title={goalTooltip(goal)}
-              >
-                <span className="material-symbols-outlined text-[14px] text-gray-500">
-                  flag
-                </span>
-                <span className="max-w-[18rem] truncate">{goalText}</span>
-              </span>
-            </>
-          )}
+          {/* Goal: the trigger is always visible so a goal can be set; the label
+              shows the live goal when there is one and "未设置" otherwise. */}
+          <span className="text-gray-200">|</span>
+          <button
+            type="button"
+            onClick={() => {
+              closeOthers();
+              setShowGoalDialog(true);
+            }}
+            title={goal === null ? '设置目标 (F6)' : goalTooltip(goal)}
+            className={`flex min-w-0 items-center gap-1 cursor-pointer transition-colors hover:text-gray-900 ${goalClass}`}
+          >
+            <span className="material-symbols-outlined text-[14px] text-gray-500">
+              flag
+            </span>
+            <span className="max-w-[18rem] truncate">
+              {goalText === '' ? 'goal: 未设置' : goalText}
+            </span>
+          </button>
         </div>
 
         {/* Centre: all turn telemetry (tokens + speed / latency / steps) */}
@@ -368,6 +380,8 @@ export const BottomBar: React.FC = () => {
           </div>
         </div>
       )}
+
+      {showGoalDialog && <GoalDialog onClose={() => setShowGoalDialog(false)} />}
     </>
   );
 };
