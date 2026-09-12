@@ -222,11 +222,26 @@ export function decodeBase64Text(dataBase64: string): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
-/** Lower-case extension of a POSIX artifact path (`''` when it has none). */
+/** Lower-case basename of a POSIX artifact path. */
+export function basenameOf(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+/**
+ * Lower-case extension of a POSIX artifact path (`''` when it has none).
+ *
+ * A dotfile is its own extension (`.gitignore` -> `gitignore`).  The server
+ * reports `application/octet-stream` for every name it cannot map to a MIME
+ * type, which includes every dotfile, so without this branch the text fallback
+ * below could never recognise `.gitignore` / `.dockerignore` and would refuse
+ * them as binary.
+ */
 export function extensionOf(path: string): string {
-  const name = path.slice(path.lastIndexOf('/') + 1);
+  const name = basenameOf(path);
   const dot = name.lastIndexOf('.');
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  if (dot < 0) return '';
+  if (dot === 0) return name.slice(1).toLowerCase();
+  return name.slice(dot + 1).toLowerCase();
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -234,15 +249,31 @@ const TEXT_EXTENSIONS = new Set([
   'toml', 'ini', 'cfg', 'conf', 'env', 'xml', 'html', 'htm', 'css', 'scss', 'js', 'jsx',
   'mjs', 'cjs', 'ts', 'tsx', 'py', 'pyi', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cc', 'cpp',
   'hpp', 'cs', 'rb', 'php', 'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd', 'sql', 'graphql',
-  'diff', 'patch', 'gitignore', 'editorconfig', 'lock',
+  'diff', 'patch', 'gitignore', 'gitattributes', 'gitmodules', 'editorconfig', 'lock',
+  'dockerignore', 'npmignore', 'prettierrc', 'eslintrc', 'babelrc', 'nvmrc', 'python-version',
+]);
+
+/**
+ * Extension-less text files, matched by lower-case basename.
+ *
+ * These carry no extension at all, so `extensionOf` yields `''` and the
+ * extension set above cannot decide them.  Kept deliberately short: an unknown
+ * name stays refused rather than risk decoding a binary into mojibake.
+ */
+const TEXT_FILENAMES = new Set([
+  'license', 'licence', 'notice', 'authors', 'contributors', 'codeowners',
+  'readme', 'changelog', 'changes', 'contributing', 'install', 'copying',
+  'dockerfile', 'containerfile', 'makefile', 'justfile', 'procfile', 'vagrantfile',
+  'gemfile', 'rakefile', 'brewfile', 'cmakelists',
 ]);
 
 /**
  * Whether a chunk of this artifact can be shown as text.
  *
  * `media_type` is authoritative when the server reports a text type; the
- * extension is only a fallback for the `application/octet-stream` default, so a
- * binary artifact is never decoded into mojibake.
+ * extension (then the extension-less basename) is only a fallback for the
+ * `application/octet-stream` default, so a binary artifact is never decoded
+ * into mojibake.
  */
 export function isTextArtifact(mediaType: string, path: string): boolean {
   const type = mediaType.toLowerCase();
@@ -257,7 +288,9 @@ export function isTextArtifact(mediaType: string, path: string): boolean {
     return true;
   }
   if (type !== 'application/octet-stream' && type !== '') return false;
-  return TEXT_EXTENSIONS.has(extensionOf(path));
+  const extension = extensionOf(path);
+  if (extension !== '') return TEXT_EXTENSIONS.has(extension);
+  return TEXT_FILENAMES.has(basenameOf(path).toLowerCase());
 }
 
 /** Highlight language for the viewer; diff mode colors added/removed lines. */

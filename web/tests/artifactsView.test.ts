@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   MalformedArtifactError,
   artifactLanguage,
+  basenameOf,
   decodeBase64Text,
   extensionOf,
   filterArtifactEntries,
@@ -142,7 +143,16 @@ test('isTextArtifact trusts the media type and only falls back to the extension'
   assert.equal(isTextArtifact('application/octet-stream', 'src/app.py'), true);
   assert.equal(isTextArtifact('application/octet-stream', 'assets/hero.png'), false);
   assert.equal(isTextArtifact('image/png', 'src/app.py'), false);
-  assert.equal(isTextArtifact('', 'Makefile'), false);
+  // Dotfiles and extension-less text files get no MIME type of their own: the
+  // fallback must recognise them, or the panel refuses them as binary.
+  assert.equal(isTextArtifact('application/octet-stream', '.gitignore'), true);
+  assert.equal(isTextArtifact('application/octet-stream', '.dockerignore'), true);
+  assert.equal(isTextArtifact('application/octet-stream', 'LICENSE'), true);
+  assert.equal(isTextArtifact('application/octet-stream', 'Dockerfile'), true);
+  assert.equal(isTextArtifact('', 'Makefile'), true);
+  // An unknown name stays refused rather than being decoded into mojibake.
+  assert.equal(isTextArtifact('application/octet-stream', 'artifact.bin'), false);
+  assert.equal(isTextArtifact('application/octet-stream', 'mystery'), false);
 });
 
 test('path helpers stay inside the workspace root', () => {
@@ -153,7 +163,14 @@ test('path helpers stay inside the workspace root', () => {
   assert.equal(parentArtifactPath('.'), '.');
   assert.equal(extensionOf('src/app.py'), 'py');
   assert.equal(extensionOf('Makefile'), '');
-  assert.equal(extensionOf('.gitignore'), '');
+  // A dotfile is its own extension: the server reports octet-stream for it, so
+  // this token is the only thing the text fallback can match on.
+  assert.equal(extensionOf('.gitignore'), 'gitignore');
+  assert.equal(extensionOf('.dockerignore'), 'dockerignore');
+  assert.equal(extensionOf('config/.env'), 'env');
+  assert.equal(extensionOf('archive.tar.gz'), 'gz');
+  assert.equal(basenameOf('src/lib/app.py'), 'app.py');
+  assert.equal(basenameOf('LICENSE'), 'LICENSE');
 });
 
 test('artifactLanguage switches to diff highlighting in diff mode', () => {

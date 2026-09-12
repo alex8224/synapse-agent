@@ -110,6 +110,19 @@ export function filterSessions(items: SessionItem[], query: string): SessionItem
   );
 }
 
+/**
+ * Title of an already-loaded session row, or `null` when it is not loaded.
+ *
+ * Used as the attach-time fallback: the header must show a real title instead of
+ * the raw thread id, so a caller that has no title of its own asks the lists the
+ * sidebar already holds before falling back further.
+ */
+export function sessionTitleFrom(items: SessionItem[], threadId: string): string | null {
+  if (threadId === '') return null;
+  const found = items.find((item) => item.thread_id === threadId);
+  return found === undefined || found.title === '' ? null : found.title;
+}
+
 /** Minimal project shape the sidebar tree needs (kept structural for tests). */
 export interface ProjectLabelSource {
   workspace_path: string;

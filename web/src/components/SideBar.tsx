@@ -148,6 +148,8 @@ export const SideBar: React.FC = () => {
           </span>
           <input
             ref={searchRef}
+            id="session-search"
+            name="session-search"
             type="text"
             value={sessionQuery}
             onChange={(event) => setSessionQuery(event.target.value)}
@@ -286,6 +288,8 @@ export const SideBar: React.FC = () => {
                               <li key={sess.thread_id} className="px-1 py-0.5">
                                 <input
                                   autoFocus
+                                  id="session-rename"
+                                  name="session-rename"
                                   type="text"
                                   value={renaming.draft}
                                   maxLength={SESSION_TITLE_MAX}

@@ -58,7 +58,7 @@ import {
 } from '../runtime-client/attachments.ts';
 import type { AttachmentUploadSource } from '../runtime-client/attachments.ts';
 import type { TranscriptAttachment } from './historyAttachments.ts';
-import { SESSION_TITLE_MAX, normalizeSessionTitle } from './sessionList.ts';
+import { SESSION_TITLE_MAX, normalizeSessionTitle, sessionTitleFrom } from './sessionList.ts';
 import {
   GOAL_OBJECTIVE_MAX_CHARS,
   normalizeGoalBudget,
@@ -1150,6 +1150,42 @@ async function refreshSessionGoal(epoch: number): Promise<void> {
  * Watching starts from `open.view.latest_sequence` so already-completed turns
  * that history renders are never replayed and duplicated.
  */
+/**
+ * Best-known title for a session being attached.
+ *
+ * Order: the caller's own title, the title already shown for the same thread,
+ * then any row the sidebar has loaded.  Only when nothing is known does the raw
+ * thread id stand in, so a refresh can never turn a real title back into an
+ * internal id.
+ */
+function resolveSessionTitle(session: SessionRef, title?: string): string {
+  if (title !== undefined && title !== '') return title;
+  const state = useConsoleStore.getState();
+  if (state.currentSession.thread_id === session.thread_id && state.sessionTitle !== '') {
+    return state.sessionTitle;
+  }
+  const loaded: SessionItem[] = [
+    ...state.sessions,
+    ...Object.values(state.projectSessions).flat(),
+    ...state.sessionSearch.items,
+  ];
+  return sessionTitleFrom(loaded, session.thread_id) ?? session.thread_id;
+}
+
+/**
+ * Label for a brand-new session row.
+ *
+ * This is only a *title*: the session identity is allocated by the server
+ * (`runtime.session.create`).  The runtime replaces it with a title derived from
+ * the first user message once the conversation starts.
+ */
+function freshSessionLabel(): string {
+  const chars = '0123456789abcdef';
+  let suffix = '';
+  for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+  return `新会话 ${suffix}`;
+}
+
 async function attachToSession(session: SessionRef, title?: string): Promise<void> {
   const store = useConsoleStore;
   const client = store.getState().client;
@@ -1160,7 +1196,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
   clearAttached();
   store.setState({
     currentSession: session,
-    sessionTitle: title || session.thread_id,
+    sessionTitle: resolveSessionTitle(session, title),
     messages: [],
     liveEventBuffer: [],
     liveBufferDroppedCount: 0,
@@ -1590,31 +1626,43 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // was still bound to the session being left.
     get().cancelAttachments();
     const { currentSession } = get();
-    // Generate clean 12-char hex session thread_id (matching Synapse standard format)
-    const chars = '0123456789abcdef';
-    let newThreadId = '';
-    for (let i = 0; i < 12; i++) {
-      newThreadId += chars[Math.floor(Math.random() * chars.length)];
-    }
-    const newTitle = `新会话 ${newThreadId.slice(0, 6)}`;
-    const nextSession: SessionRef = {
-      project_id: currentSession.project_id,
-      thread_id: newThreadId,
-    };
+    if (currentSession.project_id === '') return;
+    // The server owns the identity *and* the metadata row: `runtime.session.create`
+    // allocates the thread id and persists the row, and this console opens the
+    // returned session afterwards.  Inventing an id locally and only calling
+    // `runtime.session.open` produced a session the daemon had never stored, so
+    // rename/delete/goal on it failed with `not_found` until its first turn
+    // happened to insert the row.
+    const created = await client
+      .createSession({ project_id: currentSession.project_id, title: freshSessionLabel() })
+      .catch((err: unknown) => {
+        console.error('Failed to create session:', err);
+        set({ sessionActionError: describeSessionActionError(err, '新建会话失败') });
+        return null;
+      });
+    if (created === null) return;
+    const nextSession: SessionRef = created.session;
+    // The server echoes the stored title; it stays authoritative for every list.
+    const newTitle = created.title;
     const newItem: SessionItem = {
-      thread_id: newThreadId,
+      thread_id: nextSession.thread_id,
       title: newTitle,
       updated_at: new Date().toISOString(),
       time_label: '刚刚',
     };
     const epoch = ++sessionEpoch;
     set((s) => ({
-      sessions: [newItem, ...s.sessions],
-      // The session exists server-side the moment it is opened, so the total has
-      // to follow the prepended row (otherwise the footer reads "loaded 7 / 6").
-      sessionsTotal: s.sessionsTotal + 1,
+      sessions: [
+        newItem,
+        ...s.sessions.filter((item) => item.thread_id !== nextSession.thread_id),
+      ],
+      // The row is persisted before it is shown, so the total follows it — but
+      // only when the server really inserted it (`created` is false for an
+      // idempotent re-create).
+      sessionsTotal: created.created ? s.sessionsTotal + 1 : s.sessionsTotal,
       currentSession: nextSession,
       sessionTitle: newTitle,
+      sessionActionError: null,
       messages: [],
       liveEventBuffer: [],
       liveBufferDroppedCount: 0,
@@ -1661,6 +1709,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       } catch (err) {
         if (epoch === sessionEpoch) {
           console.error('Failed to initialize new session with runtime:', err);
+          // The row is already persisted, so the session is not lost: say what
+          // failed instead of leaving a console that silently never attaches.
+          set({ sessionActionError: describeSessionActionError(err, '会话初始化失败') });
           clearAttached();
         }
       }
@@ -2117,7 +2168,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   loadSessionHistory: async (session: SessionRef) => {
     if (!requireRuntimeClient()) return;
     // Full (re)load of the newest page for a session, mirroring a fresh attach.
-    await attachToSession(session, session.thread_id);
+    // No explicit title: the attach resolves the known one instead of writing the
+    // thread id into the header.
+    await attachToSession(session);
   },
   loadEarlierHistory: async () => {
     const client = requireRuntimeClient();

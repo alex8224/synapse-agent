@@ -155,6 +155,8 @@ export const CommandInput: React.FC = () => {
         <form onSubmit={handleSubmit} className="flex items-center px-3 py-2.5">
           <span className="text-gray-400 mr-2 text-xs font-mono font-semibold">›</span>
           <input
+            id="console-composer"
+            name="prompt"
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -164,13 +166,16 @@ export const CommandInput: React.FC = () => {
                 handleSubmit();
               }
             }}
-            placeholder={
-              busy ? '运行中：输入内容回车可插话排队' : 'Build anything (/ for commands, @ for files)'
-            }
+            // No "/ for commands, @ for files" hint: neither a command palette nor
+            // file mention exists in this console, and the placeholder must not
+            // advertise a feature that typing "/" or "@" does nothing for.
+            placeholder={busy ? '运行中：输入内容回车可插话排队' : 'Build anything'}
             className="flex-1 bg-transparent border-none text-gray-900 text-xs placeholder:text-gray-400 focus:outline-none font-sans"
           />
           <input
             ref={fileInputRef}
+            id="console-attachments"
+            name="attachments"
             type="file"
             accept="image/*"
             multiple

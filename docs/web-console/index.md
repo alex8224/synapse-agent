@@ -88,6 +88,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」。**布局定为保持中区居中**：`grid-cols-[1fr_auto_1fr]` + 中区 `justify-self-center`，右列保留为空对称占位列（不改为右对齐） | 已实现 |
 | BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**目标已接入**：新增只读 `runtime.session.goal`，底栏左区按 TUI 语义渲染 `goal·active 250/1.0k` / `goal·active 42s`（无目标则整段不渲染，hover 出目标原文与用量） | 已实现 |
 | TopBar | 工作区文件面板（规范外，本轮新增） | `folder_open` 打开只读文件树 + 文本查看 + **真实行级差异**，走 `runtime.artifacts.stat/list/read`：分页（`next_cursor` + 「加载更多」）、按路径子串过滤（只过滤已加载条目，显示 `已过滤/已加载` 计数）、单块 64 KiB、自动续读止于 256 KiB，之后由「继续读取（+64 KiB）」显式续读、硬上限 4 MiB，界面始终标注已读字节范围与是否 EOF；二进制文件拒绝解码、错误全部可见 | 已实现 |
+| TopBar | 文件面板的文本判定口径 | 服务端对未知类型统一报 `application/octet-stream`，前端仅在该默认值（或空值）时按**扩展名**兜底；**点文件视为自带扩展名**（`.gitignore` → `gitignore`、`.dockerignore` → `dockerignore`、`.python-version` → `python-version`），无扩展名的已知文本名（`LICENSE`/`NOTICE`/`Dockerfile`/`Makefile`/`CODEOWNERS` 等）按 basename 兜底。因此点文件与 `LICENSE` 这类文件可正常查看；**未知名字仍拒绝解码**（宁可不读也不乱码），如 `x.bin`、`mystery` | 已实现 |
 | TopBar | 文件面板的真实差异（规范外，本轮新增） | 差异比较**两个真实文本**：打开文件时的基线快照 与 当前内容（可用「重新读取」拉取磁盘上的新版本、「重设基准」重设基线），渲染真实行级差异（LCS，含行号与 `+N/-M` 计数）；中段超过 LCS 预算时按整块替换报告并标注「非最小差异」，达到渲染上限标注「已截断」，两侧一致时明确说明「无差异」。wire 无 revision 历史（`revision` 只是 stat 指纹），因此不做跨会话的旧版本比对，见交接报告 | 已实现（客户端基线对比） |
 
 其它实测观察：

@@ -92,6 +92,17 @@ class FakeSocket implements SocketLike {
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+/** Run a store action with its expected diagnostics silenced. */
+async function muted<T>(fn: () => Promise<T>): Promise<T> {
+  const error = console.error;
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = error;
+  }
+}
+
 async function openClient() {
   const sockets: FakeSocket[] = [];
   const client = new SynapseRuntimeClient({
@@ -676,4 +687,78 @@ test('switching session never aborts an already finalized attachment', async () 
     0,
   );
   assert.deepEqual(useConsoleStore.getState().attachments, []);
+});
+
+// --- creating a session -----------------------------------------------------
+
+test('a new session is persisted by the server before it is shown', async () => {
+  await muted(() => useConsoleStore.getState().createNewSession());
+
+  const create = stubCalls.find((call) => call.method === 'runtime.session.create');
+  assert.ok(create, 'a fresh session must be persisted through runtime.session.create');
+  assert.equal(create.params.project_id, PROJECT);
+  // The identity is the server's: the console asks for one instead of inventing
+  // it, which is exactly what left the row unpersisted before.
+  assert.equal('thread_id' in create.params, false);
+  // The row still gets a label, but a label is a title — never an identity.
+  assert.equal(typeof create.params.title, 'string');
+  assert.ok(create.params.title.length > 0);
+
+  const state = useConsoleStore.getState();
+  assert.equal(state.currentSession.thread_id, 'allocated');
+  assert.equal(state.sessionTitle, 'session allocated');
+  assert.equal(state.sessions[0].thread_id, 'allocated');
+  assert.equal(state.sessions[0].title, 'session allocated');
+  assert.equal(state.sessionsTotal, 3);
+  assert.equal(state.sessionActionError, null);
+});
+
+test('an idempotent re-create does not inflate the session total', async () => {
+  const client = stubClient() as any;
+  client.createSession = (params: any) => {
+    stubCalls.push({ method: 'runtime.session.create', params });
+    return Promise.resolve({
+      command_id: 'cmd',
+      session: { project_id: params.project_id, thread_id: 'allocated' },
+      created: false,
+      title: 'session allocated',
+    });
+  };
+  useConsoleStore.setState({ client });
+
+  await muted(() => useConsoleStore.getState().createNewSession());
+
+  assert.equal(useConsoleStore.getState().sessionsTotal, 2);
+  assert.equal(useConsoleStore.getState().sessions[0].thread_id, 'allocated');
+});
+
+test('a failed create reports the reason and fabricates no session row', async () => {
+  const before = useConsoleStore.getState();
+  const client = stubClient() as any;
+  client.createSession = () =>
+    Promise.reject(new RpcCallError('rejected', -32000, 'invalid_request'));
+  useConsoleStore.setState({ client });
+
+  await muted(() => useConsoleStore.getState().createNewSession());
+
+  const after = useConsoleStore.getState();
+  assert.deepEqual(
+    after.sessions.map((entry) => entry.thread_id),
+    before.sessions.map((entry) => entry.thread_id),
+  );
+  assert.equal(after.sessionsTotal, before.sessionsTotal);
+  assert.equal(after.currentSession.thread_id, before.currentSession.thread_id);
+  assert.equal(after.sessionActionError, '请求无效：请检查会话标题等参数。');
+});
+
+test('a history reload keeps the known title instead of the thread id', async () => {
+  await muted(() =>
+    useConsoleStore.getState().loadSessionHistory({ project_id: PROJECT, thread_id: 'other' }),
+  );
+
+  const state = useConsoleStore.getState();
+  assert.equal(state.currentSession.thread_id, 'other');
+  // 'other' is a loaded row titled 'Second': the header must show that, never
+  // the raw id.
+  assert.equal(state.sessionTitle, 'Second');
 });

@@ -207,6 +207,8 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
         {showForm && (
           <div className="space-y-1.5">
             <textarea
+              id="goal-objective"
+              name="goal-objective"
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
               placeholder={`目标描述（1-${GOAL_OBJECTIVE_MAX_CHARS} 字）`}
@@ -216,6 +218,8 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
             />
             {!editing && (
               <input
+                id="goal-token-budget"
+                name="goal-token-budget"
                 value={budget}
                 onChange={(e) => setBudget(e.target.value)}
                 placeholder="token 预算（可选，正整数）"

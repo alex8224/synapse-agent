@@ -211,6 +211,8 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         className="flex cursor-pointer items-center gap-1.5 pl-4 font-mono text-[11px] text-gray-700"
                       >
                         <input
+                          id={`mcp-tool-${srv.name}-${tool}`}
+                          name={`mcp-tool-${srv.name}`}
                           type="checkbox"
                           checked={selection.includes(tool)}
                           onChange={() => toggleTool(srv.name, tool)}

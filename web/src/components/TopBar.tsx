@@ -104,7 +104,12 @@ export const TopBar: React.FC = () => {
 
       {/* Session label: centred in the header by the symmetric grid, so it never
           hangs off the branch chip. */}
-      <div className="justify-self-center truncate font-medium text-blue-600">{sessionTitle}</div>
+      <div
+        className="justify-self-center truncate font-medium text-blue-600"
+        title={sessionTitle}
+      >
+        {sessionTitle}
+      </div>
 
       <div className="flex items-center justify-self-end text-gray-600 text-xs">
         {/* Telemetry lives in the bottom status bar; the header keeps context + panels. */}

@@ -281,6 +281,8 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
           </div>
 
           <input
+            id="artifact-path-filter"
+            name="artifact-path-filter"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             placeholder="按路径过滤…"

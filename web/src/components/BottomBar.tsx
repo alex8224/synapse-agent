@@ -171,6 +171,8 @@ export const BottomBar: React.FC = () => {
                   <span className="font-mono text-[10px] text-gray-400">F2</span>
                 </div>
                 <input
+                  id="model-filter"
+                  name="model-filter"
                   type="text"
                   value={modelSearch}
                   onChange={(e) => setModelSearch(e.target.value)}
