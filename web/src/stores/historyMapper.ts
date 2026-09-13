@@ -1,3 +1,4 @@
+import { todoPreviewFromArgs } from './todoView.ts';
 /**
  * Pure mappers between the Agent Runtime RPC DTOs (`runtime.session.list`,
  * `runtime.session.history`) and the console transcript/session UI model.
@@ -269,15 +270,23 @@ export function mapHistoryEvents(
       }
     } else if (ev.kind === 'tools') {
       const names: string[] = [];
+      // The projected tool calls keep their raw args, so a checklist written by
+      // `write_todos` can be rebuilt here the same way the runtime builds it for
+      // live events; without that the todo panel would only ever see this
+      // session's live turns.
+      const previews: (string | null)[] = [];
       for (const call of ev.tool_calls) {
         const name = call?.name;
-        names.push(typeof name === 'string' && name !== '' ? name : 'tool');
+        const resolved = typeof name === 'string' && name !== '' ? name : 'tool';
+        names.push(resolved);
+        previews.push(todoPreviewFromArgs(resolved, call?.args));
       }
       if (names.length === 0) {
         // Projections may carry results without calls (e.g. very old rows).
         for (const result of ev.tool_results) {
           const name = result?.name;
           names.push(typeof name === 'string' && name !== '' ? name : 'tool');
+          previews.push(null);
         }
       }
       if (names.length > 0 && turn >= startTurn) {
@@ -285,7 +294,11 @@ export function mapHistoryEvents(
           id: `hist-x-${tag}`,
           type: 'tool_group',
           timestamp: `Turn ${turn}`,
-          tools: names.map((name, i) => historyToolItem(`hist-x-${tag}-${i}`, name)),
+          tools: names.map((name, i) => {
+            const item = historyToolItem(`hist-x-${tag}-${i}`, name);
+            const preview = previews[i] ?? null;
+            return preview === null ? item : { ...item, preview };
+          }),
           finished: true,
         });
       }

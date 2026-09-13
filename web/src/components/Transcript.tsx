@@ -3,6 +3,8 @@ import { useConsoleStore } from '../stores/useConsoleStore';
 import { expandHint, thoughtLabel, toolGroupLabel, toolStatusLabel } from '../stores/transcriptLabels.ts';
 import { Markdown } from './Markdown.tsx';
 import { AttachmentThumb } from './AttachmentThumb.tsx';
+import { TurnRail } from './TurnRail.tsx';
+import { TodoPanel } from './TodoPanel.tsx';
 
 export const Transcript: React.FC = () => {
   const {
@@ -49,6 +51,12 @@ export const Transcript: React.FC = () => {
   };
 
   return (
+    <>
+      {/* Minimap of the transcript, centred on the left edge (see TurnRail). */}
+      <TurnRail />
+      {/* Floating progress panel for the session's todo list (hidden until one
+          exists). */}
+      <TodoPanel />
     <div className="flex-1 overflow-y-auto px-8 py-6 pb-36 font-sans">
       <div className="mx-auto max-w-4xl space-y-5">
         {historyAvailable === false && (
@@ -100,7 +108,8 @@ export const Transcript: React.FC = () => {
               // Chat layout: the user's turn sits on the right, the assistant's on
               // the left, and the side it is on is the role — so no "User" /
               // "Assistant" heading is needed.
-              <div key={m.id} className="flex justify-end">
+              // `data-turn-id` is the anchor the turn rail scrolls to.
+              <div key={m.id} data-turn-id={m.id} className="flex justify-end">
                 <div className="flex max-w-[80%] flex-col items-end gap-1.5">
                   {m.content !== '' && (
                     // No bubble: the side it sits on is the role, and the frame
@@ -289,5 +298,6 @@ export const Transcript: React.FC = () => {
         <div ref={bottomRef} />
       </div>
     </div>
+    </>
   );
 };
