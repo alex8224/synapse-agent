@@ -1,11 +1,16 @@
 import React, { useRef, useState } from 'react';
 import { AttachmentPreview } from './AttachmentPreview.tsx';
+import { ModelControls } from './ModelControls.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { formatBytes } from '../runtime-client/artifacts.ts';
 import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
 
 /**
- * Floating command card.
+ * Floating command card: the prompt line, then one control row inside the same
+ * rounded box — add-image on the left, the model and reasoning level the next
+ * turn will run on, and the primary action on the right.  Those two pickers used
+ * to sit in the status bar; they configure the next turn, so they belong next to
+ * the input that starts it.
  *
  * The single round button is the primary action for the current state: `↑`
  * sends when idle, and becomes an enabled `■` stop button while a turn is
@@ -13,8 +18,8 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
  * was empty, with no way to interrupt from the UI).  Typing while busy still
  * queues a steer — that path is Enter, not the button.
  *
- * Images are added with the paperclip (file picker), by pasting them into the
- * card, or by dropping them onto it — all three end in the same `handleFiles`
+ * Images are added with the `+` (file picker), by pasting them into the card, or
+ * by dropping them onto it — all three end in the same `handleFiles`
  * path.  Only the image types the runtime accepts are taken, at most eight per
  * submit and 4 MB each; every refusal is shown next to the composer instead of
  * being silently dropped.  A chunk still uploading disables sending, and an
@@ -28,7 +33,6 @@ export const CommandInput: React.FC = () => {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
-    steerQueueCount,
     runtimeStatus,
     submitPrompt,
     cancelActiveTurn,
@@ -87,26 +91,8 @@ export const CommandInput: React.FC = () => {
           dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-[#e5e7eb]'
         }`}
       >
-        <div className="flex items-center gap-2 rounded-t-lg border-b border-[#f1f2f4] bg-[#fbfcfd] px-3.5 py-1.5">
-          {busy ? (
-            <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-600" />
-              <span className="font-mono text-xs text-gray-600">
-                运行中 · Steer 队列 {steerQueueCount}
-              </span>
-            </>
-          ) : (
-            <span className="font-mono text-xs text-gray-500">Ready</span>
-          )}
-          {attachments.length > 0 && (
-            <span className="font-mono text-xs text-gray-400">
-              附件 {attachments.length}/{ATTACHMENT_MAX_COUNT}
-            </span>
-          )}
-        </div>
-
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 px-3.5 pt-2.5">
+          <div className="flex flex-wrap items-center gap-2 px-3.5 pt-2.5">
             {attachments.map((entry) => {
               const percent =
                 entry.size > 0
@@ -149,6 +135,10 @@ export const CommandInput: React.FC = () => {
                 </div>
               );
             })}
+            {/* The cap belongs with the chips: there is no separate status row. */}
+            <span className="font-mono text-[10px] text-gray-400">
+              {attachments.length}/{ATTACHMENT_MAX_COUNT}
+            </span>
           </div>
         )}
 
@@ -161,8 +151,7 @@ export const CommandInput: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex items-center px-3 py-2.5">
-          <span className="text-gray-400 mr-2 text-xs font-mono font-semibold">›</span>
+        <form onSubmit={handleSubmit} className="flex flex-col">
           <input
             id="console-composer"
             name="prompt"
@@ -175,11 +164,13 @@ export const CommandInput: React.FC = () => {
                 handleSubmit();
               }
             }}
-            // No "/ for commands, @ for files" hint: neither a command palette nor
-            // file mention exists in this console, and the placeholder must not
-            // advertise a feature that typing "/" or "@" does nothing for.
-            placeholder={busy ? '运行中：输入内容回车可插话排队' : 'Build anything'}
-            className="flex-1 bg-transparent border-none text-gray-900 text-xs placeholder:text-gray-400 focus:outline-none font-sans"
+            // The busy state lives in the placeholder (as in the reference
+            // composer) instead of a status row; the steer count is already shown
+            // on the transcript's own status strip.
+            // No "/ for commands, @ for files" hint either: neither a command
+            // palette nor file mention exists in this console.
+            placeholder={busy ? '继续输入以排队后续修改' : 'Build anything'}
+            className="w-full bg-transparent px-3.5 pb-1 pt-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none font-sans"
           />
           <input
             ref={fileInputRef}
@@ -194,14 +185,19 @@ export const CommandInput: React.FC = () => {
               e.target.value = '';
             }}
           />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
-            className="ml-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
-          >
-            <span className="material-symbols-outlined text-[16px]">attach_file</span>
-          </button>
+          {/* Control row: add on the left, what the next turn runs on the right. */}
+          <div className="flex items-center gap-2 px-2 pb-1.5">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+            >
+              <span className="material-symbols-outlined text-[18px]">add</span>
+            </button>
+            <div className="ml-auto flex min-w-0 items-center gap-3">
+              <ModelControls />
+            </div>
           {busy ? (
             <button
               type="button"
@@ -209,7 +205,7 @@ export const CommandInput: React.FC = () => {
                 void cancelActiveTurn();
               }}
               title="停止当前轮次 (Ctrl+C)"
-              className="ml-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#dc2626] text-white transition-colors hover:bg-red-700"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#dc2626] text-white transition-colors hover:bg-red-700"
             >
               <span className="material-symbols-outlined text-[16px]">stop</span>
             </button>
@@ -218,11 +214,12 @@ export const CommandInput: React.FC = () => {
               type="submit"
               disabled={!canSend}
               title={uploading ? '附件仍在上传中' : 'Send (Enter)'}
-              className="ml-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#2563eb] text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#2563eb] text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
             </button>
           )}
+          </div>
         </form>
       </div>
     </div>

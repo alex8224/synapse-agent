@@ -3,9 +3,9 @@
  *
  * The bar is a symmetric three-track grid (`1fr auto 1fr`) so the current-turn
  * telemetry sits in the exact horizontal centre; the left column carries
- * activity + model / reasoning / MCP / goal and the right track stays an empty
- * spacer. This test pins that decision against a future edit that would slide
- * the telemetry to the right edge.
+ * activity + MCP / goal (the model and reasoning pickers moved into the composer)
+ * and the right track stays an empty spacer. This test pins that decision against
+ * a future edit that would slide the telemetry to the right edge.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

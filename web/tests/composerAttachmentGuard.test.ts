@@ -16,6 +16,20 @@ import { test } from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const composer = readFileSync(join(here, '..', 'src', 'components', 'CommandInput.tsx'), 'utf8');
 const preview = readFileSync(join(here, '..', 'src', 'components', 'AttachmentPreview.tsx'), 'utf8');
+const bar = readFileSync(join(here, '..', 'src', 'components', 'BottomBar.tsx'), 'utf8');
+
+test('the model and reasoning pickers live in the composer, not the status bar', () => {
+  assert.ok(composer.includes('<ModelControls />'), 'the composer control row must host them');
+  assert.ok(
+    !bar.includes('切换模型 (F2)'),
+    'the status bar must not keep a model trigger',
+  );
+  assert.ok(!bar.includes('推理等级'), 'the status bar must not keep a reasoning trigger');
+  // They configure the next turn, so they sit in the same row as the send button.
+  const row = composer.slice(composer.indexOf('{/* Control row'));
+  assert.ok(row.includes('<ModelControls />'), 'the pickers belong to the control row');
+  assert.ok(row.includes('arrow_upward'), 'and the primary action is in that row too');
+});
 
 test('a pasted image goes through the same path as a picked one', () => {
   assert.ok(composer.includes('onPaste='), 'the composer must handle paste');
