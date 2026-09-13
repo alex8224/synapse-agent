@@ -259,6 +259,24 @@ Type `/help` in the TUI for the full reference. The essentials:
 | `/safety <profile>` | Switch safety profiles |
 | `/approve` · `/reject` | Human-in-the-loop decisions |
 
+### TUI error diagnostics
+
+Turn and approval-resume errors show a nonempty summary (including the exception
+type when its message is empty) and an `Error log:` path. Failure diagnostics are
+enabled by default and written lazily to the turn's own workspace:
+`.synapse/logs/errors-<pid>.log`. Each process rotates its file at 1 MiB with three
+backups. If the file cannot be written, the TUI explicitly reports that instead
+of hiding the original error.
+
+The JSON-lines log keeps timestamps, operation/session/turn identifiers,
+exception types, numeric error codes and stack locations. It deliberately omits
+raw exception messages, source lines, locals, prompts, tool output and settings;
+the on-screen summary redacts common credential formats. Runtime failures are
+recorded before conversion to result data, when the traceback is still available.
+See [TUI error details and logs](docs/cli.md#tui-错误详情与日志) for the PowerShell
+tail command and retention details. Restart the TUI after updating; earlier
+unlogged failures cannot be recovered from an `ERROR:` screenshot.
+
 ## ACP v1 adapter
 
 The package also installs the standalone `synapse-acp` stdio entry point. It

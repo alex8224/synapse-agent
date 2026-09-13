@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from synapse.observability.error_log import exception_message, record_error
 from synapse.runtime.agent_loop.model import (
     CancelToken,
     TurnContext,
@@ -176,13 +177,22 @@ class AgentTurnRuntime:
                 ),
             )
         except BaseException as exc:
+            # Record stack locations before converting the exception to a DTO.
+            # No request payload, exception body, locals or source lines are persisted.
+            record_error(
+                getattr(settings, "workspace", None),
+                operation="runtime.turn",
+                thread_id=context.thread_id,
+                turn_id=context.turn_id,
+                error=exc,
+            )
             return TurnResult(
                 turn_id=context.turn_id,
                 thread_id=context.thread_id,
                 status=TurnStatus.FAILED,
                 cancel_reason=token.reason if token.cancelled else None,
                 error_type=type(exc).__name__,
-                error_message=str(exc)[:2000],
+                error_message=exception_message(exc),
             )
 
         if result.cancelled or token.cancelled:

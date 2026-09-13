@@ -17,6 +17,7 @@ from typing import Any
 from textual.widgets import Input
 
 from synapse.content.multimodal import find_placeholders
+from synapse.observability.error_log import record_error
 from synapse.runtime.agent_loop import TurnContext
 from synapse.runtime.async_runtime import get_async_runtime
 from synapse.runtime.consumer import LocalProjectRuntimeConsumer, project_identity_for_workspace
@@ -839,7 +840,12 @@ class TurnController:
             )
             self._service_owners[project_id] = owner
         facade = TUIRuntimeSessionFacade(
-            TUISessionBinding(SessionRef(project_id, thread_id), owner.service, owner=owner)
+            TUISessionBinding(
+                SessionRef(project_id, thread_id),
+                owner.service,
+                owner=owner,
+                settings={"workspace": str(workspace)},
+            )
         )
         self._service_sessions[key] = facade
         return facade
@@ -1238,6 +1244,50 @@ class TurnController:
 
     # -- run ---------------------------------------------------------------
 
+    def _error_workspace(self, thread_id: str, facade: Any = None) -> Path | str | None:
+        """Capture the turn's workspace before waiting, not after a project switch."""
+        binding = getattr(facade, "binding", None)
+        bound_settings = getattr(binding, "settings", {})
+        if isinstance(bound_settings, Mapping) and bound_settings.get("workspace"):
+            return bound_settings["workspace"]
+        ref = getattr(binding, "session", None)
+        project_id = getattr(ref, "project_id", None) or self._current_project_id()
+        settings = self._service_settings.get((project_id, thread_id))
+        if settings is None and project_id == self._current_project_id():
+            settings = self._app.settings
+        return getattr(settings, "workspace", None)
+
+    def _report_turn_error(
+        self,
+        *,
+        workspace: Path | str | None,
+        thread_id: str,
+        turn_id: str,
+        generation: int,
+        operation: str,
+        error: BaseException | None = None,
+        detail: str = "",
+    ) -> None:
+        """Persist failure diagnostics even when its transcript is no longer attached."""
+        report = record_error(
+            workspace,
+            operation=operation,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            error=error,
+            detail=detail,
+        )
+        app = self._app
+        app._call_for_transcript(
+            generation, app.append_event, f"ERROR: {report.summary}", "bold red"
+        )
+        hint = (
+            f"Error log: {report.path}"
+            if report.path is not None
+            else f"Error log unavailable ({report.log_error})."
+        )
+        app._call_for_transcript(generation, app.append_event, hint, "dim")
+
     def _new_event_bridge(
         self, thread_id: str, turn_id: str, transcript_generation: int
     ) -> TextualTurnEventBridge:
@@ -1295,11 +1345,15 @@ class TurnController:
         app._call_for_transcript(transcript_generation, app._begin_turn_usage)
         facade: Any | None = None
         bridge: TextualTurnEventBridge | None = None
+        error_workspace = self._error_workspace(turn_thread_id)
+        error_turn_id = ""
         try:
             facade = self._service_facade(turn_thread_id)
+            error_workspace = self._error_workspace(turn_thread_id, facade)
 
             def on_event(event: Any) -> None:
-                nonlocal bridge
+                nonlocal bridge, error_turn_id
+                error_turn_id = event.turn_id
                 if bridge is None:
                     bridge = self._new_event_bridge(
                         turn_thread_id, event.turn_id, transcript_generation
@@ -1319,19 +1373,22 @@ class TurnController:
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
-                detail = str(getattr(result, "error_message", "") or "").strip()
-                app._call_for_transcript(
-                    transcript_generation,
-                    app.append_event,
-                    f"ERROR: {detail}" if detail else "ERROR: failed",
-                    "bold red",
+                self._report_turn_error(
+                    workspace=error_workspace,
+                    thread_id=turn_thread_id,
+                    turn_id=getattr(result, "turn_id", "") or error_turn_id,
+                    generation=transcript_generation,
+                    operation="tui.submit.result",
+                    detail=str(getattr(result, "error_message", "") or ""),
                 )
         except Exception as exc:  # noqa: BLE001 - UI boundary
-            app._call_for_transcript(
-                transcript_generation,
-                app.append_event,
-                f"ERROR: {exc}",
-                "bold red",
+            self._report_turn_error(
+                workspace=error_workspace,
+                thread_id=turn_thread_id,
+                turn_id=error_turn_id,
+                generation=transcript_generation,
+                operation="tui.submit",
+                error=exc,
             )
         finally:
             self._finish_event_bridge(bridge)
@@ -1401,8 +1458,11 @@ class TurnController:
                 app.call_from_thread(app._turn_done)
             return
         bridge: TextualTurnEventBridge | None = None
+        error_workspace = self._error_workspace(turn_thread_id, facade)
+        error_turn_id = ""
         try:
             pending = get_async_runtime().submit(facade.pending_approval()).result(timeout=5.0)
+            error_turn_id = pending.turn_id
             if not pending.actions:
                 app.call_from_thread(app.append_event, "no pending approval", "yellow")
                 return
@@ -1446,15 +1506,23 @@ class TurnController:
             if self.apply_consumer_result(result, transcript_generation=transcript_generation):
                 return
             if result.status == "failed":
-                detail = str(getattr(result, "error_message", "") or "").strip()
-                app._call_for_transcript(
-                    transcript_generation,
-                    app.append_event,
-                    f"ERROR: {detail}" if detail else "ERROR: failed",
-                    "bold red",
+                self._report_turn_error(
+                    workspace=error_workspace,
+                    thread_id=turn_thread_id,
+                    turn_id=getattr(result, "turn_id", "") or error_turn_id,
+                    generation=transcript_generation,
+                    operation="tui.resume.result",
+                    detail=str(getattr(result, "error_message", "") or ""),
                 )
         except Exception as exc:  # noqa: BLE001
-            app.call_from_thread(app.append_event, f"ERROR: {exc}", "bold red")
+            self._report_turn_error(
+                workspace=error_workspace,
+                thread_id=turn_thread_id,
+                turn_id=error_turn_id,
+                generation=transcript_generation,
+                operation="tui.resume",
+                error=exc,
+            )
         finally:
             self._finish_event_bridge(bridge)
             app.call_from_thread(app._turn_done)

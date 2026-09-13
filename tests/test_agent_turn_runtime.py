@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -418,6 +419,47 @@ def test_provider_failure_becomes_failed_result() -> None:
         assert result.error_message == "provider failed"
     finally:
         runtime_loop.close()
+
+
+def test_empty_provider_error_keeps_type_and_persists_stack(tmp_path: Path) -> None:
+    from synapse.runtime.agent_loop import CancelToken
+
+    context = _context(turn_id="logged-failure")
+    context.settings.workspace = tmp_path
+
+    def failing(*args: Any, **kwargs: Any) -> StreamResult:
+        # This source line and the request must not be copied into the log.
+        private_body = "PRIVATE-PROVIDER-BODY"
+        assert private_body
+        raise TimeoutError()
+
+    result = AgentTurnRuntime._run_sync_once(context, None, CancelToken(), failing)
+    assert result.status is TurnStatus.FAILED
+    assert result.error_message == "TimeoutError"
+    files = list((tmp_path / ".synapse" / "logs").glob("errors-*.log"))
+    assert len(files) == 1
+    text = files[0].read_text(encoding="utf-8")
+    record = json.loads(text)
+    assert record["operation"] == "runtime.turn"
+    assert record["turn_id"] == "logged-failure"
+    assert "failing" in record["stack"]
+    assert "PRIVATE-PROVIDER-BODY" not in text
+    assert "hello" not in text
+
+
+def test_runtime_error_survives_unwritable_log(tmp_path: Path) -> None:
+    from synapse.runtime.agent_loop import CancelToken
+
+    context = _context()
+    context.settings.workspace = tmp_path
+    (tmp_path / ".synapse").write_text("blocked", encoding="utf-8")
+
+    def failing(*args: Any, **kwargs: Any) -> StreamResult:
+        raise RuntimeError("provider failed")
+
+    result = AgentTurnRuntime._run_sync_once(context, None, CancelToken(), failing)
+    assert result.status is TurnStatus.FAILED
+    assert result.error_message == "provider failed"
 
 
 def test_sink_failure_does_not_change_result() -> None:
