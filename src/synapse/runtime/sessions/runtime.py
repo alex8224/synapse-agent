@@ -83,6 +83,31 @@ class SessionUsage:
         return self.input_tokens + self.output_tokens
 
 
+def _usage_from(seed: Any | None) -> SessionUsage:
+    """Session totals seeded from a durable usage row (``TranscriptUsage``).
+
+    Only the three cumulative counters are taken: the projection also carries the
+    last call's numbers, which belong to the live usage event, not to the totals.
+    A missing or malformed seed means "start at zero", which is what a session
+    with no durable row yet should report.
+    """
+    if seed is None:
+        return SessionUsage()
+
+    def count(name: str) -> int:
+        value = getattr(seed, name, 0)
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    return SessionUsage(
+        input_tokens=count("input_tokens"),
+        output_tokens=count("output_tokens"),
+        cache_tokens=count("cache_tokens"),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionBinding:
     """The agent/settings pair used by a turn.
@@ -168,6 +193,7 @@ class SessionRuntime:
         turn_runtime: AgentTurnRuntime | None = None,
         broker: SessionEventBroker | None = None,
         persist_result: Callable[[TurnContext, TurnResult], Awaitable[None] | None] | None = None,
+        initial_usage: Any | None = None,
         goal_service: Any | None = None,
         goal_followup: Callable[[Any], Awaitable[UserTurn | None] | UserTurn | None] | None = None,
         workspace: Any | None = None,
@@ -192,7 +218,10 @@ class SessionRuntime:
         self._reservation: TurnReservation | None = None
         self._approval_claim: tuple[str, str, int] | None = None
         self._consumed_approval_claim: tuple[str, int] | None = None
-        self._usage = SessionUsage()
+        # Seeded from the durable projection when the manager supplies it, so a
+        # fresh process continues the session's real totals instead of reporting
+        # only the turns it happened to run.
+        self._usage = _usage_from(initial_usage)
         self._last_error: str | None = None
         self._goal: Any | None = None
         self._last_activity_at = _utcnow()

@@ -96,6 +96,7 @@ def _session(
     persist_result: Any = None,
     goal_service: Any = None,
     goal_followup: Any = None,
+    initial_usage: Any = None,
 ) -> SessionRuntime:
     return SessionRuntime(
         thread_id="thread",
@@ -110,6 +111,7 @@ def _session(
         persist_result=persist_result,
         goal_service=goal_service,
         goal_followup=goal_followup,
+        initial_usage=initial_usage,
     )
 
 
@@ -1666,6 +1668,43 @@ def test_session_completes_without_subscriber_and_persists() -> None:
         await session.close(cancel_active=False)
 
     asyncio.run(run())
+
+
+def test_session_usage_continues_from_the_durable_row() -> None:
+    """A fresh process must keep reporting the session's real totals.
+
+    The runtime accumulates usage in memory, so without the seed a daemon restart
+    reset what clients were shown while the durable projection (what the TUI
+    reads) kept the session's lifetime total.
+    """
+    durable = SimpleNamespace(
+        input_tokens=277240183,
+        output_tokens=412045,
+        cache_tokens=276238976,
+        last_input_tokens=677175,
+        last_output_tokens=179,
+        last_cache_tokens=676736,
+    )
+    session = _session(_ControlledTurnRuntime(), initial_usage=durable)
+    usage = session.snapshot().usage
+    assert usage.input_tokens == 277240183
+    assert usage.output_tokens == 412045
+    assert usage.cache_tokens == 276238976
+
+
+def test_session_usage_seed_tolerates_missing_or_malformed_rows() -> None:
+    # No durable row yet: start from zero, exactly as before.
+    assert _session(_ControlledTurnRuntime()).snapshot().usage.input_tokens == 0
+    # A row with junk counters must not raise either.
+    seeded = _session(
+        _ControlledTurnRuntime(),
+        initial_usage=SimpleNamespace(
+            input_tokens="not-a-number",
+            output_tokens=None,
+            cache_tokens=-5,
+        ),
+    ).snapshot().usage
+    assert (seeded.input_tokens, seeded.output_tokens, seeded.cache_tokens) == (0, 0, 0)
 
 
 def test_active_context_and_wait_for_settlement_include_persistence() -> None:

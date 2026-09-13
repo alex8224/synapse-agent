@@ -568,6 +568,29 @@ def test_manager_injects_persistence_into_default_session_runtime() -> None:
     asyncio.run(run())
 
 
+def test_manager_seeds_session_usage_from_the_durable_reader() -> None:
+    """The manager asks for a seed per session and hands it to the runtime."""
+    asked: list[str] = []
+
+    def load_usage(thread_id: str) -> Any:
+        asked.append(thread_id)
+        return SimpleNamespace(input_tokens=10, output_tokens=2, cache_tokens=8)
+
+    async def run() -> None:
+        manager = RuntimeManager(
+            settings=SimpleNamespace(max_concurrency=2, model="test"),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+            load_usage=load_usage,
+        )
+        session = await manager.open_session("a")
+        assert asked == ["a"]
+        usage = session.snapshot().usage
+        assert (usage.input_tokens, usage.output_tokens, usage.cache_tokens) == (10, 2, 8)
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_submit_releases_lock_after_mark_queued_failure(monkeypatch: Any) -> None:
     """F3: a failure between lock acquisition and queue marking must not leak
     the per-session submit lock (otherwise the next submit deadlocks/errors)."""

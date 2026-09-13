@@ -359,6 +359,31 @@ class RuntimeProjectPersistence:
             default_transcript_projection_path(path)
         )
 
+    def load_usage(self, thread_id: str) -> Any | None:
+        """Durable cumulative usage for one session, or ``None`` when unknown.
+
+        A ``SessionRuntime`` keeps its own in-memory totals, and those start at
+        zero for every process: without this seed, restarting the daemon silently
+        resets a session's reported usage to the turns that process happened to
+        run, while the TUI keeps showing the session's real total (it reads the
+        same projection directly).  Seeding from here makes both agree.
+
+        Degrades to ``None`` — never raises — because a session must still open
+        when the projection is unreadable or was never written; the runtime then
+        simply starts from zero, which is the pre-existing behaviour.
+        """
+        if not self.enabled:
+            return None
+        with self._lock:
+            self._activate()
+            projection = self._projection
+        if projection is None:
+            return None
+        try:
+            return projection.load_usage(thread_id)
+        except Exception:  # noqa: BLE001 - a missing/corrupt row is just "no seed"
+            return None
+
     def persist_result(self, context: Any, result: Any) -> None:
         """``RuntimeManager.persist_result`` binding for one settled turn."""
         if not self.enabled:

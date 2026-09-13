@@ -94,6 +94,7 @@ class RuntimeManager:
         async_runtime: AsyncRuntime | None = None,
         project_id: str | None = None,
         persist_result: Callable[..., Any] | None = None,
+        load_usage: Callable[[str], Any | None] | None = None,
         persist_resources: Any | None = None,
         on_status_change: Callable[[SessionSnapshot], None] | None = None,
         persist_model_binding: Callable[[str, Any], None] | None = None,
@@ -110,6 +111,7 @@ class RuntimeManager:
         self.session_factory = session_factory
         self.project_id = project_id
         self.persist_result = persist_result
+        self.load_usage = load_usage
         self.persist_resources = persist_resources
         self.on_status_change = on_status_change
         self.persist_model_binding = persist_model_binding
@@ -251,6 +253,10 @@ class RuntimeManager:
         }
         if self.persist_result is not None:
             runtime_kwargs["persist_result"] = self.persist_result
+        # The runtime accumulates usage in memory; seed it from the durable copy
+        # so restarting the daemon does not reset a session's reported total.
+        if self.load_usage is not None:
+            runtime_kwargs["initial_usage"] = self.load_usage(thread_id)
         if self.on_status_change is not None:
             runtime_kwargs["on_status_change"] = self.on_status_change
         # Preserve old custom factories whose callable only accepts the S1

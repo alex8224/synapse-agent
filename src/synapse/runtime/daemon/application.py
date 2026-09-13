@@ -410,6 +410,9 @@ class RuntimeDaemon:
         persist_result = (
             persistence.persist_result if persistence.enabled else None
         )
+        # Seed each session runtime's cumulative usage from the durable projection,
+        # so a daemon restart no longer resets what the console reports.
+        load_usage = persistence.load_usage if persistence.enabled else None
         return RuntimeManager(
             settings=project_settings,
             agent_factory=lambda thread_id, _shared: build_agent(
@@ -424,6 +427,7 @@ class RuntimeDaemon:
             project_id=descriptor.project_id,
             persist_model_binding=persist_session_binding,
             persist_result=persist_result,
+            load_usage=load_usage,
             persist_resources=persistence if persistence.enabled else None,
         )
 
