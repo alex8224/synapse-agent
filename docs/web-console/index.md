@@ -94,6 +94,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | Transcript | 阅读列宽 | 与输入卡片共用阅读几何（`.console-gutter` + `.console-column`）：桌面端（≥ `lg`，1024px）每侧留白为工作区的 10%，列宽正好约 80% 且**无 `rem` 上限**（更宽的工作区真的更宽，不再被 60rem 锁死），窄屏每侧退回 `2rem`、列宽近全宽；滚动容器保留对称滚动条槽位（`[scrollbar-gutter:stable_both-edges]`），出现滚动条时中心线仍与输入卡片重合 | 已实现（本轮布局对齐） |
 | Transcript | ◆ Thought for Xs 折叠思考链 | 按规范文案：`◆ Thought for 0.1s`（流式为 `◆ Thinking...`，历史投影无耗时为 `◆ Thought`），带展开/收起；**折叠态是紧凑的次要日志行**（无填充底色/无边框），展开后才是面板 | 已实现（本轮层级调整） |
 | Transcript | ▾ N tools executed 折叠工具栏 | 按规范文案 `N tools executed`（含 parallel 标注）；折叠态同样是紧凑日志行，展开后逐条工具卡片；工具卡片状态徽章已中文化（运行中/等待/完成/失败/错误/已取消） | 已实现 |
+| Transcript | 一个工具批次一个工具组（本轮修复） | 实时流里 `tool_batch_started/finished` 就是批次边界：每批工具各自成组，组的位置紧随其前的思考/文本之后，**不再把整轮的工具调用合并进第一个组**（对齐 TUI「思考 → 工具 → 思考 → 工具保持两个真实批次」的冒烟项）；assistant 文本同样按段落分行（每段自己的 `answer_completed` 定稿），尚未收到任何工具项的空组不渲染 | 已实现（本轮修复） |
 | Transcript | Markdown 代码块与流式输出 | 围栏代码块（语言标签 + 复制 + 横向滚动 + 按语言高亮，尺寸不变）、标题/列表/引用/表格/行内代码/粗体/链接均正常；**表格正文按正文可读字号**（`text-sm`，14px；表头同字号、只用字重区分），单元格适度 padding，宽表在自身容器内横向滚动、不撑破阅读列 | 已实现（本轮表格可读性调整） |
 | Transcript | LaTeX 公式（规范外，本轮新增） | `$$...$$` 渲染为居中、等宽、显式标注「公式 · LaTeX 源码（未排版）」的块；`$...$` 渲染为行内公式标签。**不引入 TeX 引擎**（保持零运行时依赖），只做「明确标注为数学」的源码呈现；未闭合的流式公式仍可见 | 已实现（无依赖显式呈现） |
 | Transcript | Mermaid（规范外，本轮新增） | mermaid 围栏仍是代码块（语言标签 `mermaid`），头部标注「终端图形渲染未实现」。**不引入 mermaid 运行时**；取舍见交接报告 | 已实现（无依赖显式呈现） |
@@ -257,8 +258,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 |---|---|
 | `activity_started/updated/stopped` | 活动行（phase + detail，含计时） |
 | `reasoning_delta/completed` | 思考链（流式；完成时给出耗时） |
-| `answer_delta/completed` | 助手回答（完成事件以完整文本定稿） |
-| `tool_batch_started/finished` | 工具组（并行标记 / 关闭） |
+| `answer_delta/completed` | 助手回答（每个文本段落一行；完成事件以该段完整文本定稿） |
+| `tool_batch_started/finished` | 工具组（一个批次一组；并行标记 / 关闭） |
 | `tool_started/updated/finished` | 工具项状态、路径、结果预览、错误 |
 | `tool_result` | 旧式工具完成（按 call_id 关联到已有项） |
 | `subagent_status_changed` | 父工具项上的子代理阶段 |

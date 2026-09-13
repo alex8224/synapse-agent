@@ -151,6 +151,38 @@ test('answer_completed creates the message when no delta was streamed', () => {
   assert.equal(s.messages[0].content, 'only completion');
 });
 
+test('assistant text printed before a tool batch gets its own answer row', () => {
+  let s = apply(baseState(), event('answer_delta', { text: 'let me check' }));
+  s = apply(s, event('answer_completed', { text: 'let me check' }));
+  s = apply(s, event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem()));
+  s = apply(s, event('answer_delta', { text: 'final' }));
+  s = apply(s, event('answer_completed', { text: 'final' }));
+
+  assert.deepEqual(
+    s.messages.map((m) => m.type),
+    ['assistant', 'tool_group', 'assistant'],
+    'the final answer must not be folded into the row above the tool calls',
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'assistant').map((m) => m.content),
+    ['let me check', 'final'],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'assistant').map((m) => m.streaming),
+    [false, false],
+    'a completed segment must not swallow the next one',
+  );
+});
+
+test('a delta after answer_completed opens the next answer segment', () => {
+  let s = apply(baseState(), event('answer_delta', { text: 'first' }));
+  s = apply(s, event('answer_completed', { text: 'first' }));
+  s = apply(s, event('answer_delta', { text: 'second' }));
+
+  assert.deepEqual(s.messages.map((m) => m.content), ['first', 'second']);
+});
+
 test('tool_started upserts by item_id instead of duplicating rows', () => {
   let s = apply(baseState(), event('tool_started', toolItem()));
   s = apply(s, event('tool_started', toolItem({ status: 'running' })));
@@ -212,6 +244,92 @@ test('tool_batch_started marks the group and tool_batch_finished closes it', () 
 test('tool_batch_finished never creates an empty group', () => {
   const s = apply(baseState(), event('tool_batch_finished', { group_id: 'g1' }));
   assert.deepEqual(s.messages, []);
+});
+
+test('each tool batch of a turn gets its own group, in stream order', () => {
+  let s = apply(baseState(), event('reasoning_delta', { text: 'step one' }));
+  s = apply(s, event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g1-0', call_id: 'c1' })));
+  s = apply(s, event('tool_batch_finished', { group_id: 'g1' }));
+  s = apply(s, event('reasoning_delta', { text: 'step two' }));
+  s = apply(s, event('tool_batch_started', { parallel: true }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g2-0', call_id: 'c2', name: 'grep' })));
+  s = apply(s, event('tool_batch_finished', { group_id: 'g2' }));
+
+  assert.deepEqual(
+    s.messages.map((m) => m.type),
+    ['thought', 'tool_group', 'thought', 'tool_group'],
+    'the second batch must not be appended to the group the first batch opened',
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'tool_group').map((m) => m.tools?.map((t) => t.name)),
+    [['read_file'], ['grep']],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'tool_group').map((m) => m.parallel),
+    [false, true],
+  );
+});
+
+test('a batch that never reported finished is sealed by the next batch', () => {
+  let s = apply(baseState(), event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g1-0' })));
+  // No `tool_batch_finished` (truncated or older stream): the next batch must
+  // still start its own group instead of appending to the first one.
+  s = apply(s, event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g2-0', name: 'grep' })));
+
+  const groups = s.messages.filter((m) => m.type === 'tool_group');
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].finished, true);
+  assert.equal(groups[1].finished, false);
+  assert.deepEqual(groups.map((m) => m.tools?.map((t) => t.name)), [['read_file'], ['grep']]);
+});
+
+test('a late update for a closed group patches that group instead of opening one', () => {
+  let s = apply(baseState(), event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g1-0' })));
+  s = apply(s, event('tool_batch_finished', { group_id: 'g1' }));
+  s = apply(s, event('tool_updated', toolItem({ item_id: 'g1-0', status: 'completed', preview: 'ok' })));
+
+  assert.equal(s.messages.length, 1, 'the update must not open a second group');
+  assert.equal(s.messages[0].tools?.[0].status, 'completed');
+  assert.equal(s.messages[0].tools?.[0].preview, 'ok');
+});
+
+test('legacy tool_result updates a known row and joins the batch still open', () => {
+  let s = apply(baseState(), event('tool_batch_started', { parallel: false }));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g1-0', call_id: 'c1' })));
+  s = apply(s, event('tool_batch_finished', { group_id: 'g1' }));
+  s = apply(s, event('tool_batch_started', { parallel: false }));
+  // A result for the first batch's call still finds its own row ...
+  s = apply(s, event('tool_result', { name: 'read_file', call_id: 'c1', status: 'completed' }));
+  // ... while an unknown one joins the batch that is still open.
+  s = apply(s, event('tool_result', { name: 'grep', call_id: 'c9', status: 'completed' }));
+
+  const groups = s.messages.filter((m) => m.type === 'tool_group');
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].tools?.[0].status, 'completed');
+  assert.deepEqual(groups[1].tools?.map((t) => t.name), ['grep']);
+});
+
+test('an item id reused by a later turn stays in that later turn', () => {
+  let s = apply(
+    baseState(),
+    event('tool_started', toolItem({ item_id: 'g1-0', name: 'read_file' })),
+  );
+  // Every turn restarts the item ids, so this `g1-0` is a different call.
+  s = apply(s, event('tool_started', toolItem({ item_id: 'g1-0', name: 'bash' }), 't2'));
+  s = apply(
+    s,
+    event('tool_finished', { item_id: 'g1-0', status: 'completed', preview: 'out' }, 't2'),
+  );
+
+  assert.equal(s.messages.length, 2, 'the second turn must get its own row');
+  assert.equal(s.messages[0].tools?.[0].name, 'read_file');
+  assert.equal(s.messages[0].tools?.[0].preview, null, 'turn 1 must not take turn 2 results');
+  assert.equal(s.messages[1].tools?.[0].name, 'bash');
+  assert.equal(s.messages[1].tools?.[0].preview, 'out');
 });
 
 test('subagent_status_changed survives a later tool_updated', () => {

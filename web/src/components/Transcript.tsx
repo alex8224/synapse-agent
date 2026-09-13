@@ -159,6 +159,11 @@ export const Transcript: React.FC = () => {
           }
           if (m.type === 'tool_group') {
             const toolList = m.tools || [];
+            // A batch opens its group before the first item lands (and a batch can
+            // end up carrying none), so an empty placeholder is not a row yet.
+            if (toolList.length === 0) {
+              return null;
+            }
             const failed = toolList.filter((t) => t.error || t.status === 'failed').length;
             const running = toolList.filter(
               (t) => t.status === 'running' || t.status === 'pending',

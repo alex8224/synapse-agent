@@ -15,6 +15,10 @@
  * (`src/synapse/ui/turn/event_renderer.py`).  `plan_updated` / `plan_removed` /
  * `diff_updated` are intentionally not rendered here either (the TUI ignores
  * them too, for lack of a sink representation).
+ *
+ * One stream batch is one visual tool group and one assistant text segment is
+ * one answer row, so interleaved reasoning / tools / text keep the order the TUI
+ * shows them in.
  */
 import type { RuntimeEvent } from '../client/types.ts';
 import type { ApprovalActionPayload } from '../runtime-client/contract.generated.ts';
@@ -72,8 +76,21 @@ function asText(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function toolGroupId(turnId: string): string {
-  return `tools-${turnId}`;
+function toolGroupPrefix(turnId: string): string {
+  return `tools-${turnId}-`;
+}
+
+function answerPrefix(turnId: string): string {
+  return `ans-${turnId}-`;
+}
+
+/** How many transcript rows of one turn already carry this prefix. */
+function countWithPrefix(messages: readonly TranscriptMessage[], prefix: string): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.id.startsWith(prefix)) count += 1;
+  }
+  return count;
 }
 
 function elapsedLabel(startedAt: number, at: number): string {
@@ -153,30 +170,139 @@ function upsertToolItem(group: TranscriptMessage, item: ToolItemView): Transcrip
   return { ...group, tools: next };
 }
 
-/** Find (or create) the single tool group of this turn and update it. */
-function withToolGroup(
+/**
+ * Merge an incoming item over the row that already holds it in this turn; a miss
+ * is a no-op.
+ *
+ * Item ids restart with every turn (`g1-0` is the first call of each turn), so
+ * the lookup has to stay inside this turn's groups: matching an older turn's row
+ * would swallow the item and it would never appear in the batch that produced it.
+ */
+function mergeTurnToolItem(
   messages: TranscriptMessage[],
   turnId: string,
-  timestamp: string,
-  mutate: (group: TranscriptMessage) => TranscriptMessage,
+  item: ToolItemView,
 ): TranscriptMessage[] {
-  const id = toolGroupId(turnId);
-  const index = messages.findIndex((m) => m.id === id);
-  if (index === -1) {
-    return [...messages, mutate({ id, type: 'tool_group', timestamp, tools: [] })];
-  }
-  return messages.map((m, i) => (i === index ? mutate(m) : m));
+  const prefix = toolGroupPrefix(turnId);
+  let changed = false;
+  const next = messages.map((m) => {
+    if (m.type !== 'tool_group' || !m.id.startsWith(prefix)) return m;
+    if (!m.tools?.some((t) => t.id === item.id)) return m;
+    changed = true;
+    return {
+      ...m,
+      tools: m.tools.map((t) => (t.id === item.id ? mergeToolItem(t, item) : t)),
+    };
+  });
+  return changed ? next : messages;
 }
 
-/** Patch one tool item by id across the transcript; a miss is a no-op. */
+/**
+ * Patch the newest row of this turn matching `match`; a miss is a no-op.
+ *
+ * A legacy `tool_result` carries no item id, so its row is found by call id (or
+ * tool name) inside this turn's groups, newest group first.
+ */
+function patchTurnToolItem(
+  messages: TranscriptMessage[],
+  turnId: string,
+  match: (tool: ToolItemView) => boolean,
+  patch: (tool: ToolItemView) => ToolItemView,
+): TranscriptMessage[] {
+  const prefix = toolGroupPrefix(turnId);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.type !== 'tool_group' || !message.id.startsWith(prefix)) continue;
+    const tools = message.tools ?? [];
+    const hit = tools.findIndex(match);
+    if (hit === -1) continue;
+    return messages.map((m, j) =>
+      j === i ? { ...m, tools: tools.map((t, k) => (k === hit ? patch(t) : t)) } : m,
+    );
+  }
+  return messages;
+}
+
+/**
+ * Index of the tool group still collecting items for this turn, or -1.
+ *
+ * The runtime brackets every model step's tool calls with `tool_batch_started`
+ * and `tool_batch_finished`, so one turn holds one group per batch.  Only the
+ * newest group may still take rows: a finished one must never be reopened, or a
+ * later batch is appended to the group the first batch opened and the tool calls
+ * drift away from the reasoning step they followed.
+ */
+function openToolGroupIndex(messages: TranscriptMessage[], turnId: string): number {
+  const prefix = toolGroupPrefix(turnId);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.type !== 'tool_group' || !message.id.startsWith(prefix)) continue;
+    return message.finished === true ? -1 : i;
+  }
+  return -1;
+}
+
+/**
+ * Seal the open group of this turn and append the next one.
+ *
+ * One stream batch is one visual group, exactly like the TUI reference
+ * (`ui/textual_stream_sink.py`, `tool_calls_started`): a batch that never got a
+ * clean `tool_batch_finished` is sealed here, so the next batch still starts its
+ * own group.
+ */
+function openToolGroup(
+  messages: TranscriptMessage[],
+  turnId: string,
+  stamp: string,
+  parallel: boolean,
+): TranscriptMessage[] {
+  const prefix = toolGroupPrefix(turnId);
+  const sealed = messages.map((m) =>
+    m.type === 'tool_group' && m.finished !== true && m.id.startsWith(prefix)
+      ? { ...m, finished: true }
+      : m,
+  );
+  return [
+    ...sealed,
+    {
+      id: `${prefix}${countWithPrefix(sealed, prefix) + 1}`,
+      type: 'tool_group',
+      timestamp: stamp,
+      tools: [],
+      parallel,
+      finished: false,
+    },
+  ];
+}
+
+/** Append an item to this turn's open group, opening a new one when needed. */
+function appendToolItem(
+  messages: TranscriptMessage[],
+  turnId: string,
+  stamp: string,
+  item: ToolItemView,
+): TranscriptMessage[] {
+  const index = openToolGroupIndex(messages, turnId);
+  if (index !== -1) {
+    return messages.map((m, i) => (i === index ? upsertToolItem(m, item) : m));
+  }
+  const opened = openToolGroup(messages, turnId, stamp, false);
+  const last = opened.length - 1;
+  return opened.map((m, i) => (i === last ? upsertToolItem(m, item) : m));
+}
+
+/** Patch one tool item by id inside this turn's groups; a miss is a no-op. */
 function patchToolItem(
   messages: TranscriptMessage[],
+  turnId: string,
   itemId: string,
   patch: Partial<ToolItemView>,
 ): TranscriptMessage[] {
+  const prefix = toolGroupPrefix(turnId);
   let changed = false;
   const next = messages.map((m) => {
-    if (m.type !== 'tool_group' || !m.tools?.some((t) => t.id === itemId)) return m;
+    if (m.type !== 'tool_group' || !m.id.startsWith(prefix)) return m;
+    if (!m.tools?.some((t) => t.id === itemId)) return m;
     changed = true;
     return { ...m, tools: m.tools.map((t) => (t.id === itemId ? { ...t, ...patch } : t)) };
   });
@@ -193,9 +319,11 @@ export function isTurnTerminalKind(kind: string): boolean {
   return kind === 'turn_completed' || kind === 'turn_cancelled' || kind === 'turn_failed';
 }
 
+/** Mark this turn's open group finished; nothing to do when none is open. */
 function closeToolGroup(messages: TranscriptMessage[], turnId: string): TranscriptMessage[] {
-  const id = toolGroupId(turnId);
-  return messages.map((m) => (m.id === id ? { ...m, finished: true } : m));
+  const index = openToolGroupIndex(messages, turnId);
+  if (index === -1) return messages;
+  return messages.map((m, i) => (i === index ? { ...m, finished: true } : m));
 }
 
 /**
@@ -256,20 +384,75 @@ function appendToThought(
   );
 }
 
+/**
+ * Index of the answer row this turn is still writing, or -1.
+ *
+ * A multi-step turn prints assistant text before each further tool batch ("let me
+ * check X", tools, then the final answer).  Folding every delta of the turn into
+ * one per-turn row merged those segments and left the row where the first one
+ * started, so the final answer rendered above the tool calls that produced it.
+ * A segment stays open until its own `answer_completed` closes it.
+ */
+function openAnswerIndex(messages: TranscriptMessage[], turnId: string): number {
+  const prefix = answerPrefix(turnId);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.type !== 'assistant' || !message.id.startsWith(prefix)) continue;
+    return message.streaming === true ? i : -1;
+  }
+  return -1;
+}
+
 function appendToAnswer(
   messages: TranscriptMessage[],
   turnId: string,
   text: string,
   stamp: string,
 ): TranscriptMessage[] {
-  const id = `ans-${turnId}`;
-  const index = messages.findIndex((m) => m.id === id);
-  if (index === -1) {
-    return [...messages, { id, type: 'assistant', timestamp: stamp, content: text }];
+  const index = openAnswerIndex(messages, turnId);
+  if (index !== -1) {
+    return messages.map((m, i) =>
+      i === index ? { ...m, content: (m.content || '') + text } : m,
+    );
   }
-  return messages.map((m, i) =>
-    i === index ? { ...m, content: (m.content || '') + text } : m,
-  );
+  const prefix = answerPrefix(turnId);
+  return [
+    ...messages,
+    {
+      id: `${prefix}${countWithPrefix(messages, prefix) + 1}`,
+      type: 'assistant',
+      timestamp: stamp,
+      content: text,
+      streaming: true,
+    },
+  ];
+}
+
+/** Close this turn's streaming answer row with its authoritative text. */
+function completeAnswer(
+  messages: TranscriptMessage[],
+  turnId: string,
+  body: string,
+  stamp: string,
+): TranscriptMessage[] {
+  const index = openAnswerIndex(messages, turnId);
+  if (index !== -1) {
+    return messages.map((m, i) =>
+      i === index ? { ...m, content: body || m.content, streaming: false } : m,
+    );
+  }
+  if (!body) return messages;
+  const prefix = answerPrefix(turnId);
+  return [
+    ...messages,
+    {
+      id: `${prefix}${countWithPrefix(messages, prefix) + 1}`,
+      type: 'assistant',
+      timestamp: stamp,
+      content: body,
+      streaming: false,
+    },
+  ];
 }
 
 function normalizeApprovalActions(value: unknown): ApprovalAction[] {
@@ -349,30 +532,17 @@ export function reduceRuntimeEvent(
     const text = asText(payload.text);
     if (text) next.messages = appendToAnswer(state.messages, turnId, text, stamp);
   } else if (kind === 'answer_completed') {
-    const body = asText(payload.text);
-    const id = `ans-${turnId}`;
-    const existing = state.messages.some((m) => m.id === id);
-    if (existing) {
-      next.messages = state.messages.map((m) =>
-        m.id === id && body ? { ...m, content: body } : m,
-      );
-    } else if (body) {
-      next.messages = [
-        ...state.messages,
-        { id, type: 'assistant', timestamp: stamp, content: body },
-      ];
-    }
+    next.messages = completeAnswer(state.messages, turnId, asText(payload.text), stamp);
   } else if (kind === 'tool_batch_started') {
-    next.messages = withToolGroup(state.messages, turnId, stamp, (group) => ({
-      ...group,
-      parallel: payload.parallel === true,
-      finished: false,
-    }));
+    // One batch is one group: seal whatever is still open and start the next.
+    next.messages = openToolGroup(state.messages, turnId, stamp, payload.parallel === true);
   } else if (kind === 'tool_started' || kind === 'tool_updated') {
     const item = toolItemFromPayload(payload);
-    next.messages = withToolGroup(state.messages, turnId, stamp, (group) =>
-      upsertToolItem(group, item),
-    );
+    // A late update for a row that already exists (a subagent item refreshed
+    // after its group closed) patches that row instead of opening a new group.
+    const merged = mergeTurnToolItem(state.messages, turnId, item);
+    next.messages =
+      merged !== state.messages ? merged : appendToolItem(state.messages, turnId, stamp, item);
   } else if (kind === 'tool_finished') {
     const itemId = asText(payload.item_id);
     if (itemId) {
@@ -382,41 +552,34 @@ export function reduceRuntimeEvent(
       };
       const preview = asText(payload.preview);
       if (preview) patch.preview = preview;
-      next.messages = patchToolItem(state.messages, itemId, patch);
+      next.messages = patchToolItem(state.messages, turnId, itemId, patch);
     }
   } else if (kind === 'tool_result') {
     const name = asText(payload.name) || 'tool';
     const callId = asText(payload.call_id) || null;
     const status = asText(payload.status) || 'completed';
     const sub = payload.sub === true;
-    next.messages = withToolGroup(state.messages, turnId, stamp, (group) => {
-      const tools = group.tools ?? [];
-      const index = tools.findIndex(
-        (t) => (callId !== null && t.callId === callId) || t.name === name,
-      );
-      if (index === -1) {
-        return upsertToolItem(group, legacyToolItem(name, callId, status, sub));
-      }
-      return {
-        ...group,
-        tools: tools.map((t, i) =>
-          i === index
-            ? {
-                ...t,
-                status,
-                error: status === 'failed' || status === 'error' || t.error,
-                sub: t.sub || sub,
-              }
-            : t,
-        ),
-      };
-    });
+    const patched = patchTurnToolItem(
+      state.messages,
+      turnId,
+      (t) => (callId !== null && t.callId === callId) || t.name === name,
+      (t) => ({
+        ...t,
+        status,
+        error: status === 'failed' || status === 'error' || t.error,
+        sub: t.sub || sub,
+      }),
+    );
+    next.messages =
+      patched !== state.messages
+        ? patched
+        : appendToolItem(state.messages, turnId, stamp, legacyToolItem(name, callId, status, sub));
   } else if (kind === 'tool_batch_finished') {
     next.messages = closeToolGroup(state.messages, turnId);
   } else if (kind === 'subagent_status_changed') {
     const parentId = asText(payload.parent_id);
     if (parentId) {
-      const patched = patchToolItem(state.messages, parentId, {
+      const patched = patchToolItem(state.messages, turnId, parentId, {
         subagentStatus: typeof payload.status === 'string' ? payload.status : null,
       });
       if (patched !== state.messages) next.messages = patched;

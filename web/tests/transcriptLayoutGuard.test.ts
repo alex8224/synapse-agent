@@ -103,3 +103,17 @@ test('the scroller keeps the reading column centred when a scrollbar appears', (
     'the transcript scroller must reserve symmetric scrollbar gutters',
   );
 });
+
+test('a tool group without items paints nothing', () => {
+  // A batch opens its group before the first item lands (and a batch can end up
+  // carrying none), so the row must be skipped until it has items - the TUI never
+  // paints an empty "0 tools" placeholder either.
+  const tools = transcript.slice(
+    transcript.indexOf("if (m.type === 'tool_group')"),
+    transcript.indexOf("if (m.type === 'assistant')"),
+  );
+  assert.ok(
+    tools.includes('if (toolList.length === 0)'),
+    'an empty tool group must render nothing',
+  );
+});

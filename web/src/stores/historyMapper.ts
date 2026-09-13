@@ -62,6 +62,14 @@ export interface TranscriptMessage {
   finished?: boolean;
   /** Epoch ms a streaming thought started (live only, used for its duration). */
   startedAt?: number;
+  /**
+   * Live only: an assistant row still being written.
+   *
+   * A multi-step turn prints text before each further tool batch, so those
+   * segments are separate rows; this flag marks the one the next delta belongs
+   * to (the durable projection never sets it).
+   */
+  streaming?: boolean;
   /** Severity of an `info` row. */
   infoLevel?: 'info' | 'warning';
   /**
