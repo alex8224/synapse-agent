@@ -25,6 +25,7 @@ const VISIBLE_SESSIONS = 5;
 export const SideBar: React.FC = () => {
   const {
     isSidebarCollapsed,
+    workspacePath,
     projects,
     activeProjectId,
     expandedProjectIds,
@@ -82,6 +83,11 @@ export const SideBar: React.FC = () => {
     setDeletingThreadId(null);
     await deleteSession(threadId);
   };
+
+  // Identity of the workspace this console is attached to.  The header used to
+  // print the raw path; the header is now the session chip row, so the path lives
+  // with the app-level actions at the foot of the sidebar.
+  const identityLabel = workspacePath === '' ? '未绑定工作区' : workspacePath;
 
   const visibleProjects = useMemo(() => {
     if (query === '') return projects;
@@ -141,6 +147,21 @@ export const SideBar: React.FC = () => {
   return (
     <nav className="bg-[#f8f9fa] border-r border-[#e5e7eb] h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
       <div className="px-3">
+        {/* Nav entry the collapsed rail also carries, with the shortcut spelled
+            out.  It creates in the *current* project, exactly like the rail's
+            `+` and Ctrl+N; per-project creation stays on each project row. */}
+        <button
+          type="button"
+          onClick={() => createNewSession()}
+          title="在当前项目新建会话 (Ctrl+N)"
+          className="mb-2 flex w-full cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-gray-700 transition-colors hover:bg-gray-200/60 hover:text-gray-900"
+        >
+          <span className="material-symbols-outlined shrink-0 text-[16px] text-gray-500">add</span>
+          <span className="min-w-0 flex-1 truncate text-left">新建任务</span>
+          <kbd className="shrink-0 rounded border border-gray-200 bg-white px-1 font-mono text-[10px] text-gray-400">
+            Ctrl+N
+          </kbd>
+        </button>
         <div className="mb-2 px-1">
           <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider font-mono">
             PROJECTS
@@ -160,7 +181,7 @@ export const SideBar: React.FC = () => {
             placeholder="搜索项目 / 会话"
             title="搜索项目与会话 (Ctrl+K)"
             spellCheck={false}
-            className="w-full rounded border border-gray-200 bg-white pl-6 pr-6 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
+            className="w-full rounded border border-gray-200 bg-white pl-6 pr-12 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
           />
           {query !== '' && (
             <button
@@ -172,10 +193,23 @@ export const SideBar: React.FC = () => {
               close
             </button>
           )}
+          {/* Shortcut hint in the slot the clear button uses once a query exists. */}
+          {query === '' && (
+            <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 select-none font-mono text-[10px] text-gray-400">
+              Ctrl+K
+            </span>
+          )}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 mt-2">
+      {/* The tree scrolls with no visible scrollbar (`.sidebar-scroll`).  It is
+          focusable so the keyboard (arrows / PageUp / PageDown) scrolls it even
+          before any row inside has focus; the outline is suppressed to keep the
+          rail edge clean, matching the rest of the console controls. */}
+      <div
+        className="sidebar-scroll flex-1 overflow-y-auto px-2 mt-2 focus:outline-none"
+        tabIndex={0}
+      >
         {visibleProjects.length === 0 && (
           <div className="px-2 py-3 text-[11px] text-gray-400 font-mono">
             {query !== '' ? '没有匹配的项目或会话' : '暂无项目'}
@@ -463,18 +497,30 @@ export const SideBar: React.FC = () => {
         </div>
       )}
 
-      {/* App-level row: the context actions sit with the settings entry, and the
-          version is shown inside the settings panel instead of this label. */}
-      <div className="mt-2 flex items-center gap-1 border-t border-[#e5e7eb] px-3 pt-3">
-        <ConsoleActions />
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          title="打开设置"
-          className="material-symbols-outlined cursor-pointer text-[18px] text-gray-500 transition-colors hover:text-gray-900"
+      {/* Foot of the sidebar: the workspace identity, then the app-level row where
+          the context actions sit with the settings entry (the version is shown
+          inside the settings panel instead of this label). */}
+      <div className="mt-2 border-t border-[#e5e7eb] px-3 pt-2">
+        <div
+          className="flex items-center gap-1.5 font-mono text-[10px] text-gray-500"
+          title={identityLabel}
         >
-          settings
-        </button>
+          <span className="material-symbols-outlined shrink-0 text-[13px] text-gray-400">
+            folder
+          </span>
+          <span className="truncate">{identityLabel}</span>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1">
+          <ConsoleActions />
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title="打开设置"
+            className="material-symbols-outlined cursor-pointer text-[18px] text-gray-500 transition-colors hover:text-gray-900"
+          >
+            settings
+          </button>
+        </div>
       </div>
 
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}

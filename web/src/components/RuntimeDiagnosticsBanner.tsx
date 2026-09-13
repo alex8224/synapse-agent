@@ -23,27 +23,31 @@ export const RuntimeDiagnosticsBanner: React.FC = () => {
   return (
     <div
       role="status"
-      className="border-b border-amber-200 bg-amber-50/80 px-8 py-2 font-mono text-[11px] text-amber-900 leading-relaxed"
+      className="console-gutter border-b border-amber-200 bg-amber-50/80 py-2 font-mono text-[11px] text-amber-900 leading-relaxed"
     >
-      <div className="font-semibold">{model.title}</div>
-      <ul className="mt-1 space-y-0.5">
-        {model.facts.map((fact) => (
-          <li key={fact} className="break-all">
-            {fact}
-          </li>
-        ))}
-      </ul>
-      <div className="mt-1 flex items-center space-x-2 text-amber-800/80">
-        <span>{model.note}</span>
-        <button
-          type="button"
-          onClick={() => {
-            void loadRuntimeDiagnostics({ trigger: 'manual', force: true });
-          }}
-          className="shrink-0 rounded border border-amber-300 px-1.5 py-0.5 hover:bg-amber-100"
-        >
-          重新读取
-        </button>
+      {/* Same reading column as the transcript and the composer, so the notice
+          starts on the chat's left edge instead of the pane's. */}
+      <div className="console-column">
+        <div className="font-semibold">{model.title}</div>
+        <ul className="mt-1 space-y-0.5">
+          {model.facts.map((fact) => (
+            <li key={fact} className="break-all">
+              {fact}
+            </li>
+          ))}
+        </ul>
+        <div className="mt-1 flex items-center space-x-2 text-amber-800/80">
+          <span>{model.note}</span>
+          <button
+            type="button"
+            onClick={() => {
+              void loadRuntimeDiagnostics({ trigger: 'manual', force: true });
+            }}
+            className="shrink-0 rounded border border-amber-300 px-1.5 py-0.5 hover:bg-amber-100"
+          >
+            重新读取
+          </button>
+        </div>
       </div>
     </div>
   );

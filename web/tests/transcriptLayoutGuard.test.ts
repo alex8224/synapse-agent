@@ -50,8 +50,13 @@ test('the conversation carries no bubble frame', () => {
   );
 });
 
-test('the column is centred and the message text is larger', () => {
-  assert.ok(transcript.includes('mx-auto max-w-4xl'), 'the transcript column must be centred');
+test('the column is the shared reading width and the message text is larger', () => {
+  // The width itself lives in `index.css` (`shellLayout.test.ts` pins the pairing
+  // with the composer); here it only has to be that shared column, not a literal.
+  assert.ok(
+    transcript.includes('console-column'),
+    'the transcript column must use the shared reading width',
+  );
   assert.equal(
     (transcript.match(/text-base leading-relaxed/g) ?? []).length,
     2,
@@ -65,5 +70,36 @@ test('assistant-side activity stays inside the left column', () => {
     (transcript.match(/max-w-\[85%\]/g) ?? []).length,
     3,
     'the thought, tool group and info rows must be bounded to the left column',
+  );
+});
+
+test('the run log stays subordinate to the answer', () => {
+  // Thought and tool rows are log lines: no filled chip, no box of their own, and
+  // a smaller size than the answer they precede.
+  const thought = transcript.slice(
+    transcript.indexOf("if (m.type === 'thought')"),
+    transcript.indexOf("if (m.type === 'tool_group')"),
+  );
+  assert.equal(thought.includes('bg-[#f3f4f5]'), false, 'a thought must not be a filled chip');
+  assert.ok(thought.includes('text-[11px]'), 'a thought line must be smaller than the answer');
+  const tools = transcript.slice(
+    transcript.indexOf("if (m.type === 'tool_group')"),
+    transcript.indexOf("if (m.type === 'assistant')"),
+  );
+  assert.equal(
+    tools.includes('bg-[#f3f4f5]'),
+    false,
+    'a collapsed tool group must not be a filled chip either',
+  );
+  assert.ok(tools.includes('text-[11px]'), 'a tool line must be smaller than the answer');
+});
+
+test('the scroller keeps the reading column centred when a scrollbar appears', () => {
+  // A one-sided scrollbar narrows the scroll port, which would shift the column
+  // left of the composer that shares its width; symmetric gutters keep the
+  // centring, and therefore the alignment, intact.
+  assert.ok(
+    transcript.includes('[scrollbar-gutter:stable_both-edges]'),
+    'the transcript scroller must reserve symmetric scrollbar gutters',
   );
 });

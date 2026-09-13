@@ -23,6 +23,10 @@ export interface GitStatusView {
   dirty: boolean;
   files: GitFileChangeView[];
   truncated: boolean;
+  /** Tracked added lines vs HEAD; null when git could not answer. */
+  insertions: number | null;
+  /** Tracked removed lines vs HEAD; null when git could not answer. */
+  deletions: number | null;
 }
 
 export interface GitDiffView {
@@ -72,6 +76,12 @@ function count(value: unknown, what: string): number {
   return value;
 }
 
+/** A line count that is null when git could not answer, never a fabricated 0. */
+function nullableCount(value: unknown, what: string): number | null {
+  if (value === null) return null;
+  return count(value, what);
+}
+
 function flag(value: unknown, what: string): boolean {
   if (typeof value !== 'boolean') throw new MalformedGitPayloadError(`${what} must be a boolean`);
   return value;
@@ -86,6 +96,8 @@ const STATUS_KEYS = [
   'dirty',
   'files',
   'truncated',
+  'insertions',
+  'deletions',
 ] as const;
 const DIFF_KEYS = ['path', 'text', 'binary', 'truncated', 'empty'] as const;
 
@@ -113,6 +125,8 @@ export function parseGitStatus(payload: unknown): GitStatusView {
     dirty: flag(record['dirty'], 'git dirty'),
     files,
     truncated: flag(record['truncated'], 'git truncated'),
+    insertions: nullableCount(record['insertions'], 'git insertions'),
+    deletions: nullableCount(record['deletions'], 'git deletions'),
   };
 }
 

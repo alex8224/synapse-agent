@@ -18,6 +18,43 @@ body {
 }
 
 @layer utilities {
+  /*
+    Reading column and its gutters.
+
+    The transcript and the fixed composer must share one left/right edge, so the
+    geometry lives here instead of matching Tailwind literals inside each
+    component, which can drift apart (they did: the chat was `max-w-4xl`, the
+    input card `max-w-3xl`).
+
+    The wrapper carries the gutters (`.console-gutter`), the column carries the
+    width (`.console-column`), and both resolve against the workspace pane.  On
+    desktop the gutters are 10% of the pane each side, so the column is exactly
+    80% of the workspace and prose does not stretch edge to edge across a wide
+    pane.  There is deliberately no `rem` cap: the old `max-width: 60rem` froze
+    the column on a wider workspace, so a bigger window bought no extra reading
+    room.  Below `lg` the gutters fall back to a flat `2rem` (the previous
+    `px-8`) and the column fills the rest, so a narrow window stays near full
+    width with only the necessary margins.
+
+    The transcript's scroller additionally reserves symmetric scrollbar gutters
+    (`[scrollbar-gutter:stable_both-edges]`), so a scrollbar insets the chat
+    column by the same amount on both sides and its centre line stays on the
+    composer's instead of drifting left by half a scrollbar width.
+  */
+  .console-gutter { padding-left: 2rem; padding-right: 2rem; }
+  .console-column { width: 100%; margin-left: auto; margin-right: auto; }
+  @media (min-width: 1024px) {
+    .console-gutter { padding-left: 10%; padding-right: 10%; }
+  }
+  /*
+    Sidebar tree: scrolls with the wheel, touch and the keyboard, but shows no
+    scrollbar, so the 240px rail keeps one clean edge.  `scrollbar-width` covers
+    Firefox, `-ms-overflow-style` legacy Edge, and the `::-webkit-scrollbar`
+    pseudo-element Blink/WebKit.  The selector is scoped to this class on
+    purpose: the transcript must keep its visible, symmetric-gutter scrollbar.
+  */
+  .sidebar-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+  .sidebar-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
   .font-kbd { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 450; }
   .font-body-md { font-family: 'Inter', sans-serif; font-size: 14px; line-height: 20px; font-weight: 400; }

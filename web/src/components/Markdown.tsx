@@ -157,14 +157,18 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
 
     if (block.type === 'table') {
       return (
-        <div key={key} className="my-2 overflow-x-auto">
-          <table className="border-collapse text-xs">
+        // The table body reads at `text-sm` (14px) so it is legible next to the
+        // 16px chat prose instead of looking like a footnote; the header keeps the
+        // same size and only differs by weight.  `overflow-x-auto` keeps a wide
+        // table scrolling inside its own box rather than stretching the column.
+        <div key={key} className="my-2 max-w-full overflow-x-auto">
+          <table className="border-collapse text-sm">
             <thead>
               <tr>
                 {block.header.map((cell, cellIndex) => (
                   <th
                     key={`${key}.h${cellIndex}`}
-                    className="border border-gray-200 bg-[#f8f9fa] px-2 py-1 text-left font-semibold text-gray-800"
+                    className="border border-gray-200 bg-[#f8f9fa] px-3 py-1.5 text-left font-semibold text-gray-800"
                   >
                     {renderSpans(cell, `${key}.h${cellIndex}`)}
                   </th>
@@ -177,7 +181,7 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
                   {row.map((cell, cellIndex) => (
                     <td
                       key={`${key}.r${rowIndex}c${cellIndex}`}
-                      className="border border-gray-200 px-2 py-1 align-top text-gray-700"
+                      className="border border-gray-200 px-3 py-1.5 align-top text-gray-700"
                     >
                       {renderSpans(cell, `${key}.r${rowIndex}c${cellIndex}`)}
                     </td>

@@ -74,6 +74,56 @@ def test_a_clean_repository_is_not_dirty(repo: Path) -> None:
     assert status.files == ()
     assert status.dirty is False
     assert status.branch == "main"
+    # A clean tree has a real zero, not an unknown: the numstat probe answered.
+    assert (status.insertions, status.deletions) == (0, 0)
+
+
+def test_status_reports_tracked_line_counts(repo: Path) -> None:
+    (repo / "tracked.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    status = git_status_workspace(GitStatusQuery(REF), _session(repo))
+    assert (status.insertions, status.deletions) == (2, 0)
+
+
+def test_removed_lines_are_reported(repo: Path) -> None:
+    (repo / "tracked.txt").write_text("", encoding="utf-8")
+    status = git_status_workspace(GitStatusQuery(REF), _session(repo))
+    assert (status.insertions, status.deletions) == (0, 1)
+
+
+def test_staged_and_unstaged_changes_are_never_counted_twice(repo: Path) -> None:
+    # Stage a file, then modify it again: the combined diff against HEAD counts
+    # the file once, instead of summing the index and the worktree diffs.
+    (repo / "staged.txt").write_text("a\nb\n", encoding="utf-8")
+    _git(repo, "add", "staged.txt")
+    (repo / "staged.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    status = git_status_workspace(GitStatusQuery(REF), _session(repo))
+    assert (status.insertions, status.deletions) == (3, 0)
+
+
+def test_untracked_and_binary_changes_contribute_no_lines(repo: Path) -> None:
+    # One tracked line added, one untracked file (not part of any diff), and one
+    # staged binary file (numstat reports `-`, so it has no line counts).
+    (repo / "tracked.txt").write_text("one\ntwo\n", encoding="utf-8")
+    (repo / "untracked.txt").write_text("new\nnewer\n", encoding="utf-8")
+    (repo / "blob.bin").write_bytes(bytes(range(256)))
+    _git(repo, "add", "blob.bin")
+    status = git_status_workspace(GitStatusQuery(REF), _session(repo))
+    assert (status.insertions, status.deletions) == (1, 0)
+    assert {change.path for change in status.files} == {
+        "tracked.txt",
+        "untracked.txt",
+        "blob.bin",
+    }
+
+
+def test_an_unborn_head_still_reports_staged_line_counts(tmp_path: Path) -> None:
+    # A repository with no commit yet: `git diff HEAD` has no HEAD to name, so the
+    # worktree is compared against the empty tree instead.
+    _git(tmp_path, "init", "--quiet", "-b", "main")
+    (tmp_path / "new.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    _git(tmp_path, "add", "new.txt")
+    status = git_status_workspace(GitStatusQuery(REF), _session(tmp_path))
+    assert (status.insertions, status.deletions) == (3, 0)
 
 
 def test_the_file_list_is_bounded(repo: Path) -> None:

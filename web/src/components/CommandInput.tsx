@@ -67,7 +67,10 @@ export const CommandInput: React.FC = () => {
   };
 
   return (
-    <div className="absolute bottom-10 left-0 w-full px-8 pointer-events-none flex justify-center z-30">
+    // Pinned to the bottom of the workspace column, in the same `console-gutter`
+    // wrapper and with the same `console-column` width the transcript uses, so
+    // the card's edges line up with the chat column above it.
+    <div className="console-gutter pointer-events-none absolute bottom-0 left-0 z-30 flex w-full justify-center pb-3">
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -87,7 +90,7 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`w-full max-w-3xl pointer-events-auto bg-white border rounded-lg shadow-sm flex flex-col focus-within:border-blue-500 transition-colors ${
+        className={`console-column pointer-events-auto flex flex-col rounded-lg border bg-white shadow-sm transition-colors focus-within:border-blue-500 ${
           dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-[#e5e7eb]'
         }`}
       >

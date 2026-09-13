@@ -41,6 +41,9 @@ MAX_STATUS_FILES = 200
 MAX_DIFF_BYTES = 256 * 1024
 #: A git probe must never hold a worker thread indefinitely.
 GIT_TIMEOUT_S = 5.0
+#: The empty tree object: what an unborn ``HEAD`` is diffed against so a
+#: repository with no commit yet still reports its staged additions.
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,12 @@ class GitStatusResult:
     dirty: bool
     files: tuple[GitFileChange, ...]
     truncated: bool
+    #: Tracked added/removed lines against ``HEAD`` (staged and unstaged
+    #: combined, so a file is never counted twice); ``None`` when git cannot
+    #: answer, never a fabricated ``0``.  Binary changes and untracked files
+    #: carry no line counts and contribute nothing.
+    insertions: int | None
+    deletions: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +175,40 @@ def _parse_branch_line(line: str) -> tuple[str | None, str | None, int, int]:
     return (branch.strip() or None), (upstream.strip() or None), ahead, behind
 
 
+def _numstat_totals(root: Path) -> tuple[int, int] | None:
+    """Total added/removed tracked lines, or ``None`` when git cannot answer.
+
+    ``git diff --numstat HEAD`` is the combined diff against the last commit, so
+    a file that is both staged and further modified is counted once — the index
+    and the worktree diffs are never summed on top of each other.  An unborn
+    ``HEAD`` (a repository with no commit yet) is compared against the empty tree
+    instead, which is the same projection.  Binary changes report ``-`` for both
+    columns: they have no line counts and are skipped rather than counted as
+    zero, and untracked files are not part of any diff so they are not counted
+    here either.  A malformed line returns ``None`` so the caller reports
+    "unknown" instead of a fabricated zero.
+    """
+    raw = _run_git(root, ["diff", "--numstat", "HEAD"])
+    if raw is None:
+        raw = _run_git(root, ["diff", "--numstat", _EMPTY_TREE])
+    if raw is None:
+        return None
+    insertions = deletions = 0
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, removed = parts[0], parts[1]
+        if added == "-" or removed == "-":
+            continue
+        try:
+            insertions += int(added)
+            deletions += int(removed)
+        except ValueError:
+            return None
+    return insertions, deletions
+
+
 def git_status_workspace(query: GitStatusQuery, session: object) -> GitStatusResult:
     """``git status --porcelain=v1 --branch`` for the session's workspace."""
     if not isinstance(query, GitStatusQuery):
@@ -197,6 +240,7 @@ def git_status_workspace(query: GitStatusQuery, session: object) -> GitStatusRes
                 worktree_status=line[1],
             )
         )
+    totals = _numstat_totals(root)
     return GitStatusResult(
         branch=branch,
         upstream=upstream,
@@ -205,6 +249,8 @@ def git_status_workspace(query: GitStatusQuery, session: object) -> GitStatusRes
         dirty=bool(files),
         files=tuple(files),
         truncated=truncated,
+        insertions=None if totals is None else totals[0],
+        deletions=None if totals is None else totals[1],
     )
 
 

@@ -3,6 +3,50 @@
 面向 runtime daemon 的浏览器控制台前端。生产运行方式与完整命令见仓库根
 `README.md`、`docs/web-console/index.md` 与 `docs/web-console/formal-host.md`。
 
+## 布局
+
+窗口是**两列**结构（`src/App.tsx`），不是「全宽顶栏 + 侧栏/主区 + 全宽底栏」：
+
+- 左列 `SideBar` 占满整个视口高度：导航（新建任务 `Ctrl+N`、搜索 `Ctrl+K`，与折叠轨上
+  的同名入口是同一个动作）、项目 → 会话树（会话树**不显示滚动条但可正常滚动**：
+  wheel / touch / 键盘，跨浏览器），底部是工作区身份行与设置/上下文操作入口。
+- 右列是「工作区列」，自上而下为 `TopBar`（三轨栅格：左轨项目与分支，中轨会话标题
+  ——两侧等宽 `1fr` 使其**真正居中于工作区列**、不随左右内容宽度漂移、窄屏也不重叠，
+  右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
+  分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
+  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、固定在底部的 `CommandInput`，
+  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。
+
+聊天列与输入卡片共用同一套阅读几何（`src/index.css`）：外层 `.console-gutter` 负责留白，
+桌面端（≥ `lg`，1024px）每侧为工作区宽度的 10%，因此内层 `.console-column` 正好是工作区的
+**约 80%**，且**没有 `rem` 硬上限**，所以更宽的工作区会真的更宽、不会被锁死；窄屏每侧退回固定
+的 `2rem`，列宽近全宽。transcript 的滚动容器保留对称滚动条槽位
+（`[scrollbar-gutter:stable_both-edges]`），因此出现滚动条时聊天列两侧对称内缩一个滚动条
+宽度、中心线仍与输入卡片重合（不会向一侧偏移）。侧栏的会话树则相反：
+滚动可用但不显示滚动条（`src/index.css` 的 `.sidebar-scroll`，`scrollbar-width` +
+`-ms-overflow-style` + `::-webkit-scrollbar` 三族规则，按类名限定），240px 轨道边缘保持干净，
+且不影响 transcript 的可见滚动条。聊天区里的运行日志（thought / tools / info）是紧凑的次要
+层级，展开后才成为面板，助手回复保持正文排版。Markdown 表格按正文可读字号渲染（`text-sm`，
+14px；表头同字号、只用字重区分），单元格留出适度 padding，宽表在自身容器内横向滚动、不撑破
+阅读列；代码块与侧栏尺寸不变。
+
+这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
+`tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
+布局与排版层级之外，本轮唯一的功能改动是
+在只读 `runtime.git.status` 上**增量**加了 `insertions` / `deletions` 两个字段（`git diff
+--numstat HEAD` 的真实 tracked 增删行数，见下），旧字段与旧接口保持兼容；不宣称与参考截图
+像素级一致。
+
+静态守护之外，`tests/shellLayout.verify.ts` 会用真实宿主 + 无头 Chrome 量一遍渲染结果
+（侧栏是否全高、顶栏/底栏是否只属于右列、输入卡片是否落在聊天列的同一中心线上、窄窗是否
+横向溢出），并在 1920 / 1440 / 900 / 640 四个视口核对阅读列宽度：桌面端约为工作区宽度的
+80% 且**大于旧的 60rem 上限**（证明没有被 rem 锁死），窄屏回到近全宽。它需要本机有
+Chrome/Edge，且不属于 `npm test`：
+
+```bash
+node tests/shellLayout.verify.ts
+```
+
 ## 开发
 
 开发只依赖 Vite 做静态热更新与受控代理；它不读取任何 token 文件，也不实现

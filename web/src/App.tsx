@@ -55,19 +55,27 @@ export function App() {
   }
 
   return (
-    <div className="bg-background text-on-background h-screen w-screen overflow-hidden flex flex-col font-body-md selection:bg-editor-selection">
-      <TopBar />
-      <div className="flex flex-1 overflow-hidden relative">
-        <SideBar />
-        <main className="flex-1 flex flex-col relative bg-surface-container overflow-hidden">
+    /*
+      Two columns, not three stacked rows: the navigation is a full-height column
+      on the left, and everything that belongs to the open session (header chips,
+      transcript, composer, status strip) is the workspace column on the right.
+      The header and the status strip used to span the whole window and ran
+      underneath the sidebar; scoping them here is what makes the sidebar read as
+      one continuous rail from the top edge to the bottom.
+    */
+    <div className="bg-background text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
+      <SideBar />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <TopBar />
+        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-surface-container">
           {/* Only rendered when the relay is down and the read-only diagnostics
               read succeeded; see the component for the degradation rules. */}
           <RuntimeDiagnosticsBanner />
           <Transcript />
           <CommandInput />
         </main>
+        <BottomBar />
       </div>
-      <BottomBar />
     </div>
   );
 }

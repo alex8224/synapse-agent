@@ -616,6 +616,10 @@ export interface GitStatusQuery {
 /**
  * ``files`` is capped at 200 entries and then
  * ``truncated`` is true; ``branch`` is null on a detached HEAD.
+ * ``insertions``/``deletions`` are the tracked line counts from
+ * `git diff --numstat HEAD` (staged and unstaged combined, never
+ * summed twice); they are null when git cannot answer, and binary or
+ * untracked changes contribute no lines.
  */
 export interface GitStatusResult {
   branch: string | null;
@@ -625,6 +629,8 @@ export interface GitStatusResult {
   dirty: boolean;
   files: GitFileChange[];
   truncated: boolean;
+  insertions: number | null;
+  deletions: number | null;
 }
 
 /**

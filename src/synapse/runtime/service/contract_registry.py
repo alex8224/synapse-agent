@@ -649,6 +649,10 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         notes=(
             "``files`` is capped at " + str(MAX_STATUS_FILES) + " entries and then",
             "``truncated`` is true; ``branch`` is null on a detached HEAD.",
+            "``insertions``/``deletions`` are the tracked line counts from",
+            "`git diff --numstat HEAD` (staged and unstaged combined, never",
+            "summed twice); they are null when git cannot answer, and binary or",
+            "untracked changes contribute no lines.",
         ),
     ),
     _dto(GitFileChange, role="value"),

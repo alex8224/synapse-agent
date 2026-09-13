@@ -31,6 +31,8 @@ const STATUS = {
   dirty: true,
   files: [{ path: 'a.ts', index_status: ' ', worktree_status: 'M' }],
   truncated: false,
+  insertions: 17,
+  deletions: 890,
 };
 
 test('a git status payload decodes into camelCase fields', () => {
@@ -38,6 +40,8 @@ test('a git status payload decodes into camelCase fields', () => {
   assert.equal(status.branch, 'feature/x');
   assert.equal(status.ahead, 2);
   assert.equal(status.behind, 1);
+  assert.equal(status.insertions, 17);
+  assert.equal(status.deletions, 890);
   assert.deepEqual(status.files, [
     { path: 'a.ts', indexStatus: ' ', worktreeStatus: 'M' },
   ]);
@@ -49,6 +53,16 @@ test('a detached HEAD decodes as a null branch', () => {
   assert.equal(status.upstream, null);
 });
 
+test('unknown line counts decode as null, never a fabricated zero', () => {
+  const status = parseGitStatus({ ...STATUS, insertions: null, deletions: null });
+  assert.equal(status.insertions, null);
+  assert.equal(status.deletions, null);
+  // A real zero is a number, distinct from the null "git could not answer".
+  const clean = parseGitStatus({ ...STATUS, insertions: 0, deletions: 0 });
+  assert.equal(clean.insertions, 0);
+  assert.equal(clean.deletions, 0);
+});
+
 test('malformed git payloads are refused, never half-read', () => {
   const bad = [
     null,
@@ -57,6 +71,10 @@ test('malformed git payloads are refused, never half-read', () => {
     { ...STATUS, ahead: -1 },
     { ...STATUS, ahead: 1.5 },
     { ...STATUS, dirty: 'yes' },
+    { ...STATUS, insertions: -1 },
+    { ...STATUS, insertions: 1.5 },
+    { ...STATUS, insertions: '17' },
+    { ...STATUS, deletions: -1 },
     { ...STATUS, files: [{ path: 'a.ts', index_status: ' ' }] },
     { ...STATUS, files: [{ path: 'a.ts', index_status: 1, worktree_status: 'M' }] },
     { ...STATUS, files: 'a.ts' },
@@ -119,4 +137,15 @@ test('the explorer stays read-only and is reachable from the branch chip', () =>
   assert.ok(topBar.includes('setExplorerOpen(true)'), 'the chip must open it');
   assert.ok(topBar.includes('gitStatus.ahead'), 'the chip must show the ahead count');
   assert.ok(topBar.includes('gitStatus.behind'), 'the chip must show the behind count');
+  // The change statistics are the real tracked added/removed lines, not the file
+  // count, and they are shown as `+N -M`.
+  assert.ok(topBar.includes('gitStatus.insertions'), 'the chip must read the added lines');
+  assert.ok(topBar.includes('gitStatus.deletions'), 'the chip must read the removed lines');
+  assert.ok(topBar.includes('+{insertions}'), 'the added lines render as +N');
+  assert.ok(topBar.includes('-{deletions}'), 'the removed lines render as -M');
+  assert.equal(
+    topBar.includes('files.length'),
+    false,
+    'the chip must not fall back to the changed-file count',
+  );
 });
