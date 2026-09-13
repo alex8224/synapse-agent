@@ -89,6 +89,8 @@ import {
   parseArtifactPage,
 } from './artifacts.ts';
 import type { ArtifactChunkView, ArtifactEntry, ArtifactPageView } from './artifacts.ts';
+import { parseGitDiff, parseGitStatus } from './git.ts';
+import type { GitDiffView, GitStatusView } from './git.ts';
 import {
   ATTACHMENT_READ_BYTES,
   parseAbortAttachmentResult,
@@ -653,6 +655,31 @@ export class SynapseRuntimeClient {
     return parseArtifactMetadata(
       await this.call('runtime.artifacts.stat', { ref: { session, path } }),
     );
+  }
+
+  /**
+   * Read the workspace's git status (`runtime.git.status`).
+   *
+   * Read-only: branch, upstream tracking counts and the changed-file list, all
+   * through the same strict decoder rule as the artifact calls.  Nothing here
+   * stages or commits.
+   */
+  public async gitStatus(session: SessionRef): Promise<GitStatusView> {
+    return parseGitStatus(await this.call('runtime.git.status', { session }));
+  }
+
+  /**
+   * Read one file's unified diff (`runtime.git.diff`).
+   *
+   * `staged` compares the index instead of the worktree.  The server caps the
+   * text and reports `truncated`, so one huge diff cannot blow up the panel.
+   */
+  public async gitDiff(
+    session: SessionRef,
+    path: string,
+    staged = false,
+  ): Promise<GitDiffView> {
+    return parseGitDiff(await this.call('runtime.git.diff', { session, path, staged }));
   }
 
   /**

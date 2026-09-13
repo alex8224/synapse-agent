@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { SynapseRuntimeClient } from '../client/SynapseRuntimeClient.ts';
+import type { GitStatusView } from '../runtime-client/git.ts';
 import {
   ConsoleAuthRequiredError,
   deriveRuntimeSocketUrl,
@@ -571,6 +572,14 @@ interface ConsoleStore {
   runtimeDiagnostics: RuntimeDiagnosticsSnapshot;
   /** Read the host's read-only runtime diagnostics (gated, single-flight). */
   loadRuntimeDiagnostics: (options?: RuntimeDiagnosticsRequest) => Promise<void>;
+  /**
+   * Read the workspace's git status (`runtime.git.status`).
+   *
+   * Read-only and re-readable: the header chip and the git explorer both show
+   * what it returns, and a workspace where git cannot answer keeps the last
+   * known value rather than clearing the branch the host reported.
+   */
+  loadGitStatus: () => Promise<void>;
 
   pendingApproval: PendingApproval | null;
   resolveApproval: (decision: 'allow_once' | 'reject_once') => Promise<void>;
@@ -601,6 +610,8 @@ interface ConsoleStore {
   workspacePath: string;
   gitBranch: string;
   gitDirty: boolean;
+  /** Live git status for the attached session's workspace, or null while unknown. */
+  gitStatus: GitStatusView | null;
 
   // Session
   currentSession: SessionRef;
@@ -1301,6 +1312,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     mcpConnecting: false,
     mcpRuntimeKnown: false,
   });
+  // Git chrome is per workspace and read-only: refresh it on every attach so a
+  // switch cannot leave the previous session's tree on screen.
+  void store.getState().loadGitStatus();
   if (!client) return;
   try {
     await client.unwatchEvents();
@@ -1685,6 +1699,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   workspacePath: '',
   gitBranch: '',
   gitDirty: false,
+  gitStatus: null,
 
   // Explicitly empty until the host reports the authenticated project context.
   currentSession: {
@@ -2716,6 +2731,29 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     });
     runtimeDiagnosticsPromise = attempt;
     return attempt;
+  },
+  loadGitStatus: async () => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    if (get().pairingState !== 'paired') return;
+    const session = get().currentSession;
+    if (!session.thread_id) return;
+    try {
+      const status = await client.gitStatus(session);
+      // A session switch mid-flight must not paint another session's tree.
+      if (get().currentSession.thread_id !== session.thread_id) return;
+      set({
+        gitStatus: status,
+        // The host still reports the branch on pairing; the runtime's own view is
+        // authoritative once it answers, and it also carries the tracking counts.
+        gitBranch: status.branch ?? get().gitBranch,
+        gitDirty: status.dirty,
+      });
+    } catch {
+      // Best-effort chrome: a workspace where git cannot answer (no repository,
+      // no binary) keeps the host-reported branch and shows no counts.
+      set({ gitStatus: null });
+    }
   },
   resolveApproval: async (kind: 'allow_once' | 'reject_once') => {
     const client = requireRuntimeClient();

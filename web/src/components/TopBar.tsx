@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { GitExplorer } from './GitExplorer.tsx';
 
 /**
  * The header keeps identity only — sidebar toggle, workspace, branch and the
@@ -13,10 +14,14 @@ export const TopBar: React.FC = () => {
     toggleSidebar,
     workspacePath,
     gitBranch,
+    gitDirty,
+    gitStatus,
     sessionTitle,
   } = useConsoleStore();
+  const [explorerOpen, setExplorerOpen] = useState(false);
 
   return (
+    <>
     <header className="bg-white border-b border-[#e5e7eb] grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 h-10 px-4 w-full shrink-0 z-20 select-none text-xs font-mono">
       <div className="flex min-w-0 items-center space-x-3">
         <button
@@ -40,13 +45,36 @@ export const TopBar: React.FC = () => {
         {gitBranch !== '' && (
           <>
             <span className="text-gray-300 mx-1">|</span>
-            <div className="flex min-w-0 items-center space-x-1.5 text-gray-800">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+            {/* Clicking the chip opens the read-only git explorer.  The dot is the
+                same dirty marker the TUI's chrome shows, and the tracking counts
+                come from `runtime.git.status`. */}
+            <button
+              type="button"
+              onClick={() => setExplorerOpen(true)}
+              title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
+              className="flex min-w-0 cursor-pointer items-center space-x-1.5 rounded px-1 py-0.5 text-gray-800 transition-colors hover:bg-gray-100"
+            >
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  gitDirty ? 'bg-amber-500' : 'bg-emerald-500'
+                }`}
+              ></span>
               <span className="material-symbols-outlined text-[15px] text-gray-600">
                 fork_right
               </span>
               <span className="truncate">{gitBranch}</span>
-            </div>
+              {gitStatus !== null && gitStatus.ahead > 0 && (
+                <span className="text-emerald-600">↑{gitStatus.ahead}</span>
+              )}
+              {gitStatus !== null && gitStatus.behind > 0 && (
+                <span className="text-amber-600">↓{gitStatus.behind}</span>
+              )}
+              {gitStatus !== null && gitStatus.dirty && (
+                <span className="text-amber-600">
+                  {gitStatus.files.length}f{gitStatus.truncated ? '+' : ''}
+                </span>
+              )}
+            </button>
           </>
         )}
       </div>
@@ -65,5 +93,7 @@ export const TopBar: React.FC = () => {
           session label centred). */}
       <div className="justify-self-end" />
     </header>
+    {explorerOpen && <GitExplorer onClose={() => setExplorerOpen(false)} />}
+    </>
   );
 };
