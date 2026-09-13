@@ -122,17 +122,22 @@ export const BottomBar: React.FC = () => {
         right-aligned column: the bar must stay centre-weighted.
       */}
       {/*
-        `whitespace-nowrap` + `overflow-hidden` are load-bearing: the bar is a
-        fixed 28px strip, and a squeezed label that wraps would double a row's
-        line box and push the whole bar out of alignment.  Long labels truncate
-        (or clip at the track edge) instead of wrapping.
+        `whitespace-nowrap` is load-bearing: the bar is a fixed 28px strip, and a
+        squeezed label that wraps would double a row's line box and push the whole
+        bar out of alignment.  Labels that can grow are truncated at their own
+        `max-w` instead of wrapping.
+
+        Deliberately *not* `overflow-hidden`: the MCP popover is anchored inside
+        this bar (`absolute bottom-8` on its trigger), so clipping the bar hid the
+        popover entirely — it mounted, and was invisible.  Nothing here overflows
+        the viewport now that every growable label truncates.
 
         It is a real flex child of the app column rather than an overlay: while
         it was `fixed`, the middle row still stretched to the viewport bottom and
         the bar covered the sidebar's own footer (its settings entry), leaving a
         strip of it unreachable.
       */}
-      <footer className="grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 overflow-hidden whitespace-nowrap border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
+      <footer className="grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
         {/* Left: activity + configuration */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span
