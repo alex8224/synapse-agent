@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 40 wire methods: 38 service methods
+ * The 42 wire methods: 40 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -44,6 +44,8 @@ export const WIRE_METHODS = [
   "runtime.events.read",
   "runtime.events.unwatch",
   "runtime.events.watch",
+  "runtime.git.diff",
+  "runtime.git.status",
   "runtime.project.list",
   "runtime.project.thinking.set",
   "runtime.protocol.negotiate",
@@ -86,7 +88,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (26). */
+/** Authorization capabilities enforced by the ACL layer (28). */
 export const AUTHORIZATION_CAPABILITIES = [
   "artifacts.list",
   "artifacts.read",
@@ -95,6 +97,8 @@ export const AUTHORIZATION_CAPABILITIES = [
   "attachments.write",
   "events.read",
   "events.watch",
+  "git.diff",
+  "git.status",
   "project.list",
   "project.thinking",
   "session.close",
@@ -156,6 +160,8 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.config.get": "session.read",
   "runtime.events.read": "events.read",
   "runtime.events.watch": "events.watch",
+  "runtime.git.diff": "git.diff",
+  "runtime.git.status": "git.status",
   "runtime.project.list": "project.list",
   "runtime.project.thinking.set": "project.thinking",
   "runtime.session.close": "session.close",
@@ -573,6 +579,52 @@ export interface GetSessionGoalQuery {
 
 export interface GetSessionQuery {
   session: SessionRef;
+}
+
+export interface GitDiffQuery {
+  session: SessionRef;
+  path: string;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  staged?: boolean;
+}
+
+/**
+ * ``text`` is capped at 262144 bytes and then
+ * ``truncated`` is true; ``binary`` means the diff was not decoded and
+ * ``empty`` means there is nothing to show (unchanged or untracked).
+ */
+export interface GitDiffResult {
+  path: string;
+  text: string;
+  binary: boolean;
+  truncated: boolean;
+  empty: boolean;
+}
+
+export interface GitFileChange {
+  path: string;
+  index_status: string;
+  worktree_status: string;
+}
+
+export interface GitStatusQuery {
+  session: SessionRef;
+}
+
+/**
+ * ``files`` is capped at 200 entries and then
+ * ``truncated`` is true; ``branch`` is null on a detached HEAD.
+ */
+export interface GitStatusResult {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  files: GitFileChange[];
+  truncated: boolean;
 }
 
 /**

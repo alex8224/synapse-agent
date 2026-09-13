@@ -13,6 +13,8 @@
     "attachments.write",
     "events.read",
     "events.watch",
+    "git.diff",
+    "git.status",
     "project.list",
     "project.thinking",
     "session.close",
@@ -463,6 +465,42 @@
         "max_event_bytes": 1048576,
         "queue_size": 128
       }
+    },
+    {
+      "capability": "git.diff",
+      "class": "service",
+      "in_process": "Optional delegate method, same degradation rule as `runtime.git.status`.",
+      "method": "runtime.git.diff",
+      "notes": [
+        "Read-only unified diff for one workspace-relative path, staged or worktree.",
+        "Bounded to 262144 bytes and binary-safe; an unchanged or",
+        "untracked path is an empty diff, not an error."
+      ],
+      "request": "GitDiffQuery",
+      "result": "GitDiffResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "git_diff",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "git.status",
+      "class": "service",
+      "in_process": "Optional delegate method; an in-process delegate without it reports the feature as unavailable instead of failing the wrapper at construction.",
+      "method": "runtime.git.status",
+      "notes": [
+        "Read-only: the workspace's branch, upstream tracking counts and changed",
+        "files, from `git status --porcelain=v1 --branch`.  Nothing is staged or",
+        "committed, and a workspace where git cannot answer is `git_unavailable`."
+      ],
+      "request": "GitStatusQuery",
+      "result": "GitStatusResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "git_status",
+      "wire_defaults": {}
     },
     {
       "capability": "project.list",
@@ -2480,6 +2518,218 @@
       ],
       "origin": "python",
       "role": "request"
+    },
+    "GitDiffQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "staged",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GitDiffResult": {
+      "fields": [
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "binary",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "truncated",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "empty",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``text`` is capped at 262144 bytes and then",
+        "``truncated`` is true; ``binary`` means the diff was not decoded and",
+        "``empty`` means there is nothing to show (unchanged or untracked)."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "GitFileChange": {
+      "fields": [
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "index_status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "worktree_status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "GitStatusQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GitStatusResult": {
+      "fields": [
+        {
+          "name": "branch",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "upstream",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "ahead",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "behind",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "dirty",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "files",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[GitFileChange, ...]",
+          "required": true,
+          "ts_type": "GitFileChange[]",
+          "wire": "json"
+        },
+        {
+          "name": "truncated",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``files`` is capped at 200 entries and then",
+        "``truncated`` is true; ``branch`` is null on a detached HEAD."
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "HistoryAttachment": {
       "fields": [

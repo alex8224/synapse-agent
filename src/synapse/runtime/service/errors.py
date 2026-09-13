@@ -19,6 +19,7 @@ __all__ = [
     "ConfigOverflowError",
     "EventOverflowError",
     "EventTooLargeError",
+    "GitUnavailableError",
     "HistoryTooLargeError",
     "InvalidCursorError",
     "InvalidArtifactCursorError",
@@ -96,6 +97,12 @@ class ArtifactChangedError(RuntimeServiceError):
     """The artifact revision changed during an operation or did not match."""
 
     code = "artifact_changed"
+
+
+class GitUnavailableError(RuntimeServiceError):
+    """Git cannot answer for this workspace (no binary, no repository, timeout)."""
+
+    code = "git_unavailable"
 
 
 class ArtifactUnavailableError(RuntimeServiceError):

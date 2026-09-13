@@ -1,0 +1,238 @@
+"""Read-only git status/diff for one session's workspace.
+
+The TUI shells out to ``git`` in-process (``ui/git_explore/provider.py``); the
+console has no such channel, so the same two questions are answered here and
+exposed over the wire: what the working tree looks like, and what one file's
+diff is.  Nothing here writes: no staging, no commits, no checkout.
+
+Every result is bounded — the file list, the diff size and the subprocess
+timeout — and every failure the caller can act on is a typed error rather than
+an empty result that would look like "no changes".
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from synapse.runtime.service.errors import (
+    GitUnavailableError,
+    InvalidRequestError,
+)
+from synapse.runtime.sessions.ref import SessionRef
+
+__all__ = [
+    "GitDiffQuery",
+    "GitDiffResult",
+    "GitFileChange",
+    "GitStatusQuery",
+    "GitStatusResult",
+    "MAX_DIFF_BYTES",
+    "MAX_STATUS_FILES",
+    "git_diff_workspace",
+    "git_status_workspace",
+]
+
+#: Changed files reported in one status call; past this the result says so.
+MAX_STATUS_FILES = 200
+#: One file's diff is capped at this many bytes (the text is UTF-8, so this is
+#: also the character budget for ASCII-heavy diffs).
+MAX_DIFF_BYTES = 256 * 1024
+#: A git probe must never hold a worker thread indefinitely.
+GIT_TIMEOUT_S = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class GitStatusQuery:
+    """Status of the workspace the session runs in."""
+
+    session: SessionRef
+
+
+@dataclass(frozen=True, slots=True)
+class GitFileChange:
+    """One changed path, using git's own two-letter status columns.
+
+    ``index_status`` is the staged column, ``worktree_status`` the unstaged one;
+    ``??`` means untracked.  Both are passed through verbatim so a client can
+    render them the way git does instead of guessing from a boolean.
+    """
+
+    path: str
+    index_status: str
+    worktree_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class GitStatusResult:
+    branch: str | None
+    upstream: str | None
+    ahead: int
+    behind: int
+    dirty: bool
+    files: tuple[GitFileChange, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GitDiffQuery:
+    session: SessionRef
+    path: str
+    #: Compare the staged (index) version instead of the worktree.
+    staged: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class GitDiffResult:
+    path: str
+    text: str
+    binary: bool
+    truncated: bool
+    #: True when the path has no diff at all (unchanged, or untracked).
+    empty: bool
+
+
+def _workspace_root(session: object) -> Path:
+    workspace = getattr(session, "workspace", None)
+    if not workspace:
+        raise GitUnavailableError("git workspace is unavailable")
+    try:
+        root = Path(str(workspace)).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise GitUnavailableError("git workspace is unavailable") from exc
+    if not root.is_dir():
+        raise GitUnavailableError("git workspace is unavailable")
+    return root
+
+
+def _run_git(root: Path, args: list[str]) -> bytes | None:
+    """Run one bounded read-only git command; ``None`` when git cannot answer.
+
+    A missing ``git`` binary, a non-repository workspace or a timeout all mean
+    the same thing to a caller — "git cannot be read here" — and none of them
+    may raise through the service boundary.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", *args],
+            cwd=str(root),
+            capture_output=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _validate_repo_path(path: str) -> str:
+    """One safe workspace-relative POSIX path, or ``InvalidRequestError``."""
+    if not isinstance(path, str) or path == "":
+        raise InvalidRequestError("git path is required")
+    if len(path.encode("utf-8")) > 4096:
+        raise InvalidRequestError("git path is too long")
+    if "\\" in path or path.startswith("/") or ":" in path:
+        raise InvalidRequestError("git path must be a relative POSIX path")
+    pure = PurePosixPath(path)
+    if any(part in ("", ".", "..") for part in pure.parts):
+        raise InvalidRequestError("git path must not contain empty or parent segments")
+    if pure.is_absolute():
+        raise InvalidRequestError("git path must be relative")
+    return pure.as_posix()
+
+
+def _parse_branch_line(line: str) -> tuple[str | None, str | None, int, int]:
+    """Parse ``## branch...upstream [ahead N, behind M]`` from porcelain v1."""
+    body = line[3:].strip()
+    if body.startswith("HEAD (no branch)"):
+        return None, None, 0, 0
+    if body.startswith("No commits yet on "):
+        return body[len("No commits yet on ") :].strip() or None, None, 0, 0
+    ahead = behind = 0
+    bracket = body.find(" [")
+    if bracket >= 0:
+        tracking = body[bracket + 2 :].rstrip("]")
+        body = body[:bracket]
+        for part in tracking.split(","):
+            chunk = part.strip()
+            if chunk.startswith("ahead "):
+                ahead = int(chunk[6:].strip() or 0)
+            elif chunk.startswith("behind "):
+                behind = int(chunk[7:].strip() or 0)
+    branch, _, upstream = body.partition("...")
+    return (branch.strip() or None), (upstream.strip() or None), ahead, behind
+
+
+def git_status_workspace(query: GitStatusQuery, session: object) -> GitStatusResult:
+    """``git status --porcelain=v1 --branch`` for the session's workspace."""
+    if not isinstance(query, GitStatusQuery):
+        raise InvalidRequestError("git status query must be a GitStatusQuery")
+    root = _workspace_root(session)
+    raw = _run_git(root, ["status", "--porcelain=v1", "--branch", "--untracked-files=all"])
+    if raw is None:
+        raise GitUnavailableError("git status is unavailable in this workspace")
+    text = raw.decode("utf-8", errors="replace")
+
+    branch: str | None = None
+    upstream: str | None = None
+    ahead = behind = 0
+    files: list[GitFileChange] = []
+    truncated = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            branch, upstream, ahead, behind = _parse_branch_line(line)
+            continue
+        if len(line) < 4:
+            continue
+        if len(files) >= MAX_STATUS_FILES:
+            truncated = True
+            break
+        files.append(
+            GitFileChange(
+                path=line[3:].strip(),
+                index_status=line[0],
+                worktree_status=line[1],
+            )
+        )
+    return GitStatusResult(
+        branch=branch,
+        upstream=upstream,
+        ahead=ahead,
+        behind=behind,
+        dirty=bool(files),
+        files=tuple(files),
+        truncated=truncated,
+    )
+
+
+def git_diff_workspace(query: GitDiffQuery, session: object) -> GitDiffResult:
+    """One file's unified diff (staged or worktree), bounded and binary-safe."""
+    if not isinstance(query, GitDiffQuery):
+        raise InvalidRequestError("git diff query must be a GitDiffQuery")
+    path = _validate_repo_path(query.path)
+    root = _workspace_root(session)
+    args = ["diff", "--no-color", "--unified=3"]
+    if query.staged:
+        args.append("--cached")
+    args.extend(["--", path])
+    raw = _run_git(root, args)
+    if raw is None:
+        raise GitUnavailableError("git diff is unavailable in this workspace")
+    if b"\x00" in raw:
+        return GitDiffResult(path=path, text="", binary=True, truncated=False, empty=False)
+    if b"Binary files " in raw and b" differ" in raw:
+        return GitDiffResult(path=path, text="", binary=True, truncated=False, empty=False)
+    truncated = len(raw) > MAX_DIFF_BYTES
+    body = raw[:MAX_DIFF_BYTES].decode("utf-8", errors="replace")
+    return GitDiffResult(
+        path=path,
+        text=body,
+        binary=False,
+        truncated=truncated,
+        # An empty diff is a real answer: unchanged, untracked, or a path git
+        # cannot diff.  The caller renders it instead of an error.
+        empty=body.strip() == "",
+    )

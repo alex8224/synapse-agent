@@ -70,6 +70,13 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.git import (
+    GitDiffQuery,
+    GitDiffResult,
+    GitFileChange,
+    GitStatusQuery,
+    GitStatusResult,
+)
 from synapse.runtime.service.history import (
     HistoryAttachment,
     HistoryEvent,
@@ -2069,6 +2076,26 @@ class RuntimeWebSocketClient(GoalClientMixin):
         return _artifact_metadata(result)
 
     @_fence_on_protocol_failure
+    async def git_status(self, query: GitStatusQuery) -> GitStatusResult:
+        result = await self._request_with_retry(
+            "runtime.git.status",
+            {"session": _wire_session(query.session)},
+        )
+        return _git_status_result(result)
+
+    @_fence_on_protocol_failure
+    async def git_diff(self, query: GitDiffQuery) -> GitDiffResult:
+        result = await self._request_with_retry(
+            "runtime.git.diff",
+            {
+                "session": _wire_session(query.session),
+                "path": query.path,
+                "staged": query.staged,
+            },
+        )
+        return _git_diff_result(result)
+
+    @_fence_on_protocol_failure
     async def list_artifacts(self, query: ListArtifactsQuery) -> ArtifactPage:
         result = await self._request_with_retry(
             "runtime.artifacts.list",
@@ -2408,6 +2435,68 @@ def _artifact_ref(value: object) -> ArtifactRef:
         return ArtifactRef(_ref(ref["session"]), _text(ref["path"], "path", 4096))
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None
+
+
+_GIT_STATUS_FIELDS = ("branch", "upstream", "ahead", "behind", "dirty", "files", "truncated")
+_GIT_FILE_FIELDS = ("path", "index_status", "worktree_status")
+_GIT_DIFF_FIELDS = ("path", "text", "binary", "truncated", "empty")
+
+
+def _git_status_result(value: object) -> GitStatusResult:
+    """Strict decoder for ``runtime.git.status``."""
+    record = _required_fields(value, _GIT_STATUS_FIELDS)
+    branch = record["branch"]
+    upstream = record["upstream"]
+    if (branch is not None and type(branch) is not str) or (
+        upstream is not None and type(upstream) is not str
+    ):
+        raise ProtocolTransportError()
+    for name in ("ahead", "behind"):
+        if type(record[name]) is not int or record[name] < 0:
+            raise ProtocolTransportError()
+    for name in ("dirty", "truncated"):
+        if type(record[name]) is not bool:
+            raise ProtocolTransportError()
+    if not isinstance(record["files"], list):
+        raise ProtocolTransportError()
+    files: list[GitFileChange] = []
+    for entry in record["files"]:
+        item = _required_fields(entry, _GIT_FILE_FIELDS)
+        if any(type(item[name]) is not str for name in _GIT_FILE_FIELDS):
+            raise ProtocolTransportError()
+        files.append(
+            GitFileChange(
+                path=item["path"],
+                index_status=item["index_status"],
+                worktree_status=item["worktree_status"],
+            )
+        )
+    return GitStatusResult(
+        branch=branch,
+        upstream=upstream,
+        ahead=record["ahead"],
+        behind=record["behind"],
+        dirty=record["dirty"],
+        files=tuple(files),
+        truncated=record["truncated"],
+    )
+
+
+def _git_diff_result(value: object) -> GitDiffResult:
+    """Strict decoder for ``runtime.git.diff``."""
+    record = _required_fields(value, _GIT_DIFF_FIELDS)
+    if type(record["path"]) is not str or type(record["text"]) is not str:
+        raise ProtocolTransportError()
+    for name in ("binary", "truncated", "empty"):
+        if type(record[name]) is not bool:
+            raise ProtocolTransportError()
+    return GitDiffResult(
+        path=record["path"],
+        text=record["text"],
+        binary=record["binary"],
+        truncated=record["truncated"],
+        empty=record["empty"],
+    )
 
 
 def _artifact_metadata(value: object) -> ArtifactMetadata:

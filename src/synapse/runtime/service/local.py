@@ -103,6 +103,14 @@ from synapse.runtime.service.events import (
     matches_event,
     project_payload,
 )
+from synapse.runtime.service.git import (
+    GitDiffQuery,
+    GitDiffResult,
+    GitStatusQuery,
+    GitStatusResult,
+    git_diff_workspace,
+    git_status_workspace,
+)
 from synapse.runtime.service.goal_commands import GoalLedger, SessionGoalService
 from synapse.runtime.service.goal_management import (
     ClearSessionGoalCommand,
@@ -1078,6 +1086,32 @@ class LocalAgentRuntimeService:
         self._check_project(manager, query.ref.session)
         session = self._resolve_session(manager, query.ref.session)
         return await asyncio.to_thread(read_artifact_filesystem, query, session)
+
+    async def git_status(self, query: GitStatusQuery) -> GitStatusResult:
+        """Read the session workspace's git status through a bounded worker."""
+        if not isinstance(query, GitStatusQuery):
+            raise InvalidRequestError(
+                "git status query must be a GitStatusQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+        manager = self._resolve_manager(query.session)
+        self._check_project(manager, query.session)
+        session = self._resolve_session(manager, query.session)
+        return await asyncio.to_thread(git_status_workspace, query, session)
+
+    async def git_diff(self, query: GitDiffQuery) -> GitDiffResult:
+        """Read one file's bounded unified diff from the session workspace."""
+        if not isinstance(query, GitDiffQuery):
+            raise InvalidRequestError(
+                "git diff query must be a GitDiffQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+        manager = self._resolve_manager(query.session)
+        self._check_project(manager, query.session)
+        session = self._resolve_session(manager, query.session)
+        return await asyncio.to_thread(git_diff_workspace, query, session)
 
     # -- attachment port ---------------------------------------------------
 

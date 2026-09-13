@@ -84,6 +84,10 @@ from synapse.runtime.service.events import (
     MAX_SCAN_LIMIT,
     MIN_EVENT_BYTES,
 )
+from synapse.runtime.service.git import (
+    GitDiffQuery,
+    GitStatusQuery,
+)
 from synapse.runtime.service.goal_management import (
     MAX_SESSION_GOAL_OBJECTIVE_CHARS,
     ClearSessionGoalCommand,
@@ -150,7 +154,7 @@ MAX_MCP_INCLUDE_TOOLS: Final = 512
 #: An image MIME type is a short token; bound it well below ``MAX_STRING_BYTES``.
 MAX_ATTACHMENT_MIME_BYTES: Final = 256
 
-#: The 24 wire methods: 22 service methods (including ``runtime.events.watch``)
+#: The wire methods: every service method (including ``runtime.events.watch``)
 #: plus the two connection-state methods ``runtime.protocol.negotiate`` and
 #: ``runtime.events.unwatch``.
 METHODS: Final = frozenset(method.method for method in WIRE_METHODS)
@@ -844,6 +848,16 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             ),
             expected_revision=revision,
         )
+    if method == "runtime.git.status":
+        _fields(params, {"session"})
+        return GitStatusQuery(session=_session(params["session"]))
+    if method == "runtime.git.diff":
+        _optional_fields(params, {"session", "path"}, {"staged"})
+        return GitDiffQuery(
+            session=_session(params["session"]),
+            path=_bounded_text(params["path"], MAX_PATH_BYTES),
+            staged=_boolean(params.get("staged", False)),
+        )
     if method == "runtime.attachments.begin":
         _optional_fields(params, {"session", "size", "mime"}, {"display_name"})
         display_name = params.get("display_name")
@@ -1069,6 +1083,10 @@ async def dispatch(
         return await service.list_artifacts(dto)  # type: ignore[arg-type]
     if method == "runtime.artifacts.read":
         return await service.read_artifact(dto)  # type: ignore[arg-type]
+    if method == "runtime.git.status":
+        return await service.git_status(dto)  # type: ignore[arg-type]
+    if method == "runtime.git.diff":
+        return await service.git_diff(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.begin":
         return await service.begin_attachment(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.append":

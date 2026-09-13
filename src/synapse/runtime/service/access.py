@@ -63,6 +63,12 @@ from synapse.runtime.service.errors import (
     PermissionDeniedError,
 )
 from synapse.runtime.service.events import EventFilter, EventPage, ReadEventsQuery
+from synapse.runtime.service.git import (
+    GitDiffQuery,
+    GitDiffResult,
+    GitStatusQuery,
+    GitStatusResult,
+)
 from synapse.runtime.service.goal_management import (
     ClearSessionGoalCommand,
     EditSessionGoalCommand,
@@ -119,6 +125,8 @@ __all__ = [
     "bind_access",
     "EVENTS_READ",
     "EVENTS_WATCH",
+    "GIT_STATUS",
+    "GIT_DIFF",
     "ARTIFACTS_STAT",
     "ARTIFACTS_LIST",
     "ARTIFACTS_READ",
@@ -183,6 +191,10 @@ EVENTS_WATCH = "events.watch"
 ARTIFACTS_STAT = "artifacts.stat"
 ARTIFACTS_LIST = "artifacts.list"
 ARTIFACTS_READ = "artifacts.read"
+#: Read-only git surfaces: the workspace's status and one file's diff.  Both
+#: are reads, and both are thread-scoped because a session owns the workspace.
+GIT_STATUS = "git.status"
+GIT_DIFF = "git.diff"
 #: Read one session's durable image attachments (stat + bounded read).  Session
 #: scoped: the grant is bound to one ``SessionRef`` and never to a project.
 ATTACHMENTS_READ = "attachments.read"
@@ -214,6 +226,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_SEARCH,
         EVENTS_READ,
         EVENTS_WATCH,
+        GIT_STATUS,
+        GIT_DIFF,
         ARTIFACTS_STAT,
         ARTIFACTS_LIST,
         ARTIFACTS_READ,
@@ -862,6 +876,30 @@ class AccessControlledAgentRuntimeService:
         session = self._session_from_dto(query, ReadArtifactQuery, "read query")
         self._authorize(session, ARTIFACTS_READ)
         return await self._delegate.read_artifact(query)
+
+    async def git_status(self, query: GitStatusQuery) -> GitStatusResult:
+        """Authorize ``git.status`` (a session read), then delegate.
+
+        Optional delegate method, like ``set_thinking_level``: a delegate without
+        it reports the feature as unavailable instead of failing the wrapper at
+        construction, so injected doubles keep working.  The ACL check still runs
+        first, so a caller without the capability is denied either way.
+        """
+        session = self._session_from_dto(query, GitStatusQuery, "git status query")
+        self._authorize(session, GIT_STATUS)
+        delegate = getattr(self._delegate, "git_status", None)
+        if not callable(delegate):
+            raise InvalidRequestError("git status is unavailable")
+        return await delegate(query)
+
+    async def git_diff(self, query: GitDiffQuery) -> GitDiffResult:
+        """Authorize ``git.diff`` (a session read), then delegate (optional)."""
+        session = self._session_from_dto(query, GitDiffQuery, "git diff query")
+        self._authorize(session, GIT_DIFF)
+        delegate = getattr(self._delegate, "git_diff", None)
+        if not callable(delegate):
+            raise InvalidRequestError("git diff is unavailable")
+        return await delegate(query)
 
     async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:
         """Authorize ``attachments.write`` per session, then reserve an upload.

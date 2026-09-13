@@ -41,6 +41,8 @@ from synapse.runtime.service.access import (
     ATTACHMENTS_WRITE,
     EVENTS_READ,
     EVENTS_WATCH,
+    GIT_DIFF,
+    GIT_STATUS,
     PROJECT_LIST,
     PROJECT_THINKING,
     SESSION_CLOSE,
@@ -155,6 +157,15 @@ from synapse.runtime.service.events import (
     EventPage,
     ReadEventsQuery,
     RuntimeEvent,
+)
+from synapse.runtime.service.git import (
+    MAX_DIFF_BYTES,
+    MAX_STATUS_FILES,
+    GitDiffQuery,
+    GitDiffResult,
+    GitFileChange,
+    GitStatusQuery,
+    GitStatusResult,
 )
 from synapse.runtime.service.goal_management import (
     MAX_SESSION_GOAL_OBJECTIVE_CHARS,
@@ -631,6 +642,26 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
     _dto(StatArtifactQuery, role="request"),
     _dto(ListArtifactsQuery, role="request"),
     _dto(ReadArtifactQuery, role="request"),
+    _dto(GitStatusQuery, role="request"),
+    _dto(
+        GitStatusResult,
+        role="result",
+        notes=(
+            "``files`` is capped at " + str(MAX_STATUS_FILES) + " entries and then",
+            "``truncated`` is true; ``branch`` is null on a detached HEAD.",
+        ),
+    ),
+    _dto(GitFileChange, role="value"),
+    _dto(GitDiffQuery, role="request"),
+    _dto(
+        GitDiffResult,
+        role="result",
+        notes=(
+            "``text`` is capped at " + str(MAX_DIFF_BYTES) + " bytes and then",
+            "``truncated`` is true; ``binary`` means the diff was not decoded and",
+            "``empty`` means there is nothing to show (unchanged or untracked).",
+        ),
+    ),
     _dto(
         BeginAttachmentCommand,
         role="request",
@@ -1066,6 +1097,43 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         scope="session",
         scope_location="params.ref.session",
         service_method="stat_artifact",
+    ),
+    WireMethod(
+        method="runtime.git.status",
+        method_class="service",
+        request="GitStatusQuery",
+        result="GitStatusResult",
+        capability=GIT_STATUS,
+        scope="session",
+        scope_location="params.session",
+        service_method="git_status",
+        in_process=(
+            "Optional delegate method; an in-process delegate without it reports the "
+            "feature as unavailable instead of failing the wrapper at construction."
+        ),
+        notes=(
+            "Read-only: the workspace's branch, upstream tracking counts and changed",
+            "files, from `git status --porcelain=v1 --branch`.  Nothing is staged or",
+            "committed, and a workspace where git cannot answer is `git_unavailable`.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.git.diff",
+        method_class="service",
+        request="GitDiffQuery",
+        result="GitDiffResult",
+        capability=GIT_DIFF,
+        scope="session",
+        scope_location="params.session",
+        service_method="git_diff",
+        in_process=(
+            "Optional delegate method, same degradation rule as `runtime.git.status`."
+        ),
+        notes=(
+            "Read-only unified diff for one workspace-relative path, staged or worktree.",
+            "Bounded to " + str(MAX_DIFF_BYTES) + " bytes and binary-safe; an unchanged or",
+            "untracked path is an empty diff, not an error.",
+        ),
     ),
     WireMethod(
         method="runtime.attachments.begin",

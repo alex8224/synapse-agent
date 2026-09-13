@@ -159,6 +159,8 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.attachments.abort": "abort_attachment",
     "runtime.attachments.stat": "stat_attachment",
     "runtime.attachments.read": "read_attachment",
+    "runtime.git.status": "git_status",
+    "runtime.git.diff": "git_diff",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -173,6 +175,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "session.goal",
         "attachments.read",
         "attachments.write",
+        "git.status",
+        "git.diff",
     }
 )
 

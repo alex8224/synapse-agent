@@ -231,6 +231,8 @@ _ADDITIVE_CAPABILITIES = frozenset(
         SESSION_GOAL,
         "attachments.read",
         "attachments.write",
+        "git.status",
+        "git.diff",
     }
 )
 

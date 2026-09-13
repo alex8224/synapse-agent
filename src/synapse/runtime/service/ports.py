@@ -61,6 +61,12 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.git import (
+    GitDiffQuery,
+    GitDiffResult,
+    GitStatusQuery,
+    GitStatusResult,
+)
 from synapse.runtime.service.goal_management import (
     ClearSessionGoalCommand,
     EditSessionGoalCommand,
@@ -366,6 +372,10 @@ class AgentRuntimeService(Protocol):
     async def list_artifacts(self, query: ListArtifactsQuery) -> ArtifactPage: ...
 
     async def read_artifact(self, query: ReadArtifactQuery) -> ArtifactChunk: ...
+
+    async def git_status(self, query: GitStatusQuery) -> GitStatusResult: ...
+
+    async def git_diff(self, query: GitDiffQuery) -> GitDiffResult: ...
 
     async def begin_attachment(
         self, command: BeginAttachmentCommand
