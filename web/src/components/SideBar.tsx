@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CONSOLE_VERSION } from '../consoleInfo.ts';
+import { ConsoleActions } from './ConsoleActions.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   SESSION_TITLE_MAX,
@@ -117,11 +117,22 @@ export const SideBar: React.FC = () => {
         >
           <span className="material-symbols-outlined text-[18px]">search</span>
         </button>
-        <div
-          title={`${projects.length} 个项目 / 已加载 ${sessions.length} 个会话`}
-          className="mt-auto mb-1 font-mono text-[10px] text-gray-400"
-        >
-          {projects.length}
+        <div className="mt-auto flex flex-col items-center gap-1">
+          <ConsoleActions orientation="column" />
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title="打开设置"
+            className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px]">settings</span>
+          </button>
+          <div
+            title={`${projects.length} 个项目 / 已加载 ${sessions.length} 个会话`}
+            className="mb-1 font-mono text-[10px] text-gray-400"
+          >
+            {projects.length}
+          </div>
         </div>
       </nav>
     );
@@ -452,16 +463,17 @@ export const SideBar: React.FC = () => {
         </div>
       )}
 
-      <div className="mt-2 px-3 pt-3 border-t border-[#e5e7eb]">
+      {/* App-level row: the context actions sit with the settings entry, and the
+          version is shown inside the settings panel instead of this label. */}
+      <div className="mt-2 flex items-center gap-1 border-t border-[#e5e7eb] px-3 pt-3">
+        <ConsoleActions />
         <button
           type="button"
           onClick={() => setSettingsOpen(true)}
           title="打开设置"
-          className="flex w-full items-center space-x-2 text-gray-600 hover:bg-gray-200/60 p-1.5 rounded transition-colors text-xs cursor-pointer"
+          className="material-symbols-outlined cursor-pointer text-[18px] text-gray-500 transition-colors hover:text-gray-900"
         >
-          <span className="material-symbols-outlined text-[17px] text-gray-500">settings</span>
-          <span className="flex-1 text-left">设置</span>
-          <span className="text-gray-400 font-mono text-[11px]">Synapse {CONSOLE_VERSION}</span>
+          settings
         </button>
       </div>
 

@@ -83,3 +83,21 @@ test('the top bar toggle lines up with the collapsed rail', () => {
     'the rail must keep the geometry this alignment is measured against',
   );
 });
+
+test('the context actions and the settings entry live in the sidebar', () => {
+  assert.ok(sideBar.includes('<ConsoleActions'), 'the sidebar must host the context actions');
+  // The header keeps identity only: no file browser, no diagnostics, no logout.
+  for (const trigger of ['folder_open', 'terminal', 'logoutConsole', '会话信息']) {
+    assert.equal(
+      source.includes(trigger),
+      false,
+      `the header must not keep ${trigger}`,
+    );
+  }
+  // The version is shown inside the settings panel, not next to its label.
+  assert.equal(
+    sideBar.includes('CONSOLE_VERSION'),
+    false,
+    'the settings row must not print the version',
+  );
+});
