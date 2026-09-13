@@ -50,6 +50,29 @@ def _attr(settings: Any, name: str, default: Any = None) -> Any:
     return getattr(settings, name, default)
 
 
+def _context_window_of(registry: Any, model: str) -> int | None:
+    """The selected model's input context size, or ``None`` when it has none.
+
+    Read from the registry profile, which is the same source the TUI labels its
+    context occupancy with.  An unknown model, or a profile without the field,
+    is simply "no window": clients then render the bare token count instead of a
+    fraction, which is why this degrades rather than raising.
+    """
+    getter = getattr(registry, "get", None)
+    if not callable(getter):
+        # An injected double may expose only the enumeration surface; a registry
+        # that cannot resolve a profile simply has no window to report.
+        return None
+    try:
+        profile = getter(model)
+    except KeyError:
+        return None
+    raw = getattr(profile, "context_window", None)
+    if type(raw) is not int or raw <= 0:
+        return None
+    return raw
+
+
 def _model_text(value: Any) -> str | None:
     """Coerce a whitelisted model alias/name to a bounded string or None."""
     if value is None:
@@ -226,6 +249,7 @@ def build_config_view(
                 else None
             ),
             can_set_project_thinking=bool(can_set_project_thinking),
+            context_window=_context_window_of(registry, current),
         )
     except ValueError as exc:
         raise ConfigOverflowError("runtime config exceeds the safety bound") from exc

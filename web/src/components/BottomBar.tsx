@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
-import { turnStatSegments, usageSegments, usageTooltip } from '../stores/usageView.ts';
+import {
+  contextOccupancy,
+  sessionUsageSegments,
+  turnStatSegments,
+} from '../stores/usageView.ts';
 import { goalLabel, goalTooltip } from '../stores/goalView.ts';
 import { McpPanel } from './McpPanel.tsx';
 import { GoalDialog } from './GoalDialog.tsx';
@@ -43,6 +47,8 @@ export const BottomBar: React.FC = () => {
     canSetThinking,
     runtimeStatus,
     usage,
+    sessionUsage,
+    contextWindow,
     goal,
   } = useConsoleStore();
 
@@ -114,9 +120,13 @@ export const BottomBar: React.FC = () => {
   }, [popoverOpen]);
 
   const busy = runtimeStatus === 'running';
-  // Every usage metric now lives here: the token totals and the speed/latency/
-  // step telemetry of the current turn.
-  const telemetry = [...usageSegments(usage), ...turnStatSegments(usage)];
+  // The bar reports this turn's speed/latency/steps, then the session's usage as
+  // two raw groups (totals, then context/hit share).  No label and no tooltip:
+  // the numbers are printed as the runtime reported them.
+  const telemetry = [
+    ...turnStatSegments(usage),
+    ...sessionUsageSegments(sessionUsage, contextOccupancy(usage), contextWindow),
+  ];
   // An absent goal renders nothing at all (never a placeholder).
   const goalText = goalLabel(goal);
   const goalClass = goal === null ? '' : (GOAL_STATUS_CLASS[goal.label] ?? 'text-gray-600');
@@ -132,11 +142,22 @@ export const BottomBar: React.FC = () => {
         spacer (F1 opens the full shortcut list). Do not switch the centre to a
         right-aligned column: the bar must stay centre-weighted.
       */}
-      <footer className="fixed bottom-0 left-0 z-40 grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
+      {/*
+        `whitespace-nowrap` + `overflow-hidden` are load-bearing: the bar is a
+        fixed 28px strip, and a squeezed label that wraps would double a row's
+        line box and push the whole bar out of alignment.  Long labels truncate
+        (or clip at the track edge) instead of wrapping.
+
+        It is a real flex child of the app column rather than an overlay: while
+        it was `fixed`, the middle row still stretched to the viewport bottom and
+        the bar covered the sidebar's own footer (its settings entry), leaving a
+        strip of it unreachable.
+      */}
+      <footer className="grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 overflow-hidden whitespace-nowrap border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
         {/* Left: activity + configuration */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span
-            className={`flex items-center gap-1.5 font-sans text-[11px] font-medium ${
+            className={`flex shrink-0 items-center gap-1.5 font-sans text-[11px] font-medium ${
               busy ? 'text-blue-600' : 'text-gray-500'
             }`}
           >
@@ -320,7 +341,6 @@ export const BottomBar: React.FC = () => {
         {/* Centre: all turn telemetry (tokens + speed / latency / steps) */}
         <div
           className="flex shrink-0 items-center justify-self-center gap-2 tabular-nums"
-          title={telemetry.length > 0 ? usageTooltip(usage) : undefined}
         >
           {telemetry.length === 0 ? (
             <span className="font-sans text-[11px] text-gray-300">尚无本轮指标</span>

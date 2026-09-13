@@ -75,7 +75,10 @@ export const TopBar: React.FC = () => {
       <div className="flex min-w-0 items-center space-x-3">
         <button
           onClick={toggleSidebar}
-          className="text-gray-700 hover:bg-gray-100 p-1 rounded transition-colors flex items-center"
+          // Same 28px box as the collapsed rail's buttons, pulled left by the
+          // header's padding so both icon centres land on the same vertical axis
+          // (the rail centres its buttons in a 44px column, i.e. at x = 22px).
+          className="-ml-2 flex h-7 w-7 items-center justify-center rounded text-gray-700 transition-colors hover:bg-gray-100"
           title="Toggle Sidebar"
         >
           <span className="material-symbols-outlined text-[18px]">dock_to_left</span>

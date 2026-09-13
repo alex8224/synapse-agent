@@ -183,9 +183,49 @@ function patchToolItem(
   return changed ? next : messages;
 }
 
+/**
+ * Kinds that terminate the turn.
+ *
+ * Exported so the store can refresh what a finished turn changed (the session's
+ * cumulative token totals) without repeating the list.
+ */
+export function isTurnTerminalKind(kind: string): boolean {
+  return kind === 'turn_completed' || kind === 'turn_cancelled' || kind === 'turn_failed';
+}
+
 function closeToolGroup(messages: TranscriptMessage[], turnId: string): TranscriptMessage[] {
   const id = toolGroupId(turnId);
   return messages.map((m) => (m.id === id ? { ...m, finished: true } : m));
+}
+
+/**
+ * Id of the reasoning segment currently streaming for one turn.
+ *
+ * A multi-step turn reasons once per step (before each tool call), and the
+ * durable history projection stores those as separate `thought` events.  Feeding
+ * every delta of the turn into one per-turn message merged them into a single
+ * fold, and the next `reasoning_completed` then replaced the accumulated text
+ * with that segment's own body — so earlier segments vanished too.
+ *
+ * A segment stays open only while it is streaming *and* still the newest row: a
+ * tool call, an answer or a completion all end it, so the next delta opens the
+ * next segment.
+ */
+function thoughtIdFor(messages: TranscriptMessage[], turnId: string): string {
+  const prefix = `thought-${turnId}-`;
+  let lastThought = -1;
+  let count = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i].id.startsWith(prefix)) {
+      lastThought = i;
+      count += 1;
+    }
+  }
+  const open = lastThought === -1 ? null : messages[lastThought];
+  if (open !== null && open.duration === 'streaming' && lastThought === messages.length - 1) {
+    return open.id;
+  }
+  return `${prefix}${count + 1}`;
 }
 
 function appendToThought(
@@ -195,7 +235,7 @@ function appendToThought(
   stamp: string,
   at: number,
 ): TranscriptMessage[] {
-  const id = `thought-${turnId}`;
+  const id = thoughtIdFor(messages, turnId);
   const index = messages.findIndex((m) => m.id === id);
   if (index === -1) {
     return [
@@ -295,14 +335,14 @@ export function reduceRuntimeEvent(
     if (text) next.messages = appendToThought(state.messages, turnId, text, stamp, at);
   } else if (kind === 'reasoning_completed') {
     const body = asText(payload.text);
+    const prefix = `thought-${turnId}-`;
     next.messages = state.messages.map((m) => {
-      if (m.type !== 'thought' || m.id !== `thought-${turnId}`) return m;
-      const duration =
-        m.startedAt !== undefined
-          ? elapsedLabel(m.startedAt, at)
-          : m.duration === 'streaming'
-            ? 'done'
-            : m.duration;
+      // Only the segment still streaming is completed; an already-finished one
+      // must not be overwritten by a later completion's body.
+      if (m.type !== 'thought' || !m.id.startsWith(prefix) || m.duration !== 'streaming') {
+        return m;
+      }
+      const duration = m.startedAt !== undefined ? elapsedLabel(m.startedAt, at) : 'done';
       return { ...m, content: body || m.content, duration };
     });
   } else if (kind === 'answer_delta') {
@@ -408,11 +448,7 @@ export function reduceRuntimeEvent(
   } else if (kind === 'turn_waiting_approval') {
     // Still in flight: the turn is blocked on the human, not idle.
     next.runtimeStatus = 'running';
-  } else if (
-    kind === 'turn_completed' ||
-    kind === 'turn_cancelled' ||
-    kind === 'turn_failed'
-  ) {
+  } else if (isTurnTerminalKind(kind)) {
     next.runtimeStatus = 'idle';
     next.steerQueueCount = 0;
     next.activity = null;

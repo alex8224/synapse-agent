@@ -138,6 +138,10 @@ class RuntimeConfigView:
     can_toggle_mcp_global: bool = False
     project_thinking_level: str | None = None
     can_set_project_thinking: bool = False
+    # The selected model's input context size, or None when its profile does not
+    # declare one.  Clients need the denominator to render context occupancy
+    # ("14.2k/200k"); the TUI reads the same number off the model profile.
+    context_window: int | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.current_model, name="current_model")
@@ -185,3 +189,6 @@ class RuntimeConfigView:
         ):
             if type(getattr(self, flag)) is not bool:
                 raise ValueError(f"{flag} must be a boolean")
+        window = self.context_window
+        if window is not None and (type(window) is not int or window <= 0):
+            raise ValueError("context_window must be a positive integer or None")

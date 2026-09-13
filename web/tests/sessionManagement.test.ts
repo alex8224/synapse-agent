@@ -286,6 +286,7 @@ function stubClient() {
           status: 'idle',
           active_turn_id: null,
           latest_sequence: 0,
+          usage: { input_tokens: 20327, output_tokens: 93, cache_tokens: 19840 },
         },
       }),
     watchEvents: () => Promise.resolve({ subscription_id: 'sub-1', cursor: 0 }),
@@ -767,4 +768,16 @@ test('a history reload keeps the known title instead of the thread id', async ()
   // 'other' is a loaded row titled 'Second': the header must show that, never
   // the raw id.
   assert.equal(state.sessionTitle, 'Second');
+});
+
+test('the session view totals reach the store on attach', async () => {
+  await muted(() => useConsoleStore.getState().switchSession('other', 'Second'));
+
+  // The bar shows the conversation's cumulative cost, and the only surface that
+  // carries it is the session view returned by `runtime.session.open`.
+  assert.deepEqual(useConsoleStore.getState().sessionUsage, {
+    input: 20327,
+    output: 93,
+    cache: 19840,
+  });
 });

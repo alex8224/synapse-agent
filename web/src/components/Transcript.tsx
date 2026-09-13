@@ -34,9 +34,23 @@ export const Transcript: React.FC = () => {
     loadEarlierHistory();
   };
 
+  /**
+   * Expand/collapse one fold.
+   *
+   * This is a *view* change, not new content, but the store replaces the
+   * `messages` array to flip the flag — and the auto-scroll effect keys off that
+   * array identity.  Without the same guard the "load earlier" path uses, opening
+   * a fold yanked the transcript to the bottom, so it never appeared to open in
+   * place.
+   */
+  const handleToggleExpand = (id: string) => {
+    skipAutoScroll.current = true;
+    toggleMessageExpand(id);
+  };
+
   return (
     <div className="flex-1 overflow-y-auto px-8 py-6 pb-36 font-sans">
-      <div className="max-w-4xl space-y-5">
+      <div className="mx-auto max-w-4xl space-y-5">
         {historyAvailable === false && (
           <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-800 font-mono leading-relaxed">
             此会话在 transcript 投影中不可用（history.available=false）。以下只显示建立连接后的实时内容；
@@ -83,39 +97,42 @@ export const Transcript: React.FC = () => {
         {messages.map((m) => {
           if (m.type === 'user') {
             return (
-              <div key={m.id} className="pt-4 border-t border-gray-100/80 first:border-t-0">
-                <div className="flex items-baseline space-x-2 mb-1.5">
-                  <span className="font-bold text-gray-900 text-sm">User</span>
-                  <span className="text-gray-400 font-mono text-xs">{m.timestamp}</span>
+              // Chat layout: the user's turn sits on the right, the assistant's on
+              // the left, and the side it is on is the role — so no "User" /
+              // "Assistant" heading is needed.
+              <div key={m.id} className="flex justify-end">
+                <div className="flex max-w-[80%] flex-col items-end gap-1.5">
+                  {m.content !== '' && (
+                    // No bubble: the side it sits on is the role, and the frame
+                    // only added noise around the text.
+                    <div className="whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900">
+                      {m.content}
+                    </div>
+                  )}
+                  {m.attachments !== undefined && m.attachments.length > 0 && (
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {m.attachments.map((attachment) => (
+                        <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
+                      ))}
+                    </div>
+                  )}
+                  <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
                 </div>
-                {m.content !== '' && (
-                  <div className="text-gray-900 text-sm leading-relaxed flex items-start bg-gray-50/70 p-3 rounded-lg border border-gray-100">
-                    <span className="text-xs mr-2 text-blue-600">●</span>
-                    <span>{m.content}</span>
-                  </div>
-                )}
-                {m.attachments !== undefined && m.attachments.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {m.attachments.map((attachment) => (
-                      <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
-                    ))}
-                  </div>
-                )}
               </div>
             );
           }
           if (m.type === 'thought') {
             return (
-              <div key={m.id}>
+              <div key={m.id} className="max-w-[85%]">
                 <div
-                  onClick={() => toggleMessageExpand(m.id)}
+                  onClick={() => handleToggleExpand(m.id)}
                   className="inline-flex items-center space-x-2 px-3 py-1.5 rounded bg-[#f3f4f5] border border-gray-200 text-gray-700 text-xs cursor-pointer hover:bg-gray-200/80 transition-colors select-none font-mono"
                 >
                   <span>{thoughtLabel(m.duration)}</span>
                   <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
                 </div>
                 {m.expanded && (
-                  <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600">
+                  <div className="mt-2 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
                     <Markdown text={m.content ?? ''} />
                   </div>
                 )}
@@ -130,9 +147,9 @@ export const Transcript: React.FC = () => {
             ).length;
             const expanded = m.expanded === true;
             return (
-              <div key={m.id} className="py-1">
+              <div key={m.id} className="max-w-[85%] py-1">
                 <div
-                  onClick={() => toggleMessageExpand(m.id)}
+                  onClick={() => handleToggleExpand(m.id)}
                   title={expanded ? '收起工具详情' : '展开工具详情'}
                   className="inline-flex items-center space-x-2 px-3 py-1.5 rounded bg-[#f3f4f5] border border-gray-200 text-gray-700 text-xs cursor-pointer hover:bg-gray-200/80 transition-colors select-none font-mono"
                 >
@@ -202,14 +219,11 @@ export const Transcript: React.FC = () => {
           }
           if (m.type === 'assistant') {
             return (
-              <div key={m.id} className="pt-2">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <span className="font-bold text-gray-900 text-sm">Assistant</span>
-                  <span className="text-gray-400 font-mono text-xs">{m.timestamp}</span>
-                </div>
-                <div className="text-gray-900 text-sm leading-relaxed font-sans bg-white p-4 rounded-lg border border-gray-200/80 shadow-2xs">
+              <div key={m.id} className="flex max-w-[80%] flex-col items-start gap-1.5">
+                <div className="text-base leading-relaxed font-sans text-gray-900">
                   <Markdown text={m.content ?? ''} />
                 </div>
+                <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
               </div>
             );
           }
@@ -218,7 +232,7 @@ export const Transcript: React.FC = () => {
             return (
               <div
                 key={m.id}
-                className={`rounded border px-3 py-1.5 font-mono text-[11px] leading-relaxed ${
+                className={`max-w-[85%] rounded border px-3 py-1.5 font-mono text-[11px] leading-relaxed ${
                   warning
                     ? 'border-amber-200 bg-amber-50/70 text-amber-800'
                     : 'border-gray-200 bg-gray-50/70 text-gray-600'

@@ -58,6 +58,7 @@ def _config_result(**overrides: object) -> dict[str, object]:
         "can_toggle_mcp_global": False,
         "project_thinking_level": "low",
         "can_set_project_thinking": True,
+        "context_window": None,
     }
     data.update(overrides)
     return data

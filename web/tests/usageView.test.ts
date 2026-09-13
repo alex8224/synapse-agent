@@ -5,16 +5,92 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  cacheHitRate,
   compactCount,
+  contextOccupancy,
   EMPTY_USAGE,
+  formatSessionUsage,
   formatUsageMetrics,
   fullCount,
+  parseSessionUsage,
   parseUsagePayload,
+  sessionUsageSegments,
   turnStatSegments,
   usageSegments,
   usageTooltip,
   type UsageView,
 } from '../src/stores/usageView.ts';
+
+test('parseSessionUsage reads the session view totals and drops an unused session', () => {
+  assert.deepEqual(
+    parseSessionUsage({ input_tokens: 20327, output_tokens: 93, cache_tokens: 19840 }),
+    { input: 20327, output: 93, cache: 19840 },
+  );
+  // All zeros is "this session has not run a turn yet", not a real total.
+  assert.equal(parseSessionUsage({ input_tokens: 0, output_tokens: 0, cache_tokens: 0 }), null);
+  assert.equal(parseSessionUsage(null), null);
+  assert.equal(parseSessionUsage(undefined), null);
+  assert.equal(parseSessionUsage('nope'), null);
+});
+
+test('the bar prints two unlabelled groups: totals, then context/window share', () => {
+  assert.deepEqual(sessionUsageSegments(null), []);
+  const segments = sessionUsageSegments(
+    { input: 20327, output: 93, cache: 19840 },
+    45000,
+    200000,
+  );
+  assert.equal(segments.length, 2);
+  // The TUI's order: input/cache/output, then context occupancy and how much of
+  // the model window it takes.  Raw numbers, no label, no tooltip.
+  assert.deepEqual(
+    segments.map((segment) => [segment.label, segment.value]),
+    [
+      ['', '20.3k/19.8k/93/97.6%'],
+      ['', '45.0k/23%'],
+    ],
+  );
+  assert.equal(formatSessionUsage({ input: 20327, output: 93, cache: 19840 }), 'in 20,327 · cache 19,840 · out 93');
+  assert.equal(formatSessionUsage(null), '-');
+});
+
+test('the context group degrades to whichever half is known', () => {
+  // Context but no window: the count is printed, the share is not invented.
+  assert.equal(sessionUsageSegments(null, 1234)[0].value, '1.2k');
+  assert.equal(sessionUsageSegments(null, 1234, 100000)[0].value, '1.2k/1%');
+  // Neither: nothing to print, so the placeholder keeps its job.
+  assert.deepEqual(sessionUsageSegments(null, 0), []);
+});
+
+test('the cache hit rate is appended to the totals, and omitted when unknown', () => {
+  assert.equal(cacheHitRate(null), null);
+  assert.equal(cacheHitRate({ input: 0, output: 5, cache: 0 }), null);
+  assert.equal(cacheHitRate({ input: 20327, output: 93, cache: 19840 }), '97.6%');
+  // No input to divide by: three numbers, no trailing placeholder.
+  assert.equal(sessionUsageSegments({ input: 0, output: 5, cache: 0 })[0].value, '0/0/5');
+});
+
+test('the context occupancy falls back to the last call input', () => {
+  // The runtime never sends `context_size`, so the last call's prompt is the
+  // occupancy — the same quantity the TUI labels its context with.
+  assert.equal(contextOccupancy(null), null);
+  assert.equal(contextOccupancy({ ...EMPTY_USAGE, lastInput: 20978 }), 20978);
+  // An explicit metric wins when a runtime does send one.
+  assert.equal(contextOccupancy({ ...EMPTY_USAGE, contextSize: 45000, lastInput: 20978 }), 45000);
+  assert.equal(contextOccupancy(EMPTY_USAGE), null);
+});
+
+test('the usage tooltip leads with the session totals when they exist', () => {
+  const usage: UsageView = { ...EMPTY_USAGE, turnInput: 10, turnOutput: 2 };
+  assert.equal(usageTooltip(usage), '本轮 输入 10 · 输出 2');
+  const withSession = usageTooltip(usage, { input: 20327, output: 93, cache: 19840 });
+  assert.equal(
+    withSession.split('\n')[0],
+    '本会话累计 in 20,327 / cache 19,840 / out 93',
+  );
+  // The session line survives with no turn telemetry at all (idle bar).
+  assert.equal(usageTooltip(null, { input: 5, output: 1, cache: 0 }), '本会话累计 in 5 / cache 0 / out 1');
+});
 
 test('compactCount scales token counts', () => {
   assert.equal(compactCount(0), '0');
@@ -223,7 +299,7 @@ test('usageTooltip carries the compressed numbers including the cache share', ()
     modelCalls: 2,
   }).split('\n');
   assert.deepEqual(lines, [
-    '输入 20,612 · 输出 752',
+    '本轮 输入 20,612 · 输出 752',
     '缓存 19,712（占输入 95.6%）',
     '上下文 45,000',
     '速率 327.3 tok/s（估算）',
@@ -235,5 +311,5 @@ test('usageTooltip carries the compressed numbers including the cache share', ()
 
 test('usageTooltip omits a cache line when nothing was cached', () => {
   const lines = usageTooltip({ ...EMPTY_USAGE, turnOutput: 5 }).split('\n');
-  assert.deepEqual(lines, ['输入 0 · 输出 5']);
+  assert.deepEqual(lines, ['本轮 输入 0 · 输出 5']);
 });

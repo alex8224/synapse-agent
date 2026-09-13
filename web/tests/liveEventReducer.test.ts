@@ -107,6 +107,37 @@ test('reasoning deltas accumulate into one thought and complete with a duration'
   assert.equal(s.messages[0].duration, '0.0s');
 });
 
+test('each reasoning step of a turn gets its own thought fold', () => {
+  let s = apply(baseState(), event('reasoning_delta', { text: 'step one' }));
+  s = apply(s, event('reasoning_completed', { text: 'step one' }));
+  // the tool call of the first step
+  s = apply(s, event('tool_started', toolItem()));
+  s = apply(s, event('reasoning_delta', { text: 'step two' }));
+  s = apply(s, event('reasoning_completed', { text: 'step two' }));
+
+  assert.deepEqual(
+    s.messages.map((m) => m.type),
+    ['thought', 'tool_group', 'thought'],
+    'the second step must not be merged into the first fold',
+  );
+  const thoughts = s.messages.filter((m) => m.type === 'thought');
+  // Neither completion may overwrite the other segment's text.
+  assert.deepEqual(thoughts.map((m) => m.content), ['step one', 'step two']);
+  assert.deepEqual(thoughts.map((m) => m.duration), ['0.0s', '0.0s']);
+});
+
+test('a step boundary does not require a completion event', () => {
+  let s = apply(baseState(), event('reasoning_delta', { text: 'first' }));
+  // The model goes straight to a tool call, so the segment ends with the row
+  // that follows it rather than with `reasoning_completed`.
+  s = apply(s, event('tool_started', toolItem()));
+  s = apply(s, event('reasoning_delta', { text: 'second' }));
+
+  const thoughts = s.messages.filter((m) => m.type === 'thought');
+  assert.equal(thoughts.length, 2);
+  assert.deepEqual(thoughts.map((m) => m.content), ['first', 'second']);
+});
+
 test('answer_completed replaces the streamed answer with the authoritative text', () => {
   let s = apply(baseState(), event('answer_delta', { text: 'partial' }));
   s = apply(s, event('answer_completed', { text: 'the full answer' }));

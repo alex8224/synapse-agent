@@ -4238,6 +4238,17 @@
           "required": true,
           "ts_type": "boolean",
           "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "context_window",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
         }
       ],
       "origin": "python",

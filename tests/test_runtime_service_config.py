@@ -159,6 +159,7 @@ def test_view_wire_projection_is_whitelisted_json() -> None:
         "can_toggle_mcp_global": False,
         "project_thinking_level": None,
         "can_set_project_thinking": False,
+        "context_window": None,
     }
     # A view can never carry arbitrary settings keys, so a secret sentinel that
     # exists only on the source settings object cannot leak into JSON.
@@ -202,14 +203,21 @@ class FakeRegistry:
         default: str,
         levels: list[str] | None = None,
         default_thinking: str | None = None,
+        context_window: int | None = None,
     ) -> None:
         self.names = names
         self.default = default
         self.levels = levels or ["off", "minimal", "low", "medium", "high", "max"]
         self.default_thinking = default_thinking
+        self.context_window = context_window
 
     def list_names(self) -> list[str]:
         return list(self.names)
+
+    def get(self, name: str | None = None) -> SimpleNamespace:
+        """Resolve one profile; the window is what the occupancy share needs."""
+        del name
+        return SimpleNamespace(context_window=self.context_window)
 
     def allowed_thinking_levels(self, name: str | None = None) -> list[str]:
         del name
@@ -242,7 +250,7 @@ def _view_of(
     monkeypatch.setattr(
         config_source,
         "registry_from_settings",
-        lambda _s: FakeRegistry(["openai:a", "openai:b"], "openai:b"),
+        lambda _s: FakeRegistry(["openai:a", "openai:b"], "openai:b", context_window=200000),
     )
     monkeypatch.setattr(
         config_source,
@@ -271,6 +279,8 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
     # default stays unknown instead of echoing the session's level.
     assert view.project_thinking_level is None
     assert view.can_set_project_thinking is False
+    # The selected model's window is what the bar divides the context by.
+    assert view.context_window == 200000
     assert len(view.mcp_servers) == 1
     mcp = view.mcp_servers[0]
     assert (mcp.name, mcp.transport, mcp.enabled, mcp.tool_prefix) == (
@@ -296,6 +306,7 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
         "can_toggle_mcp_global",
         "project_thinking_level",
         "can_set_project_thinking",
+        "context_window",
     }
 
 

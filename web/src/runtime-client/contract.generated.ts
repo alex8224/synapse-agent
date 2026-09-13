@@ -1054,6 +1054,10 @@ export interface RuntimeConfigView {
    * python_default_kind=value python_default=false
    */
   can_set_project_thinking: boolean;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  context_window: number | null;
 }
 
 /**

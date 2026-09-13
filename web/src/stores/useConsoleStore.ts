@@ -48,8 +48,10 @@ import {
 import type { McpRuntimeServerState } from './mcpRuntimeView.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
 import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
+import { isTurnTerminalKind } from './liveEventReducer.ts';
 import type { PendingApproval } from './liveEventReducer.ts';
 import type { UsageView } from './usageView.ts';
+import { parseSessionUsage, type SessionUsage } from './usageView.ts';
 import {
   AttachmentUploadCancelledError,
   readUploadSource,
@@ -318,8 +320,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         // Stale event from a subscription that was replaced while switching sessions.
         return;
       }
+      const buffering = store.getState().historyLoading || activeId === null;
       store.setState((s) => {
-        if (s.historyLoading || activeId === null) {
+        if (buffering) {
           // History page not yet applied (or watch handshake in flight): hold the
           // event and merge it after the snapshot lands so nothing is dropped and
           // history is never over-written by live deltas. The buffer is bounded:
@@ -335,6 +338,10 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         }
         return reduceRuntimeEvent(s, event);
       });
+      // A finished turn changes the session's cumulative totals.  Folded here
+      // rather than inside the updater (which must stay a pure reduction), and
+      // skipped while buffering because the replay folds it instead.
+      if (!buffering && isTurnTerminalKind(event.kind)) foldTurnUsage(event.payload);
     },
   });
 
@@ -378,6 +385,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     pendingApproval: null,
     activity: null,
     usage: null,
+    sessionUsage: null,
     metricsLabel: '',
     goal: null,
     goalBusy: false,
@@ -738,6 +746,21 @@ interface ConsoleStore {
   activity: ActivityView | null;
   /** Latest `usage_updated` metrics, also rendered as `metricsLabel`. */
   usage: UsageView | null;
+  /**
+   * Session-cumulative token totals, from `runtime.session.open`'s session view.
+   *
+   * Distinct from `usage` on purpose: `usage` is the *current turn's* telemetry
+   * (speed, steps, TTFT), while this is what the whole conversation has spent so
+   * far — the number the TUI prints in its bottom bar.
+   */
+  sessionUsage: SessionUsage | null;
+  /**
+   * Selected model's input context size (`runtime.config.get`), or `null`.
+   *
+   * The denominator of the context-occupancy share; without it the bar prints
+   * the bare token count rather than inventing a fraction.
+   */
+  contextWindow: number | null;
   /** Current session's long-running goal, or null when it has none. */
   goal: SessionGoalView | null;
   /** True while a goal write (`runtime.session.goal.*`) is in flight. */
@@ -963,7 +986,43 @@ function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
   store.setState({ liveEventBuffer: [] });
   for (const entry of pending) {
     store.setState((s) => reduceRuntimeEvent(s, entry.event));
+    // A finished turn changed the session's cumulative totals.
+    if (isTurnTerminalKind(entry.event.kind)) foldTurnUsage(entry.event.payload);
   }
+}
+
+/**
+ * Add one finished turn's tokens to the session totals.
+ *
+ * The terminal payload carries that turn's own `input/output/cache` counts, and
+ * the runtime accumulates exactly those in its own settle step, so folding them
+ * here keeps the bar exact.  Re-asking `runtime.session.open` at this point does
+ * *not* work: the wire event is emitted before the runtime has folded the turn
+ * in, so the reply still carries the pre-turn totals.  The authoritative read
+ * happens on attach (and again at the next submit), so a session used elsewhere
+ * is re-synced rather than drifting.
+ */
+function foldTurnUsage(payload: unknown): void {
+  if (payload === null || typeof payload !== 'object') return;
+  const record = payload as Record<string, unknown>;
+  const count = (key: string): number => {
+    const value = record[key];
+    return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0;
+  };
+  const input = count('input_tokens');
+  const output = count('output_tokens');
+  const cache = count('cache_tokens');
+  if (input === 0 && output === 0 && cache === 0) return;
+  useConsoleStore.setState((s) => {
+    const base = s.sessionUsage ?? { input: 0, output: 0, cache: 0 };
+    return {
+      sessionUsage: {
+        input: base.input + input,
+        output: base.output + output,
+        cache: base.cache + cache,
+      },
+    };
+  });
 }
 
 /**
@@ -1224,6 +1283,8 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     pendingApproval: null,
     activity: null,
     usage: null,
+    // The previous session's totals must not linger while this one loads.
+    sessionUsage: null,
     metricsLabel: '',
     goal: null,
     goalBusy: false,
@@ -1251,6 +1312,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
         runtimeStatus: opened.view.status === 'running' ? 'running' : 'idle',
         activeTurnId: opened.view.active_turn_id ?? null,
         modelName: opened.view.active_model || opened.view.model || store.getState().modelName,
+        // The session view carries the runtime's cumulative totals; the console
+        // never accumulates them itself, so a reload cannot lose history.
+        sessionUsage: parseSessionUsage(opened.view.usage),
       });
     }
     // Start watching at the session's current sequence: no full replay of
@@ -1705,6 +1769,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         if (opened.view) {
           set({
             modelName: opened.view.active_model || opened.view.model || get().modelName,
+            sessionUsage: parseSessionUsage(opened.view.usage),
           });
         }
         const watch = await client.watchEvents(nextSession, opened.view?.latest_sequence ?? 0);
@@ -2250,6 +2315,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   runtimeStatus: 'idle',
   activity: null,
   usage: null,
+  sessionUsage: null,
+  contextWindow: null,
   goal: null,
   goalBusy: false,
   goalActionError: null,
@@ -2722,6 +2789,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     set({ runtimeStatus: 'running' });
     try {
       const opened = await client.openSession(currentSession);
+      // Re-sync the authoritative totals here: this call is already being made,
+      // and it is what corrects a session that was also used elsewhere.
+      set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
       if (!get().activeSubscriptionId) {
         const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
         set({ activeSubscriptionId: watch.subscription_id });

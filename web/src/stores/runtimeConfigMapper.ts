@@ -40,6 +40,8 @@ export interface RuntimeConfigStatePatch {
   /** The project's own default level (never the session's rebind). */
   projectThinkingLevel?: string | null;
   canSetProjectThinking?: boolean;
+  /** Selected model's input context size; `null` when its profile has none. */
+  contextWindow?: number | null;
 }
 
 /** Human label for the MCP footer, derived only from real server states. */
@@ -86,6 +88,9 @@ export function mapRuntimeConfig(
     // the console then shows the project default as unknown and read-only.
     projectThinkingLevel: view.project_thinking_level ?? null,
     canSetProjectThinking: view.can_set_project_thinking ?? false,
+    // A peer that predates the field omits it: the console then renders the bare
+    // context count instead of a fraction, never a guessed window.
+    contextWindow: view.context_window ?? null,
   };
   if (!opts.preserveModel) {
     patch.modelName = view.current_model;

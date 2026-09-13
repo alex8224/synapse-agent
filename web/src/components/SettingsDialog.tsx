@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { cacheHitRate, formatSessionUsage } from '../stores/usageView.ts';
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -64,7 +65,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     toggleMcpServer,
     canToggleMcpGlobal,
     usage,
-    metricsLabel,
+    sessionUsage,
     logoutConsole,
   } = useConsoleStore();
 
@@ -259,7 +260,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
         </Section>
 
         <Section title="用量">
-          <Row label="本会话累计" value={metricsLabel || '-'} />
+          {/* The session's own totals, not `metricsLabel`: that label is this
+              turn's telemetry, so the row used to contradict its own name. */}
+          <Row label="本会话累计" value={formatSessionUsage(sessionUsage)} />
           <Row
             label="最近一次调用"
             value={usage ? `in ${usage.lastInput} / out ${usage.lastOutput}` : '-'}
@@ -268,6 +271,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
             label="上下文"
             value={usage?.contextSize === null || usage === null ? '-' : usage.contextSize}
           />
+          <Row label="缓存命中率" value={cacheHitRate(sessionUsage) ?? '-'} />
         </Section>
 
         <div className="mt-5 flex justify-end border-t border-gray-100 pt-3">

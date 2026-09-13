@@ -25,7 +25,6 @@ const VISIBLE_SESSIONS = 5;
 export const SideBar: React.FC = () => {
   const {
     isSidebarCollapsed,
-    toggleSidebar,
     projects,
     activeProjectId,
     expandedProjectIds,
@@ -100,16 +99,10 @@ export const SideBar: React.FC = () => {
 
   if (isSidebarCollapsed) {
     // Collapsed to a minimal rail: the workspace stays reachable instead of
-    // disappearing (expand, new session, search, and the loaded count).
+    // disappearing (new session, search, and the loaded count).  Expanding is
+    // the top bar's toggle (or Ctrl+B) — a second toggle here was a duplicate.
     return (
       <nav className="bg-[#f8f9fa] border-r border-[#e5e7eb] h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
-        <button
-          onClick={toggleSidebar}
-          title="展开侧栏 (Ctrl+B)"
-          className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[18px]">dock_to_right</span>
-        </button>
         <button
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
