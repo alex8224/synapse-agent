@@ -32,6 +32,14 @@ const PINNED_TO_BOTTOM_PX = 32;
 const USER_SCROLL_SETTLE_MS = 150;
 
 /**
+ * How close to the top of the transcript counts as "reached the top", in pixels.
+ *
+ * Reaching it loads the next page of earlier history, so the button above the
+ * oldest loaded turn is a fallback rather than the only way in.
+ */
+const EARLIER_HISTORY_TRIGGER_PX = 48;
+
+/**
  * One transcript row.
  *
  * Memoized on the message object: folding streamed text rebuilds the transcript
@@ -275,6 +283,13 @@ export const Transcript: React.FC = () => {
    */
   const userScrolling = useRef(false);
 
+  // Stable identity: the scroll listener below triggers the same guarded path the
+  // button uses, and a changing callback would re-attach that listener.
+  const handleLoadEarlier = useCallback(() => {
+    skipAutoScroll.current = true;
+    loadEarlierHistory();
+  }, [loadEarlierHistory]);
+
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (scroller === null) return;
@@ -297,19 +312,34 @@ export const Transcript: React.FC = () => {
         userScrolling.current = false;
       }, USER_SCROLL_SETTLE_MS);
     };
+    /**
+     * Load the next page of earlier history once the reader reaches the top.
+     *
+     * The gates are read from the store rather than closed over, so the listener
+     * never acts on a stale `historyHasMore` / `historyLoading`; the store refuses
+     * a load that is already running or exhausted anyway.
+     */
+    const loadEarlierAtTop = () => {
+      if (scroller.scrollTop > EARLIER_HISTORY_TRIGGER_PX) return;
+      const { historyHasMore, historyLoading } = useConsoleStore.getState();
+      if (!historyHasMore || historyLoading) return;
+      handleLoadEarlier();
+    };
     track();
     scroller.addEventListener('wheel', beginUserScroll, { passive: true });
     scroller.addEventListener('touchstart', beginUserScroll, { passive: true });
     scroller.addEventListener('touchmove', beginUserScroll, { passive: true });
     scroller.addEventListener('scroll', track, { passive: true });
+    scroller.addEventListener('scroll', loadEarlierAtTop, { passive: true });
     return () => {
       if (settle !== null) clearTimeout(settle);
       scroller.removeEventListener('wheel', beginUserScroll);
       scroller.removeEventListener('touchstart', beginUserScroll);
       scroller.removeEventListener('touchmove', beginUserScroll);
       scroller.removeEventListener('scroll', track);
+      scroller.removeEventListener('scroll', loadEarlierAtTop);
     };
-  }, []);
+  }, [handleLoadEarlier]);
 
   useEffect(() => {
     if (skipAutoScroll.current) {
@@ -326,11 +356,6 @@ export const Transcript: React.FC = () => {
     // The view is at the bottom now, whatever moved it there in between.
     pinnedToBottom.current = true;
   }, [messages]);
-
-  const handleLoadEarlier = () => {
-    skipAutoScroll.current = true;
-    loadEarlierHistory();
-  };
 
   /**
    * Expand/collapse one fold.
@@ -390,6 +415,9 @@ export const Transcript: React.FC = () => {
 
         {historyHasMore && messages.length > 0 && (
           <div className="flex justify-center pt-1">
+            {/* Reaching the top loads this page on its own (see the scroll
+                listener); the button stays as the manual path and as the "there is
+                more" hint. */}
             <button
               onClick={handleLoadEarlier}
               disabled={historyLoading}

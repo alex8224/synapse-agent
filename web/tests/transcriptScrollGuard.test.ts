@@ -100,7 +100,28 @@ test('opening a fold never scrolls the transcript to the bottom', () => {
 
 test('prepending an earlier page keeps its own guard', () => {
   assert.ok(
-    /handleLoadEarlier = \(\) => \{\s*skipAutoScroll\.current = true;/.test(transcript),
+    /handleLoadEarlier = useCallback\(\(\) => \{\s*skipAutoScroll\.current = true;/.test(transcript),
     'loading an earlier page must not yank the view to the bottom either',
   );
+});
+
+test('reaching the top loads the earlier page without a click', () => {
+  assert.ok(
+    transcript.includes('EARLIER_HISTORY_TRIGGER_PX'),
+    'the top zone must be a named constant, not a literal',
+  );
+  assert.ok(
+    /scrollTop > EARLIER_HISTORY_TRIGGER_PX/.test(transcript),
+    'only the top zone may trigger a load',
+  );
+  assert.ok(
+    /historyHasMore, historyLoading \} = useConsoleStore\.getState\(\)/.test(transcript),
+    'the trigger must read the gates from the store instead of closing over them',
+  );
+  assert.ok(
+    transcript.includes('handleLoadEarlier();'),
+    'the trigger must reuse the guarded handler, which raises skipAutoScroll',
+  );
+  // The button stays as the manual path (and as the "there is more" hint).
+  assert.ok(transcript.includes('onClick={handleLoadEarlier}'), 'the button must keep working');
 });
