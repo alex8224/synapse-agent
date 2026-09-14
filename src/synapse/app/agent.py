@@ -45,6 +45,7 @@ from synapse.runtime.subagents import (
     build_default_subagents_with_display,
     ensure_user_subagents,
 )
+from synapse.runtime.summarization_tuning import apply_compaction_tuning
 from synapse.settings import Settings
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tools import (
@@ -688,6 +689,11 @@ def build_coding_agent(
             debug=settings.debug,
             name="coding-agent",
         )
+    # deepagents wires the summarization middleware with fraction-based
+    # thresholds evaluated by a token estimator that mis-prices inline media;
+    # see synapse.runtime.summarization_tuning for the measurements.
+    for note in apply_compaction_tuning(agent):
+        logger.info("%s", note)
     agent._coding_model_spec = model_spec  # type: ignore[attr-defined]
     agent._coding_model_profile = selected_profile.name  # type: ignore[attr-defined]
     agent._coding_checkpointer = saver  # type: ignore[attr-defined]

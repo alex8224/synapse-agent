@@ -132,6 +132,7 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
     from synapse.runtime.filesystem_tool_prompt_middleware import (
         build_filesystem_tool_prompt_middleware,
     )
+    from synapse.runtime.image_window_middleware import build_image_window_middleware
     from synapse.runtime.session_header_middleware import (
         build_session_header_middleware,
     )
@@ -141,6 +142,9 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
         # Publish the active thread id so the httpx layer can stamp
         # X-Session-ID / Session-Id on every model request (gateway affinity).
         build_session_header_middleware(),
+        # Prune stale images before anything else reads the request: screenshot
+        # histories otherwise dominate the wire payload on every turn.
+        build_image_window_middleware(model=context.model),
         build_agent_md_middleware(context.project_root),
         build_filesystem_tool_prompt_middleware(context.model_request_excluded_tools),
         build_describe_image_middleware(
