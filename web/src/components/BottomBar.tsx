@@ -150,7 +150,7 @@ export const BottomBar: React.FC = () => {
         the bar covered the sidebar's own footer (its settings entry), leaving a
         strip of it unreachable.
       */}
-      <footer className="material-chrome grid h-status w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-line px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
+      <footer className="material-chrome grid h-status w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-line px-3 font-numeric text-[11px] text-gray-500 shrink-0 select-none">
         {/* Left: activity + configuration */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span

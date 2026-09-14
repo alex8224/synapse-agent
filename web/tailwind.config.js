@@ -148,6 +148,9 @@ export default {
         "label-caps": ["var(--font-ui)"],
         "headline-lg": ["var(--font-ui)"],
         "headline-md": ["var(--font-ui)"],
+        // Telemetry: Fluent sets numerals in Bahnschrift, which keeps the status
+        // strip's digits aligned without a monospace face.
+        numeric: ["var(--font-numeric)"],
       }
     },
   },

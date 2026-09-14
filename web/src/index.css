@@ -109,6 +109,7 @@
        separate roles: the shipped palette reads the shell in Inter and everything
        else in the system UI font, exactly as before. */
     --font-body: Inter, sans-serif;
+    --font-numeric: 'JetBrains Mono', ui-monospace, monospace;
     --chrome-h: 2.5rem;
     --status-h: 1.75rem;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
@@ -126,6 +127,7 @@
     --motion-normal: 200ms;
     --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
     /* The focus ring is drawn once, globally, from the accent role. */
+    --focus-ring: 37 99 235;
     --focus-ring-width: 2px;
     --focus-ring-offset: 2px;
   }
@@ -139,24 +141,27 @@
     way when the design says so.
   */
   [data-theme='fluent-light'] {
-    color-scheme: light;
-    --f-canvas: 250 250 250;
-    --f-card: 255 255 255;
-    --f-sunken: 245 245 245;
-    --f-line: 224 224 224;
-    --f-line-strong: 209 209 209;
-    --f-fg-1: 36 36 36;
-    --f-fg-2: 66 66 66;
-    --f-fg-3: 97 97 97;
-    --f-fg-4: 117 117 117;
-    --f-brand-soft: 235 243 252;
-    --f-brand-soft-2: 207 228 250;
-    --f-brand-icon: 40 134 222;
-    --f-brand: 15 108 189;
-    --f-brand-strong: 17 94 163;
+    /* Fluent 2 web tokens, taken from @fluentui/tokens (webLightTheme).  Each
+       line names the token it comes from, so the palette can be re-checked
+       against the source instead of being remembered. */
+    --f-canvas: 250 250 250;            /* colorNeutralBackground2 */
+    --f-card: 255 255 255;              /* colorNeutralBackground1 */
+    --f-sunken: 245 245 245;            /* colorNeutralBackground3 */
+    --f-line: 224 224 224;              /* colorNeutralStroke2 */
+    --f-line-strong: 209 209 209;       /* colorNeutralStroke1 */
+    --f-fg-1: 36 36 36;              /* colorNeutralForeground1 */
+    --f-fg-2: 66 66 66;              /* colorNeutralForeground2 */
+    --f-fg-3: 97 97 97;              /* colorNeutralForeground3 */
+    --f-fg-4: 112 112 112;              /* colorNeutralForeground4 */
+    --f-brand-soft: 235 243 252;        /* colorBrandBackground2 */
+    --f-brand-soft-2: 235 243 252;      /* colorBrandBackground2 */
+    --f-brand-icon: 17 94 163;        /* colorBrandForeground2 */
+    --f-brand: 15 108 189;             /* colorBrandBackground */
+    --f-brand-strong: 17 94 163;      /* colorBrandBackgroundHover */
+    --f-brand-text: 15 108 189;        /* colorBrandForeground1 (text/icons, focus ring) */
 
     --gray-50: var(--f-canvas);
-    --gray-100: var(--f-sunken);
+    --gray-100: 245 245 245;            /* colorNeutralBackground1Hover */
     --gray-200: var(--f-line);
     --gray-300: var(--f-line-strong);
     --gray-400: var(--f-fg-4);
@@ -169,7 +174,7 @@
     --blue-50: var(--f-brand-soft);
     --blue-100: var(--f-brand-soft-2);
     --blue-400: var(--f-brand-icon);
-    --blue-500: var(--f-brand);
+    --blue-500: var(--f-brand-text);
     --blue-600: var(--f-brand);
     --blue-700: var(--f-brand-strong);
 
@@ -178,26 +183,58 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --accent: var(--f-brand);
-    --on-accent: 255 255 255;
-    --radius-card: 8px;
-    --radius-control: 4px;
-    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
-    --font-body: 'Segoe UI Variable Text', 'Segoe UI', Inter, sans-serif;
-    --font-mono: Consolas, 'Cascadia Mono', ui-monospace, monospace;
-    --chrome-h: 3rem;
-    --status-h: 2rem;
-    /* Fluent's elevation is a soft, wide, low-opacity shadow rather than a tight
-       dark one. */
-    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06), 0 2px 4px rgb(0 0 0 / 0.04);
-    --shadow-flyout: 0 8px 16px rgb(0 0 0 / 0.14), 0 0 2px rgb(0 0 0 / 0.12);
-    /* Acrylic: the chrome and flyouts sit on a blurred, tinted backdrop. */
+    --focus-ring: 15 108 189;       /* colorBrandForeground1 */
+    --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
+    --danger: 177 14 28;              /* colorStatusDangerForeground1 */
+    --radius-card: 8px;             /* borderRadiusXLarge */
+    --radius-control: 4px;          /* borderRadiusMedium */
+    --font-ui: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont,
+      Roboto, 'Helvetica Neue', sans-serif;   /* fontFamilyBase */
+    --font-body: var(--font-ui);
+    --font-mono: Consolas, 'Courier New', Courier, monospace;   /* fontFamilyMonospace */
+    --font-numeric: Bahnschrift, 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto,
+      'Helvetica Neue', sans-serif;   /* fontFamilyNumeric */
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
+    --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
     --material-chrome: rgb(var(--surface) / 0.8);
     --material-flyout: rgb(var(--surface) / 0.85);
     --material-blur: blur(30px);
-    /* Fluent motion: faster, on its own ease-out curve. */
-    --motion-fast: 150ms;
-    --motion-normal: 250ms;
-    --motion-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
+    --motion-fast: 150ms;           /* durationFast */
+    --motion-normal: 200ms;         /* durationNormal */
+    --motion-ease: cubic-bezier(0, 0, 0, 1);   /* curveDecelerateMid */
+    --chrome-h: 3rem;             /* Fluent desktop density */
+    --status-h: 2rem;
+
+    /* Status palettes: danger / warning / success from Fluent's own ramps. */
+    --red-50: 253 243 244;              /* colorStatusDangerBackground1 */
+    --red-100: 241 187 188;             /* colorPaletteRedBackground2 */
+    --red-200: 238 172 178;             /* colorStatusDangerBorder1 */
+    --red-300: 209 52 56;             /* colorPaletteRedBorder2 */
+    --red-400: 188 47 50;             /* colorPaletteRedForeground1 */
+    --red-500: 197 15 31;             /* colorStatusDangerBackground3 */
+    --red-600: 188 47 50;             /* colorPaletteRedForeground1 */
+    --red-700: 117 29 31;             /* colorPaletteRedForeground2 */
+    --red-800: 117 29 31;
+    --red-900: 117 29 31;
+    --amber-50: 255 249 245;            /* colorStatusWarningBackground1 */
+    --amber-100: 244 191 171;           /* colorPaletteDarkOrangeBackground2 */
+    --amber-200: 253 207 180;           /* colorStatusWarningBorder1 */
+    --amber-300: 218 59 1;           /* colorPaletteDarkOrangeBorder2 */
+    --amber-400: 196 53 1;           /* colorPaletteDarkOrangeForeground1 */
+    --amber-500: 218 59 1;           /* colorPaletteDarkOrangeBackground3 */
+    --amber-600: 188 75 9;           /* colorStatusWarningForeground1 */
+    --amber-700: 122 33 1;           /* colorPaletteDarkOrangeForeground2 */
+    --amber-800: 122 33 1;
+    --amber-900: 122 33 1;
+    --green-50: 241 250 241;            /* colorStatusSuccessBackground1 */
+    --green-100: 159 216 159;           /* colorPaletteGreenBackground2 */
+    --green-500: 16 124 16;           /* colorPaletteGreenBackground3 */
+    --green-600: 14 112 14;           /* colorStatusSuccessForeground1 */
+    --green-700: 9 69 9;           /* colorPaletteGreenForeground2 */
+    --green-800: 9 69 9;
+    --emerald-500: 16 124 16;
+    --emerald-600: 14 112 14;
+    --emerald-700: 9 69 9;
   }
 
   /*
@@ -209,24 +246,25 @@
     surface.
   */
   [data-theme='fluent-dark'] {
-    color-scheme: dark;
-    --f-canvas: 31 31 31;
-    --f-card: 41 41 41;
-    --f-sunken: 51 51 51;
-    --f-line: 82 82 82;
-    --f-line-strong: 102 102 102;
-    --f-fg-1: 255 255 255;
-    --f-fg-2: 224 224 224;
-    --f-fg-3: 199 199 199;
-    --f-fg-4: 158 158 158;
-    --f-brand-soft: 8 35 56;
-    --f-brand-soft-2: 15 58 92;
-    --f-brand-icon: 98 171 245;
-    --f-brand: 71 158 245;
-    --f-brand-strong: 40 134 222;
+    /* Fluent 2 web tokens, taken from @fluentui/tokens (webDarkTheme). */
+    --f-canvas: 31 31 31;            /* colorNeutralBackground2 */
+    --f-card: 41 41 41;              /* colorNeutralBackground1 */
+    --f-sunken: 20 20 20;            /* colorNeutralBackground3 */
+    --f-line: 82 82 82;              /* colorNeutralStroke2 */
+    --f-line-strong: 102 102 102;       /* colorNeutralStroke1 */
+    --f-fg-1: 255 255 255;              /* colorNeutralForeground1 */
+    --f-fg-2: 214 214 214;              /* colorNeutralForeground2 */
+    --f-fg-3: 173 173 173;              /* colorNeutralForeground3 */
+    --f-fg-4: 153 153 153;              /* colorNeutralForeground4 */
+    --f-brand-soft: 8 35 56;        /* colorBrandBackground2 */
+    --f-brand-soft-2: 8 35 56;
+    --f-brand-icon: 98 171 245;        /* colorBrandForeground2 */
+    --f-brand: 17 94 163;             /* colorBrandBackground */
+    --f-brand-strong: 15 108 189;      /* colorBrandBackgroundHover */
+    --f-brand-text: 71 158 245;        /* colorBrandForeground1 */
 
     --gray-50: var(--f-canvas);
-    --gray-100: var(--f-sunken);
+    --gray-100: 61 61 61;            /* colorNeutralBackground1Hover */
     --gray-200: var(--f-line);
     --gray-300: var(--f-line-strong);
     --gray-400: var(--f-fg-4);
@@ -239,7 +277,7 @@
     --blue-50: var(--f-brand-soft);
     --blue-100: var(--f-brand-soft-2);
     --blue-400: var(--f-brand-icon);
-    --blue-500: var(--f-brand);
+    --blue-500: var(--f-brand-text);
     --blue-600: var(--f-brand);
     --blue-700: var(--f-brand-strong);
 
@@ -248,62 +286,57 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --accent: var(--f-brand);
-    --on-accent: 8 19 31;
+    --focus-ring: 71 158 245;       /* colorBrandForeground1 */
+    --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
+    --danger: 220 98 109;              /* colorStatusDangerForeground1 */
     --radius-card: 8px;
     --radius-control: 4px;
-    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
-    --font-body: 'Segoe UI Variable Text', 'Segoe UI', Inter, sans-serif;
-    --font-mono: Consolas, 'Cascadia Mono', ui-monospace, monospace;
-    --chrome-h: 3rem;
-    --status-h: 2rem;
-    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
-    --shadow-flyout: 0 8px 16px rgb(0 0 0 / 0.5), 0 0 2px rgb(0 0 0 / 0.4);
+    --font-ui: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont,
+      Roboto, 'Helvetica Neue', sans-serif;
+    --font-body: var(--font-ui);
+    --font-mono: Consolas, 'Courier New', Courier, monospace;
+    --font-numeric: Bahnschrift, 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto,
+      'Helvetica Neue', sans-serif;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24), 0 0 2px rgba(0, 0, 0, 0.28);
+    --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.24), 0 0 2px rgba(0, 0, 0, 0.28);
     --material-chrome: rgb(var(--surface) / 0.8);
     --material-flyout: rgb(var(--surface) / 0.85);
     --material-blur: blur(30px);
     --motion-fast: 150ms;
-    --motion-normal: 250ms;
-    --motion-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
+    --motion-normal: 200ms;
+    --motion-ease: cubic-bezier(0, 0, 0, 1);
+    --chrome-h: 3rem;             /* Fluent desktop density */
+    --status-h: 2rem;
 
-    /* Banners and badges: dark tints behind, legible strong steps in front. */
-    --red-50: 42 18 21;
-    --red-100: 59 26 28;
-    --red-200: 92 43 46;
-    --red-300: 142 78 82;
-    --red-400: 217 112 122;
-    --red-500: 241 112 123;
-    --red-600: 241 112 123;
-    --red-700: 248 160 166;
-    --red-800: 251 196 200;
-    --red-900: 253 231 233;
-    --amber-50: 37 26 0;
-    --amber-100: 61 44 0;
-    --amber-200: 92 68 0;
-    --amber-300: 134 106 0;
-    --amber-400: 215 183 58;
-    --amber-500: 252 225 0;
-    --amber-600: 252 225 0;
-    --amber-700: 255 231 102;
-    --amber-800: 255 240 163;
-    --amber-900: 255 247 214;
-    --green-50: 13 36 13;
-    --green-100: 20 54 20;
-    --green-500: 108 203 95;
-    --green-600: 108 203 95;
-    --green-700: 154 217 143;
-    --green-800: 191 232 184;
-    --emerald-500: 108 203 95;
-    --emerald-600: 154 217 143;
-    --emerald-700: 191 232 184;
-    --purple-50: 31 21 51;
-    --purple-100: 44 31 74;
-    --purple-500: 185 138 247;
-    --purple-600: 201 164 250;
-    --purple-700: 220 196 252;
-    --math-surface: 28 24 38;
-    --math-header: 36 29 51;
-    --math-inline: 36 29 51;
-    --danger: 241 112 123;
+    --red-50: 59 5 9;              /* colorStatusDangerBackground1 */
+    --red-100: 117 29 31;             /* colorPaletteRedBackground2 */
+    --red-200: 197 15 31;             /* colorStatusDangerBorder1 */
+    --red-300: 209 52 56;             /* colorPaletteRedBorder2 */
+    --red-400: 227 125 128;             /* colorPaletteRedForeground1 */
+    --red-500: 197 15 31;             /* colorStatusDangerBackground3 */
+    --red-600: 227 125 128;             /* colorPaletteRedForeground1 */
+    --red-700: 241 187 188;             /* colorPaletteRedForeground2 */
+    --red-800: 241 187 188;
+    --red-900: 241 187 188;
+    --amber-50: 74 30 4;            /* colorStatusWarningBackground1 */
+    --amber-100: 122 33 1;           /* colorPaletteDarkOrangeBackground2 */
+    --amber-200: 247 99 12;           /* colorStatusWarningBorder1 */
+    --amber-300: 218 59 1;           /* colorPaletteDarkOrangeBorder2 */
+    --amber-400: 233 131 94;           /* colorPaletteDarkOrangeForeground1 */
+    --amber-500: 218 59 1;           /* colorPaletteDarkOrangeBackground3 */
+    --amber-600: 250 160 107;           /* colorStatusWarningForeground1 */
+    --amber-700: 244 191 171;           /* colorPaletteDarkOrangeForeground2 */
+    --amber-800: 244 191 171;
+    --amber-900: 244 191 171;
+    --green-50: 5 37 5;            /* colorStatusSuccessBackground1 */
+    --green-100: 9 69 9;           /* colorPaletteGreenBackground2 */
+    --green-500: 16 124 16;           /* colorPaletteGreenBackground3 */
+    --green-600: 84 176 84;           /* colorStatusSuccessForeground1 */
+    --green-700: 159 216 159;           /* colorPaletteGreenForeground2 */
+    --green-800: 159 216 159;
+    --emerald-500: 16 124 16;
+    --emerald-600: 84 176 84;
+    --emerald-700: 159 216 159;
   }
 }
 
@@ -392,7 +425,7 @@ body {
     component can still opt out (the sidebar tree does, to keep its edge clean).
   */
   :where(button, a[href], input, select, textarea, [tabindex]):focus-visible {
-    outline: var(--focus-ring-width) solid rgb(var(--accent));
+    outline: var(--focus-ring-width) solid rgb(var(--focus-ring));
     outline-offset: var(--focus-ring-offset);
   }
   .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }

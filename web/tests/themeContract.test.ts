@@ -60,6 +60,8 @@ test('the theme contract names roles, not shades', () => {
     '--font-ui',
     '--font-body',
     '--font-mono',
+    '--font-numeric',
+    '--focus-ring',
     '--shadow-card',
     '--shadow-flyout',
     '--material-chrome',
@@ -134,6 +136,7 @@ test('a theme replaces the roles it claims to', () => {
       '--material-blur',
       '--motion-ease',
       '--chrome-h',
+      '--focus-ring',
     ]) {
       assert.ok(declared.has(role), `${theme} must replace ${role}`);
     }
@@ -175,8 +178,8 @@ test('the window chrome and the flyouts carry their material', () => {
 
 test('the console draws one focus ring, from the accent role', () => {
   assert.ok(
-    /:where\([^)]*\):focus-visible\s*\{[^}]*outline:[^}]*rgb\(var\(--accent\)\)/.test(styles),
-    'the focus ring must be drawn once, globally, in the accent colour',
+    /:where\([^)]*\):focus-visible\s*\{[^}]*outline:[^}]*rgb\(var\(--focus-ring\)\)/.test(styles),
+    'the focus ring must be drawn once, globally, from its own role',
   );
 });
 

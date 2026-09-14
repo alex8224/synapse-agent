@@ -69,6 +69,19 @@
 
 `[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
 `fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
+两个示例主题的取值**不是凭记忆写的**：它们逐条取自 `@fluentui/tokens@1.0.0-alpha.22` 的
+`webLightTheme` / `webDarkTheme`（可在浏览器里 `import` 该包直接读），每行注释都写明来源 token，
+例如 `--surface` ← `colorNeutralBackground1`、`--surface-canvas` ← `colorNeutralBackground2`、
+`--line` ← `colorNeutralStroke2`、`--accent` ← `colorBrandBackground`、
+`--focus-ring` ← `colorBrandForeground1`（深色下底填色不够亮，焦点环必须用前景色）、
+`--on-accent` ← `colorNeutralForegroundOnBrand`、`--danger` ← `colorStatusDangerForeground1`、
+状态色阶 ← `colorStatusDanger*/Success*/Warning*` 与 `colorPaletteRed/Green/DarkOrange*`、
+`--radius-control` ← `borderRadiusMedium`（4px）、`--radius-card` ← `borderRadiusXLarge`（8px）、
+`--motion-fast/normal` ← `durationFast`/`durationNormal`（150/200ms）、
+`--motion-ease` ← `curveDecelerateMid`（`cubic-bezier(0, 0, 0, 1)`）、
+`--font-ui` ← `fontFamilyBase`、`--font-mono` ← `fontFamilyMonospace`、
+`--font-numeric` ← `fontFamilyNumeric`（Bahnschrift，状态条的数字用它）。
+公式块（`--math-*`）与外壳密度（48/32px）是产品选择，Fluent web token 里没有对应项，保持自定值。
 激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。
 示例主题只重定义中性面/文本/描边/强调色；状态色沿用默认值，需要时按同样方式覆盖。
 两个示例主题同时给出了 Fluent 的**几何与排印**：控件圆角 4px、外壳 48px/32px、
