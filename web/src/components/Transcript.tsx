@@ -393,7 +393,7 @@ export const Transcript: React.FC = () => {
       // `.no-scrollbar`: the wheel, touch and the keyboard still scroll it, but no
       // scrollbar takes a bite out of the reading column, so its edges line up
       // with the composer card's (the sidebar tree works the same way).
-      className="console-gutter no-scrollbar flex-1 overflow-y-auto py-6 font-sans"
+      className="console-gutter no-scrollbar console-pane-inset flex-1 overflow-y-auto font-sans"
     >
       <div className="console-column space-y-5">
         {historyAvailable === false && (

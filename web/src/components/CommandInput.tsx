@@ -1,5 +1,5 @@
 import { Add20Regular, Dismiss20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AttachmentPreview } from './AttachmentPreview.tsx';
 import { ModelControls } from './ModelControls.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -29,11 +29,32 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
  * picked image itself (`AttachmentPreview`) rather than a file-name chip, and
  * hovering it enlarges the copy, so what will be sent is verifiable before the
  * turn is submitted.
+ *
+ * The card floats over the transcript (`.console-pane-inset` reserves its height
+ * in the scroller), which is what makes its own acrylic visible: a blur needs
+ * content behind it.  The reserved height is the card's *measured* height, not a
+ * guess, so growing the card (attachments, a wrapped control row) can never hide
+ * the newest line behind it.
  */
 export const CommandInput: React.FC = () => {
   const [text, setText] = useState('');
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const card = cardRef.current;
+    if (card === null) return;
+    const root = document.documentElement;
+    const publish = () => root.style.setProperty('--composer-h', `${card.offsetHeight}px`);
+    publish();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(publish);
+    observer.observe(card);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--composer-h');
+    };
+  }, []);
   const {
     runtimeStatus,
     submitPrompt,
@@ -81,13 +102,16 @@ export const CommandInput: React.FC = () => {
   };
 
   return (
-    // The last row of the workspace column, not a floating card: the transcript
-    // keeps its own height above it, so the newest streamed line is visible at the
-    // bottom of the scrollport instead of behind the input.  It keeps the shared
-    // gutters and the shared `console-column` width, and the transcript shows no
-    // scrollbar, so the card's edges line up with the chat column above it.
-    <div className="console-gutter pointer-events-none z-30 flex w-full shrink-0 justify-center pb-3">
+    // The card floats over the transcript's bottom edge, so the transcript scrolls
+    // behind it and the card's acrylic has something to blur.  The scroller reserves
+    // the card's measured height (`--composer-h`, published below), so the newest
+    // streamed line still lands above the card at the bottom of the scrollport
+    // instead of behind the input.  It keeps the shared gutters and the shared
+    // `console-column` width, and the transcript shows no scrollbar, so the card's
+    // edges line up with the chat column above it.
+    <div className="console-gutter pointer-events-none absolute inset-x-0 bottom-0 z-30 flex w-full justify-center pb-3">
       <div
+        ref={cardRef}
         onDragOver={(e) => {
           e.preventDefault();
           setDragging(true);
@@ -106,10 +130,20 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column ui-composer pointer-events-auto flex flex-col rounded-card border material-chrome shadow-card transition-all duration-150 ${
+        className={`console-column ui-composer relative isolate pointer-events-auto flex flex-col rounded-card border shadow-card transition-all duration-150 ${
           dragging ? 'border-blue-500 ring-2 ring-blue-200/60' : 'border-line/70'
         }`}
       >
+        {/* The card's acrylic is a layer, not the card's own material.
+            `backdrop-filter` makes an element a *backdrop root*, so the two pickers
+            that hang above this card could only blur what the card painted itself --
+            the transcript behind them stayed sharp and they read as transparent
+            instead of frosted.  The card still gets the material; the pickers get
+            the page.  `isolate` keeps the negative layer inside the card. */}
+        <div
+          aria-hidden="true"
+          className="material-chrome pointer-events-none absolute inset-0 -z-10 rounded-card"
+        />
         {attachments.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 px-3.5 pt-2.5">
             {attachments.map((entry) => {
@@ -204,8 +238,10 @@ export const CommandInput: React.FC = () => {
               e.target.value = '';
             }}
           />
-          {/* Control row: add on the left, what the next turn runs on the right. */}
-          <div className="ui-composer-toolbar">
+          {/* Control row: add on the left, what the next turn runs on the right.
+              It is also the pickers' anchor (`relative`): anchored to their own
+              trigger, a 320px model menu ran past the left edge of a narrow pane. */}
+          <div className="ui-composer-toolbar relative">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}

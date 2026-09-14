@@ -118,6 +118,10 @@ test('a modal is portaled, so an acrylic ancestor cannot anchor it', () => {
     'GitExplorer.tsx',
     'ImageLightbox.tsx',
     'BottomBar.tsx',
+    // The rail's popovers are windows of their own too: `FloatingPanel` portals them
+    // for the same reason (an acrylic ancestor caps their backdrop).
+    'ConsoleActions.tsx',
+    'ArtifactsPanel.tsx',
   ]) {
     const source = readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
     if (!source.includes('fixed inset-0')) continue;
@@ -233,9 +237,16 @@ test('shape, elevation and material are named by role, not by literal', () => {
 test('the window chrome and the flyouts carry their material', () => {
   const read = (name: string): string => readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
   // The chrome: the shell surfaces a theme can make acrylic.
-  for (const name of ['SideBar.tsx', 'TopBar.tsx', 'BottomBar.tsx']) {
+  for (const name of ['SideBar.tsx', 'TopBar.tsx']) {
     assert.ok(read(name).includes('material-chrome'), `${name} must use the chrome material`);
   }
+  // The status strip takes the chrome fill through `.material-strip`, which is the
+  // same fill and grain without the blur: nothing scrolls behind the strip, and a
+  // blur there would make it a backdrop root and cap the MCP popover inside it.
+  assert.ok(
+    read('BottomBar.tsx').includes('material-strip'),
+    'BottomBar.tsx must use the chrome material (the unblurred strip variant)',
+  );
   // The flyouts: the surfaces where acrylic is actually visible (content passes
   // behind them), so they must not fall back to an opaque fill.
   for (const name of ['SettingsDialog.tsx', 'GoalDialog.tsx', 'TodoPanel.tsx']) {

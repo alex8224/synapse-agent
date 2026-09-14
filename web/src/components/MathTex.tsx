@@ -19,7 +19,7 @@ const MathSource: React.FC<{ tex: string; streaming: boolean; note?: string }> =
       </span>
       <span className="font-mono text-[10px] text-amber-600">{note ?? 'LaTeX 源码（未排版）'}</span>
     </div>
-    <pre className="overflow-auto whitespace-pre-wrap px-3 py-3 text-center font-mono text-[13px] leading-6 text-gray-800">
+    <pre className="fluent-scrollbar overflow-auto whitespace-pre-wrap px-3 py-3 text-center font-mono text-[13px] leading-6 text-gray-800">
       {tex}
     </pre>
   </div>

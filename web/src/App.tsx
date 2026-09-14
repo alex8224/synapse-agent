@@ -67,7 +67,14 @@ export function App() {
       <SideBar />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar />
-        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden material-pane">
+        {/*
+          Deliberately *not* `overflow-hidden`: the transcript scroller reaches up
+          behind the header (`.console-under-chrome`) so the header's acrylic has
+          something to blur.  Clipping the pane here cut that strip off and left
+          the material invisible.  Everything in the pane is a flex row that takes
+          its own height, so nothing else can overflow it.
+        */}
+        <main className="relative flex min-h-0 flex-1 flex-col material-pane">
           {/* Only rendered when the relay is down and the read-only diagnostics
               read succeeded; see the component for the degradation rules. */}
           <RuntimeDiagnosticsBanner />

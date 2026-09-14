@@ -14,6 +14,12 @@ import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
  * the other one opens (two overlapping popovers must never be open at once).
  * `F2` still toggles the model picker, so the advertised shortcut keeps working
  * from wherever the composer is.
+ *
+ * Neither wrapper is positioned: the panels anchor to the composer's control row
+ * (`.ui-composer-toolbar`, the nearest positioned ancestor).  Anchored to the
+ * trigger instead, a 320px model menu opened from a trigger that sits ~130px left
+ * of the card's edge ran past the left edge of a 400px-wide workspace pane at a
+ * 640px window.
  */
 export const ModelControls: React.FC = () => {
   const {
@@ -80,7 +86,7 @@ export const ModelControls: React.FC = () => {
 
   return (
     <>
-      <div className="relative min-w-0 max-w-full" ref={modelRef}>
+      <div className="min-w-0 max-w-full" ref={modelRef}>
         <button
           type="button"
           onClick={() => {

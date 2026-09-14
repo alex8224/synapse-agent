@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Dismiss16Regular, ArrowUp16Regular, Folder16Regular, Document16Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { CodeBlock } from './CodeBlock.tsx';
+import { FloatingPanel } from './FloatingPanel.tsx';
 import {
   ARTIFACT_CHUNK_BYTES,
   ARTIFACT_HARD_MAX_BYTES,
@@ -79,7 +80,10 @@ const DIFF_SIGN: Record<'context' | 'add' | 'remove', string> = {
  * a real line diff, never "looks like a diff" colouring, and when the middle
  * block is too large for an exact LCS the panel says the diff is coarse.
  */
-export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+export const ArtifactsPanel: React.FC<{ anchor: HTMLElement | null; onClose: () => void }> = ({
+  anchor,
+  onClose,
+}) => {
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
   const paired = useConsoleStore((s) => s.pairingState === 'paired');
@@ -241,12 +245,13 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const hardCapped = truncated && file.loadedBytes >= ARTIFACT_HARD_MAX_BYTES;
 
   return (
-    <div
-      role="dialog"
-      aria-label="工作区文件"
-      // Opened from the sidebar's settings row, so it expands upward from there
-      // (the triggers sit at the bottom of the window).
-      className="absolute bottom-full left-0 z-50 mb-2 flex h-[32rem] w-[56rem] max-w-[calc(100vw-2rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in text-left shadow-flyout"
+    // Opened from the sidebar's settings row, so it expands upward from there (the
+    // triggers sit at the bottom of the window).  A `FloatingPanel`, not a box in
+    // the rail: see that component for why.
+    <FloatingPanel
+      anchor={anchor}
+      label="工作区文件"
+      className="flex h-[32rem] w-[56rem] max-w-[calc(100vw-2rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in text-left shadow-flyout"
     >
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-gray-900">工作区文件</span>
@@ -299,7 +304,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto py-1">
+          <div className="fluent-scrollbar min-h-0 flex-1 overflow-y-auto py-1">
             {entries.length === 0 && !listLoading && listError === null && (
               <div className="px-2 py-2 font-mono text-[10px] text-gray-400">空目录</div>
             )}
@@ -391,7 +396,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto px-2 py-1">
+          <div className="fluent-scrollbar min-h-0 flex-1 overflow-auto px-2 py-1">
             {fileLoading && <div className="font-mono text-[10px] text-gray-400">读取中…</div>}
             {fileError !== null && (
               <div className="rounded border border-red-100 bg-red-50 px-2 py-1 font-mono text-[10px] leading-relaxed text-red-700">
@@ -426,7 +431,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
                           {diff.coarse && ' · 中段过大，已按整块替换报告（非最小差异）'}
                           {diff.truncated && ' · 已达渲染上限，差异被截断'}
                         </div>
-                        <pre className="overflow-auto font-mono text-[11px] leading-4">
+                        <pre className="fluent-scrollbar overflow-auto font-mono text-[11px] leading-4">
                           {diff.lines.map((line, index) => (
                             <div
                               key={`${index}.${line.kind}`}
@@ -472,6 +477,6 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
           </div>
         </div>
       </div>
-    </div>
+    </FloatingPanel>
   );
 };

@@ -78,6 +78,16 @@
     font-family: var(--font-ui); font-size: var(--type-caption);
     line-height: 16px; font-weight: 600; color: rgb(var(--gray-600));
   }
+  /*
+    Fluent checkbox: a 16px box filled from the accent role.  `accent-color` is
+    what carries the role, so the control follows the theme instead of the
+    browser default (which stays light in a dark theme).
+  */
+  .ui-check {
+    width: 16px; height: 16px; flex-shrink: 0;
+    accent-color: rgb(var(--accent));
+    cursor: pointer;
+  }
   .ui-nav-row {
     position: relative;
     border-radius: var(--radius-control);
@@ -270,6 +280,10 @@
     --font-numeric: 'JetBrains Mono', ui-monospace, monospace;
     --chrome-h: 2.5rem;
     --status-h: 1.75rem;
+    /* The floating composer's height: measured at runtime and republished as an
+       inline property on the root (see `CommandInput`).  The value here only
+       covers the first paint, before the observer runs. */
+    --composer-h: 4.5rem;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
     /* Second elevation step (dialogs, popovers). */
     --shadow-flyout: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.08);
@@ -282,6 +296,10 @@
     --material-chrome: rgb(var(--surface));
     --material-flyout: rgb(var(--surface));
     --material-blur: none;
+    /* Acrylic's texture layers: a light sheen and a grain, both off unless a theme
+       asks for the material (see `.material-chrome` / `.material-flyout`). */
+    --material-sheen: none;
+    --material-grain: none;
     /* Motion: one duration scale and one curve, so every existing `transition-*`
        utility moves the way the theme says instead of each its own way. */
     --motion-fast: 120ms;
@@ -366,8 +384,21 @@
     --material-canvas: rgb(var(--surface-canvas) / 0.45);
     --material-pane: rgb(var(--surface) / 0.62);
     --material-chrome: rgb(var(--surface) / 0.70);
-    --material-flyout: rgb(var(--surface) / 0.96);
-    --material-blur: blur(20px) saturate(180%);
+    /*
+      The flyout fill is deliberately well below the chrome's: a dialog or a popover
+      is read *against* what is behind it, so the acrylic has to be visible.  What
+      keeps the label legible is the blur, not the fill -- at 30px the text behind
+      the panel is a wash, so a ~0.62 fill shows the material without the
+      bleed-through the old 0.8 fill showed at 20px (which was not the blur's fault:
+      the panel was painted *under* the workspace pane, so the text was sharp).
+    */
+    --material-flyout: rgb(var(--surface) / 0.62);
+    --material-blur: blur(30px) saturate(180%);
+    --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
+    --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
+    /* Native controls (select popups, checkboxes, scrollbars) follow the theme
+       instead of the operating system's light default. */
+    color-scheme: light;
     --motion-fast: 150ms;           /* durationFast */
     --motion-normal: 200ms;         /* durationNormal */
     --motion-ease: cubic-bezier(0, 0, 0, 1);   /* curveDecelerateMid */
@@ -477,8 +508,11 @@
     --material-canvas: rgb(var(--surface-canvas) / 0.45);
     --material-pane: rgb(var(--surface) / 0.58);
     --material-chrome: rgb(var(--surface) / 0.68);
-    --material-flyout: rgb(var(--surface) / 0.95);
-    --material-blur: blur(20px) saturate(180%);
+    --material-flyout: rgb(var(--surface) / 0.60);
+    --material-blur: blur(30px) saturate(180%);
+    --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
+    --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
+    color-scheme: dark;
     --motion-fast: 150ms;
     --motion-normal: 200ms;
     --motion-ease: cubic-bezier(0, 0, 0, 1);
@@ -564,6 +598,22 @@ body {
   .console-gutter { padding-left: 2rem; padding-right: 2rem; }
   .console-column { width: 100%; margin-left: auto; margin-right: auto; }
   .ui-composer { max-width: var(--composer-max); }
+  /*
+    The pane's one scroller runs under both acrylic surfaces: up behind the header
+    and down behind the floating composer.  That is what makes either material
+    visible at all -- a blur has to have something behind it, and a static window
+    fill is not something.  The insets keep the first line clear of the bar and the
+    newest line clear of the card by the same 1.5rem the other edges use, and
+    `scroll-padding-bottom` makes the transcript's own `scrollIntoView({block:
+    'end'})` land on the visible edge instead of behind the card.  `--composer-h`
+    is published by the composer from its measured height.
+  */
+  .console-pane-inset {
+    margin-top: calc(-1 * var(--chrome-h));
+    padding-top: calc(var(--chrome-h) + 1.5rem);
+    padding-bottom: calc(var(--composer-h) + 1.5rem);
+    scroll-padding-bottom: calc(var(--composer-h) + 1.5rem);
+  }
   @media (min-width: 1024px) {
     .console-gutter { padding-left: 10%; padding-right: 10%; }
   }
@@ -619,16 +669,46 @@ body {
   }
   .material-chrome {
     background-color: var(--material-chrome);
+    background-image: var(--material-sheen), var(--material-grain);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
     box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
   }
   .material-flyout {
     background-color: var(--material-flyout);
+    background-image: var(--material-sheen), var(--material-grain);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
     box-shadow: var(--shadow-flyout), inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
   }
+  /*
+    The status strip: the chrome's fill and grain without its blur.
+
+    Nothing scrolls behind it (the composer floats above it), so the blur would be
+    invisible anyway -- and it would make the strip a *backdrop root*, which caps
+    the MCP popover that lives inside it: the panel could only blur what the strip
+    itself painted, so the transcript behind it stayed sharp.
+  */
+  .material-strip {
+    background-color: var(--material-chrome);
+    background-image: var(--material-sheen), var(--material-grain);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
+  }
+  /*
+    Acrylic is blur + tint + noise.
+
+    The blur and the tint alone read as a plain card wherever the surface sits over
+    a flat area: there is nothing for the eye to call "frosted", only a slightly
+    lighter rectangle.  The grain is what carries the material, so it is drawn by
+    the material classes rather than by each component.  It is inert (no pointer
+    events) and sits behind the content, exactly like the layer in Windows.
+
+    It is a background *layer* rather than a pseudo-element on purpose: an
+    `::after` needs `position: relative` on the surface, and that silently beat
+    Tailwind's `.absolute` on every flyout -- the panels became in-flow boxes that
+    stretched their anchor (the sidebar's tree was pushed up) instead of floating.
+    A theme with no material sets both layers to `none`.
+  */
 
   /*
     Flyout entrance.

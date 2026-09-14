@@ -86,7 +86,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
           </button>
         </div>
       </div>
-      <pre className="max-h-[28rem] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
+      <pre className="fluent-scrollbar max-h-[28rem] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
         <code className="whitespace-pre">
           {tokens.map((token, index) => (
             <span key={index} className={TOKEN_CLASS[token.kind]}>

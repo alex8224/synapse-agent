@@ -138,28 +138,38 @@ test('the chat column keeps the reading width and the composer is narrower', () 
 });
 
 test('the composer is the last row of the workspace column, not a floating card', () => {
-  // A floating composer covered the bottom of the transcript: the newest streamed
-  // line ended up behind the input, so "scrolled to the bottom" did not show it.
-  assert.equal(
-    composer.includes('absolute bottom-0'),
-    false,
-    'the composer must not be positioned over the transcript',
+  // The card floats so the transcript scrolls behind it — that is what makes the
+  // card's own acrylic visible at all.  What the in-flow row bought was that the
+  // newest streamed line was never hidden behind the input; the scroller reserves
+  // the card's *measured* height instead, so the same guarantee holds.
+  assert.ok(
+    composer.includes('absolute inset-x-0 bottom-0'),
+    'the composer must float over the transcript',
+  );
+  assert.ok(composer.includes('cardRef'), 'the card must be measured, not guessed');
+  assert.ok(
+    /new ResizeObserver/.test(composer),
+    'a card that grows (attachments, a wrapped row) must republish its height',
   );
   assert.ok(
-    composer.includes('shrink-0'),
-    'the composer must take its own height instead of overlaying the scroller',
+    composer.includes("setProperty('--composer-h'"),
+    'the measured height travels to the scroller as a CSS variable',
   );
-  assert.equal(
-    composer.includes('bottom-10'),
-    false,
-    'the composer must not float above a gap left by the old full-width footer',
+  assert.ok(transcript.includes('console-pane-inset'), 'the transcript must reserve the card');
+  assert.ok(
+    /\.console-pane-inset\s*\{[^}]*padding-bottom:\s*calc\(var\(--composer-h\) \+ 1\.5rem\)[^}]*scroll-padding-bottom:\s*calc\(var\(--composer-h\) \+ 1\.5rem\)/.test(
+      styles,
+    ),
+    'the reserved height and the scroll padding must be the same inset',
   );
-  // The padding that used to keep content clear of the floating card is gone, so
-  // the scrollport's bottom edge is the last visible line.
+  assert.ok(
+    /--composer-h:\s*[\d.]+rem/.test(styles),
+    'the first paint needs a value before the observer runs',
+  );
   assert.equal(
     transcript.includes('pb-36'),
     false,
-    'the transcript must not reserve room for a floating composer any more',
+    'a fixed guess at the card height is what hid the newest line',
   );
 });
 
@@ -213,5 +223,70 @@ test('the sidebar nav names the two entries and their shortcuts', () => {
   assert.ok(
     (sidebar.match(/Ctrl\+K/g) ?? []).length >= 2,
     'the search entry must show its shortcut too',
+  );
+});
+
+test('the sidebar popovers are windows of their own, not boxes in the rail', () => {
+  // They were `absolute` boxes inside the nav, and that broke three things:
+  //
+  //  * the rail's own `backdrop-filter` made the nav a backdrop root, so the panel
+  //    could only blur what the nav painted — the transcript behind it stayed sharp
+  //    and the panel read as transparent instead of frosted;
+  //  * a 512px-tall panel was laid out in the footer's box, so it stretched that
+  //    box and pushed the session tree up;
+  //  * with the workspace column following the rail in the DOM, the panel also lost
+  //    the paint race (its close button landed on the transcript).
+  //
+  // They are `FloatingPanel`s now: portalled to the body and positioned from the
+  // trigger's viewport rect.
+  const actions = read('components/ConsoleActions.tsx');
+  const artifacts = read('components/ArtifactsPanel.tsx');
+  assert.ok(actions.includes('<FloatingPanel'), 'the rail panels must float');
+  assert.ok(artifacts.includes('<FloatingPanel'), 'the file browser must float too');
+  for (const source of [actions, artifacts]) {
+    assert.equal(
+      /className="absolute bottom-full/.test(source),
+      false,
+      'a floating panel must not also be laid out inside its anchor',
+    );
+  }
+  const floating = read('components/FloatingPanel.tsx');
+  assert.ok(floating.includes("from './Portal.tsx'"), 'it must portal, or the rail stays its backdrop root');
+  assert.ok(
+    floating.includes('fixed z-50'),
+    'it must position itself against the viewport',
+  );
+  assert.ok(
+    floating.includes('addEventListener(\'resize\''),
+    'a resize must re-measure the anchor',
+  );
+});
+
+test('the transcript scrolls under the chrome, so the acrylic has something to blur', () => {
+  // A blur needs content behind it.  While the pane clipped its own children and
+  // the header sat above a static window fill, `backdrop-filter` had nothing to
+  // act on and the material was invisible at rest.
+  assert.ok(
+    transcript.includes('console-pane-inset'),
+    'the transcript must reach up behind the header',
+  );
+  assert.ok(
+    /\.console-pane-inset\s*\{[^}]*margin-top:\s*calc\(-1 \* var\(--chrome-h\)\)[^}]*padding-top:\s*calc\(var\(--chrome-h\) \+ 1\.5rem\)/.test(
+      styles,
+    ),
+    'the class owns the negative margin and the matching content inset',
+  );
+  const main = app.slice(app.indexOf('<main className='), app.indexOf('<main className=') + 200);
+  assert.equal(
+    main.includes('overflow-hidden'),
+    false,
+    'the pane must not clip the strip the scroller reaches into',
+  );
+  const topBar = read('components/TopBar.tsx');
+  // `z-20` only orders a *positioned* element; a static header lost the race
+  // against the pane and the scrolled content covered it instead.
+  assert.ok(
+    topBar.includes('material-chrome relative z-20'),
+    'the header must be positioned for its z-index to apply',
   );
 });

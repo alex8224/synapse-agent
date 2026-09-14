@@ -125,7 +125,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               type="checkbox"
               checked={staged}
               onChange={(event) => setStaged(event.target.checked)}
-              className="h-3 w-3 cursor-pointer"
+              className="ui-check"
             />
             暂存区
           </label>
@@ -149,7 +149,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <div className="no-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
+          <div className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
             {statusError !== null && (
               <p className="px-3 py-2 text-[11px] leading-relaxed text-amber-700">
                 {statusError}
@@ -183,7 +183,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             ))}
           </div>
 
-          <div className="min-w-0 flex-1 overflow-auto bg-canvas px-3 py-2">
+          <div className="fluent-scrollbar min-w-0 flex-1 overflow-auto bg-canvas px-3 py-2">
             {selected === null && <p className="text-[11px] text-gray-400">选择一个文件查看 diff。</p>}
             {diffError !== null && <p className="text-[11px] text-amber-700">{diffError}</p>}
             {diffError === null && diff !== null && diff.empty && (

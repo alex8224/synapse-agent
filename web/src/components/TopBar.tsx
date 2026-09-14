@@ -60,7 +60,7 @@ export const TopBar: React.FC = () => {
 
   return (
     <>
-    <header className="material-chrome grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 z-20 select-none text-sm font-sans">
+    <header className="material-chrome relative z-20 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 select-none text-sm font-sans">
       {/* Left track: identity controls and context.  `min-w-0` lets the chips
           truncate instead of widening the track and nudging the centre line. */}
       <div className="flex min-w-0 items-center gap-1.5">

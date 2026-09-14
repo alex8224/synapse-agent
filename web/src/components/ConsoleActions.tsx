@@ -1,8 +1,9 @@
 import { Info20Regular, FolderOpen20Regular, WindowConsole20Regular, SignOut20Regular, Dismiss20Regular } from '@fluentui/react-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { ArtifactsPanel } from './ArtifactsPanel.tsx';
+import { FloatingPanel } from './FloatingPanel.tsx';
 
 /**
  * The console's context actions: session info, the read-only workspace file
@@ -13,8 +14,11 @@ import { ArtifactsPanel } from './ArtifactsPanel.tsx';
  * with the other app-level entry point.  `orientation` picks the layout: a row
  * for the expanded sidebar's footer, a column for the collapsed 44px rail.
  *
- * Each panel opens *above* its trigger (`bottom-full`) because the triggers are
- * at the bottom of the window; Escape closes the open one.
+ * Each panel opens *above* its trigger because the triggers are at the bottom of
+ * the window; Escape closes the open one.  They are `FloatingPanel`s, not boxes
+ * inside the rail: nested in it they could not blur the transcript (the rail's own
+ * `backdrop-filter` is a backdrop root) and their height stretched the rail's
+ * footer, pushing the session tree up.
  */
 export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   orientation = 'row',
@@ -50,6 +54,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   );
 
   const [openPanel, setOpenPanel] = useState<'info' | 'diagnostics' | 'artifacts' | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (openPanel === null) return;
@@ -64,7 +69,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   const trigger = 'ui-icon-button';
 
   return (
-    <div className="relative shrink-0">
+    <div className="shrink-0" ref={rowRef}>
       <div className={orientation === 'row' ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'}>
         <button
           onClick={() => setOpenPanel((v) => (v === 'info' ? null : 'info'))}
@@ -109,7 +114,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
       </div>
 
       {openPanel === 'info' && (
-        <Panel title="会话信息" onClose={() => setOpenPanel(null)}>
+        <Panel title="会话信息" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
           <Row label="工作区" value={workspacePath || '-'} />
           <Row label="项目" value={currentSession.project_id || '-'} />
           <Row label="分支" value={gitBranch || '-'} />
@@ -126,7 +131,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
       )}
 
       {openPanel === 'diagnostics' && (
-        <Panel title="运行时诊断" onClose={() => setOpenPanel(null)}>
+        <Panel title="运行时诊断" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
           <Row label="状态" value={diagnostics.status} />
           <Row
             label="daemon"
@@ -145,25 +150,29 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
         </Panel>
       )}
 
-      {openPanel === 'artifacts' && <ArtifactsPanel onClose={() => setOpenPanel(null)} />}
+      {openPanel === 'artifacts' && (
+        <ArtifactsPanel anchor={rowRef.current} onClose={() => setOpenPanel(null)} />
+      )}
     </div>
   );
 };
 
 function Panel({
   title,
+  anchor,
   onClose,
   children,
 }: {
   title: string;
+  anchor: HTMLElement | null;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <div
-      role="dialog"
-      aria-label={title}
-      className="absolute bottom-full left-0 z-50 mb-2 w-96 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3.5 text-left shadow-flyout"
+    <FloatingPanel
+      anchor={anchor}
+      label={title}
+      className="w-96 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3.5 text-left shadow-flyout"
     >
       <div className="mb-2.5 flex items-center justify-between border-b border-line/60 pb-2">
         <span className="text-xs font-bold text-gray-900">{title}</span>
@@ -177,7 +186,7 @@ function Panel({
         </button>
       </div>
       <div className="space-y-1">{children}</div>
-    </div>
+    </FloatingPanel>
   );
 }
 

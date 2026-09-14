@@ -114,6 +114,16 @@ interface Snapshot {
     rect: Rect
     column: Rect
   } | null
+  /**
+   * The scroller's bottom reserve for the floating composer: the padding that
+   * keeps the newest line clear of the card, the matching scroll padding, and the
+   * measured card height the composer published.
+   */
+  composerReserve: {
+    paddingBottom: number
+    scrollPaddingBottom: number
+    published: string
+  } | null
   navText: string
   scrollWidth: number
 }
@@ -163,9 +173,32 @@ const SNAPSHOT = `(() => {
       rect: rect(scroller),
       column: rect(scroller.querySelector('.console-column')),
     },
+    composerReserve: scroller === null ? null : {
+      paddingBottom: parseFloat(getComputedStyle(scroller).paddingBottom),
+      scrollPaddingBottom: parseFloat(getComputedStyle(scroller).scrollPaddingBottom),
+      published: getComputedStyle(document.documentElement).getPropertyValue('--composer-h').trim(),
+    },
     navText: sidebar.innerText,
     scrollWidth: document.documentElement.scrollWidth,
   }
+})()`
+
+/**
+ * Scroll the transcript to its end and report whether the newest content landed
+ * above the floating composer.
+ *
+ * The reserved padding is what makes this true; measuring it only proves the
+ * mechanism, not the guarantee the reader actually depends on.
+ */
+const BOTTOM_VISIBLE = `(() => {
+  const scroller = document.querySelector('main .no-scrollbar')
+  const card = document.querySelector('#console-composer').closest('.console-column')
+  if (scroller === null || card === null) return false
+  scroller.scrollTop = scroller.scrollHeight
+  const items = scroller.querySelectorAll('.console-column > *')
+  if (items.length === 0) return true
+  const newest = items[items.length - 1].getBoundingClientRect()
+  return newest.bottom <= card.getBoundingClientRect().top
 })()`
 
 /**
@@ -410,13 +443,23 @@ async function main(): Promise<void> {
     checkDesktopColumn(wide)
     checkComposer(wide)
     check('composer sits above the status strip', wide.card.bottom <= wide.footer.top, true)
-    // The composer is the last row of the workspace column, not a card over the
-    // transcript: the newest streamed line has to be visible above it.
+    // The composer floats over the transcript — that is what makes its acrylic
+    // visible — so the scroller reserves the card's *measured* height and the
+    // newest streamed line still has to land above it.
+    const reserve = wide.composerReserve
     check(
-      'the composer sits below the transcript instead of over it',
-      wide.scroller !== null && wide.card.top >= wide.scroller.rect.bottom - 1,
+      'the transcript reserves the floating composer',
+      reserve !== null && reserve.paddingBottom >= wide.card.height + 16,
       true,
     )
+    check(
+      'the scroll end lands above the composer',
+      reserve?.scrollPaddingBottom,
+      reserve?.paddingBottom,
+    )
+    check('the reserve is the measured card, not a guess', reserve?.published, `${wide.card.height}px`)
+    check('the newest line stays visible at the bottom', await evaluate(client, page, BOTTOM_VISIBLE), true)
+    check('the composer floats over the transcript', wide.card.top < wide.scroller!.rect.bottom, true)
     check('no horizontal overflow', wide.scrollWidth, wide.viewport.w)
     // The session title sits on the centre line of the workspace column: both
     // header side tracks are equal `1fr`, so the middle track cannot drift.  A

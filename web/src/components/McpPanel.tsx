@@ -113,7 +113,11 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   return (
-    <div className="absolute bottom-8 left-0 z-50 w-96 max-w-[calc(100vw-2rem)] space-y-2.5 rounded-card border border-line/80 material-flyout flyout-in p-3.5 shadow-flyout">
+    <div
+      role="dialog"
+      aria-label="MCP 工具与服务器"
+      className="absolute bottom-8 left-0 z-50 w-96 max-w-[calc(100vw-2rem)] space-y-2.5 rounded-card border border-line/80 material-flyout flyout-in p-3.5 shadow-flyout"
+    >
       <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
         <span className="text-xs font-bold text-gray-900">MCP 工具与服务器 (F5)</span>
         <div className="flex items-center gap-1.5">
@@ -238,6 +242,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                           id={`mcp-tool-${srv.name}-${tool}`}
                           name={`mcp-tool-${srv.name}`}
                           type="checkbox"
+                          className="ui-check"
                           checked={selection.includes(tool)}
                           onChange={() => toggleTool(srv.name, tool)}
                         />
