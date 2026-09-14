@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
-import { TasksApp20Regular, ChevronDown16Regular, ChevronUp16Regular } from '@fluentui/react-icons';
+import {
+  TasksApp20Regular,
+  ChevronDown16Regular,
+  ChevronUp16Regular,
+  CheckmarkCircle16Filled,
+  Circle16Regular,
+  ArrowCircleRight16Filled,
+} from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import { latestTodos, todoPanelLabel, type TodoKind } from '../stores/todoView.ts';
-
-/** Mark + colour per todo kind, mirroring the runtime's `✓`/`●`/`○` checklist. */
-const KIND_STYLE: Record<TodoKind, { mark: string; className: string }> = {
-  done: { mark: '✓', className: 'text-gray-400 line-through' },
-  active: { mark: '●', className: 'text-blue-700 font-medium' },
-  pending: { mark: '○', className: 'text-gray-600' },
-};
+import { latestTodos, todoPanelLabel } from '../stores/todoView.ts';
 
 /**
  * Floating progress panel for the session's todo list.
@@ -25,16 +25,16 @@ export const TodoPanel: React.FC = () => {
   if (view === null) return null;
 
   return (
-    <div className="absolute right-2 top-2 z-20 w-72 max-w-[calc(100%-1rem)] select-none">
-      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-line/70 shadow-flyout">
+    <div className="absolute right-3 top-3 z-20 w-80 max-w-[calc(100%-1.5rem)] select-none">
+      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-line/80 shadow-flyout">
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
           title={collapsed ? '展开 todo' : '收起 todo'}
-          className="flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-gray-50"
+          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-sunken/60"
         >
-          <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent" style={{ fontSize: '15px' }} />
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-700">
+          <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent" style={{ fontSize: '16px' }} />
+          <span className="min-w-0 flex-1 truncate font-sans text-xs font-semibold text-gray-800">
             {todoPanelLabel(view)}
           </span>
           {view.omitted > 0 && (
@@ -43,22 +43,34 @@ export const TodoPanel: React.FC = () => {
           {collapsed ? <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" /> : <ChevronUp16Regular aria-hidden="true" className="shrink-0 text-gray-400" />}
         </button>
         {!collapsed && (
-          <ul className="max-h-64 space-y-0.5 overflow-y-auto border-t border-gray-100 px-2.5 py-1.5">
+          <ul className="fluent-scrollbar max-h-64 space-y-1.5 overflow-y-auto border-t border-line/60 p-2.5">
             {view.items.map((item, index) => (
               <li
                 key={`${index}-${item.content}`}
-                className="flex items-start gap-1.5 font-mono text-[11px] leading-relaxed"
+                className="flex items-start gap-2 text-xs leading-relaxed"
               >
-                <span className={`shrink-0 ${KIND_STYLE[item.kind].className}`}>
-                  {KIND_STYLE[item.kind].mark}
-                </span>
-                <span className={`min-w-0 break-words ${KIND_STYLE[item.kind].className}`}>
+                {item.kind === 'done' ? (
+                  <CheckmarkCircle16Filled aria-hidden="true" className="mt-0.5 shrink-0 text-emerald-600" />
+                ) : item.kind === 'active' ? (
+                  <ArrowCircleRight16Filled aria-hidden="true" className="mt-0.5 shrink-0 text-accent animate-pulse" />
+                ) : (
+                  <Circle16Regular aria-hidden="true" className="mt-0.5 shrink-0 text-gray-400" />
+                )}
+                <span
+                  className={`min-w-0 break-words font-sans ${
+                    item.kind === 'done'
+                      ? 'text-gray-400 line-through decoration-gray-300'
+                      : item.kind === 'active'
+                        ? 'font-medium text-gray-900'
+                        : 'text-gray-600'
+                  }`}
+                >
                   {item.content}
                 </span>
               </li>
             ))}
             {view.omitted > 0 && (
-              <li className="pt-0.5 font-mono text-[10px] text-gray-400">
+              <li className="pt-1 font-mono text-[10px] text-gray-400">
                 … 另有 {view.omitted} 项未包含在预览中
               </li>
             )}
