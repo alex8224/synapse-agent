@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Portal } from './Portal.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   MalformedGitPayloadError,
@@ -90,10 +91,13 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const diffLines = diff === null ? [] : diff.text.replace(/\n$/, '').split('\n');
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20"
-      onClick={onClose}
-    >
+    // `Portal`: this panel is a window of its own, so an acrylic ancestor cannot
+    // anchor its `fixed` box to itself.
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20"
+        onClick={onClose}
+      >
       <div
         role="dialog"
         aria-label="Git Explorer"
@@ -144,7 +148,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <div className="w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
+          <div className="no-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
             {statusError !== null && (
               <p className="px-3 py-2 text-[11px] leading-relaxed text-amber-700">
                 {statusError}
@@ -204,6 +208,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

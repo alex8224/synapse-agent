@@ -80,6 +80,33 @@ test('the theme contract names roles, not shades', () => {
   }
 });
 
+test('a modal is portaled, so an acrylic ancestor cannot anchor it', () => {
+  // `backdrop-filter` on the chrome makes that element the containing block for
+  // `fixed` descendants, so a dialog rendered inside the sidebar was positioned
+  // over the rail (it read as "docked to the sidebar") in the acrylic themes.
+  // Every modal therefore renders through `Portal`.
+  for (const name of [
+    'SettingsDialog.tsx',
+    'GoalDialog.tsx',
+    'GitExplorer.tsx',
+    'ImageLightbox.tsx',
+    'BottomBar.tsx',
+  ]) {
+    const source = readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
+    if (!source.includes('fixed inset-0')) continue;
+    assert.ok(source.includes("from './Portal.tsx'"), `${name} renders a modal and must portal it`);
+    assert.ok(source.includes('<Portal>'), `${name} must wrap its modal in <Portal>`);
+  }
+});
+
+test('a window of its own is not a scroll box', () => {
+  // A visible scrollbar inside a dialog is the one thing that reads as a web page;
+  // the wheel and the keyboard still move the content.
+  const settings = readFileSync(join(webRoot, 'src', 'components', 'SettingsDialog.tsx'), 'utf8');
+  assert.ok(settings.includes('no-scrollbar'), 'the settings window must not show a scrollbar');
+  assert.ok(settings.includes('overflow-y-auto'), 'its content must still scroll');
+});
+
 test('every variable Tailwind references is declared by a theme', () => {
   const referenced = new Set<string>();
   for (const match of config.matchAll(/var\((--[a-z0-9-]+)\)/g)) referenced.add(match[1]);

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Portal } from './Portal.tsx';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
@@ -138,10 +139,13 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
-      onClick={onClose}
-    >
+    // `Portal`: a dialog belongs to the window, not to whatever subtree opened it
+    // (an acrylic ancestor anchors `fixed` descendants to itself).
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+        onClick={onClose}
+      >
       <div
         className="w-full max-w-md space-y-2 rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
@@ -288,6 +292,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

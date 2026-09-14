@@ -61,6 +61,12 @@
   （`:where(button, a[href], input, select, textarea, [tabindex]):focus-visible`，取自
   `--accent`）。
 
+**模态窗口必须走 `Portal`**（`src/components/Portal.tsx`，`createPortal` 到 `document.body`）：
+`backdrop-filter` 会让元素成为 `fixed` 后代的**包含块**，所以渲染在侧栏子树里的对话框会被
+"钉"到侧栏盒子上（表现为像嵌在侧栏里、位置错乱）——这正是亚克力主题引入后暴露的问题。设置/
+目标/Git/灯箱/帮助这些窗口现在都挂在 `body` 下，定位与外壳材质无关。窗口内部**不显示滚动条**
+（`.no-scrollbar`，滚轮与键盘照常可用）：对话框里出现滚动条是最像网页的一处。
+
 `[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
 `fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
 激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。

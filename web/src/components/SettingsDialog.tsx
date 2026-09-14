@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
+import { Portal } from './Portal.tsx';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -121,16 +122,21 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   }, [onClose]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
-      onClick={onClose}
-    >
+    // `Portal`: a dialog belongs to the window, not to the sidebar it is opened
+    // from (an acrylic ancestor would otherwise anchor its `fixed` box to the rail).
+    <Portal>
       <div
-        role="dialog"
-        aria-label="设置"
-        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
-        onClick={(event) => event.stopPropagation()}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+        onClick={onClose}
       >
+        <div
+          role="dialog"
+          aria-label="设置"
+          // No visible scrollbar: a dialog is a window of its own, and the wheel /
+          // keyboard still move it (the console hides its other scrollers too).
+          className="no-scrollbar max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
+          onClick={(event) => event.stopPropagation()}
+        >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
           <span className="text-sm font-bold text-gray-900">设置</span>
           <button
@@ -352,6 +358,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

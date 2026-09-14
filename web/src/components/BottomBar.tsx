@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Portal } from './Portal.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -243,6 +244,9 @@ export const BottomBar: React.FC = () => {
       </footer>
 
       {showHelp && (
+        // `Portal`: a modal belongs to the window, not to the status strip that
+        // opened it.
+        <Portal>
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
           onClick={() => setShowHelp(false)}
@@ -276,6 +280,7 @@ export const BottomBar: React.FC = () => {
             </div>
           </div>
         </div>
+        </Portal>
       )}
 
       {showGoalDialog && <GoalDialog onClose={() => setShowGoalDialog(false)} />}

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { Portal } from './Portal.tsx';
 
 /**
  * Full-size view of one transcript image.
@@ -24,13 +25,16 @@ export const ImageLightbox: React.FC<{
   }, [onClose]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="图片预览"
-      onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
-    >
+    // `Portal`: the lightbox belongs to the window, not to the transcript row that
+    // opened it.
+    <Portal>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="图片预览"
+        onClick={onClose}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+      >
       <div
         onClick={(event) => event.stopPropagation()}
         className="flex max-h-full max-w-4xl flex-col rounded-card border border-gray-200 material-flyout p-3 shadow-flyout"
@@ -49,6 +53,7 @@ export const ImageLightbox: React.FC<{
         </div>
         <img src={src} alt={label} className="max-h-[75vh] max-w-full object-contain" />
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };
