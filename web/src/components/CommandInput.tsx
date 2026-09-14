@@ -208,6 +208,11 @@ export const CommandInput: React.FC = () => {
             id="console-composer"
             name="prompt"
             type="text"
+            // The console renders no suggestion list of its own: that dropdown is
+            // the browser's own "previously entered values" history for this
+            // field, which is noise in a chat box (the same guard the pairing
+            // field already uses).
+            autoComplete="off"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
