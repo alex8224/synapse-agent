@@ -22,7 +22,7 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
       return (
         <code
           key={key}
-          className="rounded bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-gray-800"
+          className="rounded-control bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-gray-800"
         >
           {span.text}
         </code>
@@ -56,7 +56,7 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
         href={span.href}
         target="_blank"
         rel="noreferrer noopener"
-        className="break-all text-blue-600 underline"
+        className="break-all text-blue-500 underline"
       >
         {renderSpans(span.spans, key)}
       </a>
@@ -99,7 +99,7 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
     }
 
     if (block.type === 'rule') {
-      return <hr key={key} className="my-3 border-gray-200" />;
+      return <hr key={key} className="my-3 border-line" />;
     }
 
     if (block.type === 'quote') {
@@ -148,7 +148,7 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
                 {block.header.map((cell, cellIndex) => (
                   <th
                     key={`${key}.h${cellIndex}`}
-                    className="border border-gray-200 bg-canvas px-3 py-1.5 text-left font-semibold text-gray-800"
+                    className="border border-line bg-sunken px-3 py-1.5 text-left font-semibold text-gray-800"
                   >
                     {renderSpans(cell, `${key}.h${cellIndex}`)}
                   </th>
@@ -161,7 +161,7 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
                   {row.map((cell, cellIndex) => (
                     <td
                       key={`${key}.r${rowIndex}c${cellIndex}`}
-                      className="border border-gray-200 px-3 py-1.5 align-top text-gray-700"
+                      className="border border-line px-3 py-1.5 align-top text-gray-700"
                     >
                       {renderSpans(cell, `${key}.r${rowIndex}c${cellIndex}`)}
                     </td>

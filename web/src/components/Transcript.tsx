@@ -99,7 +99,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} className="max-w-[85%]">
         <div
           onClick={() => handleToggleExpand(m.id)}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line/50 bg-surface/40 px-2.5 py-1 font-mono text-[11px] text-gray-600 backdrop-blur-sm transition-all hover:bg-surface/70 hover:text-gray-900 shadow-card"
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed"
         >
           {m.duration === 'streaming' ? (
             <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
@@ -110,7 +110,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
           <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
         </div>
         {m.expanded && (
-          <div className="mt-1.5 rounded-card border border-line/60 bg-surface/50 backdrop-blur-md p-3 text-sm text-gray-700 shadow-card">
+          <div className="material-card mt-1.5 rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
             <Markdown text={m.content ?? ''} />
           </div>
         )}
@@ -134,7 +134,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
         <div
           onClick={() => handleToggleExpand(m.id)}
           title={expanded ? '收起工具详情' : '展开工具详情'}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line/50 bg-surface/40 px-2.5 py-1 font-mono text-[11px] text-gray-600 backdrop-blur-sm transition-all hover:bg-surface/70 hover:text-gray-900 shadow-card"
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed"
         >
           {failed > 0 ? (
             <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
@@ -145,7 +145,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
           )}
           <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
           {running > 0 && (
-            <span className="font-medium text-blue-600">{running} running</span>
+            <span className="font-medium text-blue-500">{running} running</span>
           )}
           {failed > 0 && <span className="font-medium text-red-600">{failed} failed</span>}
           {!expanded && toolList.length > 0 && (
@@ -161,15 +161,15 @@ const TranscriptRow = React.memo(function TranscriptRow({
             {toolList.map((t) => (
               <div
                 key={t.id}
-                className={`rounded-control border px-2.5 py-1.5 font-mono text-[11px] backdrop-blur-md shadow-card ${
-                  t.error ? 'border-red-200/80 bg-red-50/70' : 'border-line/70 bg-surface/70'
+                className={`rounded-control border px-2.5 py-1.5 font-mono text-xs ${
+                  t.error ? 'border-red-200 bg-red-50' : 'border-line bg-surface'
                 }`}
               >
                 <div className="flex items-center space-x-2">
                   <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
                   <span className="font-medium text-gray-900">{t.label || t.name}</span>
                   {t.sub && (
-                    <span className="rounded bg-gray-100 px-1 text-[10px] text-gray-500">
+                    <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
                       sub
                     </span>
                   )}
@@ -178,12 +178,12 @@ const TranscriptRow = React.memo(function TranscriptRow({
                   )}
                   {t.path && <span className="truncate text-gray-500">{t.path}</span>}
                   <span
-                    className={`ml-auto shrink-0 rounded px-1 text-[10px] ${
+                    className={`ml-auto shrink-0 rounded-control px-1 text-[10px] ${
                       t.error
                         ? 'bg-red-100 text-red-700'
                         : t.status === 'completed'
                           ? 'bg-green-100 text-green-700'
-                          : 'bg-blue-50 text-blue-600'
+                          : 'bg-blue-50 text-blue-500'
                     }`}
                   >
                     {t.subagentStatus
@@ -218,16 +218,16 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div
         key={m.id}
-        className={`flex max-w-[85%] items-start gap-1.5 rounded-control border-l-2 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed backdrop-blur-sm ${
+        className={`flex max-w-[85%] items-start gap-1.5 rounded-control border px-2.5 py-1.5 font-mono text-xs leading-relaxed ${
           warning
-            ? 'border-amber-400 bg-amber-50/70 text-amber-800'
-            : 'border-blue-400 bg-surface/60 text-gray-600'
+            ? 'border-amber-200 bg-amber-50 text-amber-800'
+            : 'border-line bg-surface text-gray-600'
         }`}
       >
         {warning ? (
           <Warning20Regular aria-hidden="true" className="shrink-0 text-amber-600" style={{ fontSize: '14px' }} />
         ) : (
-          <Info20Regular aria-hidden="true" className="shrink-0 text-blue-600" style={{ fontSize: '14px' }} />
+          <Info20Regular aria-hidden="true" className="shrink-0 text-blue-500" style={{ fontSize: '14px' }} />
         )}
         <span className="whitespace-pre-wrap break-all">{m.content}</span>
       </div>
@@ -402,7 +402,7 @@ export const Transcript: React.FC = () => {
     >
       <div className="console-column space-y-5">
         {historyAvailable === false && (
-          <div className="rounded-card border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-800 font-mono leading-relaxed">
+          <div className="rounded-card border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 font-mono leading-relaxed">
             此会话在 transcript 投影中不可用（history.available=false）。以下只显示建立连接后的实时内容；
             不按“空历史”显示，也不会回退到 checkpoint。
           </div>
@@ -411,7 +411,7 @@ export const Transcript: React.FC = () => {
         {historyError !== null && (
           <div
             role="alert"
-            className="rounded-card border border-red-200 bg-red-50/70 p-3 text-xs text-red-800 font-mono leading-relaxed"
+            className="rounded-card border border-red-200 bg-red-50 p-3 text-xs text-red-800 font-mono leading-relaxed"
           >
             {historyError}
             以下只显示建立连接后的实时内容，不回退到 checkpoint。
@@ -426,7 +426,7 @@ export const Transcript: React.FC = () => {
             <button
               onClick={handleLoadEarlier}
               disabled={historyLoading}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded border border-line/60 bg-surface/60 backdrop-blur-md text-gray-600 text-xs font-mono hover:bg-surface/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none shadow-card"
+              className="inline-flex h-8 cursor-pointer select-none items-center space-x-1.5 rounded-control border border-line bg-surface px-3 text-xs font-mono text-gray-600 transition-colors hover:bg-surface-hover active:bg-surface-pressed disabled:cursor-not-allowed disabled:text-fg-disabled"
             >
               <ArrowSort20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '14px' }} />
               <span>{historyLoading ? '加载更早历史中…' : '加载更早历史'}</span>
@@ -452,29 +452,29 @@ export const Transcript: React.FC = () => {
 
         {/* HITL Pending Approval Dialog */}
         {pendingApproval && (
-          <div className="p-4 border border-amber-300 bg-amber-50/80 rounded-card space-y-3">
+          <div className="space-y-3 rounded-card border border-amber-200 bg-amber-50 p-4 shadow-card">
             <div className="flex items-center space-x-2 text-amber-800 font-medium text-xs">
               <Shield20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '18px' }} />
               <span>需要审批危险操作 (Turn: {pendingApproval.turn_id})</span>
             </div>
             <div className="space-y-1.5 font-mono text-xs text-gray-700">
               {pendingApproval.actions.map((act, idx) => (
-                <div key={idx} className="p-2 bg-surface rounded border border-amber-200">
+                <div key={idx} className="rounded-control border border-amber-200 bg-surface p-2">
                   <div className="font-bold text-gray-900">{act.name}</div>
-                  <div className="text-gray-600 text-[11px] truncate">{JSON.stringify(act.args)}</div>
+                  <div className="truncate text-xs text-gray-600">{JSON.stringify(act.args)}</div>
                 </div>
               ))}
             </div>
             <div className="flex space-x-2 pt-1">
               <button
                 onClick={() => resolveApproval('allow_once')}
-                className="px-3 py-1 bg-green-600 text-on-accent text-xs font-medium rounded hover:bg-green-700 transition-colors cursor-pointer"
+                className="h-8 cursor-pointer rounded-control bg-accent px-3 text-xs font-medium text-on-accent transition-colors hover:bg-blue-700"
               >
                 批准本次
               </button>
               <button
                 onClick={() => resolveApproval('reject_once')}
-                className="px-3 py-1 bg-red-600 text-on-accent text-xs font-medium rounded hover:bg-red-700 transition-colors cursor-pointer"
+                className="h-8 cursor-pointer rounded-control bg-red-500 px-3 text-xs font-medium text-on-accent transition-colors hover:bg-red-700"
               >
                 拒绝
               </button>
@@ -482,7 +482,7 @@ export const Transcript: React.FC = () => {
           </div>
         )}
         {activity && activity.active && (
-          <div className="flex select-none items-center gap-1.5 font-mono text-[11px] text-gray-500">
+          <div className="flex select-none items-center gap-1.5 font-mono text-xs text-gray-500">
             <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
             <span>{activity.phase}</span>
             {activity.detail && <span className="text-gray-400">{activity.detail}</span>}

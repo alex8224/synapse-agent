@@ -73,6 +73,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 
 | 区域 | 规范要素 | 实测 | 状态 |
 |---|---|---|---|
+| Transcript | 展开的思考面板 = 毛玻璃卡片（本轮新增） | 该面板是全页唯一一处页面内 acrylic：按**角色**取主题材质 `material-card`（填充 `--material-card`、模糊 `--material-blur`、纹理 `--material-sheen` / `--material-grain`），组件里不出现任何字面 `backdrop-blur-*` 或透明度混色；随包主题的 `--material-blur` 为 `none`，因此默认不付合成层代价。注意观感来源：卡片背后是窗格填充与 Mica 渐变（没有内容从它后面滚过），所以「毛玻璃」主要体现在半透明填充 + 颗粒纹理，模糊本身几乎不可见 | 已实现（本轮） |
+| Transcript | 页面内卡片的 Fluent 层色（本轮新增） | 聊天区页面内卡片一律「实心层色 + 描边」，不再用半透明填充与 `backdrop-blur`（acrylic 只留给浮层：对话框 / 浮出面板 / 悬停预览；唯一例外是展开的思考面板，它按角色取主题的 `material-card` 材质）。用户气泡改为实心 `colorBrandBackground2` + 中性描边 + 统一 8px 圆角（去掉 `14/14/3/14` 尾角与模糊）；Thought / 工具批次 chip、工具详情行、info 行、历史横幅、「加载更早历史」按钮统一 4px 圆角 + `border-line` + `bg-surface`，hover/active 用新角色 `--surface-hover` / `--surface-pressed`；info 行去掉左侧强调条，改 Fluent MessageBar 形态（状态底 + 状态描边 + 图标）；审批卡片按钮改 32px Fluent 按钮（primary = `--accent`，destructive = `--red-500`）；公式卡片移除专用紫色角色，改用与代码块相同的 canvas / sunken 层色（主题契约删除 `--math-*`，新增 `--surface-hover` / `--surface-pressed` / `--fg-disabled`）；日志行字号从 11px（不在 Fluent 字号阶梯上）提到 caption1 12px，元数据保持 caption2 10px；`themeContract.test.ts` 新增「页面内卡片不得使用 `backdrop-blur`」守卫（只放行 `material-card` 这一处命名例外），`transcriptLayoutGuard.test.ts` 新增字号守卫 | 已实现（本轮） |
 | Shell | 两列结构（本轮布局对齐） | 左列 `SideBar` 全高（`h-full`，折叠轨同为全高）；右列依次为 `TopBar` / `RuntimeDiagnosticsBanner` / `Transcript` / `CommandInput` / `BottomBar`，顶栏与底栏不再横跨侧栏 | 已实现（布局调整） |
 | TopBar | 侧栏折叠开关 | 有（Fluent `PanelLeft` 按钮 / Ctrl+B） | 已实现 |
 | TopBar | 📁 工作区路径 | **已移至侧栏底部身份行**（顶栏改为会话 chip 行） | 已实现（位置调整） |

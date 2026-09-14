@@ -69,13 +69,13 @@ test('the theme contract names roles, not shades', () => {
     '--surface',
     '--surface-canvas',
     '--surface-sunken',
+    '--surface-hover',
+    '--surface-pressed',
+    '--fg-disabled',
     '--line',
     '--accent',
     '--on-accent',
     '--danger',
-    '--math-surface',
-    '--math-header',
-    '--math-inline',
     '--radius-card',
     '--radius-control',
     '--composer-max',
@@ -88,6 +88,7 @@ test('the theme contract names roles, not shades', () => {
     '--shadow-flyout',
     '--material-chrome',
     '--material-flyout',
+    '--material-card',
     '--material-blur',
     '--mica-backdrop',
     '--material-canvas',
@@ -195,6 +196,9 @@ test('a theme replaces the roles it claims to', () => {
       '--gray-200',
       '--surface',
       '--surface-canvas',
+      '--surface-hover',
+      '--surface-pressed',
+      '--fg-disabled',
       '--line',
       '--accent',
       // Shape, type, elevation, material and motion are part of a theme too:
@@ -203,6 +207,7 @@ test('a theme replaces the roles it claims to', () => {
       '--font-ui',
       '--font-body',
       '--shadow-flyout',
+      '--material-card',
       '--material-blur',
       '--mica-backdrop',
       '--motion-ease',
@@ -258,6 +263,29 @@ test('the console draws one focus ring, from the accent role', () => {
   assert.ok(
     /:where\([^)]*\):focus-visible\s*\{[^}]*outline:[^}]*rgb\(var\(--focus-ring\)\)/.test(styles),
     'the focus ring must be drawn once, globally, from its own role',
+  );
+});
+
+test('a card in the page is painted, not blurred', () => {
+  // Fluent reserves acrylic for the transient surfaces: a flyout, a dialog, a
+  // teaching tip.  A card that is part of the page is a solid layer fill with a
+  // stroke, so the reading column -- where the two look most alike -- must not
+  // reach for `backdrop-blur-*` at all.  (The flyouts are covered by
+  // `material-flyout`, which carries the blur in its own rule.)
+  const offenders: string[] = [];
+  for (const name of ['Transcript.tsx', 'CodeBlock.tsx', 'MathTex.tsx', 'Markdown.tsx', 'MermaidBlock.tsx']) {
+    const source = readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
+    if (source.includes('backdrop-blur')) offenders.push(name);
+  }
+  assert.deepEqual(offenders, [], 'an in-page card must not blur the page behind it');
+  // The expanded thought panel is the one deliberate exception, and it takes the
+  // material *by name*: the fill, the blur radius and the grain stay the theme's
+  // decision, so a component can never pick its own frosted look.
+  const transcript = readFileSync(join(webRoot, 'src', 'components', 'Transcript.tsx'), 'utf8');
+  assert.equal(
+    (transcript.match(/material-card/g) ?? []).length,
+    1,
+    'the acrylic card must be the thought panel, through the card material',
   );
 });
 

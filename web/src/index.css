@@ -141,14 +141,18 @@
     color: rgb(var(--gray-600));
   }
 
+  /*
+    Fluent 2's chat bubble: one solid layer fill (`colorBrandBackground2`) with the
+    neutral stroke, one corner language and no elevation.  The asymmetric tail
+    (14px/3px) was a chat-app idiom rather than a Fluent one, and the blur was the
+    same mistake the flyouts had: acrylic belongs to the transient surfaces, not to
+    a message painted in the page.
+  */
   .ui-user-bubble {
-    background-color: rgb(var(--blue-50) / 0.75);
-    border: 1px solid rgb(var(--blue-100) / 0.85);
-    border-radius: 14px 14px 3px 14px;
+    background-color: rgb(var(--blue-50));
+    border: 1px solid rgb(var(--line));
+    border-radius: var(--radius-card);
     padding: 9px 14px;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   }
   @media (prefers-reduced-motion: reduce) {
     .ui-button, .ui-icon-button, .ui-nav-row, .ui-menu-item { transition: none; }
@@ -262,10 +266,13 @@
     --line: 229 231 235;
     --accent: 37 99 235;
     --on-accent: 255 255 255;
-    --math-surface: 250 248 255;
-    --math-header: 244 240 253;
-    --math-inline: 246 244 251;
     --danger: 220 38 38;
+    /* State fills and the disabled foreground: a subtle surface (a log chip, a
+       ghost control) takes these on hover/press instead of an opacity mix of
+       whatever layer it happens to sit on, and disabled text gets its own role. */
+    --surface-hover: 245 245 245;
+    --surface-pressed: 235 235 235;
+    --fg-disabled: 189 189 189;
 
     /* Shape, type and elevation. */
     --radius-card: 8px;
@@ -295,6 +302,7 @@
     --material-pane: rgb(var(--surface));
     --material-chrome: rgb(var(--surface));
     --material-flyout: rgb(var(--surface));
+    --material-card: rgb(var(--surface));
     --material-blur: none;
     /* Acrylic's texture layers: a light sheen and a grain, both off unless a theme
        asks for the material (see `.material-chrome` / `.material-flyout`). */
@@ -361,6 +369,9 @@
     --surface-canvas: var(--f-canvas);
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
+    --surface-hover: 245 245 245;   /* colorSubtleBackgroundHover */
+    --surface-pressed: 235 235 235; /* colorSubtleBackgroundPressed */
+    --fg-disabled: 189 189 189;     /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
     --focus-ring: 15 108 189;       /* colorBrandForeground1 */
     --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
@@ -393,6 +404,7 @@
       the panel was painted *under* the workspace pane, so the text was sharp).
     */
     --material-flyout: rgb(var(--surface) / 0.62);
+    --material-card: rgb(var(--surface) / 0.62);
     --material-blur: blur(30px) saturate(180%);
     --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
     --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
@@ -485,6 +497,9 @@
     --surface-canvas: var(--f-canvas);
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
+    --surface-hover: 56 56 56;      /* colorSubtleBackgroundHover */
+    --surface-pressed: 51 51 51;    /* colorSubtleBackgroundPressed */
+    --fg-disabled: 92 92 92;        /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
     --focus-ring: 71 158 245;       /* colorBrandForeground1 */
     --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
@@ -509,6 +524,7 @@
     --material-pane: rgb(var(--surface) / 0.58);
     --material-chrome: rgb(var(--surface) / 0.68);
     --material-flyout: rgb(var(--surface) / 0.60);
+    --material-card: rgb(var(--surface) / 0.60);
     --material-blur: blur(30px) saturate(180%);
     --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
     --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
@@ -680,6 +696,22 @@ body {
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
     box-shadow: var(--shadow-flyout), inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
+  }
+  /*
+    The one acrylic surface *in* the page: the expanded thought panel.
+
+    Fluent's rule is that acrylic belongs to the transient surfaces, and the rest
+    of the reading column follows it (see the guard in `themeContract.test.ts`).
+    This card is the exception the reader asked for, and it takes the material by
+    role: the theme decides the fill, the blur and the texture, so the shipped
+    palette -- where `--material-blur` is `none` -- pays nothing for it, and no
+    component has to pick a blur radius or an opacity mix of its own.
+  */
+  .material-card {
+    background-color: var(--material-card);
+    background-image: var(--material-sheen), var(--material-grain);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
   }
   /*
     The status strip: the chrome's fill and grain without its blur.

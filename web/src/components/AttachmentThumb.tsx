@@ -81,7 +81,7 @@ export const AttachmentThumb: React.FC<{ attachment: TranscriptAttachment }> = (
           type="button"
           onClick={() => setOpen(true)}
           title={`${title}（点击放大）`}
-          className="block cursor-zoom-in overflow-hidden rounded border border-gray-200 bg-gray-50 transition-colors hover:border-gray-300"
+          className="block cursor-zoom-in overflow-hidden rounded-control border border-line bg-sunken transition-colors hover:border-gray-300"
         >
           <img
             src={ready.url}
@@ -91,7 +91,7 @@ export const AttachmentThumb: React.FC<{ attachment: TranscriptAttachment }> = (
         </button>
       ) : (
         <div
-          className="flex h-16 w-16 items-center justify-center rounded border border-gray-200 bg-gray-50"
+          className="flex h-16 w-16 items-center justify-center rounded-control border border-line bg-sunken"
           title={title}
         >
           {resource?.status === 'error' || resource?.status === 'unsupported' ? (

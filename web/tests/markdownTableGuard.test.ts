@@ -38,9 +38,12 @@ test('the table body reads at the chat scale, not a footnote size', () => {
 });
 
 test('the header keeps the cell size and only differs by weight', () => {
+  // The header row is a layer, not a colour of its own: Fluent's table header is
+  // `colorNeutralBackground3` over `colorNeutralStroke2` borders, the same pair the
+  // code blocks use.
   assert.ok(
     table.includes(
-      'border border-gray-200 bg-canvas px-3 py-1.5 text-left font-semibold text-gray-800',
+      'border border-line bg-sunken px-3 py-1.5 text-left font-semibold text-gray-800',
     ),
     'the header must share the cell padding and size, marked only by font-semibold',
   );
@@ -48,7 +51,7 @@ test('the header keeps the cell size and only differs by weight', () => {
 
 test('the body cells get roomier padding', () => {
   assert.ok(
-    table.includes('border border-gray-200 px-3 py-1.5 align-top text-gray-700'),
+    table.includes('border border-line px-3 py-1.5 align-top text-gray-700'),
     'the cells must use the roomier padding',
   );
 });

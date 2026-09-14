@@ -92,12 +92,14 @@ export default {
         canvas: "rgb(var(--surface-canvas) / <alpha-value>)",
         sunken: "rgb(var(--surface-sunken) / <alpha-value>)",
         line: "rgb(var(--line) / <alpha-value>)",
+        // State fills and the disabled foreground: a subtle surface takes these on
+        // hover/press, so no component has to invent an opacity mix.
+        "surface-hover": "rgb(var(--surface-hover) / <alpha-value>)",
+        "surface-pressed": "rgb(var(--surface-pressed) / <alpha-value>)",
+        "fg-disabled": "rgb(var(--fg-disabled) / <alpha-value>)",
         accent: "rgb(var(--accent) / <alpha-value>)",
         "on-accent": "rgb(var(--on-accent) / <alpha-value>)",
         danger: "rgb(var(--danger) / <alpha-value>)",
-        "math-surface": "rgb(var(--math-surface) / <alpha-value>)",
-        "math-header": "rgb(var(--math-header) / <alpha-value>)",
-        "math-inline": "rgb(var(--math-inline) / <alpha-value>)",
 
         // Kept names (the shell uses these three) pointing at the same roles.
         background: "rgb(var(--surface-canvas) / <alpha-value>)",

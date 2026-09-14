@@ -97,7 +97,7 @@ test('the run log stays subordinate to the answer', () => {
     transcript.indexOf("if (m.type === 'tool_group')"),
   );
   assert.equal(thought.includes('bg-[#f3f4f5]'), false, 'a thought must not be a filled chip');
-  assert.ok(thought.includes('text-[11px]'), 'a thought line must be smaller than the answer');
+  assert.ok(thought.includes('text-xs'), 'a thought line must be smaller than the answer');
   const tools = transcript.slice(
     transcript.indexOf("if (m.type === 'tool_group')"),
     transcript.indexOf("if (m.type === 'assistant')"),
@@ -107,7 +107,20 @@ test('the run log stays subordinate to the answer', () => {
     false,
     'a collapsed tool group must not be a filled chip either',
   );
-  assert.ok(tools.includes('text-[11px]'), 'a tool line must be smaller than the answer');
+  assert.ok(tools.includes('text-xs'), 'a tool line must be smaller than the answer');
+});
+
+test('the run log reads at a Fluent type step', () => {
+  // Fluent's ramp steps by caption2 (10px), caption1 (12px), body1 (14px) and up;
+  // 11px is not on it.  The log lines take caption1 and the metadata stays at
+  // caption2, so a hand-picked size cannot drift back in.
+  assert.equal(
+    transcript.includes('text-[11px]'),
+    false,
+    'an off-ramp size must not come back',
+  );
+  assert.ok(transcript.includes('text-xs'), 'the log lines read at caption1');
+  assert.ok(transcript.includes('text-[10px]'), 'the metadata stays at caption2');
 });
 
 test('the scroller scrolls with no visible scrollbar', () => {

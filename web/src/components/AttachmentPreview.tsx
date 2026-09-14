@@ -68,7 +68,7 @@ export const AttachmentPreview: React.FC<{
         title={label}
         // Aspect-preserving on purpose: the point of the preview is to confirm
         // *which* image was pasted, and a square crop hides most of a screenshot.
-        className="h-12 w-auto min-w-8 max-w-[8rem] rounded border border-gray-200 bg-gray-50 object-contain"
+        className="h-12 w-auto min-w-8 max-w-[8rem] rounded-control border border-line bg-sunken object-contain"
       />
       {/* Hover-only, and rendered up front so the shared URL reaches it: a modal
           on hover would be far more disruptive than a floating copy. */}
@@ -76,7 +76,7 @@ export const AttachmentPreview: React.FC<{
         <img
           ref={zoomRef}
           alt={label}
-          className="max-h-64 max-w-[28rem] rounded object-contain"
+          className="max-h-64 max-w-[28rem] rounded-control object-contain"
         />
         <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px]">
           <span className="max-w-[18rem] truncate text-gray-800">{label}</span>
