@@ -307,10 +307,14 @@
     --material-flyout: rgb(var(--surface));
     --material-card: rgb(var(--surface));
     --material-blur: none;
-    /* Acrylic's texture layers: a light sheen and a grain, both off unless a theme
-       asks for the material (see `.material-chrome` / `.material-flyout`). */
+    /* Acrylic's texture and edge: the sheen and the grain are off here, so nothing
+       pays for a compositing layer unless a theme asks for the material (see
+       `.material-chrome` / `.material-flyout`).  The edge is a role like the rest
+       of them: what reads as a highlight depends on which side of the surface is
+       lighter, so the shipped opaque palette keeps the dark theme's hairline. */
     --material-sheen: none;
     --material-grain: none;
+    --material-edge: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
     /* Motion: one duration scale and one curve, so every existing `transition-*`
        utility moves the way the theme says instead of each its own way. */
     --motion-fast: 120ms;
@@ -389,28 +393,55 @@
       'Helvetica Neue', sans-serif;   /* fontFamilyNumeric */
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
     --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
-    /* Mica: a browser has no desktop wallpaper to sample, so the window gets a
-       faint brand wash in its place.  The chrome and the two window fills are
-       translucent over it, which is what makes the material visible at rest. */
-    --mica-backdrop: radial-gradient(135% 120% at 8% 0%, rgba(200, 225, 255, 0.88) 0%, rgba(230, 240, 255, 0.5) 45%, transparent 75%),
-      radial-gradient(110% 110% at 92% 15%, rgba(215, 235, 255, 0.65) 0%, transparent 60%),
+    /*
+      Mica: a browser has no desktop wallpaper to sample, so the window gets a
+      brand wash in its place.  The chrome and the two window fills are
+      translucent over it, which is what makes the material visible at rest.
+
+      Light acrylic is not dark acrylic with a white fill.  Every cue the dark
+      theme uses to say "glass" is a *bright* one -- a white sheen, a white inner
+      edge, bright grain specks -- and over a white page a bright cue is
+      literally no cue (the sheen composited to a 0.1-level shift, i.e. nothing).
+      Light acrylic therefore has to say it the other way round: the surface is
+      the *cooler, darker* of the two, it takes its colour from what is behind
+      it, and its edge is a bright hairline above a cool one.  That only works if
+      the backdrop is a colour and the fills are thin enough to show it, so both
+      are set here together: a saturated wash, and a window that lets most of it
+      through.
+    */
+    --mica-backdrop: radial-gradient(135% 120% at 8% 0%, rgba(146, 195, 250, 0.93) 0%, rgba(186, 214, 250, 0.70) 45%, transparent 75%),
+      radial-gradient(110% 110% at 92% 15%, rgba(186, 214, 250, 0.65) 0%, transparent 60%),
       linear-gradient(180deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
-    --material-canvas: rgb(var(--surface-canvas) / 0.45);
-    --material-pane: rgb(var(--surface) / 0.62);
-    --material-chrome: rgb(var(--surface) / 0.70);
+    --material-canvas: rgb(var(--surface-canvas) / 0.35);
+    /* The two window fills are a cool tint rather than `--surface`: at 0.62 of pure
+       white the chrome composited within 2 levels of the pane it floats over, so
+       the layer had no edge of its own.  The tint is what makes the pane read as
+       something *under* glass. */
+    --material-pane: rgb(251 253 255 / 0.58);
+    --material-chrome: rgb(242 246 252 / 0.62);
     /*
       The flyout fill is deliberately well below the chrome's: a dialog or a popover
       is read *against* what is behind it, so the acrylic has to be visible.  What
       keeps the label legible is the blur, not the fill -- at 30px the text behind
-      the panel is a wash, so a ~0.62 fill shows the material without the
+      the panel is a wash, so a ~0.55 fill shows the material without the
       bleed-through the old 0.8 fill showed at 20px (which was not the blur's fault:
       the panel was painted *under* the workspace pane, so the text was sharp).
     */
-    --material-flyout: rgb(var(--surface) / 0.62);
-    --material-card: rgb(var(--surface) / 0.62);
+    --material-flyout: rgb(242 246 252 / 0.55);
+    --material-card: rgb(242 246 252 / 0.55);
     --material-blur: blur(30px) saturate(180%);
-    --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
-    --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
+    /* The sheen stays on the light's side (top-left) but carries a cool tint: a
+       white one over a light fill is arithmetically a no-op (see the mica note). */
+    --material-sheen: linear-gradient(135deg, rgba(200, 226, 255, 0.5) 0%, rgba(255, 255, 255, 0) 46%);
+    /* Grain carries the material (see the "Acrylic is blur + tint + noise" note),
+       and it carries it by *relative* contrast: the same 0.08 layer that swings a
+       dark surface by ~100% of its luminance moves a light one by ~17%, which
+       reads as nothing. */
+    --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.12'/%3E%3C/svg%3E");
+    /* The glass edge: a bright top hairline over a cool bottom one.  The shipped
+       white-only edge is invisible here (0.25 white over a white fill), and this is
+       what gives the pane its thickness. */
+    --material-edge: inset 0 1px 0 0 rgba(255, 255, 255, 0.85), inset 0 -1px 0 0 rgba(24, 60, 110, 0.05);
     /* Native controls (select popups, checkboxes, scrollbars) follow the theme
        instead of the operating system's light default. */
     color-scheme: light;
@@ -531,6 +562,7 @@
     --material-blur: blur(30px) saturate(180%);
     --material-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 42%);
     --material-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23grain)' opacity='0.08'/%3E%3C/svg%3E");
+    --material-edge: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
     color-scheme: dark;
     --motion-fast: 150ms;
     --motion-normal: 200ms;
@@ -677,8 +709,10 @@ body {
     A theme decides whether a surface is opaque or acrylic: `--material-chrome`
     (window chrome: sidebar, header, composer, status strip) and
     `--material-flyout` (dialogs, popovers) carry the fill, `--material-blur` the
-    backdrop.  The shipped palette sets `--material-blur: none`, so nothing pays
-    for a compositing layer unless the theme asks for acrylic.
+    backdrop, and `--material-edge` the glass edge (`--material-sheen` /
+    `--material-grain` the texture).  The shipped palette sets
+    `--material-blur: none`, so nothing pays for a compositing layer unless the
+    theme asks for acrylic.
   */
   .material-canvas {
     background-color: var(--material-canvas);
@@ -691,14 +725,14 @@ body {
     background-image: var(--material-sheen), var(--material-grain);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
+    box-shadow: var(--material-edge);
   }
   .material-flyout {
     background-color: var(--material-flyout);
     background-image: var(--material-sheen), var(--material-grain);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
-    box-shadow: var(--shadow-flyout), inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
+    box-shadow: var(--shadow-flyout), var(--material-edge);
   }
   /*
     The one acrylic surface *in* the page: the expanded thought panel.
@@ -727,7 +761,7 @@ body {
   .material-strip {
     background-color: var(--material-chrome);
     background-image: var(--material-sheen), var(--material-grain);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
+    box-shadow: var(--material-edge);
   }
   /*
     Acrylic is blur + tint + noise.
@@ -743,6 +777,11 @@ body {
     Tailwind's `.absolute` on every flyout -- the panels became in-flow boxes that
     stretched their anchor (the sidebar's tree was pushed up) instead of floating.
     A theme with no material sets both layers to `none`.
+
+    The edge (`--material-edge`) is the fourth cue and the only one that is not a
+    layer: which way it points depends on which side of the surface is lighter, so
+    it is a theme role rather than a literal on the three material classes (a white
+    hairline is a highlight on the dark theme and nothing at all on the light one).
   */
 
   /*
