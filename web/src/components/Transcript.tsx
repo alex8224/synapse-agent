@@ -8,6 +8,7 @@ import {
   Info20Regular,
   ArrowSort20Regular,
   DismissCircle20Regular,
+  Shield20Regular,
 } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -448,7 +449,7 @@ export const Transcript: React.FC = () => {
         {pendingApproval && (
           <div className="p-4 border border-amber-300 bg-amber-50/80 rounded-card space-y-3">
             <div className="flex items-center space-x-2 text-amber-800 font-medium text-xs">
-              <span className="material-symbols-outlined text-[18px]">gavel</span>
+              <Shield20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '18px' }} />
               <span>需要审批危险操作 (Turn: {pendingApproval.turn_id})</span>
             </div>
             <div className="space-y-1.5 font-mono text-xs text-gray-700">

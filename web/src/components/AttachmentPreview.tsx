@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { Image20Regular, ImageOff20Regular } from '@fluentui/react-icons';
 import { formatBytes } from '../runtime-client/artifacts.ts';
 import type { AttachmentUploadSource } from '../runtime-client/attachments.ts';
 
@@ -53,11 +54,11 @@ export const AttachmentPreview: React.FC<{
 
   if (failed) {
     return (
-      <span className="material-symbols-outlined text-[18px] text-red-500">broken_image</span>
+      <ImageOff20Regular aria-hidden="true" className="text-red-500" style={{ fontSize: '18px' }} />
     );
   }
   if (blob === null) {
-    return <span className="material-symbols-outlined text-[18px] text-gray-400">image</span>;
+    return <Image20Regular aria-hidden="true" className="text-gray-400" style={{ fontSize: '18px' }} />;
   }
   return (
     <div className="group relative shrink-0">

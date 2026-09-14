@@ -286,9 +286,9 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
             <span>{goalActionError ?? goalNotice}</span>
             <button
               onClick={dismissGoalAlert}
-              className="material-symbols-outlined cursor-pointer text-[14px] opacity-70 hover:opacity-100"
+              className="ui-icon-button ui-compact opacity-70 hover:opacity-100"
             >
-              close
+              <Dismiss20Regular aria-hidden="true" style={{ fontSize: '13px' }} />
             </button>
           </div>
         )}

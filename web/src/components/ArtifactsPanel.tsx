@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Dismiss16Regular } from '@fluentui/react-icons';
+import { Dismiss16Regular, ArrowUp16Regular, Folder16Regular, Document16Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { CodeBlock } from './CodeBlock.tsx';
 import {
@@ -277,7 +277,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
               className="flex items-center gap-1 disabled:text-gray-300 hover:text-gray-900"
               title="上级目录"
             >
-              <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
+              <ArrowUp16Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '13px' }} />
               ..
             </button>
             <span>{listLoading ? '读取中…' : `${filtered.length}/${entries.length} 项`}</span>
@@ -320,9 +320,11 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
                   file?.entry.path === entry.path ? 'bg-blue-50 text-blue-700' : 'text-gray-700'
                 }`}
               >
-                <span className="material-symbols-outlined text-[14px] text-gray-400">
-                  {KIND_ICON[entry.kind]}
-                </span>
+                {entry.kind === 'directory' ? (
+                  <Folder16Regular aria-hidden="true" className="shrink-0 text-gray-400" />
+                ) : (
+                  <Document16Regular aria-hidden="true" className="shrink-0 text-gray-400" />
+                )}
                 <span className="min-w-0 flex-1 truncate">
                   {entry.path.slice(entry.path.lastIndexOf('/') + 1)}
                 </span>

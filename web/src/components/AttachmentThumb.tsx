@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Image20Regular, ImageOff20Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { formatBytes } from '../runtime-client/artifacts.ts';
 import { ImageLightbox } from './ImageLightbox.tsx';
@@ -93,18 +94,11 @@ export const AttachmentThumb: React.FC<{ attachment: TranscriptAttachment }> = (
           className="flex h-16 w-16 items-center justify-center rounded border border-gray-200 bg-gray-50"
           title={title}
         >
-          <span
-            className="material-symbols-outlined text-[18px] text-gray-400"
-            aria-label={
-              resource?.status === 'error' || resource?.status === 'unsupported'
-                ? '附件不可预览'
-                : '附件加载中'
-            }
-          >
-            {resource?.status === 'error' || resource?.status === 'unsupported'
-              ? 'broken_image'
-              : 'image'}
-          </span>
+          {resource?.status === 'error' || resource?.status === 'unsupported' ? (
+            <ImageOff20Regular aria-hidden="true" className="text-gray-400" style={{ fontSize: '18px' }} />
+          ) : (
+            <Image20Regular aria-hidden="true" className="text-gray-400" style={{ fontSize: '18px' }} />
+          )}
         </div>
       )}
       {open && ready !== null && (
