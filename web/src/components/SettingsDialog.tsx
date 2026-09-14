@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
+import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -39,6 +40,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  * exposes — model rebind and per-server MCP reload — plus console logout.
  */
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
+  // The appearance is the one preference that is not the runtime's: it lives in
+  // the browser, so it is read from its own small store rather than the console's.
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const setAppearance = useAppearanceStore((state) => state.setAppearance);
   const {
     workspacePath,
     gitBranch,
@@ -142,6 +147,34 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           <Row label="配对状态" value={pairingState} />
           <Row label="连接状态" value={connectionState} />
           <Row label="会话总数" value={sessionsTotal} />
+        </Section>
+
+        <Section title="外观">
+          {/* The theme is CSS (`src/index.css`); this only chooses which one the
+              document carries.  "跟随系统" keeps following the OS while it is
+              selected, so a machine that switches at sunset switches the console. */}
+          <Row
+            label="主题"
+            value={
+              <span className="flex items-center gap-1" role="group" aria-label="主题">
+                {APPEARANCE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setAppearance(option.value)}
+                    aria-pressed={appearance === option.value}
+                    className={`cursor-pointer rounded-control border px-2 py-0.5 text-xs transition-colors ${
+                      appearance === option.value
+                        ? 'border-accent bg-accent text-on-accent'
+                        : 'border-line bg-surface text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </span>
+            }
+          />
         </Section>
 
         <Section title="工作区">

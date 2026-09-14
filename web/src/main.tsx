@@ -6,6 +6,12 @@ import './index.css'
 // the console keeps working with no network beyond the loopback host.
 import 'katex/dist/katex.min.css'
 import App from './App.tsx'
+import { initAppearance } from './stores/appearance.ts'
+
+// Before the first render: the stored appearance (and the OS preference when it is
+// "system") decides the `data-theme` the document carries, so the console never
+// paints one palette for a frame and then swaps.
+initAppearance()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

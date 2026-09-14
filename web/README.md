@@ -56,6 +56,18 @@
 激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。
 示例主题只重定义中性面/文本/描边/强调色；状态色沿用默认值，需要时按同样方式覆盖。
 
+读者侧的选择在**设置 → 外观 → 主题**：`跟随系统` / `浅色` / `深色`
+（`src/stores/appearance.ts`）。`浅色` 用出厂调色板（不带 `data-theme`），`深色` 用
+`fluent-dark`，`跟随系统` 读 `prefers-color-scheme` 并在系统切换时跟随（监听 media query 的
+`change`；只有偏好仍是 `system` 时监听器才动作，显式选择优先）。`src/main.tsx` 在**首次渲染前**
+调用 `initAppearance()`，所以不会先画浅色再跳深色。
+
+这个选择**不落盘**：控制台的 C-12 不变量是「前端不使用任何浏览器存储」
+（`tests/sourceGuard.test.ts` 静态守护，`tests/appearance.test.ts` 另有一条针对性断言），
+因为它唯一允许持有的状态是宿主下发的 HttpOnly 会话 cookie；因此刷新后回到「跟随系统」。
+如果将来为纯 UI 偏好放宽该不变量，需要改的接缝只有 `useAppearanceStore.setAppearance`
+与 `initAppearance` 两处。
+
 新增主题 = 复制一个 `[data-theme='…']` 块、给出这些变量的值；不需要改 Tailwind 配置或组件。
 不变量由 `tests/themeContract.test.ts` 守护：配置引用的变量必须在主题里有定义、示例主题必须
 替换掉角色、组件里不得再出现 `bg-white` / `text-white` / 任意 hex（否则那块颜色主题够不到）。
