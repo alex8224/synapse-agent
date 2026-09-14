@@ -130,3 +130,52 @@ export function turnRailHoverText(turn: TurnSummary, maxLen: number = TURN_RAIL_
   }
   return lines.join('\n');
 }
+
+/**
+ * Slack above the scroll port's top edge that still counts as "at the anchor".
+ *
+ * The rail marks the turn whose content fills the viewport, and a turn scrolled
+ * to `block: 'start'` lands exactly on the edge -- without a little slack a
+ * sub-pixel scroll position would drop the mark.
+ */
+export const TURN_RAIL_ACTIVE_SLACK_PX = 12;
+
+/**
+ * Index of the turn the transcript is showing, or -1 before the first one.
+ *
+ * `offsets[i]` is the turn anchor's distance from the top of the scrollable
+ * content, ascending.  The active turn is the last anchor at or above
+ * `scrollTop + slack`: the one the viewport is inside.  Above the first anchor
+ * (the top of the transcript, where the port's own padding sits) the first turn
+ * is the one on screen, so it stays active rather than the rail going dark.
+ */
+export function activeTurnIndex(
+  offsets: readonly number[],
+  scrollTop: number,
+  slack: number = TURN_RAIL_ACTIVE_SLACK_PX,
+): number {
+  if (offsets.length === 0) return -1;
+  let active = 0;
+  for (let i = 0; i < offsets.length; i += 1) {
+    if (offsets[i] > scrollTop + slack) break;
+    active = i;
+  }
+  return active;
+}
+
+/**
+ * Rail row that draws `turnIndex`, or -1 when the rail does not show it.
+ *
+ * Past `RAIL_ROWS` turns a row stands for a range, so the row to animate is the
+ * one whose range contains the turn rather than the turn's own position.
+ */
+export function turnRailRowFor(
+  slots: readonly (readonly number[])[],
+  turnIndex: number,
+): number {
+  if (turnIndex < 0) return -1;
+  for (let row = 0; row < slots.length; row += 1) {
+    if (slots[row].includes(turnIndex)) return row;
+  }
+  return -1;
+}

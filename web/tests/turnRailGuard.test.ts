@@ -34,3 +34,40 @@ test('clicking a rail row scrolls to that turn', () => {
   );
   assert.ok(transcript.includes('<TurnRail />'), 'the transcript must render the rail');
 });
+
+test('a rail bar lengthens under the pointer and settles back', () => {
+  assert.ok(
+    /group-hover:w-\d/.test(rail),
+    'a hovered bar must lengthen through the group-hover width',
+  );
+  assert.ok(
+    rail.includes('transition-[width,background-color]'),
+    'the lengthening must be animated, not a jump',
+  );
+  // The bar must not carry two conflicting widths at once: the animated row
+  // takes the lengthened width outright instead of relying on stylesheet order.
+  assert.ok(
+    /const resting = .*\n/.test(rail) && rail.includes('onScreen ? BAR_LENGTHENED : resting'),
+    'the resting and lengthened widths must be exclusive',
+  );
+});
+
+test('the rail follows the transcript and animates the turn on screen', () => {
+  assert.ok(
+    rail.includes("addEventListener('scroll'"),
+    'the rail must follow the transcript port, not only the pointer',
+  );
+  assert.ok(
+    rail.includes('requestAnimationFrame'),
+    'the follow must be coalesced onto a frame',
+  );
+  assert.ok(
+    rail.includes('activeTurnIndex') && rail.includes('turnRailRowFor'),
+    'the on-screen turn must come from the shared rules',
+  );
+  // The transcript owns the port the rail listens to.
+  assert.ok(
+    transcript.includes('scrollerRef'),
+    'the transcript must keep its own scroller handle',
+  );
+});

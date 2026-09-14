@@ -9,10 +9,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  TURN_RAIL_ACTIVE_SLACK_PX,
   TURN_RAIL_PREVIEW_MAX,
+  activeTurnIndex,
   formatTurnRailPreview,
   transcriptTurns,
   turnRailHoverText,
+  turnRailRowFor,
   turnRailSlotLabel,
   turnRailTickSlots,
 } from '../src/stores/turnRail.ts';
@@ -91,4 +94,55 @@ test('the hover text carries the user message and the conclusion', () => {
   // A turn with no answer yet shows the user line only.
   const [pending] = transcriptTurns([message('user', 'still running', 'u2')]);
   assert.equal(turnRailHoverText(pending), '#1 still running');
+});
+
+test('the active turn is the last anchor the viewport has passed', () => {
+  const offsets = [0, 400, 900, 1500];
+  assert.equal(activeTurnIndex(offsets, 0), 0);
+  assert.equal(activeTurnIndex(offsets, 100), 0);
+  assert.equal(activeTurnIndex(offsets, 400), 1);
+  // Still short of the next anchor once the slack is taken into account.
+  assert.equal(activeTurnIndex(offsets, 880), 1);
+  assert.equal(activeTurnIndex(offsets, 899), 2);
+  assert.equal(activeTurnIndex(offsets, 1500), 3);
+  assert.equal(activeTurnIndex(offsets, 99_999), 3);
+});
+
+test('a scroll position inside the slack still counts as at the anchor', () => {
+  const offsets = [0, 400];
+  // A turn scrolled to `block: 'start'` lands a pixel or two off the edge.
+  assert.equal(activeTurnIndex(offsets, 400 - TURN_RAIL_ACTIVE_SLACK_PX + 1), 1);
+  assert.equal(activeTurnIndex(offsets, 400 - TURN_RAIL_ACTIVE_SLACK_PX - 1), 0);
+});
+
+test('the first turn stays active while the viewport is above every anchor', () => {
+  assert.equal(activeTurnIndex([], 0), -1);
+  // The port's own top padding puts the first anchor below the top edge; the
+  // turn is still the one on screen.
+  assert.equal(activeTurnIndex([50], 0), 0);
+  assert.equal(activeTurnIndex([50], 30), 0);
+});
+
+test('an anchor the rail cannot find does not shadow the ones above it', () => {
+  // A missing anchor is measured as +Infinity: the turns above it stay active
+  // rather than the rail going dark.
+  const offsets = [0, Number.POSITIVE_INFINITY];
+  assert.equal(activeTurnIndex(offsets, 10), 0);
+  assert.equal(activeTurnIndex(offsets, 99_999), 0);
+});
+
+test('the animated row is the one whose range holds the turn', () => {
+  const slots = turnRailTickSlots(3, 5);
+  assert.equal(slots[1][0], 0);
+  assert.equal(turnRailRowFor(slots, 0), 1);
+  assert.equal(turnRailRowFor(slots, 2), 3);
+  assert.equal(turnRailRowFor(slots, -1), -1);
+  // Past RAIL_ROWS turns a row stands for a range: the turn maps to that row.
+  const merged = turnRailTickSlots(60, 4);
+  assert.deepEqual(merged.map((row) => row.length), [15, 15, 15, 15]);
+  assert.equal(turnRailRowFor(merged, 0), 0);
+  assert.equal(turnRailRowFor(merged, 20), 1);
+  assert.equal(turnRailRowFor(merged, 59), 3);
+  // A gap row draws nothing, so it can never be the animated row.
+  assert.equal(turnRailRowFor(turnRailTickSlots(2, 5), 1), 2);
 });
