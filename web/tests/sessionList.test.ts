@@ -7,8 +7,10 @@ import assert from 'node:assert/strict';
 
 import type { SessionItem } from '../src/stores/historyMapper.ts';
 import {
+  displaySessionTitle,
   filterSessions,
   groupSessionsByTime,
+  isPlaceholderSessionTitle,
   matchesProject,
   projectLabel,
   sessionGroupKey,
@@ -128,4 +130,23 @@ test('matchesProject covers the label, the full path and the registered name', (
   assert.equal(matchesProject(entry, 'SYNAPSE'), true);
   assert.equal(matchesProject(entry, 'agent'), true);
   assert.equal(matchesProject(entry, 'nope'), false);
+});
+
+test('an unnamed session is recognised by every placeholder the store uses', () => {
+  // Mirrors `is_default_session_title` in `synapse/sessions/store.py`.
+  for (const title of ['', '   ', 't1', 'session t1', 'session', 'New session', 'UNTITLED']) {
+    assert.equal(isPlaceholderSessionTitle(title, 't1'), true, `${JSON.stringify(title)} is a placeholder`);
+  }
+  // The label this console shows for such a row is one too, so a second read is
+  // never triggered by its own fallback.
+  assert.equal(isPlaceholderSessionTitle('新会话 4f2a1b', 't1'), true);
+  for (const title of ['fix the flaky test', '新会话记录', 'sessions']) {
+    assert.equal(isPlaceholderSessionTitle(title, 't1'), false, `${title} is a name`);
+  }
+});
+
+test('an unnamed session shows the console label, a named one its own title', () => {
+  assert.equal(displaySessionTitle('session 4f2a1b8c9d0e', '4f2a1b8c9d0e'), '新会话 4f2a1b');
+  assert.equal(displaySessionTitle('', '4f2a1b8c9d0e'), '新会话 4f2a1b');
+  assert.equal(displaySessionTitle('  fix   the flaky test ', 't1'), 'fix   the flaky test');
 });

@@ -445,12 +445,23 @@ class LocalAgentRuntimeService:
             raise ConflictError(str(exc)) from exc
         except RuntimeClosedError as exc:
             raise ClosedError(str(exc)) from exc
-        return CommandReceipt(
+        receipt = CommandReceipt(
             command_id=command.command_id,
             session=command.session,
             turn_id=handle.turn_id,
             accepted=True,
         )
+        # The first user message names the session.  Bound here rather than in each
+        # client, so the console, the TUI and any later consumer share one rule:
+        # the store keeps a title that is already bound and only replaces a
+        # placeholder, so a later turn never renames a session the user named.
+        try:
+            await self._session_metadata.touch(command.session, title_hint=command.text)
+        except Exception as exc:  # noqa: BLE001 - the turn is already running
+            # A title is cosmetic: a metadata write failure must not turn an
+            # accepted turn into an error for the caller, and the next turn retries.
+            _LOGGER.warning("failed to bind session title: %s", exc)
+        return receipt
 
     async def open_session(self, command: OpenSessionCommand) -> OpenSessionResult:
         """Open (idempotently) the runtime for one session.

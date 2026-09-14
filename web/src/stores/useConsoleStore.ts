@@ -68,7 +68,13 @@ import {
 } from '../runtime-client/attachments.ts';
 import type { AttachmentUploadSource } from '../runtime-client/attachments.ts';
 import type { TranscriptAttachment } from './historyAttachments.ts';
-import { SESSION_TITLE_MAX, normalizeSessionTitle, sessionTitleFrom } from './sessionList.ts';
+import {
+  SESSION_TITLE_MAX,
+  displaySessionTitle,
+  isPlaceholderSessionTitle,
+  normalizeSessionTitle,
+  sessionTitleFrom,
+} from './sessionList.ts';
 import {
   GOAL_OBJECTIVE_MAX_CHARS,
   normalizeGoalBudget,
@@ -1333,21 +1339,36 @@ function resolveSessionTitle(session: SessionRef, title?: string): string {
     ...Object.values(state.projectSessions).flat(),
     ...state.sessionSearch.items,
   ];
-  return sessionTitleFrom(loaded, session.thread_id) ?? session.thread_id;
+  // Nothing is known about the thread yet: show the console's own placeholder
+  // label rather than a raw id.
+  return sessionTitleFrom(loaded, session.thread_id) ?? displaySessionTitle('', session.thread_id);
 }
 
 /**
- * Label for a brand-new session row.
+ * Read back a title the daemon may just have bound.
  *
- * This is only a *title*: the session identity is allocated by the server
- * (`runtime.session.create`).  The runtime replaces it with a title derived from
- * the first user message once the conversation starts.
+ * A session's name comes from its first user message, derived server-side on
+ * `runtime.turn.submit` (the same rule the TUI applies), so a session that was
+ * still unnamed when the turn was accepted needs one list read to show its real
+ * name in the header and the sidebar.  A session that already has a title is left
+ * alone: the read is only worth paying while the row is still a placeholder.
  */
-function freshSessionLabel(): string {
-  const chars = '0123456789abcdef';
-  let suffix = '';
-  for (let i = 0; i < 6; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
-  return `新会话 ${suffix}`;
+function refreshSessionTitleAfterTurn(session: SessionRef, shown: string): void {
+  if (!isPlaceholderSessionTitle(shown, session.thread_id)) return;
+  void useConsoleStore
+    .getState()
+    .fetchSessions()
+    .then(() => {
+      const state = useConsoleStore.getState();
+      // The user may have switched sessions while the list was in flight.
+      if (state.currentSession.thread_id !== session.thread_id) return;
+      const bound = sessionTitleFrom(state.sessions, session.thread_id);
+      if (bound !== null) useConsoleStore.setState({ sessionTitle: bound });
+    })
+    .catch((err: unknown) => {
+      // A name is cosmetic: a failed read must never surface as a send failure.
+      console.warn('Failed to refresh the session title:', err);
+    });
 }
 
 async function attachToSession(session: SessionRef, title?: string): Promise<void> {
@@ -1812,8 +1833,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // `runtime.session.open` produced a session the daemon had never stored, so
     // rename/delete/goal on it failed with `not_found` until its first turn
     // happened to insert the row.
+    // No title is sent: the server stores its own placeholder, and the daemon
+    // binds the real title from the first user message (`runtime.turn.submit`).
+    // A locally invented name would be persisted as a real title and would block
+    // that binding, which is exactly what left every session called "新会话 xxxx".
     const created = await client
-      .createSession({ project_id: currentSession.project_id, title: freshSessionLabel() })
+      .createSession({ project_id: currentSession.project_id })
       .catch((err: unknown) => {
         console.error('Failed to create session:', err);
         set({ sessionActionError: describeSessionActionError(err, '新建会话失败') });
@@ -1821,8 +1846,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       });
     if (created === null) return;
     const nextSession: SessionRef = created.session;
-    // The server echoes the stored title; it stays authoritative for every list.
-    const newTitle = created.title;
+    // The server echoes its placeholder until the first turn names the session;
+    // it is shown as this console's own label, and never written back.
+    const newTitle = displaySessionTitle(created.title, nextSession.thread_id);
     const newItem: SessionItem = {
       thread_id: nextSession.thread_id,
       title: newTitle,
@@ -2952,6 +2978,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       // finalized attachments stay server-side (never auto-deleted) and the
       // history projection renders them again after a refresh.
       set({ attachments: [] });
+      // The daemon may just have named this session from the message that was
+      // submitted: read the title back so the header and the list stop showing
+      // the placeholder.
+      refreshSessionTitleAfterTurn(currentSession, get().sessionTitle);
     } catch (err) {
       if (err instanceof ConnectionLostError && err.unknownOutcome) {
         // The submit may have reached the daemon and started a turn; the

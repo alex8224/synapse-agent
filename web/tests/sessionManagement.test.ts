@@ -207,6 +207,7 @@ test('search/rename/delete send the exact frames the sidebar produces', async ()
 const stubCalls: Array<{ method: string; params: any }> = [];
 let searchPlan: Array<() => Promise<unknown>> = [];
 let projectPlan: Array<() => Promise<unknown>> = [];
+let listPlan: Array<() => Promise<unknown>> = [];
 let deleteImpl: (params: any) => Promise<unknown> = async () => ({
   command_id: 'cmd',
   session: SESSION,
@@ -242,6 +243,7 @@ const ATTACHMENT_ID = 'f'.repeat(32);
 function stubClient() {
   return {
     getState: () => 'disconnected',
+    connect: () => Promise.resolve(undefined),
     searchSessions: (params: any) => {
       stubCalls.push({ method: 'runtime.session.search', params });
       const next = searchPlan.shift();
@@ -251,6 +253,11 @@ function stubClient() {
       stubCalls.push({ method: 'runtime.project.list', params });
       const next = projectPlan.shift();
       return next ? next() : Promise.resolve({ projects: [], next_offset: null, total: 0 });
+    },
+    listSessions: (params: any) => {
+      stubCalls.push({ method: 'runtime.session.list', params });
+      const next = listPlan.shift();
+      return next ? next() : Promise.resolve({ items: [], next_offset: null, total: 0 });
     },
     renameSession: (params: any) => {
       stubCalls.push({ method: 'runtime.session.rename', params });
@@ -363,6 +370,7 @@ function resetStore() {
   stubCalls.length = 0;
   searchPlan = [];
   projectPlan = [];
+  listPlan = [];
   deleteImpl = async () => ({
     command_id: 'cmd',
     session: SESSION,
@@ -707,17 +715,69 @@ test('a new session is persisted by the server before it is shown', async () => 
   // The identity is the server's: the console asks for one instead of inventing
   // it, which is exactly what left the row unpersisted before.
   assert.equal('thread_id' in create.params, false);
-  // The row still gets a label, but a label is a title — never an identity.
-  assert.equal(typeof create.params.title, 'string');
-  assert.ok(create.params.title.length > 0);
+  // No name is sent either: the daemon binds the title from the first user
+  // message, and a locally invented one would be stored as a real title and
+  // block that binding (every session used to stay "新会话 xxxx").
+  assert.equal('title' in create.params, false);
 
   const state = useConsoleStore.getState();
   assert.equal(state.currentSession.thread_id, 'allocated');
-  assert.equal(state.sessionTitle, 'session allocated');
+  // The server's placeholder is shown as this console's own label, never as the
+  // raw `session <thread_id>` it stores.
+  assert.equal(state.sessionTitle, '新会话 alloca');
   assert.equal(state.sessions[0].thread_id, 'allocated');
-  assert.equal(state.sessions[0].title, 'session allocated');
+  assert.equal(state.sessions[0].title, '新会话 alloca');
   assert.equal(state.sessionsTotal, 3);
   assert.equal(state.sessionActionError, null);
+});
+
+test('the first user message names the session, read back from the server', async () => {
+  await muted(() => useConsoleStore.getState().createNewSession());
+  assert.equal(useConsoleStore.getState().sessionTitle, '新会话 alloca');
+
+  // The daemon binds the title while the stored one is still a placeholder, so
+  // the console reads it back once instead of deriving it itself.
+  listPlan = [
+    () =>
+      Promise.resolve({
+        items: [
+          {
+            thread_id: 'allocated',
+            title: 'fix the flaky test',
+            model: null,
+            active_model: null,
+            summary: null,
+            created_at: '2026-09-12T00:00:00Z',
+            updated_at: '2026-09-12T00:00:00Z',
+          },
+        ],
+        next_offset: null,
+        total: 1,
+      }),
+  ];
+  await muted(() => useConsoleStore.getState().submitPrompt('fix the flaky test'));
+  await tick();
+
+  const state = useConsoleStore.getState();
+  assert.equal(state.sessionTitle, 'fix the flaky test');
+  assert.equal(state.sessions[0].title, 'fix the flaky test');
+  assert.equal(
+    stubCalls.filter((call) => call.method === 'runtime.session.list').length,
+    1,
+  );
+});
+
+test('a session that already has a title is not re-read', async () => {
+  // 'First' is a real title, so the submit must not spend a list read on it.
+  useConsoleStore.setState({ sessionTitle: 'First' });
+  await muted(() => useConsoleStore.getState().submitPrompt('hello'));
+  await tick();
+
+  assert.equal(useConsoleStore.getState().sessionTitle, 'First');
+  assert.equal(
+    stubCalls.some((call) => call.method === 'runtime.session.list'),
+    false,
+  );
 });
 
 test('an idempotent re-create does not inflate the session total', async () => {

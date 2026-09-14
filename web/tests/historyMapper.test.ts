@@ -51,7 +51,9 @@ test('toSessionItem maps RPC metadata to the sidebar model with fallbacks', () =
     summary: 's',
   });
   assert.equal(item.thread_id, 't1');
-  assert.equal(item.title, 't1'); // empty title falls back to thread_id
+  // An unnamed row shows the console's own label, not the raw id: the server
+  // keeps its placeholder until the first user message names the session.
+  assert.equal(item.title, '新会话 t1');
   assert.equal(item.time_label, '06-07 08:09');
 });
 

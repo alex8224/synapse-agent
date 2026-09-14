@@ -15,6 +15,7 @@ import { todoPreviewFromArgs } from './todoView.ts';
 import { HISTORY_PAGE_SIZE } from '../client/types.ts';
 import type { HistoryEvent, SessionMetadataItem } from '../client/types.ts';
 import { mapHistoryAttachments, type TranscriptAttachment } from './historyAttachments.ts';
+import { displaySessionTitle } from './sessionList.ts';
 
 /**
  * One tool invocation as rendered inside a transcript tool group.
@@ -197,7 +198,9 @@ export function timeLabelFromIso(iso?: string | null): string {
 export function toSessionItem(item: SessionMetadataItem): SessionItem {
   return {
     thread_id: item.thread_id,
-    title: item.title || item.thread_id,
+    // An unnamed row shows the console's own placeholder label, never the raw
+    // `session <thread_id>` the server stores until the first user message.
+    title: displaySessionTitle(item.title, item.thread_id),
     updated_at: item.updated_at,
     time_label: timeLabelFromIso(item.updated_at),
   };

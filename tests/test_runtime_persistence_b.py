@@ -151,6 +151,28 @@ def test_runtime_persistence_missing_path_disables_cleanly() -> None:
     assert binder.enabled is False
 
 
+def test_submit_binds_the_first_user_message_as_the_session_title(tmp_path: Path) -> None:
+    """The daemon names a session, so no client has to derive the title."""
+
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        factory = _SessionFactory()
+        manager = _manager(settings, factory, None)
+        service = _service(manager)
+        await service.open_session(OpenSessionCommand(SessionRef("p1", "t1")))
+
+        await service.submit_turn(
+            SubmitTurnCommand(session=SessionRef("p1", "t1"), text="  bind   me  ")
+        )
+
+        page = await service.list_sessions(ListSessionsQuery(project_id="p1"))
+        titles = {item.thread_id: item.title for item in page.items}
+        assert titles["t1"] == "bind me"
+        await manager.shutdown()
+
+    run(scenario())
+
+
 def test_consumer_style_service_persists_history_and_survives_restart(tmp_path: Path) -> None:
     async def first_pass() -> None:
         settings = _settings(tmp_path)

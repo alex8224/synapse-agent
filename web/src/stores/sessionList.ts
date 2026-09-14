@@ -28,6 +28,46 @@ export function normalizeSessionTitle(title: string): string | null {
   return text;
 }
 
+/** Characters of a thread id shown when a session has no name yet. */
+const SHORT_ID_CHARS = 6;
+
+/**
+ * Whether a stored title is still a placeholder rather than a name.
+ *
+ * Mirrors the store's own rule (`is_default_session_title` in
+ * `synapse/sessions/store.py`) plus the label this console shows for such a row,
+ * so "does this session still need a name?" has one answer on both sides: the
+ * daemon binds the first user message while the title is a placeholder, and the
+ * console only asks for the title back while that is still the case.
+ */
+export function isPlaceholderSessionTitle(
+  title: string | null | undefined,
+  threadId: string,
+): boolean {
+  const text = (title ?? '').trim();
+  if (text === '' || text === threadId) return true;
+  if (text.startsWith('session ') || text.startsWith('新会话 ')) return true;
+  const folded = text.toLowerCase();
+  return folded === 'session' || folded === 'new session' || folded === 'untitled';
+}
+
+/**
+ * Title to show for one session row.
+ *
+ * A row that has not been named yet is shown as `新会话 <id>`: the server keeps
+ * its own placeholder until the first user message arrives, and `session
+ * <thread_id>` is not something to put in front of a reader.  Anything else is
+ * the real title, unchanged.
+ */
+export function displaySessionTitle(
+  title: string | null | undefined,
+  threadId: string,
+): string {
+  const text = (title ?? '').trim();
+  if (!isPlaceholderSessionTitle(text, threadId)) return text;
+  return `新会话 ${threadId.slice(0, SHORT_ID_CHARS)}`;
+}
+
 export interface SessionGroup {
   key: SessionGroupKey;
   label: string;

@@ -228,6 +228,21 @@ class SessionStoreMetadataStore:
                 info = store.rename(thread_id, title)
         return _item_from_info(info) if info is not None else None
 
+    def touch(
+        self, thread_id: str, *, title_hint: str | None = None
+    ) -> SessionMetadataItem:
+        """Bind a hint as the title while the stored title is still a placeholder.
+
+        The store owns the rule (``SessionStore.touch`` / ``is_default_session_title``):
+        a bound title is never overwritten by a later hint, while an unbound row --
+        including one created without a title -- takes the first user message as its
+        name.  Unlike ``rename`` this also creates a missing row, which is what lets
+        a client that opened a session without persisting metadata still name it.
+        """
+        with self._lock, self._open() as store:
+            info = store.touch(thread_id, title_hint=title_hint)
+        return _item_from_info(info)
+
     def delete(self, thread_id: str) -> bool:
         with self._lock:
             if not self._path.is_file():
@@ -363,6 +378,25 @@ class SessionMetadataService:
             title=item.title,
             renamed=True,
         )
+
+    async def touch(
+        self, session: SessionRef, *, title_hint: str | None = None
+    ) -> SessionMetadataItem:
+        """Bind one turn's user message as the session title while it is a placeholder.
+
+        This is the TUI's rule (``store.touch(title_hint=...)`` on every turn) moved
+        where the metadata lives, so every consumer gets a named session without
+        re-implementing the derivation: the first user message names the session,
+        and a title the user typed later is never overwritten.
+        """
+        self._raise_if_closed()
+        async with self._mutation_lock:
+            context = await self._context(session.project_id)
+            store = self._store(context)
+            item = await asyncio.to_thread(
+                store.touch, session.thread_id, title_hint=title_hint
+            )
+        return item
 
     async def delete(self, command: DeleteSessionCommand) -> DeleteSessionResult:
         """Delete one session's metadata row and thread goal (busy rejected).

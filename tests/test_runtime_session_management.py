@@ -199,6 +199,43 @@ def test_rename_overrides_autotouch_title_and_search_is_readonly(tmp_path: Path)
     assert not missing.exists()
 
 
+def test_touch_names_a_session_from_its_first_user_message(tmp_path: Path) -> None:
+    """The store's autotouch rule, reached through the service port."""
+    db = tmp_path / "sessions.sqlite"
+    service = _service(db)
+
+    async def run() -> None:
+        created = await service.create(CreateSessionCommand(project_id="proj", thread_id="t1"))
+        assert created.title == "session t1"
+
+        bound = await service.touch(
+            SessionRef("proj", "t1"), title_hint="  fix   the\nflaky test "
+        )
+        assert bound.title == "fix the flaky test"
+
+        # A later turn must not rename the session...
+        again = await service.touch(SessionRef("proj", "t1"), title_hint="second turn")
+        assert again.title == "fix the flaky test"
+
+        # ...and neither does a hint for a title the user bound themselves.
+        await service.create(
+            CreateSessionCommand(project_id="proj", thread_id="t2", title="Manual title")
+        )
+        kept = await service.touch(SessionRef("proj", "t2"), title_hint="from the turn")
+        assert kept.title == "Manual title"
+
+        # A session opened without ever persisting metadata is named as well.
+        fresh = await service.touch(SessionRef("proj", "t3"), title_hint="opened but unpersisted")
+        assert fresh.thread_id == "t3"
+        assert fresh.title == "opened but unpersisted"
+
+        # An attachment-only turn carries no hint: the placeholder stays.
+        untouched = await service.touch(SessionRef("proj", "t4"), title_hint="")
+        assert untouched.title == "session t4"
+
+    asyncio.run(run())
+
+
 def test_delete_rejects_busy_runtime_and_retains_history(tmp_path: Path) -> None:
     db = tmp_path / "sessions.sqlite"
     checkpoint = tmp_path / "checkpoints.sqlite"
