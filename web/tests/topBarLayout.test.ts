@@ -63,13 +63,25 @@ test('the session title is the centred middle track', () => {
   );
 });
 
-test('the change statistics show the real line counts on the right edge', () => {
-  const stats = classNamesOf('{/* Right track: the change statistics');
-  assert.ok(stats.includes('justify-self-end'), 'the statistics track must hug the right edge');
-  const chip = source.slice(source.indexOf('{/* Right track'));
+test('the change statistics hang off the branch chip', () => {
+  const branch = source.indexOf('{/* Branch context only exists for a git-managed workspace');
+  const centre = source.indexOf('{/* Centre track');
+  assert.ok(branch >= 0 && centre > branch, 'the branch chip must precede the centre track');
+  const chip = source.slice(branch, centre);
+  assert.ok(
+    chip.indexOf('{gitBranch}') < chip.indexOf('+{insertions}'),
+    'the statistics must follow the branch name they describe',
+  );
   assert.ok(chip.includes('setExplorerOpen(true)'), 'the statistics chip must open the explorer');
   assert.ok(chip.includes('+{insertions}'), 'the added lines render as +N');
   assert.ok(chip.includes('-{deletions}'), 'the removed lines render as -M');
+  // The dirty marker stays; the file-with-plus/minus glyph does not.
+  assert.ok(chip.includes('bg-amber-500'), 'a dirty workspace still shows its marker');
+  assert.equal(
+    /\bdifference\b/.test(source),
+    false,
+    'the statistics chip must not carry the file-difference icon',
+  );
   assert.equal(
     /files\.length/.test(chip),
     false,
@@ -156,9 +168,11 @@ test('the branch chip and the statistics chip both open the git explorer', () =>
   );
   assert.ok(branch.includes('<button'), 'the branch chip must be a button, not a div');
   assert.ok(branch.includes('setExplorerOpen(true)'), 'the branch chip must open the explorer');
-  const stats = source.slice(source.indexOf('{/* Right track'));
-  assert.ok(stats.includes('<button'), 'the statistics chip must stay a button');
-  assert.ok(stats.includes('setExplorerOpen(true)'), 'the statistics chip must open the explorer');
+  // The statistics chip is a button too, and now sits inside that same track.
+  assert.ok(
+    (branch.match(/<button/g) ?? []).length >= 2,
+    'the statistics chip must stay a button next to the branch chip',
+  );
 });
 
 test('a narrow window drops the secondary chip, not the title or the branch', () => {

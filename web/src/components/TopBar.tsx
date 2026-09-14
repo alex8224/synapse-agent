@@ -119,6 +119,29 @@ export const TopBar: React.FC = () => {
                 <span className="text-amber-600">↓{gitStatus.behind}</span>
               )}
             </button>
+            {/* Change statistics, hanging off the branch chip: the dot is the same
+                dirty marker the TUI's chrome shows, and `+N -M` are the real tracked
+                added/removed lines from `runtime.git.status` (no number at all while
+                they are unknown, never a fabricated zero).  Clicking it opens the
+                same read-only git explorer as the branch chip. */}
+            <button
+              type="button"
+              onClick={() => setExplorerOpen(true)}
+              title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-gray-800 transition-colors hover:bg-gray-100"
+            >
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  gitDirty ? 'bg-amber-500' : 'bg-emerald-500'
+                }`}
+              ></span>
+              {hasLineCounts && (
+                <>
+                  <span className="text-emerald-600">+{insertions}</span>
+                  <span className="text-red-600">-{deletions}</span>
+                </>
+              )}
+            </button>
           </>
         )}
       </div>
@@ -136,37 +159,11 @@ export const TopBar: React.FC = () => {
         <span className="truncate font-medium">{sessionTitle}</span>
       </div>
 
-      {/* Right track: the change statistics, pinned to the right edge of its
-          track.  The dot is the same dirty marker the TUI's chrome shows, and
-          this chip opens the read-only git explorer (changed files and per-file
-          diff) alongside the branch chip.  `+N -M` are the real tracked
-          added/removed lines from `runtime.git.status`; while they are unknown
-          the chip shows no number at all rather than a misleading 0. */}
-      <div className="flex min-w-0 items-center justify-self-end">
-        {gitBranch !== '' && (
-          <button
-            type="button"
-            onClick={() => setExplorerOpen(true)}
-            title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
-            className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-gray-800 transition-colors hover:bg-gray-100"
-          >
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${
-                gitDirty ? 'bg-amber-500' : 'bg-emerald-500'
-              }`}
-            ></span>
-            <span className="material-symbols-outlined text-[15px] text-gray-500">
-              difference
-            </span>
-            {hasLineCounts && (
-              <>
-                <span className="text-emerald-600">+{insertions}</span>
-                <span className="text-red-600">-{deletions}</span>
-              </>
-            )}
-          </button>
-        )}
-      </div>
+      {/* Right track: deliberately empty.  The change statistics used to sit here
+          on the right edge; they now hang off the branch chip, so the numbers are
+          read next to the branch they describe.  The track stays in the grid
+          because the two equal `1fr` sides are what keep the title centred. */}
+      <div />
     </header>
     {explorerOpen && <GitExplorer onClose={() => setExplorerOpen(false)} />}
     </>
