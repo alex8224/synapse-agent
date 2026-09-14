@@ -1,32 +1,13 @@
 import React, { useMemo } from 'react';
 import { parseMarkdown, type Block, type Span } from '../markdown/parse.ts';
 import { CodeBlock } from './CodeBlock.tsx';
+import { DisplayMath, InlineMath } from './MathTex.tsx';
+import { MermaidBlock } from './MermaidBlock.tsx';
 
 /** Above this size the document is rendered as plain text instead of parsed. */
 const PARSE_MAX_CHARS = 200_000;
 
 const HEADING_CLASS = ['text-lg', 'text-base', 'text-sm', 'text-sm', 'text-xs', 'text-xs'];
-
-/**
- * Display math (`$$...$$`).
- *
- * Deliberately dependency-free: the console ships no TeX engine, so the formula
- * is shown as a centered monospace source block that is explicitly labelled as
- * math (never as code), instead of silently pretending to be a rendered formula.
- */
-const MathBlock: React.FC<{ tex: string; streaming: boolean }> = ({ tex, streaming }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-purple-100 bg-[#faf8ff]">
-    <div className="flex items-center justify-between border-b border-purple-100 bg-[#f4f0fd] px-2.5 py-1">
-      <span className="font-mono text-[10px] uppercase tracking-wide text-purple-500">
-        公式{streaming ? ' · streaming' : ''}
-      </span>
-      <span className="font-mono text-[10px] text-purple-400">LaTeX 源码（未排版）</span>
-    </div>
-    <pre className="overflow-auto whitespace-pre-wrap px-3 py-3 text-center font-mono text-[13px] leading-6 text-gray-800">
-      {tex}
-    </pre>
-  </div>
-);
 
 function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
   return spans.map((span, index) => {
@@ -35,15 +16,7 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
       return <React.Fragment key={key}>{span.text}</React.Fragment>;
     }
     if (span.type === 'math') {
-      return (
-        <span
-          key={key}
-          title={`公式：${span.tex}`}
-          className="rounded bg-[#f6f4fb] px-1 font-mono text-[0.9em] text-purple-700"
-        >
-          {span.tex}
-        </span>
-      );
+      return <InlineMath key={key} tex={span.tex} />;
     }
     if (span.type === 'code') {
       return (
@@ -72,6 +45,11 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
         </del>
       );
     }
+    // `<br>` in the source: a real element, so a cell can stack several values
+    // without the tag itself ever reaching the DOM as text or as markup.
+    if (span.type === 'break') {
+      return <br key={key} />;
+    }
     return (
       <a
         key={key}
@@ -91,22 +69,24 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
     const key = `${keyPrefix}.${index}`;
 
     if (block.type === 'code') {
+      // A `mermaid` fence is a diagram, not code: it renders as an SVG, and
+      // falls back to this same code block (with a visible reason) while it
+      // streams or when it cannot be rendered.
+      if (block.lang === 'mermaid') {
+        return <MermaidBlock key={key} code={block.code} streaming={!block.closed} />;
+      }
       return (
         <CodeBlock
           key={key}
           lang={block.lang}
           code={block.code}
           streaming={!block.closed}
-          // No mermaid renderer ships with the console (and adding one would
-          // pull in a runtime dependency): say so instead of showing a diagram
-          // that is silently missing.
-          note={block.lang === 'mermaid' ? '终端图形渲染未实现' : undefined}
         />
       );
     }
 
     if (block.type === 'math') {
-      return <MathBlock key={key} tex={block.tex} streaming={!block.closed} />;
+      return <DisplayMath key={key} tex={block.tex} streaming={!block.closed} />;
     }
 
     if (block.type === 'heading') {
@@ -212,7 +192,9 @@ export interface MarkdownProps {
  * Typed nodes are rendered through React (never raw HTML).  An oversized
  * document falls back to plain text so a pathological answer cannot stall the
  * transcript, and an unterminated fence still renders as a code block because
- * answers stream in token by token.
+ * answers stream in token by token.  The two exceptions whose output is markup
+ * by nature -- KaTeX formulas and mermaid diagrams -- are rendered by their own
+ * components, which own the sanitization (see `GeneratedHtml.tsx`).
  */
 const MarkdownBody: React.FC<MarkdownProps> = ({ text }) => {
   const blocks = useMemo(

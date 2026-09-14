@@ -29,6 +29,7 @@ function plainText(spans: ReturnType<typeof parseInline>): string {
       if (span.type === 'link') return `[link:${span.href}]${plainText(span.spans)}`;
       if (span.type === 'strong') return `[b]${plainText(span.spans)}[/b]`;
       if (span.type === 'em') return `[i]${plainText(span.spans)}[/i]`;
+      if (span.type === 'break') return '[br]';
       return `[del]${plainText(span.spans)}[/del]`;
     })
     .join('');
@@ -185,4 +186,37 @@ test('parsing never throws on pathological input', () => {
   for (const sample of samples) {
     assert.doesNotThrow(() => parseMarkdown(sample), `parseMarkdown(${JSON.stringify(sample)})`);
   }
+});
+
+test('a <br> tag becomes a hard line break, in every casing and spacing', () => {
+  for (const tag of ['<br>', '<br/>', '<br />', '<BR>', '<Br />']) {
+    assert.equal(plainText(parseInline(`a${tag}b`)), 'a[br]b', `parseInline(${JSON.stringify(tag)})`);
+  }
+  assert.deepEqual(parseInline('a<br>b').map((span) => span.type), ['text', 'break', 'text']);
+});
+
+test('a line break is its own span, so the tag never reaches the DOM as text', () => {
+  const spans = parseInline('A.<br>功能改动');
+  assert.deepEqual(spans, [
+    { type: 'text', text: 'A.' },
+    { type: 'break' },
+    { type: 'text', text: '功能改动' },
+  ]);
+});
+
+test('text that only looks like a break tag stays text', () => {
+  for (const sample of ['a<brx>b', 'a<br', 'a<b r>b', 'a< br>b', 'a</br>b']) {
+    assert.equal(
+      parseInline(sample).some((span) => span.type === 'break'),
+      false,
+      `parseInline(${JSON.stringify(sample)}) must not produce a break`,
+    );
+  }
+});
+
+test('a table cell can stack values with <br>', () => {
+  const blocks = parseMarkdown('| a | b |\n| --- | --- |\n| x<br>y | 2 |');
+  const table = blocks[0] as BlockTable;
+  assert.equal(plainText(table.rows[0][0]), 'x[br]y');
+  assert.deepEqual(table.rows[0][0].map((span) => span.type), ['text', 'break', 'text']);
 });

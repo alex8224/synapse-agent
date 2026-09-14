@@ -1,10 +1,12 @@
 /**
- * Offline tests for the dependency-free math / mermaid presentation.
+ * Offline tests for the classification half of math / mermaid rendering.
  *
- * The console ships no TeX or mermaid renderer, so the parser must at least
- * *classify* both explicitly (never silently degrading a formula into prose or a
- * diagram into an anonymous code block), and must stay conservative enough that
- * ordinary prose about money is still text.
+ * The parser must classify both explicitly -- never silently degrading a formula
+ * into prose or a diagram into an anonymous code block -- and must stay
+ * conservative enough that ordinary prose about money is still text.  What the
+ * classified nodes are then rendered *as* (KaTeX markup, a mermaid SVG, or the
+ * labelled source when either refuses) is covered by `mathRender.test.ts`,
+ * `markdownRenderGuard.test.ts` and the browser check.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

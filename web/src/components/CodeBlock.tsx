@@ -67,7 +67,14 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
         </span>
         <div className="flex items-center gap-2">
           {note !== undefined && (
-            <span className="font-sans text-[10px] text-amber-600">{note}</span>
+            // A renderer's failure reason can be long; it truncates instead of
+            // squeezing the language label or wrapping the header.
+            <span
+              title={note}
+              className="max-w-[24rem] truncate font-sans text-[10px] text-amber-600"
+            >
+              {note}
+            </span>
           )}
           <button
             type="button"

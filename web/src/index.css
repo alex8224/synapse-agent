@@ -61,4 +61,37 @@ body {
   .font-code-sm { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 16px; font-weight: 450; }
   .font-body-sm { font-family: 'Inter', sans-serif; font-size: 13px; line-height: 18px; font-weight: 400; }
   .font-label-caps { font-family: 'Inter', sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
+
+  /*
+    Typeset formulas and diagrams live inside blocks that already carry the
+    transcript's own vertical rhythm, so the renderers' outer margins are
+    dropped (KaTeX sets `margin: 1em 0` on `.katex-display`) instead of
+    doubling the gap.  A display formula is allowed to be wider than the reading
+    column: it scrolls inside its own box rather than stretching the column.
+  */
+  .math-block .katex-display { margin: 0; }
+  .math-inline .katex { font-size: 1.05em; }
+  /* mermaid emits an inline `max-width` on its SVG; let a wide diagram scroll. */
+  .mermaid-diagram svg { max-width: 100%; height: auto; }
+}
+
+/*
+  Markdown table columns.
+
+  The table keeps the browser's automatic layout, which hands each column a
+  share of the reading width proportional to its content: a cell holding one
+  long path or identifier claims most of the row.  The column that pays for it
+  is the short one next to it, because a column is only ever squeezed down to
+  its minimum content width -- and for Chinese text, which may break between
+  any two characters, that minimum is a single character.  A three-character
+  label then renders as a ribbon four lines tall ("B. 新 / 功 / 能 / 文 / 件").
+
+  The floor below keeps every column readable.  It is deliberately declared
+  outside `@layer utilities`, so it outranks the Tailwind utilities on the
+  cells.  A table whose floors do not fit the column is not clipped: the
+  `overflow-x-auto` wrapper in `Markdown.tsx` scrolls it.
+*/
+.markdown-body th,
+.markdown-body td {
+  min-width: 8rem;
 }

@@ -40,7 +40,26 @@ export interface SpanMath {
   type: 'math';
   tex: string;
 }
-export type Span = SpanText | SpanCode | SpanStrong | SpanEm | SpanDel | SpanLink | SpanMath;
+/**
+ * A hard line break written as `<br>`, `<br/>` or `<br />`.
+ *
+ * Model answers routinely use the tag to stack several values inside one table
+ * cell, where there is no other way to ask for a break.  It stays a typed node
+ * so the React layer emits a real `<br />` element: the tag itself is never
+ * passed through as markup.
+ */
+export interface SpanBreak {
+  type: 'break';
+}
+export type Span =
+  | SpanText
+  | SpanCode
+  | SpanStrong
+  | SpanEm
+  | SpanDel
+  | SpanLink
+  | SpanMath
+  | SpanBreak;
 
 export interface BlockParagraph {
   type: 'paragraph';
@@ -101,6 +120,8 @@ const QUOTE_RE = /^\s{0,3}>/;
 const ITEM_RE = /^(\s*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
 /** Display-math opener: `$$` plus whatever follows it on the same line. */
 const DISPLAY_MATH_RE = /^\s{0,3}\$\$(.*)$/;
+/** Hard line break: `<br>`, `<br/>` or `<br />`, in any casing. */
+const BREAK_RE = /^<br\s*\/?>/i;
 
 /**
  * Keep only targets that cannot execute script.  A bare relative path is
@@ -246,6 +267,13 @@ export function parseInline(text: string): Span[] {
     }
 
     if (ch === '<') {
+      const br = BREAK_RE.exec(text.slice(i));
+      if (br) {
+        flush();
+        spans.push({ type: 'break' });
+        i += br[0].length;
+        continue;
+      }
       const auto = /^<(https?:\/\/[^>\s]+)>/.exec(text.slice(i));
       if (auto) {
         flush();

@@ -28,7 +28,10 @@
 且不影响 transcript 的可见滚动条。聊天区里的运行日志（thought / tools / info）是紧凑的次要
 层级，展开后才成为面板，助手回复保持正文排版。Markdown 表格按正文可读字号渲染（`text-sm`，
 14px；表头同字号、只用字重区分），单元格留出适度 padding，宽表在自身容器内横向滚动、不撑破
-阅读列；代码块与侧栏尺寸不变。
+阅读列；每个单元格另有 `8rem` 宽度下限（`src/index.css` 的 `.markdown-body th/td`，刻意声明在
+`@layer utilities` 之外以压过单元格上的工具类），否则自动表格布局会把短列一路压到最小内容宽度
+——中文可逐字断行，最小内容宽度就是一个字，`B. 新功能文件` 会渲染成五行竖排。下限之和超过阅读列
+时表格仍走自身的横向滚动，不会被裁掉。代码块与侧栏尺寸不变。
 
 这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
 `tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
@@ -47,11 +50,44 @@ Chrome/Edge，且不属于 `npm test`：
 node tests/shellLayout.verify.ts
 ```
 
+## Markdown 渲染：公式与图形
+
+正文一律由 `src/markdown/parse.ts` 解析成类型化节点、再由 React 渲染，**不生成 HTML**。
+只有两个渲染器的输出本身就是标记，它们各自承担自己的清洗责任：
+
+模型常写的硬换行标签 `<br>` / `<br/>` / `<br />`（任意大小写）也走类型化节点：解析器产出
+`{ type: 'break' }`，`Markdown.tsx` 渲染成 `<br />`。这样表格单元格里可以自己堆叠多行，而
+标签本身既不会作为文本显示、也不会作为标记注入（`tests/markdownParser.test.ts` 覆盖各种写法与
+否定样例，`<brx>` / `<b r>` / `</br>` 保持纯文本）。
+
+| 输入 | 渲染 | 失败/拒绝时的行为 |
+|---|---|---|
+| `$$...$$`（块）与 `$...$`（行内） | KaTeX（`src/markdown/tex.ts` + `src/components/MathTex.tsx`） | 回退为「公式 + LaTeX 源码」块并写明原因 |
+| ` ```mermaid ` 围栏 | mermaid（`src/components/MermaidBlock.tsx`），`import('mermaid')` 懒加载 | 回退为代码块，头部显示原因 |
+
+边界（`tests/markdownRenderGuard.test.ts` 静态守护）：
+
+- `src/**` 中唯一一处 `dangerouslySetInnerHTML` 在 `src/components/GeneratedHtml.tsx`，
+  只接受 KaTeX 输出与经 DOMPurify SVG profile 清洗过的 mermaid SVG；
+- KaTeX 固定以 `trust: false` / `throwOnError: false` / `maxExpand: 1000` 运行，
+  mermaid 固定以 `securityLevel: 'strict'` + `htmlLabels: false` 运行；
+- 含 `%%{...}%%` 指令或 YAML frontmatter（`---`）的图形**不渲染**：这两个是模型文本能把
+  CSS（`themeCSS` / `fontFamily`）带进 SVG 的仅有通道，mermaid 只校验 CSS 花括号配平、
+  DOMPurify 不解析 CSS，而内联 SVG 的 `<style>` 作用于整页。渲染结果里 `<style>` 的
+  `@import` / `url()` 也会被中和，作为 mermaid 升级后的兜底。空定义与超过 20000 字符的
+  图形同样拒绝——这些情况都回退为带原因的源码块；
+- mermaid 渲染到组件自己的离屏容器（不碰 `document.body`），流式未闭合的围栏在闭合前
+  一直是代码块，因此不会出现半张图或红色半成品公式。
+
+依赖口径：`mermaid` / `katex` / `dompurify` 是仅有的三个新增运行时依赖；mermaid 只在实际
+出现图形时下载（构建产物里是独立 chunk），KaTeX 与其字体随主包加载，不访问任何 CDN。
+
 ## 开发
 
 开发只依赖 Vite 做静态热更新与受控代理；它不读取任何 token 文件，也不实现
-业务中间件。先启动正式宿主（提供配对/会话 API 与 `/runtime-ws` 中继），
-再启动 dev server：
+业务中间件。先启动正式宿主（提供配对/会话 API 与 `/runtime-ws` 中继），再启动 dev
+server。宿主默认会按需拉起 runtime daemon（没有运行中的就起一个、退出时停掉；已有的
+就复用），所以这一步不需要另开终端跑 `synapse-runtime`：
 
 ```bash
 # 终端 1：正式宿主（也可以指向任意部署好的宿主）
