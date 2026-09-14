@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper.ts';
 import { mcpServerPhase } from '../stores/mcpRuntimeView.ts';
@@ -52,7 +53,23 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     toggleMcpGlobal,
     refreshMcpRuntime,
     saveMcpTools,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this panel paints: a reasoning delta must not re-render it.
+    useShallow((state) => ({
+      mcpServers: state.mcpServers,
+      mcpEnabled: state.mcpEnabled,
+      mcpRuntime: state.mcpRuntime,
+      mcpWarnings: state.mcpWarnings,
+      mcpConnecting: state.mcpConnecting,
+      mcpRuntimeKnown: state.mcpRuntimeKnown,
+      canToggleMcpGlobal: state.canToggleMcpGlobal,
+      runtimeStatus: state.runtimeStatus,
+      toggleMcpServer: state.toggleMcpServer,
+      toggleMcpGlobal: state.toggleMcpGlobal,
+      refreshMcpRuntime: state.refreshMcpRuntime,
+      saveMcpTools: state.saveMcpTools,
+    })),
+  );
 
   // Unsaved checkbox edits, keyed by server. An absent entry means "show the
   // persisted selection", so a refresh can never clobber an in-progress edit.

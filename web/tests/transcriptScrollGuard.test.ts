@@ -1,10 +1,11 @@
 /**
  * Source guards for the transcript's auto-scroll.
  *
- * Streaming must keep following the newest content, but a *view* change — opening
- * a thought or a tool group — must not: the store replaces the `messages` array
- * to flip the flag, and the auto-scroll effect keys off that array identity, so
- * without the guard the fold opened off-screen at the bottom of the page.
+ * Streaming must keep following the newest content, but only while the reader is
+ * already at the bottom: a *view* change (opening a fold) must never scroll, and
+ * neither must a stream the reader has deliberately scrolled away from.  The
+ * follow is instant rather than smooth, because a smooth animation whose target
+ * moves every few milliseconds is restarted (and never finishes) once per chunk.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -23,10 +24,34 @@ test('new content still scrolls the transcript to the bottom', () => {
   assert.ok(/}, \[messages\]\)/.test(transcript), 'the effect must still key off the messages array');
 });
 
+test('the follow is instant, never an animation restarted per chunk', () => {
+  assert.equal(
+    transcript.includes("behavior: 'smooth'"),
+    false,
+    'a smooth follow is restarted on every chunk while a turn streams',
+  );
+});
+
+test('only a view that is already at the bottom follows the stream', () => {
+  assert.ok(transcript.includes('pinnedToBottom'), 'the transcript must track whether it is pinned');
+  assert.ok(
+    transcript.includes('PINNED_TO_BOTTOM_PX'),
+    'the pin threshold must be a named constant, not a literal',
+  );
+  assert.ok(
+    /if \(!pinnedToBottom\.current/.test(transcript),
+    'an unpinned view must not be yanked to the bottom by a stream',
+  );
+  assert.ok(
+    transcript.includes("addEventListener('scroll'"),
+    'the pin state must follow real scrolling',
+  );
+});
+
 test('opening a fold never scrolls the transcript to the bottom', () => {
   assert.ok(transcript.includes('skipAutoScroll'), 'the transcript must have a scroll guard');
   assert.ok(
-    /handleToggleExpand = \(id: string\) => \{\s*skipAutoScroll\.current = true;/.test(transcript),
+    /handleToggleExpand = [\s\S]{0,80}skipAutoScroll\.current = true;/.test(transcript),
     'an expand toggle must raise the guard before it mutates the messages array',
   );
   // Every fold toggle goes through the guarded handler; a direct call would

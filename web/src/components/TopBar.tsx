@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel } from '../stores/sessionList.ts';
 import { GitExplorer } from './GitExplorer.tsx';
@@ -30,7 +31,18 @@ export const TopBar: React.FC = () => {
     gitDirty,
     gitStatus,
     sessionTitle,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this bar paints: a reasoning delta must not re-render it.
+    useShallow((state) => ({
+      toggleSidebar: state.toggleSidebar,
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      gitBranch: state.gitBranch,
+      gitDirty: state.gitDirty,
+      gitStatus: state.gitStatus,
+      sessionTitle: state.sessionTitle,
+    })),
+  );
   const [explorerOpen, setExplorerOpen] = useState(false);
 
   // The project label comes from the project list the sidebar already holds, and

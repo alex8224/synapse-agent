@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { ConsoleActions } from './ConsoleActions.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
@@ -52,7 +53,40 @@ export const SideBar: React.FC = () => {
     createNewSession,
     createSessionInProject,
     currentSession,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this column paints: a reasoning delta must not re-render
+    // the session list.
+    useShallow((state) => ({
+      isSidebarCollapsed: state.isSidebarCollapsed,
+      workspacePath: state.workspacePath,
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      expandedProjectIds: state.expandedProjectIds,
+      projectSessions: state.projectSessions,
+      loadingProjectIds: state.loadingProjectIds,
+      toggleProjectExpanded: state.toggleProjectExpanded,
+      switchProject: state.switchProject,
+      sessions: state.sessions,
+      sessionsTotal: state.sessionsTotal,
+      sessionsNextOffset: state.sessionsNextOffset,
+      sessionsLoading: state.sessionsLoading,
+      sessionQuery: state.sessionQuery,
+      setSessionQuery: state.setSessionQuery,
+      sessionSearch: state.sessionSearch,
+      loadMoreSessionSearch: state.loadMoreSessionSearch,
+      renameSession: state.renameSession,
+      deleteSession: state.deleteSession,
+      sessionActionError: state.sessionActionError,
+      sessionNotice: state.sessionNotice,
+      dismissSessionAlert: state.dismissSessionAlert,
+      searchFocusToken: state.searchFocusToken,
+      requestSessionSearchFocus: state.requestSessionSearchFocus,
+      loadMoreSessions: state.loadMoreSessions,
+      createNewSession: state.createNewSession,
+      createSessionInProject: state.createSessionInProject,
+      currentSession: state.currentSession,
+    })),
+  );
 
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);

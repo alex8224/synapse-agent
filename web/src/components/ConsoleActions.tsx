@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { ArtifactsPanel } from './ArtifactsPanel.tsx';
 
@@ -29,7 +30,23 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
     logoutConsole,
     runtimeDiagnostics,
     loadRuntimeDiagnostics,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields these actions paint: a reasoning delta must not re-render
+    // them.
+    useShallow((state) => ({
+      workspacePath: state.workspacePath,
+      gitBranch: state.gitBranch,
+      sessionTitle: state.sessionTitle,
+      currentSession: state.currentSession,
+      modelName: state.modelName,
+      connectionState: state.connectionState,
+      usage: state.usage,
+      metricsLabel: state.metricsLabel,
+      logoutConsole: state.logoutConsole,
+      runtimeDiagnostics: state.runtimeDiagnostics,
+      loadRuntimeDiagnostics: state.loadRuntimeDiagnostics,
+    })),
+  );
 
   const [openPanel, setOpenPanel] = useState<'info' | 'diagnostics' | 'artifacts' | null>(null);
 

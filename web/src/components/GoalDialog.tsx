@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   GOAL_OBJECTIVE_MAX_CHARS,
@@ -52,7 +53,22 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
     pauseGoal,
     resumeGoal,
     dismissGoalAlert,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this dialog paints: a reasoning delta must not re-render it.
+    useShallow((state) => ({
+      currentSession: state.currentSession,
+      goal: state.goal,
+      goalBusy: state.goalBusy,
+      goalActionError: state.goalActionError,
+      goalNotice: state.goalNotice,
+      setGoal: state.setGoal,
+      editGoal: state.editGoal,
+      clearGoal: state.clearGoal,
+      pauseGoal: state.pauseGoal,
+      resumeGoal: state.resumeGoal,
+      dismissGoalAlert: state.dismissGoalAlert,
+    })),
+  );
 
   const [objective, setObjective] = useState('');
   const [budget, setBudget] = useState('');

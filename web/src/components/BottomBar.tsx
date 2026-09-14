@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   contextOccupancy,
   sessionUsageSegments,
@@ -41,7 +42,18 @@ export const BottomBar: React.FC = () => {
     sessionUsage,
     contextWindow,
     goal,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this strip paints: a reasoning delta must not re-render it.
+    useShallow((state) => ({
+      mcpStatus: state.mcpStatus,
+      mcpServers: state.mcpServers,
+      runtimeStatus: state.runtimeStatus,
+      usage: state.usage,
+      sessionUsage: state.sessionUsage,
+      contextWindow: state.contextWindow,
+      goal: state.goal,
+    })),
+  );
 
   const [showMcpPanel, setShowMcpPanel] = useState(false);
   const [showGoalDialog, setShowGoalDialog] = useState(false);

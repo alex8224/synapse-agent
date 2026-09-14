@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 
@@ -23,7 +24,20 @@ export const ModelControls: React.FC = () => {
     canSetThinking,
     setThinkingLevel,
     thinkingLevelError,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields these controls paint: a reasoning delta must not re-render
+    // them.
+    useShallow((state) => ({
+      modelName: state.modelName,
+      availableModels: state.availableModels,
+      setModel: state.setModel,
+      thinkingLevel: state.thinkingLevel,
+      thinkingLevels: state.thinkingLevels,
+      canSetThinking: state.canSetThinking,
+      setThinkingLevel: state.setThinkingLevel,
+      thinkingLevelError: state.thinkingLevelError,
+    })),
+  );
 
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showThinkingPicker, setShowThinkingPicker] = useState(false);

@@ -214,7 +214,7 @@ export interface MarkdownProps {
  * transcript, and an unterminated fence still renders as a code block because
  * answers stream in token by token.
  */
-export const Markdown: React.FC<MarkdownProps> = ({ text }) => {
+const MarkdownBody: React.FC<MarkdownProps> = ({ text }) => {
   const blocks = useMemo(
     () => (text.length > PARSE_MAX_CHARS ? null : parseMarkdown(text)),
     [text],
@@ -224,3 +224,11 @@ export const Markdown: React.FC<MarkdownProps> = ({ text }) => {
   }
   return <div className="markdown-body">{renderBlocks(blocks, 'md')}</div>;
 };
+
+/**
+ * Memoized on `text`: a row that re-renders for an unrelated reason (an activity
+ * tick, a fold in another row) must not re-render a document that did not change.
+ * The parse cache alone would not be enough -- `renderBlocks` would still rebuild
+ * every element of the document.
+ */
+export const Markdown = React.memo(MarkdownBody);

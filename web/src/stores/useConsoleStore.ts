@@ -48,9 +48,16 @@ import {
 } from './mcpRuntimeView.ts';
 import type { McpRuntimeServerState } from './mcpRuntimeView.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
-import { reduceRuntimeEvent, type ActivityView } from './liveEventReducer.ts';
+import type { ActivityView } from './liveEventReducer.ts';
 import { isTurnTerminalKind } from './liveEventReducer.ts';
 import type { PendingApproval } from './liveEventReducer.ts';
+import {
+  coalesceLiveEvents,
+  DELTA_COALESCE_MS,
+  foldLiveEvents,
+  isCoalescibleDeltaKind,
+  type LiveEventEntry,
+} from './liveDeltaBatch.ts';
 import type { UsageView } from './usageView.ts';
 import { parseSessionUsage, type SessionUsage } from './usageView.ts';
 import {
@@ -245,6 +252,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         // Unexpected drop: the old subscription id is dead. Clear it so live
         // events delivered right after the resume watch are buffered and
         // merged once the new subscription is attributed, never dropped.
+        // Anything still queued for the display window belongs to the dead
+        // subscription and is applied now, while it is still attributable.
+        flushPendingDeltas();
         store.setState({ activeSubscriptionId: null, recoveryState: 'reconnecting' });
       }
     },
@@ -311,6 +321,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         // Server closed the subscription (e.g. session closed). Detach the
         // watch bookkeeping without cancelling the session (watch.detach is
         // deliberately not a cancel) and keep the transcript as-is.
+        flushPendingDeltas();
         store.setState({ activeSubscriptionId: null, recoveryState: 'idle' });
       }
     },
@@ -322,12 +333,15 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         return;
       }
       const buffering = store.getState().historyLoading || activeId === null;
-      store.setState((s) => {
-        if (buffering) {
-          // History page not yet applied (or watch handshake in flight): hold the
-          // event and merge it after the snapshot lands so nothing is dropped and
-          // history is never over-written by live deltas. The buffer is bounded:
-          // once full, the oldest events are dropped and the drop is observable.
+      if (buffering) {
+        // Holding this event for the snapshot is an ordering boundary: whatever
+        // is still queued for the display window must land first.
+        flushPendingDeltas();
+        // History page not yet applied (or watch handshake in flight): hold the
+        // event and merge it after the snapshot lands so nothing is dropped and
+        // history is never over-written by live deltas. The buffer is bounded:
+        // once full, the oldest events are dropped and the drop is observable.
+        store.setState((s) => {
           const next = [...s.liveEventBuffer, { event, subscription_id: subId }];
           const dropped = next.length - MAX_LIVE_BUFFER;
           return dropped > 0
@@ -336,13 +350,21 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
                 liveBufferDroppedCount: s.liveBufferDroppedCount + dropped,
               }
             : { liveEventBuffer: next };
-        }
-        return reduceRuntimeEvent(s, event);
-      });
-      // A finished turn changes the session's cumulative totals.  Folded here
-      // rather than inside the updater (which must stay a pure reduction), and
-      // skipped while buffering because the replay folds it instead.
-      if (!buffering && isTurnTerminalKind(event.kind)) foldTurnUsage(event.payload);
+        });
+        return;
+      }
+      if (isCoalescibleDeltaKind(event.kind)) {
+        // Streamed text: held for the display window and merged with the chunks
+        // that arrive behind it instead of costing one store update each.
+        queueDelta({ event, subscription_id: subId });
+        return;
+      }
+      // Every other event is an ordering boundary for the deltas queued behind
+      // it (a completed thought must close *after* its text has been applied).
+      flushPendingDeltas();
+      // The terminal-totals fold lives in `applyLiveEvents`, after the update, so
+      // the reduction itself stays pure.
+      applyLiveEvents([{ event, subscription_id: subId }]);
     },
   });
 
@@ -823,6 +845,72 @@ let lastAttachedEpoch = 0;
 const MAX_LIVE_BUFFER = 2000;
 
 /**
+ * Streamed text deltas waiting for the display window to close.
+ *
+ * Folding every chunk as it arrived made a fast reasoning stream pay a full store
+ * update, a re-render of every subscriber and a Markdown re-parse of the whole
+ * accumulated thought per chunk.  The queue is applied by `flushPendingDeltas`,
+ * which is also called at every ordering boundary, so events are still folded in
+ * arrival order.
+ */
+let pendingDeltas: LiveEventEntry[] = [];
+let pendingDeltaTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelPendingDeltaTimer(): void {
+  if (pendingDeltaTimer !== null) {
+    clearTimeout(pendingDeltaTimer);
+    pendingDeltaTimer = null;
+  }
+}
+
+/**
+ * Fold a run of live events into the store as one state update.
+ *
+ * A run of one entry is exactly the per-event fold the store did before, so
+ * batching cannot change what a single event does.
+ */
+function applyLiveEvents(entries: readonly LiveEventEntry[]): void {
+  if (entries.length === 0) return;
+  const merged = coalesceLiveEvents(entries);
+  useConsoleStore.setState((state) => foldLiveEvents(state, merged));
+  for (const entry of merged) {
+    // A finished turn changes the session's cumulative totals.
+    if (isTurnTerminalKind(entry.event.kind)) foldTurnUsage(entry.event.payload);
+  }
+}
+
+/** Apply every queued delta now: the display window closed, or an event needs the order kept. */
+function flushPendingDeltas(): void {
+  cancelPendingDeltaTimer();
+  if (pendingDeltas.length === 0) return;
+  const queued = pendingDeltas;
+  pendingDeltas = [];
+  const activeId = useConsoleStore.getState().activeSubscriptionId;
+  applyLiveEvents(
+    queued.filter(
+      (entry) =>
+        entry.subscription_id === undefined ||
+        activeId === null ||
+        entry.subscription_id === activeId,
+    ),
+  );
+}
+
+/** Drop queued deltas without applying them (the session they belong to is gone). */
+function discardPendingDeltas(): void {
+  cancelPendingDeltaTimer();
+  pendingDeltas = [];
+}
+
+/** Hold one delta until the display window closes. */
+function queueDelta(entry: LiveEventEntry): void {
+  pendingDeltas.push(entry);
+  if (pendingDeltaTimer === null) {
+    pendingDeltaTimer = setTimeout(flushPendingDeltas, DELTA_COALESCE_MS);
+  }
+}
+
+/**
  * One image in the composer, bound to the session that was active when it was
  * picked.  `uploading` rows are cancellable; `ready` rows carry the finalized
  * opaque attachment id that a submit references.
@@ -995,11 +1083,9 @@ function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
       )
     : buffered;
   store.setState({ liveEventBuffer: [] });
-  for (const entry of pending) {
-    store.setState((s) => reduceRuntimeEvent(s, entry.event));
-    // A finished turn changed the session's cumulative totals.
-    if (isTurnTerminalKind(entry.event.kind)) foldTurnUsage(entry.event.payload);
-  }
+  // Replayed as one run: the same events, one state update instead of one per
+  // event, and the terminal-totals fold still happens for each of them.
+  applyLiveEvents(pending);
 }
 
 /**
@@ -1272,6 +1358,9 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
   // upload (aborting its partial bytes best-effort) before the new attach.
   store.getState().cancelAttachments();
   clearAttached();
+  // Queued deltas belong to the session being left: apply them before its
+  // transcript (and its subscription) is replaced.
+  flushPendingDeltas();
   store.setState({
     currentSession: session,
     sessionTitle: resolveSessionTitle(session, title),
@@ -1612,6 +1701,9 @@ async function activateProject(projectId: string): Promise<boolean> {
   // same update so the previous project's conversation is never shown under the
   // new project's header.  `fetchSessions`/`createNewSession` read
   // `currentSession.project_id`, so it must be set before they run.
+  // The switch replaces the session as well: queued deltas are applied while
+  // they are still attributable to the session being left.
+  flushPendingDeltas();
   store.setState({
     activeProjectId: projectId,
     projectSessions: cachedSessions,
@@ -1738,6 +1830,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       time_label: '刚刚',
     };
     const epoch = ++sessionEpoch;
+    // The session is being replaced: apply whatever the display window still
+    // holds before its transcript is cleared.
+    flushPendingDeltas();
     set((s) => ({
       sessions: [
         newItem,
@@ -2628,6 +2723,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     sessionEpoch++;
     // The next pairing gets a fresh diagnostics read and a fresh latch.
     resetRuntimeDiagnostics();
+    // The whole console state is being wiped: queued deltas have no session to
+    // land in any more.
+    discardPendingDeltas();
     set({
       client: null,
       pairingState: 'unpaired',
@@ -2705,6 +2803,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       client.disconnect();
     }
     clearAttached();
+    // Deliberate detach: the queue belongs to the subscription being dropped.
+    flushPendingDeltas();
     set({
       connectionState: 'disconnected',
       recoveryState: 'idle',

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { useShallow } from 'zustand/react/shallow';
 import { cacheHitRate, formatSessionUsage } from '../stores/usageView.ts';
 
 export interface SettingsDialogProps {
@@ -67,7 +68,39 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     usage,
     sessionUsage,
     logoutConsole,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields this dialog paints: a reasoning delta must not re-render it.
+    useShallow((state) => ({
+      workspacePath: state.workspacePath,
+      gitBranch: state.gitBranch,
+      gitDirty: state.gitDirty,
+      currentSession: state.currentSession,
+      sessionTitle: state.sessionTitle,
+      connectionState: state.connectionState,
+      pairingState: state.pairingState,
+      sessionsTotal: state.sessionsTotal,
+      modelName: state.modelName,
+      availableModels: state.availableModels,
+      setModel: state.setModel,
+      thinkingLevel: state.thinkingLevel,
+      thinkingLevels: state.thinkingLevels,
+      canSetThinking: state.canSetThinking,
+      projectThinkingLevel: state.projectThinkingLevel,
+      canSetProjectThinking: state.canSetProjectThinking,
+      projectThinkingError: state.projectThinkingError,
+      setProjectThinkingLevel: state.setProjectThinkingLevel,
+      mcpServers: state.mcpServers,
+      mcpEnabled: state.mcpEnabled,
+      mcpRuntime: state.mcpRuntime,
+      mcpConnecting: state.mcpConnecting,
+      mcpRuntimeKnown: state.mcpRuntimeKnown,
+      toggleMcpServer: state.toggleMcpServer,
+      canToggleMcpGlobal: state.canToggleMcpGlobal,
+      usage: state.usage,
+      sessionUsage: state.sessionUsage,
+      logoutConsole: state.logoutConsole,
+    })),
+  );
 
   // Success is reported explicitly: the stored value changes in the row above,
   // but a write that succeeds must say so instead of leaving the user to guess

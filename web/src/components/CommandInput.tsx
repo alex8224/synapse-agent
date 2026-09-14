@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { AttachmentPreview } from './AttachmentPreview.tsx';
 import { ModelControls } from './ModelControls.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { useShallow } from 'zustand/react/shallow';
 import { formatBytes } from '../runtime-client/artifacts.ts';
 import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
 
@@ -40,7 +41,19 @@ export const CommandInput: React.FC = () => {
     attachmentError,
     addAttachments,
     removeAttachment,
-  } = useConsoleStore();
+  } = useConsoleStore(
+    // Only the fields the composer paints: a reasoning delta must not re-render
+    // it (and must not touch the text the user is typing).
+    useShallow((state) => ({
+      runtimeStatus: state.runtimeStatus,
+      submitPrompt: state.submitPrompt,
+      cancelActiveTurn: state.cancelActiveTurn,
+      attachments: state.attachments,
+      attachmentError: state.attachmentError,
+      addAttachments: state.addAttachments,
+      removeAttachment: state.removeAttachment,
+    })),
+  );
 
   const busy = runtimeStatus === 'running';
   const uploading = attachments.some((entry) => entry.status === 'uploading');
