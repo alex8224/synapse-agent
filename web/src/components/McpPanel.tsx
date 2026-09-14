@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Dismiss16Regular, ChevronUp16Regular, ChevronDown16Regular } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper.ts';
 import { mcpServerPhase } from '../stores/mcpRuntimeView.ts';
 import type { McpServerPhase } from '../stores/mcpRuntimeView.ts';
 
@@ -43,30 +42,24 @@ const PHASE_TEXT: Record<McpServerPhase, string> = {
 export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const {
     mcpServers,
-    mcpEnabled,
     mcpRuntime,
     mcpWarnings,
     mcpConnecting,
     mcpRuntimeKnown,
-    canToggleMcpGlobal,
     runtimeStatus,
     toggleMcpServer,
-    toggleMcpGlobal,
     refreshMcpRuntime,
     saveMcpTools,
   } = useConsoleStore(
     // Only the fields this panel paints: a reasoning delta must not re-render it.
     useShallow((state) => ({
       mcpServers: state.mcpServers,
-      mcpEnabled: state.mcpEnabled,
       mcpRuntime: state.mcpRuntime,
       mcpWarnings: state.mcpWarnings,
       mcpConnecting: state.mcpConnecting,
       mcpRuntimeKnown: state.mcpRuntimeKnown,
-      canToggleMcpGlobal: state.canToggleMcpGlobal,
       runtimeStatus: state.runtimeStatus,
       toggleMcpServer: state.toggleMcpServer,
-      toggleMcpGlobal: state.toggleMcpGlobal,
       refreshMcpRuntime: state.refreshMcpRuntime,
       saveMcpTools: state.saveMcpTools,
     })),
@@ -128,21 +121,6 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           >
             {mcpConnecting ? '连接中…' : '重新连接'}
           </button>
-          <span
-            aria-disabled={!canToggleMcpGlobal}
-            title={canToggleMcpGlobal ? undefined : RUNTIME_CONFIG_READ_ONLY_NOTICE}
-            className={`inline-flex items-center gap-1 rounded-control px-2 py-0.5 font-mono text-[10px] border transition-colors ${
-              canToggleMcpGlobal
-                ? 'cursor-pointer'
-                : 'cursor-not-allowed border-dashed border-gray-300 text-gray-400'
-            } ${mcpEnabled ? 'border-emerald-300/80 bg-emerald-50 text-emerald-800' : 'border-line/70 bg-gray-100 text-gray-600'}`}
-            onClick={() => {
-              if (canToggleMcpGlobal) void toggleMcpGlobal();
-            }}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${mcpEnabled ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-            <span>{mcpEnabled ? '全局启用' : '全局停用'}</span>
-          </span>
           <button
             onClick={onClose}
             title="关闭 (Esc)"
