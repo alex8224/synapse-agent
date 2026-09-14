@@ -18,7 +18,7 @@ const RAIL_ROWS = 30;
  * screen.  One length for both, because they are the same signal: "this is the
  * turn you are looking at".
  */
-const BAR_LENGTHENED = 'w-7';
+const BAR_LENGTHENED = 'w-5';
 
 /** The bar's own animation: width and colour, eased, so it reads as a slide. */
 const BAR_ANIMATION = 'transition-[width,background-color] duration-200 ease-out';
@@ -105,17 +105,21 @@ export const TurnRail: React.FC = () => {
   };
 
   return (
-    <div className="pointer-events-none absolute left-3 top-1/2 z-20 -translate-y-1/2 select-none">
-      <div data-turn-rail className="pointer-events-auto flex flex-col gap-px">
+    <div className="pointer-events-none absolute left-2.5 top-1/2 z-20 -translate-y-1/2 select-none">
+      <div
+        data-turn-rail
+        title="会话轮次快速导航"
+        className="pointer-events-auto flex flex-col items-center gap-1 rounded-full border border-line/60 bg-surface/75 px-1 py-2 shadow-card backdrop-blur-md transition-colors hover:bg-surface/90"
+      >
         {slots.map((indices, row) => {
           if (indices.length === 0) {
-            return <div key={`gap-${row}`} className="h-1.5 w-2" />;
+            return <div key={`gap-${row}`} className="h-1 w-2.5" />;
           }
           const previews = indices.map((i) => turns[i].user);
           const label = turnRailSlotLabel(indices, previews);
           // A denser bucket reads as a longer bar, so the shape of the session
           // is visible at a glance.
-          const resting = indices.length === 1 ? 'w-3' : indices.length < 4 ? 'w-4' : 'w-5';
+          const resting = indices.length === 1 ? 'w-2' : indices.length < 4 ? 'w-3' : 'w-4';
           // The row on screen takes the lengthened width outright instead of
           // through the hover variant, so the two can never fight over it.
           const onScreen = row === activeRow;
@@ -125,15 +129,15 @@ export const TurnRail: React.FC = () => {
               type="button"
               onClick={() => jumpTo(indices[0])}
               title={indices.length === 1 ? turnRailHoverText(turns[indices[0]]) : label}
-              className="group relative flex h-1.5 w-5 cursor-pointer items-center"
+              className="group relative flex h-2 w-5 cursor-pointer items-center justify-center"
             >
               <span
                 // `shrink-0`: the bar outgrows its 20px hit area when it is
                 // lengthened, and a flex item would otherwise be squeezed back
                 // to the button's width instead of overflowing it.
                 className={`${onScreen ? BAR_LENGTHENED : resting} h-[3px] shrink-0 rounded-full ${
-                  onScreen ? 'bg-blue-500' : 'bg-gray-300'
-                } ${BAR_ANIMATION} group-hover:w-7 group-hover:bg-blue-500`}
+                  onScreen ? 'bg-accent' : 'bg-gray-400/70'
+                } ${BAR_ANIMATION} group-hover:w-5 group-hover:bg-accent`}
               />
             </button>
           );

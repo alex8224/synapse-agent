@@ -64,6 +64,11 @@ const TranscriptRow = React.memo(function TranscriptRow({
   message: TranscriptMessage;
   handleToggleExpand: (id: string) => void;
 }) {
+  const updateSpotlight = (e: React.MouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    e.currentTarget.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
+    e.currentTarget.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
+  };
   if (m.type === 'user') {
     return (
       // Chat layout: the user's turn sits on the right, the assistant's on
@@ -78,7 +83,10 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} data-turn-id={m.id} className="flex justify-end">
         <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5">
           {m.content !== '' && (
-            <div className="ui-user-bubble whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900">
+            <div
+              onMouseMove={updateSpotlight}
+              className="ui-user-bubble fluent-spotlight whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900"
+            >
               {m.content}
             </div>
           )}
@@ -99,7 +107,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} className="max-w-[85%]">
         <div
           onClick={() => handleToggleExpand(m.id)}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed"
+          onMouseMove={updateSpotlight}
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
         >
           {m.duration === 'streaming' ? (
             <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
@@ -109,11 +118,13 @@ const TranscriptRow = React.memo(function TranscriptRow({
           <span>{thoughtLabel(m.duration)}</span>
           <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
         </div>
-        {m.expanded && (
-          <div className="material-card mt-1.5 rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
-            <Markdown text={m.content ?? ''} />
+        <div className="fluent-accordion" data-expanded={m.expanded === true}>
+          <div className="fluent-accordion-content pt-1.5">
+            <div className="material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
+              <Markdown text={m.content ?? ''} />
+            </div>
           </div>
-        )}
+        </div>
       </div>
     );
   }
@@ -134,7 +145,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
         <div
           onClick={() => handleToggleExpand(m.id)}
           title={expanded ? '收起工具详情' : '展开工具详情'}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed"
+          onMouseMove={updateSpotlight}
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
         >
           {failed > 0 ? (
             <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
@@ -156,12 +168,13 @@ const TranscriptRow = React.memo(function TranscriptRow({
           )}
           <span className="text-gray-400">{expandHint(expanded)}</span>
         </div>
-        {expanded && (
-          <div className="mt-1.5 space-y-1.5">
+        <div className="fluent-accordion" data-expanded={expanded}>
+          <div className="fluent-accordion-content pt-1.5 space-y-1.5">
             {toolList.map((t) => (
               <div
                 key={t.id}
-                className={`rounded-control border px-2.5 py-1.5 font-mono text-xs ${
+                onMouseMove={updateSpotlight}
+                className={`rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight ${
                   t.error ? 'border-red-200 bg-red-50' : 'border-line bg-surface'
                 }`}
               >
@@ -199,7 +212,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
               </div>
             ))}
           </div>
-        )}
+        </div>
       </div>
     );
   }

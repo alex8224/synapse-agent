@@ -44,6 +44,11 @@ export const CommandInput: React.FC = () => {
   const [dragging, setDragging] = useState(false);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const updateSpotlight = (e: React.MouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    e.currentTarget.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
+    e.currentTarget.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
+  };
   useEffect(() => {
     const card = cardRef.current;
     if (card === null) return;
@@ -133,7 +138,8 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column ui-composer relative isolate pointer-events-auto flex flex-col rounded-card border shadow-card transition-all duration-150 ${
+        onMouseMove={updateSpotlight}
+        className={`console-column ui-composer fluent-spotlight relative isolate pointer-events-auto flex flex-col rounded-card border shadow-card transition-all duration-150 ${
           dragging ? 'border-blue-500 ring-2 ring-blue-200/60' : 'border-line/70'
         }`}
       >

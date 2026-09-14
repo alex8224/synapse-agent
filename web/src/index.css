@@ -101,9 +101,9 @@
     font-weight: 600;
   }
   .ui-nav-row[data-selected='true']::before {
-    content: ''; position: absolute; left: 2px; top: 6px; bottom: 6px;
+    content: ''; position: absolute; left: 0; top: 50%;
+    transform: translateY(-50%); height: 16px;
     width: 3px; border-radius: 9999px; background: rgb(var(--accent));
-    box-shadow: 0 0 6px rgba(var(--accent) / 0.5);
   }
   .ui-menu-item { display: block; width: 100%; padding: 6px 8px; text-align: left; }
   .ui-menu-item[aria-pressed='true'] { background: rgb(var(--selection-fill)); font-weight: 600; }
@@ -195,7 +195,7 @@
     --type-title: 16px;
     --control-hover: var(--gray-100);
     --control-pressed: var(--gray-200);
-    --selection-fill: var(--blue-50);
+    --selection-fill: var(--surface-hover);
     /* Composer width cap: a single-line input does not need the chat column's
        reading width, so the two are deliberately not the same width. */
     --composer-max: 48rem;
@@ -320,6 +320,9 @@
     --motion-fast: 120ms;
     --motion-normal: 200ms;
     --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --motion-ease-decelerate: cubic-bezier(0, 0, 0, 1);
+    --motion-ease-accelerate: cubic-bezier(0.7, 0, 1, 0.5);
+    --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
     /* The focus ring is drawn once, globally, from the accent role. */
     --focus-ring: 37 99 235;
     --focus-ring-width: 2px;
@@ -377,6 +380,7 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --surface-hover: 245 245 245;   /* colorSubtleBackgroundHover */
+    --selection-fill: var(--surface-hover);
     --surface-pressed: 235 235 235; /* colorSubtleBackgroundPressed */
     --fg-disabled: 189 189 189;     /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
@@ -448,6 +452,9 @@
     --motion-fast: 150ms;           /* durationFast */
     --motion-normal: 200ms;         /* durationNormal */
     --motion-ease: cubic-bezier(0, 0, 0, 1);   /* curveDecelerateMid */
+    --motion-ease-decelerate: cubic-bezier(0, 0, 0, 1);
+    --motion-ease-accelerate: cubic-bezier(0.7, 0, 1, 0.5);
+    --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
     --chrome-h: 3rem;             /* Fluent desktop density */
     --status-h: 2rem;
 
@@ -532,6 +539,7 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --surface-hover: 56 56 56;      /* colorSubtleBackgroundHover */
+    --selection-fill: var(--surface-hover);
     --surface-pressed: 51 51 51;    /* colorSubtleBackgroundPressed */
     --fg-disabled: 92 92 92;        /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
@@ -567,6 +575,9 @@
     --motion-fast: 150ms;
     --motion-normal: 200ms;
     --motion-ease: cubic-bezier(0, 0, 0, 1);
+    --motion-ease-decelerate: cubic-bezier(0, 0, 0, 1);
+    --motion-ease-accelerate: cubic-bezier(0.7, 0, 1, 0.5);
+    --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
     --chrome-h: 3rem;             /* Fluent desktop density */
     --status-h: 2rem;
 
@@ -794,15 +805,15 @@ body {
     `material-flyout` surface and every scrim carries it (see `tests/themeContract.test.ts`).
   */
   .flyout-in {
-    animation: flyout-in var(--motion-normal) var(--motion-ease) both;
+    animation: flyout-in 180ms var(--motion-ease-decelerate) both;
   }
   .scrim-in {
-    animation: scrim-in var(--motion-normal) var(--motion-ease) both;
+    animation: scrim-in 180ms var(--motion-ease-decelerate) both;
   }
   @keyframes flyout-in {
     from {
       opacity: 0;
-      transform: scale(0.98) translateY(4px);
+      transform: scale(0.985) translateY(5px);
     }
     to {
       opacity: 1;
@@ -822,6 +833,58 @@ body {
     .scrim-in {
       animation: none;
     }
+    .fluent-accordion {
+      transition: none !important;
+    }
+  }
+
+  /*
+    Fluent 2 Smooth Grid Accordion
+    Hardware-accelerated height transition for collapsible cards and tool groups.
+  */
+  .fluent-accordion {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 220ms var(--motion-ease-decelerate);
+  }
+  .fluent-accordion[data-expanded='true'] {
+    grid-template-rows: 1fr;
+  }
+  .fluent-accordion-content {
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /*
+    Fluent 2 Spotlight (Reveal Light)
+    Subtle pointer-following ambient gradient for cards and message bubbles.
+  */
+  .fluent-spotlight {
+    position: relative;
+  }
+  .fluent-spotlight::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 160ms var(--motion-ease-standard);
+    background: radial-gradient(
+      160px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+      rgba(255, 255, 255, 0.08),
+      transparent 75%
+    );
+  }
+  .fluent-spotlight:hover::before {
+    opacity: 1;
+  }
+  [data-theme='fluent-light'] .fluent-spotlight::before {
+    background: radial-gradient(
+      160px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+      rgba(0, 0, 0, 0.04),
+      transparent 75%
+    );
   }
   /*
     One focus ring for the whole console, drawn from the accent role: Fluent puts
@@ -842,7 +905,7 @@ body {
     these two rules must sit in this layer: the card also carries the `border-line`
     utility, and a layer always beats a more specific selector from an earlier one.
   */
-  .ui-composer:focus-within { border-color: rgb(var(--accent)); box-shadow: 0 0 0 1px rgb(var(--accent)), 0 8px 24px rgba(var(--accent) / 0.12), var(--shadow-card); }
+  .ui-composer:focus-within { border-color: rgb(var(--accent)); box-shadow: 0 0 0 1px rgb(var(--accent)), var(--shadow-card); }
   .ui-composer-input:focus-visible { outline: none; }
   .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 450; }

@@ -142,12 +142,19 @@ export const SideBar: React.FC = () => {
     );
   }, [projects, query, activeProjectId, searchItems, projectSessions]);
 
-  if (isSidebarCollapsed) {
-    // Collapsed to a minimal rail: the workspace stays reachable instead of
-    // disappearing (new session, search, and the loaded count).  Expanding is
-    // the top bar's toggle (or Ctrl+B) — a second toggle here was a duplicate.
-    return (
-      <nav aria-label="项目与会话" className="material-chrome border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
+  return (
+    <nav
+      aria-label="项目与会话"
+      className={`material-chrome relative h-full shrink-0 select-none border-r border-line overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)] ${
+        isSidebarCollapsed ? 'w-[44px]' : 'w-[240px]'
+      }`}
+    >
+      {/* Minimal Rail View (shown when collapsed) */}
+      <div
+        className={`absolute inset-0 flex flex-col items-center py-3 gap-1.5 transition-opacity duration-200 ${
+          isSidebarCollapsed ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
+      >
         <button
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
@@ -182,13 +189,14 @@ export const SideBar: React.FC = () => {
             {projects.length}
           </div>
         </div>
-        {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
-      </nav>
-    );
-  }
+      </div>
 
-  return (
-    <nav aria-label="项目与会话" className="material-chrome border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-sm font-sans">
+      {/* Expanded Sidebar View */}
+      <div
+        className={`w-[240px] h-full flex flex-col py-3 text-sm font-sans transition-opacity duration-200 ${
+          isSidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
+        }`}
+      >
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's
@@ -392,7 +400,9 @@ export const SideBar: React.FC = () => {
                             <li
                               key={sess.thread_id}
                               data-selected={selected}
-                              className="ui-nav-row group flex items-center gap-0.5 text-gray-700"
+                              className={`ui-nav-row group flex items-center gap-0.5 ${
+                                selected ? 'text-gray-900 font-medium' : 'text-gray-700'
+                              }`}
                             >
                               <button
                                 type="button"
@@ -564,6 +574,7 @@ export const SideBar: React.FC = () => {
         </div>
       </div>
 
+      </div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </nav>
   );
