@@ -233,6 +233,8 @@ _ADDITIVE_CAPABILITIES = frozenset(
         "attachments.write",
         "git.status",
         "git.diff",
+        "project.register",
+        "fs.list",
     }
 )
 

@@ -13,7 +13,7 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 
 ## Methods
 
-契约冻结后 wire 表共 **40 个方法**（38 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
+契约冻结后 wire 表共 **44 个方法**（42 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
 
 | method | params 的主要字段 | result |
 |---|---|---|
@@ -30,7 +30,9 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.events.read` | `session`, optional `after/limit/scan_limit/filter/max_event_bytes` | `EventPage` |
 | `runtime.events.unwatch` | `subscription_id` | `{removed}` |
 | `runtime.events.watch` | `session`, optional `after/queue_size/filter/max_event_bytes` | `{subscription_id,cursor}` then notifications |
+| `runtime.fs.list` | optional `path/limit` | `DirectoryListing` |
 | `runtime.project.list` | optional `limit/offset` | `ProjectListPage` |
+| `runtime.project.register` | `workspace_path` | `ProjectListItem` |
 | `runtime.project.thinking.set` | `project_id`, `level`, optional `command_id` | `SetProjectThinkingLevelResult` |
 | `runtime.protocol.negotiate` | `versions`, optional `client` | `NegotiateResult` |
 | `runtime.session.close` | `session`, optional `cancel_active/command_id` | `CloseSessionResult` |
@@ -72,9 +74,15 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 
 `runtime.session.goal`（读）之外的五个写方法 `runtime.session.goal.set` / `.edit` / `.clear` / `.pause` / `.resume` 共用一个独立 capability `session.goal`：`session.read` 只授权读，绝不授权任一写操作。`edit` / `clear` / `pause` / `resume` 都要求 `expected_goal_id`（乐观并发，目标已被替换时返回 `conflict`）；`set` 的 `objective` 必填、`token_budget` 可选且必须为正整数，且**拒绝覆盖未完成的 goal**（`conflict`）。`pause` 只请求取消**本会话**自己的 live turn 并通过 `cancellation_requested` 报告；`resume` 只做状态转移，不会自动续跑一轮。写入落在该会话自身的 ledger 上，不用全局 `get_goal_service()` 单例，因此一个项目不会写到另一个项目的 goal。
 
-### 项目列举（additive）
+### 项目列举与登记、宿主目录浏览（additive）
 
-`runtime.project.list`（`project.list`，**catalog scope**，无 per-request 项目位置）只读枚举已登记项目：请求 `limit` 1..100、`offset` 0..100000，`visible_project_ids` 是服务端计算字段，wire decoder 显式拒绝客户端传入；服务端在 provider 内**先按可见性过滤再分页**。该方法不打开会话、不构建 agent、也不注册新项目。项目**登记**（`ProjectCatalog.register_project` / `touch_project`）没有 wire 方法。
+`runtime.project.list`（`project.list`，**catalog scope**，无 per-request 项目位置）只读枚举已登记项目：请求 `limit` 1..100、`offset` 0..100000，`visible_project_ids` 是服务端计算字段，wire decoder 显式拒绝客户端传入；服务端在 provider 内**先按可见性过滤再分页**。该方法不打开会话、不构建 agent、也不注册新项目。项目**登记**（`ProjectCatalog.register_project`）现在有 wire 方法：`runtime.project.register`。
+
+`runtime.project.register`（`project.register`，**catalog scope**，无 per-request 项目位置）是**写**面：请求只有 `workspace_path`（≤ 4096 UTF-8 bytes，wire decoder 只校验长度与 NUL），daemon 解析该宿主路径、确认它是已存在目录，再 upsert 用户层项目 catalog（`~/.synapse/catalog.sqlite`）。登记按 workspace 路径**幂等**：重复登记复用同一个稳定 `project_id`，结果是与列举面相同的 `ProjectListItem` 投影。
+
+`runtime.fs.list`（`fs.list`，**catalog scope**，无 per-request 项目位置）是**只读且有界**的宿主目录浏览：请求 `path`（`null` 表示 daemon 的 home 目录）与 `limit`（默认 200，1..1000），结果是 `DirectoryListing`（`path` / `parent`，文件系统根处 `parent` 为 `null` / `entries: DirectoryEntry[]` / `truncated` / `roots`，其中 `roots` 是平台顶层入口：Windows 为盘符、POSIX 为 `/`），`DirectoryEntry` 只有 `{name, path}`。它只枚举该目录的**直接子目录**——从不返回文件、从不递归。
+
+两者的授权都只要求一个**项目级**（project-wide）能力授予（`project.register` / `fs.list`，与 `project.list` 一样经 `visible_project_ids` 计算），不依赖任何 per-request 项目位置。
 
 `runtime.session.rebind` 与 `runtime.session.thinking.set` 都是**会话级写**：只替换该
 thread 后续 turn 使用的 agent/settings 绑定并持久化到该会话的 model binding，绝不修改
@@ -100,7 +108,7 @@ S9 增加 transport 控制方法 `runtime.protocol.negotiate`，严格参数为
 
 ### 尚未 wire（本表之外）
 
-下列后端能力存在但**没有** wire 方法，本表（及整个契约）不覆盖：会话清理 `prune_empty`、会话导出（JSON / Markdown）、对话全文搜索、项目登记/更新、上下文压缩与上下文状态（TUI `/compact`、`/context`）、safety / 权限策略读写、工具输出压缩设置（TUI `/compression`）、远程身份 / 多用户 principal 管理。TUI 的 `/theme` 与 slash 命令解析/补全属 UI-only，不需要 RPC。逐项真源与状态见 [progress.md](progress.md) 的「尚未 wire 的后端能力（真实矩阵）」。
+下列后端能力存在但**没有** wire 方法，本表（及整个契约）不覆盖：会话清理 `prune_empty`、会话导出（JSON / Markdown）、对话全文搜索、上下文压缩与上下文状态（TUI `/compact`、`/context`）、safety / 权限策略读写、工具输出压缩设置（TUI `/compression`）、远程身份 / 多用户 principal 管理。项目登记/更新已不再是缺口：`runtime.project.register` 覆盖 `ProjectCatalog.register_project` 的登记/更新（`touch_project` 没有单独方法），宿主目录浏览由 `runtime.fs.list` 提供。TUI 的 `/theme` 与 slash 命令解析/补全属 UI-only，不需要 RPC。逐项真源与状态见 [progress.md](progress.md) 的「尚未 wire 的后端能力（真实矩阵）」。
 
 ## Limits and lifecycle
 

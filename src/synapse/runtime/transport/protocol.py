@@ -84,6 +84,13 @@ from synapse.runtime.service.events import (
     MAX_SCAN_LIMIT,
     MIN_EVENT_BYTES,
 )
+from synapse.runtime.service.fs_browse import (
+    DIRECTORY_LIST_LIMIT_DEFAULT,
+    DIRECTORY_LIST_LIMIT_MAX,
+    DIRECTORY_LIST_LIMIT_MIN,
+    MAX_DIRECTORY_PATH_BYTES,
+    ListDirectoriesQuery,
+)
 from synapse.runtime.service.git import (
     GitDiffQuery,
     GitStatusQuery,
@@ -111,6 +118,10 @@ from synapse.runtime.service.project_list import (
     PROJECT_LIST_LIMIT_MIN,
     PROJECT_LIST_OFFSET_MAX,
     ListProjectsQuery,
+)
+from synapse.runtime.service.project_register import (
+    MAX_WORKSPACE_PATH_BYTES,
+    RegisterProjectCommand,
 )
 from synapse.runtime.service.recovery import (
     MAX_RECONCILE_PROBE_TURNS,
@@ -992,6 +1003,29 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 maximum=PROJECT_LIST_OFFSET_MAX,
             ),
         )
+    if method == "runtime.project.register":
+        # Catalog-scoped: the path is a host filesystem path, resolved and
+        # validated by the daemon's catalog-backed registrar, never here.
+        _optional_fields(params, {"workspace_path"}, set())
+        return RegisterProjectCommand(
+            workspace_path=_bounded_text(params["workspace_path"], MAX_WORKSPACE_PATH_BYTES),
+        )
+    if method == "runtime.fs.list":
+        # Catalog-scoped and read-only: one bounded level of host directories.
+        _optional_fields(params, set(), {"path", "limit"})
+        raw_path = params.get("path")
+        return ListDirectoriesQuery(
+            path=(
+                None
+                if raw_path is None
+                else _bounded_text(raw_path, MAX_DIRECTORY_PATH_BYTES)
+            ),
+            limit=_bounded_integer(
+                params.get("limit", DIRECTORY_LIST_LIMIT_DEFAULT),
+                minimum=DIRECTORY_LIST_LIMIT_MIN,
+                maximum=DIRECTORY_LIST_LIMIT_MAX,
+            ),
+        )
     if method == "runtime.session.history":
         _optional_fields(params, {"session"}, {"before_turn", "limit"})
         before_turn = params.get("before_turn")
@@ -1111,6 +1145,10 @@ async def dispatch(
         return await service.search_sessions(dto)  # type: ignore[arg-type]
     if method == "runtime.project.list":
         return await service.list_projects(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.register":
+        return await service.register_project(dto)  # type: ignore[arg-type]
+    if method == "runtime.fs.list":
+        return await service.list_directories(dto)  # type: ignore[arg-type]
     if method == "runtime.session.history":
         return await service.read_session_history(dto)  # type: ignore[arg-type]
     if method == "runtime.session.reconcile":

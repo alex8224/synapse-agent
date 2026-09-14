@@ -76,14 +76,15 @@ flowchart LR
 | S9 | 重连、版本协商与兼容矩阵 | 已完成（门禁验证见 progress） |
 | S10 | 迁移 CLI/TUI/ACP 消费者并删除过渡路径 | completed；legacy stream utility 保留兼容 |
 
-### S10 之后的 wire 增量（会话管理 / goal / 附件 / project list）
+### S10 之后的 wire 增量（会话管理 / goal / 附件 / project list / 项目登记 / 宿主目录浏览）
 
-契约冻结（v1）后 wire 表继续**只做 additive** 扩展，当前共 40 个 wire 方法（38 个 service + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）与 26 个授权 capability，权威仍是 `service/contract_registry.py` / `service/access.py`：
+契约冻结（v1）后 wire 表继续**只做 additive** 扩展，当前共 44 个 wire 方法（42 个 service + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）与 30 个授权 capability，权威仍是 `service/contract_registry.py` / `service/access.py`：
 
 - **会话管理**：`runtime.session.create` / `rename` / `delete` / `search`（各自独立 capability）；`create` 由服务端分配身份，`delete` 只删元数据行与 thread goal 并在结果里报告 `retained_history`（checkpoint 与 transcript projection 保留），`search` 是**元数据搜索**而非全文检索。
 - **会话 goal 写**：`runtime.session.goal.set` / `edit` / `clear` / `pause` / `resume`（独立 `session.goal` capability，`session.read` 不授权写入；`expected_goal_id` 做乐观并发）。
 - **附件**：`runtime.attachments.begin` / `append` / `finish` / `abort` / `stat` / `read`（`attachments.write` / `attachments.read`），以及 `runtime.turn.submit` 的可选 `attachment_refs`；`read_session_history` 的 `HistoryEvent.attachments` 只带 durable 元数据。
 - **项目列举**：`runtime.project.list`（`project.list`，只读、服务端计算可见集合、先过滤再分页）。
+- **项目登记与宿主目录浏览**：`runtime.project.register`（`project.register`，写面：daemon 解析并校验宿主目录后 upsert 用户层项目 catalog，按 workspace 路径幂等、重复登记复用同一 `project_id`）与 `runtime.fs.list`（`fs.list`，只读有界：只枚举一个宿主目录的直接子目录，从不返回文件、从不递归，`limit` 默认 200 / 1..1000）。两者都是 catalog scope、无 per-request 项目位置。
 
 实际门禁数字、附件限额常量、`retained history` 语义与**仍未 wire 的后端能力矩阵**见 [progress.md](progress.md)；逐方法参数/结果见 [S7 wire 协议表](s7-wire-protocol.md)。
 
@@ -200,7 +201,7 @@ S1 门禁（全部通过，含硬化后新增用例）：
 > 下列条目描述 **S1 基线时**的边界；后续阶段的落地情况以 [progress.md](progress.md)
 > 为准（网络传输 = S7、daemon = S8、消费者迁移 = S10 均已完成，**仍未 wire 的后端能力**
 > 在 progress.md 的「尚未 wire 的后端能力（真实矩阵）」列出）。本服务至今**不承诺**：
-> 会话清理 / 导出 / 对话全文搜索、项目登记、上下文压缩与 safety 策略读写等能力有对应 RPC。
+> 会话清理 / 导出 / 对话全文搜索、上下文压缩与 safety 策略读写等能力有对应 RPC（项目登记与宿主目录浏览现已由 `runtime.project.register` / `runtime.fs.list` 提供，见上）。
 
 - 网络传输与 daemon：S1 不引入进程外通信（ADR-010 仍有效）；S7/S8 已交付传输与 daemon，见 [ADR-S-015](adr-s-015-json-rpc-websocket.md)、[ADR-S-016](adr-s-016-daemon.md)。
 - 远程 DTO 编码：`SubmitTurnCommand.attachments` 及部分嵌套值明确仅进程内兼容（wire 拒绝非空 `attachments`，远程图片走 `attachment_refs`）。

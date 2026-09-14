@@ -243,6 +243,11 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 > `all` 只是**同一用户**的 console scope，**不是多用户隔离边界**。单项目语义可用
 > `--project-scope workspace` 恢复。下方「例外范围」「不是存在性 oracle」两条相应收窄到
 > `workspace` 模式。
+>
+> **catalog scope 方法**：`runtime.project.list` / `runtime.project.register` / `runtime.fs.list`
+> 都是 catalog scope（无 per-request 项目位置），参数里没有任何 `project_id` 位置，因此守卫在两种
+> 模式下都只做形状检查并**原样转发**，由 daemon 侧按 `project.list` / `project.register` /
+> `fs.list` 能力位授权；`workspace` 模式也不会误拒它们（它们不携带可被判定的项目位置）。
 
 | 项 | 现状 |
 |---|---|
@@ -434,6 +439,10 @@ pytest**，含单文件与 `--collect-only`）：
   项目标识仍由宿主控制面（`/api/session`）给出。`RelayProjectScopeGuard` 在 `workspace`
   模式下仍作单项目纵深防御；默认 `all` 模式**不保留宿主侧项目白名单**，只做协议 scope
   形状检查，可寻址集合由 daemon 的精确 `project_id` 路由 + 授权决定（见 §4.1）。
+  **项目登记与宿主目录浏览同样是 catalog scope**（`runtime.project.register` /
+  `runtime.fs.list`，均无项目路由位置）：守卫原样转发、由 daemon 授权（`project.register`
+  写用户层 catalog 且按 workspace 路径幂等，`fs.list` 只读且只返回直接子目录），因此宿主侧
+  不需要、也不保留任何针对它们的项目判定。
 - 前端事件消费已与 TUI 对齐：`web/src/stores/liveEventReducer.ts` 归约
   activity / reasoning / answer / tool_* / subagent / usage / info / approval /
   terminal 事件（覆盖表见 `index.md` §4）；`GET /api/runtime-status` 也已由前端消费

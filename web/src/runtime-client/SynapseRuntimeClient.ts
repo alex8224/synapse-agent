@@ -18,6 +18,7 @@ import {
   SESSION_SEARCH_PAGE_SIZE,
   HISTORY_PAGE_SIZE,
   PROJECT_LIST_PAGE_SIZE,
+  DIRECTORY_LIST_PAGE_SIZE,
 } from './types.ts';
 import type {
   JsonRpcNotification,
@@ -47,6 +48,8 @@ import type {
   DeleteSessionResult,
   SearchSessionsParams,
   SessionSearchResult,
+  ListDirectoriesParams,
+  ListDirectoriesResult,
   ListProjectsParams,
   ProjectListResult,
   ReadSessionHistoryParams,
@@ -54,6 +57,8 @@ import type {
   GetRuntimeConfigParams,
   RuntimeConfigResult,
   ReconcileSessionParams,
+  RegisterProjectParams,
+  RegisterProjectResult,
   SessionRecoverabilityResult,
   SetProjectThinkingLevelResult,
   SetThinkingLevelResult,
@@ -561,6 +566,38 @@ export class SynapseRuntimeClient {
     return this.call<ProjectListResult>('runtime.project.list', {
       limit: params.limit ?? PROJECT_LIST_PAGE_SIZE,
       offset: params.offset ?? 0,
+    });
+  }
+
+  /**
+   * Register one host workspace directory as a project
+   * (`runtime.project.register`).
+   *
+   * The browser never resolves the path: the daemon validates the host path and
+   * upserts the user-layer catalog row, so the console can switch to the
+   * returned project and open a session in it.  Idempotent per workspace path.
+   */
+  public async registerProject(
+    params: RegisterProjectParams,
+  ): Promise<RegisterProjectResult> {
+    return this.call<RegisterProjectResult>('runtime.project.register', {
+      workspace_path: params.workspace_path,
+    });
+  }
+
+  /**
+   * List one host directory's immediate sub-directories (`runtime.fs.list`).
+   *
+   * Backs the console's "add project" picker: the browser cannot resolve a host
+   * path itself, so the daemon answers a bounded, read-only listing.  A null
+   * `path` means the daemon's home directory.
+   */
+  public async listDirectories(
+    params: ListDirectoriesParams = {},
+  ): Promise<ListDirectoriesResult> {
+    return this.call<ListDirectoriesResult>('runtime.fs.list', {
+      path: params.path ?? null,
+      limit: params.limit ?? DIRECTORY_LIST_PAGE_SIZE,
     });
   }
 

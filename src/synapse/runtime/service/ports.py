@@ -61,6 +61,10 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.fs_browse import (
+    DirectoryListing,
+    ListDirectoriesQuery,
+)
 from synapse.runtime.service.git import (
     GitDiffQuery,
     GitDiffResult,
@@ -83,8 +87,10 @@ from synapse.runtime.service.history import (
 )
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
+    ProjectListItem,
     ProjectListPage,
 )
+from synapse.runtime.service.project_register import RegisterProjectCommand
 from synapse.runtime.service.queries import (
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -346,6 +352,27 @@ class AgentRuntimeService(Protocol):
         constructible and reports the feature as unavailable (see the ACL
         layer).  The call never opens a session, builds an agent, registers a
         project, or creates a database.
+        """
+        ...
+
+    async def register_project(self, command: RegisterProjectCommand) -> ProjectListItem:
+        """Register one host workspace path as a project (catalog write).
+
+        Optional delegate method: a delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL
+        layer).  The daemon injects a catalog-backed registrar, so the service
+        layer itself never imports the project catalog.  Registration is
+        idempotent per workspace path.
+        """
+        ...
+
+    async def list_directories(self, query: ListDirectoriesQuery) -> DirectoryListing:
+        """List one host directory's immediate sub-directories (bounded, read-only).
+
+        Optional delegate method: a delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL
+        layer).  It backs the console's "add project" picker: only directory
+        names are returned, never file contents, and never a recursive walk.
         """
         ...
 

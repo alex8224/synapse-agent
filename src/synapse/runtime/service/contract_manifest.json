@@ -13,9 +13,11 @@
     "attachments.write",
     "events.read",
     "events.watch",
+    "fs.list",
     "git.diff",
     "git.status",
     "project.list",
+    "project.register",
     "project.thinking",
     "session.close",
     "session.create",
@@ -467,6 +469,27 @@
       }
     },
     {
+      "capability": "fs.list",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  Read-only and bounded: only immediate sub-directory names are returned, never file contents, and never a recursive walk.",
+      "method": "runtime.fs.list",
+      "notes": [
+        "A catalog-scoped method: it has no per-request project position.  ``path`` is null for the daemon's home directory or an absolute host path; ``limit`` is bounded to 1..1000 by the wire decoder."
+      ],
+      "params_alias": "ListDirectoriesParams",
+      "request": "ListDirectoriesQuery",
+      "result": "DirectoryListing",
+      "result_alias": "ListDirectoriesResult",
+      "result_nullable": false,
+      "scope": "catalog",
+      "scope_location": null,
+      "service_method": "list_directories",
+      "wire_defaults": {
+        "limit": 200,
+        "path": null
+      }
+    },
+    {
       "capability": "git.diff",
       "class": "service",
       "in_process": "Optional delegate method, same degradation rule as `runtime.git.status`.",
@@ -523,6 +546,24 @@
         "limit": 50,
         "offset": 0
       }
+    },
+    {
+      "capability": "project.register",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  The daemon injects a catalog-backed registrar, so the call writes the user-layer catalog and is idempotent per workspace path.",
+      "method": "runtime.project.register",
+      "notes": [
+        "A catalog-scoped method: it has no per-request project position.  The workspace path is resolved and validated server-side; the wire decoder only bounds its length."
+      ],
+      "params_alias": "RegisterProjectParams",
+      "request": "RegisterProjectCommand",
+      "result": "ProjectListItem",
+      "result_alias": "RegisterProjectResult",
+      "result_nullable": false,
+      "scope": "catalog",
+      "scope_location": null,
+      "service_method": "register_project",
+      "wire_defaults": {}
     },
     {
       "capability": "project.thinking",
@@ -2182,6 +2223,90 @@
       "origin": "python",
       "role": "result"
     },
+    "DirectoryEntry": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One immediate sub-directory: its display name and absolute host path."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "DirectoryListing": {
+      "fields": [
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "parent",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "entries",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[DirectoryEntry, ...]",
+          "required": true,
+          "ts_type": "DirectoryEntry[]",
+          "wire": "json"
+        },
+        {
+          "name": "truncated",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "roots",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One bounded directory listing.  ``parent`` is null at a filesystem root;",
+        "``truncated`` marks that ``entries`` hit the caller's limit.",
+        "``roots`` are the platform's top-level entry points (drives on Windows,",
+        "mounts on POSIX) so a picker can jump between them."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
     "EditSessionGoalCommand": {
       "fields": [
         {
@@ -3133,6 +3258,38 @@
       "origin": "python",
       "role": "request"
     },
+    "ListDirectoriesQuery": {
+      "fields": [
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "path",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": 200,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``path`` is null for the daemon's home directory or an absolute host path;",
+        "``limit`` is bounded to 1..1000 by the wire decoder."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ListProjectsQuery": {
       "fields": [
         {
@@ -4030,6 +4187,26 @@
           "ts_type": "string[]",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "RegisterProjectCommand": {
+      "fields": [
+        {
+          "name": "workspace_path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One host workspace path to register as a project.  The daemon resolves",
+        "it against its own filesystem and upserts the catalog row; re-registering",
+        "a known path reuses its stable ``project_id``."
       ],
       "origin": "python",
       "role": "request"

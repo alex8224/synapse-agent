@@ -63,6 +63,10 @@ from synapse.runtime.service.errors import (
     PermissionDeniedError,
 )
 from synapse.runtime.service.events import EventFilter, EventPage, ReadEventsQuery
+from synapse.runtime.service.fs_browse import (
+    DirectoryListing,
+    ListDirectoriesQuery,
+)
 from synapse.runtime.service.git import (
     GitDiffQuery,
     GitDiffResult,
@@ -86,8 +90,10 @@ from synapse.runtime.service.history import (
 from synapse.runtime.service.ports import AgentRuntimeService, EventWatch
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
+    ProjectListItem,
     ProjectListPage,
 )
+from synapse.runtime.service.project_register import RegisterProjectCommand
 from synapse.runtime.service.queries import (
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -140,6 +146,8 @@ __all__ = [
     "SESSION_GOAL",
     "PROJECT_THINKING",
     "PROJECT_LIST",
+    "PROJECT_REGISTER",
+    "FS_LIST",
     "SESSION_CREATE",
     "SESSION_DELETE",
     "SESSION_LIST",
@@ -173,6 +181,14 @@ PROJECT_THINKING = "project.thinking"
 #: (never a thread-scoped one): only a project-wide grant authorizes it, and the
 #: visible set it derives is the ACL visibility the list is filtered by.
 PROJECT_LIST = "project.list"
+#: Register a host workspace directory as a project.  Catalog-scoped: there is
+#: no existing project position to check, so the gate is a project-wide grant of
+#: this capability (see ``AccessControlledAgentRuntimeService.register_project``).
+PROJECT_REGISTER = "project.register"
+#: Browse the host filesystem for the console's "add project" picker.
+#: Catalog-scoped and strictly read-only: it returns directory names only and
+#: never reads file contents.
+FS_LIST = "fs.list"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
 #: Persist a new session's metadata row.  Project-level (there is no thread yet
@@ -218,6 +234,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_GOAL,
         PROJECT_THINKING,
         PROJECT_LIST,
+        PROJECT_REGISTER,
+        FS_LIST,
         SESSION_CREATE,
         SESSION_DELETE,
         SESSION_LIST,
@@ -1103,6 +1121,50 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "list_projects", None)
         if not callable(delegate):
             raise InvalidRequestError("project list is unavailable")
+        return await delegate(query)
+
+    async def register_project(self, command: RegisterProjectCommand) -> ProjectListItem:
+        """Authorize project registration and delegate the catalog write.
+
+        Catalog-scoped: there is no project position to check, so the gate is a
+        project-wide grant of ``project.register`` -- ``visible_project_ids``
+        returns the caller's project-wide grant set, and an empty set denies.
+        The daemon's own principal (and an unrestricted connection) returns
+        ``None``, which authorizes.  Registration is idempotent per workspace
+        path, so a repeated call reuses the same ``project_id``.
+        """
+        if type(command) is not RegisterProjectCommand:
+            raise InvalidRequestError(
+                "register project command must be a RegisterProjectCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        visible = self._authorizer.visible_project_ids(self._principal, PROJECT_REGISTER)
+        if visible is not None and not visible:
+            raise PermissionDeniedError()
+        delegate = getattr(self._delegate, "register_project", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project registration is unavailable")
+        return await delegate(command)
+
+    async def list_directories(self, query: ListDirectoriesQuery) -> DirectoryListing:
+        """Authorize the bounded host-directory browse and delegate it.
+
+        Catalog-scoped and read-only: the gate is a project-wide grant of
+        ``fs.list`` (see :meth:`register_project`).  Only immediate
+        sub-directory names are returned; the listing never reads file contents
+        and never recurses.
+        """
+        if type(query) is not ListDirectoriesQuery:
+            raise InvalidRequestError(
+                "list directories query must be a ListDirectoriesQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        visible = self._authorizer.visible_project_ids(self._principal, FS_LIST)
+        if visible is not None and not visible:
+            raise PermissionDeniedError()
+        delegate = getattr(self._delegate, "list_directories", None)
+        if not callable(delegate):
+            raise InvalidRequestError("directory browsing is unavailable")
         return await delegate(query)
 
     async def read_session_history(

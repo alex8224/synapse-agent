@@ -161,6 +161,8 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.attachments.read": "read_attachment",
     "runtime.git.status": "git_status",
     "runtime.git.diff": "git_diff",
+    "runtime.project.register": "register_project",
+    "runtime.fs.list": "list_directories",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -177,6 +179,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "attachments.write",
         "git.status",
         "git.diff",
+        "project.register",
+        "fs.list",
     }
 )
 
@@ -216,6 +220,13 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "HistoryAttachment",
         "ReadAttachmentQuery",
         "StatAttachmentQuery",
+        # Project-registration and host-directory-browse DTOs (the "add project" flow).
+        "RegisterProjectParams",
+        "RegisterProjectResult",
+        "ListDirectoriesParams",
+        "ListDirectoriesResult",
+        "DirectoryEntry",
+        "DirectoryListing",
     }
 )
 

@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 42 wire methods: 40 service methods
+ * The 44 wire methods: 42 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -44,9 +44,11 @@ export const WIRE_METHODS = [
   "runtime.events.read",
   "runtime.events.unwatch",
   "runtime.events.watch",
+  "runtime.fs.list",
   "runtime.git.diff",
   "runtime.git.status",
   "runtime.project.list",
+  "runtime.project.register",
   "runtime.project.thinking.set",
   "runtime.protocol.negotiate",
   "runtime.session.close",
@@ -88,7 +90,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (28). */
+/** Authorization capabilities enforced by the ACL layer (30). */
 export const AUTHORIZATION_CAPABILITIES = [
   "artifacts.list",
   "artifacts.read",
@@ -97,9 +99,11 @@ export const AUTHORIZATION_CAPABILITIES = [
   "attachments.write",
   "events.read",
   "events.watch",
+  "fs.list",
   "git.diff",
   "git.status",
   "project.list",
+  "project.register",
   "project.thinking",
   "session.close",
   "session.create",
@@ -160,9 +164,11 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.config.get": "session.read",
   "runtime.events.read": "events.read",
   "runtime.events.watch": "events.watch",
+  "runtime.fs.list": "fs.list",
   "runtime.git.diff": "git.diff",
   "runtime.git.status": "git.status",
   "runtime.project.list": "project.list",
+  "runtime.project.register": "project.register",
   "runtime.project.thinking.set": "project.thinking",
   "runtime.session.close": "session.close",
   "runtime.session.create": "session.create",
@@ -499,6 +505,28 @@ export interface DiffPayload {
 }
 
 /**
+ * One immediate sub-directory: its display name and absolute host path.
+ */
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+/**
+ * One bounded directory listing.  ``parent`` is null at a filesystem root;
+ * ``truncated`` marks that ``entries`` hit the caller's limit.
+ * ``roots`` are the platform's top-level entry points (drives on Windows,
+ * mounts on POSIX) so a picker can jump between them.
+ */
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  truncated: boolean;
+  roots: string[];
+}
+
+/**
  * ``expected_goal_id`` must still be the persisted goal (otherwise ``conflict``); ``objective`` follows the same bounds as ``set``.
  */
 export interface EditSessionGoalCommand {
@@ -714,6 +742,21 @@ export interface ListArtifactsQuery {
   cursor?: string | null;
   /**
    * python_default_kind=value python_default=100
+   */
+  limit?: number;
+}
+
+/**
+ * ``path`` is null for the daemon's home directory or an absolute host path;
+ * ``limit`` is bounded to 1..1000 by the wire decoder.
+ */
+export interface ListDirectoriesQuery {
+  /**
+   * python_default_kind=value python_default=null
+   */
+  path?: string | null;
+  /**
+   * python_default_kind=value python_default=200
    */
   limit?: number;
 }
@@ -984,6 +1027,15 @@ export interface ReconcileSessionQuery {
    * python_default_kind=value python_default=[]
    */
   probe_turn_ids?: string[];
+}
+
+/**
+ * One host workspace path to register as a project.  The daemon resolves
+ * it against its own filesystem and upserts the catalog row; re-registering
+ * a known path reuses its stable ``project_id``.
+ */
+export interface RegisterProjectCommand {
+  workspace_path: string;
 }
 
 /**
@@ -1744,6 +1796,8 @@ export type EditSessionGoalParams = EditSessionGoalCommand;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;
+export type ListDirectoriesParams = ListDirectoriesQuery;
+export type ListDirectoriesResult = DirectoryListing;
 export type ListProjectsParams = ListProjectsQuery;
 export type ListSessionsParams = ListSessionsQuery;
 export type McpServerState = McpServerStateView;
@@ -1753,6 +1807,8 @@ export type ProjectListResult = ProjectListPage;
 export type ReadSessionHistoryParams = ReadSessionHistoryQuery;
 export type RebindSessionParams = RebindSessionCommand;
 export type ReconcileSessionParams = ReconcileSessionQuery;
+export type RegisterProjectParams = RegisterProjectCommand;
+export type RegisterProjectResult = ProjectListItem;
 export type ReloadMcpParams = ReloadMcpCommand;
 export type RenameSessionParams = RenameSessionCommand;
 export type ResumeSessionGoalParams = ResumeSessionGoalCommand;

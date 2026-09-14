@@ -27,6 +27,7 @@ from synapse.runtime.service import (
     AclAuthorizer,
     CatalogProjectListProvider,
     CatalogProjectProvider,
+    CatalogProjectRegistrar,
     DaemonAuthorizer,
     LocalAgentRuntimeService,
     Principal,
@@ -463,6 +464,7 @@ class RuntimeDaemon:
             delegate = LocalAgentRuntimeService(
                 self.router,
                 project_list_provider=self._project_list_provider(),
+                project_registrar=self._project_registrar(),
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -484,6 +486,19 @@ class RuntimeDaemon:
         if catalog is None:
             return None
         return CatalogProjectListProvider(catalog)
+
+    def _project_registrar(self) -> CatalogProjectRegistrar | None:
+        """A catalog-backed registrar over the same daemon catalog.
+
+        ``None`` before the catalog exists keeps the optional delegate method
+        reporting itself as unavailable instead of failing the service build.
+        The adapter validates the workspace path and upserts the catalog row;
+        registration is idempotent per path.
+        """
+        catalog = self.catalog
+        if catalog is None:
+            return None
+        return CatalogProjectRegistrar(catalog)
 
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:

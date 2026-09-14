@@ -18,6 +18,11 @@
 > 上传与历史缩略图都改走 runtime RPC（§2.3），协议面见 §3 与 §3.2；仍未 wire 的后端
 > 能力见 `docs/agent-runtime-service/progress.md`（附件 `abort` 的 finalized 保护已由服务端
 > 强制，见该文「已修复」小节）。
+>
+> **「添加项目」切片**：输入区的 `+` 不再打开图片选择器，改为打开「添加项目」对话框
+> （`web/src/components/AddProjectDialog.tsx`）：经 `runtime.fs.list` 浏览**宿主**目录，进入目标目录后
+> 点「选择此目录并新建会话」经 `runtime.project.register` 登记，再切到该项目并开新会话（§2.3）。
+> 图片附件仍可加入输入区——走**粘贴或拖放**（点击选图的入口已移除），8 张 / 4 MB 限额与预览行为不变。
 
 ## 1. 架构定位
 
@@ -51,7 +56,7 @@
 | **TopBar (顶栏)** | 工作区列顶部的单行 chip，**三轨栅格**（两侧等宽 `1fr`）：左轨 [\|] 侧栏折叠开关 · 项目 · ⎇ Git 分支（含 ↑/↓ 跟踪计数）**紧接变更统计**（脏/干净状态点 + `+N -M` **真实 tracked 增删行数**，读在它描述的分支旁边）；中轨为**会话标题**，因两侧等宽而**真正居中于工作区列**（不随左右 chip 宽度漂移，独立轨道也保证窄屏不重叠）；右轨保留但不再放 chip（两侧等宽是标题居中的依据）；**分支与统计两个 chip 都是按钮、都可打开只读 Git Explorer**；窄屏（< `lg`）隐藏次要的项目 chip，保留标题与分支；工作区路径移至侧栏底部身份行 |
 | **SideBar (侧栏)** | 240px 宽度、**占满整个视口高度**，可折叠收起为极简轨；顶部导航含 新建任务 (Ctrl+N) 与 搜索 (Ctrl+K)；项目 → 会话两级树按时间分组；会话树**不显示滚动条但可正常滚动**（wheel / touch / 键盘，跨浏览器）；底栏为工作区身份行 + 纯净设置入口，无头像与通知铃铛杂音 |
 | **Transcript (主画布)** | 助手回复（左）与用户提问（右）为正文排版，且两者右边缘同线：助手正文限宽列宽 80%，用户行因此右侧内缩 20%，气泡不再伸到助手正文之外；◆ Thought for Xs / ▾ N tools executed / info 是紧凑的次要日志行（在左侧、限宽 85%，展开后才成面板） · Markdown 代码块与流式输出 |
-| **CommandBar (输入区)** | 工作区列**最后一行**的卡片（不是覆盖聊天区的浮层，转录滚动容器在其上方，最新一行就在可见底边上）：与聊天列同宽同边（`.console-gutter` + `.console-column`；转录不显示滚动条，故两侧都不被占用、边缘完全对齐）；文本在上，附件在左下，模型 / 推理强度 / 发送在右下；若有正在运行的任务则浮现 Steer queue 状态 |
+| **CommandBar (输入区)** | 工作区列**最后一行**的卡片（不是覆盖聊天区的浮层，转录滚动容器在其上方，最新一行就在可见底边上）：与聊天列同宽同边（`.console-gutter` + `.console-column`；转录不显示滚动条，故两侧都不被占用、边缘完全对齐）；文本在上，附件预览在其上方一行；控制行**左侧的 `+` 是「添加项目」**（打开宿主目录浏览器，见 §2.3），右侧是模型 / 推理强度 / 发送；若有正在运行的任务则浮现 Steer queue 状态 |
 | **BottomBar (底栏)** | 工作区列底部常驻（不再横跨侧栏）：MCP 工具池状态 · Agent 活跃态 (● 运行中/○ 空闲) · 中区本轮/会话遥测 · 目标；模型与推理级别选择已移入输入卡片 |
 
 > **布局对齐（本轮）**：窗口改为「全高侧栏 + 右列工作区」两列，顶栏与底栏只属于右列；
@@ -161,18 +166,20 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 空数组＝清空白名单、结果新增 `tool_names` 与每服务器 `discovered`/`loaded` 等）
 见 `docs/mcp.md` 的「MCP 面板协议」。
 
-### 2.3 会话管理（侧栏）与图片附件（本轮新增）
+### 2.3 会话管理（侧栏）、添加项目与图片附件（本轮新增）
 
-侧栏的项目 → 会话树与输入区图片附件都直接走 runtime RPC，不在前端拼装数据。
+侧栏的项目 → 会话树、输入区 `+` 的「添加项目」流程与输入区图片附件都直接走 runtime RPC，不在前端拼装数据。
 
 | 面 | wire 方法 | 实测 |
 |---|---|---|
 | 项目列表 | `runtime.project.list` | 有界分页（`limit` 1..100）；`GET /api/projects` 保留为 deprecated 兼容路由，不再是业务入口 |
+| 添加项目（浏览宿主目录） | `runtime.fs.list` | 对话框打开 daemon 的 home 目录（请求不带 `path` 即 home），点条目逐级进入**宿主**的直接子目录（`limit` 默认 200、服务端上限 1000，「上一级」按钮在 `parent` 为 `null` 时禁用）；顶部另有盘符/根按钮（结果里的 `roots`，Windows 为盘符、POSIX 为 `/`）与可编辑路径框（粘贴绝对路径直达），行内「选择」按钮一次点击即可选中该目录；只列目录、不列文件、不递归，`truncated` 为真时提示「仅显示前 N 个子目录」 |
+| 添加项目（登记并切换） | `runtime.project.register` | 「选择此目录并新建会话」登记的是**当前浏览目录**：daemon 解析该宿主路径并要求它是已存在目录，按 workspace 路径幂等（重复登记复用同一 `project_id`）；成功后刷新项目列表、切到该项目并新建会话，失败原因留在对话框内 |
 | 新建会话 | `runtime.session.create` | 只写元数据行，`thread_id` 由服务端分配并返回；随后仍走 `runtime.session.open` + watch |
 | 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白/超长在本地与服务端都被拒 |
 | 删除 | `runtime.session.delete` | 只删元数据与 goal；确认框与提示明确写出 checkpoint/transcript 仍保留，不宣称「对话已删除」；运行中会话由服务端原子拒绝（`conflict`），前端不自动 cancel |
 | 搜索 | `runtime.session.search` | 服务端**元数据**搜索（title/summary/thread_id/model），不是全文检索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
-| 选择/拖放图片 | — | 回形针或拖放到输入卡片；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒文件名与原因显示在输入区 |
+| 粘贴/拖放图片 | — | **粘贴**到输入卡片或**拖放**文件到卡片；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒文件名与原因显示在输入区。点击选图的入口已移除（`+` 现在是「添加项目」） |
 | 上传 | `runtime.attachments.begin` / `.append` / `.finish` | 每个附件独立串流并显示进度；分块 ≤ 256 KiB（base64），`finish` 由服务端校验大小与 MIME |
 | 取消/移除 | `runtime.attachments.abort`（best-effort） | 只在 `finish` 之前取消/失败时中止；**不对已 finalize 的 ref 调 abort** |
 | 发送 | `runtime.turn.submit` 的 `attachment_refs` | 有附件仍在上传时禁止发送；仅附件（文本为空）可提交；单次最多 8 个不透明 id |
@@ -188,7 +195,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 
 ## 3. 通信与协议层契约
 
-严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 40 个方法）。控制台涉及的子集：
+严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 44 个方法）。控制台涉及的子集：
 
 | 协议方法 | 方向 | 用途 |
 |---|---|---|
@@ -207,6 +214,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | `runtime.session.thinking.set` | Request -> Response | 会话级推理等级写入 |
 | `runtime.project.thinking.set` | Request -> Response | 项目级默认推理等级写入（只影响新建会话） |
 | `runtime.project.list` | Request -> Response | 可见项目枚举（服务端计算可见集合、有界分页） |
+| `runtime.project.register` | Request -> Response | 登记宿主目录为项目（catalog scope、按 workspace 路径幂等） |
+| `runtime.fs.list` | Request -> Response | 宿主目录浏览（catalog scope、只读有界、只列直接子目录） |
 | `runtime.config.get` | Request -> Response | 运行时配置只读投影（模型/推理/MCP） |
 | `runtime.session.mcp.reload` | Request -> Response | MCP 会话附着/开关/工具白名单 |
 | `runtime.session.goal` | Request -> Response | 读取会话 goal（无目标返回 null） |
@@ -232,7 +241,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 `runtime.session.rename`、`runtime.session.delete`、`runtime.session.search`、
 `runtime.session.history`、`runtime.session.reconcile`、`runtime.session.rebind`、
 `runtime.session.mcp.reload`、`runtime.session.thinking.set`、`runtime.project.thinking.set`、
-`runtime.project.list`、`runtime.session.goal`、`runtime.session.goal.set` /
+`runtime.project.list`、`runtime.project.register`、`runtime.fs.list`、`runtime.session.goal`、
+`runtime.session.goal.set` /
 `.edit` / `.clear` / `.pause` / `.resume`、`runtime.config.get`、`runtime.turn.submit`、
 `runtime.turn.steer`、`runtime.turn.cancel`、`runtime.turn.approval.resume`、
 `runtime.events.watch`、`runtime.events.unwatch`、
@@ -249,9 +259,11 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 ### 3.2 明确不调用的面（不声称对等）
 
 - **没有 wire 方法、因此控制台不提供**：会话清理（`prune_empty`）、会话导出（JSON /
-  Markdown）、对话**全文**搜索、项目登记/更新、上下文压缩与上下文状态（TUI `/compact`、
+  Markdown）、对话**全文**搜索、上下文压缩与上下文状态（TUI `/compact`、
   `/context`）、safety / 权限策略读写、工具输出压缩设置（TUI `/compression`）。逐项真源与
   状态见 `docs/agent-runtime-service/progress.md` 的「尚未 wire 的后端能力（真实矩阵）」。
+  项目登记/更新**不再是缺口**：`runtime.project.register` 已 wire（宿主目录浏览用
+  `runtime.fs.list`），控制台经 §2.3 的「添加项目」流程使用它们。
 - **UI-only，不需要 RPC**：TUI 的 `/theme` 与 slash 命令解析/补全属终端外观与输入层；
   控制台有自己的主题、输入区与快捷键。
 - `runtime.session.list` 没有查询参数，因此侧栏搜索只覆盖**已加载**会话（§2.1 已标注）；

@@ -11,6 +11,7 @@ import asyncio
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from synapse.runtime.service.project_list import (
@@ -19,11 +20,13 @@ from synapse.runtime.service.project_list import (
     ProjectListItem,
     ProjectListPage,
 )
+from synapse.runtime.service.project_register import RegisterProjectCommand
 from synapse.runtime.sessions.manager import RuntimeManager
 
 __all__ = [
     "CatalogProjectListProvider",
     "CatalogProjectProvider",
+    "CatalogProjectRegistrar",
     "ManagerFactory",
     "ProjectProvider",
     "RouterClosedError",
@@ -131,6 +134,53 @@ class CatalogProjectListProvider:
             projects=page,
             next_offset=consumed if consumed < total else None,
             total=total,
+        )
+
+
+class CatalogProjectRegistrar:
+    """Register one workspace path through a catalog-like object.
+
+    ``lookup`` is a catalog-like object exposing
+    ``register_project(workspace=...)`` (the same duck-typed boundary the other
+    providers use), so the service layer never imports the catalog package.  The
+    adapter verifies the path is an existing directory before writing, then
+    returns the same non-secret ``ProjectListItem`` projection the list surface
+    uses.  Registration is idempotent: re-registering a known path reuses its
+    stable ``project_id``.
+    """
+
+    def __init__(self, lookup: Any) -> None:
+        self._lookup = lookup
+
+    def __call__(self, command: RegisterProjectCommand) -> ProjectListItem:
+        if type(command) is not RegisterProjectCommand:
+            raise ValueError("command must be a RegisterProjectCommand")
+        register = getattr(self._lookup, "register_project", None)
+        if not callable(register):
+            raise ValueError("catalog does not support project registration")
+        try:
+            workspace = Path(command.workspace_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("workspace path is not accessible") from exc
+        if not workspace.is_dir():
+            raise ValueError("workspace path is not a directory")
+        row = register(str(workspace))
+        project_id = getattr(row, "project_id", None)
+        workspace_path = getattr(row, "workspace_path", None)
+        if (
+            type(project_id) is not str
+            or not project_id
+            or type(workspace_path) is not str
+            or not workspace_path
+        ):
+            raise ValueError("catalog returned an invalid project row")
+        name = getattr(row, "name", None)
+        branch = getattr(row, "git_branch", None)
+        return ProjectListItem(
+            project_id=project_id,
+            workspace_name=name if type(name) is str and name else None,
+            git_branch=branch if type(branch) is str and branch else None,
+            workspace_path=workspace_path,
         )
 
 

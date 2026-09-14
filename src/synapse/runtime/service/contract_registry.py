@@ -41,9 +41,11 @@ from synapse.runtime.service.access import (
     ATTACHMENTS_WRITE,
     EVENTS_READ,
     EVENTS_WATCH,
+    FS_LIST,
     GIT_DIFF,
     GIT_STATUS,
     PROJECT_LIST,
+    PROJECT_REGISTER,
     PROJECT_THINKING,
     SESSION_CLOSE,
     SESSION_CREATE,
@@ -158,6 +160,12 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.fs_browse import (
+    DIRECTORY_LIST_LIMIT_DEFAULT,
+    DirectoryEntry,
+    DirectoryListing,
+    ListDirectoriesQuery,
+)
 from synapse.runtime.service.git import (
     MAX_DIFF_BYTES,
     MAX_STATUS_FILES,
@@ -198,6 +206,7 @@ from synapse.runtime.service.project_list import (
     ProjectListItem,
     ProjectListPage,
 )
+from synapse.runtime.service.project_register import RegisterProjectCommand
 from synapse.runtime.service.queries import (
     ApprovalActionView,
     GetSessionGoalQuery,
@@ -781,6 +790,38 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(ProjectListPage, role="result"),
+    _dto(
+        RegisterProjectCommand,
+        role="request",
+        notes=(
+            "One host workspace path to register as a project.  The daemon resolves",
+            "it against its own filesystem and upserts the catalog row; re-registering",
+            "a known path reuses its stable ``project_id``.",
+        ),
+    ),
+    _dto(
+        ListDirectoriesQuery,
+        role="request",
+        notes=(
+            "``path`` is null for the daemon's home directory or an absolute host path;",
+            "``limit`` is bounded to 1..1000 by the wire decoder.",
+        ),
+    ),
+    _dto(
+        DirectoryEntry,
+        role="value",
+        notes=("One immediate sub-directory: its display name and absolute host path.",),
+    ),
+    _dto(
+        DirectoryListing,
+        role="result",
+        notes=(
+            "One bounded directory listing.  ``parent`` is null at a filesystem root;",
+            "``truncated`` marks that ``entries`` hit the caller's limit.",
+            "``roots`` are the platform's top-level entry points (drives on Windows,",
+            "mounts on POSIX) so a picker can jump between them.",
+        ),
+    ),
     _dto(SessionMetadataItem, role="result"),
     _dto(SessionHistoryPage, role="result"),
     _dto(
@@ -1611,6 +1652,51 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "server decides which registered projects are visible.",
             "``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire "
             "decoder; ``visible_project_ids`` is never accepted from the wire.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.project.register",
+        method_class="service",
+        request="RegisterProjectCommand",
+        result="ProjectListItem",
+        capability=PROJECT_REGISTER,
+        scope="catalog",
+        scope_location=None,
+        service_method="register_project",
+        params_alias="RegisterProjectParams",
+        result_alias="RegisterProjectResult",
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable.  The daemon injects a catalog-backed registrar, so the call "
+            "writes the user-layer catalog and is idempotent per workspace path."
+        ),
+        notes=(
+            "A catalog-scoped method: it has no per-request project position.  The "
+            "workspace path is resolved and validated server-side; the wire decoder "
+            "only bounds its length.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.fs.list",
+        method_class="service",
+        request="ListDirectoriesQuery",
+        result="DirectoryListing",
+        capability=FS_LIST,
+        scope="catalog",
+        scope_location=None,
+        service_method="list_directories",
+        params_alias="ListDirectoriesParams",
+        result_alias="ListDirectoriesResult",
+        wire_defaults=(("path", None), ("limit", DIRECTORY_LIST_LIMIT_DEFAULT)),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable.  Read-only and bounded: only immediate sub-directory names "
+            "are returned, never file contents, and never a recursive walk."
+        ),
+        notes=(
+            "A catalog-scoped method: it has no per-request project position.  "
+            "``path`` is null for the daemon's home directory or an absolute host "
+            "path; ``limit`` is bounded to 1..1000 by the wire decoder.",
         ),
     ),
     WireMethod(

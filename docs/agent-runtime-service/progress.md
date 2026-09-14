@@ -7,14 +7,14 @@
 ## 当前工作
 
 - S2 状态：已冻结；全部专项与回归门禁已完成。
-- 当前阶段：S10（消费者迁移，`completed`）；其上叠加「会话管理 / goal 写 / 附件 / project list / Web 接线」增量切片（`completed`）。
-- 当前任务：S10 implementation 与 final gates 已完成；总体 S0-S10 `completed`。增量切片 = `runtime.project.list`、会话 CRUD（create/rename/delete/search）、goal 五写方法、附件六方法 + `attachment_refs` + history refs 重建、Web 侧项目列表/会话管理/goal 对话框/图片上传与历史缩略图接线。
+- 当前阶段：S10（消费者迁移，`completed`）；其上叠加「会话管理 / goal 写 / 附件 / project list / 项目登记与宿主目录浏览 / Web 接线」增量切片（`completed`）。
+- 当前任务：S10 implementation 与 final gates 已完成；总体 S0-S10 `completed`。增量切片 = `runtime.project.list`、会话 CRUD（create/rename/delete/search）、goal 五写方法、附件六方法 + `attachment_refs` + history refs 重建、项目登记与宿主目录浏览（`runtime.project.register` / `runtime.fs.list`）、Web 侧项目列表/会话管理/goal 对话框/图片上传与历史缩略图接线/「添加项目」对话框接线。
 - 下一阶段：无（增量切片）；仍未 wire 的后端能力见下文「尚未 wire 的后端能力（真实矩阵）」。
 - 当前阻塞：无。
 
 ## 契约冻结与生成物门禁（ADR-S-019，已完成）
 
-- 权威：`service/contract_registry.py` 登记 **40 个 wire 方法**（38 个 `method_class="service"` + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个 `method_class="transport"` 连接态方法）、24 个 kind → payload schema、4 个协议功能 flag、**26 个授权 capability**（`service/access.py` 仍是常量真源）与 schema 清单；`transport/protocol.py` 从它派生 `METHODS` / `CAPABILITIES`，契约层运行时不回读任何生成物。计数可用 `service/contract_manifest.json` 交叉核对（`"class": "service"` 38 条、`"class": "transport"` 2 条、`authorization_capabilities` 26 条、`events` 24 条）。
+- 权威：`service/contract_registry.py` 登记 **44 个 wire 方法**（42 个 `method_class="service"` + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个 `method_class="transport"` 连接态方法）、24 个 kind → payload schema、4 个协议功能 flag、**30 个授权 capability**（`service/access.py` 仍是常量真源）与 schema 清单；`transport/protocol.py` 从它派生 `METHODS` / `CAPABILITIES`，契约层运行时不回读任何生成物。计数可用 `service/contract_manifest.json` 交叉核对（`"class": "service"` 42 条、`"class": "transport"` 2 条、`authorization_capabilities` 30 条、`events` 24 条）。
 - 生成物：`src/synapse/runtime/service/contract_manifest.json` 与 `web/src/runtime-client/contract.generated.ts`，由 `scripts/export_contract_manifest.py` 经 `service/contract_export.py` 渲染；`--check` 对提交内容做逐字节校验，漂移即失败。
 - 事件契约：24 个 kind 与全部 payload dataclass 上移到 `service/event_types.py`，`runtime/streaming/events.py` 原样 re-export 同一批对象；`info` 保持裸 `str`，`RuntimeEvent.turn_sequence` 与 `ToolBatchPayload.items` 保留；影子 kind 不进枚举与 manifest，但 TUI/web 的历史兼容分支**保留**（未清理，也不声称已清理）。
 - 契约层边界：`CONTRACT_FILES` 补齐 `recovery.py` / `runtime_config.py` / `artifacts.py` / `access.py` / `event_types.py`；`artifacts.py`（纯 DTO）/ `artifact_filesystem.py`（FS 实现）拆分；`service/__init__.py` 改为 PEP 562 懒 re-export（导入子模块仍会执行父包，但不再拉入 `local` / `routing` / 会话执行栈）。
@@ -23,7 +23,7 @@
 
 ## `runtime.project.list` 与可信连接 scope（已完成）
 
-- **新 wire 方法**：`runtime.project.list`（契约冻结后 wire 表 40 个方法之一；`service/access.py` 仍是 capability 常量真源，授权 capability 现为 26 个）。请求/结果 DTO 是纯 DTO：`ListProjectsQuery`（`limit` 1..100、`offset` 0..100000，`visible_project_ids` 为服务端计算字段，wire decoder 显式拒绝）、`ProjectListItem`（`project_id` / `workspace_name` / `git_branch` / `workspace_path`；不含 `session_count` / `last_active_at` 等 catalog 聚合业务数据）、`ProjectListPage`（`projects` / `next_offset` / `total`）。契约层新增 `service/project_list.py`，provider port 由 composition root 注入，服务层不 import catalog。
+- **新 wire 方法**：`runtime.project.list`（契约冻结后 wire 表 44 个方法之一；`service/access.py` 仍是 capability 常量真源，授权 capability 现为 30 个）。请求/结果 DTO 是纯 DTO：`ListProjectsQuery`（`limit` 1..100、`offset` 0..100000，`visible_project_ids` 为服务端计算字段，wire decoder 显式拒绝）、`ProjectListItem`（`project_id` / `workspace_name` / `git_branch` / `workspace_path`；不含 `session_count` / `last_active_at` 等 catalog 聚合业务数据）、`ProjectListPage`（`projects` / `next_offset` / `total`）。契约层新增 `service/project_list.py`，provider port 由 composition root 注入，服务层不 import catalog。
 - **可见性**：枚举结果 = 已登记项目 ∩ 当前 principal 的项目可见集合（`AclAuthorizer.visible_project_ids` / `DaemonAuthorizer` 返回 `None` = 不限），空集合直接 `permission_denied`；`visible_project_ids` 在 provider 内**先过滤再分页**。不建 manager / agent、不开 session、不注册新项目（专项用会在被调用时失败的 manager provider 断言）。
 - **可信连接 scope**：host→daemon WS 握手携带宿主私有头 `X-Synapse-Project-Scope`（browser 不接触该 socket，只有 host 能设置；daemon 仅在 bearer 认证成功后读取，认证失败不重绑）。仅 `--project-scope workspace` 绑定当前 `project_id`；`all` 不发该头，连接保持 daemon 自身同用户可见集合。daemon 用 `ProjectScopeAuthorizer`（**只做减法**的限定 ACL wrapper）叠加在既有策略之上，因此不会扩大原 ACL；session / project 方法同样生效。`runtime.protocol.negotiate` 仍只接受 `versions` / `client`，browser 无法自报 scope。
 - **Web**：业务项目列表改走共享 runtime client（`SynapseRuntimeClient.listProjects` → `runtime.project.list`，有界分页），`GET /api/projects` 保留为 deprecated 兼容路由、不再是业务入口；bootstrap 的当前项目标识仍由 host 控制面给出（`/api/session`）。Cookie / CSRF / Origin / host guard 全部保留：`RelayProjectScopeGuard` 仍作纵深防御，其上限与 daemon 的 catalog 边界对齐（500），避免 host 侧静态集合比 daemon 列表更严。
@@ -36,6 +36,7 @@
   | 会话 CRUD（create / rename / delete / search） | completed | 四个方法进 wire 表与契约，各有独立 capability（`session.create` / `session.rename` / `session.delete` / `session.search`）；`create` 由服务端分配身份，`rename` / `delete` 走会话元数据层，`delete` 保留对话历史（检查点与转录）且 busy 会话以 `conflict` 拒绝、不取消回合；Web 端侧栏走 RPC |
   | 会话 goal 管理写入（`set` / `edit` / `clear` / `pause` / `resume`） | completed | 五个写方法进 wire 表与契约；独立 `session.goal` capability（`session.read` 不授权写入）；`expected_goal_id` 防并发误改；`set` 拒绝覆盖未完成 goal；`pause` 只取消本会话 live turn；`resume` 仅状态转移、不自动续跑；写入用会话自身 ledger（非全局 `get_goal_service()` 单例）；Web 端 F6 目标对话框走 RPC |
   | 附件支持（服务端六方法 + submit refs + history refs + Web 接线） | completed | 六个方法 `runtime.attachments.begin` / `append` / `finish` / `abort` / `stat` / `read` 进 wire 表与契约，按 `SessionRef` 分别由 `attachments.write` / `attachments.read` 授权；单块解码上限 `MAX_CHUNK_BYTES` = 256 KiB（base64 上限 `MAX_CHUNK_BASE64_CHARS`，落在 1 MiB frame 内）；`runtime.turn.submit` 新增可选 `attachment_refs`（不透明 id，最多 8 个，服务端从可信 session workspace 解析，旧 in-process `attachments` 对象仍被 wire 拒绝非空、两来源不可混用、至少 text 或 refs 之一）；durable 引用写入 transcript projection JSON（不含 base64），`read_session_history` 新增 additive `HistoryEvent.attachments` 元数据/引用以便 Web 经 read 方法加载；`SubmitTurnCommand.attachments` 仍被 wire 拒绝非空。Web 侧上传、取消与历史缩略图均已接线（见下） |
+  | 项目登记 + 宿主目录浏览（composer「添加项目」） | completed | `runtime.project.register`（`project.register`：写面，daemon 解析并校验宿主目录后 upsert 用户层 catalog（`~/.synapse/catalog.sqlite`），按 workspace 路径幂等、复用同一 `project_id`，结果是与列举面相同的 `ProjectListItem`）与 `runtime.fs.list`（`fs.list`：只读有界，只枚举一个宿主目录的直接子目录、从不返回文件、从不递归，`limit` 默认 200 / 1..1000）进 wire 表与契约；二者均为 catalog scope、无 per-request 项目位置，授权为项目级授予（`visible_project_ids`，空集合即 `permission_denied`）；Web 输入区 `+` 走这两个方法（浏览宿主目录 → 登记 → 切到该项目并开新会话） |
   | 远程身份 / 多用户 principal 管理 | pending | 属 ADR-S-014 后续 |
 
 - **附件限额（读自 `service/attachments.py` 常量，非估算）**：
@@ -85,13 +86,13 @@ Push-Location web; try { npx tsc -b; node --test tests/runtimeContractFixture.te
 | 会话清理 `prune_empty` | `synapse.sessions.store.SessionStore.prune_empty` | 未 wire | 无 `runtime.session.prune`；只能进程内调用 |
 | 会话导出（JSON / Markdown） | `SessionStore.export_json` / `export_markdown`（TUI `/export`） | 未 wire | 无 `runtime.session.export` |
 | 对话全文搜索 | `synapse.sessions.search_index.SessionSearchIndex`（`search_session` 工具进程内使用） | 未 wire | 已有本地增量索引（`search-index.sqlite`）实现会话消息全文搜索，只是**没有 wire 方法暴露**；`runtime.session.search` **只是元数据搜索**（title / summary / thread_id / model / active_model），不是 transcript 全文检索 |
-| 项目登记 / 更新 | `synapse.projects.catalog.ProjectCatalog.register_project` / `touch_project` | 未 wire | `runtime.project.list` 是**只读**枚举：不建 manager、不开 session、不注册新项目 |
+| 项目登记 / 更新 | `synapse.projects.catalog.ProjectCatalog.register_project` / `touch_project` | 已 wire | `runtime.project.register`（`project.register`，catalog scope）覆盖登记/更新：daemon 解析并校验宿主目录后 upsert 用户层 catalog，按 workspace 路径幂等（`register_project` 本身即 upsert，并 bump `last_active_at`；没有单独的 `touch_project` 方法）。`runtime.project.list` 仍是**只读**枚举：不建 manager、不开 session、不注册新项目 |
 | 上下文压缩 / 上下文状态 | `synapse.runtime.context_compact`（TUI `/compact`、`/context`） | 未 wire | 无 `runtime.context.compact` / `runtime.context.status` |
 | safety / 权限策略读写 | `synapse.runtime.safety`、`synapse.runtime.fs_permissions`、HITL 策略 | 未 wire | 只有审批面（`runtime.turn.approval.get` / `.resume`）进了 wire |
 | 工具输出压缩设置 | TUI `/compression`（`synapse.commands.compression.handle_compression`） | 未 wire | 无对应写方法 |
 | 远程身份 / 多用户 principal 管理 | — | 未 wire | 属 ADR-S-014 后续 |
 
-**已 wire 对照（本切片相关，说明哪些面已对等）**：会话列举与历史（`runtime.session.list` / `runtime.session.history` / `runtime.session.reconcile`）、项目列举（`runtime.project.list`）、会话 CRUD（`runtime.session.create` / `rename` / `delete` / `search`）、模型与会话重绑（`runtime.session.rebind`）、会话/项目思考等级（`runtime.session.thinking.set` / `runtime.project.thinking.set`）、MCP 重载（`runtime.session.mcp.reload`）、goal 读写（`runtime.session.goal` + 五个写方法）、附件六方法 + `attachment_refs`、artifacts 三方法。
+**已 wire 对照（本切片相关，说明哪些面已对等）**：会话列举与历史（`runtime.session.list` / `runtime.session.history` / `runtime.session.reconcile`）、项目列举（`runtime.project.list`）、项目登记与宿主目录浏览（`runtime.project.register` / `runtime.fs.list`）、会话 CRUD（`runtime.session.create` / `rename` / `delete` / `search`）、模型与会话重绑（`runtime.session.rebind`）、会话/项目思考等级（`runtime.session.thinking.set` / `runtime.project.thinking.set`）、MCP 重载（`runtime.session.mcp.reload`）、goal 读写（`runtime.session.goal` + 五个写方法）、附件六方法 + `attachment_refs`、artifacts 三方法。
 
 **UI-only，不是必须 RPC**（不计入「对等」缺口）：
 

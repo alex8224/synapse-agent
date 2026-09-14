@@ -1,6 +1,7 @@
 import { Add20Regular, Dismiss20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { AttachmentPreview } from './AttachmentPreview.tsx';
+import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -9,7 +10,7 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
 
 /**
  * Floating command card: the prompt line, then one control row inside the same
- * rounded box — add-image on the left, the model and reasoning level the next
+ * rounded box — add-project on the left, the model and reasoning level the next
  * turn will run on, and the primary action on the right.  Those two pickers used
  * to sit in the status bar; they configure the next turn, so they belong next to
  * the input that starts it.
@@ -20,11 +21,13 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
  * was empty, with no way to interrupt from the UI).  Typing while busy still
  * queues a steer — that path is Enter, not the button.
  *
- * Images are added with the `+` (file picker), by pasting them into the card, or
- * by dropping them onto it — all three end in the same `handleFiles`
- * path.  Only the image types the runtime accepts are taken, at most eight per
- * submit and 4 MB each; every refusal is shown next to the composer instead of
- * being silently dropped.  A chunk still uploading disables sending, and an
+ * The `+` on the left is "add project": it opens `AddProjectDialog`, which walks
+ * the host filesystem and registers a workspace directory as a new project (then
+ * switches to it and opens a session).  Images are added by pasting them into the
+ * card or dropping them onto it — both end in the same `handleFiles` path.  Only
+ * the image types the runtime accepts are taken, at most eight per submit and
+ * 4 MB each; every refusal is shown next to the composer instead of being
+ * silently dropped.  A chunk still uploading disables sending, and an
  * attachment-only turn may be submitted with empty text.  Each pending row is the
  * picked image itself (`AttachmentPreview`) rather than a file-name chip, and
  * hovering it enlarges the copy, so what will be sent is verifiable before the
@@ -39,7 +42,7 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
 export const CommandInput: React.FC = () => {
   const [text, setText] = useState('');
   const [dragging, setDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const card = cardRef.current;
@@ -230,28 +233,15 @@ export const CommandInput: React.FC = () => {
             aria-label="消息输入"
             className="ui-composer-input w-full bg-transparent text-gray-900 placeholder:text-gray-500 font-sans"
           />
-          <input
-            ref={fileInputRef}
-            id="console-attachments"
-            name="attachments"
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              handleFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
           {/* Control row: add on the left, what the next turn runs on the right.
               It is also the pickers' anchor (`relative`): anchored to their own
               trigger, a 320px model menu ran past the left edge of a narrow pane. */}
           <div className="ui-composer-toolbar relative">
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
-              title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
-              aria-label="添加图片附件"
+              onClick={() => setProjectDialogOpen(true)}
+              title="添加项目（选择本地目录并新建会话）"
+              aria-label="添加项目"
               className="ui-icon-button"
             >
               <Add20Regular aria-hidden="true" />
@@ -285,6 +275,7 @@ export const CommandInput: React.FC = () => {
           </div>
         </form>
       </div>
+      {projectDialogOpen && <AddProjectDialog onClose={() => setProjectDialogOpen(false)} />}
     </div>
   );
 };

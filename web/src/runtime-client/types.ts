@@ -30,6 +30,8 @@ export type {
   CreateSessionResult,
   DeleteSessionParams,
   DeleteSessionResult,
+  DirectoryEntry,
+  DirectoryListing,
   EditSessionGoalParams,
   EventNotificationMeta,
   FinishAttachmentCommand,
@@ -42,6 +44,8 @@ export type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
+  ListDirectoriesParams,
+  ListDirectoriesResult,
   ListProjectsParams,
   ListSessionsParams,
   McpServerState,
@@ -57,6 +61,8 @@ export type {
   RebindSessionParams,
   RebindSessionResult,
   ReconcileSessionParams,
+  RegisterProjectParams,
+  RegisterProjectResult,
   ReloadMcpParams,
   ReloadMcpResult,
   RenameSessionParams,
@@ -88,5 +94,7 @@ export const SESSION_LIST_PAGE_SIZE = 50;
 export const SESSION_SEARCH_PAGE_SIZE = 50;
 /** Bounded page size for `runtime.project.list` (backend default is 50, cap 100). */
 export const PROJECT_LIST_PAGE_SIZE = 100;
+/** Bounded page size for `runtime.fs.list` (backend default is 200, cap 1000). */
+export const DIRECTORY_LIST_PAGE_SIZE = 200;
 /** Bounded page size for `runtime.session.history` (backend default is 20, cap 100). */
 export const HISTORY_PAGE_SIZE = 20;

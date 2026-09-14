@@ -72,6 +72,7 @@ from synapse.runtime.service.commands import (
     SteerTurnResult,
     SubmitTurnCommand,
 )
+from synapse.runtime.service.directory_browse import list_directories_filesystem
 from synapse.runtime.service.errors import (
     ClosedError,
     ConflictError,
@@ -102,6 +103,10 @@ from synapse.runtime.service.events import (
     RuntimeEvent,
     matches_event,
     project_payload,
+)
+from synapse.runtime.service.fs_browse import (
+    DirectoryListing,
+    ListDirectoriesQuery,
 )
 from synapse.runtime.service.git import (
     GitDiffQuery,
@@ -134,9 +139,11 @@ from synapse.runtime.service.history_store import (
 from synapse.runtime.service.ports import EventWatch
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
+    ProjectListItem,
     ProjectListPage,
     ProjectListProvider,
 )
+from synapse.runtime.service.project_register import RegisterProjectCommand
 from synapse.runtime.service.queries import (
     ApprovalActionView,
     GetSessionGoalQuery,
@@ -331,6 +338,7 @@ class LocalAgentRuntimeService:
         session_rebinder: Callable[[RuntimeManager, SessionRef, str], tuple[Any, Any]]
         | None = None,
         project_list_provider: ProjectListProvider | None = None,
+        project_registrar: Callable[[RegisterProjectCommand], ProjectListItem] | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -339,6 +347,11 @@ class LocalAgentRuntimeService:
         # daemon injects a catalog-backed adapter; without one the optional
         # ``list_projects`` method reports itself as unavailable.
         self._project_list_provider = project_list_provider
+        # A catalog-backed registrar supplied by the composition root.  The
+        # service layer never imports the project catalog, so the daemon injects
+        # an adapter; without one the optional ``register_project`` method
+        # reports itself as unavailable.
+        self._project_registrar = project_registrar
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -974,6 +987,41 @@ class LocalAgentRuntimeService:
         if provider is None:
             raise InvalidRequestError("project list is unavailable")
         return await asyncio.to_thread(provider, query)
+
+    async def register_project(self, command: RegisterProjectCommand) -> ProjectListItem:
+        """Register one host workspace path through the injected registrar adapter.
+
+        The service layer never imports the project catalog: the daemon injects a
+        catalog-backed adapter that validates the path and upserts the row.  The
+        blocking filesystem check and catalog write run on a worker thread so the
+        event loop is never held by disk I/O.
+        """
+        if type(command) is not RegisterProjectCommand:
+            raise InvalidRequestError(
+                "register project command must be a RegisterProjectCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        registrar = self._project_registrar
+        if registrar is None:
+            raise InvalidRequestError("project registration is unavailable")
+        try:
+            return await asyncio.to_thread(registrar, command)
+        except ValueError as exc:
+            # The adapter's messages are controlled (never a raw OS string).
+            raise InvalidRequestError(str(exc)) from exc
+
+    async def list_directories(self, query: ListDirectoriesQuery) -> DirectoryListing:
+        """List one host directory's immediate sub-directories (bounded, read-only).
+
+        The filesystem walk runs on a worker thread; the module function resolves
+        and caps the listing and raises a typed error for an inaccessible path.
+        """
+        if type(query) is not ListDirectoriesQuery:
+            raise InvalidRequestError(
+                "list directories query must be a ListDirectoriesQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        return await asyncio.to_thread(list_directories_filesystem, query)
 
     async def read_session_history(
         self, query: ReadSessionHistoryQuery

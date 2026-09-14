@@ -20,6 +20,7 @@ import type {
   SessionRef,
   ApprovalDecision,
   ProjectListItem,
+  ListDirectoriesResult,
   ReloadMcpResult,
   SessionRecoverabilityResult,
 } from '../client/types.ts';
@@ -690,6 +691,19 @@ interface ConsoleStore {
   switchProject: (projectId: string, threadId?: string) => Promise<void>;
   /** Create a fresh session in a specific project (per-project "+" button). */
   createSessionInProject: (projectId: string) => Promise<void>;
+  /**
+   * Register a host workspace directory as a project, refresh the switchable
+   * list, switch to it and open a fresh session (the composer "+" action).
+   * Resolves ``null`` on success, else the user-facing reason so the dialog can
+   * stay open.
+   */
+  addProject: (workspacePath: string) => Promise<string | null>;
+  /**
+   * List one host directory's immediate sub-directories for the "add project"
+   * picker (``runtime.fs.list``).  Rejects when the runtime is not ready or the
+   * listing fails; the dialog surfaces the reason.
+   */
+  listDirectories: (path: string | null) => Promise<ListDirectoriesResult>;
 
   // History pagination / availability state.
   historyLoading: boolean;
@@ -2350,6 +2364,26 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // console happened to be attached to.
     if (projectId !== get().activeProjectId && !(await activateProject(projectId))) return;
     await get().createNewSession();
+  },
+  addProject: async (workspacePath) => {
+    // The composer "+" flow: register the host directory, refresh the switchable
+    // list so the new project is present, then activate it and open a session.
+    const client = requireRuntimeClient();
+    if (!client) return RUNTIME_RPC_NOT_READY;
+    try {
+      const registered = await client.registerProject({ workspace_path: workspacePath });
+      await get().loadProjects();
+      await get().createSessionInProject(registered.project_id);
+      return null;
+    } catch (err) {
+      console.warn('Failed to add project:', err);
+      return describeError(err);
+    }
+  },
+  listDirectories: async (path) => {
+    const client = requireRuntimeClient();
+    if (!client) throw new Error(RUNTIME_RPC_NOT_READY);
+    return client.listDirectories({ path });
   },
   cancelActiveTurn: async () => {
     const client = requireRuntimeClient();
