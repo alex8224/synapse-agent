@@ -15,8 +15,9 @@ import { GitExplorer } from './GitExplorer.tsx';
  * chips on either side; the tracks are separate cells, so a narrow window never
  * overlaps the title with them (the secondary project chip drops first).  The
  * left track carries identity (sidebar toggle, project, branch), the right track
- * the change statistics.  The branch chip and the statistics chip both open the
- * read-only git explorer, so the explorer stays reachable even before
+ * the change statistics.  The branch chip and the statistics chip both re-read
+ * `runtime.git.status` and then open the read-only git explorer, so the explorer
+ * stays reachable even before
  * `runtime.git.status` has been read.  The workspace path moved to the sidebar's
  * identity row, the context actions (session info, workspace files, runtime
  * diagnostics, logout) live with the settings entry there, and the telemetry
@@ -32,6 +33,7 @@ export const TopBar: React.FC = () => {
     gitDirty,
     gitStatus,
     sessionTitle,
+    loadGitStatus,
   } = useConsoleStore(
     // Only the fields this bar paints: a reasoning delta must not re-render it.
     useShallow((state) => ({
@@ -42,9 +44,18 @@ export const TopBar: React.FC = () => {
       gitDirty: state.gitDirty,
       gitStatus: state.gitStatus,
       sessionTitle: state.sessionTitle,
+      loadGitStatus: state.loadGitStatus,
     })),
   );
   const [explorerOpen, setExplorerOpen] = useState(false);
+
+  // The chrome is a snapshot taken when the session was attached, so a click
+  // re-reads it before opening the explorer (a commit made outside the console
+  // is otherwise invisible until the next attach).
+  const refreshAndOpenExplorer = () => {
+    void loadGitStatus();
+    setExplorerOpen(true);
+  };
 
   // The project label comes from the project list the sidebar already holds, and
   // is simply omitted until that list has loaded: no placeholder name.
@@ -104,8 +115,8 @@ export const TopBar: React.FC = () => {
                 `runtime.git.status`. */}
             <button
               type="button"
-              onClick={() => setExplorerOpen(true)}
-              title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
+              onClick={refreshAndOpenExplorer}
+              title="刷新并打开 Git Explorer（只读：变更文件与逐文件 diff）"
               className="ui-button min-w-0 text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
             >
               <Branch20Regular aria-hidden="true" />
@@ -124,8 +135,8 @@ export const TopBar: React.FC = () => {
                 same read-only git explorer as the branch chip. */}
             <button
               type="button"
-              onClick={() => setExplorerOpen(true)}
-              title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
+              onClick={refreshAndOpenExplorer}
+              title="刷新并打开 Git Explorer（只读：变更文件与逐文件 diff）"
               aria-label="查看 Git 变更"
               className="ui-button shrink-0 font-numeric text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
             >

@@ -893,10 +893,18 @@ function applyLiveEvents(entries: readonly LiveEventEntry[]): void {
   if (entries.length === 0) return;
   const merged = coalesceLiveEvents(entries);
   useConsoleStore.setState((state) => foldLiveEvents(state, merged));
+  let turnEnded = false;
   for (const entry of merged) {
     // A finished turn changes the session's cumulative totals.
-    if (isTurnTerminalKind(entry.event.kind)) foldTurnUsage(entry.event.payload);
+    if (isTurnTerminalKind(entry.event.kind)) {
+      foldTurnUsage(entry.event.payload);
+      turnEnded = true;
+    }
   }
+  // A finished turn may also have changed the workspace (the agent edits files),
+  // so re-read the read-only git chrome once per batch.  `loadGitStatus` is
+  // best-effort and scoped to the current session, so a switch mid-flight is safe.
+  if (turnEnded) void useConsoleStore.getState().loadGitStatus();
 }
 
 /** Apply every queued delta now: the display window closed, or an event needs the order kept. */

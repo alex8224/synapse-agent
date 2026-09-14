@@ -10,9 +10,10 @@
  *  2. The git-only chips (branch name with its tracking counts, and the change
  *     statistics) render only when the host reported a branch, so a workspace
  *     that is not under git shows no orphan branch widget.
- *  3. The branch chip and the statistics chip are both buttons that open the
- *     read-only git explorer: either one is enough, so the explorer stays
- *     reachable while `runtime.git.status` is still unread.
+ *  3. The branch chip and the statistics chip are both buttons that re-read
+ *     `runtime.git.status` and then open the read-only git explorer: either one
+ *     is enough, so the explorer stays reachable while the status is unread, and
+ *     a change made outside the console (a commit) is picked up on click.
  *  4. The change statistics are the real tracked added/removed line counts
  *     (`+N -M`), never the changed-file count; while they are unknown the chip
  *     shows no number instead of a fabricated zero.
@@ -72,7 +73,10 @@ test('the change statistics hang off the branch chip', () => {
     chip.indexOf('{gitBranch}') < chip.indexOf('+{insertions}'),
     'the statistics must follow the branch name they describe',
   );
-  assert.ok(chip.includes('setExplorerOpen(true)'), 'the statistics chip must open the explorer');
+  assert.ok(
+    chip.includes('refreshAndOpenExplorer'),
+    'the statistics chip must refresh and open the explorer',
+  );
   assert.ok(chip.includes('+{insertions}'), 'the added lines render as +N');
   assert.ok(chip.includes('-{deletions}'), 'the removed lines render as -M');
   // The dirty marker stays; the file-with-plus/minus glyph does not.
@@ -160,14 +164,22 @@ test('the branch chip and the statistics chip both open the git explorer', () =>
   // Regression guard: the branch chip was downgraded to a read-only `div`, which
   // left no entry at all until `runtime.git.status` arrived (and none for a
   // workspace whose status never loads).  Both chips are buttons again.
-  const opens = source.match(/setExplorerOpen\(true\)/g) ?? [];
-  assert.equal(opens.length, 2, 'both chips must call setExplorerOpen(true)');
+  const opens = source.match(/onClick=\{refreshAndOpenExplorer\}/g) ?? [];
+  assert.equal(opens.length, 2, 'both chips must call the refresh-and-open handler');
+  assert.ok(source.includes('setExplorerOpen(true)'), 'the handler must open the explorer');
+  assert.ok(
+    /refreshAndOpenExplorer[\s\S]*?loadGitStatus\(\)/.test(source),
+    'the handler must re-read runtime.git.status before opening',
+  );
   const branch = source.slice(
     source.indexOf("gitBranch !== ''"),
     source.indexOf('{/* Centre track'),
   );
   assert.ok(branch.includes('<button'), 'the branch chip must be a button, not a div');
-  assert.ok(branch.includes('setExplorerOpen(true)'), 'the branch chip must open the explorer');
+  assert.ok(
+    branch.includes('refreshAndOpenExplorer'),
+    'the branch chip must refresh and open the explorer',
+  );
   // The statistics chip is a button too, and now sits inside that same track.
   assert.ok(
     (branch.match(/<button/g) ?? []).length >= 2,
