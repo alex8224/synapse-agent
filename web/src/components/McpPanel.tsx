@@ -112,7 +112,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   return (
-    <div className="absolute bottom-8 left-0 z-50 w-96 space-y-2 rounded-md border border-gray-200 bg-white p-3 shadow-xl">
+    <div className="absolute bottom-8 left-0 z-50 w-96 space-y-2 rounded-md border border-gray-200 bg-surface p-3 shadow-xl">
       <div className="flex items-center justify-between border-b border-gray-100 pb-2">
         <span className="text-xs font-bold text-gray-900">MCP 工具与服务器 (F5)</span>
         <div className="flex items-center gap-1">

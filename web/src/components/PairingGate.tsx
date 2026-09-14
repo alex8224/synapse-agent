@@ -32,7 +32,7 @@ export const PairingGate: React.FC = () => {
     <div className="bg-background text-on-background h-screen w-screen flex items-center justify-center font-sans">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md border border-[#e5e7eb] rounded-lg bg-white p-6 shadow-sm"
+        className="w-full max-w-md border border-line rounded-lg bg-surface p-6 shadow-sm"
       >
         <h1 className="text-sm font-semibold text-gray-900">Synapse Web 控制台配对</h1>
         <p className="mt-2 text-xs text-gray-500 leading-relaxed">
@@ -70,7 +70,7 @@ export const PairingGate: React.FC = () => {
         <button
           type="submit"
           disabled={!ready || busy}
-          className="mt-4 w-full h-8 rounded bg-[#2563eb] text-white text-xs hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          className="mt-4 w-full h-8 rounded bg-accent text-on-accent text-xs hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {busy ? '配对中…' : '配对'}
         </button>

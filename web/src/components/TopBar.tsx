@@ -59,7 +59,7 @@ export const TopBar: React.FC = () => {
 
   return (
     <>
-    <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-10 w-full shrink-0 bg-white border-b border-[#e5e7eb] px-3 z-20 select-none text-xs font-mono">
+    <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-10 w-full shrink-0 bg-surface border-b border-line px-3 z-20 select-none text-xs font-mono">
       {/* Left track: identity controls and context.  `min-w-0` lets the chips
           truncate instead of widening the track and nudging the centre line. */}
       <div className="flex min-w-0 items-center gap-1.5">
@@ -152,7 +152,7 @@ export const TopBar: React.FC = () => {
           a session name instead of a fragment of it -- and `min-w-0` lets a
           narrow window shrink the chip rather than push the side tracks. */}
       <div
-        className="flex min-w-0 max-w-[32rem] items-center gap-1.5 rounded bg-[#f3f4f5] px-2 py-1 text-gray-900"
+        className="flex min-w-0 max-w-[32rem] items-center gap-1.5 rounded bg-sunken px-2 py-1 text-gray-900"
         title={sessionTitle}
       >
         <span className="material-symbols-outlined shrink-0 text-[15px] text-gray-500">forum</span>

@@ -142,7 +142,7 @@ export const SideBar: React.FC = () => {
     // disappearing (new session, search, and the loaded count).  Expanding is
     // the top bar's toggle (or Ctrl+B) — a second toggle here was a duplicate.
     return (
-      <nav className="bg-[#f8f9fa] border-r border-[#e5e7eb] h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
+      <nav className="bg-canvas border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
         <button
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
@@ -179,7 +179,7 @@ export const SideBar: React.FC = () => {
   }
 
   return (
-    <nav className="bg-[#f8f9fa] border-r border-[#e5e7eb] h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
+    <nav className="bg-canvas border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's
@@ -192,7 +192,7 @@ export const SideBar: React.FC = () => {
         >
           <span className="material-symbols-outlined shrink-0 text-[16px] text-gray-500">add</span>
           <span className="min-w-0 flex-1 truncate text-left">新建任务</span>
-          <kbd className="shrink-0 rounded border border-gray-200 bg-white px-1 font-mono text-[10px] text-gray-400">
+          <kbd className="shrink-0 rounded border border-gray-200 bg-surface px-1 font-mono text-[10px] text-gray-400">
             Ctrl+N
           </kbd>
         </button>
@@ -215,7 +215,7 @@ export const SideBar: React.FC = () => {
             placeholder="搜索项目 / 会话"
             title="搜索项目与会话 (Ctrl+K)"
             spellCheck={false}
-            className="w-full rounded border border-gray-200 bg-white pl-6 pr-12 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
+            className="w-full rounded border border-gray-200 bg-surface pl-6 pr-12 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
           />
           {query !== '' && (
             <button
@@ -459,7 +459,7 @@ export const SideBar: React.FC = () => {
                   void loadMoreSessionSearch();
                 }}
                 disabled={sessionSearch.loading}
-                className="w-full rounded border border-gray-200 bg-white px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full rounded border border-gray-200 bg-surface px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {sessionSearch.loading ? '加载中…' : '加载更多搜索结果'}
               </button>
@@ -471,7 +471,7 @@ export const SideBar: React.FC = () => {
                   void loadMoreSessions();
                 }}
                 disabled={sessionsLoading}
-                className="w-full rounded border border-gray-200 bg-white px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full rounded border border-gray-200 bg-surface px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {sessionsLoading ? '加载中…' : '加载更多'}
               </button>
@@ -516,7 +516,7 @@ export const SideBar: React.FC = () => {
               onClick={() => {
                 void confirmDelete(deletingThreadId);
               }}
-              className="rounded bg-red-600 px-1.5 py-0.5 text-white hover:bg-red-700 cursor-pointer"
+              className="rounded bg-red-600 px-1.5 py-0.5 text-on-accent hover:bg-red-700 cursor-pointer"
             >
               删除记录
             </button>
@@ -534,7 +534,7 @@ export const SideBar: React.FC = () => {
       {/* Foot of the sidebar: the workspace identity, then the app-level row where
           the context actions sit with the settings entry (the version is shown
           inside the settings panel instead of this label). */}
-      <div className="mt-2 border-t border-[#e5e7eb] px-3 pt-2">
+      <div className="mt-2 border-t border-line px-3 pt-2">
         <div
           className="flex items-center gap-1.5 font-mono text-[10px] text-gray-500"
           title={identityLabel}

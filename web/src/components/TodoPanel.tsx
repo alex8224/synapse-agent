@@ -25,7 +25,7 @@ export const TodoPanel: React.FC = () => {
 
   return (
     <div className="absolute right-2 top-2 z-20 w-72 max-w-[calc(100%-1rem)] select-none">
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white/95 shadow-sm backdrop-blur">
+      <div className="overflow-hidden rounded-lg border border-gray-200 bg-surface/95 shadow-sm backdrop-blur">
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}

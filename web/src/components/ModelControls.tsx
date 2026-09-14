@@ -95,7 +95,7 @@ export const ModelControls: React.FC = () => {
           <span className="material-symbols-outlined text-[15px] text-gray-400">expand_more</span>
         </button>
         {showModelPicker && (
-          <div className="absolute bottom-8 right-0 z-50 flex max-h-80 w-72 flex-col rounded-md border border-gray-200 bg-white p-2 shadow-xl">
+          <div className="absolute bottom-8 right-0 z-50 flex max-h-80 w-72 flex-col rounded-md border border-gray-200 bg-surface p-2 shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-100 pb-1.5 text-[11px] font-semibold text-gray-500">
               <span>选择模型 ({availableModels.length} 个可用)</span>
               <span className="font-mono text-[10px] text-gray-400">F2</span>
@@ -154,7 +154,7 @@ export const ModelControls: React.FC = () => {
           )}
         </button>
         {showThinkingPicker && (
-          <div className="absolute bottom-8 right-0 z-50 w-40 space-y-1 rounded-md border border-gray-200 bg-white p-1 shadow-lg">
+          <div className="absolute bottom-8 right-0 z-50 w-40 space-y-1 rounded-md border border-gray-200 bg-surface p-1 shadow-lg">
             <div className="border-b border-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-400">
               推理等级
             </div>

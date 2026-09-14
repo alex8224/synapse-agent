@@ -149,7 +149,7 @@ export const BottomBar: React.FC = () => {
         the bar covered the sidebar's own footer (its settings entry), leaving a
         strip of it unreachable.
       */}
-      <footer className="grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-[#e5e7eb] bg-white px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
+      <footer className="grid h-7 w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-line bg-surface px-3 font-mono text-[11px] text-gray-500 shrink-0 select-none">
         {/* Left: activity + configuration */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span
@@ -248,7 +248,7 @@ export const BottomBar: React.FC = () => {
           onClick={() => setShowHelp(false)}
         >
           <div
-            className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 font-sans shadow-xl"
+            className="w-full max-w-md rounded-lg border border-gray-200 bg-surface p-5 font-sans shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between border-b pb-2">

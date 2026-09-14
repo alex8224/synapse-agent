@@ -33,7 +33,7 @@ export const ImageLightbox: React.FC<{
     >
       <div
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-full max-w-4xl flex-col rounded-lg border border-gray-200 bg-white p-3 shadow-xl"
+        className="flex max-h-full max-w-4xl flex-col rounded-lg border border-gray-200 bg-surface p-3 shadow-xl"
       >
         <div className="mb-2 flex items-center gap-3 border-b border-gray-100 pb-1.5">
           <span className="truncate font-mono text-[11px] font-semibold text-gray-900">{label}</span>

@@ -143,7 +143,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md space-y-2 rounded-lg border border-gray-200 bg-white p-5 font-sans shadow-xl"
+        className="w-full max-w-md space-y-2 rounded-lg border border-gray-200 bg-surface p-5 font-sans shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
@@ -202,7 +202,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
                   <button
                     type="button"
                     onClick={() => setConfirmingClear(null)}
-                    className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-white"
+                    className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-surface"
                   >
                     取消
                   </button>
@@ -210,7 +210,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
                     type="button"
                     disabled={goalBusy}
                     onClick={() => void confirmClear()}
-                    className="rounded bg-red-600 px-2 py-0.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded bg-red-600 px-2 py-0.5 text-xs text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     确认清除
                   </button>
@@ -264,7 +264,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
                 type="button"
                 disabled={disabled || !objectiveValid || (!editing && !budgetValid)}
                 onClick={() => void submit()}
-                className="rounded bg-gray-900 px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded bg-gray-900 px-2 py-1 text-xs text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {editing ? '保存' : '设置'}
               </button>

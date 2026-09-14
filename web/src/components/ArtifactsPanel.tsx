@@ -245,7 +245,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
       aria-label="工作区文件"
       // Opened from the sidebar's settings row, so it expands upward from there
       // (the triggers sit at the bottom of the window).
-      className="absolute bottom-full left-0 z-50 mb-1 flex h-[32rem] w-[56rem] flex-col rounded-md border border-gray-200 bg-white text-left shadow-xl"
+      className="absolute bottom-full left-0 z-50 mb-1 flex h-[32rem] w-[56rem] flex-col rounded-md border border-gray-200 bg-surface text-left shadow-xl"
     >
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-gray-900">工作区文件</span>

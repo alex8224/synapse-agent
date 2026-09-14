@@ -105,8 +105,8 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column pointer-events-auto flex flex-col rounded-lg border bg-white shadow-sm transition-colors focus-within:border-blue-500 ${
-          dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-[#e5e7eb]'
+        className={`console-column pointer-events-auto flex flex-col rounded-lg border bg-surface shadow-sm transition-colors focus-within:border-blue-500 ${
+          dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-line'
         }`}
       >
         {attachments.length > 0 && (
@@ -124,7 +124,7 @@ export const CommandInput: React.FC = () => {
                   // live in the tooltip and the hover preview, and a failure is
                   // still spelled out in the alert below the composer.
                   className={`relative rounded border p-1 ${
-                    failed ? 'border-red-200 bg-red-50/70' : 'border-gray-200 bg-[#f8f9fa]'
+                    failed ? 'border-red-200 bg-red-50/70' : 'border-gray-200 bg-canvas'
                   }`}
                   title={entry.error ?? `${entry.name} · ${entry.mime} · ${formatBytes(entry.size)}`}
                 >
@@ -136,7 +136,7 @@ export const CommandInput: React.FC = () => {
                     failed={failed}
                   />
                   {entry.status === 'uploading' && (
-                    <span className="pointer-events-none absolute inset-1 flex items-center justify-center rounded bg-white/70 font-mono text-[10px] tabular-nums text-blue-700">
+                    <span className="pointer-events-none absolute inset-1 flex items-center justify-center rounded bg-surface/70 font-mono text-[10px] tabular-nums text-blue-700">
                       {percent}%
                     </span>
                   )}
@@ -144,7 +144,7 @@ export const CommandInput: React.FC = () => {
                     type="button"
                     onClick={() => removeAttachment(entry.localId)}
                     title={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 shadow-sm transition-colors hover:text-gray-900"
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-surface text-gray-500 shadow-sm transition-colors hover:text-gray-900"
                   >
                     <span className="material-symbols-outlined text-[12px]">
                       {entry.status === 'uploading' ? 'cancel' : 'close'}
@@ -223,7 +223,7 @@ export const CommandInput: React.FC = () => {
                 void cancelActiveTurn();
               }}
               title="停止当前轮次 (Ctrl+C)"
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#dc2626] text-white transition-colors hover:bg-red-700"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-danger text-on-accent transition-colors hover:bg-red-700"
             >
               <span className="material-symbols-outlined text-[16px]">stop</span>
             </button>
@@ -232,7 +232,7 @@ export const CommandInput: React.FC = () => {
               type="submit"
               disabled={!canSend}
               title={uploading ? '附件仍在上传中' : 'Send (Enter)'}
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#2563eb] text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-accent text-on-accent transition-colors hover:bg-blue-700 disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
             </button>

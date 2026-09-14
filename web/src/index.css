@@ -2,11 +2,266 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  /*
+    Theme contract.
+
+    Every colour, radius, shadow and font the console paints resolves to one of
+    these variables, so a theme is just a block of values and swapping it repaints
+    the whole console without touching a component.  Two things make that work:
+
+    - the Tailwind palette steps the components already use (`gray-*`, `blue-*`,
+      the state ramps) resolve to `var(--…)` (see `tailwind.config.js`), so the
+      hundreds of existing class names follow the active theme for free;
+    - the named roles below (`--surface*`, `--line`, `--accent`, `--on-accent`,
+      `--math*`) are what new code should use, so a component never has to know a
+      shade.
+
+    `:root` reproduces the palette the console shipped with, which is why adding
+    this layer changed nothing on screen.  `[data-theme='…']` blocks replace it:
+    `fluent-light` / `fluent-dark` are a worked example (values approximate the
+    Fluent 2 semantic tokens; replace them with the design's own values).
+  */
+  :root {
+    color-scheme: light;
+
+    /* Neutral ramp. */
+    --gray-50: 249 250 251;
+    --gray-100: 243 244 246;
+    --gray-200: 229 231 235;
+    --gray-300: 209 213 219;
+    --gray-400: 156 163 175;
+    --gray-500: 107 114 128;
+    --gray-600: 75 85 99;
+    --gray-700: 55 65 81;
+    --gray-800: 31 41 55;
+    --gray-900: 17 24 39;
+
+    /* Accent ramp. */
+    --blue-50: 239 246 255;
+    --blue-100: 219 234 254;
+    --blue-400: 96 165 250;
+    --blue-500: 59 130 246;
+    --blue-600: 37 99 235;
+    --blue-700: 29 78 216;
+
+    /* State ramps: danger. */
+    --red-50: 254 242 242;
+    --red-100: 254 226 226;
+    --red-200: 254 202 202;
+    --red-300: 252 165 165;
+    --red-400: 248 113 113;
+    --red-500: 239 68 68;
+    --red-600: 220 38 38;
+    --red-700: 185 28 28;
+    --red-800: 153 27 27;
+    --red-900: 127 29 29;
+
+    /* State ramps: warning. */
+    --amber-50: 255 251 235;
+    --amber-100: 254 243 199;
+    --amber-200: 253 230 138;
+    --amber-300: 252 211 77;
+    --amber-400: 251 191 36;
+    --amber-500: 245 158 11;
+    --amber-600: 217 119 6;
+    --amber-700: 180 83 9;
+    --amber-800: 146 64 14;
+    --amber-900: 120 53 15;
+
+    /* State ramps: success. */
+    --green-50: 240 253 244;
+    --green-100: 220 252 231;
+    --green-500: 34 197 94;
+    --green-600: 22 163 74;
+    --green-700: 21 128 61;
+    --green-800: 22 101 52;
+    --emerald-500: 16 185 129;
+    --emerald-600: 5 150 105;
+    --emerald-700: 4 120 87;
+
+    /* State ramps: formulas (the only non-status accent the transcript has). */
+    --purple-50: 250 245 255;
+    --purple-100: 243 232 255;
+    --purple-500: 168 85 247;
+    --purple-600: 147 51 234;
+    --purple-700: 126 34 206;
+
+    /* Surfaces, strokes, text and accent: the roles new code names. */
+    --surface: 255 255 255;
+    --surface-canvas: 248 249 250;
+    --surface-sunken: 243 244 245;
+    --line: 229 231 235;
+    --accent: 37 99 235;
+    --on-accent: 255 255 255;
+    --math-surface: 250 248 255;
+    --math-header: 244 240 253;
+    --math-inline: 246 244 251;
+    --danger: 220 38 38;
+
+    /* Shape, type and elevation. */
+    --radius-card: 8px;
+    --radius-control: 6px;
+    --font-ui: Inter, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
+  }
+
+  /*
+    Worked example: a Fluent 2 flavoured light theme.
+
+    Only the roles are set here; the palette steps the components use are pointed
+    at those roles, so the whole console follows.  State colours keep their
+    defaults (they read the same on either surface) and can be overridden the same
+    way when the design says so.
+  */
+  [data-theme='fluent-light'] {
+    color-scheme: light;
+    --f-canvas: 250 250 250;
+    --f-card: 255 255 255;
+    --f-sunken: 245 245 245;
+    --f-line: 224 224 224;
+    --f-line-strong: 209 209 209;
+    --f-fg-1: 36 36 36;
+    --f-fg-2: 66 66 66;
+    --f-fg-3: 97 97 97;
+    --f-fg-4: 117 117 117;
+    --f-brand-soft: 235 243 252;
+    --f-brand-soft-2: 207 228 250;
+    --f-brand-icon: 40 134 222;
+    --f-brand: 15 108 189;
+    --f-brand-strong: 17 94 163;
+
+    --gray-50: var(--f-canvas);
+    --gray-100: var(--f-sunken);
+    --gray-200: var(--f-line);
+    --gray-300: var(--f-line-strong);
+    --gray-400: var(--f-fg-4);
+    --gray-500: var(--f-fg-3);
+    --gray-600: var(--f-fg-2);
+    --gray-700: var(--f-fg-2);
+    --gray-800: var(--f-fg-1);
+    --gray-900: var(--f-fg-1);
+
+    --blue-50: var(--f-brand-soft);
+    --blue-100: var(--f-brand-soft-2);
+    --blue-400: var(--f-brand-icon);
+    --blue-500: var(--f-brand);
+    --blue-600: var(--f-brand);
+    --blue-700: var(--f-brand-strong);
+
+    --surface: var(--f-card);
+    --surface-canvas: var(--f-canvas);
+    --surface-sunken: var(--f-sunken);
+    --line: var(--f-line);
+    --accent: var(--f-brand);
+    --on-accent: 255 255 255;
+    --radius-card: 8px;
+    --radius-control: 4px;
+    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
+  }
+
+  /*
+    Worked example: a Fluent 2 flavoured dark theme.
+
+    The neutral ramp is inverted (the steps the components use for text become the
+    light end), and the tinted state steps -- which are used as *backgrounds* for
+    banners -- become dark tints while their strong steps stay legible on a dark
+    surface.
+  */
+  [data-theme='fluent-dark'] {
+    color-scheme: dark;
+    --f-canvas: 31 31 31;
+    --f-card: 41 41 41;
+    --f-sunken: 51 51 51;
+    --f-line: 82 82 82;
+    --f-line-strong: 102 102 102;
+    --f-fg-1: 255 255 255;
+    --f-fg-2: 224 224 224;
+    --f-fg-3: 199 199 199;
+    --f-fg-4: 158 158 158;
+    --f-brand-soft: 8 35 56;
+    --f-brand-soft-2: 15 58 92;
+    --f-brand-icon: 98 171 245;
+    --f-brand: 71 158 245;
+    --f-brand-strong: 40 134 222;
+
+    --gray-50: var(--f-canvas);
+    --gray-100: var(--f-sunken);
+    --gray-200: var(--f-line);
+    --gray-300: var(--f-line-strong);
+    --gray-400: var(--f-fg-4);
+    --gray-500: var(--f-fg-3);
+    --gray-600: var(--f-fg-2);
+    --gray-700: var(--f-fg-2);
+    --gray-800: var(--f-fg-1);
+    --gray-900: var(--f-fg-1);
+
+    --blue-50: var(--f-brand-soft);
+    --blue-100: var(--f-brand-soft-2);
+    --blue-400: var(--f-brand-icon);
+    --blue-500: var(--f-brand);
+    --blue-600: var(--f-brand);
+    --blue-700: var(--f-brand-strong);
+
+    --surface: var(--f-card);
+    --surface-canvas: var(--f-canvas);
+    --surface-sunken: var(--f-sunken);
+    --line: var(--f-line);
+    --accent: var(--f-brand);
+    --on-accent: 8 19 31;
+    --radius-card: 8px;
+    --radius-control: 4px;
+    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
+
+    /* Banners and badges: dark tints behind, legible strong steps in front. */
+    --red-50: 42 18 21;
+    --red-100: 59 26 28;
+    --red-200: 92 43 46;
+    --red-300: 142 78 82;
+    --red-400: 217 112 122;
+    --red-500: 241 112 123;
+    --red-600: 241 112 123;
+    --red-700: 248 160 166;
+    --red-800: 251 196 200;
+    --red-900: 253 231 233;
+    --amber-50: 37 26 0;
+    --amber-100: 61 44 0;
+    --amber-200: 92 68 0;
+    --amber-300: 134 106 0;
+    --amber-400: 215 183 58;
+    --amber-500: 252 225 0;
+    --amber-600: 252 225 0;
+    --amber-700: 255 231 102;
+    --amber-800: 255 240 163;
+    --amber-900: 255 247 214;
+    --green-50: 13 36 13;
+    --green-100: 20 54 20;
+    --green-500: 108 203 95;
+    --green-600: 108 203 95;
+    --green-700: 154 217 143;
+    --green-800: 191 232 184;
+    --emerald-500: 108 203 95;
+    --emerald-600: 154 217 143;
+    --emerald-700: 191 232 184;
+    --purple-50: 31 21 51;
+    --purple-100: 44 31 74;
+    --purple-500: 185 138 247;
+    --purple-600: 201 164 250;
+    --purple-700: 220 196 252;
+    --math-surface: 28 24 38;
+    --math-header: 36 29 51;
+    --math-inline: 36 29 51;
+    --danger: 241 112 123;
+  }
+}
+
 body {
   margin: 0;
   padding: 0;
-  background-color: #f8f9fa;
-  color: #191c1d;
+  background-color: rgb(var(--surface-canvas));
+  color: rgb(var(--gray-900));
 }
 
 #root {
@@ -58,12 +313,12 @@ body {
   */
   .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
   .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
-  .font-kbd { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 12px; font-weight: 500; }
-  .font-code-md { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 450; }
-  .font-body-md { font-family: 'Inter', sans-serif; font-size: 14px; line-height: 20px; font-weight: 400; }
-  .font-code-sm { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 16px; font-weight: 450; }
-  .font-body-sm { font-family: 'Inter', sans-serif; font-size: 13px; line-height: 18px; font-weight: 400; }
-  .font-label-caps { font-family: 'Inter', sans-serif; font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
+  .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }
+  .font-code-md { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 450; }
+  .font-body-md { font-family: var(--font-ui); font-size: 14px; line-height: 20px; font-weight: 400; }
+  .font-code-sm { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 450; }
+  .font-body-sm { font-family: var(--font-ui); font-size: 13px; line-height: 18px; font-weight: 400; }
+  .font-label-caps { font-family: var(--font-ui); font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
 
   /*
     Typeset formulas and diagrams live inside blocks that already carry the

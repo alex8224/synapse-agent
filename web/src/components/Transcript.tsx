@@ -157,7 +157,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
               <div
                 key={t.id}
                 className={`rounded border px-2.5 py-1.5 font-mono text-[11px] ${
-                  t.error ? 'border-red-200 bg-red-50/60' : 'border-gray-200 bg-white'
+                  t.error ? 'border-red-200 bg-red-50/60' : 'border-gray-200 bg-surface'
                 }`}
               >
                 <div className="flex items-center space-x-2">
@@ -421,7 +421,7 @@ export const Transcript: React.FC = () => {
             <button
               onClick={handleLoadEarlier}
               disabled={historyLoading}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded border border-gray-200 bg-[#f8f9fa] text-gray-600 text-xs font-mono hover:bg-gray-200/70 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded border border-gray-200 bg-canvas text-gray-600 text-xs font-mono hover:bg-gray-200/70 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none"
             >
               <span className="material-symbols-outlined text-[14px]">unfold_more</span>
               <span>{historyLoading ? '加载更早历史中…' : '加载更早历史'}</span>
@@ -454,7 +454,7 @@ export const Transcript: React.FC = () => {
             </div>
             <div className="space-y-1.5 font-mono text-xs text-gray-700">
               {pendingApproval.actions.map((act, idx) => (
-                <div key={idx} className="p-2 bg-white rounded border border-amber-200">
+                <div key={idx} className="p-2 bg-surface rounded border border-amber-200">
                   <div className="font-bold text-gray-900">{act.name}</div>
                   <div className="text-gray-600 text-[11px] truncate">{JSON.stringify(act.args)}</div>
                 </div>
@@ -463,13 +463,13 @@ export const Transcript: React.FC = () => {
             <div className="flex space-x-2 pt-1">
               <button
                 onClick={() => resolveApproval('allow_once')}
-                className="px-3 py-1 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition-colors cursor-pointer"
+                className="px-3 py-1 bg-green-600 text-on-accent text-xs font-medium rounded hover:bg-green-700 transition-colors cursor-pointer"
               >
                 批准本次
               </button>
               <button
                 onClick={() => resolveApproval('reject_once')}
-                className="px-3 py-1 bg-red-600 text-white text-xs font-medium rounded hover:bg-red-700 transition-colors cursor-pointer"
+                className="px-3 py-1 bg-red-600 text-on-accent text-xs font-medium rounded hover:bg-red-700 transition-colors cursor-pointer"
               >
                 拒绝
               </button>

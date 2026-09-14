@@ -37,6 +37,29 @@
 
 这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
 `tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
+
+## 主题
+
+外观由**一层 CSS 变量**决定，主题就是一组变量值：换主题不碰任何组件。机制在两处：
+
+- `src/index.css` 的 `:root` 是主题契约——调色阶（`--gray-*`、`--blue-*`、状态色）、
+  语义角色（`--surface` / `--surface-canvas` / `--surface-sunken` / `--line` / `--accent` /
+  `--on-accent` / `--danger` / `--math-*`）、形状与字体（`--radius-*`、`--font-ui`、
+  `--font-mono`、`--shadow-card`）。值写成**通道三元组**（`--gray-200: 229 231 235`），
+  这样 Tailwind 的 `bg-gray-200/70` 这类透明度修饰符仍然有效。
+- `tailwind.config.js` 把组件**已经在用**的调色阶（`gray` / `blue` / 红黄绿紫状态色）与角色
+  映射到 `rgb(var(--…) / <alpha-value>)`，所以几百处既有类名自动跟随主题；新代码应该用角色名
+  （`bg-surface`、`border-line`、`bg-accent`、`text-on-accent`）而不是某个色阶。
+
+`[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
+`fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
+激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。
+示例主题只重定义中性面/文本/描边/强调色；状态色沿用默认值，需要时按同样方式覆盖。
+
+新增主题 = 复制一个 `[data-theme='…']` 块、给出这些变量的值；不需要改 Tailwind 配置或组件。
+不变量由 `tests/themeContract.test.ts` 守护：配置引用的变量必须在主题里有定义、示例主题必须
+替换掉角色、组件里不得再出现 `bg-white` / `text-white` / 任意 hex（否则那块颜色主题够不到）。
+
 布局与排版层级之外，本轮唯一的功能改动是
 在只读 `runtime.git.status` 上**增量**加了 `insertions` / `deletions` 两个字段（`git diff
 --numstat HEAD` 的真实 tracked 增删行数，见下），旧字段与旧接口保持兼容；不宣称与参考截图

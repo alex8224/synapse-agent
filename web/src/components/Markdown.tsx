@@ -22,7 +22,7 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
       return (
         <code
           key={key}
-          className="rounded bg-[#f3f4f5] px-1 py-0.5 font-mono text-[0.85em] text-gray-800"
+          className="rounded bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-gray-800"
         >
           {span.text}
         </code>
@@ -148,7 +148,7 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
                 {block.header.map((cell, cellIndex) => (
                   <th
                     key={`${key}.h${cellIndex}`}
-                    className="border border-gray-200 bg-[#f8f9fa] px-3 py-1.5 text-left font-semibold text-gray-800"
+                    className="border border-gray-200 bg-canvas px-3 py-1.5 text-left font-semibold text-gray-800"
                   >
                     {renderSpans(cell, `${key}.h${cellIndex}`)}
                   </th>

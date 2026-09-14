@@ -98,7 +98,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         role="dialog"
         aria-label="Git Explorer"
         onClick={(event) => event.stopPropagation()}
-        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-xl"
+        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-gray-200 bg-surface text-left shadow-xl"
       >
         <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2">
           <span className="material-symbols-outlined text-[18px] text-gray-500">fork_right</span>
@@ -178,7 +178,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             ))}
           </div>
 
-          <div className="min-w-0 flex-1 overflow-auto bg-[#fafafa] px-3 py-2">
+          <div className="min-w-0 flex-1 overflow-auto bg-canvas px-3 py-2">
             {selected === null && <p className="text-[11px] text-gray-400">选择一个文件查看 diff。</p>}
             {diffError !== null && <p className="text-[11px] text-amber-700">{diffError}</p>}
             {diffError === null && diff !== null && diff.empty && (

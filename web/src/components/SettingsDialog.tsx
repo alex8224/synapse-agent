@@ -123,7 +123,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
       <div
         role="dialog"
         aria-label="设置"
-        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-gray-200 bg-white p-5 font-sans shadow-xl"
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-gray-200 bg-surface p-5 font-sans shadow-xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
@@ -162,7 +162,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                   onChange={(event) => {
                     void setModel(event.target.value);
                   }}
-                  className="max-w-[16rem] rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none"
+                  className="max-w-[16rem] rounded border border-gray-200 bg-surface px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none"
                 >
                   {availableModels.map((name) => (
                     <option key={name} value={name}>
@@ -212,7 +212,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                     });
                   }}
                   title="设为项目默认"
-                  className="max-w-[10rem] rounded border border-gray-200 bg-white px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:text-gray-400"
+                  className="max-w-[10rem] rounded border border-gray-200 bg-surface px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:text-gray-400"
                 >
                   <option value="">设为项目默认…</option>
                   {thinkingLevels.map((level) => (

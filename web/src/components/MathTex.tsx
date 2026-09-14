@@ -12,8 +12,8 @@ const MathSource: React.FC<{ tex: string; streaming: boolean; note?: string }> =
   streaming,
   note,
 }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-purple-100 bg-[#faf8ff]">
-    <div className="flex items-center justify-between border-b border-purple-100 bg-[#f4f0fd] px-2.5 py-1">
+  <div className="my-2 overflow-hidden rounded-md border border-purple-100 bg-math-surface">
+    <div className="flex items-center justify-between border-b border-purple-100 bg-math-header px-2.5 py-1">
       <span className="font-mono text-[10px] uppercase tracking-wide text-purple-500">
         公式{streaming ? ' · streaming' : ''}
       </span>
@@ -37,7 +37,7 @@ export const InlineMath: React.FC<{ tex: string }> = ({ tex }) => {
     return (
       <span
         title={`公式（未能解析）：${tex}`}
-        className="rounded bg-[#f6f4fb] px-1 font-mono text-[0.9em] text-purple-700"
+        className="rounded bg-math-inline px-1 font-mono text-[0.9em] text-purple-700"
       >
         {tex}
       </span>
@@ -68,7 +68,7 @@ export const DisplayMath: React.FC<{ tex: string; streaming: boolean }> = ({ tex
     );
   }
   return (
-    <div className="math-block my-2 overflow-x-auto rounded-md border border-purple-100 bg-[#faf8ff] px-3 py-2 text-center">
+    <div className="math-block my-2 overflow-x-auto rounded-md border border-purple-100 bg-math-surface px-3 py-2 text-center">
       <GeneratedHtml html={result.html} className="math-display" />
     </div>
   );

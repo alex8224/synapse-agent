@@ -40,7 +40,7 @@ test('the table body reads at the chat scale, not a footnote size', () => {
 test('the header keeps the cell size and only differs by weight', () => {
   assert.ok(
     table.includes(
-      'border border-gray-200 bg-[#f8f9fa] px-3 py-1.5 text-left font-semibold text-gray-800',
+      'border border-gray-200 bg-canvas px-3 py-1.5 text-left font-semibold text-gray-800',
     ),
     'the header must share the cell padding and size, marked only by font-semibold',
   );
