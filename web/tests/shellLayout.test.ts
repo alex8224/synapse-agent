@@ -64,25 +64,25 @@ test('the sidebar tree scrolls with no visible scrollbar', () => {
   // clean edge.  The class is applied to the scroll container and is focusable so
   // the keyboard scrolls it even before a row inside has focus.
   const tree = sidebar.slice(
-    sidebar.indexOf('sidebar-scroll'),
+    sidebar.indexOf('no-scrollbar'),
     sidebar.indexOf('{/* Foot of the sidebar'),
   );
   assert.ok(tree.includes('overflow-y-auto'), 'the tree must still scroll');
   assert.ok(tree.includes('tabIndex={0}'), 'the tree must be keyboard-focusable');
   // The rules live in index.css and cover the three engine families.
-  assert.ok(styles.includes('.sidebar-scroll'), 'the class lives in index.css');
+  assert.ok(styles.includes('.no-scrollbar'), 'the class lives in index.css');
   assert.ok(/scrollbar-width:\s*none/.test(styles), 'Firefox needs scrollbar-width: none');
   assert.ok(/-ms-overflow-style:\s*none/.test(styles), 'legacy Edge needs -ms-overflow-style');
   assert.ok(
-    /\.sidebar-scroll::-webkit-scrollbar\s*\{[^}]*display:\s*none/.test(styles),
+    /\.no-scrollbar::-webkit-scrollbar\s*\{[^}]*display:\s*none/.test(styles),
     'Blink/WebKit need the scoped webkit pseudo-element',
   );
-  // Scoped on purpose: a bare `::-webkit-scrollbar` rule would also hide the
-  // transcript's visible, symmetric-gutter scrollbar.
+  // Scoped on purpose: a bare `::-webkit-scrollbar` rule would hide every
+  // scrollbar in the app, including a nested block's own.
   assert.equal(
     /(^|\n)\s*::-webkit-scrollbar/.test(styles),
     false,
-    'the scrollbar rule must stay scoped to the sidebar',
+    'the scrollbar rule must stay scoped to the class',
   );
 });
 
@@ -151,15 +151,24 @@ test('the composer is the last row of the workspace column, not a floating card'
 });
 
 test('the composer card lines up with the chat column', () => {
-  // Both reading wrappers reserve the same symmetric scrollbar gutter, so the
-  // transcript column and the composer card share their edges (the transcript
-  // used to be a scrollbar narrower, which read as a too-wide input).
-  for (const source of [transcript, composer]) {
-    assert.ok(
-      source.includes('[scrollbar-gutter:stable_both-edges]'),
-      'every reading wrapper must reserve the same scrollbar gutter',
-    );
-  }
+  // The transcript scrolls with no visible scrollbar, so nothing takes a bite out
+  // of the reading column: the chat column and the composer card share both edges
+  // (a visible scrollbar made the card one scrollbar wider than the text).
+  assert.ok(
+    transcript.includes('no-scrollbar'),
+    'the transcript must scroll with no visible scrollbar',
+  );
+  assert.ok(transcript.includes('overflow-y-auto'), 'the transcript must still scroll');
+  assert.equal(
+    transcript.includes('scrollbar-gutter'),
+    false,
+    'with no scrollbar there is no gutter to reserve',
+  );
+  assert.equal(
+    composer.includes('scrollbar-gutter'),
+    false,
+    'the composer must not reserve a gutter the transcript does not need',
+  );
 });
 
 test('the diagnostics notice is aligned with the reading column', () => {

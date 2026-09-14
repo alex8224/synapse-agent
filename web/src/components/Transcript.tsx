@@ -312,14 +312,17 @@ export const Transcript: React.FC = () => {
       {/* Floating progress panel for the session's todo list (hidden until one
           exists). */}
       <TodoPanel />
-    {/* `[scrollbar-gutter:stable_both-edges]` keeps the reading column centred in
-        the *pane* rather than in the pane minus a one-sided scrollbar, which is
-        what makes it line up with the composer's `console-column` below. */}
+    {/* `.no-scrollbar` keeps the reading column centred in the *pane* rather than
+        in the pane minus a one-sided scrollbar, which is what makes it line up
+        with the composer's `console-column` below. */}
     <div
       ref={scrollerRef}
       // No bottom padding for a floating composer: the composer is a sibling row,
       // so the scrollport's bottom edge is the last visible line.
-      className="console-gutter flex-1 overflow-y-auto py-6 font-sans [scrollbar-gutter:stable_both-edges]"
+      // `.no-scrollbar`: the wheel, touch and the keyboard still scroll it, but no
+      // scrollbar takes a bite out of the reading column, so its edges line up
+      // with the composer card's (the sidebar tree works the same way).
+      className="console-gutter no-scrollbar flex-1 overflow-y-auto py-6 font-sans"
     >
       <div className="console-column space-y-5">
         {historyAvailable === false && (

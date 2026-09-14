@@ -110,7 +110,7 @@ interface Snapshot {
   scroller: {
     clientWidth: number
     offsetWidth: number
-    gutter: string
+    scrollbarWidth: string
     rect: Rect
     column: Rect
   } | null
@@ -136,7 +136,7 @@ const SNAPSHOT = `(() => {
   const card = document.querySelector('#console-composer').closest('.console-column')
   const cardWrapper = card.parentElement
   const cardWrapperStyle = getComputedStyle(cardWrapper)
-  const scroller = document.querySelector('main [class*="scrollbar-gutter"]')
+  const scroller = document.querySelector('main .no-scrollbar')
   return {
     viewport: { w: window.innerWidth, h: window.innerHeight },
     sidebar: rect(sidebar), header: rect(header), footer: rect(footer),
@@ -158,7 +158,7 @@ const SNAPSHOT = `(() => {
     scroller: scroller === null ? null : {
       clientWidth: scroller.clientWidth,
       offsetWidth: scroller.offsetWidth,
-      gutter: getComputedStyle(scroller).scrollbarGutter,
+      scrollbarWidth: getComputedStyle(scroller).scrollbarWidth,
       rect: rect(scroller),
       column: rect(scroller.querySelector('.console-column')),
     },
@@ -206,11 +206,10 @@ function setViewport(client: CdpClient, page: PageHandle, width: number, height:
 /**
  * Every reading column must sit on the composer card.
  *
- * Both reading wrappers reserve the same scrollbar gutter
- * (`scrollbar-gutter: stable both-edges`), so the transcript column and the card
- * share both edges -- with or without a scrollbar -- instead of only the centre
- * line.  That is what makes the composer stop looking a scrollbar wider than the
- * text above it.
+ * The transcript scrolls with no visible scrollbar, so nothing narrows the scroll
+ * port: the transcript column and the card share both edges instead of only the
+ * centre line.  That is what makes the composer stop looking a scrollbar wider
+ * than the text above it.
  */
 function checkReadingColumns(snapshot: Snapshot): void {
   const card = snapshot.card
@@ -230,24 +229,12 @@ function checkReadingColumns(snapshot: Snapshot): void {
  * the pane rather than a `rem` cap: the check compares against 80% of the
  * *measured* pane at this viewport, so a frozen column fails as soon as the
  * window grows.
- *
- * Both reading wrappers reserve a scrollbar gutter per side
- * (`scrollbar-gutter: stable both-edges`), so the column is that 80% minus the
- * two reserved gutters -- measured from the wrapper rather than assumed, since
- * the scrollbar width is platform-specific.
  */
 function checkDesktopColumn(snapshot: Snapshot): void {
-  const { clientWidth, paddingLeft, paddingRight } = snapshot.composerBox
   const expected = Math.round(snapshot.pane.width * 0.8)
-  const column = Math.round(clientWidth - paddingLeft - paddingRight)
   check(
     `desktop column takes ~80% of the ${snapshot.pane.width}px workspace`,
-    snapshot.card.width <= expected + 2,
-    true,
-  )
-  check(
-    `desktop column fills the ${column}px gutter-and-scrollbar-inset box`,
-    Math.abs(snapshot.card.width - column) <= 2,
+    Math.abs(snapshot.card.width - expected) <= 2,
     true,
   )
 }
@@ -257,17 +244,10 @@ function checkDesktopColumn(snapshot: Snapshot): void {
  * 16px), so the column fills the rest of the pane.
  */
 function checkNarrowColumn(snapshot: Snapshot): void {
-  const { clientWidth, paddingLeft, paddingRight } = snapshot.composerBox
   const expected = snapshot.pane.width - 2 * 32
-  const column = Math.round(clientWidth - paddingLeft - paddingRight)
   check(
     `narrow column fills the ${expected}px gutter-inset workspace`,
-    snapshot.card.width <= expected + 2,
-    true,
-  )
-  check(
-    `narrow column fills the ${column}px gutter-and-scrollbar-inset box`,
-    Math.abs(snapshot.card.width - column) <= 2,
+    Math.abs(snapshot.card.width - expected) <= 2,
     true,
   )
 }
@@ -405,6 +385,9 @@ async function main(): Promise<void> {
     // The sidebar tree scrolls but shows no scrollbar; it stays keyboard-focusable.
     check('the expanded sidebar exposes its tree', wide.tree !== null, true)
     check('the sidebar tree hides its scrollbar', wide.tree?.scrollbarWidth, 'none')
+    // The transcript scrolls the same way (wheel / touch / keyboard), and its
+    // hidden scrollbar is what keeps its column on the composer card's edges.
+    check('the transcript hides its scrollbar', wide.scroller?.scrollbarWidth, 'none')
     check('the sidebar tree stays keyboard-focusable', wide.tree?.tabIndex, '0')
     check('nav names the new-task entry', wide.navText.includes('新建任务'), true)
     check('nav shows the Ctrl+N hint', wide.navText.includes('Ctrl+N'), true)

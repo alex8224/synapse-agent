@@ -50,7 +50,7 @@
 | **TopBar (顶栏)** | 工作区列顶部的单行 chip，**三轨栅格**（两侧等宽 `1fr`）：左轨 [\|] 侧栏折叠开关 · 项目 · ⎇ Git 分支（含 ↑/↓ 跟踪计数）**紧接变更统计**（脏/干净状态点 + `+N -M` **真实 tracked 增删行数**，读在它描述的分支旁边）；中轨为**会话标题**，因两侧等宽而**真正居中于工作区列**（不随左右 chip 宽度漂移，独立轨道也保证窄屏不重叠）；右轨保留但不再放 chip（两侧等宽是标题居中的依据）；**分支与统计两个 chip 都是按钮、都可打开只读 Git Explorer**；窄屏（< `lg`）隐藏次要的项目 chip，保留标题与分支；工作区路径移至侧栏底部身份行 |
 | **SideBar (侧栏)** | 240px 宽度、**占满整个视口高度**，可折叠收起为极简轨；顶部导航含 新建任务 (Ctrl+N) 与 搜索 (Ctrl+K)；项目 → 会话两级树按时间分组；会话树**不显示滚动条但可正常滚动**（wheel / touch / 键盘，跨浏览器）；底栏为工作区身份行 + 纯净设置入口，无头像与通知铃铛杂音 |
 | **Transcript (主画布)** | 助手回复（左）与用户提问（右）为正文排版；◆ Thought for Xs / ▾ N tools executed / info 是紧凑的次要日志行（展开后才成面板） · Markdown 代码块与流式输出 |
-| **CommandBar (输入区)** | 工作区列**最后一行**的卡片（不是覆盖聊天区的浮层，转录滚动容器在其上方，最新一行就在可见底边上）：与聊天列同宽同边（`.console-gutter` + `.console-column`，两侧同样预留滚动条槽位，故边缘完全对齐）；文本在上，附件在左下，模型 / 推理强度 / 发送在右下；若有正在运行的任务则浮现 Steer queue 状态 |
+| **CommandBar (输入区)** | 工作区列**最后一行**的卡片（不是覆盖聊天区的浮层，转录滚动容器在其上方，最新一行就在可见底边上）：与聊天列同宽同边（`.console-gutter` + `.console-column`；转录不显示滚动条，故两侧都不被占用、边缘完全对齐）；文本在上，附件在左下，模型 / 推理强度 / 发送在右下；若有正在运行的任务则浮现 Steer queue 状态 |
 | **BottomBar (底栏)** | 工作区列底部常驻（不再横跨侧栏）：MCP 工具池状态 · Agent 活跃态 (● 运行中/○ 空闲) · 中区本轮/会话遥测 · 目标；模型与推理级别选择已移入输入卡片 |
 
 > **布局对齐（本轮）**：窗口改为「全高侧栏 + 右列工作区」两列，顶栏与底栏只属于右列；
@@ -58,8 +58,8 @@
 > 但可滚动；聊天列与输入卡片共用 `src/index.css` 的阅读几何（外层 `.console-gutter` 留白 +
 > 内层 `.console-column` 列宽）：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，故列宽正好是
 > 工作区的**约 80%**、**无 `rem` 硬上限**（更宽的工作区真的更宽，不再被 60rem 锁死），窄屏每侧退回
-> 固定 `2rem`、列宽近全宽；transcript 滚动容器保留对称滚动条槽位（出现滚动条时两侧对称内缩，中心线仍与输入
-> 卡片重合）。布局之外，本轮唯一功能改动是在只读 `runtime.git.status` 上**增量**加
+> 固定 `2rem`、列宽近全宽；transcript 滚动容器**不显示滚动条**（与侧栏会话树同一套 `.no-scrollbar`，
+> 滚动本身不受影响），因此没有滚动条占用宽度，聊天列与输入卡片同宽同边。布局之外，本轮唯一功能改动是在只读 `runtime.git.status` 上**增量**加
 > `insertions` / `deletions`（`git diff --numstat HEAD` 的真实 tracked 增删行数），旧字段与
 > 接口保持兼容；不宣称与参考截图像素级一致。不变量由 `web/tests/shellLayout.test.ts`、
 > `web/tests/topBarLayout.test.ts`、`web/tests/transcriptLayoutGuard.test.ts` 与
@@ -83,7 +83,8 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | TopBar | 右侧上下文/Token 统计指标 | **已移至底栏中区**（见下） | 已实现（位置调整） |
 | TopBar | （规范外）`layers` / `terminal` / `folder_open` / `logout` 图标 | **已移至侧栏底部的操作行**（与设置入口同排）：`layers` = 会话信息弹层（工作区/项目/分支/会话/模型/连接/用量）；`terminal` = 运行时诊断弹层（按需读取宿主只读端点）；`folder_open` = 只读工作区文件树 | 已实现（位置调整） |
 | SideBar | 240px 宽度 | 240px | 已实现 |
-| SideBar | 会话树滚动 | 可滚动但**不显示滚动条**（`src/index.css` 的 `.sidebar-scroll`：`scrollbar-width: none` + `-ms-overflow-style: none` + `::-webkit-scrollbar`，按类名限定，不影响 transcript 的可见滚动条）；容器可聚焦，未聚焦任何行时键盘（方向键 / PageUp / PageDown）也能滚动 | 已实现（本轮） |
+| SideBar | 会话树滚动 | 可滚动但**不显示滚动条**（`src/index.css` 的 `.no-scrollbar`：`scrollbar-width: none` + `-ms-overflow-style: none` + `::-webkit-scrollbar`，按类名限定，未限定的 `::-webkit-scrollbar` 会隐藏应用内所有滚动条）；容器可聚焦，未聚焦任何行时键盘（方向键 / PageUp / PageDown）也能滚动 | 已实现（本轮） |
+| Transcript | 滚动条 | **不显示滚动条但可正常滚动**（同一个 `.no-scrollbar`，wheel / touch / 键盘均可用）：阅读列两侧不被滚动条占用，因此与输入卡片同宽同边；自动跟随到底部时最新一行就在可见底边上 | 已实现（本轮） |
 | SideBar | 折叠收起为「极简工作区」 | 44px 极简轨：展开 / 新建会话 / 搜索（点击即展开并聚焦）/ 已加载计数 | 已实现 |
 | SideBar | 新建任务 (Ctrl+N) | 有：展开态顶部是**带文字的**「新建任务」导航行（右侧标 `Ctrl+N`），折叠轨是同一个动作的 `+` 按钮，两者都作用于**当前项目**；`Ctrl+N` 快捷键不变 | 已实现（本轮补上展开态入口） |
 | SideBar | 搜索 (Ctrl+K) | 有搜索框（右侧标 `Ctrl+K` 提示，有输入时换成清除按钮）；Ctrl+K 会展开侧栏并聚焦；按标题或 thread_id 过滤 | 已实现 |
@@ -100,7 +101,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | Transcript | Markdown 代码块与流式输出 | 围栏代码块（语言标签 + 复制 + 横向滚动 + 按语言高亮，尺寸不变）、标题/列表/引用/表格/行内代码/粗体/链接均正常；**表格正文按正文可读字号**（`text-sm`，14px；表头同字号、只用字重区分），单元格适度 padding，宽表在自身容器内横向滚动、不撑破阅读列；**每个单元格有 `8rem` 宽度下限**（`.markdown-body th/td`，`web/src/index.css`），窄列（如「分组」「类型」）不再被自动布局压成竖排；单元格里的 `<br>` / `<br/>` / `<br />`（任意大小写）渲染为真实换行（`parse.ts` 的 `break` 节点 → React `<br />`），标签本身不会作为文本或标记进入 DOM | 已实现（本轮表格可读性 + 换行修复） |
 | Transcript | LaTeX 公式（规范外，本轮改为真实排版） | `$$...$$` 由 **KaTeX** 排版为居中公式块，`$...$` 排版为行内公式。渲染器固定以 `trust: false` / `throwOnError: false` / `maxExpand: 1000` 运行：不可生成链接、不可注入样式、宏展开有上限。未闭合的流式公式与解析失败的公式回退为「公式 + LaTeX 源码」块并写明原因（`公式解析失败，显示源码`），不会出现红色半成品 | 已实现（本轮） |
 | Transcript | Mermaid（规范外，本轮改为真实绘图） | mermaid 围栏由 **mermaid** 渲染为 SVG（`import('mermaid')` 懒加载，不进初始包），头部保留「复制源码」。渲染以 `securityLevel: 'strict'` + `htmlLabels: false` 运行，输出再过一遍 DOMPurify SVG profile，并把 SVG 内 `<style>` 的 `@import` / `url()` 中和掉（内联 SVG 的样式表作用于整页）。含 `%%{...}%%` 指令、YAML frontmatter（`---`）、空定义、超 20000 字符的图形**拒绝渲染**并回退为代码块（头部写明原因）；mermaid 抛错同样回退并显示错误首行 | 已实现（本轮） |
-| CommandBar | 工作区列最后一行的卡片（不覆盖聊天区） | 有：作为工作区列的独立行占位，转录滚动容器在其上方（旧实现是 `absolute bottom-0` 浮层，最新内容会被输入卡片盖住）；与聊天列同宽同边（`.console-gutter` + `.console-column`，两侧同样预留滚动条槽位） | 已实现（本轮改为非覆盖布局） |
+| CommandBar | 工作区列最后一行的卡片（不覆盖聊天区） | 有：作为工作区列的独立行占位，转录滚动容器在其上方（旧实现是 `absolute bottom-0` 浮层，最新内容会被输入卡片盖住）；与聊天列同宽同边（`.console-gutter` + `.console-column`，转录不显示滚动条故两侧等宽） | 已实现（本轮改为非覆盖布局） |
 | CommandBar | 运行中浮现 Steer queue 状态 | 有（`Steer queue: N queued`） | 已实现 |
 | CommandBar | 单一蓝色圆形发送按钮 ↑ | 空闲为蓝色 `↑` 发送（输入为空时禁用）；**运行中变为红色 `■` 停止键**，始终可用，点击调用 `runtime.turn.cancel`。与规范「忙碌自动转为 Steer 插队」有意不同：插话仍由 **Enter** 承担，顶部状态条显示 `运行中 · Steer 队列 N` | 已实现（按评审调整） |
 | BottomBar | 模型切换下拉 | 有（19 个可用，可过滤；F2） | 已实现 |

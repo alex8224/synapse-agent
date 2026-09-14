@@ -47,14 +47,17 @@ body {
     .console-gutter { padding-left: 10%; padding-right: 10%; }
   }
   /*
-    Sidebar tree: scrolls with the wheel, touch and the keyboard, but shows no
-    scrollbar, so the 240px rail keeps one clean edge.  `scrollbar-width` covers
-    Firefox, `-ms-overflow-style` legacy Edge, and the `::-webkit-scrollbar`
-    pseudo-element Blink/WebKit.  The selector is scoped to this class on
-    purpose: the transcript must keep its visible, symmetric-gutter scrollbar.
+    A scroll container that shows no scrollbar: the wheel, touch and the keyboard
+    still scroll it, but the surface keeps one clean edge.  Used by the sidebar
+    tree (its 240px rail stays a clean edge) and by the transcript (the reading
+    column keeps both its edges, so it lines up with the composer card).
+    `scrollbar-width` covers Firefox, `-ms-overflow-style` legacy Edge, and the
+    `::-webkit-scrollbar` pseudo-element Blink/WebKit.  The rules stay scoped to
+    this class on purpose: a bare `::-webkit-scrollbar` rule would hide every
+    scrollbar in the app, including the ones a nested block still needs.
   */
-  .sidebar-scroll { scrollbar-width: none; -ms-overflow-style: none; }
-  .sidebar-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
   .font-kbd { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; font-weight: 450; }
   .font-body-md { font-family: 'Inter', sans-serif; font-size: 14px; line-height: 20px; font-weight: 400; }

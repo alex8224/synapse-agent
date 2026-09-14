@@ -22,13 +22,12 @@
 聊天列与输入卡片共用同一套阅读几何（`src/index.css`）：外层 `.console-gutter` 负责留白，
 桌面端（≥ `lg`，1024px）每侧为工作区宽度的 10%，因此内层 `.console-column` 正好是工作区的
 **约 80%**，且**没有 `rem` 硬上限**，所以更宽的工作区会真的更宽、不会被锁死；窄屏每侧退回固定
-的 `2rem`，列宽近全宽。transcript 的滚动容器与输入区外层**都**保留对称滚动条槽位
-（`[scrollbar-gutter:stable_both-edges]`），因此出现滚动条时聊天列两侧对称内缩一个滚动条
-宽度，且聊天列与输入卡片始终**同宽同边**（只保留中心线重合会让输入卡片看起来比正文宽一个
-滚动条）。侧栏的会话树则相反：
-滚动可用但不显示滚动条（`src/index.css` 的 `.sidebar-scroll`，`scrollbar-width` +
-`-ms-overflow-style` + `::-webkit-scrollbar` 三族规则，按类名限定），240px 轨道边缘保持干净，
-且不影响 transcript 的可见滚动条。聊天区里的运行日志（thought / tools / info）是紧凑的次要
+的 `2rem`，列宽近全宽。transcript 的滚动容器**不显示滚动条**（`src/index.css` 的
+`.no-scrollbar`，与侧栏会话树同一套规则），滚动本身不受影响（wheel / touch / 键盘）；因为
+没有滚动条占用宽度，聊天列与输入卡片始终**同宽同边**（可见滚动条会让输入卡片比正文宽一个
+滚动条）。`.no-scrollbar` 的 `scrollbar-width` + `-ms-overflow-style` + `::-webkit-scrollbar`
+三族规则按类名限定：未限定的 `::-webkit-scrollbar` 会把应用内所有滚动条一起隐藏（含嵌套块自己
+需要的）。聊天区里的运行日志（thought / tools / info）是紧凑的次要
 层级，展开后才成为面板，助手回复保持正文排版。Markdown 表格按正文可读字号渲染（`text-sm`，
 14px；表头同字号、只用字重区分），单元格留出适度 padding，宽表在自身容器内横向滚动、不撑破
 阅读列；每个单元格另有 `8rem` 宽度下限（`src/index.css` 的 `.markdown-body th/td`，刻意声明在

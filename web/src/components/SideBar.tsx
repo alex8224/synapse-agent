@@ -236,12 +236,12 @@ export const SideBar: React.FC = () => {
         </div>
       </div>
 
-      {/* The tree scrolls with no visible scrollbar (`.sidebar-scroll`).  It is
+      {/* The tree scrolls with no visible scrollbar (`.no-scrollbar`).  It is
           focusable so the keyboard (arrows / PageUp / PageDown) scrolls it even
           before any row inside has focus; the outline is suppressed to keep the
           rail edge clean, matching the rest of the console controls. */}
       <div
-        className="sidebar-scroll flex-1 overflow-y-auto px-2 mt-2 focus:outline-none"
+        className="no-scrollbar flex-1 overflow-y-auto px-2 mt-2 focus:outline-none"
         tabIndex={0}
       >
         {visibleProjects.length === 0 && (

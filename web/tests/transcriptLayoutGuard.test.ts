@@ -94,13 +94,19 @@ test('the run log stays subordinate to the answer', () => {
   assert.ok(tools.includes('text-[11px]'), 'a tool line must be smaller than the answer');
 });
 
-test('the scroller keeps the reading column centred when a scrollbar appears', () => {
-  // A one-sided scrollbar narrows the scroll port, which would shift the column
-  // left of the composer that shares its width; symmetric gutters keep the
-  // centring, and therefore the alignment, intact.
+test('the scroller scrolls with no visible scrollbar', () => {
+  // The column keeps both its edges -- and so stays on the composer card's -- only
+  // if no scrollbar takes a bite out of it, the way the sidebar tree already
+  // works.  Scrolling itself (wheel, touch, keyboard) must stay.
   assert.ok(
-    transcript.includes('[scrollbar-gutter:stable_both-edges]'),
-    'the transcript scroller must reserve symmetric scrollbar gutters',
+    transcript.includes('no-scrollbar'),
+    'the transcript scroller must hide its scrollbar',
+  );
+  assert.ok(transcript.includes('overflow-y-auto'), 'the transcript must still scroll');
+  assert.equal(
+    transcript.includes('scrollbar-gutter'),
+    false,
+    'a hidden scrollbar leaves nothing to reserve',
   );
 });
 
