@@ -16,7 +16,8 @@ import { create } from 'zustand';
 
 export type Appearance = 'system' | 'light' | 'dark';
 
-/** The theme applied for a dark appearance (`null` = the palette shipped with). */
+/** Both appearances use the same Fluent component language. */
+export const LIGHT_THEME = 'fluent-light';
 export const DARK_THEME = 'fluent-dark';
 
 export const APPEARANCE_OPTIONS: readonly { value: Appearance; label: string }[] = [
@@ -25,14 +26,11 @@ export const APPEARANCE_OPTIONS: readonly { value: Appearance; label: string }[]
   { value: 'dark', label: '深色' },
 ];
 
-/**
- * Theme id for one preference: `null` means the shipped palette, so a reader who
- * never touches the control sees exactly what the console always looked like.
- */
-export function themeFor(appearance: Appearance, prefersDark: boolean): string | null {
+/** Resolve an explicit appearance, or follow the operating system. */
+export function themeFor(appearance: Appearance, prefersDark: boolean): string {
   if (appearance === 'dark') return DARK_THEME;
-  if (appearance === 'light') return null;
-  return prefersDark ? DARK_THEME : null;
+  if (appearance === 'light') return LIGHT_THEME;
+  return prefersDark ? DARK_THEME : LIGHT_THEME;
 }
 
 /** Apply one theme id to the document root (`null` restores the shipped palette). */

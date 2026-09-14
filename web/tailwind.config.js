@@ -116,6 +116,7 @@ export default {
         status: "var(--status-h)",
       },
       borderRadius: {
+        DEFAULT: "var(--radius-control)",
         // A theme decides the corner language (Fluent is squarer than Tailwind's
         // defaults); the components only name the role.
         card: "var(--radius-card)",
@@ -137,6 +138,8 @@ export default {
         DEFAULT: "var(--motion-ease)",
       },
       fontFamily: {
+        sans: ["var(--font-ui)"],
+        mono: ["var(--font-mono)"],
         // Every family resolves through the theme, so a theme can swap the UI font
         // (e.g. Segoe UI Variable) without touching a component.
         kbd: ["var(--font-mono)"],

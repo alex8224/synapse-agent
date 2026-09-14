@@ -38,7 +38,7 @@
 - **服务端依赖**：直连现有的 synapse.runtime.transport.RuntimeWebSocketServer（默认端口或 --port 启动）。
   该 daemon 默认由宿主**按需拉起**：`--state-dir` 下没有运行中的 daemon 时宿主自己起一个、
   退出时停掉；已有一个在跑就复用（`--no-start-runtime` 可关掉，见 `formal-host.md` §1/§2.1）。
-- **前端定位**：单页应用（SPA），以无干扰的极简主义（Kinetic Mono 风格）提供接近 TUI 且体验更优的流式对话、思维链折叠、工具调用查看与 Steer 实时插话能力。
+- **前端定位**：单页应用（SPA），主界面采用统一的 Fluent 明暗外观，保留紧凑的流式对话、思维链折叠、工具调用查看与 Steer 实时插话能力。
 
 ---
 
@@ -47,7 +47,7 @@
 | 区域 | 规范与要素 |
 |---|---|
 | **Shell (窗口)** | **两列**：左侧全高导航列 + 右侧「工作区列」（顶栏、主画布、输入卡片、底栏都只属于右列，不再横跨侧栏） |
-| **Theme (主题)** | 外观由 `src/index.css` 的一层 CSS 变量决定（调色阶 + 语义角色 + 形状/排印/层级/材质/动效/外壳密度），`tailwind.config.js` 把组件已在用的色阶映射到 `rgb(var(--…) / <alpha-value>)`；`[data-theme='…']` 块即可整块替换外观。仓库自带 `fluent-light` / `fluent-dark` 两个示例主题（取值按 Fluent 2 语义近似，可替换为设计稿 token）；组件内不再出现 `bg-white` / 任意 hex，由 `tests/themeContract.test.ts` 守护。读者侧在**设置 → 外观 → 主题**切换 `跟随系统 / 浅色 / 深色`（`src/stores/appearance.ts`；`system` 跟随 `prefers-color-scheme` 并在系统切换时跟随，显式选择优先；首次渲染前应用，不会闪一下浅色）。Fluent 示例主题同时给出几何与排印：控件圆角 4px、外壳 48/32px、`Segoe UI Variable Text` + Consolas、更软更宽的阴影、`blur(30px)` 亚克力（`.material-chrome` / `.material-flyout`；默认主题为 `none`，不产生合成层）、150/250ms 动效曲线；焦点环全局一次绘制（取自 `--accent`）。该选择**不落盘**——C-12 不变量是前端不使用任何浏览器存储（`tests/sourceGuard.test.ts` 守护），刷新后回到「跟随系统」 |
+| **Theme (主题)** | 设置 → 外观 → 主题提供 `跟随系统 / 浅色 / 深色`，分别跟随系统或显式启用 `fluent-light` / `fluent-dark`，浅色不再沿用旧外观。首次渲染前应用；显式选择优先，刷新回到跟随系统，不使用浏览器存储。CSS 变量统一颜色、圆角、字体、材质和动效；Segoe UI + Consolas（系统字体回退）、4px 控件圆角、48/32px 外壳、150/200ms 动效、`--focus-ring` 焦点环。主界面的导航/顶栏/输入区/模型选择器/设置与上下文操作使用随包提供的 Fluent SVG 图标及共享 32px 控件、24px 行内按钮、14px UI/12px 辅助排印；会话选中态有左侧标记，输入区工具栏分层且可换行。转录和其他专用面板的图标尚未全面迁移 |
 | **TopBar (顶栏)** | 工作区列顶部的单行 chip，**三轨栅格**（两侧等宽 `1fr`）：左轨 [\|] 侧栏折叠开关 · 项目 · ⎇ Git 分支（含 ↑/↓ 跟踪计数）**紧接变更统计**（脏/干净状态点 + `+N -M` **真实 tracked 增删行数**，读在它描述的分支旁边）；中轨为**会话标题**，因两侧等宽而**真正居中于工作区列**（不随左右 chip 宽度漂移，独立轨道也保证窄屏不重叠）；右轨保留但不再放 chip（两侧等宽是标题居中的依据）；**分支与统计两个 chip 都是按钮、都可打开只读 Git Explorer**；窄屏（< `lg`）隐藏次要的项目 chip，保留标题与分支；工作区路径移至侧栏底部身份行 |
 | **SideBar (侧栏)** | 240px 宽度、**占满整个视口高度**，可折叠收起为极简轨；顶部导航含 新建任务 (Ctrl+N) 与 搜索 (Ctrl+K)；项目 → 会话两级树按时间分组；会话树**不显示滚动条但可正常滚动**（wheel / touch / 键盘，跨浏览器）；底栏为工作区身份行 + 纯净设置入口，无头像与通知铃铛杂音 |
 | **Transcript (主画布)** | 助手回复（左）与用户提问（右）为正文排版；◆ Thought for Xs / ▾ N tools executed / info 是紧凑的次要日志行（展开后才成面板） · Markdown 代码块与流式输出 |
@@ -56,11 +56,11 @@
 
 > **布局对齐（本轮）**：窗口改为「全高侧栏 + 右列工作区」两列，顶栏与底栏只属于右列；
 > 顶栏为三轨栅格（两侧等宽 `1fr`，会话标题真正居中、窄屏不重叠），侧栏会话树不显示滚动条
-> 但可滚动；聊天列与输入卡片共用 `src/index.css` 的阅读几何（外层 `.console-gutter` 留白 +
-> 内层 `.console-column` 列宽）：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，故列宽正好是
-> 工作区的**约 80%**、**无 `rem` 硬上限**（更宽的工作区真的更宽，不再被 60rem 锁死），窄屏每侧退回
-> 固定 `2rem`、列宽近全宽；transcript 滚动容器**不显示滚动条**（与侧栏会话树同一套 `.no-scrollbar`，
-> 滚动本身不受影响），因此没有滚动条占用宽度，聊天列与输入卡片同宽同边。布局之外，本轮唯一功能改动是在只读 `runtime.git.status` 上**增量**加
+> 但可滚动；聊天列与输入卡片共用 `src/index.css` 的留白几何（外层 `.console-gutter` 留白 +
+> 内层 `.console-column`），但宽度解耦：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，聊天列取工作区的
+> **80%** 且不设上限；输入卡片在同一中轴上另受 `--composer-max`（48rem）封顶，超过上限后不再增长（单行输入不横跨宽窗口），窄屏每侧退回
+> 固定 `2rem`、两者都近全宽；transcript 滚动容器**不显示滚动条**（与侧栏会话树同一套 `.no-scrollbar`，
+> 滚动本身不受影响）。布局之外，本轮唯一功能改动是在只读 `runtime.git.status` 上**增量**加
 > `insertions` / `deletions`（`git diff --numstat HEAD` 的真实 tracked 增删行数），旧字段与
 > 接口保持兼容；不宣称与参考截图像素级一致。不变量由 `web/tests/shellLayout.test.ts`、
 > `web/tests/topBarLayout.test.ts`、`web/tests/transcriptLayoutGuard.test.ts` 与
@@ -74,7 +74,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | 区域 | 规范要素 | 实测 | 状态 |
 |---|---|---|---|
 | Shell | 两列结构（本轮布局对齐） | 左列 `SideBar` 全高（`h-full`，折叠轨同为全高）；右列依次为 `TopBar` / `RuntimeDiagnosticsBanner` / `Transcript` / `CommandInput` / `BottomBar`，顶栏与底栏不再横跨侧栏 | 已实现（布局调整） |
-| TopBar | 侧栏折叠开关 | 有（`dock_to_left` 按钮 / Ctrl+B） | 已实现 |
+| TopBar | 侧栏折叠开关 | 有（Fluent `PanelLeft` 按钮 / Ctrl+B） | 已实现 |
 | TopBar | 📁 工作区路径 | **已移至侧栏底部身份行**（顶栏改为会话 chip 行） | 已实现（位置调整） |
 | TopBar | ⎇ Git 分支 | 有（`fork_right` + 分支名 + ↑/↓ 跟踪计数；**点击打开只读 Git Explorer**，因此 `runtime.git.status` 尚未读到时也有入口） | 已实现 |
 | TopBar | 会话标题 | 有（中轨 chip / tab，位于工作区列中心线；两侧等宽 `1fr` 轨道使其不随左右内容漂移，超长截断） | 已实现（本轮居中） |
@@ -98,7 +98,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | SideBar | 底部身份行 + 纯净设置入口 | 身份行显示当前工作区路径（空值显示「未绑定工作区」，不编造名字）；同一区域是上下文操作行（会话信息 / 工作区文件 / 运行时诊断 / 退出配对）与设置入口，打开设置面板（控制台 / 工作区 / 模型与推理 / MCP / 用量 + 退出配对），Esc 或点击遮罩关闭 | 已实现 |
 | SettingsDialog | 项目默认推理等级（规范外，本轮新增） | 「模型与推理」区新增「项目默认」行：显示项目自身默认等级 + 「设为项目默认…」下拉。写入 `runtime.project.thinking.set`（能力位 `project.thinking`），落盘到项目设置层，**只影响此后新建的会话**；成功显示「已写入项目默认：X」，失败显示红色原因（无乐观更新，只有真正落盘才改变显示值）。底栏「推理级别」仍显示**当前会话**的实际值 | 已实现 |
 | Transcript | 用户提问 | 在右侧，无气泡框（所在的一侧即角色）；助手回复在左侧，保持正文排版 | 已实现（按评审调整） |
-| Transcript | 阅读列宽 | 与输入卡片共用阅读几何（`.console-gutter` + `.console-column`）：桌面端（≥ `lg`，1024px）每侧留白为工作区的 10%，列宽正好约 80% 且**无 `rem` 上限**（更宽的工作区真的更宽，不再被 60rem 锁死），窄屏每侧退回 `2rem`、列宽近全宽；滚动容器保留对称滚动条槽位（`[scrollbar-gutter:stable_both-edges]`），出现滚动条时中心线仍与输入卡片重合 | 已实现（本轮布局对齐） |
+| Transcript | 阅读列宽 | 与输入卡片共用留白几何（`.console-gutter` + `.console-column`）但宽度解耦：桌面端（≥ `lg`，1024px）每侧留白为工作区的 10%，聊天列取工作区的 80% 且不设上限；输入卡片在同一中轴上另受 `--composer-max`（48rem）封顶。窄屏每侧退回 `2rem`、两者都近全宽 | 已实现（本轮布局对齐） |
 | Transcript | ◆ Thought for Xs 折叠思考链 | 按规范文案：`◆ Thought for 0.1s`（流式为 `◆ Thinking...`，历史投影无耗时为 `◆ Thought`），带展开/收起；**折叠态是紧凑的次要日志行**（无填充底色/无边框），展开后才是面板 | 已实现（本轮层级调整） |
 | Transcript | ▾ N tools executed 折叠工具栏 | 按规范文案 `N tools executed`（含 parallel 标注）；折叠态同样是紧凑日志行，展开后逐条工具卡片；工具卡片状态徽章已中文化（运行中/等待/完成/失败/错误/已取消） | 已实现 |
 | Transcript | 一个工具批次一个工具组（本轮修复） | 实时流里 `tool_batch_started/finished` 就是批次边界：每批工具各自成组，组的位置紧随其前的思考/文本之后，**不再把整轮的工具调用合并进第一个组**（对齐 TUI「思考 → 工具 → 思考 → 工具保持两个真实批次」的冒烟项）；assistant 文本同样按段落分行（每段自己的 `answer_completed` 定稿），尚未收到任何工具项的空组不渲染 | 已实现（本轮修复） |

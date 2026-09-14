@@ -1,3 +1,4 @@
+import { Info20Regular, FolderOpen20Regular, WindowConsole20Regular, SignOut20Regular, Dismiss20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -60,7 +61,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   }, [openPanel]);
 
   const diagnostics = runtimeDiagnostics;
-  const trigger = 'material-symbols-outlined cursor-pointer text-[18px] text-gray-500 transition-colors hover:text-gray-900';
+  const trigger = 'ui-icon-button';
 
   return (
     <div className="relative shrink-0">
@@ -68,16 +69,20 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
         <button
           onClick={() => setOpenPanel((v) => (v === 'info' ? null : 'info'))}
           title="会话信息"
+          aria-label="会话信息"
+          aria-expanded={openPanel === 'info'}
           className={trigger}
         >
-          layers
+          <Info20Regular aria-hidden="true" />
         </button>
         <button
           onClick={() => setOpenPanel((v) => (v === 'artifacts' ? null : 'artifacts'))}
           title="工作区文件（只读，按块读取）"
+          aria-label="工作区文件"
+          aria-expanded={openPanel === 'artifacts'}
           className={trigger}
         >
-          folder_open
+          <FolderOpen20Regular aria-hidden="true" />
         </button>
         <button
           onClick={() => {
@@ -85,18 +90,21 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
             void loadRuntimeDiagnostics({ trigger: 'manual', force: true });
           }}
           title="运行时诊断（读取宿主只读端点）"
+          aria-label="运行时诊断"
+          aria-expanded={openPanel === 'diagnostics'}
           className={trigger}
         >
-          terminal
+          <WindowConsole20Regular aria-hidden="true" />
         </button>
         <button
           onClick={() => {
             void logoutConsole();
           }}
           title="退出配对（作废控制台会话，回到配对界面）"
+          aria-label="退出配对"
           className={trigger}
         >
-          logout
+          <SignOut20Regular aria-hidden="true" />
         </button>
       </div>
 
@@ -162,9 +170,10 @@ function Panel({
         <button
           onClick={onClose}
           title="关闭 (Esc)"
-          className="material-symbols-outlined cursor-pointer text-[16px] text-gray-400 hover:text-gray-700"
+          aria-label="关闭"
+          className="ui-icon-button"
         >
-          close
+          <Dismiss20Regular aria-hidden="true" />
         </button>
       </div>
       <div className="space-y-1">{children}</div>

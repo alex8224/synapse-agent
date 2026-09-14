@@ -19,13 +19,13 @@
   滚动容器在其上方结束，因此自动跟随到底部时最新一行就在可见底边上（旧的 `absolute bottom-0`
   浮层会把最新内容盖住，需要手动上滚才能看见）。
 
-聊天列与输入卡片共用同一套阅读几何（`src/index.css`）：外层 `.console-gutter` 负责留白，
-桌面端（≥ `lg`，1024px）每侧为工作区宽度的 10%，因此内层 `.console-column` 正好是工作区的
-**约 80%**，且**没有 `rem` 硬上限**，所以更宽的工作区会真的更宽、不会被锁死；窄屏每侧退回固定
-的 `2rem`，列宽近全宽。transcript 的滚动容器**不显示滚动条**（`src/index.css` 的
-`.no-scrollbar`，与侧栏会话树同一套规则），滚动本身不受影响（wheel / touch / 键盘）；因为
-没有滚动条占用宽度，聊天列与输入卡片始终**同宽同边**（可见滚动条会让输入卡片比正文宽一个
-滚动条）。`.no-scrollbar` 的 `scrollbar-width` + `-ms-overflow-style` + `::-webkit-scrollbar`
+聊天列与输入卡片共用同一套留白几何（`src/index.css` 的 `.console-gutter` + `.console-column`），
+但**宽度是解耦的**：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，聊天列取工作区的
+**80%** 且不设上限（更宽的工作区真的更宽）；输入卡片在同一中轴上另受 `--composer-max`（48rem）
+封顶，超过上限后不再增长，这样单行输入不会横跨整个宽窗口。窄屏每侧退回固定
+的 `2rem`，两者都近全宽。transcript 的滚动容器**不显示滚动条**（`src/index.css` 的
+`.no-scrollbar`，与侧栏会话树同一套规则），滚动本身不受影响（wheel / touch / 键盘）。
+`.no-scrollbar` 的 `scrollbar-width` + `-ms-overflow-style` + `::-webkit-scrollbar`
 三族规则按类名限定：未限定的 `::-webkit-scrollbar` 会把应用内所有滚动条一起隐藏（含嵌套块自己
 需要的）。聊天区里的运行日志（thought / tools / info）是紧凑的次要
 层级，展开后才成为面板，助手回复保持正文排版。Markdown 表格按正文可读字号渲染（`text-sm`，
@@ -56,10 +56,9 @@
   的 DEFAULT）和外壳高度（`h-chrome` / `h-status`）都取自主题，所以几百处既有类名自动跟随；
   新代码应该用角色名（`bg-surface`、`border-line`、`bg-accent`、`text-on-accent`）而不是某个色阶。
   材质是三个类：`.material-chrome`（侧栏/顶栏/状态条）与 `.material-flyout`（对话框/浮层）
-  用 `--material-*` 的填充与背景模糊，`.material-blur` 为 `none` 时**不产生合成层**（出厂调色板
-  就是这样，Fluent 主题才付这份 GPU 成本）。焦点环全局只画一次
+  用 `--material-*` 的填充与背景模糊，`--material-blur` 为 `none` 时不产生合成层。焦点环全局只画一次
   （`:where(button, a[href], input, select, textarea, [tabindex]):focus-visible`，取自
-  `--accent`）。
+  `--focus-ring`）。
 
 **模态窗口必须走 `Portal`**（`src/components/Portal.tsx`，`createPortal` 到 `document.body`）：
 `backdrop-filter` 会让元素成为 `fixed` 后代的**包含块**，所以渲染在侧栏子树里的对话框会被
@@ -80,7 +79,7 @@
 （`material-flyout` 的行必须同时带 `flyout-in`，由守护测试强制），新增浮层不会漏掉。转录区
 **不加**动画：那里是流式高频更新，动效会重新引入 CPU 开销。
 
-`[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
+`[data-theme='…']` 块替换整套外观。控制台使用同一设计语言的两个主题：
 `fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
 两个示例主题的取值**不是凭记忆写的**：它们逐条取自 `@fluentui/tokens@1.0.0-alpha.22` 的
 `webLightTheme` / `webDarkTheme`（可在浏览器里 `import` 该包直接读），每行注释都写明来源 token，
@@ -95,14 +94,24 @@
 `--font-ui` ← `fontFamilyBase`、`--font-mono` ← `fontFamilyMonospace`、
 `--font-numeric` ← `fontFamilyNumeric`（Bahnschrift，状态条的数字用它）。
 公式块（`--math-*`）与外壳密度（48/32px）是产品选择，Fluent web token 里没有对应项，保持自定值。
-激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。
-示例主题只重定义中性面/文本/描边/强调色；状态色沿用默认值，需要时按同样方式覆盖。
-两个示例主题同时给出了 Fluent 的**几何与排印**：控件圆角 4px、外壳 48px/32px、
-`Segoe UI Variable Text` 界面字体与 Consolas 代码字体、更宽更软的阴影、`blur(30px)` 亚克力、
-150/250ms 与 `cubic-bezier(0.1, 0.9, 0.2, 1)` 动效曲线。
+两个主题同时定义中性面、文本、描边、强调色与状态色，并给出 Fluent 的**几何与排印**：
+控件圆角 4px、外壳 48px/32px、Segoe UI 界面字体与 Consolas 代码字体（非 Windows 使用系统回退）、
+`blur(30px)` 亚克力、150/200ms 与 `cubic-bezier(0, 0, 0, 1)` 动效曲线。
+
+主界面不是仅换色：导航、会话列表、顶栏、输入区、模型选择器和设置使用共享控件样式。
+
+| 范围 | 统一规则 |
+|---|---|
+| 图标 | 上述区域及侧栏上下文操作使用 `@fluentui/react-icons` 的 SVG，随包提供，不依赖图标字体 CDN；转录和其他专用面板暂未迁移 |
+| 控件 | 常规按钮/输入框 32px，行内操作 24px；hover、pressed、disabled 和键盘焦点保持一致 |
+| 排印 | UI 14px、分组/辅助标签 12px；`font-sans` / `font-mono` 均接入主题字体，代码和遥测保留专用字体 |
+| 会话列表 | 当前会话使用品牌浅底、左侧标记及 `aria-current`；项目与时间分组有独立层级 |
+| 输入区 | 单张紧凑卡片，宽度另受 `--composer-max` 封顶（比聊天列窄，同中轴）；文本区在上、控制行共用同一表面，聚焦时卡片描边转为强调色，字段本身不画焦点环；发送/停止为圆形图标按钮；模型/推理选项为可键盘操作的按钮，窄屏工具栏可换行 |
+
+保留两列布局、240px 侧栏、44px 折叠轨、聊天列宽度及发送/停止/附件处理逻辑。
 
 读者侧的选择在**设置 → 外观 → 主题**：`跟随系统` / `浅色` / `深色`
-（`src/stores/appearance.ts`）。`浅色` 用出厂调色板（不带 `data-theme`），`深色` 用
+（`src/stores/appearance.ts`）。`浅色` 用 `fluent-light`（不再使用旧外观），`深色` 用
 `fluent-dark`，`跟随系统` 读 `prefers-color-scheme` 并在系统切换时跟随（监听 media query 的
 `change`；只有偏好仍是 `system` 时监听器才动作，显式选择优先）。`src/main.tsx` 在**首次渲染前**
 调用 `initAppearance()`，所以不会先画浅色再跳深色。
@@ -124,13 +133,16 @@
 
 静态守护之外，`tests/shellLayout.verify.ts` 会用真实宿主 + 无头 Chrome 量一遍渲染结果
 （侧栏是否全高、顶栏/底栏是否只属于右列、输入卡片是否落在聊天列的同一中心线上、窄窗是否
-横向溢出），并在 1920 / 1440 / 900 / 640 四个视口核对阅读列宽度：桌面端约为工作区宽度的
-80% 且**大于旧的 60rem 上限**（证明没有被 rem 锁死），窄屏回到近全宽。它需要本机有
-Chrome/Edge，且不属于 `npm test`：
+横向溢出），并在 1920 / 1440 / 900 / 640 四个视口核对宽度：聊天列桌面端为工作区的 80% 且
+随窗口增长，输入卡片停在其 48rem 上限、始终与聊天列同中轴且不更宽，窄屏两者都近全宽。
+它需要本机有 Chrome/Edge，且不属于 `npm test`：
 
 ```bash
 node tests/shellLayout.verify.ts
 ```
+
+Fluent 主界面可另运行 `node tests/fluentAppearance.verify.ts`：使用隔离的合成项目/会话，
+不连接真实宿主，检查明暗切换、控件尺寸、焦点、菜单和窄屏；截图输出到工作区 `.tmp/`。
 
 ## Markdown 渲染：公式与图形
 
@@ -161,7 +173,7 @@ node tests/shellLayout.verify.ts
 - mermaid 渲染到组件自己的离屏容器（不碰 `document.body`），流式未闭合的围栏在闭合前
   一直是代码块，因此不会出现半张图或红色半成品公式。
 
-依赖口径：`mermaid` / `katex` / `dompurify` 是仅有的三个新增运行时依赖；mermaid 只在实际
+Markdown 渲染依赖：`mermaid` / `katex` / `dompurify`；mermaid 只在实际
 出现图形时下载（构建产物里是独立 chunk），KaTeX 与其字体随主包加载，不访问任何 CDN。
 
 ## 开发

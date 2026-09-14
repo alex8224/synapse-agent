@@ -1,3 +1,4 @@
+import { PanelLeft20Regular, Folder20Regular, Branch20Regular, Chat20Regular } from '@fluentui/react-icons';
 import React, { useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -59,18 +60,19 @@ export const TopBar: React.FC = () => {
 
   return (
     <>
-    <header className="material-chrome grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 z-20 select-none text-xs font-mono">
+    <header className="material-chrome grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 z-20 select-none text-sm font-sans">
       {/* Left track: identity controls and context.  `min-w-0` lets the chips
           truncate instead of widening the track and nudging the centre line. */}
       <div className="flex min-w-0 items-center gap-1.5">
         <button
           onClick={toggleSidebar}
-          // The same 28px box the collapsed rail's buttons use, so the control
+          // The same themed box the collapsed rail's buttons use, so the control
           // does not change size when the sidebar folds.
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-700 transition-colors hover:bg-gray-100 cursor-pointer"
+          className="ui-icon-button"
           title="Toggle Sidebar (Ctrl+B)"
+          aria-label="切换侧栏"
         >
-          <span className="material-symbols-outlined text-[18px]">dock_to_left</span>
+          <PanelLeft20Regular aria-hidden="true" />
         </button>
 
         {/* Project context: the directory label of the project the session belongs
@@ -84,9 +86,7 @@ export const TopBar: React.FC = () => {
               className="hidden min-w-0 items-center gap-1.5 text-gray-800 lg:flex"
               title={activeProject?.workspace_path}
             >
-              <span className="material-symbols-outlined shrink-0 text-[16px] text-gray-600">
-                folder
-              </span>
+              <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-600" />
               <span className="max-w-[14rem] truncate">{projectName}</span>
             </div>
           </>
@@ -106,11 +106,9 @@ export const TopBar: React.FC = () => {
               type="button"
               onClick={() => setExplorerOpen(true)}
               title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-gray-800 transition-colors hover:bg-gray-100"
+              className="ui-button min-w-0 text-xs"
             >
-              <span className="material-symbols-outlined text-[15px] text-gray-600">
-                fork_right
-              </span>
+              <Branch20Regular aria-hidden="true" />
               <span className="max-w-[14rem] truncate">{gitBranch}</span>
               {gitStatus !== null && gitStatus.ahead > 0 && (
                 <span className="text-emerald-600">↑{gitStatus.ahead}</span>
@@ -128,7 +126,8 @@ export const TopBar: React.FC = () => {
               type="button"
               onClick={() => setExplorerOpen(true)}
               title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-gray-800 transition-colors hover:bg-gray-100"
+              aria-label="查看 Git 变更"
+              className="ui-button shrink-0 font-numeric text-xs"
             >
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
@@ -152,10 +151,10 @@ export const TopBar: React.FC = () => {
           a session name instead of a fragment of it -- and `min-w-0` lets a
           narrow window shrink the chip rather than push the side tracks. */}
       <div
-        className="flex min-w-0 max-w-[32rem] items-center gap-1.5 rounded bg-sunken px-2 py-1 text-gray-900"
+        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control border border-line bg-surface px-3 py-1.5 text-gray-900"
         title={sessionTitle}
       >
-        <span className="material-symbols-outlined shrink-0 text-[15px] text-gray-500">forum</span>
+        <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />
         <span className="truncate font-medium">{sessionTitle}</span>
       </div>
 

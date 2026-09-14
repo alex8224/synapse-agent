@@ -1,3 +1,4 @@
+import { Add20Regular, Dismiss20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
 import React, { useRef, useState } from 'react';
 import { AttachmentPreview } from './AttachmentPreview.tsx';
 import { ModelControls } from './ModelControls.tsx';
@@ -13,7 +14,7 @@ import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
  * to sit in the status bar; they configure the next turn, so they belong next to
  * the input that starts it.
  *
- * The single round button is the primary action for the current state: `↑`
+ * The primary button represents the current state: `↑`
  * sends when idle, and becomes an enabled `■` stop button while a turn is
  * running (the previous behaviour left it looking disabled because the input
  * was empty, with no way to interrupt from the UI).  Typing while busy still
@@ -105,7 +106,7 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column pointer-events-auto flex flex-col rounded-card border bg-surface shadow-card transition-colors focus-within:border-blue-500 ${
+        className={`console-column ui-composer pointer-events-auto flex flex-col rounded-card border bg-surface shadow-card transition-colors ${
           dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-line'
         }`}
       >
@@ -144,11 +145,10 @@ export const CommandInput: React.FC = () => {
                     type="button"
                     onClick={() => removeAttachment(entry.localId)}
                     title={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-surface text-gray-500 shadow-card transition-colors hover:text-gray-900"
+                    aria-label={entry.status === 'uploading' ? '取消上传' : '移除附件'}
+                    className="ui-icon-button ui-compact absolute -right-1.5 -top-1.5 border border-line bg-surface shadow-card"
                   >
-                    <span className="material-symbols-outlined text-[12px]">
-                      {entry.status === 'uploading' ? 'cancel' : 'close'}
-                    </span>
+                    <Dismiss20Regular aria-hidden="true" />
                   </button>
                 </div>
               );
@@ -188,7 +188,8 @@ export const CommandInput: React.FC = () => {
             // No "/ for commands, @ for files" hint either: neither a command
             // palette nor file mention exists in this console.
             placeholder={busy ? '继续输入以排队后续修改' : 'Build anything'}
-            className="w-full bg-transparent px-3.5 pb-1 pt-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none font-sans"
+            aria-label="消息输入"
+            className="ui-composer-input w-full bg-transparent text-gray-900 placeholder:text-gray-500 font-sans"
           />
           <input
             ref={fileInputRef}
@@ -204,16 +205,17 @@ export const CommandInput: React.FC = () => {
             }}
           />
           {/* Control row: add on the left, what the next turn runs on the right. */}
-          <div className="flex items-center gap-2 px-2 pb-1.5">
+          <div className="ui-composer-toolbar">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
               title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-control text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+              aria-label="添加图片附件"
+              className="ui-icon-button"
             >
-              <span className="material-symbols-outlined text-[18px]">add</span>
+              <Add20Regular aria-hidden="true" />
             </button>
-            <div className="ml-auto flex min-w-0 items-center gap-3">
+            <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
               <ModelControls />
             </div>
           {busy ? (
@@ -223,18 +225,20 @@ export const CommandInput: React.FC = () => {
                 void cancelActiveTurn();
               }}
               title="停止当前轮次 (Ctrl+C)"
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-danger text-on-accent transition-colors hover:bg-red-700"
+              aria-label="停止当前轮次"
+              className="ui-icon-button ui-danger ui-round"
             >
-              <span className="material-symbols-outlined text-[16px]">stop</span>
+              <Stop20Filled aria-hidden="true" />
             </button>
           ) : (
             <button
               type="submit"
               disabled={!canSend}
               title={uploading ? '附件仍在上传中' : 'Send (Enter)'}
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-accent text-on-accent transition-colors hover:bg-blue-700 disabled:opacity-40"
+              aria-label="发送消息"
+              className="ui-icon-button ui-primary ui-round"
             >
-              <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
+              <ArrowUp20Regular aria-hidden="true" />
             </button>
           )}
           </div>

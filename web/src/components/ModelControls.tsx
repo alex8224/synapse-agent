@@ -1,3 +1,4 @@
+import { Bot20Regular, BrainCircuit20Regular, ChevronDown20Regular, LockClosed20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -79,7 +80,7 @@ export const ModelControls: React.FC = () => {
 
   return (
     <>
-      <div className="relative" ref={modelRef}>
+      <div className="relative min-w-0 max-w-full" ref={modelRef}>
         <button
           type="button"
           onClick={() => {
@@ -88,14 +89,16 @@ export const ModelControls: React.FC = () => {
             setShowModelPicker(next);
           }}
           title="切换模型 (F2)"
-          className="flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-600 transition-colors hover:text-gray-900"
+          aria-expanded={showModelPicker}
+          aria-controls="model-picker"
+          className="ui-button ui-model-trigger"
         >
-          <span className="material-symbols-outlined text-[15px] text-gray-500">smart_toy</span>
+          <Bot20Regular aria-hidden="true" />
           <span className="max-w-[14rem] truncate">{modelName || '-'}</span>
-          <span className="material-symbols-outlined text-[15px] text-gray-400">expand_more</span>
+          <ChevronDown20Regular aria-hidden="true" />
         </button>
         {showModelPicker && (
-          <div className="absolute bottom-8 right-0 z-50 flex max-h-80 w-72 flex-col rounded-control border border-gray-200 material-flyout flyout-in p-2 shadow-flyout">
+          <div id="model-picker" role="group" aria-label="选择模型" className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-72 max-w-[calc(100vw-4rem)] flex-col rounded-control border border-line material-flyout flyout-in p-2 shadow-flyout">
             <div className="flex items-center justify-between border-b border-gray-100 pb-1.5 text-[11px] font-semibold text-gray-500">
               <span>选择模型 ({availableModels.length} 个可用)</span>
               <span className="font-mono text-[10px] text-gray-400">F2</span>
@@ -107,27 +110,26 @@ export const ModelControls: React.FC = () => {
               value={modelSearch}
               onChange={(e) => setModelSearch(e.target.value)}
               placeholder="过滤模型名称..."
-              className="my-1.5 rounded border border-gray-200 bg-gray-50 px-2 py-1 font-sans text-xs focus:border-blue-500 focus:outline-none"
+              aria-label="过滤模型名称"
+              className="ui-field my-2 w-full"
             />
             <div className="max-h-60 flex-1 space-y-0.5 overflow-y-auto pr-1">
               {availableModels
                 .filter((m) => m.toLowerCase().includes(modelSearch.toLowerCase()))
                 .map((m) => (
-                  <div
+                  <button
                     key={m}
+                    type="button"
+                    aria-pressed={m === modelName}
                     onClick={() => {
                       setModel(m);
                       setShowModelPicker(false);
                       setModelSearch('');
                     }}
-                    className={`cursor-pointer truncate rounded px-2 py-1 text-xs transition-colors ${
-                      m === modelName
-                        ? 'bg-blue-50 font-medium text-blue-600'
-                        : 'text-gray-700 hover:bg-gray-100'
-                    }`}
+                    className="ui-menu-item truncate text-gray-700"
                   >
                     {m}
-                  </div>
+                  </button>
                 ))}
             </div>
           </div>
@@ -143,18 +145,20 @@ export const ModelControls: React.FC = () => {
             setShowThinkingPicker(next);
           }}
           title={canSetThinking ? '推理等级' : RUNTIME_CONFIG_READ_ONLY_NOTICE}
-          className="flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-600 transition-colors hover:text-gray-900"
+          aria-expanded={showThinkingPicker}
+          aria-controls="thinking-picker"
+          className="ui-button ui-model-trigger"
         >
-          <span className="material-symbols-outlined text-[15px] text-gray-500">psychology</span>
+          <BrainCircuit20Regular aria-hidden="true" />
           <span>{thinkingLevel === null ? '-' : thinkingLevel}</span>
           {canSetThinking ? (
-            <span className="material-symbols-outlined text-[15px] text-gray-400">expand_more</span>
+            <ChevronDown20Regular aria-hidden="true" />
           ) : (
-            <span className="material-symbols-outlined text-[14px] text-gray-300">lock</span>
+            <LockClosed20Regular aria-hidden="true" />
           )}
         </button>
         {showThinkingPicker && (
-          <div className="absolute bottom-8 right-0 z-50 w-40 space-y-1 rounded-control border border-gray-200 material-flyout flyout-in p-1 shadow-flyout">
+          <div id="thinking-picker" role="group" aria-label="推理等级" className="absolute bottom-full right-0 mb-2 z-50 w-40 space-y-1 rounded-control border border-line material-flyout flyout-in p-1 shadow-flyout">
             <div className="border-b border-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-400">
               推理等级
             </div>
@@ -164,8 +168,11 @@ export const ModelControls: React.FC = () => {
               </div>
             )}
             {thinkingLevels.map((lvl) => (
-              <div
+              <button
                 key={lvl}
+                type="button"
+                disabled={!canSetThinking}
+                aria-pressed={lvl === thinkingLevel}
                 onClick={() => {
                   if (!canSetThinking) return;
                   // Keep the popover open on failure so the reason below the list
@@ -174,14 +181,10 @@ export const ModelControls: React.FC = () => {
                     if (ok) setShowThinkingPicker(false);
                   });
                 }}
-                className={`rounded px-2 py-1 text-xs ${
-                  canSetThinking
-                    ? 'cursor-pointer text-gray-700 transition-colors hover:bg-gray-100'
-                    : 'cursor-not-allowed text-gray-400'
-                } ${lvl === thinkingLevel ? 'bg-purple-50 font-medium text-purple-600' : ''}`}
+                className="ui-menu-item text-gray-700"
               >
                 {lvl}
-              </div>
+              </button>
             ))}
             {thinkingLevelError !== null && (
               <div className="border-t border-gray-100 px-2 py-1 text-[10px] leading-relaxed text-red-600">

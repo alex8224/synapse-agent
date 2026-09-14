@@ -1,3 +1,4 @@
+import { Dismiss20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
@@ -13,9 +14,9 @@ export interface SettingsDialogProps {
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-gray-100 py-1.5 last:border-b-0">
-      <span className="shrink-0 font-mono text-[11px] text-gray-400">{label}</span>
-      <span className="break-all text-right text-xs text-gray-800">{value}</span>
+    <div className="flex items-start justify-between gap-4 border-b border-line py-2.5 last:border-b-0">
+      <span className="shrink-0 text-sm text-gray-600">{label}</span>
+      <span className="min-w-0 break-all text-right text-sm text-gray-900">{value}</span>
     </div>
   );
 }
@@ -23,7 +24,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-4">
-      <h2 className="mb-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+      <h2 className="ui-section-label mb-2">
         {title}
       </h2>
       {children}
@@ -138,13 +139,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           onClick={(event) => event.stopPropagation()}
         >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-          <span className="text-sm font-bold text-gray-900">设置</span>
+          <span className="ui-settings-title text-gray-900">设置</span>
           <button
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined cursor-pointer text-[18px] text-gray-400 hover:text-gray-700"
+            aria-label="关闭设置"
+            className="ui-icon-button"
           >
-            close
+            <Dismiss20Regular aria-hidden="true" />
           </button>
         </div>
 
@@ -162,17 +164,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           <Row
             label="主题"
             value={
-              <span className="flex items-center gap-1" role="group" aria-label="主题">
+              <span className="flex flex-wrap items-center justify-end gap-1" role="group" aria-label="主题">
                 {APPEARANCE_OPTIONS.map((option) => (
                   <button
                     key={option.value}
                     type="button"
                     onClick={() => setAppearance(option.value)}
                     aria-pressed={appearance === option.value}
-                    className={`cursor-pointer rounded-control border px-2 py-0.5 text-xs transition-colors ${
+                    className={`ui-button border ${
                       appearance === option.value
-                        ? 'border-accent bg-accent text-on-accent'
-                        : 'border-line bg-surface text-gray-700 hover:bg-gray-100'
+                        ? 'ui-primary border-accent'
+                        : 'border-line bg-surface'
                     }`}
                   >
                     {option.label}
@@ -201,7 +203,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                   onChange={(event) => {
                     void setModel(event.target.value);
                   }}
-                  className="max-w-[16rem] rounded border border-gray-200 bg-surface px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none"
+                  aria-label="模型"
+                  className="ui-field max-w-full w-64"
                 >
                   {availableModels.map((name) => (
                     <option key={name} value={name}>
@@ -251,7 +254,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                     });
                   }}
                   title="设为项目默认"
-                  className="max-w-[10rem] rounded border border-gray-200 bg-surface px-1 py-0.5 text-xs text-gray-800 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:text-gray-400"
+                  aria-label="设为项目默认"
+                  className="ui-field max-w-full w-40"
                 >
                   <option value="">设为项目默认…</option>
                   {thinkingLevels.map((level) => (

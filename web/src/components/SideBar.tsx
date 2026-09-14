@@ -1,3 +1,8 @@
+import {
+  Add20Regular, Search20Regular, Settings20Regular, Dismiss20Regular,
+  ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
+  CheckmarkCircle20Regular, Edit20Regular, Delete20Regular,
+} from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ConsoleActions } from './ConsoleActions.tsx';
@@ -142,20 +147,22 @@ export const SideBar: React.FC = () => {
     // disappearing (new session, search, and the loaded count).  Expanding is
     // the top bar's toggle (or Ctrl+B) — a second toggle here was a duplicate.
     return (
-      <nav className="material-chrome border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
+      <nav aria-label="项目与会话" className="material-chrome border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
         <button
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
-          className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
+          aria-label="新建会话"
+          className="ui-icon-button"
         >
-          <span className="material-symbols-outlined text-[18px]">add</span>
+          <Add20Regular aria-hidden="true" />
         </button>
         <button
           onClick={requestSessionSearchFocus}
           title="搜索会话 (Ctrl+K)"
-          className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
+          aria-label="搜索会话"
+          className="ui-icon-button"
         >
-          <span className="material-symbols-outlined text-[18px]">search</span>
+          <Search20Regular aria-hidden="true" />
         </button>
         <div className="mt-auto flex flex-col items-center gap-1">
           <ConsoleActions orientation="column" />
@@ -163,9 +170,10 @@ export const SideBar: React.FC = () => {
             type="button"
             onClick={() => setSettingsOpen(true)}
             title="打开设置"
-            className="flex items-center justify-center w-7 h-7 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer"
+            aria-label="打开设置"
+            className="ui-icon-button"
           >
-            <span className="material-symbols-outlined text-[18px]">settings</span>
+            <Settings20Regular aria-hidden="true" />
           </button>
           <div
             title={`${projects.length} 个项目 / 已加载 ${sessions.length} 个会话`}
@@ -174,12 +182,13 @@ export const SideBar: React.FC = () => {
             {projects.length}
           </div>
         </div>
+        {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       </nav>
     );
   }
 
   return (
-    <nav className="material-chrome border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
+    <nav aria-label="项目与会话" className="material-chrome border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-sm font-sans">
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's
@@ -188,23 +197,21 @@ export const SideBar: React.FC = () => {
           type="button"
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
-          className="mb-2 flex w-full cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-gray-700 transition-colors hover:bg-gray-200/60 hover:text-gray-900"
+          className="ui-button ui-primary mb-4 w-full"
         >
-          <span className="material-symbols-outlined shrink-0 text-[16px] text-gray-500">add</span>
+          <Add20Regular aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-left">新建任务</span>
-          <kbd className="shrink-0 rounded border border-gray-200 bg-surface px-1 font-mono text-[10px] text-gray-400">
+          <kbd className="shrink-0 rounded-control px-1 font-kbd opacity-80">
             Ctrl+N
           </kbd>
         </button>
         <div className="mb-2 px-1">
-          <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider font-mono">
-            PROJECTS
+          <span className="ui-section-label">
+            项目与会话
           </span>
         </div>
         <div className="relative">
-          <span className="material-symbols-outlined absolute left-1.5 top-1/2 -translate-y-1/2 text-[14px] text-gray-400">
-            search
-          </span>
+          <Search20Regular aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
             ref={searchRef}
             id="session-search"
@@ -215,16 +222,18 @@ export const SideBar: React.FC = () => {
             placeholder="搜索项目 / 会话"
             title="搜索项目与会话 (Ctrl+K)"
             spellCheck={false}
-            className="w-full rounded border border-gray-200 bg-surface pl-6 pr-12 py-1 text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-blue-500"
+            aria-label="搜索项目与会话"
+            className="ui-field w-full pl-8 pr-12 placeholder:text-gray-500"
           />
           {query !== '' && (
             <button
               type="button"
               onClick={() => setSessionQuery('')}
               title="清除搜索"
-              className="material-symbols-outlined absolute right-1 top-1/2 -translate-y-1/2 text-[14px] text-gray-400 hover:text-gray-700 cursor-pointer"
+              aria-label="清除搜索"
+              className="ui-icon-button ui-compact absolute right-1 top-1/2 -translate-y-1/2"
             >
-              close
+              <Dismiss20Regular aria-hidden="true" />
             </button>
           )}
           {/* Shortcut hint in the slot the clear button uses once a query exists. */}
@@ -238,10 +247,10 @@ export const SideBar: React.FC = () => {
 
       {/* The tree scrolls with no visible scrollbar (`.no-scrollbar`).  It is
           focusable so the keyboard (arrows / PageUp / PageDown) scrolls it even
-          before any row inside has focus; the outline is suppressed to keep the
-          rail edge clean, matching the rest of the console controls. */}
+          before any row inside has focus. */}
       <div
-        className="no-scrollbar flex-1 overflow-y-auto px-2 mt-2 focus:outline-none"
+        className="sidebar-scroll no-scrollbar flex-1 overflow-y-auto px-2 mt-3"
+        aria-label="项目会话列表"
         tabIndex={0}
       >
         {visibleProjects.length === 0 && (
@@ -288,7 +297,7 @@ export const SideBar: React.FC = () => {
           return (
             <div key={project.project_id} className="mt-1">
               <div
-                className={`group flex w-full items-center gap-0.5 rounded px-1 py-1 transition-colors hover:bg-gray-200/60 ${
+                className={`ui-nav-row group flex w-full items-center gap-0.5 px-1 py-1 ${
                   isActive ? 'text-gray-900' : 'text-gray-600'
                 }`}
               >
@@ -298,22 +307,18 @@ export const SideBar: React.FC = () => {
                     void toggleProjectExpanded(project.project_id);
                   }}
                   title={project.workspace_path}
-                  className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                  aria-expanded={expanded}
+                  className="flex min-h-8 min-w-0 flex-1 items-center gap-1 text-left"
                 >
-                  <span className="material-symbols-outlined text-[15px] text-gray-400">
-                    {expanded ? 'expand_more' : 'chevron_right'}
-                  </span>
-                  <span className="material-symbols-outlined text-[14px] text-gray-500">folder</span>
+                  {expanded
+                    ? <ChevronDown20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
+                    : <ChevronRight20Regular aria-hidden="true" className="shrink-0 text-gray-500" />}
+                  <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-600" />
                   <span className={`truncate ${isActive ? 'font-medium' : ''}`}>
                     {projectLabel(project)}
                   </span>
                   {isActive && (
-                    <span
-                      className="material-symbols-outlined text-[12px] text-blue-600"
-                      title="当前项目"
-                    >
-                      check_circle
-                    </span>
+                    <CheckmarkCircle20Regular aria-label="当前项目" className="shrink-0 text-accent" />
                   )}
                 </button>
                 {/* Row actions stay in the layout (so the label never jumps) but
@@ -329,14 +334,15 @@ export const SideBar: React.FC = () => {
                     void createSessionInProject(project.project_id);
                   }}
                   title={`在 ${projectLabel(project)} 新建会话`}
-                  className="material-symbols-outlined shrink-0 cursor-pointer rounded text-[15px] text-gray-400 opacity-0 transition-opacity hover:bg-gray-300/60 hover:text-gray-900 group-hover:opacity-100 group-focus-within:opacity-100"
+                  aria-label={`在 ${projectLabel(project)} 新建会话`}
+                  className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                 >
-                  add
+                  <Add20Regular aria-hidden="true" />
                 </button>
               </div>
 
               {expanded && (
-                <div className="ml-3 border-l border-gray-200 pl-2">
+                <div className="ml-3 border-l border-line pl-2">
                   {loading && raw.length === 0 && (
                     <div className="px-1 py-1 font-mono text-[10px] text-gray-400">加载中…</div>
                   )}
@@ -347,7 +353,7 @@ export const SideBar: React.FC = () => {
                   )}
                   {groups.map((group) => (
                     <div key={group.key} className="mt-1">
-                      <div className="px-1 mb-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                      <div className="ui-section-label px-1 mb-1 mt-3">
                         {group.label} · {group.items.length}
                       </div>
                       <ul className="space-y-1">
@@ -376,7 +382,8 @@ export const SideBar: React.FC = () => {
                                   }}
                                   onBlur={() => setRenaming(null)}
                                   title={`重命名会话（1-${SESSION_TITLE_MAX} 个字符）`}
-                                  className="w-full rounded border border-blue-400 px-1 py-0.5 text-xs text-gray-800 focus:outline-none"
+                                  aria-label="重命名会话"
+                                  className="ui-field w-full"
                                 />
                               </li>
                             );
@@ -384,11 +391,8 @@ export const SideBar: React.FC = () => {
                           return (
                             <li
                               key={sess.thread_id}
-                              className={`group flex items-center gap-0.5 rounded transition-colors hover:bg-gray-200/60 ${
-                                selected
-                                  ? 'bg-gray-200/80 font-medium text-gray-900 shadow-2xs'
-                                  : 'text-gray-600'
-                              }`}
+                              data-selected={selected}
+                              className="ui-nav-row group flex items-center gap-0.5 text-gray-700"
                             >
                               <button
                                 type="button"
@@ -396,7 +400,8 @@ export const SideBar: React.FC = () => {
                                   void switchProject(project.project_id, sess.thread_id);
                                 }}
                                 title={`${sess.title}\n${sess.thread_id}`}
-                                className="min-w-0 flex-1 cursor-pointer truncate px-1.5 py-1 text-left"
+                                aria-current={selected ? 'page' : undefined}
+                                className="min-h-8 min-w-0 flex-1 cursor-pointer truncate pl-3 pr-1 py-1.5 text-left"
                               >
                                 {sess.title}
                               </button>
@@ -408,17 +413,19 @@ export const SideBar: React.FC = () => {
                                   setRenaming({ threadId: sess.thread_id, draft: sess.title })
                                 }
                                 title="重命名会话"
-                                className="material-symbols-outlined shrink-0 cursor-pointer rounded text-[13px] text-gray-400 opacity-0 transition-opacity hover:bg-gray-300/60 hover:text-gray-900 group-hover:opacity-100 group-focus-within:opacity-100"
+                                aria-label="重命名会话"
+                                className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                               >
-                                edit
+                                <Edit20Regular aria-hidden="true" />
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setDeletingThreadId(sess.thread_id)}
                                 title="删除会话记录"
-                                className="material-symbols-outlined shrink-0 cursor-pointer rounded text-[13px] text-gray-400 opacity-0 transition-opacity hover:bg-gray-300/60 hover:text-red-600 group-hover:opacity-100 group-focus-within:opacity-100"
+                                aria-label="删除会话记录"
+                                className="ui-icon-button ui-compact opacity-0 hover:text-red-600 group-hover:opacity-100 group-focus-within:opacity-100"
                               >
-                                delete
+                                <Delete20Regular aria-hidden="true" />
                               </button>
                             </li>
                           );
@@ -436,7 +443,7 @@ export const SideBar: React.FC = () => {
                             : [...ids, project.project_id],
                         )
                       }
-                      className="mt-1 w-full rounded px-1 py-0.5 text-left font-mono text-[10px] text-gray-400 transition-colors hover:bg-gray-200/60 hover:text-gray-700"
+                      className="ui-button mt-1 w-full justify-start text-xs"
                     >
                       {showAllProjects.includes(project.project_id)
                         ? '收起'
@@ -459,7 +466,7 @@ export const SideBar: React.FC = () => {
                   void loadMoreSessionSearch();
                 }}
                 disabled={sessionSearch.loading}
-                className="w-full rounded border border-gray-200 bg-surface px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="ui-button w-full border border-line bg-surface"
               >
                 {sessionSearch.loading ? '加载中…' : '加载更多搜索结果'}
               </button>
@@ -471,12 +478,12 @@ export const SideBar: React.FC = () => {
                   void loadMoreSessions();
                 }}
                 disabled={sessionsLoading}
-                className="w-full rounded border border-gray-200 bg-surface px-2 py-1 text-[11px] font-mono text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="ui-button w-full border border-line bg-surface"
               >
                 {sessionsLoading ? '加载中…' : '加载更多'}
               </button>
             )}
-        <div className="mt-1 font-mono text-[10px] text-gray-400">
+        <div className="mt-2 text-xs text-gray-500">
           {searching
             ? sessionSearch.error !== null
               ? sessionSearch.error
@@ -493,9 +500,10 @@ export const SideBar: React.FC = () => {
               type="button"
               onClick={dismissSessionAlert}
               title="关闭提示"
-              className="material-symbols-outlined cursor-pointer text-[13px] text-amber-700"
+              aria-label="关闭提示"
+              className="ui-icon-button ui-compact"
             >
-              close
+              <Dismiss20Regular aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -516,14 +524,14 @@ export const SideBar: React.FC = () => {
               onClick={() => {
                 void confirmDelete(deletingThreadId);
               }}
-              className="rounded bg-red-600 px-1.5 py-0.5 text-on-accent hover:bg-red-700 cursor-pointer"
+              className="ui-button ui-danger"
             >
               删除记录
             </button>
             <button
               type="button"
               onClick={() => setDeletingThreadId(null)}
-              className="rounded border border-red-300 px-1.5 py-0.5 text-red-800 hover:bg-red-100 cursor-pointer"
+              className="ui-button border border-line"
             >
               取消
             </button>
@@ -539,9 +547,7 @@ export const SideBar: React.FC = () => {
           className="flex items-center gap-1.5 font-mono text-[10px] text-gray-500"
           title={identityLabel}
         >
-          <span className="material-symbols-outlined shrink-0 text-[13px] text-gray-400">
-            folder
-          </span>
+          <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
           <span className="truncate">{identityLabel}</span>
         </div>
         <div className="mt-1.5 flex items-center gap-1">
@@ -550,9 +556,10 @@ export const SideBar: React.FC = () => {
             type="button"
             onClick={() => setSettingsOpen(true)}
             title="打开设置"
-            className="material-symbols-outlined cursor-pointer text-[18px] text-gray-500 transition-colors hover:text-gray-900"
+            aria-label="打开设置"
+            className="ui-icon-button"
           >
-            settings
+            <Settings20Regular aria-hidden="true" />
           </button>
         </div>
       </div>

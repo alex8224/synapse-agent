@@ -152,9 +152,10 @@ const SNAPSHOT = `(() => {
       paddingLeft: parseFloat(cardWrapperStyle.paddingLeft),
       paddingRight: parseFloat(cardWrapperStyle.paddingRight),
     },
-    // Every reading column in the pane: the transcript, the diagnostics notice
-    // (when it is up) and the composer card itself.
-    columns: [...document.querySelectorAll('main .console-column')].map(rect),
+    // Every reading column in the pane except the composer: the transcript and the
+    // diagnostics notice (when it is up) share the chat edges.  The composer is
+    // narrower on purpose, so it is measured separately (see checkComposer).
+    columns: [...document.querySelectorAll('main .console-column')].filter((el) => el !== card).map(rect),
     scroller: scroller === null ? null : {
       clientWidth: scroller.clientWidth,
       offsetWidth: scroller.offsetWidth,
@@ -204,52 +205,94 @@ function setViewport(client: CdpClient, page: PageHandle, width: number, height:
 }
 
 /**
- * Every reading column must sit on the composer card.
+ * The reading columns share the chat column's edges.
  *
  * The transcript scrolls with no visible scrollbar, so nothing narrows the scroll
- * port: the transcript column and the card share both edges instead of only the
- * centre line.  That is what makes the composer stop looking a scrollbar wider
- * than the text above it.
+ * port: the transcript and the diagnostics notice share both edges.  The composer
+ * is excluded -- it is narrower on purpose (see `checkComposer`).
  */
 function checkReadingColumns(snapshot: Snapshot): void {
-  const card = snapshot.card
+  const reference = snapshot.columns[0]
+  if (reference === undefined) return
   for (const column of snapshot.columns) {
     check(
-      `column at x=${column.left} shares the composer edges`,
+      `reading column at x=${column.left} shares the chat edges`,
       [column.left, column.right],
-      [card.left, card.right],
+      [reference.left, reference.right],
     )
   }
 }
 
+/** The composer cap from `index.css` (`--composer-max: 48rem`, root font 16px). */
+const COMPOSER_MAX = 48 * 16
+
+/** The chat column's width: the transcript's own reading column. */
+function chatColumn(snapshot: Snapshot): number {
+  return snapshot.scroller?.column.width ?? -1
+}
+
 /**
- * Desktop: the column takes ~80% of the workspace pane.
+ * Desktop: the chat column is 80% of the workspace pane.
  *
- * The gutters are 10% of the pane each side, so this is also a real fraction of
- * the pane rather than a `rem` cap: the check compares against 80% of the
- * *measured* pane at this viewport, so a frozen column fails as soon as the
- * window grows.
+ * The gutters are 10% of the pane each side, so the reading width is a real
+ * fraction of the pane rather than a `rem` cap.
  */
 function checkDesktopColumn(snapshot: Snapshot): void {
   const expected = Math.round(snapshot.pane.width * 0.8)
   check(
-    `desktop column takes ~80% of the ${snapshot.pane.width}px workspace`,
-    Math.abs(snapshot.card.width - expected) <= 2,
+    `chat column takes ~80% of the ${snapshot.pane.width}px workspace`,
+    Math.abs(chatColumn(snapshot) - expected) <= 2,
     true,
   )
 }
 
 /**
  * Below the breakpoint the gutters fall back to a flat `2rem` (root font size
- * 16px), so the column fills the rest of the pane.
+ * 16px), so the chat column fills the rest of the pane.
  */
 function checkNarrowColumn(snapshot: Snapshot): void {
   const expected = snapshot.pane.width - 2 * 32
   check(
-    `narrow column fills the ${expected}px gutter-inset workspace`,
+    `narrow chat column fills the ${expected}px gutter-inset workspace`,
+    Math.abs(chatColumn(snapshot) - expected) <= 2,
+    true,
+  )
+}
+
+/**
+ * The composer is narrower than the chat column, and centred on the same axis.
+ *
+ * A single-line input does not need the reading width, so it is capped at
+ * `--composer-max`; below the cap the gutter-inset width decides, exactly like the
+ * chat column.  The media query that switches the gutters is on the viewport.
+ */
+function checkComposer(snapshot: Snapshot): void {
+  const inset = snapshot.viewport.w >= 1024
+    ? Math.round(snapshot.pane.width * 0.8)
+    : snapshot.pane.width - 2 * 32
+  const expected = Math.min(inset, COMPOSER_MAX)
+  check(
+    `composer is ${expected}px wide, not the reading width`,
     Math.abs(snapshot.card.width - expected) <= 2,
     true,
   )
+  const column = snapshot.scroller?.column
+  if (column === undefined) return
+  check(
+    'composer is centred on the chat column',
+    Math.abs(snapshot.card.left + snapshot.card.right - (column.left + column.right)) <= 2,
+    true,
+  )
+  // Below the cap the two are the same width (there is nothing to give up); past it
+  // the composer stops growing while the chat column keeps going.
+  check('composer is not wider than the chat column', snapshot.card.width <= column.width, true)
+  if (column.width > COMPOSER_MAX) {
+    check(
+      `composer stays at its ${COMPOSER_MAX}px cap while the chat column is ${column.width}px`,
+      snapshot.card.width <= COMPOSER_MAX,
+      true,
+    )
+  }
 }
 
 async function waitFor(
@@ -362,9 +405,10 @@ async function main(): Promise<void> {
     check('header stays at the top edge', wide.header.top, 0)
     check('status strip starts right of the sidebar', wide.footer.left, wide.sidebar.width)
     check('status strip ends at the bottom edge', wide.footer.bottom, wide.viewport.h)
-    check('the pane renders its reading columns', wide.columns.length >= 2, true)
+    check('the pane renders its reading columns', wide.columns.length >= 1, true)
     checkReadingColumns(wide)
     checkDesktopColumn(wide)
+    checkComposer(wide)
     check('composer sits above the status strip', wide.card.bottom <= wide.footer.top, true)
     // The composer is the last row of the workspace column, not a card over the
     // transcript: the newest streamed line has to be visible above it.
@@ -386,20 +430,20 @@ async function main(): Promise<void> {
     check('the expanded sidebar exposes its tree', wide.tree !== null, true)
     check('the sidebar tree hides its scrollbar', wide.tree?.scrollbarWidth, 'none')
     // The transcript scrolls the same way (wheel / touch / keyboard), and its
-    // hidden scrollbar is what keeps its column on the composer card's edges.
+    // hidden scrollbar is what keeps its column on the reading edges.
     check('the transcript hides its scrollbar', wide.scroller?.scrollbarWidth, 'none')
     check('the sidebar tree stays keyboard-focusable', wide.tree?.tabIndex, '0')
     check('nav names the new-task entry', wide.navText.includes('新建任务'), true)
     check('nav shows the Ctrl+N hint', wide.navText.includes('Ctrl+N'), true)
     check('search shows the Ctrl+K hint', wide.navText.includes('Ctrl+K'), true)
 
-    // Wide workspace: the reading width is a fraction of the pane, not the old
-    // 60rem cap, so the column keeps growing instead of freezing at 960px.
+    // Wide workspace: the chat column keeps growing while the composer stops at its
+    // cap, so the two are visibly decoupled.
     await setViewport(client, page, 1920, 1080)
     await new Promise((resolve) => setTimeout(resolve, 500))
     const extraWide = (await evaluate(client, page, SNAPSHOT)) as Snapshot
     console.log('')
-    console.log('--- 1920x1080 (no rem cap) ---')
+    console.log('--- 1920x1080 (chat grows, composer capped) ---')
     console.log(
       JSON.stringify(
         { viewport: extraWide.viewport, card: extraWide.card, composerBox: extraWide.composerBox },
@@ -408,7 +452,9 @@ async function main(): Promise<void> {
       ),
     )
     checkDesktopColumn(extraWide)
-    check('a wide workspace outgrows the old 60rem cap', extraWide.card.width > 960, true)
+    checkComposer(extraWide)
+    check('a wide workspace widens the chat column', chatColumn(extraWide) > chatColumn(wide), true)
+    check('a wide workspace does not widen the composer', extraWide.card.width, wide.card.width)
     check('wide workspace has no horizontal overflow', extraWide.scrollWidth, extraWide.viewport.w)
     await setViewport(client, page, 1440, 900)
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -444,6 +490,7 @@ async function main(): Promise<void> {
     check('narrow window has no horizontal overflow', narrow.scrollWidth, narrow.viewport.w)
     checkReadingColumns(narrow)
     checkNarrowColumn(narrow)
+    checkComposer(narrow)
 
     // Compact window: still near full width, so only the flat `2rem` gutters remain.
     await setViewport(client, page, 640, 640)
@@ -461,6 +508,7 @@ async function main(): Promise<void> {
     check('compact window has no horizontal overflow', compact.scrollWidth, compact.viewport.w)
     checkReadingColumns(compact)
     checkNarrowColumn(compact)
+    checkComposer(compact)
 
     const shot = (await client.send(
       'Page.captureScreenshot',

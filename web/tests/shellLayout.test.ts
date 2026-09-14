@@ -12,8 +12,8 @@
  *     they render underneath the sidebar.
  *  2. The transcript and the composer must share one reading geometry
  *     (`.console-gutter` + `.console-column` in `index.css`): the same gutters
- *     around the same 80%-of-workspace column, so the input card keeps the
- *     chat's left and right edges.
+ *     around the same capped column, so the input card keeps the chat's left and
+ *     right edges.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -88,11 +88,11 @@ test('the sidebar tree scrolls with no visible scrollbar', () => {
   );
 });
 
-test('the transcript and the composer share one reading width', () => {
+test('the chat column keeps the reading width and the composer is narrower', () => {
   assert.ok(styles.includes('.console-column'), 'the shared reading width lives in index.css');
   assert.ok(styles.includes('.console-gutter'), 'the shared gutters live in index.css');
-  // Desktop: the gutters are 10% of the workspace each side, so the column is
-  // exactly 80% of it.  No `rem` cap: a hard cap froze the column on a wider pane.
+  // Desktop: the gutters are 10% of the workspace each side, so the chat column is
+  // 80% of it; below `lg` the gutters are a flat 2rem.
   assert.ok(
     /@media\s*\(min-width:\s*1024px\)\s*\{[^}]*\.console-gutter\s*\{[^}]*padding-left:\s*10%[^}]*padding-right:\s*10%/.test(
       styles,
@@ -103,21 +103,32 @@ test('the transcript and the composer share one reading width', () => {
     /\.console-gutter\s*\{[^}]*padding-left:\s*2rem[^}]*padding-right:\s*2rem/.test(styles),
     'below the breakpoint the shared gutters must be a flat 2rem',
   );
+  assert.ok(
+    /\.console-column\s*\{[^}]*width:\s*100%/.test(styles),
+    'the chat column must fill the gutter-inset content box',
+  );
   assert.equal(
     /\.console-column\s*\{[^}]*max-width:/.test(styles),
     false,
-    'the shared column must not carry a hard width cap again',
+    'the chat column keeps the full reading width; the cap belongs to the composer',
+  );
+  // The composer is the only capped surface: narrower than the chat on purpose,
+  // still centred on the same axis.
+  assert.ok(
+    /\.ui-composer\s*\{\s*max-width:\s*var\(--composer-max\)/.test(styles),
+    'only the composer carries the width cap',
   );
   assert.ok(
-    /\.console-column\s*\{[^}]*width:\s*100%/.test(styles),
-    'the column must fill the gutter-inset content box',
+    /--composer-max:\s*\d+(\.\d+)?rem/.test(styles),
+    'the cap belongs to the theme contract, not to a component',
   );
   assert.ok(transcript.includes('console-column'), 'the chat column must use it');
   assert.ok(composer.includes('console-column'), 'the composer card must use it');
+  assert.ok(composer.includes('ui-composer'), 'the composer must carry its own cap');
   assert.equal(
     /max-w-3xl/.test(composer),
     false,
-    'the composer must not carry a width of its own next to the shared one',
+    'the composer must not carry a Tailwind width next to the shared geometry',
   );
   // The same horizontal gutters on every reading wrapper, otherwise the columns
   // drift apart (and the diagnostics notice stops starting on the chat edge).
@@ -152,10 +163,11 @@ test('the composer is the last row of the workspace column, not a floating card'
   );
 });
 
-test('the composer card lines up with the chat column', () => {
+test('the composer is centred without borrowing the chat width', () => {
   // The transcript scrolls with no visible scrollbar, so nothing takes a bite out
-  // of the reading column: the chat column and the composer card share both edges
-  // (a visible scrollbar made the card one scrollbar wider than the text).
+  // of the reading column.  The composer no longer shares that column's edges: it
+  // is capped narrower (`--composer-max`) and centred on the same axis.
+  assert.ok(composer.includes('console-column'), 'the composer stays on the reading axis');
   assert.ok(
     transcript.includes('no-scrollbar'),
     'the transcript must scroll with no visible scrollbar',

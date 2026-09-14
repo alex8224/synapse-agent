@@ -28,7 +28,7 @@ test('the model and reasoning pickers live in the composer, not the status bar',
   // They configure the next turn, so they sit in the same row as the send button.
   const row = composer.slice(composer.indexOf('{/* Control row'));
   assert.ok(row.includes('<ModelControls />'), 'the pickers belong to the control row');
-  assert.ok(row.includes('arrow_upward'), 'and the primary action is in that row too');
+  assert.ok(row.includes('<ArrowUp20Regular'), 'and the primary action is in that row too');
 });
 
 test('a pasted image goes through the same path as a picked one', () => {

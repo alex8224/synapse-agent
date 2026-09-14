@@ -92,7 +92,7 @@ test('the change statistics hang off the branch chip', () => {
 test('the branch chip is rendered only for a git-managed workspace', () => {
   const guard = source.indexOf("gitBranch !== ''");
   assert.ok(guard >= 0, 'the branch chip must be guarded by a non-empty branch');
-  const chip = source.indexOf('fork_right');
+  const chip = source.indexOf('<Branch20Regular');
   assert.ok(chip > guard, 'the branch chip must sit inside the non-empty-branch guard');
   // The project chip carries a separator of its own *before* this guard, so the
   // search has to start at the guard.
@@ -105,7 +105,7 @@ test('the branch chip is rendered only for a git-managed workspace', () => {
 });
 
 test('the top bar owns the sidebar toggle', () => {
-  assert.ok(source.includes('dock_to_left'), 'the top bar must keep the toggle');
+  assert.ok(source.includes('<PanelLeft20Regular'), 'the top bar must keep the toggle');
   // The collapsed rail used to carry a second control for the same action; the
   // rail now keeps only new-session / search / loaded count.
   assert.equal(
@@ -123,17 +123,17 @@ test('the top bar owns the sidebar toggle', () => {
 test('the toggle is the first control of the workspace column', () => {
   // The sidebar is a full-height column to the left of the header, so the header
   // is no longer pulled back onto the collapsed rail's axis: the toggle is simply
-  // the leading control of the left track, in the same 28px box as the rail
+  // the leading control of the left track, in the same themed box as the rail
   // buttons.
   const toggle = classNamesOf('onClick={toggleSidebar}');
-  assert.ok(toggle.includes('h-7 w-7'), 'the toggle must match the rail button box');
+  assert.ok(toggle.includes('ui-icon-button'), 'the toggle must match the rail button box');
   assert.equal(
     toggle.includes('-ml-'),
     false,
     'the header must not offset a control towards the rail it no longer spans',
   );
   assert.ok(
-    sideBar.includes('w-[44px]') && sideBar.includes('w-7 h-7'),
+    sideBar.includes('w-[44px]') && sideBar.includes('ui-icon-button'),
     'the rail must keep the geometry this alignment is measured against',
   );
 });
@@ -192,10 +192,10 @@ test('a narrow window drops the secondary chip, not the title or the branch', ()
     source.indexOf('{/* Centre track'),
     source.indexOf('{/* Right track'),
   );
-  assert.equal(/\bhidden\b/.test(title), false, 'the session title must stay visible');
+  assert.equal(/\bhidden\b/.test(title.replaceAll('aria-hidden', 'ariaHidden')), false, 'the session title must stay visible');
   const branch = source.slice(
     source.indexOf("gitBranch !== ''"),
     source.indexOf('{/* Centre track'),
   );
-  assert.equal(/\bhidden\b/.test(branch), false, 'the branch chip must stay visible');
+  assert.equal(/\bhidden\b/.test(branch.replaceAll('aria-hidden', 'ariaHidden')), false, 'the branch chip must stay visible');
 });

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   APPEARANCE_OPTIONS,
   DARK_THEME,
+  LIGHT_THEME,
   applyTheme,
   themeFor,
 } from '../src/stores/appearance.ts';
@@ -21,19 +22,21 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 
 test('an explicit choice beats the operating system', () => {
-  assert.equal(themeFor('light', true), null, 'light stays light on a dark system');
+  assert.equal(themeFor('light', true), LIGHT_THEME, 'light stays Fluent light on a dark system');
   assert.equal(themeFor('dark', false), DARK_THEME, 'dark stays dark on a light system');
 });
 
 test('system follows the operating system', () => {
   assert.equal(themeFor('system', true), DARK_THEME);
-  assert.equal(themeFor('system', false), null, 'the shipped palette is the light theme');
+  assert.equal(themeFor('system', false), LIGHT_THEME, 'system light uses Fluent too');
 });
 
 test('applying a theme writes the document attribute, and clears it for the default', () => {
   const root = { dataset: {} as DOMStringMap };
   applyTheme(root, DARK_THEME);
   assert.equal(root.dataset.theme, DARK_THEME);
+  applyTheme(root, LIGHT_THEME);
+  assert.equal(root.dataset.theme, LIGHT_THEME);
   applyTheme(root, null);
   assert.equal('theme' in root.dataset, false, 'the shipped palette carries no attribute');
   assert.doesNotThrow(() => applyTheme(null, DARK_THEME));

@@ -1,3 +1,24 @@
+
+test('the composer carries focus on the card, not on the field inside it', () => {
+  // The field is full width with square corners, so the global ring drew a square
+  // rectangle: it overflowed the card's rounded corners and its bottom edge cut the
+  // card in two.  The card's border is the indicator instead.
+  assert.ok(
+    /\.ui-composer:focus-within\s*\{[^}]*border-color:[^}]*rgb\(var\(--accent\)\)/.test(styles),
+    'the card border must turn to the accent role while the composer is focused',
+  );
+  assert.ok(
+    /\.ui-composer-input:focus-visible\s*\{\s*outline:\s*none/.test(styles),
+    'the full-width field must not draw a ring of its own',
+  );
+  // Both must live in the utilities layer: the card also carries the `border-line`
+  // utility, and a cascade layer beats a more specific selector from an earlier one.
+  // Anchor on the at-rule: a later comment also mentions `@layer utilities`.
+  const utilities = styles.slice(styles.indexOf('@layer utilities {'));
+  for (const rule of ['.ui-composer:focus-within', '.ui-composer-input:focus-visible']) {
+    assert.ok(utilities.includes(rule), `${rule} must sit in the utilities layer to win`);
+  }
+});
 /**
  * Guards for the theme contract.
  *
@@ -57,6 +78,7 @@ test('the theme contract names roles, not shades', () => {
     '--math-inline',
     '--radius-card',
     '--radius-control',
+    '--composer-max',
     '--font-ui',
     '--font-body',
     '--font-mono',
@@ -245,4 +267,30 @@ test('no component paints a colour the theme cannot reach', () => {
   };
   walk(join(webRoot, 'src'));
   assert.deepEqual(offenders, [], 'paint through the theme roles instead of literals');
+});
+
+test('the Fluent main surface uses shared controls and bundled SVG icons', () => {
+  for (const name of ['SideBar', 'TopBar', 'CommandInput', 'ModelControls', 'ConsoleActions', 'SettingsDialog']) {
+    const source = readFileSync(join(webRoot, 'src', 'components', `${name}.tsx`), 'utf8');
+    assert.ok(source.includes("from '@fluentui/react-icons'"), `${name} uses bundled Fluent icons`);
+    assert.equal(source.includes('material-symbols-outlined'), false, `${name} must not mix icon families`);
+    assert.equal(source.includes('focus:outline-none'), false, `${name} must preserve keyboard focus`);
+    assert.ok(source.includes('ui-button') || source.includes('ui-icon-button'), `${name} uses shared controls`);
+  }
+  assert.ok(/sans:\s*\["var\(--font-ui\)"\]/.test(config));
+  assert.ok(/mono:\s*\["var\(--font-mono\)"\]/.test(config));
+  for (const role of ['--control-h', '--control-compact-h', '--type-ui', '--type-caption', '--selection-fill']) {
+    assert.ok(root.has(role), `the control contract defines ${role}`);
+  }
+});
+
+test('navigation selection has a marker and picker choices are keyboard buttons', () => {
+  const sidebar = readFileSync(join(webRoot, 'src', 'components', 'SideBar.tsx'), 'utf8');
+  const pickers = readFileSync(join(webRoot, 'src', 'components', 'ModelControls.tsx'), 'utf8');
+  assert.ok(sidebar.includes("aria-current={selected ? 'page' : undefined}"));
+  assert.ok(styles.includes(".ui-nav-row[data-selected='true']::before"));
+  assert.ok(/<button\s+key=\{m\}\s+type="button"/.test(pickers));
+  assert.ok(/<button\s+key=\{lvl\}\s+type="button"\s+disabled=\{!canSetThinking\}/.test(pickers));
+  const collapsed = sidebar.slice(sidebar.indexOf('if (isSidebarCollapsed)'), sidebar.indexOf('{/* Nav entry'));
+  assert.ok(collapsed.includes('{settingsOpen && <SettingsDialog'), 'settings must mount in the collapsed rail too');
 });

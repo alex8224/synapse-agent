@@ -2,6 +2,104 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .ui-button, .ui-icon-button, .ui-nav-row, .ui-menu-item {
+    min-height: var(--control-h);
+    border-radius: var(--radius-control);
+    font-family: var(--font-ui);
+    font-size: var(--type-ui);
+    line-height: 20px;
+    transition: background-color var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
+  }
+  .ui-button, .ui-icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 4px 8px;
+    color: rgb(var(--gray-700));
+    cursor: pointer;
+  }
+  .ui-icon-button { width: var(--control-h); padding: 0; flex-shrink: 0; }
+  .ui-icon-button svg, .ui-button svg { flex-shrink: 0; font-size: 20px; }
+  .ui-compact { width: var(--control-compact-h); min-height: var(--control-compact-h); }
+  .ui-compact svg { font-size: 16px; }
+  .ui-button:hover:not(:disabled), .ui-icon-button:hover:not(:disabled),
+  .ui-nav-row:hover, .ui-menu-item:hover:not(:disabled) {
+    background-color: rgb(var(--control-hover));
+    color: rgb(var(--gray-900));
+  }
+  .ui-button:active:not(:disabled), .ui-icon-button:active:not(:disabled),
+  .ui-menu-item:active:not(:disabled) { background-color: rgb(var(--control-pressed)); }
+  .ui-primary { background-color: rgb(var(--accent)); color: rgb(var(--on-accent)); }
+  .ui-primary:hover:not(:disabled) { background-color: rgb(var(--blue-700)); color: rgb(var(--on-accent)); }
+  .ui-primary:active:not(:disabled) { background-color: rgb(var(--blue-700)); }
+  .ui-danger { background-color: rgb(var(--danger)); color: rgb(var(--on-accent)); }
+  .ui-danger:hover:not(:disabled), .ui-danger:active:not(:disabled) {
+    background-color: rgb(var(--red-700)); color: rgb(var(--on-accent));
+  }
+  .ui-button:disabled, .ui-icon-button:disabled, .ui-menu-item:disabled {
+    opacity: 0.45; cursor: not-allowed;
+  }
+  .ui-field {
+    min-height: var(--control-h);
+    border: 1px solid rgb(var(--line));
+    border-bottom-color: rgb(var(--gray-500));
+    border-radius: var(--radius-control);
+    background: rgb(var(--surface));
+    color: rgb(var(--gray-900));
+    font-family: var(--font-ui);
+    font-size: var(--type-ui);
+    line-height: 20px;
+    padding: 4px 8px;
+  }
+  .ui-field:focus { border-bottom-color: rgb(var(--accent)); }
+  .ui-field:disabled { color: rgb(var(--gray-400)); cursor: not-allowed; }
+  .ui-section-label {
+    font-family: var(--font-ui); font-size: var(--type-caption);
+    line-height: 16px; font-weight: 600; color: rgb(var(--gray-600));
+  }
+  .ui-nav-row { position: relative; }
+  .ui-nav-row[data-selected='true'] {
+    background-color: rgb(var(--selection-fill)); color: rgb(var(--gray-900));
+    font-weight: 600;
+  }
+  .ui-nav-row[data-selected='true']::before {
+    content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
+    width: 3px; border-radius: var(--radius-control); background: rgb(var(--accent));
+  }
+  .ui-menu-item { display: block; width: 100%; padding: 6px 8px; text-align: left; }
+  .ui-menu-item[aria-pressed='true'] { background: rgb(var(--selection-fill)); font-weight: 600; }
+  /*
+    The composer is one compact card: the field on top, the control row on the
+    same surface, no separator between them, and only the padding a single line
+    needs.  Focus is carried by the card, not by a ring around the field — those
+    two rules live in the utilities layer, where they can outrank the card's own
+    `border-line` utility.
+  */
+  .ui-composer-input {
+    padding: 10px 14px; font-size: var(--type-ui); line-height: 22px;
+  }
+  .ui-composer-toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 0 8px 8px;
+  }
+  /* The primary and stop actions are round, as in Fluent's own composer. */
+  .ui-icon-button.ui-round { border-radius: 9999px; }
+  .ui-model-trigger { min-width: 0; max-width: 100%; font-size: var(--type-caption); }
+  .ui-model-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ui-session-title { font-family: var(--font-ui); font-size: var(--type-ui); }
+  .ui-settings-title { font-size: var(--type-title); line-height: 24px; font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) {
+    .ui-button, .ui-icon-button, .ui-nav-row, .ui-menu-item { transition: none; }
+  }
+  @media (forced-colors: active) {
+    .ui-nav-row[data-selected='true'], .ui-menu-item[aria-pressed='true'] {
+      outline: 1px solid Highlight; outline-offset: -1px;
+    }
+  }
+}
 @layer base {
   /*
     Theme contract.
@@ -17,13 +115,24 @@
       `--math*`) are what new code should use, so a component never has to know a
       shade.
 
-    `:root` reproduces the palette the console shipped with, which is why adding
-    this layer changed nothing on screen.  `[data-theme='…']` blocks replace it:
-    `fluent-light` / `fluent-dark` are a worked example (values approximate the
-    Fluent 2 semantic tokens; replace them with the design's own values).
+    `:root` keeps the original fallback palette for the contract. The appearance
+    store always selects `fluent-light` or `fluent-dark` before rendering; the
+    fallback is not offered as a reader preference.
   */
   :root {
     color-scheme: light;
+    /* Shared desktop controls; code and telemetry retain their own type roles. */
+    --control-h: 32px;
+    --control-compact-h: 24px;
+    --type-caption: 12px;
+    --type-ui: 14px;
+    --type-title: 16px;
+    --control-hover: var(--gray-100);
+    --control-pressed: var(--gray-200);
+    --selection-fill: var(--blue-50);
+    /* Composer width cap: a single-line input does not need the chat column's
+       reading width, so the two are deliberately not the same width. */
+    --composer-max: 48rem;
 
     /* Neutral ramp. */
     --gray-50: 249 250 251;
@@ -386,13 +495,15 @@ body {
 
     The wrapper carries the gutters (`.console-gutter`), the column carries the
     width (`.console-column`), and both resolve against the workspace pane.  On
-    desktop the gutters are 10% of the pane each side, so the column is exactly
-    80% of the workspace and prose does not stretch edge to edge across a wide
-    pane.  There is deliberately no `rem` cap: the old `max-width: 60rem` froze
-    the column on a wider workspace, so a bigger window bought no extra reading
-    room.  Below `lg` the gutters fall back to a flat `2rem` (the previous
-    `px-8`) and the column fills the rest, so a narrow window stays near full
-    width with only the necessary margins.
+    desktop the gutters are 10% of the pane each side, so the column is 80% of the
+    workspace.  Below `lg` the gutters fall back to a flat `2rem` (the previous
+    `px-8`) and the column fills the rest, so a narrow window stays near full width
+    with only the necessary margins.
+
+    The composer is the one exception (`.ui-composer` below): it is capped at
+    `--composer-max` so a single-line input does not stretch across a wide pane.
+    It stays centred on the reading column's axis, but it is deliberately narrower
+    than the chat -- the two do not share an edge.
 
     The transcript's scroller additionally reserves symmetric scrollbar gutters
     (`[scrollbar-gutter:stable_both-edges]`), so a scrollbar insets the chat
@@ -401,6 +512,7 @@ body {
   */
   .console-gutter { padding-left: 2rem; padding-right: 2rem; }
   .console-column { width: 100%; margin-left: auto; margin-right: auto; }
+  .ui-composer { max-width: var(--composer-max); }
   @media (min-width: 1024px) {
     .console-gutter { padding-left: 10%; padding-right: 10%; }
   }
@@ -492,6 +604,17 @@ body {
     outline: var(--focus-ring-width) solid rgb(var(--focus-ring));
     outline-offset: var(--focus-ring-offset);
   }
+  /*
+    The composer card is the focus target, not the field inside it.
+
+    The field is full width with square corners, so the ring above drew a square
+    rectangle that overflowed the card's rounded corners and cut the card in two
+    at its bottom edge.  The card's own border carries the indicator instead, and
+    these two rules must sit in this layer: the card also carries the `border-line`
+    utility, and a layer always beats a more specific selector from an earlier one.
+  */
+  .ui-composer:focus-within { border-color: rgb(var(--accent)); }
+  .ui-composer-input:focus-visible { outline: none; }
   .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 450; }
   .font-body-md { font-family: var(--font-body); font-size: 14px; line-height: 20px; font-weight: 400; }
