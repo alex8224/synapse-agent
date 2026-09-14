@@ -75,6 +75,34 @@ test('only a view that is already at the bottom follows the stream', () => {
   );
 });
 
+test('only a reader gesture may end the follow', () => {
+  // Our own follow and the browser's scroll anchoring both fire `scroll`, and a
+  // layout change above the viewport (a streamed thought settling to its final
+  // height) moves the scroll position on its own.  Reading the latch from every
+  // scroll event ended the follow for the rest of the turn: the reasoning streamed
+  // into view, the tool call after it did not.
+  assert.ok(
+    transcript.includes("addEventListener('wheel'"),
+    'a wheel gesture must be tracked as the reader scrolling',
+  );
+  assert.ok(
+    transcript.includes("addEventListener('touchmove'"),
+    'a touch gesture must be tracked too',
+  );
+  assert.ok(
+    /if \(!userScrolling\.current\) return;/.test(transcript),
+    'a scroll the app caused must not end the follow',
+  );
+  assert.ok(
+    transcript.includes('USER_SCROLL_SETTLE_MS'),
+    'a gesture needs an end, so the latch settles shortly after its last event',
+  );
+  assert.ok(
+    transcript.includes('pinnedToBottom.current = true'),
+    'following re-arms the latch, so the next update keeps following',
+  );
+});
+
 test('opening a fold never scrolls the transcript to the bottom', () => {
   assert.ok(transcript.includes('skipAutoScroll'), 'the transcript must have a scroll guard');
   assert.ok(
