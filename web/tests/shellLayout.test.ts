@@ -32,7 +32,9 @@ const composer = read('components/CommandInput.tsx');
 const banner = read('components/RuntimeDiagnosticsBanner.tsx');
 
 test('the shell is a sidebar column plus a workspace column', () => {
-  const shell = app.slice(app.indexOf('<div className="bg-background'));
+  // The window root paints the window fill (`material-canvas`), which is the
+  // backdrop's translucent layer in a theme that has one.
+  const shell = app.slice(app.indexOf('<div className="material-canvas'));
   const sidebarAt = shell.indexOf('<SideBar />');
   const columnAt = shell.indexOf('flex min-w-0 flex-1 flex-col');
   assert.ok(sidebarAt >= 0, 'the sidebar must be a direct child of the shell');
