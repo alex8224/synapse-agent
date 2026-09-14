@@ -23,6 +23,15 @@ import type { TranscriptMessage } from '../stores/historyMapper.ts';
 const PINNED_TO_BOTTOM_PX = 32;
 
 /**
+ * How long after the last wheel / touch event a scroll gesture counts as over.
+ *
+ * Long enough that a continuous gesture keeps the follow latch live, short enough
+ * that the next streamed update is not yanked back while the reader is still
+ * looking elsewhere.
+ */
+const USER_SCROLL_SETTLE_MS = 150;
+
+/**
  * One transcript row.
  *
  * Memoized on the message object: folding streamed text rebuilds the transcript
@@ -254,17 +263,52 @@ export const Transcript: React.FC = () => {
    * that always follows.
    */
   const pinnedToBottom = useRef(true);
+  /**
+   * True while a wheel / touch gesture is driving the scroller.
+   *
+   * Only the reader may end the follow.  Our own `scrollIntoView` and the
+   * browser's scroll anchoring also fire `scroll`, and a layout change *above* the
+   * viewport (a streamed thought settling to its final height, a tool row
+   * appearing) moves the scroll position on its own: reading the latch from every
+   * scroll event ended the follow for the rest of the turn, so the reasoning
+   * streamed into view but the tool call after it did not.
+   */
+  const userScrolling = useRef(false);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (scroller === null) return;
+    const distance = (): number =>
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const track = () => {
-      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      pinnedToBottom.current = distance <= PINNED_TO_BOTTOM_PX;
+      if (!userScrolling.current) return;
+      pinnedToBottom.current = distance() <= PINNED_TO_BOTTOM_PX;
+    };
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const beginUserScroll = () => {
+      userScrolling.current = true;
+      if (settle !== null) clearTimeout(settle);
+      // A gesture is over shortly after its last event; the latch is then final
+      // until the next one.  A gesture that ended at the bottom re-arms the
+      // follow, which is how scrolling back down resumes it.
+      settle = setTimeout(() => {
+        settle = null;
+        pinnedToBottom.current = distance() <= PINNED_TO_BOTTOM_PX;
+        userScrolling.current = false;
+      }, USER_SCROLL_SETTLE_MS);
     };
     track();
+    scroller.addEventListener('wheel', beginUserScroll, { passive: true });
+    scroller.addEventListener('touchstart', beginUserScroll, { passive: true });
+    scroller.addEventListener('touchmove', beginUserScroll, { passive: true });
     scroller.addEventListener('scroll', track, { passive: true });
-    return () => scroller.removeEventListener('scroll', track);
+    return () => {
+      if (settle !== null) clearTimeout(settle);
+      scroller.removeEventListener('wheel', beginUserScroll);
+      scroller.removeEventListener('touchstart', beginUserScroll);
+      scroller.removeEventListener('touchmove', beginUserScroll);
+      scroller.removeEventListener('scroll', track);
+    };
   }, []);
 
   useEffect(() => {
@@ -279,6 +323,8 @@ export const Transcript: React.FC = () => {
     // few milliseconds, so a smooth animation is restarted (and never finishes)
     // hundreds of times over a single thought.
     bottomRef.current?.scrollIntoView({ block: 'end' });
+    // The view is at the bottom now, whatever moved it there in between.
+    pinnedToBottom.current = true;
   }, [messages]);
 
   const handleLoadEarlier = () => {

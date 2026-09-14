@@ -32,6 +32,33 @@ test('the follow is instant, never an animation restarted per chunk', () => {
   );
 });
 
+test('only the reader can end the follow', () => {
+  // Our own `scrollIntoView` and the browser's scroll anchoring also fire
+  // `scroll`, and a layout change above the viewport (a streamed thought settling,
+  // a tool row appearing) moves the scroll position on its own.  Reading the
+  // "am I at the bottom?" latch from every scroll event ended the follow for the
+  // rest of the turn -- the reasoning streamed into view, the tool call after it
+  // did not.
+  assert.ok(transcript.includes('userScrolling'), 'the follow latch needs a user-gesture flag');
+  assert.ok(
+    /if \(!userScrolling\.current\) return;/.test(transcript),
+    'a scroll event the reader did not cause must not end the follow',
+  );
+  for (const gesture of ['wheel', 'touchstart', 'touchmove']) {
+    assert.ok(
+      transcript.includes(`addEventListener('${gesture}'`),
+      `${gesture} must arm the follow latch`,
+    );
+  }
+  // Following re-asserts the latch, so the next update keeps following.
+  assert.ok(
+    /scrollIntoView\(\{ block: 'end' \}\);\s*\n\s*\/\/[^\n]*\n\s*pinnedToBottom\.current = true;/.test(
+      transcript,
+    ),
+    'the follow must re-arm the latch after it scrolls',
+  );
+});
+
 test('only a view that is already at the bottom follows the stream', () => {
   assert.ok(transcript.includes('pinnedToBottom'), 'the transcript must track whether it is pinned');
   assert.ok(
