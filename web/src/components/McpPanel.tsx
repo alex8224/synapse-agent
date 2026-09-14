@@ -113,30 +113,31 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   return (
-    <div className="absolute bottom-8 left-0 z-50 w-96 space-y-2 rounded-control border border-gray-200 material-flyout flyout-in p-3 shadow-flyout">
-      <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+    <div className="absolute bottom-8 left-0 z-50 w-96 max-w-[calc(100vw-2rem)] space-y-2.5 rounded-card border border-line/80 material-flyout flyout-in p-3.5 shadow-flyout">
+      <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
         <span className="text-xs font-bold text-gray-900">MCP 工具与服务器 (F5)</span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => void refreshMcpRuntime()}
             title="重新连接已启用的 MCP 服务器并刷新工具列表"
-            className="cursor-pointer rounded px-1.5 py-0.5 font-mono text-[10px] text-gray-600 hover:bg-gray-100"
+            className="ui-button ui-compact border border-line/60 bg-surface/50 text-gray-700 hover:bg-surface text-[11px]"
           >
             {mcpConnecting ? '连接中…' : '重新连接'}
           </button>
           <span
             aria-disabled={!canToggleMcpGlobal}
             title={canToggleMcpGlobal ? undefined : RUNTIME_CONFIG_READ_ONLY_NOTICE}
-            className={`rounded px-2 py-0.5 font-mono text-[10px] ${
+            className={`inline-flex items-center gap-1 rounded-control px-2 py-0.5 font-mono text-[10px] border transition-colors ${
               canToggleMcpGlobal
                 ? 'cursor-pointer'
-                : 'cursor-not-allowed border border-dashed border-gray-300 text-gray-400'
-            } ${mcpEnabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}
+                : 'cursor-not-allowed border-dashed border-gray-300 text-gray-400'
+            } ${mcpEnabled ? 'border-emerald-300/80 bg-emerald-50 text-emerald-800' : 'border-line/70 bg-gray-100 text-gray-600'}`}
             onClick={() => {
               if (canToggleMcpGlobal) void toggleMcpGlobal();
             }}
           >
-            {mcpEnabled ? '全局启用' : '全局停用'} · 只读
+            <span className={`h-1.5 w-1.5 rounded-full ${mcpEnabled ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+            <span>{mcpEnabled ? '全局启用' : '全局停用'}</span>
           </span>
           <button
             onClick={onClose}
@@ -154,7 +155,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </p>
       )}
 
-      <div className="max-h-64 space-y-1.5 overflow-y-auto">
+      <div className="fluent-scrollbar max-h-64 space-y-1.5 overflow-y-auto pr-1">
         {mcpServers.length === 0 ? (
           <div className="py-2 text-center font-sans text-xs text-gray-400">
             未配置任何 MCP 服务器
@@ -170,7 +171,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             return (
               <div
                 key={srv.name}
-                className="rounded border border-gray-100 p-1.5 text-xs hover:bg-gray-50"
+                className="rounded-control border border-line/60 bg-surface/50 p-2 text-xs transition-all hover:border-line hover:bg-surface/80 shadow-card"
               >
                 <div
                   className="flex cursor-pointer items-center justify-between"
@@ -192,14 +193,19 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         : ''}
                     </span>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <span
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                        srv.enabled ? 'bg-blue-50 text-blue-600' : 'text-gray-400'
+                  <div className="flex shrink-0 items-center gap-2">
+                    <div
+                      className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                        srv.enabled ? 'bg-accent' : 'bg-gray-300'
                       }`}
+                      aria-hidden="true"
                     >
-                      {srv.enabled ? 'ON' : 'OFF'}
-                    </span>
+                      <span
+                        className={`inline-block h-3 w-3 rounded-full bg-on-accent transition-transform ${
+                          srv.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </div>
                     {srv.enabled && discovered.length > 0 && (
                       <button
                         onClick={(event) => {

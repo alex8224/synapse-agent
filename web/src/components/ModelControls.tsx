@@ -1,4 +1,4 @@
-import { Bot20Regular, BrainCircuit20Regular, ChevronDown20Regular, LockClosed20Regular } from '@fluentui/react-icons';
+import { Bot20Regular, BrainCircuit20Regular, ChevronDown20Regular, LockClosed20Regular, Checkmark16Regular, Search16Regular } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -98,39 +98,48 @@ export const ModelControls: React.FC = () => {
           <ChevronDown20Regular aria-hidden="true" />
         </button>
         {showModelPicker && (
-          <div id="model-picker" role="group" aria-label="选择模型" className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-72 max-w-[calc(100vw-4rem)] flex-col rounded-control border border-line material-flyout flyout-in p-2 shadow-flyout">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-1.5 text-[11px] font-semibold text-gray-500">
+          <div id="model-picker" role="group" aria-label="选择模型" className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-80 max-w-[calc(100vw-4rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in p-2.5 shadow-flyout">
+            <div className="flex items-center justify-between border-b border-line/60 px-1 pb-2 text-xs font-semibold text-gray-700">
               <span>选择模型 ({availableModels.length} 个可用)</span>
-              <span className="font-mono text-[10px] text-gray-400">F2</span>
+              <span className="ui-kbd">F2</span>
             </div>
-            <input
-              id="model-filter"
-              name="model-filter"
-              type="text"
-              value={modelSearch}
-              onChange={(e) => setModelSearch(e.target.value)}
-              placeholder="过滤模型名称..."
-              aria-label="过滤模型名称"
-              className="ui-field my-2 w-full"
-            />
-            <div className="max-h-60 flex-1 space-y-0.5 overflow-y-auto pr-1">
+            <div className="relative my-2 w-full">
+              <Search16Regular aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                id="model-filter"
+                name="model-filter"
+                type="text"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                placeholder="过滤模型名称..."
+                aria-label="过滤模型名称"
+                className="ui-field w-full pl-8 pr-2 text-xs"
+              />
+            </div>
+            <div className="fluent-scrollbar max-h-60 flex-1 space-y-0.5 overflow-y-auto pr-1">
               {availableModels
                 .filter((m) => m.toLowerCase().includes(modelSearch.toLowerCase()))
-                .map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    aria-pressed={m === modelName}
-                    onClick={() => {
-                      setModel(m);
-                      setShowModelPicker(false);
-                      setModelSearch('');
-                    }}
-                    className="ui-menu-item truncate text-gray-700"
-                  >
-                    {m}
-                  </button>
-                ))}
+                .map((m) => {
+                  const selected = m === modelName;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => {
+                        setModel(m);
+                        setShowModelPicker(false);
+                        setModelSearch('');
+                      }}
+                      className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
+                        selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                      }`}
+                    >
+                      <span className="truncate">{m}</span>
+                      {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                    </button>
+                  );
+                })}
             </div>
           </div>
         )}
@@ -158,36 +167,44 @@ export const ModelControls: React.FC = () => {
           )}
         </button>
         {showThinkingPicker && (
-          <div id="thinking-picker" role="group" aria-label="推理等级" className="absolute bottom-full right-0 mb-2 z-50 w-40 space-y-1 rounded-control border border-line material-flyout flyout-in p-1 shadow-flyout">
-            <div className="border-b border-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-400">
+          <div id="thinking-picker" role="group" aria-label="推理等级" className="absolute bottom-full right-0 mb-2 z-50 w-52 space-y-1.5 rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout">
+            <div className="border-b border-line/60 px-2 pb-1.5 text-xs font-semibold text-gray-700">
               推理等级
             </div>
             {!canSetThinking && (
-              <div className="px-2 py-1 text-[10px] leading-relaxed text-gray-500">
+              <div className="px-2 py-1 text-[11px] leading-relaxed text-gray-500">
                 当前只读：该会话未开放推理等级写端口，等级由服务端设置决定。
               </div>
             )}
-            {thinkingLevels.map((lvl) => (
-              <button
-                key={lvl}
-                type="button"
-                disabled={!canSetThinking}
-                aria-pressed={lvl === thinkingLevel}
-                onClick={() => {
-                  if (!canSetThinking) return;
-                  // Keep the popover open on failure so the reason below the list
-                  // stays readable instead of flashing away.
-                  void setThinkingLevel(lvl).then((ok) => {
-                    if (ok) setShowThinkingPicker(false);
-                  });
-                }}
-                className="ui-menu-item text-gray-700"
-              >
-                {lvl}
-              </button>
-            ))}
+            <div className="space-y-0.5 pt-0.5">
+              {thinkingLevels.map((lvl) => {
+                const selected = lvl === thinkingLevel;
+                return (
+                  <button
+                    key={lvl}
+                    type="button"
+                    disabled={!canSetThinking}
+                    aria-pressed={selected}
+                    onClick={() => {
+                      if (!canSetThinking) return;
+                      // Keep the popover open on failure so the reason below the list
+                      // stays readable instead of flashing away.
+                      void setThinkingLevel(lvl).then((ok) => {
+                        if (ok) setShowThinkingPicker(false);
+                      });
+                    }}
+                    className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
+                      selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                    }`}
+                  >
+                    <span>{lvl}</span>
+                    {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                  </button>
+                );
+              })}
+            </div>
             {thinkingLevelError !== null && (
-              <div className="border-t border-gray-100 px-2 py-1 text-[10px] leading-relaxed text-red-600">
+              <div className="border-t border-line/60 px-2 py-1 text-[10px] leading-relaxed text-red-600">
                 切换失败：{thinkingLevelError}
               </div>
             )}

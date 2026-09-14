@@ -493,7 +493,7 @@ export const SideBar: React.FC = () => {
       </div>
 
       {(sessionActionError !== null || sessionNotice !== null) && (
-        <div className="mx-3 mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+        <div className="mx-3 mt-2 rounded-control border border-amber-200/80 bg-amber-50/80 backdrop-blur-sm px-2 py-1.5 text-[10px] text-amber-900 shadow-xs">
           <div className="flex items-start gap-1">
             <span className="flex-1">{sessionActionError ?? sessionNotice}</span>
             <button
@@ -512,7 +512,7 @@ export const SideBar: React.FC = () => {
       {deletingThreadId !== null && (
         // Deleting removes the session *record* only: the confirmation says so
         // explicitly, because the conversation itself is retained on disk.
-        <div className="mx-3 mt-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] text-red-900">
+        <div className="mx-3 mt-2 rounded-control border border-red-200/80 bg-red-50/80 backdrop-blur-sm px-2.5 py-2 text-[10px] text-red-900 shadow-xs">
           <div className="mb-1">删除该会话的记录？</div>
           <div className="mb-1 text-red-800">
             仅删除会话记录（元数据与目标）；对话历史（检查点与转录）仍保留在磁盘上，不会被删除。

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { Dismiss16Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 
 /**
@@ -33,11 +34,11 @@ export const ImageLightbox: React.FC<{
         aria-modal="true"
         aria-label="图片预览"
         onClick={onClose}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6 scrim-in"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-6 scrim-in"
       >
       <div
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-full max-w-4xl flex-col rounded-card border border-gray-200 material-flyout flyout-in p-3 shadow-flyout"
+        className="flex max-h-full max-w-4xl flex-col rounded-card border border-line/80 material-flyout flyout-in p-3 shadow-flyout"
       >
         <div className="mb-2 flex items-center gap-3 border-b border-gray-100 pb-1.5">
           <span className="truncate font-mono text-[11px] font-semibold text-gray-900">{label}</span>
@@ -46,9 +47,9 @@ export const ImageLightbox: React.FC<{
             type="button"
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined ml-auto cursor-pointer text-[16px] text-gray-400 hover:text-gray-700"
+            className="ui-icon-button ui-compact ml-auto text-gray-400 hover:text-gray-700"
           >
-            close
+            <Dismiss16Regular aria-hidden="true" />
           </button>
         </div>
         <img src={src} alt={label} className="max-h-[75vh] max-w-full object-contain" />

@@ -163,15 +163,15 @@ function Panel({
     <div
       role="dialog"
       aria-label={title}
-      className="absolute bottom-full left-0 z-50 mb-1 w-80 rounded-control border border-gray-200 material-flyout flyout-in p-3 text-left shadow-flyout"
+      className="absolute bottom-full left-0 z-50 mb-2 w-96 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3.5 text-left shadow-flyout"
     >
-      <div className="mb-2 flex items-center justify-between border-b border-gray-100 pb-1.5">
-        <span className="text-xs font-semibold text-gray-900">{title}</span>
+      <div className="mb-2.5 flex items-center justify-between border-b border-line/60 pb-2">
+        <span className="text-xs font-bold text-gray-900">{title}</span>
         <button
           onClick={onClose}
           title="关闭 (Esc)"
           aria-label="关闭"
-          className="ui-icon-button"
+          className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
         >
           <Dismiss20Regular aria-hidden="true" />
         </button>
@@ -183,9 +183,9 @@ function Panel({
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-3 border-b border-gray-50 py-1 last:border-b-0">
-      <span className="shrink-0 font-mono text-[10px] text-gray-400">{label}</span>
-      <span className="break-all text-right text-[11px] text-gray-800">{value}</span>
+    <div className="flex items-start justify-between gap-3 rounded-control border-b border-line/40 px-1 py-1.5 last:border-b-0">
+      <span className="shrink-0 font-mono text-[10px] font-medium text-gray-500">{label}</span>
+      <span className="break-all text-right text-[11px] font-sans text-gray-900">{value}</span>
     </div>
   );
 }

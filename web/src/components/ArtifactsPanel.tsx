@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Dismiss16Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { CodeBlock } from './CodeBlock.tsx';
 import {
@@ -245,7 +246,7 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
       aria-label="工作区文件"
       // Opened from the sidebar's settings row, so it expands upward from there
       // (the triggers sit at the bottom of the window).
-      className="absolute bottom-full left-0 z-50 mb-1 flex h-[32rem] w-[56rem] flex-col rounded-control border border-gray-200 material-flyout flyout-in text-left shadow-flyout"
+      className="absolute bottom-full left-0 z-50 mb-2 flex h-[32rem] w-[56rem] max-w-[calc(100vw-2rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in text-left shadow-flyout"
     >
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-gray-900">工作区文件</span>
@@ -254,9 +255,9 @@ export const ArtifactsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =
           <button
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined cursor-pointer text-[16px] text-gray-400 hover:text-gray-700"
+            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
           >
-            close
+            <Dismiss16Regular aria-hidden="true" />
           </button>
         </div>
       </div>
