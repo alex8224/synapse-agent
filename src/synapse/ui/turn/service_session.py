@@ -73,20 +73,36 @@ class TUIRuntimeSessionFacade:
 
     async def ensure_open(self) -> SessionView:
         result = await self.binding.service.open_session(OpenSessionCommand(self.binding.session))
-        self.state.view = result.view
-        self.state.last_sequence = max(self.state.last_sequence, result.view.latest_sequence)
+        self.adopt_view(result.view)
         self._closed = False
         return result.view
 
     async def get(self, *, refresh: bool = True) -> SessionView:
         if self.state.view is None or refresh:
-            self.state.view = await self.binding.service.get_session(
-                GetSessionQuery(self.binding.session)
-            )
-            self.state.last_sequence = max(
-                self.state.last_sequence, self.state.view.latest_sequence
+            self.adopt_view(
+                await self.binding.service.get_session(GetSessionQuery(self.binding.session))
             )
         return self.state.view
+
+    def adopt_view(self, view: SessionView) -> None:
+        """Adopt a freshly projected view and reconcile the event cursor.
+
+        A broker sequence only ever grows inside one stream instance, so a
+        projected ``latest_sequence`` *below* the tracked cursor proves the
+        session's event stream was rebuilt (runtime closed and reopened, idle
+        eviction, daemon restart).  The stored cursor then belongs to the
+        previous stream; resuming it is rejected by the service as out of
+        range, which used to abort a submit before the turn was ever sent.
+        Restart from the new stream's tip instead: the durable transcript
+        still provides history, and the retained window of a rebuilt stream
+        must never be replayed into an already rendered transcript.
+        """
+        latest = int(getattr(view, "latest_sequence", 0) or 0)
+        if latest < self.state.last_sequence:
+            self.state.last_sequence = latest
+        else:
+            self.state.last_sequence = max(self.state.last_sequence, latest)
+        self.state.view = view
 
     def watch(self, *, after: int | None = None) -> Any:
         """Return a lease; leaving it closes only the subscription."""
@@ -204,11 +220,7 @@ class TUIRuntimeSessionFacade:
             # fenced turn id yet. Close with cancel_active=True so Esc can revoke
             # the reservation instead of leaving the UI stuck in "starting".
             if view is not None and view.status in {"queued", "starting", "cancelling"}:
-                result = await self.binding.service.close_session(
-                    CloseSessionCommand(self.binding.session, cancel_active=True)
-                )
-                self._closed = True
-                self.state.view = None
+                result = await self.close(cancel_active=True)
                 return bool(result.closed or result.cancellation_requested)
             return False
         return await self.binding.service.cancel_turn(
@@ -256,4 +268,8 @@ class TUIRuntimeSessionFacade:
         )
         self._closed = True
         self.state.view = None
+        if getattr(result, "closed", False):
+            # The runtime — and with it the event stream this cursor belongs to —
+            # is gone, so the next open starts a fresh stream at sequence 0.
+            self.state.last_sequence = 0
         return result

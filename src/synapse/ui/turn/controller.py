@@ -890,22 +890,21 @@ class TurnController:
         if facade is None:
             return
         usage = getattr(status_update, "usage", None)
-        facade.state.view = SessionView(
-            project_id=project_id,
-            thread_id=thread_id,
-            status=str(getattr(status_update, "status", "idle") or "idle"),
-            active_turn_id=getattr(status_update, "active_turn_id", None),
-            latest_sequence=int(getattr(status_update, "latest_sequence", 0) or 0),
-            usage=UsageView(
-                input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-                output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-                cache_tokens=int(getattr(usage, "cache_tokens", 0) or 0),
-            ),
-            last_error=getattr(status_update, "last_error", None),
-            last_activity_at=str(getattr(status_update, "last_activity_at", "") or ""),
-        )
-        facade.state.last_sequence = max(
-            facade.state.last_sequence, facade.state.view.latest_sequence
+        facade.adopt_view(
+            SessionView(
+                project_id=project_id,
+                thread_id=thread_id,
+                status=str(getattr(status_update, "status", "idle") or "idle"),
+                active_turn_id=getattr(status_update, "active_turn_id", None),
+                latest_sequence=int(getattr(status_update, "latest_sequence", 0) or 0),
+                usage=UsageView(
+                    input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                    output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+                    cache_tokens=int(getattr(usage, "cache_tokens", 0) or 0),
+                ),
+                last_error=getattr(status_update, "last_error", None),
+                last_activity_at=str(getattr(status_update, "last_activity_at", "") or ""),
+            )
         )
 
     def _on_session_status_ui(self, status_update: Any) -> None:

@@ -5,8 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from synapse.runtime.service import CloseSessionCommand, SessionView, UsageView
+from synapse.runtime.service import (
+    CloseSessionCommand,
+    LocalAgentRuntimeService,
+    SessionView,
+    UsageView,
+)
+from synapse.runtime.sessions import RuntimeManager, SessionRuntime
 from synapse.runtime.sessions.ref import SessionRef
+from synapse.runtime.streaming import EVENT_VERSION, TextPayload, TurnEvent, TurnEventKind
 from synapse.ui.turn.service_session import (
     TUIRuntimeSessionFacade,
     TUISessionBinding,
@@ -144,3 +151,135 @@ def test_watch_widens_the_overflow_kill_threshold() -> None:
 
     assert calls == [(REF, 42, _TUI_EVENT_QUEUE_SIZE)]
     assert _TUI_EVENT_QUEUE_SIZE == _MAX_QUEUE_SIZE
+
+
+def _view(latest_sequence: int) -> SessionView:
+    return SessionView("project", "thread", "idle", None, latest_sequence, UsageView(), None, "")
+
+
+def test_adopt_view_resets_the_cursor_when_the_stream_was_rebuilt() -> None:
+    """A lower ``latest_sequence`` proves a new broker generation."""
+    facade = TUIRuntimeSessionFacade(TUISessionBinding(REF, object()))
+
+    facade.adopt_view(_view(7))
+    facade.adopt_view(_view(9))
+    assert facade.state.last_sequence == 9
+
+    facade.adopt_view(_view(0))
+    assert facade.state.last_sequence == 0
+    assert facade.state.view.latest_sequence == 0
+
+
+def test_reopened_session_watches_from_the_new_stream_tip() -> None:
+    """A rebuilt stream must not be resumed with the previous stream's cursor."""
+    cursors: list[int] = []
+
+    class Service:
+        def __init__(self) -> None:
+            self.latest = 5
+
+        async def open_session(self, command):
+            del command
+            return SimpleNamespace(view=_view(self.latest))
+
+        def watch_events(self, session, *, after=0, queue_size=0):
+            del session, queue_size
+            cursors.append(after)
+            return object()
+
+    service = Service()
+    facade = TUIRuntimeSessionFacade(TUISessionBinding(REF, service))
+
+    asyncio.run(facade.ensure_open())
+    facade.watch()
+    service.latest = 0  # the runtime was closed and reopened: fresh broker
+    asyncio.run(facade.ensure_open())
+    facade.watch()
+
+    assert cursors == [5, 0]
+
+
+def test_close_releases_the_cursor_only_when_the_runtime_is_gone() -> None:
+    results = iter(
+        [
+            SimpleNamespace(closed=True, cancellation_requested=False),
+            SimpleNamespace(closed=False, cancellation_requested=False),
+        ]
+    )
+
+    class Service:
+        async def close_session(self, command):
+            del command
+            return next(results)
+
+    facade = TUIRuntimeSessionFacade(TUISessionBinding(REF, Service()))
+
+    facade.state.last_sequence = 9
+    asyncio.run(facade.close(cancel_active=True))
+    assert facade.state.last_sequence == 0
+
+    facade.state.last_sequence = 4
+    asyncio.run(facade.close(cancel_active=True))
+    assert facade.state.last_sequence == 4
+
+
+def _live_service() -> tuple[RuntimeManager, LocalAgentRuntimeService]:
+    project_id = REF.project_id
+
+    def session_factory(*, thread_id: str, agent: object, settings: object) -> SessionRuntime:
+        return SessionRuntime(
+            thread_id=thread_id,
+            project_id=project_id,
+            agent=agent,
+            settings=settings,
+        )
+
+    manager = RuntimeManager(
+        settings=SimpleNamespace(max_concurrency=2, model="test"),
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        session_factory=session_factory,
+        max_concurrent_sessions=4,
+        project_id=project_id,
+    )
+    service = LocalAgentRuntimeService(
+        lambda requested: manager if requested == project_id else None
+    )
+    return manager, service
+
+
+def test_close_then_reopen_never_watches_with_a_stale_cursor() -> None:
+    """Regression for ``errors-<pid>.log`` ``tui.submit`` InvalidCursorError.
+
+    Esc-cancelling closes the session runtime while the facade survives, so the
+    next prompt used to resume a cursor of the destroyed stream: the service
+    rejected it as out of range and the turn was never submitted.
+    """
+    manager, service = _live_service()
+    facade = TUIRuntimeSessionFacade(TUISessionBinding(REF, service))
+
+    async def run() -> None:
+        await facade.ensure_open()
+        session = manager.get_session(REF.thread_id)
+        assert session is not None
+        session.broker.emit(
+            TurnEvent(
+                version=EVENT_VERSION,
+                thread_id=REF.thread_id,
+                turn_id="turn-1",
+                sequence=1,
+                kind=TurnEventKind.ANSWER_DELTA,
+                payload=TextPayload("hi"),
+            )
+        )
+        await facade.get()
+        assert facade.state.last_sequence == 1
+
+        await facade.close(cancel_active=True)
+        await facade.ensure_open()
+        assert facade.state.last_sequence == 0
+        async with facade.watch():
+            pass
+
+        await manager.shutdown()
+
+    asyncio.run(run())

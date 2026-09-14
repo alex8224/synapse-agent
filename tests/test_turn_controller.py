@@ -15,11 +15,12 @@ from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.agent_loop.request import build_turn_request
 from synapse.runtime.service import SessionView, UsageView
 from synapse.runtime.sessions import SessionStatus
+from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.steer import SteerQueue
 from synapse.sessions.transcript import UiTranscriptEvent
 from synapse.sessions.transcript_projection import TranscriptProjection
 from synapse.ui.turn.controller import TurnController
-from synapse.ui.turn.service_session import TUIRuntimeSessionFacade
+from synapse.ui.turn.service_session import TUIRuntimeSessionFacade, TUISessionBinding
 
 # Service-only test doubles below intentionally use facades rather than execution runtimes.
 
@@ -516,13 +517,10 @@ def test_status_update_refreshes_facade_for_cancel_gate() -> None:
     app = _FakeApp()
     app._current_project_id = lambda: "p"
     controller = TurnController(app)
-    facade = SimpleNamespace(
-        binding=SimpleNamespace(session=SimpleNamespace(project_id="p", thread_id="t1")),
-        state=SimpleNamespace(
-            view=SessionView("p", "t1", "idle", None, 0, UsageView(), None, ""),
-            last_sequence=0,
-        ),
+    facade = TUIRuntimeSessionFacade(
+        TUISessionBinding(SessionRef("p", "t1"), service=SimpleNamespace())
     )
+    facade.state.view = SessionView("p", "t1", "idle", None, 0, UsageView(), None, "")
     controller._service_sessions["p:t1"] = facade
 
     controller._on_session_status_changed(
