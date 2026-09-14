@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useRef } from 'react';
+import {
+  BrainCircuit20Regular,
+  Sparkle20Regular,
+  Wrench20Regular,
+  SpinnerIos20Regular,
+  Warning20Regular,
+  Info20Regular,
+  ArrowSort20Regular,
+  DismissCircle20Regular,
+} from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   expandHint,
-  thoughtIcon,
   thoughtLabel,
-  toolGroupIcon,
   toolGroupLabel,
   toolStatusLabel,
 } from '../stores/transcriptLabels.ts';
@@ -64,9 +72,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} data-turn-id={m.id} className="flex justify-end">
         <div className="flex max-w-[80%] flex-col items-end gap-1.5">
           {m.content !== '' && (
-            // No bubble: the side it sits on is the role, and the frame
-            // only added noise around the text.
-            <div className="whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900">
+            <div className="ui-user-bubble whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900">
               {m.content}
             </div>
           )}
@@ -85,21 +91,20 @@ const TranscriptRow = React.memo(function TranscriptRow({
   if (m.type === 'thought') {
     return (
       <div key={m.id} className="max-w-[85%]">
-        {/* Run log, not content: one muted line that only grows into a
-            panel when it is opened, so the answer stays the loudest
-            thing in the column. */}
         <div
           onClick={() => handleToggleExpand(m.id)}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 font-mono text-[11px] text-gray-500 transition-colors hover:text-gray-900"
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line/50 bg-surface/40 px-2.5 py-1 font-mono text-[11px] text-gray-600 backdrop-blur-sm transition-all hover:bg-surface/70 hover:text-gray-900 shadow-card"
         >
-          <span className="material-symbols-outlined text-[13px] text-gray-400">
-            {thoughtIcon(m.duration === 'streaming')}
-          </span>
+          {m.duration === 'streaming' ? (
+            <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
+          ) : (
+            <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
+          )}
           <span>{thoughtLabel(m.duration)}</span>
           <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
         </div>
         {m.expanded && (
-          <div className="mt-1.5 border-l-2 border-gray-200 pl-3 text-sm text-gray-600">
+          <div className="mt-1.5 rounded-card border border-line/60 bg-surface/50 backdrop-blur-md p-3 text-sm text-gray-700 shadow-card">
             <Markdown text={m.content ?? ''} />
           </div>
         )}
@@ -123,21 +128,15 @@ const TranscriptRow = React.memo(function TranscriptRow({
         <div
           onClick={() => handleToggleExpand(m.id)}
           title={expanded ? '收起工具详情' : '展开工具详情'}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 font-mono text-[11px] text-gray-600 transition-colors hover:text-gray-900"
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line/50 bg-surface/40 px-2.5 py-1 font-mono text-[11px] text-gray-600 backdrop-blur-sm transition-all hover:bg-surface/70 hover:text-gray-900 shadow-card"
         >
-          {/* The batch's own outcome, so a failed or running batch is legible
-              without reading the counters next to it. */}
-          <span
-            className={`material-symbols-outlined text-[14px] ${
-              failed > 0
-                ? 'text-red-500'
-                : running > 0
-                  ? 'animate-spin text-blue-500'
-                  : 'text-gray-400'
-            }`}
-          >
-            {toolGroupIcon({ running, failed })}
-          </span>
+          {failed > 0 ? (
+            <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
+          ) : running > 0 ? (
+            <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '14px' }} />
+          ) : (
+            <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
+          )}
           <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
           {running > 0 && (
             <span className="font-medium text-blue-600">{running} running</span>
@@ -156,14 +155,12 @@ const TranscriptRow = React.memo(function TranscriptRow({
             {toolList.map((t) => (
               <div
                 key={t.id}
-                className={`rounded border px-2.5 py-1.5 font-mono text-[11px] ${
-                  t.error ? 'border-red-200 bg-red-50/60' : 'border-gray-200 bg-surface'
+                className={`rounded-control border px-2.5 py-1.5 font-mono text-[11px] backdrop-blur-md shadow-card ${
+                  t.error ? 'border-red-200/80 bg-red-50/70' : 'border-line/70 bg-surface/70'
                 }`}
               >
                 <div className="flex items-center space-x-2">
-                  <span className="material-symbols-outlined text-[13px] text-gray-500">
-                    {t.icon}
-                  </span>
+                  <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
                   <span className="font-medium text-gray-900">{t.label || t.name}</span>
                   {t.sub && (
                     <span className="rounded bg-gray-100 px-1 text-[10px] text-gray-500">
@@ -215,15 +212,17 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div
         key={m.id}
-        className={`max-w-[85%] border-l-2 px-2.5 py-1 font-mono text-[11px] leading-relaxed ${
+        className={`flex max-w-[85%] items-start gap-1.5 rounded-control border-l-2 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed backdrop-blur-sm ${
           warning
-            ? 'border-amber-300 bg-amber-50/60 text-amber-800'
-            : 'border-gray-200 text-gray-500'
+            ? 'border-amber-400 bg-amber-50/70 text-amber-800'
+            : 'border-blue-400 bg-surface/60 text-gray-600'
         }`}
       >
-        <span className="material-symbols-outlined align-middle text-[13px]">
-          {warning ? 'warning' : 'info'}
-        </span>{' '}
+        {warning ? (
+          <Warning20Regular aria-hidden="true" className="shrink-0 text-amber-600" style={{ fontSize: '14px' }} />
+        ) : (
+          <Info20Regular aria-hidden="true" className="shrink-0 text-blue-600" style={{ fontSize: '14px' }} />
+        )}
         <span className="whitespace-pre-wrap break-all">{m.content}</span>
       </div>
     );
@@ -421,9 +420,9 @@ export const Transcript: React.FC = () => {
             <button
               onClick={handleLoadEarlier}
               disabled={historyLoading}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded border border-gray-200 bg-canvas text-gray-600 text-xs font-mono hover:bg-gray-200/70 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded border border-line/60 bg-surface/60 backdrop-blur-md text-gray-600 text-xs font-mono hover:bg-surface/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none shadow-card"
             >
-              <span className="material-symbols-outlined text-[14px]">unfold_more</span>
+              <ArrowSort20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '14px' }} />
               <span>{historyLoading ? '加载更早历史中…' : '加载更早历史'}</span>
             </button>
           </div>

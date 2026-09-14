@@ -106,8 +106,8 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column ui-composer pointer-events-auto flex flex-col rounded-card border bg-surface shadow-card transition-colors ${
-          dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-line'
+        className={`console-column ui-composer pointer-events-auto flex flex-col rounded-card border material-chrome shadow-card transition-all duration-150 ${
+          dragging ? 'border-blue-500 ring-2 ring-blue-200/60' : 'border-line/70'
         }`}
       >
         {attachments.length > 0 && (

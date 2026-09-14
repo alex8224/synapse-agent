@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Flash20Regular, ChevronDown16Regular, Flag20Regular, Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -178,15 +179,9 @@ export const BottomBar: React.FC = () => {
               title="管理 MCP 服务器 (F5)"
               className="flex items-center gap-1 cursor-pointer transition-colors hover:text-gray-900"
             >
-              <span
-                className={`material-symbols-outlined text-[14px] ${
-                  mcpServers.some((s) => s.enabled) ? 'text-green-600' : 'text-gray-400'
-                }`}
-              >
-                bolt
-              </span>
+              <Flash20Regular aria-hidden="true" className={`shrink-0 ${mcpServers.some((s) => s.enabled) ? 'text-green-600' : 'text-gray-400'}`} style={{ fontSize: '15px' }} />
               <span className="text-gray-700">mcp: {mcpStatus}</span>
-              <span className="material-symbols-outlined text-[14px] text-gray-400">expand_more</span>
+              <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" />
             </button>
             {showMcpPanel && (
               <McpPanel onClose={() => setShowMcpPanel(false)} />
@@ -205,9 +200,7 @@ export const BottomBar: React.FC = () => {
             title={goal === null ? '设置目标 (F6)' : goalTooltip(goal)}
             className={`flex min-w-0 items-center gap-1 cursor-pointer transition-colors hover:text-gray-900 ${goalClass}`}
           >
-            <span className="material-symbols-outlined text-[14px] text-gray-500">
-              flag
-            </span>
+            <Flag20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '15px' }} />
             <span className="max-w-[18rem] truncate">
               {goalText === '' ? 'goal: 未设置' : goalText}
             </span>
@@ -248,7 +241,7 @@ export const BottomBar: React.FC = () => {
         // opened it.
         <Portal>
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4 scrim-in"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm p-4 scrim-in"
           onClick={() => setShowHelp(false)}
         >
           <div
@@ -260,9 +253,9 @@ export const BottomBar: React.FC = () => {
               <button
                 onClick={() => setShowHelp(false)}
                 title="关闭 (Esc)"
-                className="material-symbols-outlined cursor-pointer text-[18px] text-gray-400 hover:text-gray-600"
+                className="ui-icon-button ui-compact text-gray-400 hover:text-gray-600"
               >
-                close
+                <Dismiss20Regular aria-hidden="true" />
               </button>
             </div>
             <div className="space-y-1.5 font-mono text-xs text-gray-600">
@@ -271,9 +264,9 @@ export const BottomBar: React.FC = () => {
                   key={row.keys}
                   className="flex items-center justify-between border-b border-gray-50 py-1 last:border-b-0"
                 >
-                  <kbd className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500">
+                  <span className="ui-kbd">
                     {row.keys}
-                  </kbd>
+                  </span>
                   <span className="font-sans">{row.label}</span>
                 </div>
               ))}

@@ -106,7 +106,7 @@ export const TopBar: React.FC = () => {
               type="button"
               onClick={() => setExplorerOpen(true)}
               title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              className="ui-button min-w-0 text-xs"
+              className="ui-button min-w-0 text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
             >
               <Branch20Regular aria-hidden="true" />
               <span className="max-w-[14rem] truncate">{gitBranch}</span>
@@ -127,7 +127,7 @@ export const TopBar: React.FC = () => {
               onClick={() => setExplorerOpen(true)}
               title="打开 Git Explorer（只读：变更文件与逐文件 diff）"
               aria-label="查看 Git 变更"
-              className="ui-button shrink-0 font-numeric text-xs"
+              className="ui-button shrink-0 font-numeric text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
             >
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
@@ -151,7 +151,7 @@ export const TopBar: React.FC = () => {
           a session name instead of a fragment of it -- and `min-w-0` lets a
           narrow window shrink the chip rather than push the side tracks. */}
       <div
-        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control border border-line bg-surface px-3 py-1.5 text-gray-900"
+        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control border border-line/60 bg-surface/60 backdrop-blur-md px-3 py-1.5 text-gray-900 shadow-card"
         title={sessionTitle}
       >
         <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />

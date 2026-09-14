@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Branch20Regular, ArrowSync20Regular, Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
@@ -95,17 +96,17 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     // anchor its `fixed` box to itself.
     <Portal>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 scrim-in"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm scrim-in"
         onClick={onClose}
       >
       <div
         role="dialog"
         aria-label="Git Explorer"
         onClick={(event) => event.stopPropagation()}
-        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-gray-200 material-flyout flyout-in text-left shadow-flyout"
+        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-line/70 material-flyout flyout-in text-left shadow-flyout"
       >
         <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2">
-          <span className="material-symbols-outlined text-[18px] text-gray-500">fork_right</span>
+          <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
           <span className="text-sm font-semibold text-gray-900">Git Explorer</span>
           <span className="font-mono text-xs text-gray-500">{status?.branch ?? 'git'}</span>
           {status !== null && (
@@ -133,17 +134,17 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             onClick={() => void loadStatus()}
             disabled={busy}
             title="刷新"
-            className="material-symbols-outlined cursor-pointer text-[17px] text-gray-500 hover:text-gray-900 disabled:opacity-40"
+            className="ui-icon-button ui-compact text-gray-500 hover:text-gray-900 disabled:opacity-40"
           >
-            refresh
+            <ArrowSync20Regular aria-hidden="true" className={busy ? 'animate-spin' : ''} />
           </button>
           <button
             type="button"
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined cursor-pointer text-[17px] text-gray-400 hover:text-gray-700"
+            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
           >
-            close
+            <Dismiss20Regular aria-hidden="true" />
           </button>
         </div>
 

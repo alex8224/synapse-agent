@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -143,11 +144,11 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
     // (an acrylic ancestor anchors `fixed` descendants to itself).
     <Portal>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4 scrim-in"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm p-4 scrim-in"
         onClick={onClose}
       >
       <div
-        className="w-full max-w-md space-y-2 rounded-card border border-gray-200 material-flyout flyout-in p-5 font-sans shadow-flyout"
+        className="w-full max-w-md space-y-2 rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
@@ -155,9 +156,9 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
           <button
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined cursor-pointer text-[18px] text-gray-400 hover:text-gray-600"
+            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-600"
           >
-            close
+            <Dismiss20Regular aria-hidden="true" />
           </button>
         </div>
 

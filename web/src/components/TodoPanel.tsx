@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { TasksApp20Regular, ChevronDown16Regular, ChevronUp16Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { latestTodos, todoPanelLabel, type TodoKind } from '../stores/todoView.ts';
 
@@ -25,23 +26,21 @@ export const TodoPanel: React.FC = () => {
 
   return (
     <div className="absolute right-2 top-2 z-20 w-72 max-w-[calc(100%-1rem)] select-none">
-      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-gray-200 shadow-card">
+      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-line/70 shadow-flyout">
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
           title={collapsed ? '展开 todo' : '收起 todo'}
           className="flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-gray-50"
         >
-          <span className="material-symbols-outlined text-[15px] text-gray-500">checklist</span>
+          <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent" style={{ fontSize: '15px' }} />
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-700">
             {todoPanelLabel(view)}
           </span>
           {view.omitted > 0 && (
             <span className="shrink-0 font-mono text-[10px] text-gray-400">+{view.omitted}</span>
           )}
-          <span className="material-symbols-outlined text-[16px] text-gray-400">
-            {collapsed ? 'expand_more' : 'expand_less'}
-          </span>
+          {collapsed ? <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" /> : <ChevronUp16Regular aria-hidden="true" className="shrink-0 text-gray-400" />}
         </button>
         {!collapsed && (
           <ul className="max-h-64 space-y-0.5 overflow-y-auto border-t border-gray-100 px-2.5 py-1.5">

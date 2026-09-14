@@ -9,8 +9,8 @@
     font-family: var(--font-ui);
     font-size: var(--type-ui);
     line-height: 20px;
-    transition: background-color var(--motion-fast) var(--motion-ease),
-      color var(--motion-fast) var(--motion-ease);
+    transition: all var(--motion-fast) var(--motion-ease);
+    user-select: none;
   }
   .ui-button, .ui-icon-button {
     display: inline-flex;
@@ -31,11 +31,28 @@
     color: rgb(var(--gray-900));
   }
   .ui-button:active:not(:disabled), .ui-icon-button:active:not(:disabled),
-  .ui-menu-item:active:not(:disabled) { background-color: rgb(var(--control-pressed)); }
-  .ui-primary { background-color: rgb(var(--accent)); color: rgb(var(--on-accent)); }
-  .ui-primary:hover:not(:disabled) { background-color: rgb(var(--blue-700)); color: rgb(var(--on-accent)); }
-  .ui-primary:active:not(:disabled) { background-color: rgb(var(--blue-700)); }
-  .ui-danger { background-color: rgb(var(--danger)); color: rgb(var(--on-accent)); }
+  .ui-menu-item:active:not(:disabled) {
+    background-color: rgb(var(--control-pressed));
+    transform: scale(0.97);
+  }
+  .ui-primary {
+    background-color: rgb(var(--accent));
+    color: rgb(var(--on-accent));
+    box-shadow: 0 1px 3px rgba(var(--accent) / 0.3);
+  }
+  .ui-primary:hover:not(:disabled) {
+    background-color: rgb(var(--blue-700));
+    color: rgb(var(--on-accent));
+    box-shadow: 0 3px 8px rgba(var(--accent) / 0.35);
+  }
+  .ui-primary:active:not(:disabled) {
+    background-color: rgb(var(--blue-700));
+    transform: scale(0.97);
+  }
+  .ui-danger {
+    background-color: rgb(var(--danger));
+    color: rgb(var(--on-accent));
+  }
   .ui-danger:hover:not(:disabled), .ui-danger:active:not(:disabled) {
     background-color: rgb(var(--red-700)); color: rgb(var(--on-accent));
   }
@@ -53,6 +70,7 @@
     font-size: var(--type-ui);
     line-height: 20px;
     padding: 4px 8px;
+    transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
   }
   .ui-field:focus { border-bottom-color: rgb(var(--accent)); }
   .ui-field:disabled { color: rgb(var(--gray-400)); cursor: not-allowed; }
@@ -60,14 +78,19 @@
     font-family: var(--font-ui); font-size: var(--type-caption);
     line-height: 16px; font-weight: 600; color: rgb(var(--gray-600));
   }
-  .ui-nav-row { position: relative; }
+  .ui-nav-row {
+    position: relative;
+    border-radius: var(--radius-control);
+    transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
+  }
   .ui-nav-row[data-selected='true'] {
     background-color: rgb(var(--selection-fill)); color: rgb(var(--gray-900));
     font-weight: 600;
   }
   .ui-nav-row[data-selected='true']::before {
-    content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
-    width: 3px; border-radius: var(--radius-control); background: rgb(var(--accent));
+    content: ''; position: absolute; left: 2px; top: 6px; bottom: 6px;
+    width: 3px; border-radius: 9999px; background: rgb(var(--accent));
+    box-shadow: 0 0 6px rgba(var(--accent) / 0.5);
   }
   .ui-menu-item { display: block; width: 100%; padding: 6px 8px; text-align: left; }
   .ui-menu-item[aria-pressed='true'] { background: rgb(var(--selection-fill)); font-weight: 600; }
@@ -91,6 +114,32 @@
   .ui-model-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ui-session-title { font-family: var(--font-ui); font-size: var(--type-ui); }
   .ui-settings-title { font-size: var(--type-title); line-height: 24px; font-weight: 600; }
+
+  .ui-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 14px;
+    border-radius: var(--radius-control);
+    background-color: rgb(var(--surface-sunken) / 0.7);
+    border: 1px solid rgb(var(--line));
+    box-shadow: 0 1px 0 0 rgba(0, 0, 0, 0.05);
+    color: rgb(var(--gray-600));
+  }
+
+  .ui-user-bubble {
+    background-color: rgb(var(--blue-50) / 0.75);
+    border: 1px solid rgb(var(--blue-100) / 0.85);
+    border-radius: 14px 14px 3px 14px;
+    padding: 9px 14px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  }
   @media (prefers-reduced-motion: reduce) {
     .ui-button, .ui-icon-button, .ui-nav-row, .ui-menu-item { transition: none; }
   }
@@ -311,13 +360,14 @@
     /* Mica: a browser has no desktop wallpaper to sample, so the window gets a
        faint brand wash in its place.  The chrome and the two window fills are
        translucent over it, which is what makes the material visible at rest. */
-    --mica-backdrop: radial-gradient(120% 140% at 12% 0%, rgb(var(--f-brand-soft) / 0.75), transparent 62%),
-      linear-gradient(165deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
-    --material-canvas: rgb(var(--surface-canvas) / 0.55);
-    --material-pane: rgb(var(--surface) / 0.72);
-    --material-chrome: rgb(var(--surface) / 0.8);
-    --material-flyout: rgb(var(--surface) / 0.85);
-    --material-blur: blur(30px);
+    --mica-backdrop: radial-gradient(135% 120% at 8% 0%, rgba(200, 225, 255, 0.88) 0%, rgba(230, 240, 255, 0.5) 45%, transparent 75%),
+      radial-gradient(110% 110% at 92% 15%, rgba(215, 235, 255, 0.65) 0%, transparent 60%),
+      linear-gradient(180deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
+    --material-canvas: rgb(var(--surface-canvas) / 0.45);
+    --material-pane: rgb(var(--surface) / 0.62);
+    --material-chrome: rgb(var(--surface) / 0.70);
+    --material-flyout: rgb(var(--surface) / 0.82);
+    --material-blur: blur(20px) saturate(180%);
     --motion-fast: 150ms;           /* durationFast */
     --motion-normal: 200ms;         /* durationNormal */
     --motion-ease: cubic-bezier(0, 0, 0, 1);   /* curveDecelerateMid */
@@ -421,13 +471,14 @@
     /* Mica: a browser has no desktop wallpaper to sample, so the window gets a
        faint brand wash in its place.  The chrome and the two window fills are
        translucent over it, which is what makes the material visible at rest. */
-    --mica-backdrop: radial-gradient(120% 140% at 12% 0%, rgb(var(--f-brand-soft) / 0.75), transparent 62%),
-      linear-gradient(165deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
-    --material-canvas: rgb(var(--surface-canvas) / 0.55);
-    --material-pane: rgb(var(--surface) / 0.72);
-    --material-chrome: rgb(var(--surface) / 0.8);
-    --material-flyout: rgb(var(--surface) / 0.85);
-    --material-blur: blur(30px);
+    --mica-backdrop: radial-gradient(135% 120% at 8% 0%, rgba(16, 50, 88, 0.85) 0%, rgba(24, 34, 52, 0.45) 45%, transparent 75%),
+      radial-gradient(110% 110% at 92% 15%, rgba(22, 58, 96, 0.6) 0%, transparent 60%),
+      linear-gradient(180deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
+    --material-canvas: rgb(var(--surface-canvas) / 0.45);
+    --material-pane: rgb(var(--surface) / 0.58);
+    --material-chrome: rgb(var(--surface) / 0.68);
+    --material-flyout: rgb(var(--surface) / 0.80);
+    --material-blur: blur(20px) saturate(180%);
     --motion-fast: 150ms;
     --motion-normal: 200ms;
     --motion-ease: cubic-bezier(0, 0, 0, 1);
@@ -548,11 +599,13 @@ body {
     background-color: var(--material-chrome);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.25);
   }
   .material-flyout {
     background-color: var(--material-flyout);
     -webkit-backdrop-filter: var(--material-blur);
     backdrop-filter: var(--material-blur);
+    box-shadow: var(--shadow-flyout), inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
   }
 
   /*
@@ -613,7 +666,7 @@ body {
     these two rules must sit in this layer: the card also carries the `border-line`
     utility, and a layer always beats a more specific selector from an earlier one.
   */
-  .ui-composer:focus-within { border-color: rgb(var(--accent)); }
+  .ui-composer:focus-within { border-color: rgb(var(--accent)); box-shadow: 0 0 0 1px rgb(var(--accent)), 0 8px 24px rgba(var(--accent) / 0.12), var(--shadow-card); }
   .ui-composer-input:focus-visible { outline: none; }
   .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 450; }

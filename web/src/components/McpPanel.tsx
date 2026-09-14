@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Dismiss16Regular, ChevronUp16Regular, ChevronDown16Regular } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper.ts';
@@ -140,9 +141,9 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <button
             onClick={onClose}
             title="关闭 (Esc)"
-            className="material-symbols-outlined cursor-pointer text-[16px] text-gray-400 hover:text-gray-700"
+            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
           >
-            close
+            <Dismiss16Regular aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -206,9 +207,9 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                           setExpanded((prev) => ({ ...prev, [srv.name]: !open }));
                         }}
                         title={open ? '收起工具列表' : '展开工具列表'}
-                        className="material-symbols-outlined cursor-pointer text-[16px] text-gray-400 hover:text-gray-700"
+                        className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
                       >
-                        {open ? 'expand_less' : 'expand_more'}
+                        {open ? <ChevronUp16Regular aria-hidden="true" /> : <ChevronDown16Regular aria-hidden="true" />}
                       </button>
                     )}
                   </div>
