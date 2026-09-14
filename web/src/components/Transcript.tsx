@@ -317,7 +317,9 @@ export const Transcript: React.FC = () => {
         what makes it line up with the composer's `console-column` below. */}
     <div
       ref={scrollerRef}
-      className="console-gutter flex-1 overflow-y-auto py-6 pb-36 font-sans [scrollbar-gutter:stable_both-edges]"
+      // No bottom padding for a floating composer: the composer is a sibling row,
+      // so the scrollport's bottom edge is the last visible line.
+      className="console-gutter flex-1 overflow-y-auto py-6 font-sans [scrollbar-gutter:stable_both-edges]"
     >
       <div className="console-column space-y-5">
         {historyAvailable === false && (

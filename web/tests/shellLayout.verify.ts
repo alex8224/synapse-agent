@@ -206,22 +206,19 @@ function setViewport(client: CdpClient, page: PageHandle, width: number, height:
 /**
  * Every reading column must sit on the composer card.
  *
- * Without a scrollbar the edges match exactly.  With one, the transcript's
- * `scrollbar-gutter: stable both-edges` insets its column symmetrically by the
- * scrollbar width, so the invariant is: same centre line, and never outside the
- * card (one scrollbar width per side at most, hence the 20px slack: the Windows
- * scrollbar is 15-17px).
+ * Both reading wrappers reserve the same scrollbar gutter
+ * (`scrollbar-gutter: stable both-edges`), so the transcript column and the card
+ * share both edges -- with or without a scrollbar -- instead of only the centre
+ * line.  That is what makes the composer stop looking a scrollbar wider than the
+ * text above it.
  */
 function checkReadingColumns(snapshot: Snapshot): void {
-  const cardCentre = snapshot.card.left + snapshot.card.right
+  const card = snapshot.card
   for (const column of snapshot.columns) {
-    const inside =
-      column.left >= snapshot.card.left - 20 && column.right <= snapshot.card.right + 20
-    check(`column at x=${column.left} stays inside the composer edges`, inside, true)
     check(
-      `column at x=${column.left} shares the composer centre line`,
-      column.left + column.right,
-      cardCentre,
+      `column at x=${column.left} shares the composer edges`,
+      [column.left, column.right],
+      [card.left, card.right],
     )
   }
 }
@@ -233,12 +230,24 @@ function checkReadingColumns(snapshot: Snapshot): void {
  * the pane rather than a `rem` cap: the check compares against 80% of the
  * *measured* pane at this viewport, so a frozen column fails as soon as the
  * window grows.
+ *
+ * Both reading wrappers reserve a scrollbar gutter per side
+ * (`scrollbar-gutter: stable both-edges`), so the column is that 80% minus the
+ * two reserved gutters -- measured from the wrapper rather than assumed, since
+ * the scrollbar width is platform-specific.
  */
 function checkDesktopColumn(snapshot: Snapshot): void {
+  const { clientWidth, paddingLeft, paddingRight } = snapshot.composerBox
   const expected = Math.round(snapshot.pane.width * 0.8)
+  const column = Math.round(clientWidth - paddingLeft - paddingRight)
   check(
     `desktop column takes ~80% of the ${snapshot.pane.width}px workspace`,
-    Math.abs(snapshot.card.width - expected) <= 2,
+    snapshot.card.width <= expected + 2,
+    true,
+  )
+  check(
+    `desktop column fills the ${column}px gutter-and-scrollbar-inset box`,
+    Math.abs(snapshot.card.width - column) <= 2,
     true,
   )
 }
@@ -248,10 +257,17 @@ function checkDesktopColumn(snapshot: Snapshot): void {
  * 16px), so the column fills the rest of the pane.
  */
 function checkNarrowColumn(snapshot: Snapshot): void {
+  const { clientWidth, paddingLeft, paddingRight } = snapshot.composerBox
   const expected = snapshot.pane.width - 2 * 32
+  const column = Math.round(clientWidth - paddingLeft - paddingRight)
   check(
     `narrow column fills the ${expected}px gutter-inset workspace`,
-    Math.abs(snapshot.card.width - expected) <= 2,
+    snapshot.card.width <= expected + 2,
+    true,
+  )
+  check(
+    `narrow column fills the ${column}px gutter-and-scrollbar-inset box`,
+    Math.abs(snapshot.card.width - column) <= 2,
     true,
   )
 }
@@ -370,6 +386,13 @@ async function main(): Promise<void> {
     checkReadingColumns(wide)
     checkDesktopColumn(wide)
     check('composer sits above the status strip', wide.card.bottom <= wide.footer.top, true)
+    // The composer is the last row of the workspace column, not a card over the
+    // transcript: the newest streamed line has to be visible above it.
+    check(
+      'the composer sits below the transcript instead of over it',
+      wide.scroller !== null && wide.card.top >= wide.scroller.rect.bottom - 1,
+      true,
+    )
     check('no horizontal overflow', wide.scrollWidth, wide.viewport.w)
     // The session title sits on the centre line of the workspace column: both
     // header side tracks are equal `1fr`, so the middle track cannot drift.  A

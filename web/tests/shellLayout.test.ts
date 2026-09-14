@@ -124,16 +124,42 @@ test('the transcript and the composer share one reading width', () => {
   assert.ok(banner.includes('console-gutter'), 'the diagnostics notice must use the same gutters');
 });
 
-test('the composer is pinned to the bottom of the workspace column', () => {
-  assert.ok(
+test('the composer is the last row of the workspace column, not a floating card', () => {
+  // A floating composer covered the bottom of the transcript: the newest streamed
+  // line ended up behind the input, so "scrolled to the bottom" did not show it.
+  assert.equal(
     composer.includes('absolute bottom-0'),
-    'the composer must sit on the bottom edge of the workspace column',
+    false,
+    'the composer must not be positioned over the transcript',
+  );
+  assert.ok(
+    composer.includes('shrink-0'),
+    'the composer must take its own height instead of overlaying the scroller',
   );
   assert.equal(
     composer.includes('bottom-10'),
     false,
     'the composer must not float above a gap left by the old full-width footer',
   );
+  // The padding that used to keep content clear of the floating card is gone, so
+  // the scrollport's bottom edge is the last visible line.
+  assert.equal(
+    transcript.includes('pb-36'),
+    false,
+    'the transcript must not reserve room for a floating composer any more',
+  );
+});
+
+test('the composer card lines up with the chat column', () => {
+  // Both reading wrappers reserve the same symmetric scrollbar gutter, so the
+  // transcript column and the composer card share their edges (the transcript
+  // used to be a scrollbar narrower, which read as a too-wide input).
+  for (const source of [transcript, composer]) {
+    assert.ok(
+      source.includes('[scrollbar-gutter:stable_both-edges]'),
+      'every reading wrapper must reserve the same scrollbar gutter',
+    );
+  }
 });
 
 test('the diagnostics notice is aligned with the reading column', () => {

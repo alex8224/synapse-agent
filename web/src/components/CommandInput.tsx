@@ -80,10 +80,13 @@ export const CommandInput: React.FC = () => {
   };
 
   return (
-    // Pinned to the bottom of the workspace column, in the same `console-gutter`
-    // wrapper and with the same `console-column` width the transcript uses, so
-    // the card's edges line up with the chat column above it.
-    <div className="console-gutter pointer-events-none absolute bottom-0 left-0 z-30 flex w-full justify-center pb-3">
+    // The last row of the workspace column, not a floating card: the transcript
+    // keeps its own height above it, so the newest streamed line is visible at the
+    // bottom of the scrollport instead of behind the input.  It keeps the shared
+    // gutters and the shared `console-column` width, and reserves the same
+    // scrollbar gutter the transcript does, so the card's edges line up with the
+    // chat column above it instead of being a scrollbar wider.
+    <div className="console-gutter pointer-events-none z-30 flex w-full shrink-0 justify-center overflow-y-hidden pb-3 [scrollbar-gutter:stable_both-edges]">
       <div
         onDragOver={(e) => {
           e.preventDefault();

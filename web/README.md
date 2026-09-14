@@ -14,15 +14,18 @@
   ——两侧等宽 `1fr` 使其**真正居中于工作区列**、不随左右内容宽度漂移、窄屏也不重叠，
   右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
   分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
-  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、固定在底部的 `CommandInput`，
-  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。
+  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、作为最后一行占位的 `CommandInput`，
+  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。输入区**不是**浮层：它占自己的一行，转录
+  滚动容器在其上方结束，因此自动跟随到底部时最新一行就在可见底边上（旧的 `absolute bottom-0`
+  浮层会把最新内容盖住，需要手动上滚才能看见）。
 
 聊天列与输入卡片共用同一套阅读几何（`src/index.css`）：外层 `.console-gutter` 负责留白，
 桌面端（≥ `lg`，1024px）每侧为工作区宽度的 10%，因此内层 `.console-column` 正好是工作区的
 **约 80%**，且**没有 `rem` 硬上限**，所以更宽的工作区会真的更宽、不会被锁死；窄屏每侧退回固定
-的 `2rem`，列宽近全宽。transcript 的滚动容器保留对称滚动条槽位
+的 `2rem`，列宽近全宽。transcript 的滚动容器与输入区外层**都**保留对称滚动条槽位
 （`[scrollbar-gutter:stable_both-edges]`），因此出现滚动条时聊天列两侧对称内缩一个滚动条
-宽度、中心线仍与输入卡片重合（不会向一侧偏移）。侧栏的会话树则相反：
+宽度，且聊天列与输入卡片始终**同宽同边**（只保留中心线重合会让输入卡片看起来比正文宽一个
+滚动条）。侧栏的会话树则相反：
 滚动可用但不显示滚动条（`src/index.css` 的 `.sidebar-scroll`，`scrollbar-width` +
 `-ms-overflow-style` + `::-webkit-scrollbar` 三族规则，按类名限定），240px 轨道边缘保持干净，
 且不影响 transcript 的可见滚动条。聊天区里的运行日志（thought / tools / info）是紧凑的次要
