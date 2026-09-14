@@ -125,9 +125,11 @@ export const TopBar: React.FC = () => {
 
       {/* Centre track: the open session, centred on the workspace column because
           both side tracks are equal `1fr`.  The chip is capped and truncates, so
-          a long title cannot widen its track past the cap. */}
+          a long title cannot widen its track past the cap -- wide enough to read
+          a session name instead of a fragment of it -- and `min-w-0` lets a
+          narrow window shrink the chip rather than push the side tracks. */}
       <div
-        className="flex min-w-0 max-w-[20rem] items-center gap-1.5 rounded bg-[#f3f4f5] px-2 py-1 text-gray-900"
+        className="flex min-w-0 max-w-[32rem] items-center gap-1.5 rounded bg-[#f3f4f5] px-2 py-1 text-gray-900"
         title={sessionTitle}
       >
         <span className="material-symbols-outlined shrink-0 text-[15px] text-gray-500">forum</span>

@@ -55,7 +55,7 @@ test('the session title is the centred middle track', () => {
     tab.includes('truncate'),
     'a long title must truncate instead of pushing the other chips out',
   );
-  assert.ok(tab.includes('max-w-[20rem]'), 'the title track must be capped so it cannot drift');
+  assert.ok(tab.includes('max-w-[32rem]'), 'the title track must be capped so it cannot drift');
   assert.equal(
     tab.includes('justify-self'),
     false,
