@@ -42,6 +42,7 @@ import {
   toSessionListView,
 } from './historyMapper.ts';
 import type { TranscriptMessage, SessionItem } from './historyMapper.ts';
+import { toWorkspacePath } from '../markdown/filePaths.ts';
 import { mapRuntimeConfig } from './runtimeConfigMapper.ts';
 import {
   mcpRuntimePatch,
@@ -641,6 +642,13 @@ interface ConsoleStore {
   gitDirty: boolean;
   /** Live git status for the attached session's workspace, or null while unknown. */
   gitStatus: GitStatusView | null;
+
+  // A file path the model wrote in its answer, opened by a click.  The path is
+  // already normalised to workspace-relative POSIX; `requestId` makes a repeat
+  // click on the same path re-open (and re-read) the file.
+  fileViewer: { path: string; requestId: number } | null;
+  openFileViewer: (rawPath: string) => void;
+  closeFileViewer: () => void;
 
   // Session
   currentSession: SessionRef;
@@ -1835,6 +1843,14 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   gitBranch: '',
   gitDirty: false,
   gitStatus: null,
+
+  fileViewer: null,
+  openFileViewer: (rawPath) => {
+    const path = toWorkspacePath(rawPath, get().workspacePath);
+    if (path === null || path === '') return;
+    set((s) => ({ fileViewer: { path, requestId: (s.fileViewer?.requestId ?? 0) + 1 } }));
+  },
+  closeFileViewer: () => set({ fileViewer: null }),
 
   // Explicitly empty until the host reports the authenticated project context.
   currentSession: {

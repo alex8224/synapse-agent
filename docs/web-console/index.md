@@ -23,6 +23,25 @@
 > （`web/src/components/AddProjectDialog.tsx`）：经 `runtime.fs.list` 浏览**宿主**目录，进入目标目录后
 > 点「选择此目录并新建会话」经 `runtime.project.register` 登记，再切到该项目并开新会话（§2.3）。
 > 图片附件仍可加入输入区——走**粘贴或拖放**（点击选图的入口已移除），8 张 / 4 MB 限额与预览行为不变。
+>
+> **「输出文件路径可点击」切片**：助手回复里的文件路径会被识别为可点击项
+> （`web/src/markdown/filePaths.ts`）：Windows 盘符绝对路径、POSIX 绝对路径、含分隔符的相对路径，
+> 以及带已知扩展名的裸文件名都支持，可带可选 `:line:col` 后缀；**行内代码（反引号）里恰好是一个路径时
+> 也识别**（模型通常这样写路径）；`e.g.`、`i.e.`、版本号、域名、时间等散文不会被改写。点击后先把路径
+> 归一化为工作区相对 POSIX 路径（`toWorkspacePath`，识别工作区前缀、反斜杠与前导 `/`），再**居中打开**
+> 只读工作区文件管理器（`ArtifactsPanel` 的 `centered` 模式，宿主 `FileViewerHost`，状态在
+> `useConsoleStore.fileViewer`）并渲染该文件；裸文件名先在深度/数量有界的前提下按 basename 搜索
+> （`runtime-client/artifactLocate.ts`），找不到则退回工作区根目录并把文件名填入过滤框。居中窗口
+> （`FloatingWindow`）可拖动标题栏移动、从右下角缩放、最大化/还原（双击标题栏同效），头部按钮可
+> 收起/展开文件树，文件正文随窗口高度撑满（`CodeBlock` 的 `fill` 模式，去掉固定 `max-h`），
+> Esc / 点击遮罩 / 关闭按钮关闭。全部仍走只读 `runtime.artifacts.stat/read` 面，未新增后端能力。
+> 被工作区忽略规则排除的路径（如 `.gitignore` 里的构建产物 `web/dist/...`）会被明确说明「无法读取」，
+> 而不是笼统的 `runtime service error`（前端把 `service_code` 映射为可读原因，见 `artifactErrorMessage`）。
+> 标题栏取主题材质 `material-titlebar`（chrome 填充 + 颗粒 + 毛玻璃 + `--material-edge` 顶边光照，
+> 但**不含** chrome 的斜向 sheen——那是为整块侧栏/顶栏设计的，压在窄标题栏上在亮色主题里会成蓝色色带），
+> 与弹框主体的 `material-flyout` 区分开；进入沿用 `flyout-in`/`scrim-in`，最大化/还原走
+> `fluent-window-motion` 过渡（拖动与缩放不加过渡，避免跟手延迟），时长/曲线来自主题变量，
+> `prefers-reduced-motion` 下全部关闭。
 
 ## 1. 架构定位
 
@@ -190,6 +209,33 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 现在**有** finalized 保护：对已 `finish` 的附件（或 `finish` 崩溃窗口里已落盘的
 `data.bin`）调用只返回 `removed=False` 且不删除字节，未完成上传仍正常删除；见
 `docs/agent-runtime-service/progress.md` 的「已修复」小节。
+
+### 2.4 文件查看器：选中行、图片 / Markdown 预览与文本差异（本轮新增）
+
+同一个只读文件面板（`web/src/components/ArtifactsPanel.tsx`，居中宿主 `FileViewerHost`）在
+§2.1 的文本查看与真实差异之上补齐了图片与 Markdown，判定口径都在
+`web/src/runtime-client/artifacts.ts`（`web/src/client/artifacts.ts` 只是兼容再导出）：
+
+- **选中行**：被选中的行是真正的 `<button>`（键盘可达，`aria-current` + `data-selected` 宣告选中），
+  样式取共享导航 token `ui-nav-row`——主题角色 `--selection-fill` 底色 + `--accent` 左侧强调条，
+  浅色与深色主题各自定义、组件不写死颜色；`forced-colors` 下改用 `Highlight` 描边。选中在读取之前
+  发布，因此内容加载中与读取失败时标记都保留。
+- **图片预览**：`image/png` / `image/jpeg` / `image/gif` / `image/webp` / `image/bmp`，上限
+  `ARTIFACT_IMAGE_MAX_BYTES` = **4 MiB**，按 `runtime.artifacts.stat` 元数据在首次读取前判定
+  （超限或大小为 0 都给出可见原因）；字节按有界分块顺序读取后生成 blob URL，`object-contain`
+  不裁剪，卸载或切换会话时 revoke。**SVG 不支持**：它是可携带脚本与外链的文档，经 blob URL 渲染
+  会绕过控制台的 `GeneratedHtml` 清洗，因此 `.svg` 与其它不可预览类型一样按二进制拒绝
+  （显示「不读取内容」，绝不解码为文本）。
+- **Markdown**：默认渲染预览（共享 `Markdown` 渲染器，仍走类型化节点、不注入标记），工具条可切
+  「预览 / 源码」；源码视图沿用已有的 `CodeBlock` 语言高亮（语言由扩展名推出，未知扩展名保持纯文本）。
+- **文本与差异**：文本仍按 64 KiB 一块读取，自动续读到 256 KiB 后需显式「继续读取（+64 KiB）」，
+  硬上限 4 MiB（`ARTIFACT_HARD_MAX_BYTES`，与图片上限是两个独立常量），页脚始终标注已读范围与
+  是否 EOF；「真实差异」是基线快照与当前内容的真实行级 LCS 差异（配「重新读取」/「重设基准」），
+  中段过大标注「非最小差异」、达渲染上限标注「已截断」、两侧一致时写明「无差异」。
+
+上述口径由 `web/tests/artifactPreviewGuard.test.ts`（选中行是按钮且先于读取发布、按类型路由、
+Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）与 `web/tests/artifactImages.test.ts`
+（光栅白名单不含 SVG、4 MiB 上限先于读取、分块校验、blob URL 生命周期）守护。
 
 ---
 

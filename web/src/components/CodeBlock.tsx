@@ -25,6 +25,11 @@ export interface CodeBlockProps {
    * has no renderer for).  Kept as plain text so it can never inject markup.
    */
   note?: string;
+  /**
+   * Fill the parent's height instead of capping the body at a fixed height.
+   * Used by the file viewer, whose code must track the (resizable) window.
+   */
+  fill?: boolean;
 }
 
 /**
@@ -36,6 +41,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
   code,
   streaming = false,
   note,
+  fill = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const tokens = useMemo(
@@ -59,7 +65,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
   };
 
   return (
-    <div className="my-2 overflow-hidden rounded-control border border-line bg-canvas">
+    <div
+      className={`my-2 overflow-hidden rounded-control border border-line bg-canvas ${
+        fill ? 'flex min-h-0 flex-1 flex-col' : ''
+      }`}
+    >
       <div className="flex items-center justify-between border-b border-line bg-sunken px-2.5 py-1">
         <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
           {lang || 'text'}
@@ -86,7 +96,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
           </button>
         </div>
       </div>
-      <pre className="fluent-scrollbar max-h-[28rem] overflow-auto px-3 py-2 font-mono text-[12px] leading-5">
+      <pre
+        className={`fluent-scrollbar overflow-auto px-3 py-2 font-mono text-[12px] leading-5 ${
+          fill ? 'min-h-0 flex-1' : 'max-h-[28rem]'
+        }`}
+      >
         <code className="whitespace-pre">
           {tokens.map((token, index) => (
             <span key={index} className={TOKEN_CLASS[token.kind]}>

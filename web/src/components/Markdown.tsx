@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
+import { useConsoleStore } from '../stores/useConsoleStore';
 import { parseMarkdown, type Block, type Span } from '../markdown/parse.ts';
+import { looksLikeFileRef, splitFileRefs } from '../markdown/filePaths.ts';
 import { CodeBlock } from './CodeBlock.tsx';
 import { DisplayMath, InlineMath } from './MathTex.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
@@ -9,16 +11,60 @@ const PARSE_MAX_CHARS = 200_000;
 
 const HEADING_CLASS = ['text-lg', 'text-base', 'text-sm', 'text-sm', 'text-xs', 'text-xs'];
 
-function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
+/**
+ * A file path the model wrote, rendered as a link-styled button.  Clicking it
+ * opens the workspace file manager centered on that file (`FileViewerHost`).
+ */
+const FileRefButton: React.FC<{ text: string; code?: boolean }> = ({ text, code = false }) => {
+  const openFileViewer = useConsoleStore((state) => state.openFileViewer);
+  return (
+    <button
+      type="button"
+      onClick={() => openFileViewer(text)}
+      title={`打开文件：${text}`}
+      className={
+        code
+          ? 'inline break-all rounded-control bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-600'
+          : 'inline break-all font-mono text-[0.92em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-600'
+      }
+    >
+      {text}
+    </button>
+  );
+};
+
+function renderSpans(spans: Span[], keyPrefix: string, linkify = true): React.ReactNode[] {
   return spans.map((span, index) => {
     const key = `${keyPrefix}.${index}`;
     if (span.type === 'text') {
-      return <React.Fragment key={key}>{span.text}</React.Fragment>;
+      if (!linkify) return <React.Fragment key={key}>{span.text}</React.Fragment>;
+      const parts = splitFileRefs(span.text);
+      const only = parts[0];
+      if (parts.length === 1 && only !== undefined && only.type === 'text') {
+        return <React.Fragment key={key}>{span.text}</React.Fragment>;
+      }
+      return (
+        <React.Fragment key={key}>
+          {parts.map((part, partIndex) =>
+            part.type === 'file' ? (
+              <FileRefButton key={`${key}.f${partIndex}`} text={part.text} />
+            ) : (
+              <React.Fragment key={`${key}.t${partIndex}`}>{part.text}</React.Fragment>
+            ),
+          )}
+        </React.Fragment>
+      );
     }
     if (span.type === 'math') {
       return <InlineMath key={key} tex={span.tex} />;
     }
     if (span.type === 'code') {
+      // Models usually wrap a path in backticks; a code span that is exactly a
+      // path is a file reference too, so it stays clickable.
+      const trimmed = span.text.trim();
+      if (linkify && !/\s/.test(trimmed) && looksLikeFileRef(trimmed)) {
+        return <FileRefButton key={key} text={trimmed} code />;
+      }
       return (
         <code
           key={key}
@@ -31,17 +77,17 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
     if (span.type === 'strong') {
       return (
         <strong key={key} className="font-semibold text-gray-900">
-          {renderSpans(span.spans, key)}
+          {renderSpans(span.spans, key, linkify)}
         </strong>
       );
     }
     if (span.type === 'em') {
-      return <em key={key}>{renderSpans(span.spans, key)}</em>;
+      return <em key={key}>{renderSpans(span.spans, key, linkify)}</em>;
     }
     if (span.type === 'del') {
       return (
         <del key={key} className="text-gray-400">
-          {renderSpans(span.spans, key)}
+          {renderSpans(span.spans, key, linkify)}
         </del>
       );
     }
@@ -58,7 +104,7 @@ function renderSpans(spans: Span[], keyPrefix: string): React.ReactNode[] {
         rel="noreferrer noopener"
         className="break-all text-blue-500 underline"
       >
-        {renderSpans(span.spans, key)}
+        {renderSpans(span.spans, key, false)}
       </a>
     );
   });

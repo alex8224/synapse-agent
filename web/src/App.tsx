@@ -5,6 +5,7 @@ import { Transcript } from './components/Transcript';
 import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner';
 import { CommandInput } from './components/CommandInput';
 import { BottomBar } from './components/BottomBar';
+import { FileViewerHost } from './components/FileViewerHost';
 import { PairingGate } from './components/PairingGate';
 import { useConsoleStore } from './stores/useConsoleStore';
 
@@ -83,6 +84,8 @@ export function App() {
         </main>
         <BottomBar />
       </div>
+      {/* Centered workspace-file viewer, opened from a file path in a model answer. */}
+      <FileViewerHost />
     </div>
   );
 }

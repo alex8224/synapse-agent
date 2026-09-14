@@ -108,6 +108,16 @@
   .ui-menu-item { display: block; width: 100%; padding: 6px 8px; text-align: left; }
   .ui-menu-item[aria-pressed='true'] { background: rgb(var(--selection-fill)); font-weight: 600; }
   /*
+    A toolbar toggle (preview / source, diff on / off): it is a `ui-button`, and
+    its pressed state takes the same selection tint the navigation rows use, so
+    "which one is on" is answered by the theme's selection role instead of by a
+    colour the component picked.  The accent bar is deliberately *not* repeated
+    here: a row marker says "where you are", a pressed toggle only says "on".
+  */
+  .ui-toggle[aria-pressed='true'] {
+    background-color: rgb(var(--selection-fill)); color: rgb(var(--gray-900)); font-weight: 600;
+  }
+  /*
     The composer is one compact card: the field on top, the control row on the
     same surface, no separator between them, and only the padding a single line
     needs.  Focus is carried by the card, not by a ring around the field — those
@@ -162,6 +172,9 @@
   }
   @media (forced-colors: active) {
     .ui-nav-row[data-selected='true'], .ui-menu-item[aria-pressed='true'] {
+      outline: 1px solid Highlight; outline-offset: -1px;
+    }
+    .ui-toggle[aria-pressed='true'] {
       outline: 1px solid Highlight; outline-offset: -1px;
     }
   }
@@ -738,6 +751,23 @@ body {
     backdrop-filter: var(--material-blur);
     box-shadow: var(--material-edge);
   }
+  /*
+    The title bar of a window: the chrome fill, grain, blur and edge, without the
+    chrome sheen.
+
+    The sheen is a large-surface cue -- it washes diagonally across a whole
+    sidebar or header.  On a short title bar the same gradient collapses into a
+    coloured band (a blue one in the light theme), so the bar keeps everything
+    that reads as material at this size -- the fill, the frosted backdrop, the
+    grain and the top light -- and drops the wash.
+  */
+  .material-titlebar {
+    background-color: var(--material-chrome);
+    background-image: var(--material-grain);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+    box-shadow: var(--material-edge);
+  }
   .material-flyout {
     background-color: var(--material-flyout);
     background-image: var(--material-sheen), var(--material-grain);
@@ -805,10 +835,10 @@ body {
     `material-flyout` surface and every scrim carries it (see `tests/themeContract.test.ts`).
   */
   .flyout-in {
-    animation: flyout-in 180ms var(--motion-ease-decelerate) both;
+    animation: flyout-in var(--motion-normal) var(--motion-ease) both;
   }
   .scrim-in {
-    animation: scrim-in 180ms var(--motion-ease-decelerate) both;
+    animation: scrim-in var(--motion-normal) var(--motion-ease) both;
   }
   @keyframes flyout-in {
     from {
@@ -828,10 +858,28 @@ body {
       opacity: 1;
     }
   }
+  /*
+    A window that can be resized: only the maximize/restore step animates.
+
+    Dragging and resizing set the rect on every pointer move, so a transition
+    there would lag the pointer.  The component adds this class for the single
+    maximize/restore frame only; the duration comes from the theme, and a reader
+    who asked for reduced motion gets an instant snap.
+  */
+  .fluent-window-motion {
+    transition:
+      left var(--motion-normal) var(--motion-ease-decelerate),
+      top var(--motion-normal) var(--motion-ease-decelerate),
+      width var(--motion-normal) var(--motion-ease-decelerate),
+      height var(--motion-normal) var(--motion-ease-decelerate);
+  }
   @media (prefers-reduced-motion: reduce) {
     .flyout-in,
     .scrim-in {
       animation: none;
+    }
+    .fluent-window-motion {
+      transition: none;
     }
     .fluent-accordion {
       transition: none !important;

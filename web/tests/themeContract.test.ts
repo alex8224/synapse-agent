@@ -124,6 +124,8 @@ test('a modal is portaled, so an acrylic ancestor cannot anchor it', () => {
     // for the same reason (an acrylic ancestor caps their backdrop).
     'ConsoleActions.tsx',
     'ArtifactsPanel.tsx',
+    // The movable file window owns a full-viewport scrim of its own.
+    'FloatingWindow.tsx',
   ]) {
     const source = readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
     if (!source.includes('fixed inset-0')) continue;
