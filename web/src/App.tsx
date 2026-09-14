@@ -63,11 +63,11 @@ export function App() {
       underneath the sidebar; scoping them here is what makes the sidebar read as
       one continuous rail from the top edge to the bottom.
     */
-    <div className="bg-background text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
+    <div className="material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
       <SideBar />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar />
-        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-surface-container">
+        <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden material-pane">
           {/* Only rendered when the relay is down and the read-only diagnostics
               read succeeded; see the component for the degradation rules. */}
           <RuntimeDiagnosticsBanner />

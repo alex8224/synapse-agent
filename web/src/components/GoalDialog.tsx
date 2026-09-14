@@ -143,11 +143,11 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
     // (an acrylic ancestor anchors `fixed` descendants to itself).
     <Portal>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4 scrim-in"
         onClick={onClose}
       >
       <div
-        className="w-full max-w-md space-y-2 rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
+        className="w-full max-w-md space-y-2 rounded-card border border-gray-200 material-flyout flyout-in p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">

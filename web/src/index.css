@@ -118,6 +118,9 @@
     /* Materials: the chrome and flyouts can be translucent over a blurred
        backdrop.  The shipped palette is opaque (`none` = no compositing layer at
        all), and only a theme that wants acrylic pays for it. */
+    --mica-backdrop: none;
+    --material-canvas: rgb(var(--surface-canvas));
+    --material-pane: rgb(var(--surface));
     --material-chrome: rgb(var(--surface));
     --material-flyout: rgb(var(--surface));
     --material-blur: none;
@@ -196,6 +199,13 @@
       'Helvetica Neue', sans-serif;   /* fontFamilyNumeric */
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
     --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.12), 0 0 2px rgba(0, 0, 0, 0.14);
+    /* Mica: a browser has no desktop wallpaper to sample, so the window gets a
+       faint brand wash in its place.  The chrome and the two window fills are
+       translucent over it, which is what makes the material visible at rest. */
+    --mica-backdrop: radial-gradient(120% 140% at 12% 0%, rgb(var(--f-brand-soft) / 0.75), transparent 62%),
+      linear-gradient(165deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
+    --material-canvas: rgb(var(--surface-canvas) / 0.55);
+    --material-pane: rgb(var(--surface) / 0.72);
     --material-chrome: rgb(var(--surface) / 0.8);
     --material-flyout: rgb(var(--surface) / 0.85);
     --material-blur: blur(30px);
@@ -299,6 +309,13 @@
       'Helvetica Neue', sans-serif;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24), 0 0 2px rgba(0, 0, 0, 0.28);
     --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.24), 0 0 2px rgba(0, 0, 0, 0.28);
+    /* Mica: a browser has no desktop wallpaper to sample, so the window gets a
+       faint brand wash in its place.  The chrome and the two window fills are
+       translucent over it, which is what makes the material visible at rest. */
+    --mica-backdrop: radial-gradient(120% 140% at 12% 0%, rgb(var(--f-brand-soft) / 0.75), transparent 62%),
+      linear-gradient(165deg, rgb(var(--surface-canvas)) 0%, rgb(var(--surface-sunken)) 100%);
+    --material-canvas: rgb(var(--surface-canvas) / 0.55);
+    --material-pane: rgb(var(--surface) / 0.72);
     --material-chrome: rgb(var(--surface) / 0.8);
     --material-flyout: rgb(var(--surface) / 0.85);
     --material-blur: blur(30px);
@@ -344,6 +361,8 @@ body {
   margin: 0;
   padding: 0;
   background-color: rgb(var(--surface-canvas));
+  background-image: var(--mica-backdrop);
+  background-attachment: fixed;
   color: rgb(var(--gray-900));
   font-family: var(--font-ui);
 }
@@ -407,6 +426,12 @@ body {
     backdrop.  The shipped palette sets `--material-blur: none`, so nothing pays
     for a compositing layer unless the theme asks for acrylic.
   */
+  .material-canvas {
+    background-color: var(--material-canvas);
+  }
+  .material-pane {
+    background-color: var(--material-pane);
+  }
   .material-chrome {
     background-color: var(--material-chrome);
     -webkit-backdrop-filter: var(--material-blur);
@@ -418,6 +443,45 @@ body {
     backdrop-filter: var(--material-blur);
   }
 
+  /*
+    Flyout entrance.
+
+    Fluent's windows settle in rather than appear: the dialog fades and scales up a
+    hair while its scrim fades behind it.  Durations and curve come from the theme
+    (`--motion-normal` / `--motion-ease`), and a reader who asked for reduced motion
+    gets no movement at all.  Applied by material, not per component: every
+    `material-flyout` surface and every scrim carries it (see `tests/themeContract.test.ts`).
+  */
+  .flyout-in {
+    animation: flyout-in var(--motion-normal) var(--motion-ease) both;
+  }
+  .scrim-in {
+    animation: scrim-in var(--motion-normal) var(--motion-ease) both;
+  }
+  @keyframes flyout-in {
+    from {
+      opacity: 0;
+      transform: scale(0.98) translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes scrim-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flyout-in,
+    .scrim-in {
+      animation: none;
+    }
+  }
   /*
     One focus ring for the whole console, drawn from the accent role: Fluent puts
     a rectangle just outside the control instead of letting every control invent

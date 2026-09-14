@@ -155,7 +155,7 @@ function Panel({
     <div
       role="dialog"
       aria-label={title}
-      className="absolute bottom-full left-0 z-50 mb-1 w-80 rounded-control border border-gray-200 material-flyout p-3 text-left shadow-flyout"
+      className="absolute bottom-full left-0 z-50 mb-1 w-80 rounded-control border border-gray-200 material-flyout flyout-in p-3 text-left shadow-flyout"
     >
       <div className="mb-2 flex items-center justify-between border-b border-gray-100 pb-1.5">
         <span className="text-xs font-semibold text-gray-900">{title}</span>

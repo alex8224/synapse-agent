@@ -67,6 +67,9 @@ test('the theme contract names roles, not shades', () => {
     '--material-chrome',
     '--material-flyout',
     '--material-blur',
+    '--mica-backdrop',
+    '--material-canvas',
+    '--material-pane',
     '--motion-fast',
     '--motion-normal',
     '--motion-ease',
@@ -109,6 +112,47 @@ test('a window of its own is not a scroll box', () => {
   assert.ok(settings.includes('overflow-y-auto'), 'its content must still scroll');
 });
 
+test('the material has something to show through it', () => {
+  // A translucent fill over a flat, identical surface is invisible, and a blur with
+  // nothing behind it blurs nothing: the window paints a backdrop and the two
+  // window fills are translucent over it, so the acrylic reads at rest.
+  const app = readFileSync(join(webRoot, 'src', 'App.tsx'), 'utf8');
+  assert.ok(app.includes('material-canvas'), 'the window root must use the window fill');
+  assert.ok(app.includes('material-pane'), 'the workspace pane must use the pane fill');
+  assert.equal(/bg-background|bg-surface-container/.test(app), false, 'no opaque window fills left');
+  assert.ok(styles.includes('background-image: var(--mica-backdrop)'), 'the body paints the backdrop');
+  // The shipped palette keeps both opaque and the backdrop off, so it pays nothing.
+  const root = blockOf(':root');
+  assert.ok(root.includes('--mica-backdrop: none'), 'the shipped theme has no backdrop');
+});
+
+test('flyouts settle in, and reduced motion is respected', () => {
+  assert.ok(/\.flyout-in\s*\{[^}]*animation: flyout-in var\(--motion-normal\) var\(--motion-ease\)/.test(styles), 'the flyout entrance must take its timing from the theme');
+  assert.ok(styles.includes('.scrim-in'), 'the scrim fades with it');
+  assert.ok(
+    /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.flyout-in[^}]*animation: none/.test(styles),
+    'a reader who asked for reduced motion must get none',
+  );
+  // The entrance is attached by material, so a new flyout cannot forget it.
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx$/.test(entry.name)) continue;
+      const text = readFileSync(full, 'utf8');
+      for (const line of text.split('\n')) {
+        if (line.includes('material-flyout') && !line.includes('flyout-in')) offenders.push(`${entry.name}: ${line.trim().slice(0, 40)}`);
+      }
+    }
+  };
+  walk(join(webRoot, 'src'));
+  assert.deepEqual(offenders, [], 'every flyout surface must carry its entrance');
+});
+
 test('every variable Tailwind references is declared by a theme', () => {
   const referenced = new Set<string>();
   for (const match of config.matchAll(/var\((--[a-z0-9-]+)\)/g)) referenced.add(match[1]);
@@ -134,6 +178,7 @@ test('a theme replaces the roles it claims to', () => {
       '--font-body',
       '--shadow-flyout',
       '--material-blur',
+      '--mica-backdrop',
       '--motion-ease',
       '--chrome-h',
       '--focus-ring',

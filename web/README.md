@@ -67,6 +67,19 @@
 目标/Git/灯箱/帮助这些窗口现在都挂在 `body` 下，定位与外壳材质无关。窗口内部**不显示滚动条**
 （`.no-scrollbar`，滚轮与键盘照常可用）：对话框里出现滚动条是最像网页的一处。
 
+**材质要能看见**：半透明填充盖在同色不透明面上、或背景模糊后面没有东西，都等于没有效果。
+所以 Fluent 主题里 `--mica-backdrop` 给窗口一层极淡的品牌底纹（浏览器没有桌面壁纸可采样，
+这是 Mica 的近似），`body` 画这层底纹，而窗口根（`.material-canvas`）、工作区面板
+（`.material-pane`）与外壳（`.material-chrome`）都是半透明地盖在它上面——静止时就能看出玻璃感；
+对话框/浮层盖在转录之上，背后有真实内容，模糊才真正生效。出厂主题这三项全是不透明 + `none`，
+因此零开销、外观不变。
+
+**动效**：`.flyout-in` / `.scrim-in` 让浮层"落位"而不是突然出现（淡入 + 轻微放大，时长与曲线取自
+主题的 `--motion-normal` / `--motion-ease`，即 Fluent 的 `durationNormal` 与
+`curveDecelerateMid`），并且尊重 `prefers-reduced-motion`。入场是按**材质**挂的
+（`material-flyout` 的行必须同时带 `flyout-in`，由守护测试强制），新增浮层不会漏掉。转录区
+**不加**动画：那里是流式高频更新，动效会重新引入 CPU 开销。
+
 `[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
 `fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
 两个示例主题的取值**不是凭记忆写的**：它们逐条取自 `@fluentui/tokens@1.0.0-alpha.22` 的

@@ -126,7 +126,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     // from (an acrylic ancestor would otherwise anchor its `fixed` box to the rail).
     <Portal>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4 scrim-in"
         onClick={onClose}
       >
         <div
@@ -134,7 +134,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           aria-label="设置"
           // No visible scrollbar: a dialog is a window of its own, and the wheel /
           // keyboard still move it (the console hides its other scrollers too).
-          className="no-scrollbar max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
+          className="no-scrollbar max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-card border border-gray-200 material-flyout flyout-in p-5 font-sans shadow-flyout"
           onClick={(event) => event.stopPropagation()}
         >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">

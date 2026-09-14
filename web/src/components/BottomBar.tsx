@@ -248,11 +248,11 @@ export const BottomBar: React.FC = () => {
         // opened it.
         <Portal>
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4 scrim-in"
           onClick={() => setShowHelp(false)}
         >
           <div
-            className="w-full max-w-md rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
+            className="w-full max-w-md rounded-card border border-gray-200 material-flyout flyout-in p-5 font-sans shadow-flyout"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between border-b pb-2">

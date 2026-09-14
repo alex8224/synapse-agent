@@ -25,7 +25,7 @@ export const TodoPanel: React.FC = () => {
 
   return (
     <div className="absolute right-2 top-2 z-20 w-72 max-w-[calc(100%-1rem)] select-none">
-      <div className="material-flyout overflow-hidden rounded-card border border-gray-200 shadow-card">
+      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-gray-200 shadow-card">
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
