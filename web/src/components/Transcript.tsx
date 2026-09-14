@@ -397,7 +397,7 @@ export const Transcript: React.FC = () => {
     >
       <div className="console-column space-y-5">
         {historyAvailable === false && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-800 font-mono leading-relaxed">
+          <div className="rounded-card border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-800 font-mono leading-relaxed">
             此会话在 transcript 投影中不可用（history.available=false）。以下只显示建立连接后的实时内容；
             不按“空历史”显示，也不会回退到 checkpoint。
           </div>
@@ -406,7 +406,7 @@ export const Transcript: React.FC = () => {
         {historyError !== null && (
           <div
             role="alert"
-            className="rounded-lg border border-red-200 bg-red-50/70 p-3 text-xs text-red-800 font-mono leading-relaxed"
+            className="rounded-card border border-red-200 bg-red-50/70 p-3 text-xs text-red-800 font-mono leading-relaxed"
           >
             {historyError}
             以下只显示建立连接后的实时内容，不回退到 checkpoint。
@@ -447,7 +447,7 @@ export const Transcript: React.FC = () => {
 
         {/* HITL Pending Approval Dialog */}
         {pendingApproval && (
-          <div className="p-4 border border-amber-300 bg-amber-50/80 rounded-lg space-y-3">
+          <div className="p-4 border border-amber-300 bg-amber-50/80 rounded-card space-y-3">
             <div className="flex items-center space-x-2 text-amber-800 font-medium text-xs">
               <span className="material-symbols-outlined text-[18px]">gavel</span>
               <span>需要审批危险操作 (Turn: {pendingApproval.turn_id})</span>

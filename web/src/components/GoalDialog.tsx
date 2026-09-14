@@ -143,7 +143,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md space-y-2 rounded-lg border border-gray-200 bg-surface p-5 font-sans shadow-xl"
+        className="w-full max-w-md space-y-2 rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">

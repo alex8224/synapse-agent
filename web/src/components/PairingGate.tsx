@@ -32,7 +32,7 @@ export const PairingGate: React.FC = () => {
     <div className="bg-background text-on-background h-screen w-screen flex items-center justify-center font-sans">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md border border-line rounded-lg bg-surface p-6 shadow-sm"
+        className="w-full max-w-md border border-line rounded-card bg-surface p-6 shadow-card"
       >
         <h1 className="text-sm font-semibold text-gray-900">Synapse Web 控制台配对</h1>
         <p className="mt-2 text-xs text-gray-500 leading-relaxed">

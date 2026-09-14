@@ -105,7 +105,7 @@ export const CommandInput: React.FC = () => {
           e.preventDefault();
           handleFiles(files);
         }}
-        className={`console-column pointer-events-auto flex flex-col rounded-lg border bg-surface shadow-sm transition-colors focus-within:border-blue-500 ${
+        className={`console-column pointer-events-auto flex flex-col rounded-card border bg-surface shadow-card transition-colors focus-within:border-blue-500 ${
           dragging ? 'border-blue-500 ring-2 ring-blue-100' : 'border-line'
         }`}
       >
@@ -144,7 +144,7 @@ export const CommandInput: React.FC = () => {
                     type="button"
                     onClick={() => removeAttachment(entry.localId)}
                     title={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-surface text-gray-500 shadow-sm transition-colors hover:text-gray-900"
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-gray-200 bg-surface text-gray-500 shadow-card transition-colors hover:text-gray-900"
                   >
                     <span className="material-symbols-outlined text-[12px]">
                       {entry.status === 'uploading' ? 'cancel' : 'close'}
@@ -209,7 +209,7 @@ export const CommandInput: React.FC = () => {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               title={`添加图片附件（也可直接粘贴或拖入；最多 ${ATTACHMENT_MAX_COUNT} 张，每张 4 MB）`}
-              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-control text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
             >
               <span className="material-symbols-outlined text-[18px]">add</span>
             </button>

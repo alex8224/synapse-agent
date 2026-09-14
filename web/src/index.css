@@ -102,9 +102,32 @@
     /* Shape, type and elevation. */
     --radius-card: 8px;
     --radius-control: 6px;
-    --font-ui: Inter, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+    --font-ui: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+      'Segoe UI Symbol', 'Noto Color Emoji';
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    /* The shell's reading text (`.font-body-*`) and the default UI stack are
+       separate roles: the shipped palette reads the shell in Inter and everything
+       else in the system UI font, exactly as before. */
+    --font-body: Inter, sans-serif;
+    --chrome-h: 2.5rem;
+    --status-h: 1.75rem;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
+    /* Second elevation step (dialogs, popovers). */
+    --shadow-flyout: 0 8px 24px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.08);
+    /* Materials: the chrome and flyouts can be translucent over a blurred
+       backdrop.  The shipped palette is opaque (`none` = no compositing layer at
+       all), and only a theme that wants acrylic pays for it. */
+    --material-chrome: rgb(var(--surface));
+    --material-flyout: rgb(var(--surface));
+    --material-blur: none;
+    /* Motion: one duration scale and one curve, so every existing `transition-*`
+       utility moves the way the theme says instead of each its own way. */
+    --motion-fast: 120ms;
+    --motion-normal: 200ms;
+    --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+    /* The focus ring is drawn once, globally, from the accent role. */
+    --focus-ring-width: 2px;
+    --focus-ring-offset: 2px;
   }
 
   /*
@@ -158,7 +181,23 @@
     --on-accent: 255 255 255;
     --radius-card: 8px;
     --radius-control: 4px;
-    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
+    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+    --font-body: 'Segoe UI Variable Text', 'Segoe UI', Inter, sans-serif;
+    --font-mono: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+    --chrome-h: 3rem;
+    --status-h: 2rem;
+    /* Fluent's elevation is a soft, wide, low-opacity shadow rather than a tight
+       dark one. */
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06), 0 2px 4px rgb(0 0 0 / 0.04);
+    --shadow-flyout: 0 8px 16px rgb(0 0 0 / 0.14), 0 0 2px rgb(0 0 0 / 0.12);
+    /* Acrylic: the chrome and flyouts sit on a blurred, tinted backdrop. */
+    --material-chrome: rgb(var(--surface) / 0.8);
+    --material-flyout: rgb(var(--surface) / 0.85);
+    --material-blur: blur(30px);
+    /* Fluent motion: faster, on its own ease-out curve. */
+    --motion-fast: 150ms;
+    --motion-normal: 250ms;
+    --motion-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
   }
 
   /*
@@ -212,8 +251,19 @@
     --on-accent: 8 19 31;
     --radius-card: 8px;
     --radius-control: 4px;
-    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
+    --font-ui: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+    --font-body: 'Segoe UI Variable Text', 'Segoe UI', Inter, sans-serif;
+    --font-mono: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+    --chrome-h: 3rem;
+    --status-h: 2rem;
     --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 1px 3px rgb(0 0 0 / 0.3);
+    --shadow-flyout: 0 8px 16px rgb(0 0 0 / 0.5), 0 0 2px rgb(0 0 0 / 0.4);
+    --material-chrome: rgb(var(--surface) / 0.8);
+    --material-flyout: rgb(var(--surface) / 0.85);
+    --material-blur: blur(30px);
+    --motion-fast: 150ms;
+    --motion-normal: 250ms;
+    --motion-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
 
     /* Banners and badges: dark tints behind, legible strong steps in front. */
     --red-50: 42 18 21;
@@ -262,6 +312,7 @@ body {
   padding: 0;
   background-color: rgb(var(--surface-canvas));
   color: rgb(var(--gray-900));
+  font-family: var(--font-ui);
 }
 
 #root {
@@ -313,12 +364,43 @@ body {
   */
   .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
   .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+  /*
+    Materials.
+
+    A theme decides whether a surface is opaque or acrylic: `--material-chrome`
+    (window chrome: sidebar, header, composer, status strip) and
+    `--material-flyout` (dialogs, popovers) carry the fill, `--material-blur` the
+    backdrop.  The shipped palette sets `--material-blur: none`, so nothing pays
+    for a compositing layer unless the theme asks for acrylic.
+  */
+  .material-chrome {
+    background-color: var(--material-chrome);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+  }
+  .material-flyout {
+    background-color: var(--material-flyout);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+  }
+
+  /*
+    One focus ring for the whole console, drawn from the accent role: Fluent puts
+    a rectangle just outside the control instead of letting every control invent
+    its own focus border.  `:where()` keeps the rule at zero specificity, so a
+    component can still opt out (the sidebar tree does, to keep its edge clean).
+  */
+  :where(button, a[href], input, select, textarea, [tabindex]):focus-visible {
+    outline: var(--focus-ring-width) solid rgb(var(--accent));
+    outline-offset: var(--focus-ring-offset);
+  }
   .font-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 12px; font-weight: 500; }
   .font-code-md { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 450; }
-  .font-body-md { font-family: var(--font-ui); font-size: 14px; line-height: 20px; font-weight: 400; }
+  .font-body-md { font-family: var(--font-body); font-size: 14px; line-height: 20px; font-weight: 400; }
   .font-code-sm { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 450; }
-  .font-body-sm { font-family: var(--font-ui); font-size: 13px; line-height: 18px; font-weight: 400; }
-  .font-label-caps { font-family: var(--font-ui); font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
+  .font-body-sm { font-family: var(--font-body); font-size: 13px; line-height: 18px; font-weight: 400; }
+  .font-label-caps { font-family: var(--font-body); font-size: 11px; line-height: 16px; letter-spacing: 0.05em; font-weight: 600; }
 
   /*
     Typeset formulas and diagrams live inside blocks that already carry the

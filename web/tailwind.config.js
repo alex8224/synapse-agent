@@ -109,16 +109,32 @@ export default {
         "panel-padding": "12px",
         "gutter": "16px",
         "unit": "4px",
-        "margin": "24px"
+        "margin": "24px",
+        // The chrome's own heights, so a theme can set the density (Fluent's
+        // header is taller than the shipped one) without editing the shell.
+        chrome: "var(--chrome-h)",
+        status: "var(--status-h)",
       },
       borderRadius: {
         // A theme decides the corner language (Fluent is squarer than Tailwind's
         // defaults); the components only name the role.
         card: "var(--radius-card)",
         control: "var(--radius-control)",
+        pill: "9999px",
       },
       boxShadow: {
+        // Two elevation steps, so a card and a dialog differ by role, not by
+        // whichever literal each component picked.
         card: "var(--shadow-card)",
+        flyout: "var(--shadow-flyout)",
+      },
+      transitionDuration: {
+        // Every existing `transition-*` utility follows the theme's scale.
+        DEFAULT: "var(--motion-fast)",
+        normal: "var(--motion-normal)",
+      },
+      transitionTimingFunction: {
+        DEFAULT: "var(--motion-ease)",
       },
       fontFamily: {
         // Every family resolves through the theme, so a theme can swap the UI font

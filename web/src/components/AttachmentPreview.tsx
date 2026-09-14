@@ -71,7 +71,7 @@ export const AttachmentPreview: React.FC<{
       />
       {/* Hover-only, and rendered up front so the shared URL reaches it: a modal
           on hover would be far more disruptive than a floating copy. */}
-      <div className="absolute bottom-full left-0 z-50 mb-2 hidden w-max rounded-lg border border-gray-200 bg-surface p-2 shadow-xl group-hover:block">
+      <div className="absolute bottom-full left-0 z-50 mb-2 hidden w-max rounded-card border border-gray-200 material-flyout p-2 shadow-flyout group-hover:block">
         <img
           ref={zoomRef}
           alt={label}

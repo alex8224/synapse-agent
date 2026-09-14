@@ -44,17 +44,30 @@
 
 - `src/index.css` 的 `:root` 是主题契约——调色阶（`--gray-*`、`--blue-*`、状态色）、
   语义角色（`--surface` / `--surface-canvas` / `--surface-sunken` / `--line` / `--accent` /
-  `--on-accent` / `--danger` / `--math-*`）、形状与字体（`--radius-*`、`--font-ui`、
-  `--font-mono`、`--shadow-card`）。值写成**通道三元组**（`--gray-200: 229 231 235`），
+  `--on-accent` / `--danger` / `--math-*`）、形状（`--radius-card/control`）、排印
+  （`--font-ui` 界面默认、`--font-body` 阅读正文、`--font-mono` 代码）、层级
+  （`--shadow-card` / `--shadow-flyout`）、材质（`--material-chrome` / `--material-flyout` /
+  `--material-blur`）、动效（`--motion-fast/normal/ease`）与外壳密度（`--chrome-h` /
+  `--status-h`）。值写成**通道三元组**（`--gray-200: 229 231 235`），
   这样 Tailwind 的 `bg-gray-200/70` 这类透明度修饰符仍然有效。
 - `tailwind.config.js` 把组件**已经在用**的调色阶（`gray` / `blue` / 红黄绿紫状态色）与角色
-  映射到 `rgb(var(--…) / <alpha-value>)`，所以几百处既有类名自动跟随主题；新代码应该用角色名
-  （`bg-surface`、`border-line`、`bg-accent`、`text-on-accent`）而不是某个色阶。
+  映射到 `rgb(var(--…) / <alpha-value>)`，并让圆角（`rounded-card/control`）、层级
+  （`shadow-card/flyout`）、`transition-*` 的时长与曲线（`transitionDuration/TimingFunction`
+  的 DEFAULT）和外壳高度（`h-chrome` / `h-status`）都取自主题，所以几百处既有类名自动跟随；
+  新代码应该用角色名（`bg-surface`、`border-line`、`bg-accent`、`text-on-accent`）而不是某个色阶。
+  材质是三个类：`.material-chrome`（侧栏/顶栏/状态条）与 `.material-flyout`（对话框/浮层）
+  用 `--material-*` 的填充与背景模糊，`.material-blur` 为 `none` 时**不产生合成层**（出厂调色板
+  就是这样，Fluent 主题才付这份 GPU 成本）。焦点环全局只画一次
+  （`:where(button, a[href], input, select, textarea, [tabindex]):focus-visible`，取自
+  `--accent`）。
 
 `[data-theme='…']` 块替换整套外观。仓库自带两个可用的示例主题：
 `fluent-light` 与 `fluent-dark`（取值按 Fluent 2 语义近似，**可整块替换为设计稿 token**）。
 激活方式：`document.documentElement.dataset.theme = 'fluent-dark'`（移除该属性即回到默认主题）。
 示例主题只重定义中性面/文本/描边/强调色；状态色沿用默认值，需要时按同样方式覆盖。
+两个示例主题同时给出了 Fluent 的**几何与排印**：控件圆角 4px、外壳 48px/32px、
+`Segoe UI Variable Text` 界面字体与 Consolas 代码字体、更宽更软的阴影、`blur(30px)` 亚克力、
+150/250ms 与 `cubic-bezier(0.1, 0.9, 0.2, 1)` 动效曲线。
 
 读者侧的选择在**设置 → 外观 → 主题**：`跟随系统` / `浅色` / `深色`
 （`src/stores/appearance.ts`）。`浅色` 用出厂调色板（不带 `data-theme`），`深色` 用

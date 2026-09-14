@@ -98,7 +98,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         role="dialog"
         aria-label="Git Explorer"
         onClick={(event) => event.stopPropagation()}
-        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-gray-200 bg-surface text-left shadow-xl"
+        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-gray-200 material-flyout text-left shadow-flyout"
       >
         <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2">
           <span className="material-symbols-outlined text-[18px] text-gray-500">fork_right</span>

@@ -142,7 +142,7 @@ export const SideBar: React.FC = () => {
     // disappearing (new session, search, and the loaded count).  Expanding is
     // the top bar's toggle (or Ctrl+B) — a second toggle here was a duplicate.
     return (
-      <nav className="bg-canvas border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
+      <nav className="material-chrome border-r border-line h-full w-[44px] flex flex-col items-center py-3 gap-1.5 shrink-0 select-none">
         <button
           onClick={() => createNewSession()}
           title="在当前项目新建会话 (Ctrl+N)"
@@ -179,7 +179,7 @@ export const SideBar: React.FC = () => {
   }
 
   return (
-    <nav className="bg-canvas border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
+    <nav className="material-chrome border-r border-line h-full w-[240px] flex flex-col py-3 shrink-0 select-none text-xs font-sans">
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's

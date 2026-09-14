@@ -58,8 +58,18 @@ test('the theme contract names roles, not shades', () => {
     '--radius-card',
     '--radius-control',
     '--font-ui',
+    '--font-body',
     '--font-mono',
     '--shadow-card',
+    '--shadow-flyout',
+    '--material-chrome',
+    '--material-flyout',
+    '--material-blur',
+    '--motion-fast',
+    '--motion-normal',
+    '--motion-ease',
+    '--chrome-h',
+    '--status-h',
   ]) {
     assert.ok(root.has(role), `:root must define ${role}`);
   }
@@ -81,11 +91,66 @@ test('every variable Tailwind references is declared by a theme', () => {
 test('a theme replaces the roles it claims to', () => {
   for (const theme of ['fluent-light', 'fluent-dark']) {
     const declared = declaredIn(blockOf(`[data-theme='${theme}']`));
-    for (const role of ['--gray-900', '--gray-200', '--surface', '--surface-canvas', '--line', '--accent']) {
+    for (const role of [
+      '--gray-900',
+      '--gray-200',
+      '--surface',
+      '--surface-canvas',
+      '--line',
+      '--accent',
+      // Shape, type, elevation, material and motion are part of a theme too:
+      // Fluent is not just another palette.
+      '--radius-control',
+      '--font-ui',
+      '--font-body',
+      '--shadow-flyout',
+      '--material-blur',
+      '--motion-ease',
+      '--chrome-h',
+    ]) {
       assert.ok(declared.has(role), `${theme} must replace ${role}`);
     }
     assert.ok(declared.size >= 30, `${theme} looks like a partial theme (${declared.size} variables)`);
   }
+});
+
+test('shape, elevation and material are named by role, not by literal', () => {
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      const text = readFileSync(full, 'utf8');
+      const found = text.match(/rounded-(lg|md|xl|2xl)|shadow-(sm|lg|xl)/g);
+      if (found) offenders.push(`${entry.name}: ${[...new Set(found)].join(', ')}`);
+    }
+  };
+  walk(join(webRoot, 'src'));
+  assert.deepEqual(offenders, [], 'use rounded-card / rounded-control and shadow-card / shadow-flyout');
+});
+
+test('the window chrome and the flyouts carry their material', () => {
+  const read = (name: string): string => readFileSync(join(webRoot, 'src', 'components', name), 'utf8');
+  // The chrome: the shell surfaces a theme can make acrylic.
+  for (const name of ['SideBar.tsx', 'TopBar.tsx', 'BottomBar.tsx']) {
+    assert.ok(read(name).includes('material-chrome'), `${name} must use the chrome material`);
+  }
+  // The flyouts: the surfaces where acrylic is actually visible (content passes
+  // behind them), so they must not fall back to an opaque fill.
+  for (const name of ['SettingsDialog.tsx', 'GoalDialog.tsx', 'TodoPanel.tsx']) {
+    assert.ok(read(name).includes('material-flyout'), `${name} must use the flyout material`);
+  }
+});
+
+test('the console draws one focus ring, from the accent role', () => {
+  assert.ok(
+    /:where\([^)]*\):focus-visible\s*\{[^}]*outline:[^}]*rgb\(var\(--accent\)\)/.test(styles),
+    'the focus ring must be drawn once, globally, in the accent colour',
+  );
 });
 
 test('no component paints a colour the theme cannot reach', () => {

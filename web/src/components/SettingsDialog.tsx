@@ -128,7 +128,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
       <div
         role="dialog"
         aria-label="设置"
-        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-gray-200 bg-surface p-5 font-sans shadow-xl"
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-card border border-gray-200 material-flyout p-5 font-sans shadow-flyout"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">

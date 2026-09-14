@@ -12,7 +12,7 @@ const MathSource: React.FC<{ tex: string; streaming: boolean; note?: string }> =
   streaming,
   note,
 }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-purple-100 bg-math-surface">
+  <div className="my-2 overflow-hidden rounded-control border border-purple-100 bg-math-surface">
     <div className="flex items-center justify-between border-b border-purple-100 bg-math-header px-2.5 py-1">
       <span className="font-mono text-[10px] uppercase tracking-wide text-purple-500">
         公式{streaming ? ' · streaming' : ''}
@@ -68,7 +68,7 @@ export const DisplayMath: React.FC<{ tex: string; streaming: boolean }> = ({ tex
     );
   }
   return (
-    <div className="math-block my-2 overflow-x-auto rounded-md border border-purple-100 bg-math-surface px-3 py-2 text-center">
+    <div className="math-block my-2 overflow-x-auto rounded-control border border-purple-100 bg-math-surface px-3 py-2 text-center">
       <GeneratedHtml html={result.html} className="math-display" />
     </div>
   );
