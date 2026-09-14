@@ -148,13 +148,22 @@ export const TURN_RAIL_ACTIVE_SLACK_PX = 12;
  * `scrollTop + slack`: the one the viewport is inside.  Above the first anchor
  * (the top of the transcript, where the port's own padding sits) the first turn
  * is the one on screen, so it stays active rather than the rail going dark.
+ *
+ * At the bottom the newest turn wins even when it is short enough for its own
+ * anchor to sit *inside* the viewport: the reader is looking at that turn, and the
+ * anchor rule alone would mark the second-to-last bar on the last turn.
+ *
+ * `maxScroll` is `scrollHeight - clientHeight`; the default (no scrolling) keeps
+ * the bottom rule from firing on a transcript that fits.
  */
 export function activeTurnIndex(
   offsets: readonly number[],
   scrollTop: number,
   slack: number = TURN_RAIL_ACTIVE_SLACK_PX,
+  maxScroll = Number.POSITIVE_INFINITY,
 ): number {
   if (offsets.length === 0) return -1;
+  if (scrollTop >= maxScroll - slack) return offsets.length - 1;
   let active = 0;
   for (let i = 0; i < offsets.length; i += 1) {
     if (offsets[i] > scrollTop + slack) break;

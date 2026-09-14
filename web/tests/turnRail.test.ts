@@ -131,6 +131,28 @@ test('an anchor the rail cannot find does not shadow the ones above it', () => {
   assert.equal(activeTurnIndex(offsets, 99_999), 0);
 });
 
+test('the last turn is the one on screen at the bottom', () => {
+  // A short last turn: its anchor sits *inside* the viewport, so the anchor rule
+  // alone marked the second-to-last bar while the reader was on the last turn.
+  const offsets = [0, 400, 900, 1400];
+  const maxScroll = 1500;
+  assert.equal(activeTurnIndex(offsets, maxScroll, TURN_RAIL_ACTIVE_SLACK_PX, maxScroll), 3);
+  // Within the slack of the bottom counts as the bottom too.
+  assert.equal(
+    activeTurnIndex(offsets, maxScroll - TURN_RAIL_ACTIVE_SLACK_PX, TURN_RAIL_ACTIVE_SLACK_PX, maxScroll),
+    3,
+  );
+  // Away from the bottom the anchor rule still decides.
+  assert.equal(
+    activeTurnIndex(offsets, maxScroll - 200, TURN_RAIL_ACTIVE_SLACK_PX, maxScroll),
+    2,
+  );
+  // A transcript that fits: the last turn is on screen.
+  assert.equal(activeTurnIndex(offsets, 0, TURN_RAIL_ACTIVE_SLACK_PX, 0), 3);
+  // No turns at all stays -1.
+  assert.equal(activeTurnIndex([], 0, TURN_RAIL_ACTIVE_SLACK_PX, 0), -1);
+});
+
 test('the animated row is the one whose range holds the turn', () => {
   const slots = turnRailTickSlots(3, 5);
   assert.equal(slots[1][0], 0);

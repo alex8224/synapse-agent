@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
+  TURN_RAIL_ACTIVE_SLACK_PX,
   activeTurnIndex,
   transcriptTurns,
   turnRailHoverText,
@@ -65,7 +66,12 @@ export const TurnRail: React.FC = () => {
         const anchor = scroller.querySelector(`[data-turn-id="${turn.anchorId}"]`);
         return anchor === null ? Number.POSITIVE_INFINITY : anchor.getBoundingClientRect().top - portTop;
       });
-      const next = activeTurnIndex(offsetsRef.current, scroller.scrollTop);
+      const next = activeTurnIndex(
+        offsetsRef.current,
+        scroller.scrollTop,
+        TURN_RAIL_ACTIVE_SLACK_PX,
+        scroller.scrollHeight - scroller.clientHeight,
+      );
       setActiveTurn((current) => (current === next ? current : next));
     };
     const schedule = () => {
