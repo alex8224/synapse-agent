@@ -33,6 +33,14 @@
 - **daemon 发现**：默认读取 daemon 发布的 `<state-dir>/daemon.json`
   （`DaemonLease.publish` 的 `host`/`port`）；也可显式 `--runtime-port` 覆盖。
   daemon token 从 `<state-dir>/token`（或 `--token-file`）读取，只读、绝不创建。
+- **daemon 按需拉起（默认开启）**：该 state dir 下没有**运行中**的 daemon 时，宿主用
+  `python -m synapse.runtime.daemon --state-dir <state-dir> --host 127.0.0.1 --port 0`
+  拉起一个（`synapse.runtime.daemon.launcher`），等它发布 `daemon.json` 后继续；自己退出
+  时停掉自己启动的那一个。判定「运行中」用 `daemon.json` 里的 pid 存活（不是探测端口：
+  daemon 只在 socket 绑定之后才发布元数据，探测会让它每次多打一条握手失败日志）。
+  复用与清理的边界：已运行的 daemon 一律复用且**绝不**被停止；`--no-start-runtime` 关闭
+  拉起；`--runtime-port` 视为「用那个 daemon」，同样不拉起；被强杀（`taskkill /F`）时
+  daemon 会留下继续跑（下次被复用，不会重复拉起）。
 
 ## 2 启动命令与参数（逐项核对 `--help`）
 
@@ -49,23 +57,25 @@ cd ..
 检出先 `uv sync`，否则脚本不存在、下面的 script 形式直接失败。未同步时用紧随其后的
 `python -m ...` 等价形式（测试同样使用该形式，见 `tests/test_web_console_security.py`）。
 
-终端 1（前台 daemon）：
+**一条命令即可**：宿主默认按需拉起 daemon（见 §1「daemon 按需拉起」），因此不需要先
+单开一个终端跑 `synapse-runtime`：
 
 ```bash
 uv sync   # 源码检出必做
-synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
-# 或（不依赖 console script）：python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime --port 0
-```
-
-终端 2（正式宿主）：
-
-```bash
 synapse-web-console --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
 # 或（不依赖 console script）：python -m synapse.web_console.entry --workspace . --static-dir web/dist
 ```
 
-两者都是前台常驻进程，前台启动会占住调用它的终端。交互使用各开一个终端；脚本/自动化
+要把 daemon 当独立服务跑（服务化部署、或想让它跨控制台存活）时，先起它、再起宿主
+（宿主会发现并复用，不会另起）：
+
+```bash
+synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
+# 或（不依赖 console script）：python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime --port 0
+```
+
+宿主与 daemon 都是前台常驻进程，前台启动会占住调用它的终端。交互使用各开一个终端；脚本/自动化
 （含 agent）必须非阻塞启动——让子进程脱离调用方进程树并把 stdout/stderr 重定向到文件。
 PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承 stdout 管道而
 卡住调用方（直到进程退出才返回），可行做法是 `cmd.exe /c` 包一层带重定向的脚本、再经
@@ -90,6 +100,7 @@ PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承
 | `--project-scope {workspace,all}` | `all` | 中继可寻址的项目范围：`workspace` 只允许本工作区（原单项目边界）并把该 `project_id` 作为**宿主私有握手头** `X-Synapse-Project-Scope` 发给 daemon（daemon 仅在 bearer 认证后读取，因此由 daemon 侧一并强制）；`all` 不发该头，宿主侧**不保留任何项目白名单**（只做协议 scope 形状检查），可寻址集合完全由 daemon 的精确 `project_id` 路由 + 授权决定，连接保持 daemon 自身**同一用户**可见集合（见 §4.1）。daemon 侧：握手头**缺失**才等于「无 scope」；头存在但不可用（重复大小写、空值、超长、控制字符等）直接**拒绝该次认证**，绝不退化成更宽的默认可见性 |
 | `--runtime-host HOST` | `127.0.0.1` | daemon WS host；只允许 loopback，远程 daemon 不支持 |
 | `--runtime-port PORT` | 无（读 `daemon.json`） | 覆盖 daemon 端口；必须 `1..65535`（拒绝 `0`） |
+| `--start-runtime` / `--no-start-runtime` | 开启（`--start-runtime`） | 该 state dir 下没有运行中 daemon 时，宿主自己拉起一个并在退出时停掉（见 §1「daemon 按需拉起」）；`--no-start-runtime` 要求 daemon 必须由用户启动 |
 | `--max-message-bytes INT` | `1048576` | 单帧上限；`1024..8388608` |
 | `--session-ttl-seconds INT` | `43200`（12h） | 会话 cookie 生命周期；正整数 |
 | `--pair-ttl-seconds INT` | `300` | 配对码生命周期；正整数 |
@@ -428,6 +439,7 @@ pytest**，含单文件与 `--collect-only`）：
   terminal 事件（覆盖表见 `index.md` §4）；`GET /api/runtime-status` 也已由前端消费
   （`web/src/client/runtimeStatus.ts` + `RuntimeDiagnosticsBanner`，仅在 relay 不可用时
   显示，读取失败则完全不渲染）。助手/思考内容已按 Markdown 渲染，围栏代码块带语言标签、
-  复制与按语言高亮（`web/src/markdown/`，无第三方依赖、不生成 HTML，见 `index.md` §5）。
+  复制与按语言高亮（`web/src/markdown/` 的解析器无第三方依赖、不生成 HTML，见 `index.md` §5）。
   仍未实现：`runtime.artifacts.*` 文件树与差异浏览、工具**完整**输出（事件流只带有界
-  `preview`）、LaTeX/Mermaid 图形渲染（web 端按普通代码块显示）。
+  `preview`）。LaTeX 与 Mermaid 已于本轮改为真实渲染（KaTeX / mermaid，见 `index.md` §5
+  与 `web/README.md`），其输出是仅有的两处标记注入，均带静态守护。

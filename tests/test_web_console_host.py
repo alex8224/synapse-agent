@@ -41,7 +41,7 @@ from synapse.runtime.transport.protocol import (
     parse_request,
 )
 from synapse.web_console.config import DEFAULT_SESSION_TTL_SECONDS, WebConsoleConfig
-from synapse.web_console.entry import build_parser
+from synapse.web_console.entry import build_parser, should_start_runtime
 from synapse.web_console.host import (
     RELAY_MAX_PENDING_BYTES,
     RELAY_MAX_PENDING_FRAMES,
@@ -1522,6 +1522,13 @@ def test_cli_parser_and_unresolvable_startup(tmp_path: Path) -> None:
     args = parser.parse_args(["--static-dir", "x", "--runtime-port", "9000"])
     assert args.runtime_port == 9000
     assert str(args.static_dir) == "x"
+    # Starting a daemon on demand is the default, and can be turned off; an
+    # explicit --runtime-port always means "use that daemon, do not start one".
+    assert parser.parse_args([]).start_runtime is True
+    assert parser.parse_args(["--no-start-runtime"]).start_runtime is False
+    assert should_start_runtime(start_runtime=True, runtime_port=None) is True
+    assert should_start_runtime(start_runtime=True, runtime_port=9000) is False
+    assert should_start_runtime(start_runtime=False, runtime_port=None) is False
     # A8: the security-relevant knobs are exposed on the command line.
     knobs = parser.parse_args(
         [
@@ -2625,3 +2632,104 @@ def test_frame_above_max_message_bytes_never_reaches_the_daemon(tmp_path: Path) 
             await daemon.close()
 
     _run(run())
+
+
+def test_main_stops_only_the_daemon_it_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The console stops its own daemon on the way out, and only its own.
+
+    A daemon that was already running is reused and left alone (``ensure_daemon``
+    returns ``None`` for it); the handle for one this call started is stopped in
+    the entry point's ``finally``, i.e. also when startup fails later.
+    """
+    from synapse.web_console import entry as entry_module
+
+    stopped: list[str] = []
+    asked: list[Path] = []
+
+    class FakeHandle:
+        def stop(self) -> None:
+            stopped.append("stopped")
+
+    def fake_ensure(state_dir: Path) -> FakeHandle:
+        asked.append(state_dir)
+        return FakeHandle()
+
+    def boom(_config: WebConsoleConfig) -> None:
+        raise RuntimeError("startup fails after the daemon was started")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(entry_module, "ensure_daemon", fake_ensure)
+    monkeypatch.setattr(entry_module, "resolve_project", boom)
+    state = tmp_path / "state"
+    code = entry_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--state-dir",
+            str(state),
+            "--static-dir",
+            str(tmp_path / "static"),
+            "--port",
+            "0",
+        ]
+    )
+    assert code == 2
+    assert asked == [state]
+    assert stopped == ["stopped"]
+
+
+def test_no_start_runtime_never_asks_for_a_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from synapse.web_console import entry as entry_module
+
+    asked: list[Path] = []
+    monkeypatch.setattr(entry_module, "ensure_daemon", lambda state_dir: asked.append(state_dir))
+    monkeypatch.setattr(
+        entry_module, "resolve_project", lambda _config: (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    code = entry_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--static-dir",
+            str(tmp_path / "static"),
+            "--port",
+            "0",
+            "--no-start-runtime",
+        ]
+    )
+    assert code == 2
+    assert asked == []
+
+
+def test_a_reused_daemon_is_not_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``ensure_daemon`` returning ``None`` means "someone else owns it"."""
+    from synapse.web_console import entry as entry_module
+
+    monkeypatch.setattr(entry_module, "ensure_daemon", lambda _state_dir: None)
+    monkeypatch.setattr(
+        entry_module, "resolve_project", lambda _config: (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    code = entry_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--static-dir",
+            str(tmp_path / "static"),
+            "--port",
+            "0",
+        ]
+    )
+    assert code == 2

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from synapse.runtime.daemon.launcher import DaemonHandle, ensure_daemon
 from synapse.web_console.config import (
     DEFAULT_MAX_BODY_BYTES,
     DEFAULT_MAX_CONCURRENT_SOCKETS,
@@ -55,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-host", default="127.0.0.1", help="Daemon WS host")
     parser.add_argument("--runtime-port", type=int, help="Daemon WS port (default: daemon.json)")
     parser.add_argument(
+        "--start-runtime",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Start a runtime daemon for --state-dir when none is published, and stop it "
+            "again on exit (default). Use --no-start-runtime to require a daemon the user "
+            "started themselves; --runtime-port always means 'use that daemon'."
+        ),
+    )
+    parser.add_argument(
         "--max-message-bytes",
         type=int,
         default=DEFAULT_MESSAGE_BYTES,
@@ -93,7 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def should_start_runtime(*, start_runtime: bool, runtime_port: int | None) -> bool:
+    """Whether the console host may start a daemon for itself.
+
+    An explicit ``--runtime-port`` means the caller is pointing at a specific
+    daemon; that daemon is never replaced by one we started, even when nothing
+    answers on the port yet.
+    """
+    return start_runtime and runtime_port is None
+
+
 def main(argv: list[str] | None = None) -> int:
+    launched: DaemonHandle | None = None
     try:
         args = build_parser().parse_args(argv)
         state_dir = Path(args.state_dir) if args.state_dir is not None else WebConsoleConfig(
@@ -117,6 +139,21 @@ def main(argv: list[str] | None = None) -> int:
             max_body_bytes=args.max_body_bytes,
             ws_heartbeat_seconds=args.ws_heartbeat_seconds,
         )
+        # One command should be enough to get a usable console: reuse the daemon
+        # published for this state dir, otherwise start one and stop it again on
+        # exit.  `--runtime-port` means the caller is pointing at a specific
+        # daemon, so that daemon is never replaced by one we started.
+        if should_start_runtime(start_runtime=args.start_runtime, runtime_port=config.runtime_port):
+            launched = ensure_daemon(config.state_dir)
+            if launched is not None:
+                # stderr on purpose: stdout is the single JSON metadata line.
+                print(
+                    "synapse-web-console: started runtime daemon on "
+                    f"{launched.endpoint.host}:{launched.endpoint.port} "
+                    f"(state dir {config.state_dir})",
+                    file=sys.stderr,
+                    flush=True,
+                )
         project = resolve_project(config)
         return asyncio.run(_run(config, project))
     except KeyboardInterrupt:
@@ -124,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - entry point reports and exits
         print(f"synapse-web-console: unable to start: {exc}", file=sys.stderr)
         return 2
+    finally:
+        # Only ever stops a daemon this call started; a reused one keeps running.
+        if launched is not None:
+            launched.stop()
 
 
 async def _run(config: WebConsoleConfig, project: object) -> int:

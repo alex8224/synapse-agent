@@ -1340,6 +1340,9 @@ def test_b_a8_03_cli_stdout_is_one_json_line_and_stderr_has_the_code(tmp_path: P
             str(state),
             "--static-dir",
             str(static),
+            # This test deliberately has no daemon (and no metadata) at all: it
+            # pins the pairing/metadata contract, not the daemon lifecycle.
+            "--no-start-runtime",
             "--port",
             "0",
             "--pair-ttl-seconds",

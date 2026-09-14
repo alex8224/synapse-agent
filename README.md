@@ -80,30 +80,39 @@ not migrate the CLI, TUI, or ACP consumers.
 `synapse-web`（textual-serve 把 TUI 放进浏览器）入口保持不变、仍可用，与正式宿主
 语义不同。
 
-先同步依赖与前端产物再启动（终端 1 跑前台 daemon，终端 2 跑宿主）：
+先同步依赖与前端产物再启动。**一条命令即可**：宿主默认会在该 `--state-dir` 下没有
+**运行中** daemon 时自己拉起一个（`--port 0` 由内核分配），并在自己退出时把它停掉；
+已经有一个在跑则直接复用、绝不动它。想要「daemon 必须由我亲自启动」就加
+`--no-start-runtime`；给了 `--runtime-port` 也视为「用那个 daemon」，不会另起。
 
 ```bash
 uv sync                                   # 源码检出必做：console script 由安装步骤生成
 cd web && npm ci && npm run build && cd ..
-# 1) 启动 runtime daemon（前台进程；--port 0 = 内核分配端口）
-synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
-# 2) 启动 Web 控制台宿主（产物目录需显式指定；wheel 不内置 web/dist）
+# 一条命令：宿主按需拉起/复用 daemon（产物目录需显式指定；wheel 不内置 web/dist）
 synapse-web-console --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
 ```
 
+仍然可以把 daemon 当作独立服务来跑（服务化部署、或想让它跨控制台存活）：先在一个
+终端启动它，再启动宿主——宿主会发现它并复用。
+
+```bash
+synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
+```
+
 `synapse-runtime` 与 `synapse-web-console` 两个 console script 由安装步骤（`uv sync`）
-生成：未同步的源码检出里不存在，上面两条命令会直接失败。此时改用等价的模块形式，
+生成：未同步的源码检出里不存在，上面的 console script 形式会直接失败。此时改用等价的模块形式，
 不依赖 console script（测试亦用该形式，见 `tests/test_web_console_security.py`）：
 
 ```bash
-uv run --no-sync python -m synapse.runtime.daemon --state-dir ~/.synapse/runtime \
-  --host 127.0.0.1 --port 0
 uv run --no-sync python -m synapse.web_console.entry --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
 ```
 
-两者都是前台常驻进程，前台启动会占住调用它的终端：交互使用各开一个终端；脚本/自动化
+宿主的自动拉起只覆盖它自己启动的 daemon：正常退出（Ctrl+C / SIGTERM）会连带停掉；
+被强杀（任务管理器、`taskkill /F`）则 daemon 会留下来继续跑（它是服务，下次启动会被
+复用而不是重复拉起）。两条命令行形式都是前台常驻进程，前台启动会占住调用它的终端：
+交互使用各开一个终端；脚本/自动化
 （含 agent）必须非阻塞启动——让子进程脱离调用方进程树，并把 stdout/stderr 重定向到
 文件。PowerShell 下从 shell 直接 `Start-Process -RedirectStandardOutput ...` 会因
 子进程继承 stdout 管道而卡住调用方（直到进程退出才返回），可行做法是 `cmd.exe /c`
