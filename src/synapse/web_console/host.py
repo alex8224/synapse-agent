@@ -125,9 +125,16 @@ def resolve_project(
 
 
 def load_global_settings() -> Any:
+    """User-layer settings for the console's own path resolution.
+
+    ``apply_models=False`` on purpose: the console reads exactly one value from
+    this snapshot (``resolved_catalog_path``), and applying the layered model
+    profile would import the model registry -- and with it LangChain/LangGraph,
+    ~40 MB RSS -- into a transport gateway that never builds a model or an agent.
+    """
     from synapse.settings import load_global_settings as _load
 
-    return _load()
+    return _load(apply_models=False)
 
 
 #: Every protocol position that carries a *routing* project id, in the exact

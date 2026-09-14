@@ -148,3 +148,85 @@ def test_streaming_events_reexports_contract_objects() -> None:
     assert streaming_events.TurnEvent is event_types.TurnEvent
     assert streaming_events.TextPayload is event_types.TextPayload
     assert streaming_events.ToolItemPayload is event_types.ToolItemPayload
+
+
+# --------------------------------------------------------------------------- #
+# Import-cost gates for the light facades
+#
+# The loopback web console is a transport gateway: it relays JSON-RPC frames and
+# must never pay for the agent stack.  It imports ``synapse.runtime.daemon``
+# (``config`` / ``auth``) and every settings load imports
+# ``synapse.runtime.subagent_specs`` -- for a constant each -- so the heavy
+# halves of both are resolved lazily.  The daemon composition root is included
+# for the same reason: it must not import the agent stack before a session
+# actually needs a graph.  These gates pin that closure.
+# --------------------------------------------------------------------------- #
+
+LIGHT_FACADES = [
+    "synapse.web_console.config",
+    "synapse.web_console.host",
+    "synapse.web_console.entry",
+    "synapse.runtime.daemon",
+    "synapse.runtime.daemon.application",
+    "synapse.runtime.daemon.entry",
+    "synapse.runtime.subagent_specs",
+]
+
+AGENT_STACK_PREFIXES = (
+    "langchain",
+    "langgraph",
+    "deepagents",
+    "synapse.app.agent",
+)
+
+
+@pytest.mark.parametrize("target", LIGHT_FACADES)
+def test_light_facade_import_does_not_load_the_agent_stack(target: str) -> None:
+    # The facade itself is expected to be present; everything else must not be.
+    loaded = _imported_modules(target) - {target}
+    leaked = sorted(module for module in loaded if _matches(module, AGENT_STACK_PREFIXES))
+    assert leaked == [], f"{target} leaked the agent stack: {leaked}"
+
+
+def test_daemon_package_lazy_reexports_resolve_and_stay_lazy() -> None:
+    """``from synapse.runtime.daemon import ...`` keeps working, lazily."""
+    proc = _run(
+        "import json, sys\n"
+        "import synapse.runtime.daemon as daemon\n"
+        "before = 'synapse.runtime.daemon.application' in sys.modules\n"
+        "from synapse.runtime.daemon import DaemonConfig, RuntimeDaemon, run_daemon\n"
+        "print(json.dumps({\n"
+        "    'before': before,\n"
+        "    'after': 'synapse.runtime.daemon.application' in sys.modules,\n"
+        "    'run_daemon': run_daemon.__name__,\n"
+        "    'runtime_daemon': RuntimeDaemon.__name__,\n"
+        "    'config': DaemonConfig.__name__,\n"
+        "    'submodule_attr': daemon.config.__name__,\n"
+        "    'exports_in_sync': sorted(daemon.__all__) == sorted(daemon._LAZY_EXPORTS),\n"
+        "}))\n"
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["before"] is False, "importing the package must not load the composition root"
+    assert payload["after"] is True
+    assert payload["run_daemon"] == "run_daemon"
+    assert payload["runtime_daemon"] == "RuntimeDaemon"
+    assert payload["config"] == "DaemonConfig"
+    assert payload["submodule_attr"] == "synapse.runtime.daemon.config"
+    assert payload["exports_in_sync"] is True
+
+
+def test_subagent_specs_defers_the_middleware_stack_until_compile() -> None:
+    """The declarative half stays importable without the compiler's stack."""
+    proc = _run(
+        "import json, sys\n"
+        "from synapse.runtime.subagent_specs import REASONING_EFFORT_LEVELS\n"
+        "print(json.dumps({\n"
+        "    'levels': list(REASONING_EFFORT_LEVELS),\n"
+        "    'middleware_loaded': 'synapse.runtime.middleware' in sys.modules,\n"
+        "}))\n"
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["levels"] == ["off", "minimal", "low", "medium", "high", "max"]
+    assert payload["middleware_loaded"] is False

@@ -29,15 +29,14 @@ from typing import Any, Literal
 
 import yaml
 
-from synapse.content.prompts import MANDATORY_CODING_RULES
-from synapse.integrations.openai_oauth_middleware import (
-    build_openai_oauth_compat_middleware,
-)
-from synapse.runtime.middleware import build_tool_exclusion_middleware
-from synapse.runtime.session_header_middleware import (
-    build_session_header_middleware,
-)
 from synapse.settings.config_paths import layered_agents_dirs
+
+# NOTE: this module stays import-light on purpose.  ``compile_task_specs`` is the
+# only place that needs the agent middleware stack (deepagents/LangChain,
+# ~40 MB RSS), so those imports live inside it.  ``synapse.settings.schema``
+# imports this module for the ``REASONING_EFFORT_LEVELS`` vocabulary alone, and a
+# module-scope import would charge every settings load -- including the loopback
+# web console, which never builds an agent -- for that stack.
 
 OwnershipMode = Literal["task", "handoff"]
 
@@ -368,6 +367,14 @@ def compile_task_specs(
     expressed through one ``build_tool_exclusion_middleware`` instance per
     spec, mirroring the main agent's isolation strategy.
     """
+    # Deferred on purpose: see the module-level note above.
+    from synapse.content.prompts import MANDATORY_CODING_RULES
+    from synapse.integrations.openai_oauth_middleware import (
+        build_openai_oauth_compat_middleware,
+    )
+    from synapse.runtime.middleware import build_tool_exclusion_middleware
+    from synapse.runtime.session_header_middleware import build_session_header_middleware
+
     specs: list[dict[str, Any]] = []
     for d in definitions:
         if not d.enabled or d.ownership != "task":

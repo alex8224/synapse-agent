@@ -13,7 +13,6 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any
 
-from synapse.app.agent import build_coding_agent
 from synapse.models.helpers import apply_thinking_to_settings
 from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
@@ -133,6 +132,10 @@ def apply_mcp_rebinding(
     selection + discovered/loaded tools per server) for the runtime service to
     project; that is what lets a client tell "configured on" from "tools loaded".
     """
+    # Deferred on purpose, and only here: ``synapse.app.agent`` pulls the
+    # deepagents stack (~89 MB RSS, ~3.3 s cold import) and the daemon must not
+    # pay that before a session actually needs a graph.  See ``_make_manager``.
+    from synapse.app.agent import build_coding_agent
     from synapse.integrations.mcp_client import get_mcp_pool_registry
 
     pool_key = f"{descriptor.project_id}:{thread_id}"
@@ -322,6 +325,13 @@ class RuntimeDaemon:
         project_settings = load_project_settings(descriptor.workspace)
 
         def build_agent(settings: Any, thread_id: str) -> Any:
+            # Deferred on purpose: this is the daemon's first real need for the
+            # agent stack, so the ~89 MB deepagents closure and its ~3.3 s cold
+            # import land on the first session instead of on daemon startup --
+            # an idle daemon then holds ~47 MB instead of ~115 MB.  The import
+            # cost is paid exactly once per process either way.
+            from synapse.app.agent import build_coding_agent
+
             return build_coding_agent(
                 settings,
                 project_root=descriptor.workspace,

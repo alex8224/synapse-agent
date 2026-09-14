@@ -74,7 +74,9 @@ def test_mcp_rebinding_writes_only_what_was_asked_and_reuses_a_live_pool(
         builds.append(kwargs)
         return SimpleNamespace(_coding_mcp_servers=["search"], _coding_mcp_tool_names=["x"])
 
-    monkeypatch.setattr(app, "build_coding_agent", fake_build)
+    # Patched where the name is defined: ``application`` imports it lazily, at
+    # the first session build, so an idle daemon stays free of the agent stack.
+    monkeypatch.setattr("synapse.app.agent.build_coding_agent", fake_build)
     monkeypatch.setattr(
         "synapse.integrations.mcp_client.get_mcp_pool_registry", lambda: FakeRegistry()
     )

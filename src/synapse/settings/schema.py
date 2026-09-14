@@ -577,15 +577,24 @@ def load_project_settings(workspace: Path | str | None = None, **overrides: Any)
     return _load_settings_impl(overrides=overrides, apply_env=False)
 
 
-def load_global_settings(**overrides: Any) -> Settings:
+def load_global_settings(*, apply_models: bool = True, **overrides: Any) -> Settings:
     """Load user-layer-only settings for the global control plane (P7-01).
 
     Resolves catalog/UI/model config without touching the process ``cwd``:
     does not create ``<cwd>/.synapse``, does not load a project ``.env``, and
     does not register the cwd as a project.  The workspace stays unresolved
     until the user picks a concrete project.
+
+    ``apply_models=False`` stops before the layered ``models.json`` profile
+    resolution.  That step is the only one that imports the model registry --
+    and with it LangChain/LangGraph, ~40 MB RSS -- so a caller that reads
+    nothing but user-layer *paths* (the loopback web console resolving the
+    project catalog) can skip it.  The returned snapshot is otherwise
+    identical; only the model profile fields are left at their defaults.
     """
-    return _load_settings_impl(overrides=overrides, apply_env=False, global_only=True)
+    return _load_settings_impl(
+        overrides=overrides, apply_env=False, global_only=True, apply_models=apply_models
+    )
 
 
 def _load_settings_impl(
@@ -593,6 +602,7 @@ def _load_settings_impl(
     overrides: dict[str, Any],
     apply_env: bool,
     global_only: bool = False,
+    apply_models: bool = True,
 ) -> Settings:
     project_root = overrides.get("workspace")
     root_path = Path(project_root).expanduser().resolve() if project_root is not None else None
@@ -703,6 +713,9 @@ def _load_settings_impl(
 
     if not global_only:
         settings.ensure_dirs()
+
+    if not apply_models:
+        return settings
 
     # Layered models.json → selected profile (api_key / base_url / thinking).
     # Model profile resolution is runtime configuration, while UI activation is
