@@ -23,7 +23,10 @@
   }
   .ui-icon-button { width: var(--control-h); padding: 0; flex-shrink: 0; }
   .ui-icon-button svg, .ui-button svg { flex-shrink: 0; font-size: 20px; }
-  .ui-compact { width: var(--control-compact-h); min-height: var(--control-compact-h); }
+  /* A compact control is shorter, not necessarily square: the fixed width is an
+     icon-button affordance, so a text button keeps sizing to its label. */
+  .ui-compact { min-height: var(--control-compact-h); }
+  .ui-icon-button.ui-compact { width: var(--control-compact-h); }
   .ui-compact svg { font-size: 16px; }
   .ui-button:hover:not(:disabled), .ui-icon-button:hover:not(:disabled),
   .ui-nav-row:hover, .ui-menu-item:hover:not(:disabled) {
