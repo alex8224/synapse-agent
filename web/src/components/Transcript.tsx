@@ -1,7 +1,14 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import { expandHint, thoughtLabel, toolGroupLabel, toolStatusLabel } from '../stores/transcriptLabels.ts';
+import {
+  expandHint,
+  thoughtIcon,
+  thoughtLabel,
+  toolGroupIcon,
+  toolGroupLabel,
+  toolStatusLabel,
+} from '../stores/transcriptLabels.ts';
 import { Markdown } from './Markdown.tsx';
 import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
@@ -69,7 +76,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
           className="inline-flex cursor-pointer select-none items-center gap-1.5 font-mono text-[11px] text-gray-500 transition-colors hover:text-gray-900"
         >
           <span className="material-symbols-outlined text-[13px] text-gray-400">
-            {m.expanded === true ? 'expand_more' : 'chevron_right'}
+            {thoughtIcon(m.duration === 'streaming')}
           </span>
           <span>{thoughtLabel(m.duration)}</span>
           <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
@@ -101,8 +108,18 @@ const TranscriptRow = React.memo(function TranscriptRow({
           title={expanded ? '收起工具详情' : '展开工具详情'}
           className="inline-flex cursor-pointer select-none items-center gap-1.5 font-mono text-[11px] text-gray-600 transition-colors hover:text-gray-900"
         >
-          <span className="material-symbols-outlined text-[14px] text-gray-400">
-            {expanded ? 'arrow_drop_down' : 'arrow_right'}
+          {/* The batch's own outcome, so a failed or running batch is legible
+              without reading the counters next to it. */}
+          <span
+            className={`material-symbols-outlined text-[14px] ${
+              failed > 0
+                ? 'text-red-500'
+                : running > 0
+                  ? 'animate-spin text-blue-500'
+                  : 'text-gray-400'
+            }`}
+          >
+            {toolGroupIcon({ running, failed })}
           </span>
           <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
           {running > 0 && (
@@ -115,6 +132,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
               {toolList.length > 4 ? ` +${toolList.length - 4}` : ''}
             </span>
           )}
+          <span className="text-gray-400">{expandHint(expanded)}</span>
         </div>
         {expanded && (
           <div className="mt-1.5 space-y-1.5">

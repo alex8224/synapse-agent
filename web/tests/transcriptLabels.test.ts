@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 
 import {
   expandHint,
+  thoughtIcon,
   thoughtLabel,
   toolGroupLabel,
+  toolGroupIcon,
   toolStatusLabel,
 } from '../src/stores/transcriptLabels.ts';
 
@@ -35,15 +37,27 @@ test('toolGroupLabel uses the design-spec wording and pluralises', () => {
 });
 
 test('thoughtLabel distinguishes streaming, completed and projected rows', () => {
-  assert.equal(thoughtLabel('streaming'), '◆ Thinking...');
-  assert.equal(thoughtLabel('0.1s'), '◆ Thought for 0.1s');
-  assert.equal(thoughtLabel('2.9s'), '◆ Thought for 2.9s');
-  assert.equal(thoughtLabel('done'), '◆ Thought');
-  assert.equal(thoughtLabel(undefined), '◆ Thought');
-  assert.equal(thoughtLabel(''), '◆ Thought');
+  assert.equal(thoughtLabel('streaming'), 'Thinking...');
+  assert.equal(thoughtLabel('0.1s'), 'Thought for 0.1s');
+  assert.equal(thoughtLabel('2.9s'), 'Thought for 2.9s');
+  assert.equal(thoughtLabel('done'), 'Thought');
+  assert.equal(thoughtLabel(undefined), 'Thought');
+  assert.equal(thoughtLabel(''), 'Thought');
 });
 
 test('expandHint reflects the collapsed state', () => {
   assert.equal(expandHint(true), '(收起)');
   assert.equal(expandHint(false), '(展开)');
+});
+
+test('a reasoning row carries a thinking glyph, wired while it runs', () => {
+  assert.equal(thoughtIcon(false), 'psychology');
+  assert.equal(thoughtIcon(true), 'neurology');
+});
+
+test('a tool-batch header carries its own outcome', () => {
+  assert.equal(toolGroupIcon({ running: 0, failed: 0 }), 'build');
+  assert.equal(toolGroupIcon({ running: 2, failed: 0 }), 'progress_activity');
+  assert.equal(toolGroupIcon({ running: 1, failed: 1 }), 'error');
+  assert.equal(toolGroupIcon({ running: 0, failed: 3 }), 'error');
 });
