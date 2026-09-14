@@ -1,4 +1,4 @@
-import { PanelLeft20Regular, Folder20Regular, Branch20Regular, Chat20Regular } from '@fluentui/react-icons';
+import { PanelLeft20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
 import React, { useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -92,9 +92,9 @@ export const TopBar: React.FC = () => {
             its separator so the session tab and the branch keep their room. */}
         {projectName !== '' && (
           <>
-            <span className="hidden text-gray-300 mx-1 lg:inline">|</span>
+            <span className="hidden h-3.5 w-px bg-line/80 mx-1 lg:inline-block" aria-hidden="true" />
             <div
-              className="hidden min-w-0 items-center gap-1.5 text-gray-800 lg:flex"
+              className="hidden min-w-0 items-center gap-1.5 rounded-control px-2 py-1 text-xs font-normal text-gray-700 hover:bg-surface-hover/80 transition-colors lg:flex cursor-default"
               title={activeProject?.workspace_path}
             >
               <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-600" />
@@ -109,7 +109,11 @@ export const TopBar: React.FC = () => {
             `runtime.git.status` has been read. */}
         {gitBranch !== '' && (
           <>
-            <span className="text-gray-300 mx-1">|</span>
+            {projectName !== '' ? (
+              <ChevronRight16Regular aria-hidden="true" className="hidden shrink-0 text-gray-400 lg:inline" />
+            ) : (
+              <span className="h-3.5 w-px bg-line/80 mx-1 inline-block" aria-hidden="true" />
+            )}
             {/* Clicking the branch chip opens the same read-only git explorer as
                 the statistics chip; the tracking counts come from
                 `runtime.git.status`. */}
@@ -117,39 +121,28 @@ export const TopBar: React.FC = () => {
               type="button"
               onClick={refreshAndOpenExplorer}
               title="刷新并打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              className="ui-button min-w-0 text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
+              aria-label="查看 Git 变更"
+              className="ui-button min-w-0 h-7 text-xs px-2 rounded-control text-gray-700 hover:bg-surface-hover active:bg-surface-pressed transition-colors"
             >
-              <Branch20Regular aria-hidden="true" />
-              <span className="max-w-[14rem] truncate">{gitBranch}</span>
+              <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
+              <span className="max-w-[14rem] truncate font-medium">{gitBranch}</span>
               {gitStatus !== null && gitStatus.ahead > 0 && (
-                <span className="text-emerald-600">↑{gitStatus.ahead}</span>
+                <span className="text-emerald-600 font-numeric text-[11px]">↑{gitStatus.ahead}</span>
               )}
               {gitStatus !== null && gitStatus.behind > 0 && (
-                <span className="text-amber-600">↓{gitStatus.behind}</span>
+                <span className="text-amber-600 font-numeric text-[11px]">↓{gitStatus.behind}</span>
               )}
-            </button>
-            {/* Change statistics, hanging off the branch chip: the dot is the same
-                dirty marker the TUI's chrome shows, and `+N -M` are the real tracked
-                added/removed lines from `runtime.git.status` (no number at all while
-                they are unknown, never a fabricated zero).  Clicking it opens the
-                same read-only git explorer as the branch chip. */}
-            <button
-              type="button"
-              onClick={refreshAndOpenExplorer}
-              title="刷新并打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              aria-label="查看 Git 变更"
-              className="ui-button shrink-0 font-numeric text-xs border border-line/50 bg-surface/50 backdrop-blur-sm shadow-card"
-            >
+              <span className="inline-block h-3 w-px bg-line mx-0.5" aria-hidden="true" />
               <span
                 className={`inline-block h-2 w-2 rounded-full ${
                   gitDirty ? 'bg-amber-500' : 'bg-emerald-500'
                 }`}
               ></span>
               {hasLineCounts && (
-                <>
-                  <span className="text-emerald-600">+{insertions}</span>
+                <span className="font-numeric text-[11px] tracking-tight shrink-0">
+                  <span className="text-emerald-600">+{insertions}</span>{' '}
                   <span className="text-red-600">-{deletions}</span>
-                </>
+                </span>
               )}
             </button>
           </>
@@ -162,7 +155,7 @@ export const TopBar: React.FC = () => {
           a session name instead of a fragment of it -- and `min-w-0` lets a
           narrow window shrink the chip rather than push the side tracks. */}
       <div
-        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control border border-line/60 bg-surface/60 backdrop-blur-md px-3 py-1.5 text-gray-900 shadow-card"
+        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 hover:bg-surface-hover/50 transition-colors"
         title={sessionTitle}
       >
         <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />
