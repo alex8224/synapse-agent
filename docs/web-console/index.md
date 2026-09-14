@@ -36,6 +36,8 @@
 ```
 
 - **服务端依赖**：直连现有的 synapse.runtime.transport.RuntimeWebSocketServer（默认端口或 --port 启动）。
+  该 daemon 默认由宿主**按需拉起**：`--state-dir` 下没有运行中的 daemon 时宿主自己起一个、
+  退出时停掉；已有一个在跑就复用（`--no-start-runtime` 可关掉，见 `formal-host.md` §1/§2.1）。
 - **前端定位**：单页应用（SPA），以无干扰的极简主义（Kinetic Mono 风格）提供接近 TUI 且体验更优的流式对话、思维链折叠、工具调用查看与 Steer 实时插话能力。
 
 ---
@@ -95,9 +97,9 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | Transcript | ◆ Thought for Xs 折叠思考链 | 按规范文案：`◆ Thought for 0.1s`（流式为 `◆ Thinking...`，历史投影无耗时为 `◆ Thought`），带展开/收起；**折叠态是紧凑的次要日志行**（无填充底色/无边框），展开后才是面板 | 已实现（本轮层级调整） |
 | Transcript | ▾ N tools executed 折叠工具栏 | 按规范文案 `N tools executed`（含 parallel 标注）；折叠态同样是紧凑日志行，展开后逐条工具卡片；工具卡片状态徽章已中文化（运行中/等待/完成/失败/错误/已取消） | 已实现 |
 | Transcript | 一个工具批次一个工具组（本轮修复） | 实时流里 `tool_batch_started/finished` 就是批次边界：每批工具各自成组，组的位置紧随其前的思考/文本之后，**不再把整轮的工具调用合并进第一个组**（对齐 TUI「思考 → 工具 → 思考 → 工具保持两个真实批次」的冒烟项）；assistant 文本同样按段落分行（每段自己的 `answer_completed` 定稿），尚未收到任何工具项的空组不渲染 | 已实现（本轮修复） |
-| Transcript | Markdown 代码块与流式输出 | 围栏代码块（语言标签 + 复制 + 横向滚动 + 按语言高亮，尺寸不变）、标题/列表/引用/表格/行内代码/粗体/链接均正常；**表格正文按正文可读字号**（`text-sm`，14px；表头同字号、只用字重区分），单元格适度 padding，宽表在自身容器内横向滚动、不撑破阅读列 | 已实现（本轮表格可读性调整） |
-| Transcript | LaTeX 公式（规范外，本轮新增） | `$$...$$` 渲染为居中、等宽、显式标注「公式 · LaTeX 源码（未排版）」的块；`$...$` 渲染为行内公式标签。**不引入 TeX 引擎**（保持零运行时依赖），只做「明确标注为数学」的源码呈现；未闭合的流式公式仍可见 | 已实现（无依赖显式呈现） |
-| Transcript | Mermaid（规范外，本轮新增） | mermaid 围栏仍是代码块（语言标签 `mermaid`），头部标注「终端图形渲染未实现」。**不引入 mermaid 运行时**；取舍见交接报告 | 已实现（无依赖显式呈现） |
+| Transcript | Markdown 代码块与流式输出 | 围栏代码块（语言标签 + 复制 + 横向滚动 + 按语言高亮，尺寸不变）、标题/列表/引用/表格/行内代码/粗体/链接均正常；**表格正文按正文可读字号**（`text-sm`，14px；表头同字号、只用字重区分），单元格适度 padding，宽表在自身容器内横向滚动、不撑破阅读列；**每个单元格有 `8rem` 宽度下限**（`.markdown-body th/td`，`web/src/index.css`），窄列（如「分组」「类型」）不再被自动布局压成竖排；单元格里的 `<br>` / `<br/>` / `<br />`（任意大小写）渲染为真实换行（`parse.ts` 的 `break` 节点 → React `<br />`），标签本身不会作为文本或标记进入 DOM | 已实现（本轮表格可读性 + 换行修复） |
+| Transcript | LaTeX 公式（规范外，本轮改为真实排版） | `$$...$$` 由 **KaTeX** 排版为居中公式块，`$...$` 排版为行内公式。渲染器固定以 `trust: false` / `throwOnError: false` / `maxExpand: 1000` 运行：不可生成链接、不可注入样式、宏展开有上限。未闭合的流式公式与解析失败的公式回退为「公式 + LaTeX 源码」块并写明原因（`公式解析失败，显示源码`），不会出现红色半成品 | 已实现（本轮） |
+| Transcript | Mermaid（规范外，本轮改为真实绘图） | mermaid 围栏由 **mermaid** 渲染为 SVG（`import('mermaid')` 懒加载，不进初始包），头部保留「复制源码」。渲染以 `securityLevel: 'strict'` + `htmlLabels: false` 运行，输出再过一遍 DOMPurify SVG profile，并把 SVG 内 `<style>` 的 `@import` / `url()` 中和掉（内联 SVG 的样式表作用于整页）。含 `%%{...}%%` 指令、YAML frontmatter（`---`）、空定义、超 20000 字符的图形**拒绝渲染**并回退为代码块（头部写明原因）；mermaid 抛错同样回退并显示错误首行 | 已实现（本轮） |
 | CommandBar | 固定在底部的卡片 | 有：贴在工作区列底边（`bottom-0`），与聊天列同宽同边（`.console-gutter` + `.console-column`） | 已实现（本轮布局对齐） |
 | CommandBar | 运行中浮现 Steer queue 状态 | 有（`Steer queue: N queued`） | 已实现 |
 | CommandBar | 单一蓝色圆形发送按钮 ↑ | 空闲为蓝色 `↑` 发送（输入为空时禁用）；**运行中变为红色 `■` 停止键**，始终可用，点击调用 `runtime.turn.cancel`。与规范「忙碌自动转为 Steer 插队」有意不同：插话仍由 **Enter** 承担，顶部状态条显示 `运行中 · Steer 队列 N` | 已实现（按评审调整） |
@@ -114,7 +116,9 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 其它实测观察：
 
 - 运行态活动行文案为 `model waiting for model`（`phase` 与 `detail` 语义重复）。
-- Markdown 表格列宽按内容自动分配，窄列（如「类型」）会被压成竖排。
+- Markdown 表格列宽仍按内容自动分配，但单元格的 `8rem` 下限（见上）挡住了「窄列被压成竖排」
+  这条旧观察：实测 1280 / 768 / 496px 三种阅读列宽下，短标签列都保持 128px 且只占 1 行
+  （带 `<br>` 的单元格按作者意图占 2 行）；下限之和超过阅读列时表格在自身容器内横向滚动。
 - 历史页超过服务端单页上限（256 KiB）时，客户端按 20→10→5→2→1 自适应缩小重试
   （`readHistoryPage`）；仍失败则渲染可见错误提示，不再静默停在空态。
 - 会话列表按 50 条一页**显式**翻页（底部「加载更多」+「已加载 N / 共 M」），不做自动翻页。
@@ -275,17 +279,31 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 
 助手回答与思考链按 Markdown 渲染（`web/src/components/Markdown.tsx` +
 `web/src/markdown/parse.ts`）：标题、列表（含嵌套）、引用、水平线、GFM 表格，以及行内
-代码/粗体/斜体/删除线/链接。围栏代码块由 `web/src/components/CodeBlock.tsx` 渲染：
+代码/粗体/斜体/删除线/链接。模型常用的硬换行标签 `<br>` / `<br/>` / `<br />`（任意大小写）
+解析为类型化的 `break` 节点、由 React 渲染成 `<br />`，因此单元格里可以自己堆叠多行，而标签
+本身既不会作为文本显示、也不会作为标记注入。围栏代码块由 `web/src/components/CodeBlock.tsx` 渲染：
 语言标签、复制按钮、横向滚动（不换行）、按语言的高亮（`web/src/markdown/highlight.ts`，
 覆盖 python/js/ts/json/bash/yaml/sql/rust/go/java/c/cpp/css/html 与 diff，未知语言保持纯文本）。
 
 约束与边界：
 
-- 解析器无第三方依赖，**不生成 HTML**：返回类型化节点由 React 渲染，不存在注入路径；
+- 解析器无第三方依赖，**不生成 HTML**：返回类型化节点由 React 渲染，正文本身没有注入
+  路径（公式与图形这两个「输出即标记」的例外见本节末尾）；
 - 链接目标经 `sanitizeHref` 过滤，仅保留 http/https/mailto、锚点与相对路径，
   `javascript:` / `data:` / 协议相对 `//host` 一律降级为纯文本；
 - 流式未闭合的围栏仍渲染为代码块（`closed=false`，头部标注 streaming）；
 - 超长文档（>200k 字符）与超长代码块（>40k 字符）跳过解析/高亮，回退为纯文本/无高亮，
   避免长回答阻塞渲染；
-- LaTeX 与 Mermaid **未**渲染为图形（TUI 分别用 TeXicode 与 termaid 生成终端图），
-  在 web 端按普通代码块显示。
+- LaTeX 与 Mermaid 是仅有的两个「输出即标记」的渲染器：KaTeX 输出与经 DOMPurify 清洗的
+  mermaid SVG 统一经 `GeneratedHtml`（`src/**` 中唯一一处 `dangerouslySetInnerHTML`）
+  注入，其余 Markdown 一律走类型化节点，`tests/markdownRenderGuard.test.ts` 静态守护这一点；
+- KaTeX 以 `trust: false` 运行（`\href` / `\includegraphics` / `\htmlStyle` 等不可信命令只
+  渲染为红色字面量），mermaid 以 `securityLevel: 'strict'` + `htmlLabels: false` 运行；
+- 模型文本能把 CSS 带进 SVG 的通道只有两个，**两个都不渲染**：`%%{...}%%` 指令与 YAML
+  frontmatter（`---`）。二者进入同一个 config 对象（`themeCSS` / `fontFamily`），而
+  mermaid 的 `sanitizeDirective` 只校验花括号配平、DOMPurify 不解析 CSS，所以只堵其中一个
+  会留下另一个；此外渲染结果里 `<style>` 的 `@import` / `url()` 会被中和，作为升级到新版
+  mermaid 时的兜底；
+- 两个渲染器都不静默降级：流式中、被拒绝、解析失败三种情况都回退为带原因的源码块。
+- 依赖口径变化：由「零运行时依赖」改为新增 `mermaid` / `katex` / `dompurify` 三个依赖
+  （mermaid 懒加载，KaTeX 与其样式表随主包加载），不再以「不渲染」换取零依赖。
