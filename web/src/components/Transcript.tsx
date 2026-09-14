@@ -69,9 +69,14 @@ const TranscriptRow = React.memo(function TranscriptRow({
       // Chat layout: the user's turn sits on the right, the assistant's on
       // the left, and the side it is on is the role — so no "User" /
       // "Assistant" heading is needed.
+      // The 20% right inset shares the assistant body's right edge: that block is
+      // capped at 80% of the reading column, so the user's turn is held back by
+      // whatever is left. The two numbers must keep summing to 100% (pinned by
+      // `transcriptLayoutGuard.test.ts`), which is what keeps the bubble from
+      // hanging past the answer it belongs to.
       // `data-turn-id` is the anchor the turn rail scrolls to.
       <div key={m.id} data-turn-id={m.id} className="flex justify-end">
-        <div className="flex max-w-[80%] flex-col items-end gap-1.5">
+        <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5">
           {m.content !== '' && (
             <div className="ui-user-bubble whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900">
               {m.content}

@@ -31,6 +31,22 @@ test('the user turn sits on the right, the assistant turn on the left', () => {
   );
 });
 
+test('the user turn shares the assistant body right edge', () => {
+  // The assistant body block is capped at 80% of the reading column, so the user's
+  // turn is inset by the remaining 20%: the bubble ends on the same line as the
+  // answer instead of hanging past it.  The two literals are a pair -- if either
+  // one moves, the other has to.
+  assert.ok(
+    transcript.includes('mr-[20%] flex max-w-[80%]'),
+    'the user turn must be inset by the rest of the reading column',
+  );
+  assert.equal(
+    (transcript.match(/max-w-\[80%\]/g) ?? []).length,
+    2,
+    'only the user turn and the assistant body may carry the 80% cap',
+  );
+});
+
 test('the side a turn is on replaces the role heading', () => {
   assert.ok(!transcript.includes('>User</span>'), 'the user turn must not print a role heading');
   assert.ok(
