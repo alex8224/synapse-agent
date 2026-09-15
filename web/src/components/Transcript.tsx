@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BrainCircuit20Regular,
   Sparkle20Regular,
@@ -9,6 +9,12 @@ import {
   ArrowSort20Regular,
   DismissCircle20Regular,
   Shield20Regular,
+  Copy16Regular,
+  Checkmark16Regular,
+  Edit16Regular,
+  ChevronRight16Regular,
+  ChevronDown16Regular,
+  WindowConsole20Regular,
 } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -23,6 +29,15 @@ import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
 import type { TranscriptMessage } from '../stores/historyMapper.ts';
+
+function formatProcessDuration(totalSeconds: number, isStreaming: boolean): string {
+  if (isStreaming && totalSeconds === 0) return '进行中…';
+  const sec = Math.max(1, Math.round(totalSeconds));
+  if (sec < 60) return `${sec} 秒`;
+  const mins = Math.floor(sec / 60);
+  const remSec = sec % 60;
+  return remSec > 0 ? `${mins} 分 ${remSec} 秒` : `${mins} 分钟`;
+}
 
 /**
  * How close to the bottom the view still counts as "following the stream", in
@@ -60,15 +75,40 @@ const EARLIER_HISTORY_TRIGGER_PX = 48;
 const TranscriptRow = React.memo(function TranscriptRow({
   message: m,
   handleToggleExpand,
+  processMeta,
 }: {
   message: TranscriptMessage;
   handleToggleExpand: (id: string) => void;
+  processMeta?: {
+    isFirst: boolean;
+    isLast: boolean;
+    isExpanded: boolean;
+    totalDurationText: string;
+    onToggleExpand: () => void;
+  };
 }) {
   const updateSpotlight = (e: React.MouseEvent<HTMLElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     e.currentTarget.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
     e.currentTarget.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
   };
+  const submitPrompt = useConsoleStore((state) => state.submitPrompt);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(m.content ?? '');
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (text: string) => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+    if (!clipboard || !text) return;
+    void clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => undefined);
+  };
+
   if (m.type === 'user') {
     return (
       // Chat layout: the user's turn sits on the right, the assistant's on
@@ -81,57 +121,154 @@ const TranscriptRow = React.memo(function TranscriptRow({
       // hanging past the answer it belongs to.
       // `data-turn-id` is the anchor the turn rail scrolls to.
       <div key={m.id} data-turn-id={m.id} className="flex justify-end">
-        <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5">
-          {m.content !== '' && (
-            <div
-              onMouseMove={updateSpotlight}
-              className="ui-user-bubble fluent-spotlight whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900"
-            >
-              {m.content}
+        <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5 group">
+          {isEditing ? (
+            <div className="w-full flex flex-col gap-2 rounded-card border border-accent bg-surface p-2.5 shadow-card">
+              <textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const trimmed = editText.trim();
+                    if (trimmed) {
+                      void submitPrompt(trimmed);
+                      setIsEditing(false);
+                    }
+                  } else if (e.key === "Escape") {
+                    setIsEditing(false);
+                  }
+                }}
+                className="w-full resize-none bg-transparent text-sm text-gray-900 focus:outline-none font-sans"
+                rows={Math.min(8, Math.max(2, editText.split('\n').length))}
+                autoFocus
+              />
+              <div className="flex items-center justify-end gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(false)}
+                  className="rounded px-2.5 py-1 text-gray-500 hover:bg-surface-hover cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const trimmed = editText.trim();
+                    if (trimmed) {
+                      void submitPrompt(trimmed);
+                      setIsEditing(false);
+                    }
+                  }}
+                  disabled={!editText.trim()}
+                  className="rounded bg-accent px-3 py-1 text-on-accent font-medium hover:bg-blue-700 cursor-pointer disabled:opacity-50"
+                >
+                  发送
+                </button>
+              </div>
             </div>
+          ) : (
+            <>
+              {m.content !== "" && (
+                <div
+                  onMouseMove={updateSpotlight}
+                  className="ui-user-bubble fluent-spotlight whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900"
+                >
+                  {m.content}
+                </div>
+              )}
+              {m.attachments !== undefined && m.attachments.length > 0 && (
+                <div className="flex flex-wrap justify-end gap-2">
+                  {m.attachments.map((attachment) => (
+                    <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleCopy(m.content ?? '')}
+                  title={copied ? "已复制" : "复制消息"}
+                  aria-label="复制消息"
+                  className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
+                >
+                  {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsEditing(true); setEditText(m.content ?? ''); }}
+                  title="编辑并重新发送"
+                  aria-label="编辑并重新发送"
+                  className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
+                >
+                  <Edit16Regular aria-hidden="true" />
+                </button>
+                <span className="font-mono text-[10px] text-gray-400 ml-1">{m.timestamp}</span>
+              </div>
+            </>
           )}
-          {m.attachments !== undefined && m.attachments.length > 0 && (
-            <div className="flex flex-wrap justify-end gap-2">
-              {m.attachments.map((attachment) => (
-                <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
-              ))}
-            </div>
-          )}
-          <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
         </div>
       </div>
     );
   }
   if (m.type === 'thought') {
+    if (processMeta && !processMeta.isExpanded && !processMeta.isFirst) {
+      return null;
+    }
     return (
       <div key={m.id} className="max-w-[85%]">
-        <div
-          onClick={() => handleToggleExpand(m.id)}
-          onMouseMove={updateSpotlight}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
-        >
-          {m.duration === 'streaming' ? (
-            <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
-          ) : (
-            <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
-          )}
-          <span>{thoughtLabel(m.duration)}</span>
-          <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
-        </div>
-        <div className="fluent-accordion" data-expanded={m.expanded === true}>
-          <div className="fluent-accordion-content pt-1.5">
-            <div className="material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
-              <Markdown text={m.content ?? ''} />
+        {processMeta && !processMeta.isExpanded ? (
+          <>
+            <button
+              type="button"
+              onClick={processMeta.onToggleExpand}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+            >
+              <span>已工作 {processMeta.totalDurationText}</span>
+              <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+            </button>
+            <div className="border-b border-line/60 my-2.5" />
+          </>
+        ) : (
+          <>
+            {processMeta && processMeta.isFirst && (
+              <button
+                type="button"
+                onClick={processMeta.onToggleExpand}
+                className="mb-1.5 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+              >
+                <span>已工作 {processMeta.totalDurationText}</span>
+                <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+              </button>
+            )}
+            <div
+              onClick={() => handleToggleExpand(m.id)}
+              onMouseMove={updateSpotlight}
+              className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
+            >
+              {m.duration === 'streaming' ? (
+                <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
+              ) : (
+                <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
+              )}
+              <span>{thoughtLabel(m.duration)}</span>
+              <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
             </div>
-          </div>
-        </div>
+            <div className="fluent-accordion" data-expanded={m.expanded === true}>
+              <div className="fluent-accordion-content pt-1.5">
+                <div className="material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
+                  <Markdown text={m.content ?? ''} />
+                </div>
+              </div>
+            </div>
+            {processMeta && processMeta.isLast && <div className="border-b border-line/60 my-2.5" />}
+          </>
+        )}
       </div>
     );
   }
   if (m.type === 'tool_group') {
     const toolList = m.tools || [];
-    // A batch opens its group before the first item lands (and a batch can
-    // end up carrying none), so an empty placeholder is not a row yet.
     if (toolList.length === 0) {
       return null;
     }
@@ -140,79 +277,105 @@ const TranscriptRow = React.memo(function TranscriptRow({
       (t) => t.status === 'running' || t.status === 'pending',
     ).length;
     const expanded = m.expanded === true;
+    if (processMeta && !processMeta.isExpanded && !processMeta.isFirst) {
+      return null;
+    }
     return (
       <div key={m.id} className="max-w-[85%] py-1">
-        <div
-          onClick={() => handleToggleExpand(m.id)}
-          title={expanded ? '收起工具详情' : '展开工具详情'}
-          onMouseMove={updateSpotlight}
-          className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
-        >
-          {failed > 0 ? (
-            <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
-          ) : running > 0 ? (
-            <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '14px' }} />
-          ) : (
-            <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
-          )}
-          <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
-          {running > 0 && (
-            <span className="font-medium text-blue-500">{running} running</span>
-          )}
-          {failed > 0 && <span className="font-medium text-red-600">{failed} failed</span>}
-          {!expanded && toolList.length > 0 && (
-            <span className="truncate text-gray-400">
-              {toolList.slice(0, 4).map((t) => t.name).join(' · ')}
-              {toolList.length > 4 ? ` +${toolList.length - 4}` : ''}
-            </span>
-          )}
-          <span className="text-gray-400">{expandHint(expanded)}</span>
-        </div>
-        <div className="fluent-accordion" data-expanded={expanded}>
-          <div className="fluent-accordion-content pt-1.5 space-y-1.5">
-            {toolList.map((t) => (
-              <div
-                key={t.id}
-                onMouseMove={updateSpotlight}
-                className={`rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight ${
-                  t.error ? 'border-red-200 bg-red-50' : 'border-line bg-surface'
-                }`}
+        {processMeta && !processMeta.isExpanded ? (
+          <>
+            <button
+              type="button"
+              onClick={processMeta.onToggleExpand}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+            >
+              <span>已工作 {processMeta.totalDurationText}</span>
+              <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+            </button>
+            <div className="border-b border-line/60 my-2.5" />
+          </>
+        ) : (
+          <>
+            {processMeta && processMeta.isFirst && (
+              <button
+                type="button"
+                onClick={processMeta.onToggleExpand}
+                className="mb-1.5 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
               >
-                <div className="flex items-center space-x-2">
-                  <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
-                  <span className="font-medium text-gray-900">{t.label || t.name}</span>
-                  {t.sub && (
-                    <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
-                      sub
-                    </span>
-                  )}
-                  {t.subagentName && (
-                    <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
-                  )}
-                  {t.path && <span className="truncate text-gray-500">{t.path}</span>}
-                  <span
-                    className={`ml-auto shrink-0 rounded-control px-1 text-[10px] ${
-                      t.error
-                        ? 'bg-red-100 text-red-700'
-                        : t.status === 'completed'
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-blue-50 text-blue-500'
-                    }`}
+                <span>已工作 {processMeta.totalDurationText}</span>
+                <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+              </button>
+            )}
+            <div
+              onClick={() => handleToggleExpand(m.id)}
+              title={expanded ? '收起工具详情' : '展开工具详情'}
+              onMouseMove={updateSpotlight}
+              className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
+            >
+              {failed > 0 ? (
+                <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
+              ) : running > 0 ? (
+                <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '14px' }} />
+              ) : (
+                <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
+              )}
+              <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
+              {running > 0 && (
+                <span className="font-medium text-blue-500">{running} running</span>
+              )}
+              {failed > 0 && <span className="font-medium text-red-600">{failed} failed</span>}
+              {!expanded && toolList.length > 0 && (
+                <span className="truncate text-gray-400">
+                  {toolList.slice(0, 4).map((t) => t.name).join(' · ')}
+                  {toolList.length > 4 ? ' +' + (toolList.length - 4) : ''}
+                </span>
+              )}
+              <span className="text-gray-400">{expandHint(expanded)}</span>
+            </div>
+            <div className="fluent-accordion" data-expanded={expanded}>
+              <div className="fluent-accordion-content pt-1.5 space-y-1.5">
+                {toolList.map((t) => (
+                  <div
+                    key={t.id}
+                    onMouseMove={updateSpotlight}
+                    className={"rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight " + (t.error ? "border-red-200 bg-red-50" : "border-line bg-surface")}
                   >
-                    {t.subagentStatus
-                      ? `${toolStatusLabel(t.status)} · ${t.subagentStatus}`
-                      : toolStatusLabel(t.status)}
-                  </span>
-                </div>
-                {t.preview && (
-                  <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
-                    {t.preview}
+                    <div className="flex items-center space-x-2">
+                      {t.name === 'execute' ? (
+                        <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
+                      ) : (
+                        <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
+                      )}
+                      <span className="font-medium text-gray-900">{t.name === 'execute' ? '终端' : (t.label || t.name)}</span>
+                      {t.sub && (
+                        <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
+                          sub
+                        </span>
+                      )}
+                      {t.subagentName && (
+                        <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
+                      )}
+                      {t.path && <span className="truncate text-gray-500">{t.path}</span>}
+                      <span
+                        className={"ml-auto shrink-0 rounded-control px-1 text-[10px] " + (t.error ? "bg-red-100 text-red-700" : t.status === "completed" ? "bg-green-100 text-green-700" : "bg-blue-50 text-blue-500")}
+                      >
+                        {t.subagentStatus
+                          ? (toolStatusLabel(t.status) + " · " + t.subagentStatus)
+                          : toolStatusLabel(t.status)}
+                      </span>
+                    </div>
+                    {t.preview && (
+                      <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
+                        {t.preview}
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+            {processMeta && processMeta.isLast && <div className="border-b border-line/60 my-2.5" />}
+          </>
+        )}
       </div>
     );
   }
@@ -222,7 +385,18 @@ const TranscriptRow = React.memo(function TranscriptRow({
         <div className="text-base leading-relaxed font-sans text-gray-900">
           <Markdown text={m.content ?? ''} />
         </div>
-        <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
+        <div className="flex items-center gap-1.5 pt-0.5">
+          <button
+            type="button"
+            onClick={() => handleCopy(m.content ?? '')}
+            title={copied ? '已复制' : '复制回答'}
+            aria-label="复制回答"
+            className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
+          >
+            {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
+          </button>
+          <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
+        </div>
       </div>
     );
   }
@@ -280,6 +454,79 @@ export const Transcript: React.FC = () => {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const skipAutoScroll = useRef(false);
+
+  const [expandedTurns, setExpandedTurns] = useState<Set<string>>(new Set());
+  const toggleTurnExpanded = useCallback((turnKey: string) => {
+    setExpandedTurns((prev) => {
+      const next = new Set(prev);
+      if (next.has(turnKey)) next.delete(turnKey);
+      else next.add(turnKey);
+      return next;
+    });
+  }, []);
+
+  const processMetaMap = useMemo(() => {
+    const map = new Map<string, {
+      isFirst: boolean;
+      isLast: boolean;
+      isExpanded: boolean;
+      totalDurationText: string;
+      turnKey: string;
+    }>();
+
+    let currentTurnKey = "";
+    let currentGroup: TranscriptMessage[] = [];
+
+    const flushGroup = () => {
+      if (currentGroup.length === 0) return;
+      let totalSec = 0;
+      let isStreaming = false;
+      for (const item of currentGroup) {
+        if (item.type === "thought") {
+          if (item.duration === "streaming") isStreaming = true;
+          else if (item.duration) {
+            const matched = String(item.duration).match(/([0-9.]+)/);
+            if (matched) totalSec += parseFloat(matched[1]);
+          }
+        } else if (item.type === "tool_group") {
+          const tools = item.tools || [];
+          if (tools.some((t: { status?: string }) => t.status === "running" || t.status === "pending")) {
+            isStreaming = true;
+          }
+          totalSec += Math.max(1, tools.length);
+        }
+      }
+      const durationText = formatProcessDuration(totalSec, isStreaming);
+      for (let i = 0; i < currentGroup.length; i++) {
+        const item = currentGroup[i];
+        map.set(item.id, {
+          isFirst: i === 0,
+          isLast: i === currentGroup.length - 1,
+          isExpanded: expandedTurns.has(currentTurnKey),
+          totalDurationText: durationText,
+          turnKey: currentTurnKey,
+        });
+      }
+      currentGroup = [];
+    };
+
+    for (const m of messages) {
+      if (m.type === "user") {
+        flushGroup();
+        currentTurnKey = m.id;
+      } else if (m.type === "thought" || m.type === "tool_group") {
+        if (!currentTurnKey) currentTurnKey = m.id;
+        currentGroup.push(m);
+      } else if (m.type === "assistant") {
+        flushGroup();
+        currentTurnKey = "";
+      } else {
+        flushGroup();
+      }
+    }
+    flushGroup();
+    return map;
+  }, [messages, expandedTurns]);
   /**
    * Whether the view is following the newest content.
    *
@@ -467,9 +714,27 @@ export const Transcript: React.FC = () => {
             当前会话已建立长连接，在下方输入指令即可开始与 Synapse Agent 对话
           </div>
         )}
-        {messages.map((m) => (
-          <TranscriptRow key={m.id} message={m} handleToggleExpand={handleToggleExpand} />
-        ))}
+        {messages.map((m) => {
+          const meta = processMetaMap.get(m.id);
+          return (
+            <TranscriptRow
+              key={m.id}
+              message={m}
+              handleToggleExpand={handleToggleExpand}
+              processMeta={
+                meta
+                  ? {
+                      isFirst: meta.isFirst,
+                      isLast: meta.isLast,
+                      isExpanded: meta.isExpanded,
+                      totalDurationText: meta.totalDurationText,
+                      onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
+                    }
+                  : undefined
+              }
+            />
+          );
+        })}
 
         {/* HITL Pending Approval Dialog */}
         {pendingApproval && (
