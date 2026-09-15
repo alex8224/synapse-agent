@@ -8,6 +8,8 @@
  * console uses.  Unknown values fall back to the raw string instead of being
  * hidden.
  */
+import { isHighlightedLanguage } from '../markdown/highlight.ts';
+import { extensionOf } from '../runtime-client/artifacts.ts';
 
 /** Human label for one runtime tool status. */
 export function toolStatusLabel(status: string): string {
@@ -69,4 +71,144 @@ export function toolGroupIcon(counts: ToolGroupCounts): string {
   if (counts.failed > 0) return 'error';
   if (counts.running > 0) return 'progress_activity';
   return 'build';
+}
+
+/** Argument keys already printed as a field of the row itself. */
+const TOOL_ARG_SHOWN_ELSEWHERE = new Set(['intent', 'label']);
+/** How many arguments one tool row prints before it stops. */
+export const TOOL_ARG_LIMIT = 4;
+/** Longest single argument value kept verbatim. */
+const TOOL_ARG_VALUE_CHARS = 160;
+/** Longest argument line kept in total. */
+const TOOL_ARG_LINE_CHARS = 400;
+
+/**
+ * One bounded `key=value · key=value` line for a tool row's arguments.
+ *
+ * The row is a log line, not a place to dump a payload: an argument is whatever
+ * the model wrote (a command, a patch, a whole file), so each value is collapsed
+ * to one line, truncated, the count of keys is capped and the finished line is
+ * capped again.  `intent` is the row's own label, so repeating it here would
+ * print the same words twice.  Returns `''` when nothing is left to show.
+ */
+export function formatToolArgs(args: unknown, limit: number = TOOL_ARG_LIMIT): string {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return '';
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (parts.length >= Math.max(0, limit)) break;
+    if (TOOL_ARG_SHOWN_ELSEWHERE.has(key) || value === null || value === undefined) continue;
+    const raw = typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
+    const text = raw.replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    parts.push(`${key}=${text.length > TOOL_ARG_VALUE_CHARS ? text.slice(0, TOOL_ARG_VALUE_CHARS - 1) + '…' : text}`);
+  }
+  const line = parts.join(' · ');
+  return line.length > TOOL_ARG_LINE_CHARS ? line.slice(0, TOOL_ARG_LINE_CHARS - 1) + '…' : line;
+}
+
+/**
+ * Tool names whose result *is* a file's content (mirrors the runtime's read/edit
+ * sets in `runtime/timeline.py::tool_category`).  A search or list row carries a
+ * path too, but its body is a result list, not the file.
+ */
+const FILE_CONTENT_TOOLS = new Set([
+  'read_file',
+  'read',
+  'read_file_lines',
+  'write_file',
+  'edit_file',
+  'write',
+  'edit',
+  'patch',
+  'create_file',
+]);
+
+/**
+ * Extensions mapped to the language the highlighter knows them by.
+ *
+ * The extension itself is often already a key (`py`, `tsx`, `yaml`), but the
+ * canonical name is what the code block's header prints, so the row reads
+ * "python" rather than "py" and the same file never highlights under two names.
+ */
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  py: 'python',
+  pyi: 'python',
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  json: 'json',
+  jsonl: 'json',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  ps1: 'powershell',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  ini: 'ini',
+  rs: 'rust',
+  go: 'go',
+  java: 'java',
+  c: 'c',
+  h: 'c',
+  cpp: 'cpp',
+  cc: 'cpp',
+  hpp: 'cpp',
+  sql: 'sql',
+  css: 'css',
+  scss: 'css',
+  html: 'html',
+  xml: 'xml',
+  diff: 'diff',
+  patch: 'diff',
+};
+
+/**
+ * Whether a tool result is a unified diff rather than a whole file.
+ *
+ * An edit result is a patch, so it highlights as one whatever the file is.  Both
+ * file headers are required (or a hunk header), so a document that merely starts
+ * with a `---` rule is not mistaken for a diff.
+ */
+function looksLikeDiff(text: string): boolean {
+  const head = text.slice(0, 400);
+  return /^@@ /m.test(head) || (/^--- /m.test(head) && /^\+\+\+ /m.test(head));
+}
+
+/**
+ * Language a tool row's body should be highlighted as, or `''` for plain text.
+ *
+ * Only a file-content tool qualifies: its body is the file, so the language comes
+ * from the path's extension.  A language the highlighter cannot tokenize stays
+ * plain rather than being guessed at.
+ */
+export function toolPreviewLanguage(
+  name: string,
+  path: string | null | undefined,
+  preview: string | null | undefined,
+): string {
+  if (!FILE_CONTENT_TOOLS.has((name || '').toLowerCase())) return '';
+  const body = preview ?? '';
+  if (body === '') return '';
+  if (looksLikeDiff(body)) return 'diff';
+  if (!path) return '';
+  const language = LANGUAGE_BY_EXTENSION[extensionOf(path)] ?? '';
+  return isHighlightedLanguage(language) ? language : '';
+}
+
+/**
+ * Tool names that run a program (mirrors the runtime's `run` set in
+ * `runtime/timeline.py::tool_category`).
+ *
+ * Their body is a command's output, not a file, so it is rendered as terminal
+ * output -- escapes and all -- instead of being tokenized as source code.
+ */
+const RUN_TOOLS = new Set(['execute', 'run', 'shell', 'bash']);
+
+/** True when a tool row's body is a program's terminal output. */
+export function isTerminalTool(name: string): boolean {
+  return RUN_TOOLS.has((name || '').toLowerCase());
 }

@@ -37,6 +37,14 @@ export interface ToolItemView {
   status: string;
   preview: string | null;
   error: boolean;
+  /**
+   * The call's own arguments, as the projection stores them (already truncated
+   * by the runtime).  `intent` is lifted into `label` and a path argument into
+   * `path`, so those two read as the row's own fields; the rest is what a reader
+   * opens the row to see.  Absent for live rows (the wire item payload carries no
+   * arguments) and for legacy projections.
+   */
+  args?: Record<string, unknown> | null;
   /** True for nested subagent tool items. */
   sub: boolean;
   parentId: string | null;
@@ -340,6 +348,7 @@ export function mapHistoryEvents(
               ...item, callId,
               label: typeof args.intent === 'string' ? args.intent : name,
               path: typeof args.file_path === 'string' ? args.file_path : null,
+              ...(Object.keys(args).length > 0 ? { args } : {}),
               preview: previews[i] ?? (typeof result?.content === 'string'
                 ? result.content.slice(0, 4000) : null),
               status: error ? 'failed' : status === 'ok' || status === 'success' ? 'completed' : status,

@@ -20,10 +20,15 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   expandHint,
+  formatToolArgs,
+  isTerminalTool,
   thoughtLabel,
   toolGroupLabel,
+  toolPreviewLanguage,
   toolStatusLabel,
 } from '../stores/transcriptLabels.ts';
+import { CodeBlock } from './CodeBlock.tsx';
+import { TerminalOutput } from './TerminalOutput.tsx';
 import { Markdown } from './Markdown.tsx';
 import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
@@ -338,7 +343,17 @@ const TranscriptRow = React.memo(function TranscriptRow({
             </div>
             <div className="fluent-accordion" data-expanded={expanded}>
               <div className="fluent-accordion-content pt-1.5 space-y-1.5">
-                {toolList.map((t) => (
+                {toolList.map((t) => {
+                  const argsLine = formatToolArgs(t.args);
+                  // A run tool returns a program's terminal output, so it is painted
+                  // (escapes and all) rather than tokenized as source code.
+                  const terminal = isTerminalTool(t.name);
+                  // A read / edit body is a file (or a patch), so it gets the same
+                  // highlighter the markdown fences use; anything else stays plain.
+                  const previewLang = t.preview && !terminal
+                    ? toolPreviewLanguage(t.name, t.path, t.preview)
+                    : '';
+                  return (
                   <div
                     key={t.id}
                     onMouseMove={updateSpotlight}
@@ -350,7 +365,15 @@ const TranscriptRow = React.memo(function TranscriptRow({
                       ) : (
                         <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
                       )}
-                      <span className="font-medium text-gray-900">{t.name === 'execute' ? '终端' : (t.label || t.name)}</span>
+                      {/* The tool's own name is never replaced: it is what the call
+                          *was*, while the intent beside it is what the model said it
+                          was for.  The icon carries the kind, so no word repeats it. */}
+                      <span className="shrink-0 font-medium text-gray-900">{t.name}</span>
+                      {t.label && t.label !== t.name && (
+                        <span className="truncate text-gray-600" title={t.label}>
+                          {t.label}
+                        </span>
+                      )}
                       {t.sub && (
                         <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
                           sub
@@ -368,13 +391,28 @@ const TranscriptRow = React.memo(function TranscriptRow({
                           : toolStatusLabel(t.status)}
                       </span>
                     </div>
-                    {t.preview && (
-                      <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
-                        {t.preview}
+                    {/* The call's own arguments, bounded by `formatToolArgs`: an
+                        argument can be a whole command or file, so it is one
+                        collapsed line rather than a payload. */}
+                    {argsLine !== '' && (
+                      <div className="mt-1 break-all text-gray-500" title={argsLine}>
+                        {argsLine}
                       </div>
                     )}
+                    {terminal && t.preview ? (
+                      <TerminalOutput text={t.preview} />
+                    ) : previewLang !== '' && t.preview ? (
+                      <CodeBlock lang={previewLang} code={t.preview} />
+                    ) : (
+                      t.preview && (
+                        <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
+                          {t.preview}
+                        </div>
+                      )
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </>

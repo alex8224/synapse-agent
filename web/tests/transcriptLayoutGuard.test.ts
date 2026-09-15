@@ -152,3 +152,54 @@ test('a tool group without items paints nothing', () => {
     'an empty tool group must render nothing',
   );
 });
+
+test('an expanded tool row keeps the tool name and shows its intent and arguments', () => {
+  // The name is what the call *was*, the intent what the model said it was for.
+  // Replacing the name with a kind word ("终端") dropped it entirely, and the
+  // arguments -- the reason to open the row -- were not printed at all.
+  const tools = transcript.slice(
+    transcript.indexOf("if (m.type === 'tool_group')"),
+    transcript.indexOf("if (m.type === 'assistant')"),
+  );
+  assert.ok(tools.includes('>{t.name}</span>'), 'the tool name must always be printed');
+  assert.equal(tools.includes('终端'), false, 'the name must not be replaced by a kind word');
+  assert.ok(tools.includes('{t.label}'), 'the model-provided intent must print beside it');
+  assert.ok(tools.includes('formatToolArgs(t.args)'), 'the call arguments must be printed');
+  assert.ok(
+    tools.includes("argsLine !== ''"),
+    'a call without arguments must not print an empty line',
+  );
+});
+
+test('a read or edit body is highlighted through the shared code block', () => {
+  // A file body is code, so it takes the same highlighter as a markdown fence;
+  // every other body (a command's output, a search result) stays plain text.
+  const tools = transcript.slice(
+    transcript.indexOf("if (m.type === 'tool_group')"),
+    transcript.indexOf("if (m.type === 'assistant')"),
+  );
+  assert.ok(
+    tools.includes('toolPreviewLanguage(t.name, t.path, t.preview)'),
+    'the body language must come from the tool name, path and body',
+  );
+  assert.ok(tools.includes('<CodeBlock lang={previewLang} code={t.preview} />'), 'a code body must render highlighted');
+  assert.ok(
+    tools.includes('whitespace-pre-wrap break-all text-gray-600'),
+    'a non-code body must keep the plain-text renderer',
+  );
+});
+
+test('a command body is painted as terminal output', () => {
+  // A program's output carries its own colour sequences, so it goes through the
+  // terminal renderer; tokenizing it as source code would be meaningless.
+  const tools = transcript.slice(
+    transcript.indexOf("if (m.type === 'tool_group')"),
+    transcript.indexOf("if (m.type === 'assistant')"),
+  );
+  assert.ok(tools.includes('isTerminalTool(t.name)'), 'a run tool must be recognised');
+  assert.ok(tools.includes('<TerminalOutput text={t.preview} />'), 'its body must render as terminal output');
+  assert.ok(
+    tools.includes('t.preview && !terminal'),
+    'a terminal body must not also be tokenized as source code',
+  );
+});

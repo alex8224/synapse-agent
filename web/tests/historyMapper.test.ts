@@ -79,6 +79,66 @@ test('toSessionListView preserves pagination flags and maps every item', () => {
   assert.equal(view.total, 77);
 });
 
+test('a projected tool row keeps its arguments so the row can show them', () => {
+  const messages = mapHistoryEvents(
+    [
+      {
+        kind: 'user',
+        text: 'go',
+        tool_calls: [],
+        tool_results: [],
+        turn_id: 'A',
+        elapsed_s: 1,
+        attachments: [],
+      },
+      {
+        kind: 'tools',
+        text: '',
+        tool_calls: [
+          {
+            id: 'c1',
+            name: 'execute',
+            args: { intent: 'run checks', command: 'pytest -q', timeout_s: 30 },
+          },
+        ],
+        tool_results: [{ id: 'c1', name: 'execute', status: 'ok', content: 'ok' }],
+        attachments: [],
+      },
+    ] as HistoryEvent[],
+    { startTurn: 1, pageTag: 'latest' },
+  );
+
+  const tool = messages.find((m) => m.type === 'tool_group')!.tools![0];
+  // The name is what the call was; the intent is what the model said it was for.
+  assert.equal(tool.name, 'execute');
+  assert.equal(tool.label, 'run checks');
+  assert.deepEqual(tool.args, { intent: 'run checks', command: 'pytest -q', timeout_s: 30 });
+});
+
+test('a tool call without arguments carries none', () => {
+  const messages = mapHistoryEvents(
+    [
+      {
+        kind: 'user',
+        text: 'go',
+        tool_calls: [],
+        tool_results: [],
+        attachments: [],
+      },
+      {
+        kind: 'tools',
+        text: '',
+        tool_calls: [{ id: 'c1', name: 'execute', args: {} }],
+        tool_results: [],
+        attachments: [],
+      },
+    ] as HistoryEvent[],
+    { startTurn: 1, pageTag: 'latest' },
+  );
+
+  assert.equal(messages.find((m) => m.type === 'tool_group')!.tools![0].args, undefined);
+});
+
 test('timeLabelFromIso formats MM-DD HH:MM and tolerates missing timestamps', () => {
   assert.equal(timeLabelFromIso('2025-06-07T08:09:10'), '06-07 08:09');
   assert.equal(timeLabelFromIso(null), '');
