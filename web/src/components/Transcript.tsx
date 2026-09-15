@@ -94,7 +94,6 @@ const TranscriptRow = React.memo(function TranscriptRow({
   handleToggleExpand: (id: string) => void;
   processMeta?: {
     isFirst: boolean;
-    isLast: boolean;
     isExpanded: boolean;
     totalDurationText: string;
     onToggleExpand: () => void;
@@ -245,14 +244,20 @@ const TranscriptRow = React.memo(function TranscriptRow({
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <button
-                type="button"
-                onClick={processMeta.onToggleExpand}
-                className="mb-1.5 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-              >
-                <span>已工作 {processMeta.totalDurationText}</span>
-                <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={processMeta.onToggleExpand}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+                >
+                  <span>已工作 {processMeta.totalDurationText}</span>
+                  <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                </button>
+                {/* The rule belongs to the header, in both folds: the steps below it
+                    are the fold's content, so the block must not draw a second rule
+                    at their end. */}
+                <div className="border-b border-line/60 my-2.5" />
+              </>
             )}
             <div
               onClick={() => handleToggleExpand(m.id)}
@@ -274,7 +279,6 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 </div>
               </div>
             </div>
-            {processMeta && processMeta.isLast && <div className="border-b border-line/60 my-2.5" />}
           </>
         )}
       </div>
@@ -310,14 +314,19 @@ const TranscriptRow = React.memo(function TranscriptRow({
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <button
-                type="button"
-                onClick={processMeta.onToggleExpand}
-                className="mb-1.5 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-              >
-                <span>已工作 {processMeta.totalDurationText}</span>
-                <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={processMeta.onToggleExpand}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+                >
+                  <span>已工作 {processMeta.totalDurationText}</span>
+                  <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                </button>
+                {/* Same header rule as the thought fold: the tool rows hang below it,
+                    and the block ends without a second rule. */}
+                <div className="border-b border-line/60 my-2.5" />
+              </>
             )}
             <div
               onClick={() => handleToggleExpand(m.id)}
@@ -386,7 +395,6 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 ))}
               </div>
             </div>
-            {processMeta && processMeta.isLast && <div className="border-b border-line/60 my-2.5" />}
           </>
         )}
       </div>
@@ -465,6 +473,10 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
  * elapsed time is on screen from the moment the message is sent; it stays for as
  * long as the turn has no process row (a plain question and answer never grows
  * one), which is what keeps the final elapsed time visible after the turn ends.
+ *
+ * The rule under the header is the stopwatch's own separator, so it is drawn
+ * directly under the button in both folds; what the reader opens (the running
+ * status, once there is one to report) hangs *below* that rule.
  */
 function PendingTurnRow({
   turnKey,
@@ -487,10 +499,7 @@ function PendingTurnRow({
       <button
         type="button"
         onClick={() => onToggleExpand(turnKey)}
-        className={
-          (expanded ? 'mb-1.5 ' : '') +
-          'flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors'
-        }
+        className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
       >
         <span>已工作 {text}</span>
         {expanded ? (
@@ -499,8 +508,8 @@ function PendingTurnRow({
           <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
         )}
       </button>
-      {expanded && <ActivityLine activity={activity} />}
       <div className="border-b border-line/60 my-2.5" />
+      {expanded && <ActivityLine activity={activity} />}
     </div>
   );
 }
@@ -623,7 +632,6 @@ export const Transcript: React.FC = () => {
   const processMetaMap = useMemo(() => {
     const map = new Map<string, {
       isFirst: boolean;
-      isLast: boolean;
       isExpanded: boolean;
       totalDurationText: string;
       turnKey: string;
@@ -663,7 +671,6 @@ export const Transcript: React.FC = () => {
         const item = currentGroup[i];
         map.set(item.id, {
           isFirst: i === 0,
-          isLast: i === currentGroup.length - 1,
           isExpanded: expandedTurns.has(currentTurnKey),
           totalDurationText: durationText,
           turnKey: currentTurnKey,
@@ -892,7 +899,6 @@ export const Transcript: React.FC = () => {
                   meta
                     ? {
                         isFirst: meta.isFirst,
-                        isLast: meta.isLast,
                         isExpanded: meta.isExpanded,
                         totalDurationText: meta.totalDurationText,
                         onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
@@ -944,7 +950,12 @@ export const Transcript: React.FC = () => {
             </div>
           </div>
         )}
-        {activity !== null && <ActivityLine activity={activity} />}
+        {/* The running status, as the fallback for a turn no row of its own can
+            carry it: a turn whose header is owned by a thought / tool row, or
+            activity that arrived before any turn at all.  A pending row prints the
+            same line inside its own fold, so painting it here as well put "model
+            waiting for model" on screen twice. */}
+        {activity !== null && pendingTurns.size === 0 && <ActivityLine activity={activity} />}
         <div ref={bottomRef} />
       </div>
     </div>

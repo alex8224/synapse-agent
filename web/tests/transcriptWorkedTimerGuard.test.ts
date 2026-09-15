@@ -105,6 +105,76 @@ test('an opened pending header reports what the runtime is doing', () => {
   );
 });
 
+test('the pending header keeps its rule directly under the button', () => {
+  // The rule is the stopwatch's separator, not the last line of the fold: the
+  // opened status reads *under* it.  A rule that drifts below the status (or is
+  // drawn a second time at the end of the row) is the layout the reader reported.
+  const row = transcript.slice(
+    transcript.indexOf('function PendingTurnRow('),
+    transcript.indexOf('export const Transcript'),
+  );
+  assert.ok(row.includes('已工作 {text}'), 'the pending row must print the worked-seconds header');
+  const buttonEnd = row.indexOf('</button>');
+  const rule = row.indexOf('<div className="border-b border-line/60 my-2.5" />');
+  const status = row.indexOf('{expanded && <ActivityLine activity={activity} />}');
+  assert.ok(buttonEnd !== -1, 'the pending row must open with its header button');
+  assert.ok(rule !== -1, 'the header must be followed by the thin rule');
+  assert.ok(status !== -1, 'the opened header must render the running status');
+  assert.ok(rule > buttonEnd, 'the rule must sit under the header button, not above it');
+  assert.ok(status > rule, 'the opened status must hang below the rule');
+  assert.equal(
+    (row.match(/border-b border-line\/60/g) ?? []).length,
+    1,
+    'the pending row must draw exactly one rule',
+  );
+});
+
+test('the running status is painted once, by the row that owns it', () => {
+  // A pending row prints the status inside its own fold, so the transcript must not
+  // also hold a second one at the bottom of the column.
+  assert.ok(
+    /activity !== null &&\s*\n?\s*pendingTurns\.size === 0 && <ActivityLine activity=\{activity\} \/>/.test(
+      transcript,
+    ),
+    'the trailing status line must stay off screen while a pending row carries it',
+  );
+});
+
+test('a process row keeps its rule under the header in both folds', () => {
+  // Same structure as the pending row: the rule is the stopwatch's separator, so an
+  // opened fold hangs its steps below it and draws no second rule at their end --
+  // the rule must not move (or double up) when the fold is toggled.
+  const folds = [
+    ["if (m.type === 'thought')", "if (m.type === 'tool_group')"],
+    ["if (m.type === 'tool_group')", "if (m.type === 'assistant')"],
+  ];
+  for (const [start, end] of folds) {
+    const block = transcript.slice(transcript.indexOf(start), transcript.indexOf(end));
+    assert.equal(
+      (block.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
+      2,
+      `${start} must draw the header rule once per fold and nothing at the end`,
+    );
+    assert.equal(
+      block.includes('isLast'),
+      false,
+      'the end of the steps must not draw a second rule',
+    );
+    const opened = block.slice(block.indexOf(') : ('));
+    const button = opened.indexOf('</button>');
+    const rule = opened.indexOf('<div className="border-b border-line/60 my-2.5" />');
+    const firstStep = opened.indexOf('onClick={() => handleToggleExpand(m.id)}');
+    assert.ok(button !== -1, 'an opened fold must start with its header button');
+    assert.ok(rule > button, 'the rule must sit under the opened header button');
+    assert.ok(firstStep > rule, 'the steps must hang below the rule');
+  }
+  assert.equal(
+    (transcript.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
+    5,
+    'the rule is drawn with a header only: a thought fold, a tool fold and the pending row',
+  );
+});
+
 test('a thought or tool row owns the header once it lands', () => {
   assert.ok(
     transcript.includes("m.type === 'thought' || m.type === 'tool_group'"),
