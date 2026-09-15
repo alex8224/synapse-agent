@@ -230,7 +230,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div key={m.id} className="max-w-[85%]">
         {processMeta && !processMeta.isExpanded ? (
-          <>
+          <div className="transcript-fold-header material-titlebar">
             <button
               type="button"
               onClick={processMeta.onToggleExpand}
@@ -240,11 +240,11 @@ const TranscriptRow = React.memo(function TranscriptRow({
               <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
             </button>
             <div className="border-b border-line/60 my-2.5" />
-          </>
+          </div>
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <>
+              <div className="transcript-fold-header material-titlebar">
                 <button
                   type="button"
                   onClick={processMeta.onToggleExpand}
@@ -255,9 +255,10 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 </button>
                 {/* The rule belongs to the header, in both folds: the steps below it
                     are the fold's content, so the block must not draw a second rule
-                    at their end. */}
+                    at their end.  The header is the fold's pinned strip, so the steps
+                    scroll under it instead of carrying it off the top edge. */}
                 <div className="border-b border-line/60 my-2.5" />
-              </>
+              </div>
             )}
             <div
               onClick={() => handleToggleExpand(m.id)}
@@ -300,7 +301,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div key={m.id} className="max-w-[85%] py-1">
         {processMeta && !processMeta.isExpanded ? (
-          <>
+          <div className="transcript-fold-header material-titlebar">
             <button
               type="button"
               onClick={processMeta.onToggleExpand}
@@ -310,11 +311,11 @@ const TranscriptRow = React.memo(function TranscriptRow({
               <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
             </button>
             <div className="border-b border-line/60 my-2.5" />
-          </>
+          </div>
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <>
+              <div className="transcript-fold-header material-titlebar">
                 <button
                   type="button"
                   onClick={processMeta.onToggleExpand}
@@ -324,9 +325,10 @@ const TranscriptRow = React.memo(function TranscriptRow({
                   <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
                 </button>
                 {/* Same header rule as the thought fold: the tool rows hang below it,
-                    and the block ends without a second rule. */}
+                    and the block ends without a second rule.  The header is the fold's
+                    pinned strip, so the tool rows scroll under it. */}
                 <div className="border-b border-line/60 my-2.5" />
-              </>
+              </div>
             )}
             <div
               onClick={() => handleToggleExpand(m.id)}
@@ -476,7 +478,9 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
  *
  * The rule under the header is the stopwatch's own separator, so it is drawn
  * directly under the button in both folds; what the reader opens (the running
- * status, once there is one to report) hangs *below* that rule.
+ * status, once there is one to report) hangs *below* that rule.  Button and rule
+ * are one pinned strip (`transcript-fold-header`), so the status the reader opened
+ * scrolls under the header rather than pushing it off the top edge.
  */
 function PendingTurnRow({
   turnKey,
@@ -496,19 +500,21 @@ function PendingTurnRow({
     // bound is a width here, so the rule under this header is exactly as long as the
     // one the first thought row draws.
     <div className="w-[85%]">
-      <button
-        type="button"
-        onClick={() => onToggleExpand(turnKey)}
-        className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-      >
-        <span>已工作 {text}</span>
-        {expanded ? (
-          <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-        ) : (
-          <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-        )}
-      </button>
-      <div className="border-b border-line/60 my-2.5" />
+      <div className="transcript-fold-header material-titlebar">
+        <button
+          type="button"
+          onClick={() => onToggleExpand(turnKey)}
+          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+        >
+          <span>已工作 {text}</span>
+          {expanded ? (
+            <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+          ) : (
+            <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+          )}
+        </button>
+        <div className="border-b border-line/60 my-2.5" />
+      </div>
       {expanded && <ActivityLine activity={activity} />}
     </div>
   );
