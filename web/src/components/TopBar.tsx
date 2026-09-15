@@ -30,7 +30,9 @@ import { GitExplorer } from './GitExplorer.tsx';
  * track reserves the width of the window buttons.
  */
 
-export const TopBar: React.FC = () => {
+export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpanded?: boolean }> = ({
+  onToggleNavigation, navigationExpanded,
+}) => {
   const {
     toggleSidebar,
     projects,
@@ -82,7 +84,9 @@ export const TopBar: React.FC = () => {
           truncate instead of widening the track and nudging the centre line. */}
       <div className="flex min-w-0 items-center gap-1.5 wco-caption-controls">
         <button
-          onClick={toggleSidebar}
+          onClick={onToggleNavigation ?? toggleSidebar}
+          aria-controls="console-navigation"
+          aria-expanded={navigationExpanded}
           // The same themed box the collapsed rail's buttons use, so the control
           // does not change size when the sidebar folds.
           className="ui-icon-button"

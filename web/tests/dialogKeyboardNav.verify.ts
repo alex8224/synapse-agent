@@ -61,7 +61,18 @@ store.setState({
     }),
     gitDiff: async (_session, p) => ({
       path: p, text: 'DIFF-FOR ' + p + '\\n', binary: false, truncated: false, empty: false
-    })
+    }),
+    // Synthetic workspace tree: one directory and one file at the root, and a
+    // single child directory inside any other path.  No host is contacted.
+    listArtifacts: async (_session, path) => ({
+      path: path ?? '.', nextCursor: null, truncated: false,
+      entries: (path === null || path === '.' || path === '')
+        ? [{ path: 'alpha', kind: 'directory', size: 0, media_type: 'inode/directory', revision: null, modified_at: null },
+           { path: 'readme.md', kind: 'file', size: 12, media_type: 'text/markdown', revision: 'r1', modified_at: null }]
+        : [{ path: path + '/inner', kind: 'directory', size: 0, media_type: 'inode/directory', revision: null, modified_at: null }],
+    }),
+    statArtifact: async (_session, path) =>
+      ({ path, kind: 'file', size: 12, media_type: 'text/markdown', revision: 'r1', modified_at: null }),
   },
   listDirectories: async (p) => (p === null || p === '/sample')
     ? listing('/sample', [{name:'alpha',path:'/sample/alpha'},{name:'beta',path:'/sample/beta'}])
@@ -230,17 +241,64 @@ try {
   await check('the git explorer closes on Escape', `!document.querySelector('#git-file-list')`);
 
   // --- the settings and goal dialogs ----------------------------------------
-  await focusOn('[aria-label="打开设置"]');
-  await click('[aria-label="打开设置"]');
+  // The sidebar keeps both of its states in the DOM and marks the inactive one
+  // `inert`, so the control a user can actually reach is the one outside an
+  // `inert` subtree.  Selecting the first match would click the hidden rail
+  // button, whose focus cannot be restored because `inert` blocks it.
+  const settingsTrigger =
+    `[...document.querySelectorAll('[aria-label="打开设置"]')].find((el) => !el.closest('[inert]'))`;
+  await run(`${settingsTrigger}.focus()`); await settle();
+  await run(`${settingsTrigger}.click()`); await settle();
   await wait(`!!document.querySelector('[role="dialog"][aria-label="设置"]')`);
   await check('the settings dialog takes the focus it was opened with',
     `document.querySelector('[role="dialog"][aria-label="设置"]').contains(document.activeElement)`);
   await click('[aria-label="关闭设置"]');
-  await check('closing settings returns the focus to its trigger', `document.activeElement === document.querySelector('[aria-label="打开设置"]')`);
+  await check('closing settings returns the focus to its trigger', `document.activeElement === ${settingsTrigger}`);
   await press('F6', 'F6', 117);
   await wait(`!!document.querySelector('[role="dialog"][aria-label="目标 (Goal)"]')`);
   await check('the goal dialog takes the focus and lands on its objective field',
     `document.activeElement === document.querySelector('#goal-objective')`);
+
+  // --- phone band: the file panels become list -> detail ---------------------
+  // A 320px rail plus a fixed 320px file list leaves no readable diff, so the
+  // phone band stacks the two panes and swaps between them instead.
+  await press('Escape', 'Escape', 27);
+  await client.send('Emulation.setDeviceMetricsOverride',
+    { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, page.sessionId);
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: true }, page.sessionId);
+  await settle();
+  await run(`document.querySelector('[aria-label="查看 Git 变更"]').click()`);
+  await wait(`!!document.querySelector('#git-file-list button')`);
+  const visible = (selector: string) =>
+    `document.querySelector(${JSON.stringify(selector)}).getClientRects().length > 0`;
+  await check('phone: the file list is the first pane', visible('#git-file-list'));
+  await check('phone: no diff pane before a file is picked',
+    `document.querySelector('.git-responsive-body').dataset.detail === 'false' && !${visible('.git-responsive-body > div:last-child')}`);
+  await run(`document.querySelector('#git-file-list button').click()`);
+  await wait(`document.querySelector('.git-responsive-body').dataset.detail === 'true'`);
+  await check('phone: picking a file swaps to the diff', visible('.git-responsive-body > div:last-child'));
+  await check('phone: the list is hidden while the diff is shown',
+    `!${visible('#git-file-list')}`);
+  await check('phone: a back affordance is offered', visible('.list-detail-back'));
+  await run(`document.querySelector('.list-detail-back').click()`); await settle();
+  await check('phone: back returns to the file list',
+    `${visible('#git-file-list')} && !${visible('.git-responsive-body > div:last-child')}`);
+
+  // The workspace-file panel follows the same rule, and a *directory* must stay
+  // in the list: drilling in re-lists it, so swapping panes there would show an
+  // empty preview and hide the contents the reader just asked for.
+  await press('Escape', 'Escape', 27);
+  await run(`document.querySelector('[aria-label="工作区文件"]').click()`);
+  await wait(`!!document.querySelector('.artifact-responsive-tree button')`);
+  await check('phone: the file tree is the first pane', visible('.artifact-responsive-tree'));
+  await check('phone: the preview pane waits for a file',
+    `document.querySelector('.artifact-responsive-body').dataset.mobileDetail === 'false' && !${visible('.artifact-responsive-preview')}`);
+  await run(`[...document.querySelectorAll('.artifact-responsive-tree button')].find((b) => b.textContent.includes('alpha')).click()`);
+  await settle();
+  await check('phone: opening a directory keeps the tree',
+    `${visible('.artifact-responsive-tree')} && !${visible('.artifact-responsive-preview')}`);
+  await check('phone: the tree lists the directory that was opened',
+    `document.querySelector('.artifact-responsive-tree').textContent.includes('inner')`);
 
   console.log(`ALL ${checks} CHECKS PASSED; screenshots: .tmp/dialog-keyboard-nav/`);
 } finally {

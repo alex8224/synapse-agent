@@ -28,9 +28,11 @@ const VISIBLE_SESSIONS = 5;
  * project fetches its page lazily the first time it is expanded, so opening the
  * console never fans out into one RPC per registered project.
  */
-export const SideBar: React.FC = () => {
+export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> = ({
+  collapsed, onExpand,
+}) => {
   const {
-    isSidebarCollapsed,
+    isSidebarCollapsed: storedCollapsed,
     workspacePath,
     projects,
     activeProjectId,
@@ -93,6 +95,7 @@ export const SideBar: React.FC = () => {
     })),
   );
 
+  const isSidebarCollapsed = collapsed ?? storedCollapsed;
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showAllProjects, setShowAllProjects] = useState<string[]>([]);
@@ -151,6 +154,7 @@ export const SideBar: React.FC = () => {
     >
       {/* Minimal Rail View (shown when collapsed) */}
       <div
+        inert={!isSidebarCollapsed}
         className={`absolute inset-0 flex flex-col items-center py-3 gap-1.5 transition-opacity duration-200 ${
           isSidebarCollapsed ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
@@ -164,7 +168,7 @@ export const SideBar: React.FC = () => {
           <Add20Regular aria-hidden="true" />
         </button>
         <button
-          onClick={requestSessionSearchFocus}
+          onClick={() => { onExpand?.(); requestSessionSearchFocus(); }}
           title="搜索会话 (Ctrl+K)"
           aria-label="搜索会话"
           className="ui-icon-button"
@@ -193,6 +197,7 @@ export const SideBar: React.FC = () => {
 
       {/* Expanded Sidebar View */}
       <div
+        inert={isSidebarCollapsed}
         className={`w-[240px] h-full flex flex-col py-3 text-sm font-sans transition-opacity duration-200 ${
           isSidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
         }`}

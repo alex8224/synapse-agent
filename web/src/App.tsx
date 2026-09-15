@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Dismiss20Regular } from '@fluentui/react-icons';
 import { TopBar } from './components/TopBar';
 import { SideBar } from './components/SideBar';
 import { Transcript } from './components/Transcript';
@@ -21,6 +22,75 @@ export function App() {
   const createNewSession = useConsoleStore((s) => s.createNewSession);
   const runtimeStatus = useConsoleStore((s) => s.runtimeStatus);
   const requestSessionSearchFocus = useConsoleStore((s) => s.requestSessionSearchFocus);
+
+  const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 767px)').matches);
+  const [tablet, setTablet] = useState(() => window.matchMedia('(min-width: 768px) and (max-width: 1023px)').matches);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [tabletCollapsed, setTabletCollapsed] = useState(true);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const toggleNavigation = useCallback(() => {
+    if (mobile) setDrawerOpen((open) => !open);
+    else if (tablet) setTabletCollapsed((collapsed) => !collapsed);
+    else toggleSidebar();
+  }, [mobile, tablet, toggleSidebar]);
+
+  useEffect(() => {
+    const phone = window.matchMedia('(max-width: 767px)');
+    const medium = window.matchMedia('(min-width: 768px) and (max-width: 1023px)');
+    const update = () => {
+      setMobile(phone.matches);
+      setTablet(medium.matches);
+      setDrawerOpen(false);
+    };
+    phone.addEventListener('change', update);
+    medium.addEventListener('change', update);
+    return () => {
+      phone.removeEventListener('change', update);
+      medium.removeEventListener('change', update);
+    };
+  }, []);
+
+  useEffect(() => useConsoleStore.subscribe((state, previous) => {
+    if (state.currentSession.thread_id !== previous.currentSession.thread_id ||
+        state.currentSession.project_id !== previous.currentSession.project_id ||
+        state.pairingState !== previous.pairingState) closeDrawer();
+    if (state.searchFocusToken !== previous.searchFocusToken) {
+      if (mobile) setDrawerOpen(true);
+      if (tablet) setTabletCollapsed(false);
+    }
+  }), [closeDrawer, mobile, tablet]);
+
+  useEffect(() => {
+    if (!mobile || !drawerOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    drawerRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      // Portalled dialogs own their keyboard handling while they are open.
+      if (!drawerRef.current?.contains(event.target as Node)) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeDrawer();
+      }
+      if (event.key === 'Tab') {
+        const items = Array.from(drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
+        )).filter((item) => item.getClientRects().length > 0 && !item.closest('[inert]'));
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      previous?.focus();
+    };
+  }, [mobile, drawerOpen, closeDrawer]);
 
   useEffect(() => {
     initClient();
@@ -48,12 +118,14 @@ export function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
-        toggleSidebar();
+        toggleNavigation();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         createNewSession();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        if (mobile) setDrawerOpen(true);
+        if (tablet) setTabletCollapsed(false);
         requestSessionSearchFocus();
       } else if (e.ctrlKey && e.key.toLowerCase() === 'c' && runtimeStatus === 'running') {
         e.preventDefault();
@@ -63,7 +135,9 @@ export function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    toggleSidebar,
+    toggleNavigation,
+    mobile,
+    tablet,
     cancelActiveTurn,
     createNewSession,
     requestSessionSearchFocus,
@@ -86,10 +160,21 @@ export function App() {
       underneath the sidebar; scoping them here is what makes the sidebar read as
       one continuous rail from the top edge to the bottom.
     */
-    <div className="material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
-      <SideBar />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <TopBar />
+    <div className="console-shell material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
+      {mobile && drawerOpen && <button className="navigation-scrim" aria-label="关闭导航" onClick={closeDrawer} tabIndex={-1} />}
+      <div ref={drawerRef} id="console-navigation" className={mobile ? 'navigation-drawer' : 'navigation-column'}
+        hidden={mobile && !drawerOpen} role={mobile ? 'dialog' : undefined}
+        aria-modal={mobile && drawerOpen ? true : undefined} aria-label={mobile ? '项目与会话导航' : undefined}>
+        {mobile && (
+          <button className="ui-icon-button navigation-close" aria-label="关闭导航" onClick={closeDrawer}>
+            <Dismiss20Regular aria-hidden="true" />
+          </button>
+        )}
+        <SideBar collapsed={mobile ? false : tablet ? tabletCollapsed : undefined}
+          onExpand={tablet ? () => setTabletCollapsed(false) : undefined} />
+      </div>
+      <div className="console-workspace flex min-w-0 flex-1 flex-col overflow-hidden" inert={mobile && drawerOpen}>
+        <TopBar onToggleNavigation={toggleNavigation} navigationExpanded={mobile ? drawerOpen : undefined} />
         {/*
           Deliberately *not* `overflow-hidden`: the transcript scroller reaches up
           behind the header (`.console-under-chrome`) so the header's acrylic has

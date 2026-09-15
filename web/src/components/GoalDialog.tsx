@@ -161,7 +161,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
         aria-label="目标 (Goal)"
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="w-full max-w-md space-y-2 rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
+        className="no-scrollbar max-h-[85vh] w-full max-w-md space-y-2 overflow-y-auto rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">

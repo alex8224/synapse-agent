@@ -141,7 +141,8 @@ const SNAPSHOT = `(() => {
   const header = document.querySelector('header')
   // The middle grid track of the header: the session title chip.
   const title = header.children[1]
-  const tree = sidebar.querySelector('.sidebar-scroll')
+  const treeElement = sidebar.querySelector('.sidebar-scroll')
+  const tree = treeElement?.closest('[inert]') ? null : treeElement
   const footer = document.querySelector('footer')
   const card = document.querySelector('#console-composer').closest('.console-column')
   const cardWrapper = card.parentElement
@@ -536,7 +537,7 @@ async function main(): Promise<void> {
     checkComposer(narrow)
 
     // Compact window: still near full width, so only the flat `2rem` gutters remain.
-    await setViewport(client, page, 640, 640)
+    await setViewport(client, page, 768, 640)
     await new Promise((resolve) => setTimeout(resolve, 500))
     const compact = (await evaluate(client, page, SNAPSHOT)) as Snapshot
     console.log('')
@@ -552,6 +553,38 @@ async function main(): Promise<void> {
     checkReadingColumns(compact)
     checkNarrowColumn(compact)
     checkComposer(compact)
+
+    for (const width of [360, 390, 430, 640]) {
+      await setViewport(client, page, width, 800)
+      await client.send('Emulation.setTouchEmulationEnabled', { enabled: true }, page.sessionId)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      const phone = await evaluate(client, page, `(() => {
+        const main = document.querySelector('main').getBoundingClientRect();
+        const card = document.querySelector('.ui-composer').getBoundingClientRect();
+        const nav = document.querySelector('#console-navigation');
+        return { closed: nav.hidden, full: Math.abs(main.width - innerWidth) < 2,
+          cardFits: card.left >= 10 && card.right <= innerWidth - 10,
+          wideEnough: card.width >= innerWidth - 30 };
+      })()`) as Record<string, boolean>
+      for (const [key, value] of Object.entries(phone)) check(`${width}px ${key}`, value, true)
+      await evaluate(client, page, `(() => { const button = document.querySelector('header button'); button.focus(); button.click(); })()`)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      check(`${width}px drawer opens without squeezing content`, await evaluate(client, page, `(() => {
+        const nav = document.querySelector('#console-navigation');
+        return !nav.hidden && nav.getBoundingClientRect().right <= innerWidth &&
+          document.querySelector('.console-workspace').inert &&
+          Math.abs(document.querySelector('main').getBoundingClientRect().width - innerWidth) < 2;
+      })()`), true)
+      await evaluate(client, page, `document.querySelector('.navigation-close').click()`)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      check(`${width}px focus returns to toggle`, await evaluate(client, page,
+        `document.activeElement === document.querySelector('header button')`), true)
+    }
+    await client.send('Emulation.setTouchEmulationEnabled', { enabled: false }, page.sessionId)
+    await setViewport(client, page, 1440, 900)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    check('desktop sidebar preference survives mobile navigation', await evaluate(client, page,
+      `Math.round(document.querySelector('nav').getBoundingClientRect().width)`), 240)
 
     const shot = (await client.send(
       'Page.captureScreenshot',

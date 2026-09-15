@@ -33,6 +33,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [status, setStatus] = useState<GitStatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [mobileDetail, setMobileDetail] = useState(false);
   const [staged, setStaged] = useState(false);
   const [diff, setDiff] = useState<GitDiffView | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -115,7 +116,10 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         onClick={(event) => event.stopPropagation()}
         className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-line/70 material-flyout flyout-in text-left shadow-flyout"
       >
-        <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2">
+        <div className="responsive-dialog-toolbar flex items-center gap-2 border-b border-gray-200 px-3 py-2">
+          {mobileDetail && <button className="list-detail-back ui-button" onClick={() => setMobileDetail(false)}>
+            返回文件列表
+          </button>}
           <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
           <span className="text-sm font-semibold text-gray-900">Git Explorer</span>
           <span className="font-mono text-xs text-gray-500">{status?.branch ?? 'git'}</span>
@@ -158,7 +162,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="git-responsive-body flex min-h-0 flex-1" data-detail={mobileDetail}>
           <div id="git-file-list" className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
             {statusError !== null && (
               <p className="px-3 py-2 text-[11px] leading-relaxed text-amber-700">
@@ -177,6 +181,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   // the previous file's diff while the new one loads.
                   setDiff(null);
                   setSelected(file.path);
+                  setMobileDetail(true);
                 }}
                 title={`${changeStatusLabel(file)} · ${changeStatusCode(file)}`}
                 className={`flex w-full cursor-pointer items-center gap-2 px-2 py-1 text-left transition-colors hover:bg-gray-100 ${

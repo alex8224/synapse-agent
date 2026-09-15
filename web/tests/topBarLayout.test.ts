@@ -100,7 +100,7 @@ test('the branch chip is rendered only for a git-managed workspace', () => {
   assert.ok(chip > guard, 'the branch chip must sit inside the non-empty-branch guard');
   // The project chip carries a separator of its own *before* this guard, so the
   // search has to start at the guard.
-  const separator = source.indexOf('text-gray-300 mx-1', guard);
+  const separator = source.indexOf('h-3.5 w-px bg-line/80', guard);
   assert.ok(separator > guard, 'the branch separator must sit inside the same guard');
   assert.ok(
     source.indexOf('{/* Project context') < guard,
@@ -129,7 +129,7 @@ test('the toggle is the first control of the workspace column', () => {
   // is no longer pulled back onto the collapsed rail's axis: the toggle is simply
   // the leading control of the left track, in the same themed box as the rail
   // buttons.
-  const toggle = classNamesOf('onClick={toggleSidebar}');
+  const toggle = classNamesOf('onClick={onToggleNavigation ?? toggleSidebar}');
   assert.ok(toggle.includes('ui-icon-button'), 'the toggle must match the rail button box');
   assert.equal(
     toggle.includes('-ml-'),
@@ -160,12 +160,9 @@ test('the context actions and the settings entry live in the sidebar', () => {
   );
 });
 
-test('the branch chip and the statistics chip both open the git explorer', () => {
-  // Regression guard: the branch chip was downgraded to a read-only `div`, which
-  // left no entry at all until `runtime.git.status` arrived (and none for a
-  // workspace whose status never loads).  Both chips are buttons again.
+test('the combined branch and statistics chip opens the git explorer', () => {
   const opens = source.match(/onClick=\{refreshAndOpenExplorer\}/g) ?? [];
-  assert.equal(opens.length, 2, 'both chips must call the refresh-and-open handler');
+  assert.equal(opens.length, 1, 'the combined chip must call the refresh-and-open handler');
   assert.ok(source.includes('setExplorerOpen(true)'), 'the handler must open the explorer');
   assert.ok(
     /refreshAndOpenExplorer[\s\S]*?loadGitStatus\(\)/.test(source),
@@ -180,10 +177,10 @@ test('the branch chip and the statistics chip both open the git explorer', () =>
     branch.includes('refreshAndOpenExplorer'),
     'the branch chip must refresh and open the explorer',
   );
-  // The statistics chip is a button too, and now sits inside that same track.
+  // Statistics share the branch button rather than adding another narrow-screen control.
   assert.ok(
-    (branch.match(/<button/g) ?? []).length >= 2,
-    'the statistics chip must stay a button next to the branch chip',
+    (branch.match(/<button/g) ?? []).length === 1,
+    'the combined chip must stay a single button',
   );
 });
 
@@ -209,5 +206,5 @@ test('a narrow window drops the secondary chip, not the title or the branch', ()
     source.indexOf("gitBranch !== ''"),
     source.indexOf('{/* Centre track'),
   );
-  assert.equal(/\bhidden\b/.test(branch.replaceAll('aria-hidden', 'ariaHidden')), false, 'the branch chip must stay visible');
+  assert.equal(/\bhidden\b/.test(classNamesOf('onClick={refreshAndOpenExplorer}')), false, 'the branch button must stay visible');
 });

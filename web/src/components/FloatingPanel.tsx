@@ -83,7 +83,7 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
           ...(side === 'top' ? { bottom: box.bottom } : { top: box.top }),
           ...(align === 'end' ? { transform: 'translateX(-100%)' } : null),
         }}
-        className={`fixed z-50 ${className}`}
+        className={`responsive-floating-panel fixed z-50 ${className}`}
       >
         {children}
       </div>

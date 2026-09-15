@@ -34,12 +34,12 @@ const banner = read('components/RuntimeDiagnosticsBanner.tsx');
 test('the shell is a sidebar column plus a workspace column', () => {
   // The window root paints the window fill (`material-canvas`), which is the
   // backdrop's translucent layer in a theme that has one.
-  const shell = app.slice(app.indexOf('<div className="material-canvas'));
-  const sidebarAt = shell.indexOf('<SideBar />');
+  const shell = app.slice(app.indexOf('<div className="console-shell'));
+  const sidebarAt = shell.indexOf('<SideBar ');
   const columnAt = shell.indexOf('flex min-w-0 flex-1 flex-col');
-  assert.ok(sidebarAt >= 0, 'the sidebar must be a direct child of the shell');
+  assert.ok(sidebarAt >= 0, 'the sidebar must live inside the navigation wrapper');
   assert.ok(columnAt > sidebarAt, 'the workspace column must follow the sidebar');
-  for (const child of ['<TopBar />', '<Transcript />', '<CommandInput />', '<BottomBar />']) {
+  for (const child of ['<TopBar ', '<Transcript />', '<CommandInput />', '<BottomBar />']) {
     assert.ok(shell.indexOf(child) > columnAt, `${child} must live inside the workspace column`);
   }
   assert.equal(
@@ -47,6 +47,40 @@ test('the shell is a sidebar column plus a workspace column', () => {
     false,
     'the shell must not stack full-width rows again',
   );
+});
+
+test('mobile navigation is an independent modal drawer, not a squeezed column', () => {
+  assert.ok(app.includes("matchMedia('(max-width: 767px)')"));
+  assert.ok(app.includes('const [tabletCollapsed, setTabletCollapsed] = useState(true)'));
+  assert.ok(app.includes('hidden={mobile && !drawerOpen}'));
+  assert.ok(app.includes('inert={mobile && drawerOpen}'));
+  assert.ok(app.includes("event.key === 'Tab'"));
+  assert.ok(app.includes("event.key === 'Escape'"));
+  assert.ok(app.includes('previous?.focus()'));
+  assert.ok(app.includes('state.currentSession.project_id !== previous.currentSession.project_id'));
+  assert.ok(sidebar.includes('inert={isSidebarCollapsed}'));
+  assert.ok(sidebar.includes('inert={!isSidebarCollapsed}'));
+});
+
+test('small screens have fluid content, safe areas and usable touch targets', () => {
+  assert.ok(styles.includes('height: 100dvh'));
+  assert.ok(styles.includes('padding-left: max(12px, env(safe-area-inset-left'));
+  assert.ok(styles.includes('@media (pointer: coarse)'));
+  assert.ok(styles.includes('min-height: 44px'));
+  assert.ok(styles.includes('.navigation-drawer[hidden] { display: none; }'));
+  // A dialog caps and scrolls its own body: a global rule would also override
+  // the caps the individual dialogs already declare.
+  const goal = read('components/GoalDialog.tsx');
+  assert.ok(goal.includes('max-h-[85vh]') && goal.includes('overflow-y-auto'));
+});
+
+test('file explorers have mobile list/detail navigation without changing desktop columns', () => {
+  const git = read('components/GitExplorer.tsx');
+  const files = read('components/ArtifactsPanel.tsx');
+  assert.ok(git.includes('data-detail={mobileDetail}'));
+  assert.ok(files.includes('data-mobile-detail={mobileDetail}'));
+  assert.ok(git.includes('返回文件列表') && files.includes('返回文件列表'));
+  assert.ok(styles.includes('.responsive-file-window { left: 8px !important'));
 });
 
 test('the sidebar runs the full height of the window', () => {

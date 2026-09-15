@@ -113,7 +113,10 @@ try {
   await media('dark');
   await check('system dark selects Fluent dark', `document.documentElement.dataset.theme === 'fluent-dark'`);
   await shot('fluent-dark');
-  await click('[aria-label="打开设置"]');
+  // Both sidebar states stay mounted; the inactive one is `inert`, so open
+  // settings through the reachable trigger rather than the hidden rail copy.
+  await run(`[...document.querySelectorAll('[aria-label="打开设置"]')].find((el) => !el.closest('[inert]')).click()`);
+  await settle();
   await run(`[...document.querySelectorAll('[aria-label="主题"] button')].find(b=>b.textContent==='浅色').click()`); await settle();
   await check('explicit light overrides system dark', `document.documentElement.dataset.theme === 'fluent-light'`);
   await check('settings portal is centred outside the rail', `(()=>{const r=document.querySelector('[role="dialog"][aria-label="设置"]').getBoundingClientRect(); return Math.abs(r.left+r.width/2-innerWidth/2)<2})()`);

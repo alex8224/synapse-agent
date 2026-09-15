@@ -334,6 +334,7 @@ test('navigation selection has a marker and picker choices are keyboard buttons'
   assert.ok(styles.includes(".ui-nav-row[data-selected='true']::before"));
   assert.ok(/<button\s+key=\{m\}\s+type="button"/.test(pickers));
   assert.ok(/<button\s+key=\{lvl\}\s+type="button"\s+disabled=\{!canSetThinking\}/.test(pickers));
-  const collapsed = sidebar.slice(sidebar.indexOf('if (isSidebarCollapsed)'), sidebar.indexOf('{/* Nav entry'));
-  assert.ok(collapsed.includes('{settingsOpen && <SettingsDialog'), 'settings must mount in the collapsed rail too');
+  const collapsed = sidebar.slice(sidebar.indexOf('{/* Minimal Rail View'), sidebar.indexOf('{/* Expanded Sidebar View'));
+  assert.ok(collapsed.includes('setSettingsOpen(true)'), 'collapsed rail must open settings');
+  assert.ok(sidebar.includes('{settingsOpen && <SettingsDialog'), 'shared settings dialog must remain mounted');
 });

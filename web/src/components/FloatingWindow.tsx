@@ -197,7 +197,7 @@ export const FloatingWindow: React.FC<FloatingWindowProps> = ({
         <div
           onClick={(event) => event.stopPropagation()}
           style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-          className={`fixed flex flex-col overflow-hidden rounded-card border border-line/80 material-flyout flyout-in text-left shadow-flyout ${
+          className={`responsive-file-window fixed flex flex-col overflow-hidden rounded-card border border-line/80 material-flyout flyout-in text-left shadow-flyout ${
             animating ? 'fluent-window-motion' : ''
           }`}
         >

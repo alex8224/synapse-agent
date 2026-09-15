@@ -179,6 +179,7 @@
     }
   }
 }
+
 @layer base {
   /*
     Theme contract.
@@ -1112,4 +1113,90 @@ body {
   .wco-caption-reserve {
     min-width: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
   }
+}
+
+/*
+  Responsive shell.
+
+  Two bands on top of the desktop layout: 768-1023px keeps the rail but starts it
+  collapsed, and below 768px the navigation becomes a modal drawer that is taken
+  out of flow, so a phone's workspace column keeps the full width of the screen.
+  The desktop collapse preference is never written by either band: the drawer has
+  its own state and the tablet band its own, so resizing a window back to desktop
+  restores exactly the rail the reader had.
+
+  `100dvh` is written without a `100vh` fallback on purpose: a browser that does
+  not know the unit drops the declaration and keeps the `100vh` the base layer
+  set, and this block sits last so it outranks that base-layer rule.
+*/
+#root, .console-shell { height: 100dvh; }
+.navigation-column { height: 100%; flex-shrink: 0; }
+.navigation-scrim { position: fixed; inset: 0; z-index: 44; background: rgb(0 0 0 / 35%); }
+.navigation-drawer {
+  position: fixed; inset: 0 auto 0 0; z-index: 45;
+  width: min(320px, calc(100vw - 48px)); height: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: rgb(var(--surface));
+}
+.navigation-drawer[hidden] { display: none; }
+.navigation-drawer nav, .navigation-drawer nav > div { width: 100%; }
+.navigation-drawer nav > div:last-of-type { padding-top: 52px; }
+.navigation-close { position: absolute; right: 8px; top: max(8px, env(safe-area-inset-top, 0px)); z-index: 1; }
+/* The list/detail back affordance exists only in the phone bands. */
+.list-detail-back { display: none; }
+
+@media (max-width: 767px) {
+  .console-gutter { padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); }
+  .console-workspace > header {
+    grid-template-columns: auto minmax(0, 1fr); gap: 8px;
+    padding-top: env(safe-area-inset-top, 0px);
+    height: calc(var(--chrome-h) + env(safe-area-inset-top, 0px));
+  }
+  .console-workspace > header .wco-caption-reserve { display: none; }
+  .console-workspace > header .ui-session-title { justify-self: end; max-width: 100%; }
+  .console-workspace > header .wco-caption-controls .ui-button { width: 44px; padding: 0; }
+  .console-workspace > header .wco-caption-controls .ui-button > :not(svg) { display: none; }
+  .console-workspace > footer {
+    grid-template-columns: minmax(0, 1fr); gap: 0;
+    height: auto; min-height: 44px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .console-workspace > footer > div:first-child { min-height: 44px; }
+  .console-workspace > footer > div:nth-child(2) { display: none; }
+  .console-workspace > footer > div:last-child { display: none; }
+  .console-workspace > footer button { min-height: 44px; }
+  .console-workspace > footer [role="dialog"] {
+    position: fixed; left: 12px; right: 12px; bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    width: auto; max-width: none; max-height: calc(100dvh - 120px);
+  }
+  .console-column .max-w-\[80\%\], .console-column .max-w-\[85\%\] { max-width: 100%; }
+  .console-column .mr-\[20\%\] { margin-right: 0; }
+  .console-column .w-\[85\%\] { width: 100%; }
+  .ui-composer-input { font-size: 16px; }
+  .ui-composer-toolbar { gap: 4px; }
+  .ui-composer-toolbar #model-picker, .ui-composer-toolbar #thinking-picker {
+    max-width: calc(100vw - 40px); max-height: min(320px, 50dvh); overflow-y: auto;
+  }
+  .responsive-floating-panel { left: 12px !important; right: 12px; width: auto; max-width: none; transform: none !important; bottom: 60px !important; }
+  .console-turn-rail { display: none; }
+  .git-responsive-body { flex-direction: column; }
+  .git-responsive-body #git-file-list { width: 100%; flex: 1; }
+  .git-responsive-body[data-detail="true"] #git-file-list { display: none; }
+  .git-responsive-body[data-detail="false"] > div:last-child { display: none; }
+  .list-detail-back { display: inline-flex; }
+  .artifact-responsive-tree { display: flex; width: 100%; flex: 1; }
+  .artifact-responsive-body[data-mobile-detail="true"] .artifact-responsive-tree { display: none; }
+  .artifact-responsive-body[data-mobile-detail="false"] .artifact-responsive-preview { display: none; }
+  .responsive-dialog-toolbar { flex-wrap: wrap; }
+  .responsive-file-window { left: 8px !important; top: 8px !important; width: calc(100vw - 16px) !important; height: calc(100dvh - 16px) !important; }
+  .responsive-file-window .material-titlebar { flex-wrap: wrap; }
+  .responsive-file-window .cursor-nwse-resize { display: none; }
+  .responsive-file-window .material-titlebar > span { max-width: 40%; }
+}
+@media (pointer: coarse) {
+  .ui-button, .ui-icon-button, .ui-menu-item, .ui-nav-row { min-height: 44px; }
+  .ui-icon-button, .ui-icon-button.ui-compact { width: 44px; }
+  nav .opacity-0.group-hover\:opacity-100 { opacity: 1; }
+  .ui-field { font-size: 16px; }
 }

@@ -5,7 +5,18 @@
 
 ## 布局
 
-窗口是**两列**结构（`src/App.tsx`），不是「全宽顶栏 + 侧栏/主区 + 全宽底栏」：
+桌面窗口是**两列**结构（`src/App.tsx`），不是「全宽顶栏 + 侧栏/主区 + 全宽底栏」。响应式布局分三档：
+
+| 宽度 | 导航与内容 |
+| --- | --- |
+| ≥1024px | 保留桌面侧栏展开／折叠偏好及居中阅读列 |
+| 768–1023px | 默认 44px 紧凑导航，可手动展开，不改写桌面偏好 |
+| <768px | 默认关闭的覆盖式导航抽屉，正文不为侧栏让位；左右留白 12px（另计安全区） |
+
+手机导航支持遮罩、关闭按钮、Esc、焦点约束与关闭后恢复焦点；切换项目或会话会关闭抽屉。
+手机顶栏是两轨：导航按钮 + 会话标题，Git 入口收成 44px 的图标按钮（保留 `aria-label` 与 `title`）；
+底栏只保留运行态、MCP、目标入口，省略本轮遥测。Git／文件预览在手机上使用列表与详情切换，
+列表占满宽度，选中文件后切到详情并显示「返回文件列表」。轮次导轨在手机上隐藏（正文太窄）。
 
 - 左列 `SideBar` 占满整个视口高度：导航（新建任务 `Ctrl+N`、搜索 `Ctrl+K`，与折叠轨上
   的同名入口是同一个动作）、项目 → 会话树（会话树**不显示滚动条但可正常滚动**：
@@ -14,16 +25,15 @@
   ——两侧等宽 `1fr` 使其**真正居中于工作区列**、不随左右内容宽度漂移、窄屏也不重叠，
   右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
   分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
-  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、作为最后一行占位的 `CommandInput`，
-  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。输入区**不是**浮层：它占自己的一行，转录
-  滚动容器在其上方结束，因此自动跟随到底部时最新一行就在可见底边上（旧的 `absolute bottom-0`
-  浮层会把最新内容盖住，需要手动上滚才能看见）。
+  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、浮动的 `CommandInput`，
+  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。输入卡通过 ResizeObserver 发布实际高度，
+  转录区据此预留底部空间，避免最新内容被输入卡遮挡。
 
 聊天列与输入卡片共用同一套留白几何（`src/index.css` 的 `.console-gutter` + `.console-column`），
 但**宽度是解耦的**：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，聊天列取工作区的
 **80%** 且不设上限（更宽的工作区真的更宽）；输入卡片在同一中轴上另受 `--composer-max`（48rem）
-封顶，超过上限后不再增长，这样单行输入不会横跨整个宽窗口。窄屏每侧退回固定
-的 `2rem`，两者都近全宽。transcript 的滚动容器**不显示滚动条**（`src/index.css` 的
+封顶，超过上限后不再增长，这样单行输入不会横跨整个宽窗口。平板每侧留白
+为 `2rem`，手机为 12px。transcript 的滚动容器**不显示滚动条**（`src/index.css` 的
 `.no-scrollbar`，与侧栏会话树同一套规则），滚动本身不受影响（wheel / touch / 键盘）。
 `.no-scrollbar` 的 `scrollbar-width` + `-ms-overflow-style` + `::-webkit-scrollbar`
 三族规则按类名限定：未限定的 `::-webkit-scrollbar` 会把应用内所有滚动条一起隐藏（含嵌套块自己
@@ -37,6 +47,10 @@
 
 这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
 `tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
+
+`tests/shellLayout.verify.ts` 另测 360/390/430/640px 手机布局、768/900px 平板和桌面回归。
+根布局采用 `100dvh`（保留 `100vh` 回退），视口声明启用安全区和支持浏览器的键盘布局缩放。
+iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，桌面触控模拟不能替代。
 
 **子代理步骤是卡片，不是更多工具行。** runtime 送来的工具批次是平铺的，`Transcript` 先按调用关系
 把它折成渲染节点（`src/stores/transcriptLabels.ts` 的 `groupToolsForView`：`task` 调用，或 history

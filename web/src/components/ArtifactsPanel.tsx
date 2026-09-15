@@ -154,6 +154,7 @@ export const ArtifactsPanel: React.FC<{
   /** Markdown opens rendered (the readable default) and toggles to source. */
   const [preview, setPreview] = useState<'rendered' | 'source'>('rendered');
   const [treeVisible, setTreeVisible] = useState(true);
+  const [mobileDetail, setMobileDetail] = useState(false);
 
   // One token per selection: a read that started for an older file (or before
   // the panel unmounted) may not publish its result into the current view.
@@ -337,6 +338,9 @@ export const ArtifactsPanel: React.FC<{
       return;
     }
     if (!client) return;
+    // A directory stays in the list (drilling in re-lists it); only a file
+    // swaps the phone band to the preview pane.
+    setMobileDetail(true);
     const kind = artifactPreviewKind(entry.media_type, entry.path);
     setDiffMode(false);
     setPreview('rendered');
@@ -450,10 +454,10 @@ export const ArtifactsPanel: React.FC<{
 
       {/* A solid content surface: the reading area is opaque, only the window
           frame and its title bar carry the theme's material. */}
-      <div className="flex min-h-0 flex-1 bg-surface">
+      <div className="artifact-responsive-body flex min-h-0 flex-1 bg-surface" data-mobile-detail={mobileDetail}>
         {/* Directory listing */}
         <div
-          className={`flex w-72 min-w-0 shrink-0 flex-col border-r border-line bg-canvas ${
+          className={`artifact-responsive-tree flex w-72 min-w-0 shrink-0 flex-col border-r border-line bg-canvas ${
             treeVisible ? '' : 'hidden'
           }`}
         >
@@ -558,7 +562,10 @@ export const ArtifactsPanel: React.FC<{
         </div>
 
         {/* Viewer */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="artifact-responsive-preview flex min-h-0 min-w-0 flex-1 flex-col">
+          <button className="list-detail-back ui-button" onClick={() => { setMobileDetail(false); setTreeVisible(true); }}>
+            返回文件列表
+          </button>
           {/* The toolbar wraps instead of squeezing: a narrow window keeps every
               control reachable on its own line rather than truncating labels. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-3 py-2">
@@ -790,7 +797,7 @@ export const ArtifactsPanel: React.FC<{
         actions={
           <button
             type="button"
-            onClick={() => setTreeVisible((visible) => !visible)}
+            onClick={() => { setTreeVisible((visible) => !visible); setMobileDetail(false); }}
             title={treeVisible ? '收起文件树' : '展开文件树'}
             aria-label={treeVisible ? '收起文件树' : '展开文件树'}
             className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
