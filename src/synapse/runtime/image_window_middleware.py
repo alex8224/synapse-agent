@@ -52,7 +52,18 @@ IMAGE_PAYLOAD_BUDGET_CHARS = 1_000_000
 SCREENSHOT_PLACEHOLDER = "[previous screenshot removed to save context]"
 IMAGE_PLACEHOLDER = "[previous image removed to save context]"
 
-_SCREENSHOT_TOOL_MARKERS = ("screenshot", "screen_shot", "screencap", "cdp_", "browser")
+_SCREENSHOT_TOOL_MARKERS = (
+    "screenshot",
+    "screen_shot",
+    "screencap",
+    "cdp_",
+    "browser",
+    # cua-driver returns the window/desktop image beside its accessibility tree;
+    # both are screenshots, so they share the single-image window instead of
+    # counting against the far larger generic-tool ceiling.
+    "get_window_state",
+    "get_desktop_state",
+)
 _IMAGE_BLOCK_TYPES = frozenset({"image", "image_url", "input_image"})
 _IMAGE_URL_KEYS = ("image_url", "url", "base64")
 

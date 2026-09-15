@@ -309,21 +309,53 @@ def _structured_summary(structured: Any) -> str | None:
     return text
 
 
-def _content_to_text(result: Any) -> str:
-    parts: list[str] = []
+def _image_block(block: Any) -> dict[str, Any] | None:
+    """Return an LLM-readable image block, or ``None`` when *block* is not one."""
+    data = getattr(block, "data", None)
+    mime = str(getattr(block, "mimeType", "") or "")
+    kind = str(getattr(block, "type", "") or "")
+    if not data or not (kind == "image" or mime.startswith("image/")):
+        return None
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime or 'image/png'};base64,{data}"},
+    }
+
+
+def _content_to_message_content(result: Any) -> str | list[dict[str, Any]]:
+    """Render an MCP result as LangChain message content.
+
+    Text blocks stay text. An image block becomes an ``image_url`` data URL so
+    the model receives the picture itself: rendering it with ``str(block)``
+    would inline the base64 as text, which both hides the image and re-sends
+    the payload on every later turn. How many images survive is bounded by
+    ``runtime.image_window_middleware``, not here.
+
+    A result with no image collapses to a plain string, which keeps text-only
+    servers on the previous code path.
+    """
+    blocks: list[dict[str, Any]] = []
     for block in getattr(result, "content", None) or []:
         text = getattr(block, "text", None)
         if text:
-            parts.append(text)
-        else:
-            parts.append(str(block))
+            blocks.append({"type": "text", "text": text})
+            continue
+        image = _image_block(block)
+        if image is not None:
+            blocks.append(image)
+            continue
+        blocks.append({"type": "text", "text": str(block)})
+
     summary = _structured_summary(getattr(result, "structuredContent", None))
     if summary is not None:
-        parts.append(f"structuredContent: {summary}")
-    body = "\n".join(parts)
+        blocks.append({"type": "text", "text": f"structuredContent: {summary}"})
+
     if getattr(result, "isError", False):
+        body = "\n".join(item["text"] for item in blocks if item["type"] == "text")
         return "MCP error: " + (body or "unknown")
-    return body or "(empty MCP result)"
+    if all(item["type"] == "text" for item in blocks):
+        return "\n".join(item["text"] for item in blocks) or "(empty MCP result)"
+    return blocks
 
 
 def _make_tool(
@@ -341,7 +373,7 @@ def _make_tool(
     safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in full_name)
     args_model = json_schema_to_pydantic_model(safe_name, input_schema)
 
-    def _invoke(**kwargs: Any) -> str:
+    def _invoke(**kwargs: Any) -> str | list[dict[str, Any]]:
         # Drop explicit Nones so optional MCP fields stay omitted.
         arguments = {k: v for k, v in kwargs.items() if v is not None}
         return call_fn(tool_name, arguments)
@@ -590,13 +622,15 @@ class McpSessionPool:
             logger.warning("MCP server %s open failed: %s", server.name, exc)
             return None, f"mcp server {server.name}: {exc}"
 
-    async def _call(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def _call(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> str | list[dict[str, Any]]:
         live = self._servers.get(server_name)
         if live is None:
             return f"MCP error: server {server_name} is not connected"
         try:
             result = await live.session.call_tool(tool_name, arguments=arguments)
-            return _content_to_text(result)
+            return _content_to_message_content(result)
         except Exception as exc:
             # Connection broken (e.g. stdio process exited, HTTP stream closed,
             # anyio.ClosedResourceError).  Drop the dead session so follow-up
@@ -611,7 +645,9 @@ class McpSessionPool:
             self._servers.pop(server_name, None)
             return f"MCP error: {server_name}/{tool_name}: {exc}"
 
-    def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+    def call_tool(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> str | list[dict[str, Any]]:
         try:
             return self._loop.run(self._call(server_name, tool_name, arguments))
         except Exception as exc:
