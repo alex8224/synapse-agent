@@ -38,6 +38,19 @@
 这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
 `tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
 
+**子代理步骤是卡片，不是更多工具行。** runtime 送来的工具批次是平铺的，`Transcript` 先按调用关系
+把它折成渲染节点（`src/stores/transcriptLabels.ts` 的 `groupToolsForView`：`task` 调用，或 history
+投影里带 `subagentName` 的行，开启一个分组；被标记为嵌套的行——`sub`，或 `parentId` 指向那次调用
+——落进该分组，其余仍是主代理的平铺行）。分组渲染为一张可折叠的子代理卡片：卡面取中性的抬升层
+`bg-raised`（`--surface-raised`，深色主题下是 `#383838`，不再是紫色底——紫色只留给子代理标记与
+`@子代理名` 标签）；卡头依次是子代理标记（紫色 `Bot20Regular` 图标）、`@子代理名`、目标、
+`N 步骤`、带图标的状态徽标（`运行中` 为旋转的 `SpinnerIos20Regular`，`完成` / `失败` 各带自己的
+图标）与展开箭头；卡体沿一条竖直导轨（`border-l border-line`）列出该子代理自己的每一步，每步在
+导轨上有一个显示该步自身状态的小圆（运行中同样旋转），行本身与主代理的工具行完全一致（同一个
+渲染器）。卡片默认展开，折叠状态是**行内视图状态**（不写回 store，所以不会重建 `messages` 数组、
+也不会把转录拽到底部）。分组规则由 `tests/transcriptLabels.test.ts` 守护，卡面、标记与状态动画由
+`tests/transcriptLayoutGuard.test.ts` 守护。
+
 ## 主题
 
 外观由**一层 CSS 变量**决定，主题就是一组变量值：换主题不碰任何组件。机制在两处：

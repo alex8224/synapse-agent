@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   expandHint,
   formatToolArgs,
+  groupToolsForView,
   isTerminalTool,
   thoughtIcon,
   thoughtLabel,
@@ -15,6 +16,7 @@ import {
   toolPreviewLanguage,
   toolStatusLabel,
 } from '../src/stores/transcriptLabels.ts';
+import type { ToolItemView } from '../src/stores/historyMapper.ts';
 
 test('toolStatusLabel maps the runtime statuses to the console vocabulary', () => {
   assert.equal(toolStatusLabel('running'), '运行中');
@@ -96,6 +98,119 @@ test('formatToolArgs bounds the value, the key count and the whole line', () => 
 
   const wide = formatToolArgs({ a: long, b: long, c: long });
   assert.ok(wide.length <= 400, 'the finished line must stay bounded');
+});
+
+/** One tool item of a batch, with the fields a projection would carry. */
+const tool = (name: string, extra: Partial<ToolItemView> = {}): ToolItemView => ({
+  id: name,
+  callId: null,
+  name,
+  label: name,
+  category: 'other',
+  path: null,
+  status: 'completed',
+  preview: null,
+  error: false,
+  sub: false,
+  parentId: null,
+  subagentStatus: null,
+  subagentName: null,
+  icon: 'build',
+  ...extra,
+});
+
+/** The one node a single-item batch must produce. */
+function onlyNode(tools: ToolItemView[]) {
+  const nodes = groupToolsForView(tools);
+  assert.equal(nodes.length, 1, 'the batch must fold into one node');
+  return nodes[0];
+}
+
+test('plain tool calls stay flat rows', () => {
+  const nodes = groupToolsForView([tool('read_file'), tool('edit_file')]);
+  assert.deepEqual(nodes.map((n) => n.type), ['single', 'single']);
+  assert.equal(nodes[0].type === 'single' ? nodes[0].tool.name : '', 'read_file');
+  assert.equal(nodes[1].type === 'single' ? nodes[1].tool.name : '', 'edit_file');
+});
+
+test('a task call opens a subagent group, named and goal-ed from its arguments', () => {
+  const node = onlyNode([
+    tool('task', { id: 'c1', callId: 'call-1', args: { subagent_type: 'researcher', intent: 'survey the repo' } }),
+  ]);
+  assert.equal(node.type, 'subagent');
+  assert.ok(node.type === 'subagent');
+  assert.equal(node.subagentName, 'researcher');
+  assert.equal(node.subagentGoal, 'survey the repo');
+  assert.equal(node.parent.name, 'task');
+  assert.deepEqual(node.tools, [], 'a task with no steps yet carries none');
+});
+
+test('sub-tools land inside the task that started them, by item id or call id', () => {
+  const nodes = groupToolsForView([
+    tool('task', { id: 'c1', callId: 'call-1', args: { subagent_type: 'researcher' } }),
+    tool('read_file', { id: 'c1-1', sub: true, parentId: 'c1' }),
+    tool('grep', { id: 'c1-2', sub: true, parentId: 'call-1' }),
+    tool('edit_file', { id: 'm1' }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['subagent', 'single']);
+  const group = nodes[0];
+  assert.ok(group.type === 'subagent');
+  assert.deepEqual(group.tools.map((t) => t.name), ['read_file', 'grep']);
+  // A main-agent call after the group stays its own row, and closes the group.
+  assert.equal(nodes[1].type === 'single' ? nodes[1].tool.name : '', 'edit_file');
+});
+
+test('a history row that names its subagent opens a group, and its steps join it', () => {
+  // The projection drops `parent_id`, so the open group is what a nested row
+  // hangs off.
+  const nodes = groupToolsForView([
+    tool('task', { id: 'h1', subagentName: 'planner', label: 'plan the work' }),
+    tool('read_file', { id: 'h2', sub: true }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['subagent']);
+  const group = nodes[0];
+  assert.ok(group.type === 'subagent');
+  assert.equal(group.subagentName, 'planner');
+  assert.equal(group.subagentGoal, 'plan the work');
+  assert.deepEqual(group.tools.map((t) => t.name), ['read_file']);
+});
+
+test('a subagent group is named and goal-ed from the best field it has', () => {
+  const named = onlyNode([tool('task', { subagentName: 'planner' })]);
+  assert.ok(named.type === 'subagent');
+  assert.equal(named.subagentName, 'planner', 'the row\'s own name wins');
+
+  const described = onlyNode([tool('task', { args: { description: 'find the flaky test' } })]);
+  assert.ok(described.type === 'subagent');
+  assert.equal(described.subagentName, 'subagent', 'an unnamed task still reads as a subagent');
+  assert.equal(described.subagentGoal, 'find the flaky test');
+
+  const bare = onlyNode([tool('task')]);
+  assert.ok(bare.type === 'subagent');
+  assert.equal(bare.subagentGoal, '子代理任务', 'a goal-less task keeps a placeholder');
+});
+
+test('a nested row with no subagent to hang off stays a plain row', () => {
+  const nodes = groupToolsForView([tool('read_file', { sub: true, parentId: 'missing' })]);
+  assert.deepEqual(nodes.map((n) => n.type), ['single']);
+  // An unattributed nested row after a main-agent row does not re-open the group.
+  const after = groupToolsForView([
+    tool('task', { id: 'c1' }),
+    tool('edit_file', { id: 'm1' }),
+    tool('read_file', { id: 's1', sub: true }),
+  ]);
+  assert.deepEqual(after.map((n) => n.type), ['subagent', 'single', 'single']);
+});
+
+test('a nested row that names its subagent is a step, never a new group', () => {
+  const nodes = groupToolsForView([
+    tool('task', { id: 'c1', args: { subagent_type: 'researcher' } }),
+    tool('read_file', { id: 's1', sub: true, parentId: 'c1', subagentName: 'researcher' }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['subagent']);
+  const group = nodes[0];
+  assert.ok(group.type === 'subagent');
+  assert.deepEqual(group.tools.map((t) => t.name), ['read_file']);
 });
 
 test('a file-content tool body takes the language of its path', () => {

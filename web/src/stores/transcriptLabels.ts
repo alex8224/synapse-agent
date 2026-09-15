@@ -10,6 +10,7 @@
  */
 import { isHighlightedLanguage } from '../markdown/highlight.ts';
 import { extensionOf } from '../runtime-client/artifacts.ts';
+import type { ToolItemView } from './historyMapper.ts';
 
 /** Human label for one runtime tool status. */
 export function toolStatusLabel(status: string): string {
@@ -197,6 +198,90 @@ export function toolPreviewLanguage(
   if (!path) return '';
   const language = LANGUAGE_BY_EXTENSION[extensionOf(path)] ?? '';
   return isHighlightedLanguage(language) ? language : '';
+}
+
+/**
+ * A subagent's own tool batch, as one collapsible card.
+ *
+ * `parent` is the call that started the subagent (a `task` call, or the history
+ * projection's row that names one); `tools` are the steps the runtime attributed
+ * to it.  The batch arrives flat -- every item is just a tool call -- so this is
+ * the view model that puts the nesting back.
+ */
+export interface SubagentToolGroup {
+  type: 'subagent';
+  parent: ToolItemView;
+  subagentName: string;
+  subagentGoal: string;
+  tools: ToolItemView[];
+}
+
+/** One plain tool row of a batch, belonging to the main agent. */
+export interface SingleToolItem {
+  type: 'single';
+  tool: ToolItemView;
+}
+
+/** What one item of a tool batch renders as. */
+export type ToolRenderNode = SingleToolItem | SubagentToolGroup;
+
+/**
+ * Fold a flat tool batch into render nodes.
+ *
+ * A `task` call -- or, in a history projection, any row that names the subagent it
+ * ran -- opens a {@link SubagentToolGroup}; every item the runtime marked as nested
+ * (`sub`, or a `parentId` pointing at that call) lands inside it.  Correlation is by
+ * identity first (the parent's item id / call id), then by "the group still open",
+ * so a projection that dropped the link still nests its steps under the subagent
+ * that was running.  Anything else is a plain row, and it closes the open group: the
+ * next unattributed item belongs to the main agent again.
+ */
+export function groupToolsForView(tools: ToolItemView[]): ToolRenderNode[] {
+  const nodes: ToolRenderNode[] = [];
+  const subagentGroupsByParentId = new Map<string, SubagentToolGroup>();
+  let activeSubagent: SubagentToolGroup | null = null;
+
+  for (const t of tools) {
+    if (t.name === 'task' || (t.subagentName && !t.sub)) {
+      const subagentName = t.subagentName || (typeof t.args?.subagent_type === 'string' ? t.args.subagent_type : 'subagent');
+      const subagentGoal = (typeof t.args?.intent === 'string' && t.args.intent)
+        || (t.label && t.label !== t.name ? t.label : '')
+        || (typeof t.args?.description === 'string' ? t.args.description : '')
+        || '子代理任务';
+
+      const groupNode: SubagentToolGroup = {
+        type: 'subagent',
+        parent: t,
+        subagentName,
+        subagentGoal,
+        tools: [],
+      };
+      nodes.push(groupNode);
+      if (t.id) subagentGroupsByParentId.set(t.id, groupNode);
+      if (t.callId) subagentGroupsByParentId.set(t.callId, groupNode);
+      activeSubagent = groupNode;
+      continue;
+    }
+
+    if (t.sub || t.parentId) {
+      let targetGroup: SubagentToolGroup | undefined;
+      if (t.parentId) {
+        targetGroup = subagentGroupsByParentId.get(t.parentId);
+      }
+      if (!targetGroup) {
+        targetGroup = activeSubagent ?? undefined;
+      }
+      if (targetGroup) {
+        targetGroup.tools.push(t);
+        continue;
+      }
+    }
+
+    nodes.push({ type: 'single', tool: t });
+    activeSubagent = null;
+  }
+
+  return nodes;
 }
 
 /**

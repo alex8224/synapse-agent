@@ -15,17 +15,21 @@ import {
   ChevronRight16Regular,
   ChevronDown16Regular,
   WindowConsole20Regular,
+  Bot20Regular,
 } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   expandHint,
   formatToolArgs,
+  groupToolsForView,
   isTerminalTool,
   thoughtLabel,
   toolGroupLabel,
   toolPreviewLanguage,
   toolStatusLabel,
+  type SubagentToolGroup,
+  type ToolRenderNode,
 } from '../stores/transcriptLabels.ts';
 import { CodeBlock } from './CodeBlock.tsx';
 import { TerminalOutput } from './TerminalOutput.tsx';
@@ -34,7 +38,7 @@ import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
-import type { TranscriptMessage } from '../stores/historyMapper.ts';
+import type { ToolItemView, TranscriptMessage } from '../stores/historyMapper.ts';
 import {
   formatWorkDuration,
   getGroupIntentStatus,
@@ -101,6 +105,19 @@ const TranscriptRow = React.memo(function TranscriptRow({
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(m.content ?? '');
   const [copied, setCopied] = useState(false);
+  /**
+   * Which subagent cards are open, keyed by the call that started them.
+   *
+   * A subagent's steps are a fold of their own inside the tool batch, so opening one
+   * must not be a store write: the transcript's fold flags live on the message and
+   * flipping one re-creates the messages array (and re-parses the Markdown of every
+   * row).  A card is closed by default -- the batch it lives in already says the
+   * subagent ran, and the steps are there for a reader who asks for them -- and
+   * only a deliberate expansion is remembered.
+   */
+  const [expandedSubagents, setExpandedSubagents] = useState<Record<string, boolean>>({});
+  const toggleSubagent = (id: string) =>
+    setExpandedSubagents((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
 
   const handleCopy = (text: string) => {
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
@@ -297,6 +314,180 @@ const TranscriptRow = React.memo(function TranscriptRow({
     if (processMeta && !processMeta.isExpanded && !processMeta.isFirst) {
       return null;
     }
+    // The batch is flat on the wire; this is where a subagent's own steps are put
+    // back under the call that started it, so they can be painted as one card
+    // instead of as N more rows of the main agent's list.
+    const toolNodes = groupToolsForView(toolList);
+    /**
+     * One tool row: the call's name, the intent the model gave it, its bounded
+     * arguments and its body.  Shared by a main-agent row and by a subagent step,
+     * so a nested call reads exactly like a top-level one.
+     */
+    const renderToolRow = (t: ToolItemView) => {
+      const argsLine = formatToolArgs(t.args);
+      // A run tool returns a program's terminal output, so it is painted
+      // (escapes and all) rather than tokenized as source code.
+      const terminal = isTerminalTool(t.name);
+      // A read / edit body is a file (or a patch), so it gets the same
+      // highlighter the markdown fences use; anything else stays plain.
+      const previewLang = t.preview && !terminal
+        ? toolPreviewLanguage(t.name, t.path, t.preview)
+        : '';
+      return (
+        <div
+          key={t.id}
+          onMouseMove={updateSpotlight}
+          className={"rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight " + (t.error ? "border-red-200 bg-red-50" : "border-line bg-surface")}
+        >
+          <div className="flex items-center space-x-2">
+            {t.name === 'execute' ? (
+              <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
+            ) : (
+              <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
+            )}
+            {/* The tool's own name is never replaced: it is what the call
+                *was*, while the intent beside it is what the model said it
+                was for.  The icon carries the kind, so no word repeats it. */}
+            <span className="shrink-0 font-medium text-gray-900">{t.name}</span>
+            {t.label && t.label !== t.name && (
+              <span className="truncate text-gray-600" title={t.label}>
+                {t.label}
+              </span>
+            )}
+            {t.sub && (
+              <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
+                sub
+              </span>
+            )}
+            {t.subagentName && (
+              <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
+            )}
+            {t.path && <span className="truncate text-gray-500">{t.path}</span>}
+            <span
+              className={"ml-auto shrink-0 rounded-control px-1 text-[10px] " + (t.error ? "bg-red-100 text-red-700" : t.status === "completed" ? "bg-green-100 text-green-700" : "bg-blue-50 text-blue-500")}
+            >
+              {t.subagentStatus
+                ? (toolStatusLabel(t.status) + " · " + t.subagentStatus)
+                : toolStatusLabel(t.status)}
+            </span>
+          </div>
+          {/* The call's own arguments, bounded by `formatToolArgs`: an
+              argument can be a whole command or file, so it is one
+              collapsed line rather than a payload. */}
+          {argsLine !== '' && (
+            <div className="mt-1 break-all text-gray-500" title={argsLine}>
+              {argsLine}
+            </div>
+          )}
+          {terminal && t.preview ? (
+            <TerminalOutput text={t.preview} />
+          ) : previewLang !== '' && t.preview ? (
+            <CodeBlock lang={previewLang} code={t.preview} />
+          ) : (
+            t.preview && (
+              <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
+                {t.preview}
+              </div>
+            )
+          )}
+        </div>
+      );
+    };
+    /**
+     * One subagent: the call that started it, the goal it was given, and its own
+     * steps behind a rail.  The rail is what makes the nesting readable at a
+     * glance -- a step hangs off the card, not off the main agent's list.
+     */
+    const renderSubagentCard = (node: SubagentToolGroup, key: string) => {
+      const subExpanded = expandedSubagents[key] === true;
+      const subRunning = node.parent.status === 'running'
+        || node.tools.some((s) => s.status === 'running' || s.status === 'pending');
+      // Only the task call itself decides the card's outcome: a subagent that
+      // recovered from a failed step still completed, and its own tool errors are
+      // counted on the step line instead of painting the whole card red.
+      const parentFailed = node.parent.error || node.parent.status === 'failed';
+      const failedSteps = node.tools.filter((s) => s.error || s.status === 'failed').length;
+      return (
+        <div key={key} className="rounded-control border border-line bg-raised">
+          {/* The raised fill equals the dark palette's hover step, so the header
+              takes the pressed step to stay visible when it is hovered. */}
+          <button
+            type="button"
+            onClick={() => toggleSubagent(key)}
+            aria-expanded={subExpanded}
+            title={subExpanded ? '收起子代理步骤' : '展开子代理步骤'}
+            className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-pressed"
+          >
+            {/* The subagent's own mark: purple is the identity accent, and the card
+                surface stays a neutral layer like every other in-page card. */}
+            <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-control border border-purple-200/60 bg-purple-50 text-purple-700">
+              <Bot20Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+            </span>
+            <span className="shrink-0 rounded-control bg-purple-50 text-purple-700 border border-purple-200/60 font-mono text-[10px] px-1">
+              @{node.subagentName}
+            </span>
+            <span className="truncate text-xs text-gray-900" title={node.subagentGoal}>
+              {node.subagentGoal}
+            </span>
+            <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-400">
+              {failedSteps > 0 ? `${node.tools.length} 步骤 (${failedSteps} 失败)` : `${node.tools.length} 步骤`}
+            </span>
+            <span
+              className={"flex shrink-0 items-center gap-1 rounded-control px-1 font-mono text-[10px] " + (parentFailed ? "bg-red-100 text-red-700" : subRunning ? "bg-blue-50 text-blue-500" : "bg-green-100 text-green-700")}
+            >
+              {parentFailed ? (
+                <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '11px' }} />
+              ) : subRunning ? (
+                <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '11px' }} />
+              ) : (
+                <Checkmark16Regular aria-hidden="true" style={{ fontSize: '11px' }} />
+              )}
+              {parentFailed ? '失败' : subRunning ? '运行中' : '完成'}
+            </span>
+            {subExpanded ? (
+              <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+            ) : (
+              <ChevronRight16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+            )}
+          </button>
+          <div className="fluent-accordion" data-expanded={subExpanded}>
+            <div className="fluent-accordion-content">
+              {/* The guide rail: one line the steps hang off, with a state circle
+                  per step sitting on it.  The circle is offset by the rail's own
+                  inset, so it stays centred on the line at any text size. */}
+              <div className="border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
+                {node.tools.map((t) => {
+                  // The step's own outcome, so the circle can carry it at a glance;
+                  // the row's badge still prints the word beside it.
+                  const stepRunning = t.status === 'running' || t.status === 'pending';
+                  const stepFailed = t.error || t.status === 'failed';
+                  return (
+                    <div key={t.id} className="relative">
+                      <span
+                        aria-hidden="true"
+                        className={"absolute -left-[19px] top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full " + (stepFailed ? "bg-red-100 text-red-700" : stepRunning ? "bg-blue-50 text-blue-500" : "bg-green-100 text-green-700")}
+                      >
+                        {stepFailed ? (
+                          <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '10px' }} />
+                        ) : stepRunning ? (
+                          <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '10px' }} />
+                        ) : (
+                          <Checkmark16Regular aria-hidden="true" style={{ fontSize: '10px' }} />
+                        )}
+                      </span>
+                      {renderToolRow(t)}
+                    </div>
+                  );
+                })}
+                {node.tools.length === 0 && (
+                  <div className="font-mono text-[10px] text-gray-400">等待子代理步骤…</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
     return (
       <div key={m.id} className="max-w-[85%] py-1">
         {processMeta && !processMeta.isExpanded ? (
@@ -363,76 +554,16 @@ const TranscriptRow = React.memo(function TranscriptRow({
             </div>
             <div className="fluent-accordion" data-expanded={expanded}>
               <div className="fluent-accordion-content pt-1.5 space-y-1.5">
-                {toolList.map((t) => {
-                  const argsLine = formatToolArgs(t.args);
-                  // A run tool returns a program's terminal output, so it is painted
-                  // (escapes and all) rather than tokenized as source code.
-                  const terminal = isTerminalTool(t.name);
-                  // A read / edit body is a file (or a patch), so it gets the same
-                  // highlighter the markdown fences use; anything else stays plain.
-                  const previewLang = t.preview && !terminal
-                    ? toolPreviewLanguage(t.name, t.path, t.preview)
-                    : '';
-                  return (
-                  <div
-                    key={t.id}
-                    onMouseMove={updateSpotlight}
-                    className={"rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight " + (t.error ? "border-red-200 bg-red-50" : "border-line bg-surface")}
-                  >
-                    <div className="flex items-center space-x-2">
-                      {t.name === 'execute' ? (
-                        <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
-                      ) : (
-                        <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
-                      )}
-                      {/* The tool's own name is never replaced: it is what the call
-                          *was*, while the intent beside it is what the model said it
-                          was for.  The icon carries the kind, so no word repeats it. */}
-                      <span className="shrink-0 font-medium text-gray-900">{t.name}</span>
-                      {t.label && t.label !== t.name && (
-                        <span className="truncate text-gray-600" title={t.label}>
-                          {t.label}
-                        </span>
-                      )}
-                      {t.sub && (
-                        <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
-                          sub
-                        </span>
-                      )}
-                      {t.subagentName && (
-                        <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
-                      )}
-                      {t.path && <span className="truncate text-gray-500">{t.path}</span>}
-                      <span
-                        className={"ml-auto shrink-0 rounded-control px-1 text-[10px] " + (t.error ? "bg-red-100 text-red-700" : t.status === "completed" ? "bg-green-100 text-green-700" : "bg-blue-50 text-blue-500")}
-                      >
-                        {t.subagentStatus
-                          ? (toolStatusLabel(t.status) + " · " + t.subagentStatus)
-                          : toolStatusLabel(t.status)}
-                      </span>
-                    </div>
-                    {/* The call's own arguments, bounded by `formatToolArgs`: an
-                        argument can be a whole command or file, so it is one
-                        collapsed line rather than a payload. */}
-                    {argsLine !== '' && (
-                      <div className="mt-1 break-all text-gray-500" title={argsLine}>
-                        {argsLine}
-                      </div>
-                    )}
-                    {terminal && t.preview ? (
-                      <TerminalOutput text={t.preview} />
-                    ) : previewLang !== '' && t.preview ? (
-                      <CodeBlock lang={previewLang} code={t.preview} />
-                    ) : (
-                      t.preview && (
-                        <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
-                          {t.preview}
-                        </div>
-                      )
-                    )}
-                  </div>
-                  );
-                })}
+                {toolNodes.map((node: ToolRenderNode, index) =>
+                  node.type === 'subagent' ? (
+                    renderSubagentCard(
+                      node,
+                      node.parent.id || node.parent.callId || `${node.subagentName}-${index}`,
+                    )
+                  ) : (
+                    renderToolRow(node.tool)
+                  ),
+                )}
               </div>
             </div>
           </>

@@ -203,3 +203,25 @@ test('a command body is painted as terminal output', () => {
     'a terminal body must not also be tokenized as source code',
   );
 });
+
+test('a subagent card is a neutral raised layer with an animated persona and state', () => {
+  // The card groups nested rows, so it takes the raised layer role and keeps the
+  // purple for the persona mark alone.  Its states are animated, and the rail
+  // circle carries the step's own outcome instead of one purple dot per step.
+  // The card's own `return (` opens its markup; the next one belongs to the step
+  // map, so the slice holds the whole header and the step state it derives.
+  const start = transcript.indexOf('renderSubagentCard');
+  const end = transcript.indexOf('return (', transcript.indexOf('return (', start) + 1);
+  const card = transcript.slice(start, end);
+  assert.ok(card.includes('bg-raised'), 'the card must sit on the neutral raised layer');
+  assert.equal(card.includes('bg-purple-50/40'), false, 'the card must not paint a purple fill');
+  assert.ok(
+    card.indexOf('Bot20Regular') < card.indexOf('@{node.subagentName}'),
+    'the persona mark must precede the @name tag',
+  );
+  assert.ok(card.includes('animate-spin'), 'the running state must animate');
+  assert.ok(
+    card.includes('stepRunning') && card.includes('stepFailed'),
+    'the rail circle must carry the step state',
+  );
+});

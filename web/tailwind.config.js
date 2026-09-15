@@ -82,6 +82,7 @@ export default {
         purple: {
           50: "rgb(var(--purple-50) / <alpha-value>)",
           100: "rgb(var(--purple-100) / <alpha-value>)",
+          200: "rgb(var(--purple-200) / <alpha-value>)",
           500: "rgb(var(--purple-500) / <alpha-value>)",
           600: "rgb(var(--purple-600) / <alpha-value>)",
           700: "rgb(var(--purple-700) / <alpha-value>)",
@@ -96,6 +97,7 @@ export default {
         // hover/press, so no component has to invent an opacity mix.
         "surface-hover": "rgb(var(--surface-hover) / <alpha-value>)",
         "surface-pressed": "rgb(var(--surface-pressed) / <alpha-value>)",
+        raised: "rgb(var(--surface-raised) / <alpha-value>)",
         "fg-disabled": "rgb(var(--fg-disabled) / <alpha-value>)",
         accent: "rgb(var(--accent) / <alpha-value>)",
         "on-accent": "rgb(var(--on-accent) / <alpha-value>)",

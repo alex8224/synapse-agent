@@ -271,6 +271,7 @@
     /* State ramps: formulas (the only non-status accent the transcript has). */
     --purple-50: 250 245 255;
     --purple-100: 243 232 255;
+    --purple-200: 233 213 255;
     --purple-500: 168 85 247;
     --purple-600: 147 51 234;
     --purple-700: 126 34 206;
@@ -288,6 +289,10 @@
        whatever layer it happens to sit on, and disabled text gets its own role. */
     --surface-hover: 245 245 245;
     --surface-pressed: 235 235 235;
+    /* A container that groups nested rows: one step above the pane and above the
+       cards inside it.  The shipped palette gives it the subtle step, so it reads
+       as a raised group in both themes. */
+    --surface-raised: 245 245 245;
     --fg-disabled: 189 189 189;
 
     /* Shape, type and elevation. */
@@ -393,6 +398,7 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --surface-hover: 245 245 245;   /* colorSubtleBackgroundHover */
+    --surface-raised: 245 245 245;  /* the raised group step (see :root) */
     --selection-fill: var(--surface-hover);
     --surface-pressed: 235 235 235; /* colorSubtleBackgroundPressed */
     --fg-disabled: 189 189 189;     /* colorNeutralForegroundDisabled */
@@ -552,6 +558,7 @@
     --surface-sunken: var(--f-sunken);
     --line: var(--f-line);
     --surface-hover: 56 56 56;      /* colorSubtleBackgroundHover */
+    --surface-raised: 56 56 56;     /* the raised group step (see :root) */
     --selection-fill: var(--surface-hover);
     --surface-pressed: 51 51 51;    /* colorSubtleBackgroundPressed */
     --fg-disabled: 92 92 92;        /* colorNeutralForegroundDisabled */
@@ -623,6 +630,20 @@
     --emerald-500: 16 124 16;
     --emerald-600: 84 176 84;
     --emerald-700: 159 216 159;
+
+    /*
+      The purple ramp is the subagent card's own accent, so the dark theme has to
+      replace it like every other palette step: without this block the card kept
+      the light steps (a #FAF5FF fill, a #E9D5FF stroke) and painted a bright
+      lavender panel onto a #292929 surface.  Backgrounds become deep tints and
+      the text/border steps stay light, mirroring the state ramps above.
+    */
+    --purple-50: 35 20 55;
+    --purple-100: 62 38 92;
+    --purple-200: 100 66 142;
+    --purple-500: 168 85 247;
+    --purple-600: 190 130 245;
+    --purple-700: 226 195 252;
   }
 }
 
