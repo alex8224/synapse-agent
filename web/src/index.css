@@ -680,13 +680,18 @@ body {
     fill is not something.  The insets keep the first line clear of the bar and the
     newest line clear of the card by the same 1.5rem the other edges use, and
     `scroll-padding-bottom` makes the transcript's own `scrollIntoView({block:
-    'end'})` land on the visible edge instead of behind the card.  `--composer-h`
-    is published by the composer from its measured height.
+    'end'})` land on the visible edge instead of behind the card.  The top needs
+    the same reservation for the opposite alignment: the turn rail's jump is a
+    `scrollIntoView({block: 'start'})` on the turn's user message, and without
+    `scroll-padding-top` it aligned that message with the *scrollport* top -- 40px
+    up behind the header -- so the message you asked for arrived half hidden.
+    `--composer-h` is published by the composer from its measured height.
   */
   .console-pane-inset {
     margin-top: calc(-1 * var(--chrome-h));
     padding-top: calc(var(--chrome-h) + 1.5rem);
     padding-bottom: calc(var(--composer-h) + 1.5rem);
+    scroll-padding-top: calc(var(--chrome-h) + 1.5rem);
     scroll-padding-bottom: calc(var(--composer-h) + 1.5rem);
   }
   @media (min-width: 1024px) {

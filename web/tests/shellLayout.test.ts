@@ -166,6 +166,15 @@ test('the composer is the last row of the workspace column, not a floating card'
     /--composer-h:\s*[\d.]+rem/.test(styles),
     'the first paint needs a value before the observer runs',
   );
+  // The scroller starts *behind* the header, so a `block: 'start'` scroll -- the
+  // turn rail's jump to a turn's user message -- needs the bar reserved at the
+  // top too, exactly as the composer is reserved at the bottom.
+  assert.ok(
+    /\.console-pane-inset\s*\{[^}]*scroll-padding-top:\s*calc\(var\(--chrome-h\) \+ 1\.5rem\)/.test(
+      styles,
+    ),
+    'a start-aligned jump must clear the header, not land behind it',
+  );
   assert.equal(
     transcript.includes('pb-36'),
     false,
