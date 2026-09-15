@@ -363,12 +363,36 @@ Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）�
 语言标签、复制按钮、横向滚动（不换行）、按语言的高亮（`web/src/markdown/highlight.ts`，
 覆盖 python/js/ts/json/bash/yaml/sql/rust/go/java/c/cpp/css/html 与 diff，未知语言保持纯文本）。
 
+图片引用 `![alt](src)` 解析为类型化的 `image` 节点：来源分类在
+`web/src/markdown/imageRefs.ts`（纯函数），行为在 `web/src/components/MarkdownImage.tsx`。
+**本地工作区路径**走 artifact 面（stat → 类型与体积校验 → 有界分块读字节）并渲染为图片，
+点击用共享的 `ImageLightbox` 放大（复用同一个 blob URL，不重复读盘）；**远程 `http(s)` 图片
+不加载**，只渲染成链接；`data:` 载荷与其它 scheme 直接拒绝。
+
 约束与边界：
 
 - 解析器无第三方依赖，**不生成 HTML**：返回类型化节点由 React 渲染，正文本身没有注入
   路径（公式与图形这两个「输出即标记」的例外见本节末尾）；
 - 链接目标经 `sanitizeHref` 过滤，仅保留 http/https/mailto、锚点与相对路径，
   `javascript:` / `data:` / 协议相对 `//host` 一律降级为纯文本；
+- 图片同样按来源分流，且**只有本地路径会被读取**：raster 白名单（png/jpeg/gif/webp/bmp，
+  刻意排除 SVG）且单图不超过 4 MiB，超限或类型不符时回退为可点击的文件引用按钮加一行原因，
+  不会出现裂图；远程图片只出链接（带 `rel="noreferrer noopener"`），因为加载它会向第三方
+  暴露「这条回答被读过」，而控制台没有别的远程图片通道；
+- 图片解析带 250ms 静默期：转录每来一个 token 就重解析一次，等引用稳定后再读盘，避免流式期间
+  按 token 触发 stat；
+- 点击图片打开的预览（`ImageLightbox`，转录图片与附件缩略图共用）支持缩放与平移：默认按整图
+  适应，但**不低于原图 75%**、且不超过 1:1（小图不放大），因此一张 2200px 宽的图会以约 1650px
+  打开，而不是被压进面板变成缩略图；超出舞台时可拖拽平移，偏移经 `clampOffset` 夹取，图片不会
+  被拖出视野；滚轮以指针为锚点缩放，标题栏提供 适应 / 1:1 / − / + 与当前百分比，键盘 `+` `-`
+  `0` `1`、双击在适应与 1:1 之间切换，缩放范围 10%–400%；**每次缩放固定 5 个百分点**（加/减，
+  不是乘比例），所以读数始终是 75% → 80% → 85% 这样的整数步进，且反复缩放不会漂移；滚轮按
+  累积位移折算档位（一档 = 100px / 3 行 / 1 页，`deltaMode` 三种单位都归一化），触控板的一串
+  小位移会先累积到一档再走一步，不会一划就穿到底。缩放算术集中在
+  `src/components/imageZoom.ts`（纯函数）：`tests/imageZoom.test.ts` 做行为测试，
+  `tests/imageZoomGuard.test.ts` 钉住接线，`tests/imageZoom.verify.ts` 用真实浏览器验收 16 项；
+- `tests/markdownImageGuard.test.ts` 静态守护这条边界：只有已解析的 blob URL 能进 `<img>`，
+  远程来源只出链接，且该路径没有任何网络调用；
 - 流式未闭合的围栏仍渲染为代码块（`closed=false`，头部标注 streaming）；
 - 超长文档（>200k 字符）与超长代码块（>40k 字符）跳过解析/高亮，回退为纯文本/无高亮，
   避免长回答阻塞渲染；
