@@ -2,8 +2,9 @@
  * Offline tests for the appearance preference (no DOM, no React).
  *
  * The theme itself is CSS; what is testable here is the mapping from a preference
- * to a theme id, and that the module keeps its hands off browser storage (the
- * console's C-12 invariant, which `sourceGuard.test.ts` also enforces).
+ * to a theme id, and that the reader's choice round-trips through the one
+ * non-secret browser store the console is allowed to keep (C-12 still forbids
+ * *credential* persistence; `sourceGuard.test.ts` enforces the boundary).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   APPEARANCE_OPTIONS,
+  APPEARANCE_STORAGE_KEY,
   DARK_THEME,
   FRAME_COLOR_DARK,
   FRAME_COLOR_LIGHT,
@@ -20,10 +22,46 @@ import {
   applyFrameColor,
   applyTheme,
   frameColorFor,
+  initAppearance,
+  readStoredAppearance,
   themeFor,
+  useAppearanceStore,
 } from '../src/stores/appearance.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/** A minimal in-memory `localStorage` stand-in. */
+function memoryStorage(initial: Record<string, string> = {}) {
+  const data = new Map(Object.entries(initial));
+  return {
+    getItem: (key: string): string | null => data.get(key) ?? null,
+    setItem: (key: string, value: string): void => {
+      data.set(key, value);
+    },
+  };
+}
+
+/**
+ * Run `body` with `globalThis.localStorage` swapped for `store`.
+ *
+ * Node has no DOM, so the module's storage lookup is exercised explicitly; the
+ * original property descriptor (absent on most Node versions) is restored
+ * afterwards so the swap never leaks into another test.
+ */
+function withStorage<T>(store: unknown, body: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: store,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    return body();
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'localStorage', original);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
+}
 
 test('an explicit choice beats the operating system', () => {
   assert.equal(themeFor('light', true), LIGHT_THEME, 'light stays Fluent light on a dark system');
@@ -56,11 +94,59 @@ test('the control offers exactly the three appearances', () => {
   }
 });
 
-test('the appearance preference is never written to browser storage', () => {
-  // C-12: the console keeps no browser storage; the only state it holds is the
-  // host's HttpOnly session cookie.  A theme preference is therefore session-only.
-  const source = readFileSync(join(here, '..', 'src', 'stores', 'appearance.ts'), 'utf8');
-  assert.equal(/localStorage|sessionStorage|indexedDB|document\.cookie/.test(source), false);
+test('a stored choice is restored on the next load', () => {
+  const storage = memoryStorage({ [APPEARANCE_STORAGE_KEY]: 'dark' });
+  withStorage(storage, () => {
+    assert.equal(readStoredAppearance(), 'dark');
+    initAppearance();
+    assert.equal(useAppearanceStore.getState().appearance, 'dark');
+  });
+});
+
+test('choosing an appearance writes it for the next load', () => {
+  const storage = memoryStorage();
+  withStorage(storage, () => {
+    initAppearance();
+    assert.equal(
+      useAppearanceStore.getState().appearance,
+      'system',
+      'a console with nothing stored follows the system',
+    );
+    useAppearanceStore.getState().setAppearance('light');
+    assert.equal(storage.getItem(APPEARANCE_STORAGE_KEY), 'light');
+    assert.equal(useAppearanceStore.getState().appearance, 'light');
+  });
+});
+
+test('a missing, unknown or unusable stored value falls back to the system', () => {
+  withStorage(memoryStorage(), () => {
+    assert.equal(readStoredAppearance(), 'system');
+    initAppearance();
+    assert.equal(useAppearanceStore.getState().appearance, 'system');
+  });
+  withStorage(memoryStorage({ [APPEARANCE_STORAGE_KEY]: 'midnight' }), () => {
+    assert.equal(readStoredAppearance(), 'system', 'an unknown name is not an appearance');
+  });
+  withStorage(undefined, () => {
+    assert.equal(readStoredAppearance(), 'system', 'a browser without storage still starts');
+  });
+});
+
+test('a blocked storage never breaks the theme switch', () => {
+  const blocked = {
+    getItem: () => {
+      throw new Error('storage is blocked');
+    },
+    setItem: () => {
+      throw new Error('storage is blocked');
+    },
+  };
+  withStorage(blocked, () => {
+    initAppearance();
+    assert.equal(useAppearanceStore.getState().appearance, 'system');
+    assert.doesNotThrow(() => useAppearanceStore.getState().setAppearance('dark'));
+    assert.equal(useAppearanceStore.getState().appearance, 'dark');
+  });
 });
 
 test('the window frame color follows the theme, not the manifest', () => {
@@ -104,4 +190,14 @@ test('the first paint, the tag and the manifest agree on one color', () => {
   assert.ok(tag, 'index.html must ship a theme-color tag for the first paint');
   assert.equal(tag[1], FRAME_COLOR_LIGHT);
   assert.equal(manifest.theme_color, FRAME_COLOR_LIGHT, 'the manifest and the tag must agree');
+});
+
+test('the pre-paint script reads the same key and names the same themes', () => {
+  // The bundle only runs after the HTML has been parsed, so without this script a
+  // stored dark choice would paint the light palette for a frame on every reload.
+  const html = readFileSync(join(here, '..', 'index.html'), 'utf8');
+  assert.ok(html.includes(APPEARANCE_STORAGE_KEY), 'index.html must read the stored key');
+  for (const theme of [LIGHT_THEME, DARK_THEME]) {
+    assert.ok(html.includes(theme), `index.html must name ${theme}`);
+  }
 });

@@ -4,8 +4,9 @@
  * The console holds no daemon token, never reads a token file, never puts a
  * credential in a URL, never injects an `Authorization` header and never
  * persists credentials in browser storage. Only transcriptCache may store
- * bounded view metadata (behavior/privacy tests in turnWork.test.ts).
- * These are static assertions over the
+ * bounded view metadata (behavior/privacy tests in turnWork.test.ts), and only
+ * the appearance store may keep the reader's theme choice; neither value is a
+ * secret. These are static assertions over the
  * shipped sources (`src/**` + `vite.config.ts`), so a future edit that
  * reintroduces one of those paths fails here.
  *
@@ -45,6 +46,20 @@ const files = [
   ...sourceFiles(join(webRoot, 'src')),
   join(webRoot, 'vite.config.ts'),
 ];
+
+/**
+ * Files allowed to name a storage API.
+ *
+ * C-12 forbids *credential* persistence, so the two non-secret UI stores below
+ * are exempt from that single rule: `transcriptCache` keeps bounded per-session
+ * view metadata and `appearance` keeps the reader's theme choice. Every other
+ * rule still applies to them, and no other file in `src/**` may touch browser
+ * storage at all.
+ */
+const storageExempt = new Set([
+  join(webRoot, 'src', 'stores', 'transcriptCache.ts'),
+  join(webRoot, 'src', 'stores', 'appearance.ts'),
+]);
 
 const forbidden: Array<{ name: string; pattern: RegExp }> = [
   { name: 'token file read', pattern: /test_token/i },
@@ -101,7 +116,7 @@ test('C-12 frontend sources contain no credential path', () => {
     const viewCache = file === join(webRoot, 'src', 'stores', 'transcriptCache.ts');
     if (viewCache) assert.equal(/localStorage/.test(source), false);
     const violations = credentialViolations(file, source).filter(
-      (rule) => !(viewCache && rule === 'browser credential persistence'),
+      (rule) => !(storageExempt.has(file) && rule === 'browser credential persistence'),
     );
     assert.deepEqual(
       violations,
@@ -135,6 +150,17 @@ test('C-12 real header literals and credential URLs still fail', () => {
   assert.deepEqual(credentialViolations('file.ts', "readFileSync('test_token.txt');\n"), [
     'token file read',
   ]);
+});
+
+test('C-12 the shipped HTML contains no credential path', () => {
+  // The pre-paint theme script in `index.html` is not covered by the token walk
+  // above (that one reads TypeScript), so the shipped HTML is checked textually
+  // with the same rules minus the storage rule the script legitimately needs.
+  const html = readFileSync(join(webRoot, 'index.html'), 'utf8');
+  for (const rule of forbidden) {
+    if (rule.name === 'browser credential persistence') continue;
+    assert.equal(rule.pattern.test(html), false, `index.html must not contain ${rule.name}`);
+  }
 });
 
 test('C-02 the console only ever addresses the runtime socket through the fixed path', () => {

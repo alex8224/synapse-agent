@@ -5,16 +5,21 @@
  * `data-theme` value is applied, and keeps following the operating system while
  * the reader asked for "system".
  *
- * Nothing is persisted, on purpose: the console's C-12 invariant is that the
- * frontend keeps no browser storage at all (`tests/sourceGuard.test.ts` enforces
- * it), because the only state this app is allowed to hold is the host's HttpOnly
- * session cookie.  A reload therefore starts from "follow the system" again.  If
- * that invariant is ever relaxed for UI-only preferences, the seam is
- * `useAppearanceStore.setAppearance` / `initAppearance` and nothing else.
+ * The choice is persisted in `localStorage`.  That is the one deliberate
+ * exception to the console's C-12 invariant, which forbids *credential*
+ * persistence: the only secret this app may hold is the host's HttpOnly session
+ * cookie, and a theme name is not one.  `tests/sourceGuard.test.ts` keeps the
+ * rule intact by allowing a storage API in this file and in
+ * `stores/transcriptCache.ts` only.  Storage that is unavailable (private
+ * window, "block all cookies") degrades to "follow the system" instead of
+ * raising -- see {@link readStoredAppearance}.
  */
 import { create } from 'zustand';
 
 export type Appearance = 'system' | 'light' | 'dark';
+
+/** Where the reader's choice is persisted (non-secret, per browser origin). */
+export const APPEARANCE_STORAGE_KEY = 'synapse.console.appearance';
 
 /** Both appearances use the same Fluent component language. */
 export const LIGHT_THEME = 'fluent-light';
@@ -94,6 +99,52 @@ interface AppearanceStore {
   setAppearance: (appearance: Appearance) => void;
 }
 
+function isAppearance(value: unknown): value is Appearance {
+  return value === 'system' || value === 'light' || value === 'dark';
+}
+
+/**
+ * The browser's storage, or `null` when it is not usable.
+ *
+ * A private window or a "block all cookies" setting makes the *property access*
+ * itself throw, so the lookup is guarded rather than assumed.
+ */
+function storage(): Pick<Storage, 'getItem' | 'setItem'> | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The persisted choice, or `system`.
+ *
+ * A missing, unknown or unreadable value is never an error: the console simply
+ * starts from "follow the system" as it did before the preference was stored.
+ */
+export function readStoredAppearance(): Appearance {
+  const store = storage();
+  if (store === null) return 'system';
+  try {
+    const raw = store.getItem(APPEARANCE_STORAGE_KEY);
+    return isAppearance(raw) ? raw : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+/** Best-effort write: blocked storage must not break the theme switch. */
+function persistAppearance(appearance: Appearance): void {
+  const store = storage();
+  if (store === null) return;
+  try {
+    store.setItem(APPEARANCE_STORAGE_KEY, appearance);
+  } catch {
+    /* Quota or blocked storage: the choice still applies to this session. */
+  }
+}
+
 function root(): { dataset: DOMStringMap } | null {
   return typeof document === 'undefined' ? null : document.documentElement;
 }
@@ -107,20 +158,25 @@ export const useAppearanceStore = create<AppearanceStore>((set) => ({
   appearance: 'system',
   setAppearance: (appearance) => {
     applyAppearance(themeFor(appearance, prefersDark()));
+    persistAppearance(appearance);
     set({ appearance });
   },
 }));
 
 /**
- * Apply the reader's default (follow the system) and keep following it.
+ * Apply the reader's stored choice and keep following the system while it is
+ * still `system`.
  *
  * Called from `main.tsx` *before* the first render, so the console never paints
- * the light palette for a frame and then swaps.  The listener only acts while the
- * preference is still "system": an explicit light/dark choice wins.
+ * one palette for a frame and then swaps -- including on a reload, which now
+ * restores the persisted choice instead of falling back to the system.  The
+ * listener only acts while the preference is still "system": an explicit
+ * light/dark choice wins.
  */
 export function initAppearance(): void {
-  applyAppearance(themeFor('system', prefersDark()));
-  useAppearanceStore.setState({ appearance: 'system' });
+  const stored = readStoredAppearance();
+  applyAppearance(themeFor(stored, prefersDark()));
+  useAppearanceStore.setState({ appearance: stored });
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     const { appearance } = useAppearanceStore.getState();

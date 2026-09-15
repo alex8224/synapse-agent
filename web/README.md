@@ -129,11 +129,18 @@
 `change`；只有偏好仍是 `system` 时监听器才动作，显式选择优先）。`src/main.tsx` 在**首次渲染前**
 调用 `initAppearance()`，所以不会先画浅色再跳深色。
 
-这个选择**不落盘**：控制台的 C-12 不变量是「前端不使用任何浏览器存储」
-（`tests/sourceGuard.test.ts` 静态守护，`tests/appearance.test.ts` 另有一条针对性断言），
-因为它唯一允许持有的状态是宿主下发的 HttpOnly 会话 cookie；因此刷新后回到「跟随系统」。
-如果将来为纯 UI 偏好放宽该不变量，需要改的接缝只有 `useAppearanceStore.setAppearance`
-与 `initAppearance` 两处。
+这个选择**落盘在 `localStorage`**（键 `synapse.console.appearance`），刷新与重开浏览器后
+仍然生效。这是 C-12 唯一放行的非凭据例外：该不变量禁止的是**凭据**持久化（前端唯一允许
+持有的秘密是宿主下发的 HttpOnly 会话 cookie），而主题名不是秘密。`tests/sourceGuard.test.ts`
+只对 `stores/appearance.ts` 与 `stores/transcriptCache.ts` 放行存储 API，其余规则（token 文件、
+`Authorization`、URL 里的 token、配对码）对这两个文件照旧生效；`tests/appearance.test.ts`
+钉住「写入 → 下次加载恢复」以及「存储缺失/被禁用/值非法时回退到跟随系统」。
+浏览器禁用存储（隐私窗口、阻止所有 cookie）时 `readStoredAppearance` 返回 `system` 而不是抛错，
+控制台仍能正常启动。
+
+`index.html` 里还有一段**首帧脚本**，在解析阶段就按同一个键设置 `data-theme`：bundle 只在
+HTML 解析之后才执行，没有它，已存深色主题每次刷新都会先画一帧浅色。脚本只重复键名与两个主题
+id，`tests/appearance.test.ts` 把三者钉在一起；它不参与 `system` 解析（留给 bundle）。
 
 新增主题 = 复制一个 `[data-theme='…']` 块、给出这些变量的值；不需要改 Tailwind 配置或组件。
 不变量由 `tests/themeContract.test.ts` 守护：配置引用的变量必须在主题里有定义、示例主题必须
@@ -322,8 +329,9 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
   输入 stderr 打印的配对码，安装的应用没有例外。
 - `web/dist` 不在 wheel 里，宿主仍需 `--static-dir web/dist`；manifest 与图标只是该目录下的
   普通静态文件（`no-cache`，不在 `assets/` 下），见 `docs/web-console/formal-host.md` §6.1。
-- 没有新增任何浏览器存储：C-12 不变量（前端不使用任何浏览器存储）仍由
-  `tests/sourceGuard.test.ts` 守护（`tests/appearance.test.ts` 另有一条针对性断言）；
+- 浏览器存储只用于两处非秘密的 UI 状态：会话视图缓存（`sessionStorage`）与读者选的主题
+  （`localStorage`，键 `synapse.console.appearance`）。C-12 的**凭据**路径仍由
+  `tests/sourceGuard.test.ts` 全量守护，仅这两个文件豁免「浏览器凭据持久化」这一条规则；
   通知权限由浏览器自己保存，不属于页面存储。
 
 ## 会话管理（侧栏）

@@ -18,6 +18,24 @@
       this tag as the theme changes, because the manifest cannot.
     -->
     <meta name="theme-color" content="#F8F9FA" />
+    <!--
+      Pre-paint theme: the bundle applies the stored appearance before its first
+      React render, which is already too late to stop the light palette from
+      flashing on a reload.  This reads the same key `src/stores/appearance.ts`
+      writes (only the theme ids are duplicated, and `tests/appearance.test.ts`
+      pins them together) and sets the attribute the CSS keys off; `system` and
+      an unavailable storage both fall through to the shipped palette, which the
+      bundle then resolves.
+    -->
+    <script>
+      try {
+        var choice = localStorage.getItem('synapse.console.appearance');
+        if (choice === 'dark') document.documentElement.dataset.theme = 'fluent-dark';
+        else if (choice === 'light') document.documentElement.dataset.theme = 'fluent-light';
+      } catch (e) {
+        /* Blocked storage: the bundle falls back to following the system. */
+      }
+    </script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Synapse" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
