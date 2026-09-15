@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Installable console (PWA).  `public/` is served at the root by both Vite
+      and the formal host, so these stay absolute paths; the manifest itself
+      carries the icons, the standalone display mode and the `new-session`
+      shortcut (see `web/README.md`).
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <!--
+      First-paint window frame color: the installed window's title bar, and under
+      the window controls overlay the strip that carries the window buttons.  It
+      must match the manifest's `theme_color`; `src/stores/appearance.ts` rewrites
+      this tag as the theme changes, because the manifest cannot.
+    -->
+    <meta name="theme-color" content="#F8F9FA" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Synapse" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Synapse Console</title>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>

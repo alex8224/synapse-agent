@@ -343,6 +343,31 @@ synapse-web-console: unable to start: static build directory has no index.html: 
 wheel 声明的 console script 与 `pyproject.toml`、各自 `--help` 一致：
 `synapse`、`synapse-web`、`synapse-web-console`、`synapse-acp`、`synapse-runtime`。
 
+### 6.1 可安装应用（PWA）的静态资产
+
+安装所需的文件面全部由宿主从 `--static-dir` 的**根目录**提供，引用是根路径绝对 URL：
+`/manifest.webmanifest`、`/icon-192.png`、`/icon-512.png`、`/icon-maskable-512.png`
+（与 `web/index.html` 里的 `<link rel="manifest">` / `apple-touch-icon` 一致）。
+宿主不为它们做任何特殊处理，也不新增参数或端点：它们走既有的静态服务路径
+（§3 静态路径防护、§4 缓存规则），因为不在 `assets/**` 下，所以按「其它静态」返回
+`Cache-Control: no-cache`——换图标或改 manifest 后普通刷新即可生效，而 `assets/**`
+的内容哈希 immutable 规则不受影响。换句话说，安装能力完全由构建产物自带，
+缺 `manifest.webmanifest`/图标时宿主照常启动，这些路径得到普通 404（带扩展名的文件名
+不落 SPA 回退），只是浏览器不再提供安装入口。
+
+能力边界（与 `web/README.md`「可安装应用（PWA）」一致）：
+
+- 安装只是外壳：`synapse-web-console` 及其 daemon 仍必须在跑，宿主不因安装改变任何启动、
+  配对或鉴权要求。
+- 通知只能由运行中的控制台页面发出（本地宿主不使用 Web Push）；页面关闭后没有推送，
+  角标也随之消失。
+- 会话 cookie 仍是宿主进程内存态、默认 12h TTL（§3、§9）：宿主重启后必须重新输入 stderr
+  打印的配对码，安装的应用没有例外。
+- 安装窗口的标题栏由控制台前端自己接管（`display_override:
+  ["window-controls-overlay", "standalone"]`，见 `web/README.md`「标题栏（Window Controls
+  Overlay）」）：纯前端声明，宿主不参与，不支持该显示模式的浏览器自动退回 `standalone`。
+- `web/dist` 仍不在 wheel 里，部署时仍需显式 `--static-dir`（见上文 §6）。
+
 ## 7 保留的兼容入口
 
 - `synapse-web`（textual-serve 把 TUI 渲染进浏览器，`--host` 默认 `localhost`、

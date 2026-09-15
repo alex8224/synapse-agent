@@ -22,6 +22,12 @@ import { GitExplorer } from './GitExplorer.tsx';
  * identity row, the context actions (session info, workspace files, runtime
  * diagnostics, logout) live with the settings entry there, and the telemetry
  * lives in the status strip under the composer.
+ *
+ * In an installed window this bar *is* the caption: the manifest asks for
+ * `window-controls-overlay`, so the browser stops drawing the app name and the
+ * header takes over the strip (see the `.wco-*` rules in `index.css`).  The bar
+ * becomes the drag handle, the chip track opts out of it, and the empty right
+ * track reserves the width of the window buttons.
  */
 
 export const TopBar: React.FC = () => {
@@ -71,10 +77,10 @@ export const TopBar: React.FC = () => {
 
   return (
     <>
-    <header className="material-chrome relative z-20 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 select-none text-sm font-sans">
+    <header className="material-chrome relative z-20 wco-caption grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 select-none text-sm font-sans">
       {/* Left track: identity controls and context.  `min-w-0` lets the chips
           truncate instead of widening the track and nudging the centre line. */}
-      <div className="flex min-w-0 items-center gap-1.5">
+      <div className="flex min-w-0 items-center gap-1.5 wco-caption-controls">
         <button
           onClick={toggleSidebar}
           // The same themed box the collapsed rail's buttons use, so the control
@@ -165,8 +171,10 @@ export const TopBar: React.FC = () => {
       {/* Right track: deliberately empty.  The change statistics used to sit here
           on the right edge; they now hang off the branch chip, so the numbers are
           read next to the branch they describe.  The track stays in the grid
-          because the two equal `1fr` sides are what keep the title centred. */}
-      <div />
+          because the two equal `1fr` sides are what keep the title centred.
+          In an installed window it is also what keeps the window buttons clear of
+          the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
+      <div className="wco-caption-reserve" />
     </header>
     {explorerOpen && <GitExplorer onClose={() => setExplorerOpen(false)} />}
     </>

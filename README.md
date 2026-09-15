@@ -181,6 +181,14 @@ MCP 服务器列表落在第一行），`↑`/`↓` 按阅读顺序在框内控�
 `Enter`/`Space` 触发聚焦项，`Esc` 关闭，关闭后焦点回到触发它的那个控件。
 回归验收：`cd web && node tests/dialogKeyboardNav.verify.ts`。
 
+控制台也能作为**应用安装**（PWA，`web/public/manifest.webmanifest`）：Chrome 用地址栏
+右侧的安装图标，Edge 用「应用 → 安装此站点为应用」，即可得到独立窗口的 Synapse；
+任务栏右键另有「新建会话」快捷方式。安装窗口的标题栏由控制台自己的顶栏接管
+（`display_override: window-controls-overlay`，浏览器只保留窗口按钮；不支持该模式的浏览器
+退回普通应用窗口）。安装只是外壳——**宿主仍然要在跑**
+（`synapse-web-console` 及其 daemon），页面关掉后不会有后台推送，宿主重启后也要重新配对。
+细节与边界见 `web/README.md`「可安装应用（PWA）」。
+
 Open a session in any registered project from the global catalog:
 
 ```bash

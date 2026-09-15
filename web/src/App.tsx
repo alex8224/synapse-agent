@@ -6,12 +6,16 @@ import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner'
 import { CommandInput } from './components/CommandInput';
 import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
+import { BackgroundAlerts } from './components/BackgroundAlerts';
 import { PairingGate } from './components/PairingGate';
+import { NEW_SESSION_ACTION, readShortcutAction } from './client/deepLink';
 import { useConsoleStore } from './stores/useConsoleStore';
 
 export function App() {
   const initClient = useConsoleStore((s) => s.initClient);
   const pairingState = useConsoleStore((s) => s.pairingState);
+  const connectionState = useConsoleStore((s) => s.connectionState);
+  const currentThreadId = useConsoleStore((s) => s.currentSession.thread_id);
   const toggleSidebar = useConsoleStore((s) => s.toggleSidebar);
   const cancelActiveTurn = useConsoleStore((s) => s.cancelActiveTurn);
   const createNewSession = useConsoleStore((s) => s.createNewSession);
@@ -21,6 +25,24 @@ export function App() {
   useEffect(() => {
     initClient();
   }, [initClient]);
+
+  // Installable-app shortcut (`/?action=new-session`, see `public/manifest.webmanifest`):
+  // a taskbar right-click should land in a fresh session.  It is read once, only
+  // after the console is paired *and* the relay is up, and then stripped from the
+  // address bar so that a reload cannot replay it.  When boot already created the
+  // empty session there is nothing to do: the shortcut replaces an *attached*
+  // session, never doubles it.
+  useEffect(() => {
+    if (pairingState !== 'paired' || connectionState !== 'connected') return;
+    const { action, remainingSearch } = readShortcutAction(window.location.search);
+    if (action !== NEW_SESSION_ACTION) return;
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${remainingSearch ? `?${remainingSearch}` : ''}${window.location.hash}`,
+    );
+    if (currentThreadId) void createNewSession();
+  }, [pairingState, connectionState, currentThreadId, createNewSession]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -86,6 +108,8 @@ export function App() {
       </div>
       {/* Centered workspace-file viewer, opened from a file path in a model answer. */}
       <FileViewerHost />
+      {/* Invisible: system notifications and the app badge for this window. */}
+      <BackgroundAlerts />
     </div>
   );
 }

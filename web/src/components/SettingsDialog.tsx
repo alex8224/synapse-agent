@@ -8,6 +8,12 @@ import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
 import { cacheHitRate, formatSessionUsage } from '../stores/usageView.ts';
+import {
+  notificationPermission,
+  permissionLabel,
+  requestNotificationPermission,
+} from '../stores/backgroundAlerts';
+import type { NotificationPermissionState } from '../stores/backgroundAlerts';
 
 export interface SettingsDialogProps {
   onClose: () => void;
@@ -114,6 +120,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   // but a write that succeeds must say so instead of leaving the user to guess
   // whether the default was persisted.
   const [projectNotice, setProjectNotice] = useState<string | null>(null);
+  // Browser-side notification permission: read once (never prompting on open),
+  // then refreshed only by the button below, which is the user gesture the
+  // browser requires before it will show the prompt at all.
+  const [notificationState, setNotificationState] = useState<NotificationPermissionState>(() =>
+    notificationPermission(),
+  );
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   // The sidebar's settings button keeps the focus, and the dialog is portalled
@@ -165,6 +177,31 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
           <Row label="配对状态" value={pairingState} />
           <Row label="连接状态" value={connectionState} />
           <Row label="会话总数" value={sessionsTotal} />
+        </Section>
+
+        <Section title="后台通知">
+          <Row label="浏览器权限" value={permissionLabel(notificationState)} />
+          <div className="mt-1 flex items-start justify-between gap-3">
+            <p className="text-[11px] leading-relaxed text-gray-500">
+              窗口不在前台时，等待审批与本轮结束会弹出系统通知，数量显示在已安装应用的角标上；
+              回到窗口即视为已读，角标清零。通知只能由运行中的控制台页面发出——页面关闭后不会
+              推送（本地宿主不使用 Web Push），服务端仍是唯一事实来源。
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                void requestNotificationPermission().then(setNotificationState);
+              }}
+              disabled={notificationState === 'granted' || notificationState === 'unsupported'}
+              className="ui-button shrink-0 border border-line bg-surface"
+            >
+              {notificationState === 'granted'
+                ? '已启用'
+                : notificationState === 'unsupported'
+                  ? '不支持'
+                  : '启用通知'}
+            </button>
+          </div>
         </Section>
 
         <Section title="外观">

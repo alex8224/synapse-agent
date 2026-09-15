@@ -14,8 +14,12 @@ import { fileURLToPath } from 'node:url';
 import {
   APPEARANCE_OPTIONS,
   DARK_THEME,
+  FRAME_COLOR_DARK,
+  FRAME_COLOR_LIGHT,
   LIGHT_THEME,
+  applyFrameColor,
   applyTheme,
+  frameColorFor,
   themeFor,
 } from '../src/stores/appearance.ts';
 
@@ -57,4 +61,47 @@ test('the appearance preference is never written to browser storage', () => {
   // host's HttpOnly session cookie.  A theme preference is therefore session-only.
   const source = readFileSync(join(here, '..', 'src', 'stores', 'appearance.ts'), 'utf8');
   assert.equal(/localStorage|sessionStorage|indexedDB|document\.cookie/.test(source), false);
+});
+
+test('the window frame color follows the theme, not the manifest', () => {
+  // Chromium paints the installed window's title bar -- and, under the window
+  // controls overlay, the strip behind the window buttons -- with `theme_color`.
+  // The manifest is static, so the tag is what makes it follow the reader.
+  assert.equal(frameColorFor(DARK_THEME), FRAME_COLOR_DARK);
+  assert.equal(frameColorFor(LIGHT_THEME), FRAME_COLOR_LIGHT);
+  assert.equal(frameColorFor(null), FRAME_COLOR_LIGHT, 'the shipped palette is light');
+});
+
+test('applying a frame color rewrites the theme-color tag in place', () => {
+  const written: Record<string, string> = {};
+  const meta = {
+    setAttribute: (name: string, value: string) => {
+      written[name] = value;
+    },
+  };
+  const target = {
+    querySelector: (selector: string) =>
+      selector === 'meta[name="theme-color"]' ? meta : null,
+  };
+
+  applyFrameColor(DARK_THEME, target);
+  assert.equal(written.content, FRAME_COLOR_DARK);
+  applyFrameColor(LIGHT_THEME, target);
+  assert.equal(written.content, FRAME_COLOR_LIGHT);
+});
+
+test('a document without the tag, or no document at all, is left alone', () => {
+  assert.doesNotThrow(() => applyFrameColor(DARK_THEME, null));
+  assert.doesNotThrow(() => applyFrameColor(DARK_THEME, { querySelector: () => null }));
+});
+
+test('the first paint, the tag and the manifest agree on one color', () => {
+  const html = readFileSync(join(here, '..', 'index.html'), 'utf8');
+  const manifest = JSON.parse(
+    readFileSync(join(here, '..', 'public', 'manifest.webmanifest'), 'utf8'),
+  ) as { theme_color: string };
+  const tag = /<meta name="theme-color" content="(#[0-9a-fA-F]{6})"/.exec(html);
+  assert.ok(tag, 'index.html must ship a theme-color tag for the first paint');
+  assert.equal(tag[1], FRAME_COLOR_LIGHT);
+  assert.equal(manifest.theme_color, FRAME_COLOR_LIGHT, 'the manifest and the tag must agree');
 });

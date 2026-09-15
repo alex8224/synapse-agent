@@ -213,6 +213,106 @@ loopback 默认值，因此不构成认证旁路（宿主也不因 dev 放宽任
 `synapse-web-console --static-dir <dist>` 显式指定。宿主要求该目录存在且含
 `index.html`，否则启动失败并给出可操作错误（不会出现「启动成功但页面 404」）。
 
+## 可安装应用（PWA）
+
+控制台可以「安装」成独立窗口的应用：`public/manifest.webmanifest` 与 `public/icon-*.png`
+随构建产物落在静态根（Vite 的 `public/` 与宿主 `--static-dir` 的根目录是同一层），
+所以它们用**根路径绝对 URL**（`/manifest.webmanifest`、`/icon-192.png`），与 `index.html`
+里的引用一致。`index.html` 另给出 `apple-touch-icon`、`theme-color` 与
+`apple-mobile-web-app-*`，让 iOS 的「添加到主屏幕」拿到同一套外观。
+
+| manifest 字段 | 值 | 说明 |
+|---|---|---|
+| `id` / `start_url` / `scope` | `/` | 控制台没有路由，唯一依赖的 URL 就是 origin（`/runtime-ws` 由 origin 推导，不读查询串） |
+| `display` | `standalone` | 安装后是独立窗口，不是浏览器标签页 |
+| `display_override` | `["window-controls-overlay", "standalone"]` | 顺序即优先级：安装窗口的标题栏由控制台接管（见下），不支持该显示模式的浏览器退回 `standalone` |
+| `name` / `short_name` | `Synapse Console` / `Synapse` | |
+| `lang` / `theme_color` / `background_color` | `zh-CN` / `#F8F9FA` / `#F8F9FA` | manifest 是静态文件，这几个值只负责**首帧**；运行时的窗口框架色由 `<meta name="theme-color">` 跟随主题更新（见「标题栏」一节） |
+| `icons` | `/icon-192.png`、`/icon-512.png`（`any`）+ `/icon-maskable-512.png`（`maskable`） | 192 与 512 的 `any` 加一个 512 的 maskable，即 Chrome 安装入口要求的用途组合 |
+| `launch_handler.client_mode` | `focus-existing` | 点通知或任务栏图标回到**已经开着**的那个窗口，而不是再开一份 |
+| `shortcuts[0].url` | `/?action=new-session` | 任务栏右键的「新建会话」（见下） |
+
+图标由 `public/favicon.svg` 的品牌标记生成，三个 PNG 已入库、**没有提交生成脚本**：
+512×512 用无头 Chrome/Edge 把该 SVG 光栅化（`tests/helpers/cdp.ts` 发现的是同一批可执行
+文件），再用 Pillow 缩放出 192 与 512（透明底），maskable 版在同一张 512 图上垫不透明
+`#F8F9FA` 底并把标记缩到约 280px 见方，使其落在 maskable 的安全圆内（四角为底色、
+中心为标记）。重新生成后必须跑 `npm test`：`tests/pwaManifest.test.ts` 从磁盘读真实文件，
+按 PNG 的 IHDR 核对声明尺寸、要求每个图标都是根路径 PNG、`any` 覆盖 192 与 512 且至少
+一个 512 的 maskable，并断言每个快捷方式指向的动作这一版真的实现了——图标缺失或尺寸写错
+会在单测里失败，而不是在浏览器里表现为「没有安装入口」。
+
+### 标题栏（Window Controls Overlay）
+
+安装窗口里浏览器不再画应用图标与应用名，只把窗口按钮浮在页面上，标题栏交给控制台
+**现有的顶栏**接管（不新增标题栏组件）：`src/index.css` 的 `.wco-*` 工具类只在
+`@media (display-mode: window-controls-overlay)` 内生效，`src/components/TopBar.tsx` 的
+`<header>` 成为窗口拖拽区，左侧 chip 轨道加 `wco-caption-controls` 反向退出拖拽（否则侧栏
+按钮、项目与分支 chip 全都点不动），右侧那条本来就空的轨道加 `wco-caption-reserve`，
+宽度由 `calc(100vw - env(titlebar-area-x) - env(titlebar-area-width))` 算出，正好让开窗口
+按钮。顶栏的高度、三轨道网格与 `.console-pane-inset` 的负 margin 都不变，所以非安装态
+（浏览器标签页、不支持该模式的浏览器）布局与今天完全一致。
+
+预留宽度是**算出来的**而不是写死的：用户在窗口 ⋮ 菜单里选「显示标题栏」后 overlay 消失、
+`env()` 归零，这条规则自动变成 no-op，全程不需要 JS 或条件渲染。
+`tests/windowControlsOverlay.test.ts` 钉住这些约束（规则只在显示模式内、拖拽与 no-drag
+成对、预留必须来自 `env()`、顶栏保持三轨道且中间标题仍可拖）。
+
+生效条件：`display_override` 的变更要**重启已安装的应用**（必要时卸载重装，配对 cookie
+不受影响），且该模式是 Chromium 桌面独占——Firefox、Safari、iOS 一律退回 `standalone`。
+
+浏览器自带的 overlay（origin 文字 + 展开箭头 + 应用菜单 + 窗口按钮）始终在最上层、吞掉该
+区域的点击，**不能由页面隐藏或改样式**：规范里写明了它会在启动后出现，且 overlay 的
+`geometrychange` 会让 `titlebar-area-*` 随之变化（控制台因此只用 `env()` 算预留，不做任何
+假设）。控制台能做的只有两件事——让出宽度，以及对齐配色。
+
+配色就是 `theme_color`：overlay 的背景色取自 manifest 的 `theme_color`（规范原文
+"the window controls overlay would use the `theme_color` from the manifest as the background
+color"）。manifest 改不动，所以首帧由它兜底，运行时的切换交给
+`<meta name="theme-color">`：`src/stores/appearance.ts` 在主题变化时把它改成浅色
+`#F8F9FA` / 深色 `#1F1F1F`（深色画布色，`index.css` 的 `--f-canvas`），
+`tests/appearance.test.ts` 钉住「首帧 tag、meta 目标值、manifest 三者一致」。深色主题下若
+这条 overlay 仍是浅底，说明该 Chromium 版本不读 meta——那就只能把 manifest 的
+`theme_color` 改成静态深色。
+
+### 后台通知与角标
+
+策略是**纯函数**（`src/stores/backgroundAlerts.ts`），浏览器 API 只出现在 React 胶水层
+`src/components/BackgroundAlerts.tsx`（渲染 `null`，且只挂在已配对的控制台上，配对界面
+不会触发任何权限请求）。判据是 store 状态的**边沿**，不是原始事件流：
+
+| 边沿 | 条件 | 结果 |
+|---|---|---|
+| `pendingApproval` 由无到有 | 权限已授权且 `document.visibilityState === 'hidden'` | 「需要审批」通知（`tag: synapse-approval`，同类通知互相替换） |
+| `runtimeStatus` 由 running 变 idle，且没有待审批 | 同上 | 「任务已完成」通知，正文带会话标题 |
+| 快照没变 / 窗口在前台 / 权限未授权 | — | 不发通知：正在看控制台的人不需要被打断，流式增量与重命名也不会触发 |
+
+角标走 Badging API：待审批记 1，加上「已完成但没看过」的轮数；窗口回到前台即清零
+（`visibilitychange` 与 `focus` 都算确认，并顺带重读权限，因为用户可能在浏览器自己的界面里
+回答了弹窗）。角标是装饰，失败被吞掉、不阻塞控制台。通知点击把已有窗口拉到前台
+（冷启动那条路径由 manifest 的 `focus-existing` 覆盖）。权限开关在**设置 → 后台通知**：
+显示 `已授权` / `已被拒绝（需在浏览器站点设置里恢复）` / `未请求` / `当前浏览器不支持`，
+「启用通知」按钮就是浏览器要求的那个用户手势（打开对话框本身**不会**弹权限框）。
+
+### `?action=new-session` 快捷方式
+
+`src/client/deepLink.ts` 解析查询串：只认 `action=new-session`，其它 `action` 值按「没有动作」
+处理（`App.tsx` 因此不改写地址栏）；识别到 `new-session` 时才用 `history.replaceState`
+把它从地址栏剥离，刷新不会重放动作。读取时机是**已配对且中继已连接**之后、只读一次，并且
+只有启动时已经附着了已有会话才新建会话——启动本身就建了空会话时什么都不做，避免一次点击
+建出两个会话。
+
+### 能力边界
+
+- 通知只能由**运行中的控制台页面**发出：本地宿主不使用 Web Push，页面关掉后不会有任何推送。
+- 安装成应用后**仍然需要** `synapse-web-console`（及其 daemon）在跑：安装只是外壳，没有服务端。
+- 配对 cookie 是宿主**内存**态、默认 12h TTL（`--session-ttl-seconds`）：宿主重启后必须重新
+  输入 stderr 打印的配对码，安装的应用没有例外。
+- `web/dist` 不在 wheel 里，宿主仍需 `--static-dir web/dist`；manifest 与图标只是该目录下的
+  普通静态文件（`no-cache`，不在 `assets/` 下），见 `docs/web-console/formal-host.md` §6.1。
+- 没有新增任何浏览器存储：C-12 不变量（前端不使用任何浏览器存储）仍由
+  `tests/sourceGuard.test.ts` 守护（`tests/appearance.test.ts` 另有一条针对性断言）；
+  通知权限由浏览器自己保存，不属于页面存储。
+
 ## 会话管理（侧栏）
 
 侧栏的项目 → 会话树直接使用 runtime 的会话管理接口，而不是本地拼装：

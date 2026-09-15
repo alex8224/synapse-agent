@@ -1017,3 +1017,37 @@ body {
 .markdown-body td {
   min-width: 8rem;
 }
+
+/*
+  Window Controls Overlay: the installed console owns the caption strip.
+
+  The manifest asks for `window-controls-overlay` first, so in an installed
+  window the browser stops drawing the app icon and name and keeps only the
+  window buttons, drawn *over* the page.  The console then reuses the header it
+  already has as the caption: the bar becomes the window's drag handle, and its
+  (otherwise empty) right track reserves exactly the width those buttons
+  occupy, so no chip can end up underneath them.  Nothing else moves -- the
+  header keeps its grid and its height, and the transcript keeps scrolling
+  under it.
+
+  Both rules are scoped to the display mode and the reserve is derived from
+  `env(titlebar-area-*)`: when the user picks "显示标题栏" from the window's ⋮
+  menu, the overlay is gone, the env values collapse to `0` and the reserve
+  turns into a no-op on its own.  No JS and no conditional rendering is
+  involved, and a browser without the overlay never matches the block at all.
+*/
+@media (display-mode: window-controls-overlay) {
+  .wco-caption {
+    -webkit-app-region: drag;
+  }
+
+  /* Anything clickable inside the drag strip has to opt out, or the caption
+     swallows the click. */
+  .wco-caption-controls {
+    -webkit-app-region: no-drag;
+  }
+
+  .wco-caption-reserve {
+    min-width: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  }
+}
