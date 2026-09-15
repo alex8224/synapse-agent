@@ -271,6 +271,44 @@ def json_schema_to_pydantic_model(
     )
 
 
+_STRUCTURED_VALUE_MAX_CHARS = 2048
+"""Largest ``structuredContent`` field kept verbatim; bigger ones collapse."""
+
+_STRUCTURED_TOTAL_MAX_CHARS = 8192
+"""Ceiling on the whole appended projection, so one call cannot dominate a window."""
+
+
+def _structured_summary(structured: Any) -> str | None:
+    """Render ``structuredContent`` compactly, keeping the control fields.
+
+    A server may report a result's *handles* only in ``structuredContent`` while
+    the readable body arrives as text blocks -- cua-driver keeps ``snapshot_id``
+    and ``screenshot_file_path`` there, and ``snapshot_id`` is what its
+    element-indexed ``click`` demands. Those handles are consumed by the action
+    tools, so they have to reach the model.
+
+    A field is omitted when it is too large to be worth carrying: cua-driver's
+    ``elements`` and ``tree_markdown`` repeat the accessibility tree that the
+    text block already contains, and inlining them would multiply the request.
+    Oversized fields become a placeholder that still names them, so the model
+    can tell "absent" from "too large to include".
+    """
+    if not isinstance(structured, dict) or not structured:
+        return None
+    projected: dict[str, Any] = {}
+    for key, value in structured.items():
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+        if len(rendered) <= _STRUCTURED_VALUE_MAX_CHARS:
+            projected[key] = value
+        else:
+            count = f", {len(value)} items" if isinstance(value, (list, dict)) else ""
+            projected[key] = f"<omitted {len(rendered)} chars{count}>"
+    text = json.dumps(projected, ensure_ascii=False, default=str)
+    if len(text) > _STRUCTURED_TOTAL_MAX_CHARS:
+        text = text[:_STRUCTURED_TOTAL_MAX_CHARS] + "...<truncated>"
+    return text
+
+
 def _content_to_text(result: Any) -> str:
     parts: list[str] = []
     for block in getattr(result, "content", None) or []:
@@ -279,9 +317,13 @@ def _content_to_text(result: Any) -> str:
             parts.append(text)
         else:
             parts.append(str(block))
+    summary = _structured_summary(getattr(result, "structuredContent", None))
+    if summary is not None:
+        parts.append(f"structuredContent: {summary}")
+    body = "\n".join(parts)
     if getattr(result, "isError", False):
-        return "MCP error: " + ("\n".join(parts) or "unknown")
-    return "\n".join(parts) if parts else "(empty MCP result)"
+        return "MCP error: " + (body or "unknown")
+    return body or "(empty MCP result)"
 
 
 def _make_tool(
