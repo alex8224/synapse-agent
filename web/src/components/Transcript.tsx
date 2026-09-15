@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   BrainCircuit20Regular,
   Sparkle20Regular,
@@ -37,6 +38,11 @@ import { Markdown } from './Markdown.tsx';
 import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
+import {
+  ESTIMATED_ROW_PX,
+  OVERSCAN_ROWS,
+  anchoredScrollTop,
+} from './transcriptViewport.ts';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
 import type { ToolItemView, TranscriptMessage } from '../stores/historyMapper.ts';
 import {
@@ -790,6 +796,26 @@ export const Transcript: React.FC = () => {
     [messages, activeTurnId, runtimeStatus],
   );
   const runningTurnKey = groups.find((group) => group.running)?.key ?? null;
+  /**
+   * Whether the view is following the newest content.
+   *
+   * Following is the reader's choice: a stream that scrolls on every update makes
+   * reading back through a running turn impossible, so only a view that is
+   * already at the bottom follows.  Submitting a prompt is an explicit intent, so
+   * that always follows.
+   */
+  const pinnedToBottom = useRef(true);
+  /**
+   * True while a wheel / touch / key gesture is driving the scroller.
+   *
+   * Only the reader may end the follow.  Our own `scrollIntoView` and the
+   * browser's scroll anchoring also fire `scroll`, and a layout change *above* the
+   * viewport (a streamed thought settling to its final height, a tool row
+   * appearing) moves the scroll position on its own: reading the latch from every
+   * scroll event ended the follow for the rest of the turn, so the reasoning
+   * streamed into view but the tool call after it did not.
+   */
+  const userScrolling = useRef(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (runningTurnKey === null) return;
@@ -825,31 +851,184 @@ export const Transcript: React.FC = () => {
     }
     return map;
   }, [groups, now, activity]);
+
   /**
-   * Whether the view is following the newest content.
+   * The virtualizer: only the rows near the viewport are mounted.
    *
-   * Following is the reader's choice: a stream that scrolls on every update makes
-   * reading back through a running turn impossible, so only a view that is
-   * already at the bottom follows.  Submitting a prompt is an explicit intent, so
-   * that always follows.
+   * A long session carries well over a thousand rows (one per projected event),
+   * and mounting them all in one commit is what froze the console.  The scroller
+   * and every scroll rule stay ours -- the virtualizer only decides *which* rows
+   * exist, so the follow, the pin latch and the fold guard below keep working
+   * exactly as they did.
+   *
+   * `getItemKey` is keyed on the message id rather than the index, so a prepended
+   * history page does not re-label the measurements of the rows below it.
    */
-  const pinnedToBottom = useRef(true);
+  const listRef = useRef<HTMLDivElement>(null);
+  /** The chrome above the list, whose height decides the list's offset. */
+  const chromeRef = useRef<HTMLDivElement>(null);
   /**
-   * True while a wheel / touch gesture is driving the scroller.
+   * The list's offset inside the scrollport, in pixels.
    *
-   * Only the reader may end the follow.  Our own `scrollIntoView` and the
-   * browser's scroll anchoring also fire `scroll`, and a layout change *above* the
-   * viewport (a streamed thought settling to its final height, a tool row
-   * appearing) moves the scroll position on its own: reading the latch from every
-   * scroll event ended the follow for the rest of the turn, so the reasoning
-   * streamed into view but the tool call after it did not.
+   * The banners and the "load earlier" button scroll *above* the list, so the
+   * virtualizer has to be told where its item 0 begins; otherwise the first
+   * screenful would be positioned as if it started at the scrollport top.
    */
-  const userScrolling = useRef(false);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: () => ESTIMATED_ROW_PX,
+    overscan: OVERSCAN_ROWS,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    scrollMargin,
+  });
+  const totalSize = virtualizer.getTotalSize();
+  /**
+   * Distance from the bottom captured just before an earlier page is prepended.
+   *
+   * Prepending grows the content above the viewport, and the browser's scroll
+   * anchoring cannot help here (the rows are absolutely positioned), so the
+   * distance from the bottom is re-applied until the new rows have been measured.
+   */
+  const prependAnchor = useRef<number | null>(null);
+  /**
+   * A rail jump that has not landed exactly yet.
+   *
+   * The offset of a row that has never been rendered is an estimate; the jump
+   * brings that row into the window, the first measurement corrects its height,
+   * and the offset is re-applied until it stops moving.  Converges in two or three
+   * passes, and never fights the reader (a gesture clears it, like the prepend).
+   */
+  const pendingJump = useRef<{ index: number; reserved: number } | null>(null);
+
+  // Measure where the list starts, once per chrome change rather than per render.
+  const chromeKey = `${historyAvailable}|${historyError}|${historyHasMore}|${historyLoading}|${
+    messages.length === 0
+  }`;
+  useLayoutEffect(() => {
+    const measure = () => {
+      const scroller = scrollerRef.current;
+      const list = listRef.current;
+      if (scroller === null || list === null) return;
+      const next = Math.max(
+        0,
+        Math.round(
+          list.getBoundingClientRect().top -
+            scroller.getBoundingClientRect().top +
+            scroller.scrollTop,
+        ),
+      );
+      setScrollMargin((current) => (current === next ? current : next));
+    };
+    measure();
+    // The chrome above the list can change height without any of these flags
+    // moving (a banner rewrapping, a window resize), so the offset is observed as
+    // well as inferred: a stale margin would misplace every mounted row.
+    const chrome = chromeRef.current;
+    if (chrome === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(chrome);
+    return () => observer.disconnect();
+  }, [chromeKey]);
+
+  // Re-apply the prepend anchor whenever the list's height changes, which is how
+  // the corrections that follow each new row's first measurement get applied.
+  useLayoutEffect(() => {
+    const jump = pendingJump.current;
+    if (jump === null) return;
+    const scroller = scrollerRef.current;
+    const offset = virtualizer.getOffsetForIndex(jump.index, 'start');
+    if (scroller === null || offset === undefined) return;
+    const target = Math.max(0, offset[0] - jump.reserved);
+    if (Math.abs(target - scroller.scrollTop) <= 2) {
+      pendingJump.current = null;
+      return;
+    }
+    scroller.scrollTop = target;
+  }, [totalSize, virtualizer]);
+
+  useLayoutEffect(() => {
+    const distance = prependAnchor.current;
+    if (distance === null) return;
+    const scroller = scrollerRef.current;
+    if (scroller === null) return;
+    const next = anchoredScrollTop(scroller.scrollHeight, distance);
+    if (Math.abs(next - scroller.scrollTop) > 1) scroller.scrollTop = next;
+  }, [totalSize, messages]);
+
+  /**
+   * Keep a pinned view pinned while the list's height changes.
+   *
+   * A virtual row is laid out at its estimated height until it has been measured,
+   * so the first screenful *moves the bottom* as the corrections land -- the
+   * `scrollIntoView` follow alone would land on the bottom of a height that is no
+   * longer the real one.  This is also what re-pins after an appended row grows
+   * the list, which is the same follow seen from the size instead of the message.
+   */
+  useLayoutEffect(() => {
+    // A prepend anchor or an unlanded jump owns the scroll position while armed.
+    if (prependAnchor.current !== null || pendingJump.current !== null) return;
+    if (!pinnedToBottom.current) return;
+    const scroller = scrollerRef.current;
+    if (scroller === null) return;
+    const bottom = scroller.scrollHeight - scroller.clientHeight;
+    if (Math.abs(bottom - scroller.scrollTop) > 1) scroller.scrollTop = bottom;
+  }, [totalSize]);
+
+  /**
+   * The rail's handle on this transcript.
+   *
+   * Passed down as a prop (the rail is rendered by this component, above the
+   * scrollport) so it exists on the rail's first frame; every accessor reads the
+   * live ref or the current measurement, never a snapshot.
+   */
+  const viewport = useMemo(
+    () => {
+      // Built once per message list, not per call: the rail asks for every turn's
+      // offset on each scroll frame, and rebuilding a 1000+ entry map there would
+      // put O(rows) work back on the scroll path this change exists to shorten.
+      const indexById = new Map(messages.map((m, index) => [m.id, index]));
+      return {
+        scroller: () => scrollerRef.current,
+        offsetsOf: (ids: readonly string[]): number[] =>
+          ids.map((id) => {
+            const index = indexById.get(id);
+            if (index === undefined) return Number.POSITIVE_INFINITY;
+            const offset = virtualizer.getOffsetForIndex(index, 'start');
+            return offset === undefined ? Number.POSITIVE_INFINITY : offset[0];
+          }),
+        scrollToMessage: (id: string): void => {
+          const index = indexById.get(id);
+          if (index === undefined) return;
+          const scroller = scrollerRef.current;
+          if (scroller === null) return;
+          // Jumping somewhere specific is the reader leaving the newest row behind:
+          // the follow must not pull the view back when the next row is measured.
+          pinnedToBottom.current = false;
+          // `scroll-padding-top` reserves the header's height for `scrollIntoView`,
+          // which a programmatic offset bypasses, so it is applied here instead.
+          const reserved = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+          // The jump is instant and then converges (see the effect above): the offset
+          // of a row that has never been rendered is an estimate, and a smooth pass
+          // is exactly when the virtualizer stops compensating for that estimate.
+          pendingJump.current = { index, reserved };
+          const offset = virtualizer.getOffsetForIndex(index, 'start');
+          if (offset !== undefined) scroller.scrollTop = Math.max(0, offset[0] - reserved);
+        },
+      };
+    },
+    [messages, virtualizer],
+  );
 
   // Stable identity: the scroll listener below triggers the same guarded path the
   // button uses, and a changing callback would re-attach that listener.
   const handleLoadEarlier = useCallback(() => {
     skipAutoScroll.current = true;
+    const scroller = scrollerRef.current;
+    // Capture the anchor *before* the store prepends: `scrollHeight` grows by the
+    // inserted page, and only the distance from the bottom survives that.
+    prependAnchor.current = scroller === null ? null : scroller.scrollHeight - scroller.scrollTop;
     loadEarlierHistory();
   }, [loadEarlierHistory]);
 
@@ -865,6 +1044,10 @@ export const Transcript: React.FC = () => {
     let settle: ReturnType<typeof setTimeout> | null = null;
     const beginUserScroll = () => {
       userScrolling.current = true;
+      // The reader has taken over: a page that is still being measured must not
+      // keep pulling the scroll position back to where the prepend left it.
+      prependAnchor.current = null;
+      pendingJump.current = null;
       if (settle !== null) clearTimeout(settle);
       // A gesture is over shortly after its last event; the latch is then final
       // until the next one.  A gesture that ended at the bottom re-arms the
@@ -892,6 +1075,10 @@ export const Transcript: React.FC = () => {
     scroller.addEventListener('wheel', beginUserScroll, { passive: true });
     scroller.addEventListener('touchstart', beginUserScroll, { passive: true });
     scroller.addEventListener('touchmove', beginUserScroll, { passive: true });
+    // The keyboard scrolls this scroller too, and a key is just as much the reader
+    // driving as a wheel is: without it a PageUp left the follow latch armed, and
+    // the next height correction pulled the view back to the bottom.
+    scroller.addEventListener('keydown', beginUserScroll);
     scroller.addEventListener('scroll', track, { passive: true });
     scroller.addEventListener('scroll', loadEarlierAtTop, { passive: true });
     return () => {
@@ -899,6 +1086,7 @@ export const Transcript: React.FC = () => {
       scroller.removeEventListener('wheel', beginUserScroll);
       scroller.removeEventListener('touchstart', beginUserScroll);
       scroller.removeEventListener('touchmove', beginUserScroll);
+      scroller.removeEventListener('keydown', beginUserScroll);
       scroller.removeEventListener('scroll', track);
       scroller.removeEventListener('scroll', loadEarlierAtTop);
     };
@@ -918,6 +1106,8 @@ export const Transcript: React.FC = () => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
     // The view is at the bottom now, whatever moved it there in between.
     pinnedToBottom.current = true;
+    // Following the newest row supersedes any anchor still held from a prepend.
+    prependAnchor.current = null;
   }, [messages]);
 
   useEffect(() => {
@@ -950,7 +1140,7 @@ export const Transcript: React.FC = () => {
   return (
     <>
       {/* Minimap of the transcript, centred on the left edge (see TurnRail). */}
-      <TurnRail />
+      <TurnRail viewport={viewport} />
       {/* Floating progress panel for the session's todo list (hidden until one
           exists). */}
       <TodoPanel />
@@ -966,7 +1156,7 @@ export const Transcript: React.FC = () => {
       // with the composer card's (the sidebar tree works the same way).
       className="console-gutter no-scrollbar console-pane-inset flex-1 overflow-y-auto font-sans"
     >
-      <div className="console-column space-y-5">
+      <div ref={chromeRef} className="console-column space-y-5">
         {historyAvailable === false && (
           <div className="rounded-card border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 font-mono leading-relaxed">
             此会话在 transcript 投影中不可用（history.available=false）。以下只显示建立连接后的实时内容；
@@ -1012,11 +1202,32 @@ export const Transcript: React.FC = () => {
             当前会话已建立长连接，在下方输入指令即可开始与 Synapse Agent 对话
           </div>
         )}
-        {messages.map((m) => {
+      </div>
+
+      {/*
+        The list is one spacer of the virtualizer's total height, and each mounted
+        row is positioned into it.  `transform` rather than `top` so a scroll never
+        forces a layout of every row.
+      */}
+      <div
+        ref={listRef}
+        className={messages.length > 0 ? 'console-column mt-5' : 'console-column'}
+        style={{ position: 'relative', height: totalSize }}
+      >
+        {virtualizer.getVirtualItems().map((item) => {
+          const m = messages[item.index];
+          if (m === undefined) return null;
           const meta = processMetaMap.get(m.id);
           const pending = pendingTurns.get(m.id);
           return (
-            <React.Fragment key={m.id}>
+            <div
+              key={item.key}
+              data-index={item.index}
+              ref={virtualizer.measureElement}
+              // `pb-5` is the `space-y-5` gap the plain list used to contribute.
+              className="absolute left-0 top-0 w-full pb-5"
+              style={{ transform: `translateY(${item.start - scrollMargin}px)` }}
+            >
               <TranscriptRow
                 message={m}
                 handleToggleExpand={handleToggleExpand}
@@ -1042,9 +1253,12 @@ export const Transcript: React.FC = () => {
                   onToggleExpand={toggleTurnExpanded}
                 />
               )}
-            </React.Fragment>
+            </div>
           );
         })}
+      </div>
+
+      <div className="console-column space-y-5">
 
         {/* HITL Pending Approval Dialog */}
         {pendingApproval && (

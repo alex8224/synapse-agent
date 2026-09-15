@@ -48,6 +48,17 @@
 这些布局不变量由 `tests/shellLayout.test.ts`、`tests/topBarLayout.test.ts`、
 `tests/transcriptLayoutGuard.test.ts` 与 `tests/markdownTableGuard.test.ts` 静态守护。
 
+**长会话只挂载视口附近的行。** 一个长会话的投影有上千行，一次 commit 全部挂载会卡死页面，所以
+`Transcript` 用 `@tanstack/react-virtual` 做窗口化：行高先按 `ESTIMATED_ROW_PX` 估算，挂载后由
+`measureElement` 实测校正，上下各留 `OVERSCAN_ROWS` 行，其余行由占位高度撑出滚动条。滚动容器、
+贴底跟随、读者手势闩锁（wheel / touch / **键盘**）与折叠守卫仍是 `Transcript` 自己持有，虚拟化
+只决定「哪些行存在」，因此既有滚动语义不变；前插一页时按「距底部距离」这个不变量还原 `scrollTop`
+（绝对定位的行没有浏览器滚动锚定可用），并在新行测量完成后继续校正。TurnRail 不再自己查
+`[data-turn-id]`——离屏轮次根本没有那个元素——改为通过 `Transcript` 传入的 `TranscriptViewport`
+句柄按索引取偏移与跳转，跳转落点手动应用 `scroll-padding-top` 预留量。由
+`tests/transcriptVirtualization.test.ts` 静态守护，`tests/transcriptVirtual.verify.ts` 用真实
+浏览器验收（1,200 行只挂载几十行、开屏贴底、向上滚动换窗、跳转到尚未挂载的轮次、前插保持视口）。
+
 `tests/shellLayout.verify.ts` 另测 360/390/430/640px 手机布局、768/900px 平板和桌面回归。
 根布局采用 `100dvh`（保留 `100vh` 回退），视口声明启用安全区和支持浏览器的键盘布局缩放。
 iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，桌面触控模拟不能替代。

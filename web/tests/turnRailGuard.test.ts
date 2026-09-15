@@ -26,13 +26,30 @@ test('the rail maps turns with the shared rules', () => {
 });
 
 test('clicking a rail row scrolls to that turn', () => {
-  assert.ok(rail.includes('scrollIntoView'), 'a rail row must jump to its turn');
-  assert.ok(rail.includes('data-turn-id='), 'the rail must look the anchor up by turn id');
+  // The transcript mounts only the rows near the viewport, so the rail cannot
+  // measure or scroll a `[data-turn-id]` anchor itself: an off-screen turn has no
+  // row in the DOM.  It goes through the transcript's viewport handle instead.
+  assert.ok(
+    rail.includes('viewport.scrollToMessage'),
+    'a rail row must jump through the transcript viewport handle',
+  );
+  assert.equal(
+    rail.includes('querySelector'),
+    false,
+    'the rail must not look for an anchor that may not be mounted',
+  );
   assert.ok(
     transcript.includes('data-turn-id={m.id}'),
     'the transcript must anchor each user turn with its id',
   );
-  assert.ok(transcript.includes('<TurnRail />'), 'the transcript must render the rail');
+  assert.ok(
+    transcript.includes('<TurnRail viewport={viewport} />'),
+    'the transcript must render the rail with its viewport handle',
+  );
+  assert.ok(
+    transcript.includes('scrollToMessage'),
+    'the transcript must implement the jump the rail calls',
+  );
 });
 
 test('a rail bar lengthens under the pointer and settles back', () => {

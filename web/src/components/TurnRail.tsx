@@ -10,6 +10,7 @@ import {
   turnRailSlotLabel,
   turnRailTickSlots,
 } from '../stores/turnRail.ts';
+import type { TranscriptViewport } from './transcriptViewport.ts';
 
 /** Rows the rail maps turns onto; a row is 6px of bar plus a 1px gap. */
 const MAX_RAIL_ROWS = 24;
@@ -24,9 +25,6 @@ const BAR_LENGTHENED = 'w-5';
 /** The bar's own animation: width and colour, eased, so it reads as a slide. */
 const BAR_ANIMATION = 'transition-[width,background-color] duration-200 ease-out';
 
-/** The transcript port the rail follows, owned by `Transcript`. */
-const TRANSCRIPT_PORT_SELECTOR = '.console-gutter';
-
 /**
  * The turn rail: a minimap of the transcript, centred on the left edge.
  *
@@ -39,8 +37,12 @@ const TRANSCRIPT_PORT_SELECTOR = '.console-gutter';
  * currently showing plays the same lengthening animation a hovered bar does, so
  * scrolling the transcript (or the transcript following a running turn) animates
  * the rail along with it.
+ *
+ * Every offset and every jump goes through the transcript's viewport handle: the
+ * transcript mounts only the rows near the viewport, so measuring
+ * `[data-turn-id]` in the DOM would report every off-screen turn as past the end.
  */
-export const TurnRail: React.FC = () => {
+export const TurnRail: React.FC<{ viewport: TranscriptViewport }> = ({ viewport }) => {
   const messages = useConsoleStore((state) => state.messages);
   const turns = useMemo(() => transcriptTurns(messages), [messages]);
   const railRows = useMemo(() => Math.min(MAX_RAIL_ROWS, Math.max(turns.length, 1)), [turns.length]);
@@ -55,20 +57,15 @@ export const TurnRail: React.FC = () => {
     // No rail to animate (and nothing rendered): leave the last value alone, the
     // next measurement overwrites it.
     if (turns.length < 2) return;
-    const port = document.querySelector(TRANSCRIPT_PORT_SELECTOR);
-    if (port === null) return;
-    const scroller = port as HTMLElement;
+    const scroller = viewport.scroller();
+    if (scroller === null) return;
 
     // Every read happens in one batch on the scroll frame, before the state
     // update that follows it: measuring per store update would force a layout on
     // every streamed chunk.
     const sync = () => {
       frameRef.current = null;
-      const portTop = scroller.getBoundingClientRect().top - scroller.scrollTop;
-      offsetsRef.current = turns.map((turn) => {
-        const anchor = scroller.querySelector(`[data-turn-id="${turn.anchorId}"]`);
-        return anchor === null ? Number.POSITIVE_INFINITY : anchor.getBoundingClientRect().top - portTop;
-      });
+      offsetsRef.current = viewport.offsetsOf(turns.map((turn) => turn.anchorId));
       const next = activeTurnIndex(
         offsetsRef.current,
         scroller.scrollTop,
@@ -96,7 +93,7 @@ export const TurnRail: React.FC = () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
-  }, [turns]);
+  }, [turns, viewport]);
 
   // A single-turn transcript has nothing to navigate: no rail at all.
   if (turns.length < 2) return null;
@@ -106,14 +103,12 @@ export const TurnRail: React.FC = () => {
   const jumpTo = (index: number) => {
     const turn = turns[index];
     if (turn === undefined) return;
-    const anchor = document.querySelector(`[data-turn-id="${turn.anchorId}"]`);
-    anchor?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    viewport.scrollToMessage(turn.anchorId);
   };
 
   const jumpToBottom = () => {
-    const port = document.querySelector(TRANSCRIPT_PORT_SELECTOR);
-    if (port === null) return;
-    const scroller = port as HTMLElement;
+    const scroller = viewport.scroller();
+    if (scroller === null) return;
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
     window.dispatchEvent(new CustomEvent('transcript:jump-bottom'));
   };

@@ -25,8 +25,15 @@ test('new content still scrolls the transcript to the bottom', () => {
 });
 
 test('the follow is instant, never an animation restarted per chunk', () => {
+  // The rail's jump-to-turn may animate (it is a one-shot the reader asked for);
+  // the *follow* may not, so the guard is scoped to the follow call itself.
+  const follow = transcript.slice(
+    transcript.indexOf('bottomRef.current?.scrollIntoView'),
+    transcript.indexOf('pinnedToBottom.current = true;'),
+  );
+  assert.ok(follow.includes("scrollIntoView({ block: 'end' })"), 'the follow must land at the end');
   assert.equal(
-    transcript.includes("behavior: 'smooth'"),
+    follow.includes('behavior'),
     false,
     'a smooth follow is restarted on every chunk while a turn streams',
   );
@@ -44,7 +51,9 @@ test('only the reader can end the follow', () => {
     /if \(!userScrolling\.current\) return;/.test(transcript),
     'a scroll event the reader did not cause must not end the follow',
   );
-  for (const gesture of ['wheel', 'touchstart', 'touchmove']) {
+  // The keyboard scrolls this scroller too, and a key is as much the reader
+  // driving as a wheel is.
+  for (const gesture of ['wheel', 'touchstart', 'touchmove', 'keydown']) {
     assert.ok(
       transcript.includes(`addEventListener('${gesture}'`),
       `${gesture} must arm the follow latch`,
