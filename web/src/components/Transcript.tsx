@@ -28,6 +28,7 @@ import { Markdown } from './Markdown.tsx';
 import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
+import type { ActivityView } from '../stores/liveEventReducer.ts';
 import type { TranscriptMessage } from '../stores/historyMapper.ts';
 
 function formatProcessDuration(totalSeconds: number, isStreaming: boolean): string {
@@ -37,6 +38,18 @@ function formatProcessDuration(totalSeconds: number, isStreaming: boolean): stri
   const mins = Math.floor(sec / 60);
   const remSec = sec % 60;
   return remSec > 0 ? `${mins} 分 ${remSec} 秒` : `${mins} 分钟`;
+}
+
+/**
+ * Whole seconds a turn has been running.
+ *
+ * Floored rather than rounded, so the stopwatch never prints a second the clock
+ * has not reached yet.  It is read from the wall clock instead of counted off the
+ * interval, because a background tab throttles timers to about once a minute and
+ * an incremented counter would then resume seconds behind the truth.
+ */
+function elapsedSeconds(startedAt: number): number {
+  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 }
 
 /**
@@ -423,10 +436,80 @@ const TranscriptRow = React.memo(function TranscriptRow({
   return null;
 });
 
+/**
+ * What the runtime reports it is doing right now (`activity_*` events).
+ *
+ * Only an *active* status is painted: `activity_stopped` keeps the last phase so the
+ * next one can inherit its timer, and a finished turn must not keep claiming it is
+ * still working.  It is the line the transcript holds under a running turn, and the
+ * only thing the pending header can report once the reader opens it -- a turn that
+ * has not produced a step yet has nothing else to show.
+ */
+function ActivityLine({ activity }: { activity: ActivityView | null }) {
+  if (activity === null || !activity.active) return null;
+  return (
+    <div className="flex select-none items-center gap-1.5 font-mono text-xs text-gray-500">
+      <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
+      <span>{activity.phase}</span>
+      {activity.detail && <span className="text-gray-400">{activity.detail}</span>}
+    </div>
+  );
+}
+
+/**
+ * The "已工作" header of a turn whose own rows have not landed yet.
+ *
+ * A turn paints that header -- and the rule under it -- from its first thought /
+ * tool row, so between the submit and that first row the left column would be
+ * empty.  This row stands in with the same header and the same rule, so the
+ * elapsed time is on screen from the moment the message is sent; it stays for as
+ * long as the turn has no process row (a plain question and answer never grows
+ * one), which is what keeps the final elapsed time visible after the turn ends.
+ */
+function PendingTurnRow({
+  turnKey,
+  text,
+  expanded,
+  activity,
+  onToggleExpand,
+}: {
+  turnKey: string;
+  text: string;
+  expanded: boolean;
+  activity: ActivityView | null;
+  onToggleExpand: (turnKey: string) => void;
+}) {
+  return (
+    // The process rows bound the assistant column to 85% of its width; the same
+    // bound is a width here, so the rule under this header is exactly as long as the
+    // one the first thought row draws.
+    <div className="w-[85%]">
+      <button
+        type="button"
+        onClick={() => onToggleExpand(turnKey)}
+        className={
+          (expanded ? 'mb-1.5 ' : '') +
+          'flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors'
+        }
+      >
+        <span>已工作 {text}</span>
+        {expanded ? (
+          <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+        ) : (
+          <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+        )}
+      </button>
+      {expanded && <ActivityLine activity={activity} />}
+      <div className="border-b border-line/60 my-2.5" />
+    </div>
+  );
+}
+
 export const Transcript: React.FC = () => {
   const {
     messages,
     activity,
+    runtimeStatus,
     toggleMessageExpand,
     pendingApproval,
     resolveApproval,
@@ -441,6 +524,7 @@ export const Transcript: React.FC = () => {
     useShallow((state) => ({
       messages: state.messages,
       activity: state.activity,
+      runtimeStatus: state.runtimeStatus,
       toggleMessageExpand: state.toggleMessageExpand,
       pendingApproval: state.pendingApproval,
       resolveApproval: state.resolveApproval,
@@ -464,6 +548,77 @@ export const Transcript: React.FC = () => {
       return next;
     });
   }, []);
+
+  /**
+   * The turn being worked on, as the id of its user row, or null when nothing runs.
+   *
+   * `runtimeStatus` is the store's running latch -- a submit sets it and any
+   * terminal turn event clears it -- so it is what decides whether the "已工作"
+   * header counts up or reports a fixed number.  The turn's user row is the anchor
+   * its thought / tool rows are grouped under (see `processMetaMap` below), which is
+   * why the timing is remembered under that same id.
+   */
+  const runningTurnKey = useMemo(() => {
+    if (runtimeStatus !== 'running') return null;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].type === 'user') return messages[i].id;
+    }
+    return null;
+  }, [runtimeStatus, messages]);
+
+  /**
+   * Whole seconds each turn has taken, keyed by its user row.
+   *
+   * A turn is only recorded once this console has seen it run, and its entry is
+   * kept after the turn ends: that is what fixes the final elapsed time in the
+   * header instead of letting it fall back to the durations summed off the turn's
+   * rows -- a sum an unfinished turn cannot report at all.
+   */
+  const [turnSeconds, setTurnSeconds] = useState<ReadonlyMap<string, number>>(() => new Map());
+
+  // The stopwatch: while a turn runs, re-read the clock once per second so the
+  // header counts up (已工作 1 秒, 2 秒, 3 秒 ...).  The turn's entry is left in place
+  // when it stops, so the last value stays on screen as its elapsed time.
+  useEffect(() => {
+    if (runningTurnKey === null) return;
+    const startedAt = Date.now();
+    const read = () => {
+      const seconds = elapsedSeconds(startedAt);
+      setTurnSeconds((prev) =>
+        prev.get(runningTurnKey) === seconds ? prev : new Map(prev).set(runningTurnKey, seconds),
+      );
+    };
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => window.clearInterval(timer);
+  }, [runningTurnKey]);
+
+  /**
+   * Turns whose "已工作" header has no row of its own to hang off.
+   *
+   * A turn paints that header from its first thought / tool row, so a turn that has
+   * not produced one yet -- the window right after a submit, and a plain question
+   * and answer for good -- needs a row of its own or the left column stays empty.
+   * The running turn is included before its first tick has landed, so the header is
+   * on screen with the submit itself.  The walk runs backwards, so the rows seen
+   * before a user row are exactly the rows of that user row's turn.
+   */
+  const pendingTurns = useMemo(() => {
+    const pending = new Set<string>();
+    let hasProcessRow = false;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.type === 'user') {
+        if (!hasProcessRow && (turnSeconds.has(m.id) || m.id === runningTurnKey)) {
+          pending.add(m.id);
+        }
+        hasProcessRow = false;
+      } else if (m.type === 'thought' || m.type === 'tool_group') {
+        hasProcessRow = true;
+      }
+    }
+    return pending;
+  }, [messages, turnSeconds, runningTurnKey]);
 
   const processMetaMap = useMemo(() => {
     const map = new Map<string, {
@@ -496,7 +651,14 @@ export const Transcript: React.FC = () => {
           totalSec += Math.max(1, tools.length);
         }
       }
-      const durationText = formatProcessDuration(totalSec, isStreaming);
+      // A turn this console watched run reports the stopwatch it was counted with
+      // -- live while it runs, then frozen on the value it stopped at -- rather than
+      // the durations summed off its rows.
+      const watched = turnSeconds.get(currentTurnKey);
+      const durationText =
+        watched === undefined
+          ? formatProcessDuration(totalSec, isStreaming)
+          : formatProcessDuration(watched, false);
       for (let i = 0; i < currentGroup.length; i++) {
         const item = currentGroup[i];
         map.set(item.id, {
@@ -526,7 +688,7 @@ export const Transcript: React.FC = () => {
     }
     flushGroup();
     return map;
-  }, [messages, expandedTurns]);
+  }, [messages, expandedTurns, turnSeconds]);
   /**
    * Whether the view is following the newest content.
    *
@@ -716,23 +878,38 @@ export const Transcript: React.FC = () => {
         )}
         {messages.map((m) => {
           const meta = processMetaMap.get(m.id);
+          // A running turn with no thought / tool row yet owns no header of its own,
+          // so it gets one right under its user row (0 until the first tick lands).
+          const pendingSeconds = pendingTurns.has(m.id)
+            ? (turnSeconds.get(m.id) ?? 0)
+            : undefined;
           return (
-            <TranscriptRow
-              key={m.id}
-              message={m}
-              handleToggleExpand={handleToggleExpand}
-              processMeta={
-                meta
-                  ? {
-                      isFirst: meta.isFirst,
-                      isLast: meta.isLast,
-                      isExpanded: meta.isExpanded,
-                      totalDurationText: meta.totalDurationText,
-                      onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
-                    }
-                  : undefined
-              }
-            />
+            <React.Fragment key={m.id}>
+              <TranscriptRow
+                message={m}
+                handleToggleExpand={handleToggleExpand}
+                processMeta={
+                  meta
+                    ? {
+                        isFirst: meta.isFirst,
+                        isLast: meta.isLast,
+                        isExpanded: meta.isExpanded,
+                        totalDurationText: meta.totalDurationText,
+                        onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
+                      }
+                    : undefined
+                }
+              />
+              {pendingSeconds !== undefined && (
+                <PendingTurnRow
+                  turnKey={m.id}
+                  text={formatProcessDuration(pendingSeconds, false)}
+                  expanded={expandedTurns.has(m.id)}
+                  activity={activity}
+                  onToggleExpand={toggleTurnExpanded}
+                />
+              )}
+            </React.Fragment>
           );
         })}
 
@@ -767,13 +944,7 @@ export const Transcript: React.FC = () => {
             </div>
           </div>
         )}
-        {activity && activity.active && (
-          <div className="flex select-none items-center gap-1.5 font-mono text-xs text-gray-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
-            <span>{activity.phase}</span>
-            {activity.detail && <span className="text-gray-400">{activity.detail}</span>}
-          </div>
-        )}
+        {activity !== null && <ActivityLine activity={activity} />}
         <div ref={bottomRef} />
       </div>
     </div>
