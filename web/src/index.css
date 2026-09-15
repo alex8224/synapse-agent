@@ -695,34 +695,19 @@ body {
     scroll-padding-bottom: calc(var(--composer-h) + 1.5rem);
   }
   /*
-    The pinned header of an opened fold.
+    The header of a fold.
 
     A turn's "已工作 N 秒" header is the top of its fold, and while that fold grows
     -- a thought streaming, a tool list filling in -- the transcript keeps following
-    the newest line.  Left in flow the header is carried off the top edge, so the
-    reader ends up watching the tail of a block they can no longer identify.  The
-    header is therefore pinned: it sticks to the top of the visible area and its
-    fold scrolls *under* it.
-
-    `top` is measured from the scrollport's own top edge, which `console-pane-inset`
-    runs up behind the chrome bar, so the offset has to clear it -- and it is the
-    same expression `scroll-padding-top` reserves, which is what lands the pinned
-    strip exactly where the pane's content starts.
-
-    The material is the caller's (`material-titlebar`: the chrome fill, grain, blur
-    and edge, without the large-surface sheen that collapses into a band on a bar
-    this short).  The role is the chrome's -- a bar content scrolls under -- so the
-    theme still decides the fill and the blur, and the shipped opaque palette pays
-    nothing for it.
+    the newest line.  The header stays in flow with the fold it names: it is a line
+    of the reading column, not a bar the column scrolls under, so it carries no
+    fill, no pin and no layer of its own.
   */
   .transcript-fold-header {
-    position: sticky;
-    top: calc(var(--chrome-h) + 1.5rem);
-    z-index: 2;
     /*
       A formatting context of its own, so the rule's margins stay *inside* the strip
-      instead of collapsing out through it: a pinned strip with a transparent band
-      at its foot would show the very content it is there to mask.
+      instead of collapsing out through it: the strip would otherwise open a gap
+      between its header and the rule that belongs to it.
     */
     display: flow-root;
   }

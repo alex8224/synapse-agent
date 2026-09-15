@@ -92,6 +92,47 @@ def _schedule_subagent_checkpoint_gc(context: TurnContext) -> None:
         return
 
 
+def _checkpoint_messages(context: TurnContext) -> list[Any]:
+    """The thread's full message list, or ``[]`` when none can be read.
+
+    Best-effort by design: a settlement must never fail because the checkpoint is
+    unavailable (memory backend, closed agent, an unexpected saver shape).
+    """
+    agent = getattr(context, "agent", None)
+    thread_id = getattr(context, "thread_id", None)
+    get_state = getattr(agent, "get_state", None)
+    if not thread_id or not callable(get_state):
+        return []
+    try:
+        snapshot = get_state({"configurable": {"thread_id": thread_id}})
+        values = getattr(snapshot, "values", None)
+        messages = values.get("messages") if isinstance(values, dict) else None
+    except Exception:  # noqa: BLE001 - an unreadable checkpoint degrades to the result
+        return []
+    return list(messages) if isinstance(messages, (list, tuple)) else []
+
+
+def _turn_state_messages(context: TurnContext, result: TurnResult) -> list[Any]:
+    """The settled turn's own messages, read from the checkpoint when possible.
+
+    ``TurnResult.state`` is accumulated from the stream's per-node *updates*, so
+    its ``messages`` key only holds the last node's delta: the AI message that
+    requested a tool is overwritten long before the turn settles, and a projection
+    built from it loses every tool row -- the calls are visible in the live stream
+    and gone after a reload.  The checkpointer keeps the whole conversation, so the
+    turn's slice of it (from its own user message on) is preferred; a checkpoint
+    that cannot be read degrades to ``result.state`` instead of failing.
+    """
+    messages = _checkpoint_messages(context)
+    if messages:
+        from synapse.sessions.transcript import turn_start_indexes
+
+        starts = turn_start_indexes(messages)
+        if starts:
+            return messages[starts[-1] :]
+    return list(result.state.get("messages") or [])
+
+
 @dataclass(frozen=True, slots=True)
 class SessionPersistence:
     """Persist one frozen turn without consulting widgets or mutable app state."""
@@ -127,7 +168,11 @@ class SessionPersistence:
         # this projection identical to a later checkpoint-driven rebuild.
         attachment_refs = () if resume else _durable_attachment_refs(context.request)
         events = self._events(
-            user_text, result, turn_events=turn_events, attachments=attachment_refs
+            user_text,
+            result,
+            state_messages=_turn_state_messages(context, result),
+            turn_events=turn_events,
+            attachments=attachment_refs,
         )
         if resume:
             # The original user turn is already projected. Resume may still run
@@ -159,9 +204,16 @@ class SessionPersistence:
         user_text: str,
         result: TurnResult,
         *,
+        state_messages: list[Any] | None = None,
         turn_events: list[TurnEvent] | None = None,
         attachments: tuple[Any, ...] = (),
     ) -> list[UiTranscriptEvent]:
+        """The visible events of one settled turn.
+
+        ``state_messages`` are the turn's own checkpoint messages when they could
+        be read (see ``_turn_state_messages``); ``result.state`` is only the
+        fallback, because its ``messages`` key holds the stream's last node delta.
+        """
         events: list[UiTranscriptEvent] = []
         if user_text or attachments:
             events.append(
@@ -175,7 +227,12 @@ class SessionPersistence:
             )
         if result.reasoning_text:
             events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
-        state_events = fold_messages_for_ui(list(result.state.get("messages") or []))
+        source = (
+            state_messages
+            if state_messages is not None
+            else list(result.state.get("messages") or [])
+        )
+        state_events = fold_messages_for_ui(list(source))
         tool_events = [event for event in state_events if event.kind == "tools"]
         if not tool_events and turn_events:
             tool_event = _tools_from_turn_events(turn_events)

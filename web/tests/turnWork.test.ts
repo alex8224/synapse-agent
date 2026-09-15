@@ -35,6 +35,43 @@ test('one clock/header across reasoning, narration, tools, warning and final ans
   assert.equal(workSeconds(groups[0], 20000), 19);
   assert.equal(groups[0].anchor.id, 'u');
 });
+test('live narration between tool batches never splits or resets the turn clock', () => {
+  let state = base([row('pending', 'user', { work: { startedAt: 1000, ended: false } })]);
+  state.activeTurnId = null;
+  const steps: Array<[string, Record<string, unknown>, number]> = [
+    ['activity_started', {}, 1000],
+    ['reasoning_delta', { text: 'inspect changes' }, 2000],
+    ['reasoning_completed', { text: 'inspect changes' }, 3000],
+    ['tool_batch_started', {}, 4000],
+    ['tool_started', { item_id: 'i1', call_id: 'c1', name: 'execute' }, 5000],
+    ['tool_batch_finished', {}, 160000],
+    ['answer_delta', { text: 'Checks reviewed; running tests next.' }, 167000],
+    ['answer_completed', { text: 'Checks reviewed; running tests next.' }, 168000],
+    ['activity_updated', { reset_timer: true, phase: 'model' }, 169000],
+    ['tool_batch_started', {}, 170000],
+    ['tool_started', { item_id: 'i2', call_id: 'c2', name: 'execute' }, 171000],
+    ['tool_batch_finished', {}, 184000],
+    ['answer_completed', { text: 'Changes committed.' }, 185000],
+  ];
+  for (const [kind, payload, at] of steps) {
+    state = apply(state, kind, 'A', payload, at);
+    const groups = workGroups(state.messages, state.activeTurnId, state.runtimeStatus === 'running');
+    assert.equal(groups.length, 1, kind);
+    assert.equal(groups[0].anchor.id, 'pending', kind);
+    assert.equal(groups[0].running, true, kind);
+    assert.equal(workSeconds(groups[0], at), (at - 1000) / 1000, kind);
+  }
+  state = apply(state, 'turn_completed', 'A', { elapsed_s: 184.5 }, 185500);
+  const groups = workGroups(state.messages, state.activeTurnId, false);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].running, false);
+  assert.equal(workSeconds(groups[0], 999999), 184);
+  assert.deepEqual(groups[0].rows.map((m) => m.type), ['thought', 'tool_group', 'tool_group']);
+  assert.deepEqual(state.messages.filter((m) => m.type === 'assistant').map((m) => m.content), [
+    'Checks reviewed; running tests next.', 'Changes committed.',
+  ]);
+  assert.ok(state.messages.every((m) => m.turnId === 'A'));
+});
 test('steer stays in same work group and an empty batch cannot hide the pending header', () => {
   const groups = workGroups([user(), row('x','tool_group', { turnId:'A', tools:[] }), row('steer','user', { turnId:'A', steer:true })], 'A', true);
   assert.equal(groups.length, 1); assert.equal(groups[0].rows.length, 0);

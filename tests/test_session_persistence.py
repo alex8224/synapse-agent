@@ -179,3 +179,93 @@ def test_persist_unfinished_turn_keeps_subagent_state(tmp_path, monkeypatch) -> 
         calls, context = _gc_context(tmp_path, monkeypatch)
         _persistence(_RecordingProjection()).persist(context, _result(status))
         assert calls == [], status
+
+
+def _context_with_agent(agent: object) -> TurnContext:
+    return TurnContext(
+        thread_id="t1",
+        agent=agent,
+        settings=SimpleNamespace(checkpoint_path=None),
+        request=SimpleNamespace(resume=False, input="use a tool", thread_id="t1"),
+    )
+
+
+def test_tool_rows_are_read_from_the_checkpoint_not_the_stream_delta() -> None:
+    """The stream's last update overwrites ``messages``; the checkpoint keeps all.
+
+    ``result.state`` is folded from per-node updates, so it holds only the final
+    AI message by the time the turn settles.  A projection built from it loses the
+    tool call, which is what the console showed before a reload and not after.
+    """
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("older prompt"),
+        AIMessage("", tool_calls=[{"id": "c0", "name": "read_file", "args": {}}]),
+        ToolMessage("older output", tool_call_id="c0", name="read_file"),
+        AIMessage("older answer"),
+        HumanMessage("use a tool"),
+        AIMessage(
+            "",
+            tool_calls=[{"id": "c1", "name": "execute", "args": {"intent": "run checks"}}],
+        ),
+        ToolMessage("output", tool_call_id="c1", name="execute"),
+        AIMessage("done"),
+    ]
+    agent = SimpleNamespace(
+        get_state=lambda config: SimpleNamespace(values={"messages": messages})
+    )
+    projection = _RecordingProjection()
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        # Exactly what the stream leaves behind: the last node's delta only.
+        state={"messages": [AIMessage("done")]},
+        final_text="done",
+        elapsed_s=12.5,
+    )
+
+    _persistence(projection).persist(_context_with_agent(agent), result)
+
+    events = projection.calls[0][1]
+    assert [event.kind for event in events] == ["user", "tools", "answer"]
+    tools = next(event for event in events if event.kind == "tools")
+    # The turn's own slice only: the older turn's call must not be re-projected.
+    assert [call["name"] for call in tools.tool_calls] == ["execute"]
+    assert [item["content"] for item in tools.tool_results] == ["output"]
+    # Timing stays on the user anchor, which the console's "已工作" header reads.
+    assert events[0].turn_id == "turn-1"
+    assert events[0].elapsed_s == 12.5
+
+
+def test_an_unreadable_checkpoint_degrades_to_the_stream_state() -> None:
+    """A settlement must survive a checkpoint that cannot be read."""
+
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    def boom(config: object) -> object:
+        raise RuntimeError("checkpoint unavailable")
+
+    projection = _RecordingProjection()
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        state={
+            "messages": [
+                AIMessage("", tool_calls=[{"id": "c1", "name": "execute", "args": {}}]),
+                ToolMessage("output", tool_call_id="c1", name="execute"),
+            ]
+        },
+        final_text="done",
+    )
+
+    _persistence(projection).persist(
+        _context_with_agent(SimpleNamespace(get_state=boom)), result
+    )
+
+    events = projection.calls[0][1]
+    assert [event.kind for event in events] == ["user", "tools", "answer"]
+    assert [call["name"] for call in events[1].tool_calls] == ["execute"]

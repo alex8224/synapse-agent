@@ -210,7 +210,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div key={m.id} className="max-w-[85%]">
         {processMeta && !processMeta.isExpanded ? (
-          <div className="transcript-fold-header material-titlebar">
+          <div className="transcript-fold-header">
             <button
               type="button"
               onClick={processMeta.onToggleExpand}
@@ -224,7 +224,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <div className="transcript-fold-header material-titlebar">
+              <div className="transcript-fold-header">
                 <button
                   type="button"
                   onClick={processMeta.onToggleExpand}
@@ -235,8 +235,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 </button>
                 {/* The rule belongs to the header, in both folds: the steps below it
                     are the fold's content, so the block must not draw a second rule
-                    at their end.  The header is the fold's pinned strip, so the steps
-                    scroll under it instead of carrying it off the top edge. */}
+                    at their end.  Header and rule stay in flow with the steps they
+                    name, so nothing of the fold is masked while the column scrolls. */}
                 <div className="border-b border-line/60 my-2.5" />
               </div>
             )}
@@ -281,7 +281,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     return (
       <div key={m.id} className="max-w-[85%] py-1">
         {processMeta && !processMeta.isExpanded ? (
-          <div className="transcript-fold-header material-titlebar">
+          <div className="transcript-fold-header">
             <button
               type="button"
               onClick={processMeta.onToggleExpand}
@@ -295,7 +295,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
-              <div className="transcript-fold-header material-titlebar">
+              <div className="transcript-fold-header">
                 <button
                   type="button"
                   onClick={processMeta.onToggleExpand}
@@ -305,8 +305,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
                   <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
                 </button>
                 {/* Same header rule as the thought fold: the tool rows hang below it,
-                    and the block ends without a second rule.  The header is the fold's
-                    pinned strip, so the tool rows scroll under it. */}
+                    and the block ends without a second rule.  The header stays in flow
+                    with the tool rows it names. */}
                 <div className="border-b border-line/60 my-2.5" />
               </div>
             )}
@@ -459,8 +459,8 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
  * The rule under the header is the stopwatch's own separator, so it is drawn
  * directly under the button in both folds; what the reader opens (the running
  * status, once there is one to report) hangs *below* that rule.  Button and rule
- * are one pinned strip (`transcript-fold-header`), so the status the reader opened
- * scrolls under the header rather than pushing it off the top edge.
+ * are one strip (`transcript-fold-header`), left in flow with the status it
+ * reports: the row is a line of the reading column, never a bar over it.
  */
 function PendingTurnRow({
   turnKey,
@@ -480,7 +480,7 @@ function PendingTurnRow({
     // bound is a width here, so the rule under this header is exactly as long as the
     // one the first thought row draws.
     <div className="w-[85%]">
-      <div className="transcript-fold-header material-titlebar">
+      <div className="transcript-fold-header">
         <button
           type="button"
           onClick={() => onToggleExpand(turnKey)}
