@@ -102,8 +102,11 @@ limit=20}`；`limit` 上限 100（默认 20），`before_turn` 必须 ≥ 1 或 
   投影感知的 runtime 中打开过等）。这不是“空历史”：Web 明确提示不可用，
   不渲染为空历史、**不回退** checkpoint。`available: true` 且
   `total_turns == 0` 才是真正的新会话空历史。
-- 页级安全上限：单页事件 ≤ 4096 条、payload 原文 ≤ 256 KiB、页面线格式
-  ≤ 256 KiB；投影 JSON 非有限数值/损坏会报错而不是静默吞掉。
+- 页级安全上限：单页事件 ≤ 4096 条、payload 原文 ≤ 896 KiB、页面线格式
+  ≤ 896 KiB（都在 1 MiB 传输帧预算内，留 128 KiB 余量）；投影 JSON
+  非有限数值/损坏会报错而不是静默吞掉。分页按**轮**切分，最小页即一轮，
+  因此上限必须容得下**单个**内容密集的轮次（大工具输出、整文件读取），
+  否则任何页大小都取不出该轮。
 - 权限：`project_id/thread_id` 必须是当前 runtime 可路由的会话引用；
   transcript 库不存在或缺表同样返回 `available: false`。
 - 冷启动读取与 `runtime.session.list` 相同：已注册且可路由的项目无需先

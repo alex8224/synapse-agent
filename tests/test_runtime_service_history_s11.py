@@ -519,7 +519,8 @@ def test_history_page_oversized_single_payload_rejected_before_parse(tmp_path) -
     connection.execute(
         "INSERT INTO transcript_events(thread_id,event_seq,turn_seq,kind,payload_json)"
         " VALUES (?,?,?,?,?)",
-        ("thread-a", 0, 1, "answer", "x" * (300 * 1024)),  # oversized AND invalid JSON
+        # oversized AND invalid JSON
+        ("thread-a", 0, 1, "answer", "x" * (history_store._MAX_HISTORY_RAW_BYTES + 1)),
     )
     connection.execute(
         "INSERT INTO transcript_meta(thread_id,total_turns,total_events) VALUES (?,?,?)",
@@ -545,7 +546,7 @@ def test_history_byte_preflight_scoped_to_requested_turn_window(tmp_path) -> Non
         [
             ("thread-a", 0, 1, "user", '{"text":"turn 1 user"}'),
             ("thread-a", 1, 1, "answer", '{"text":"turn 1 answer"}'),
-            ("thread-a", 2, 2, "answer", "x" * (300 * 1024)),
+            ("thread-a", 2, 2, "answer", "x" * (history_store._MAX_HISTORY_RAW_BYTES + 1)),
         ],
     )
     connection.execute(
@@ -594,6 +595,44 @@ def test_history_snapshot_tolerates_meta_beyond_events(tmp_path) -> None:
     assert (page.start_turn, page.end_turn) == (3, 3)
     assert page.events == ()
     assert page.has_more is True
+
+
+def test_history_page_delivers_a_single_turn_above_the_legacy_cap(tmp_path) -> None:
+    """One content-rich turn sets the floor for a history page.
+
+    Regression: a turn whose payload exceeded the old 256 KiB cap made *every*
+    page size in the console's shrink ladder fail, because the smallest page is
+    still that one turn, so the session became unreadable.
+    """
+    _make_sessions_db(tmp_path / "sessions.sqlite")
+    _make_empty_transcript_db(tmp_path / "transcript.sqlite")
+    connection = sqlite3.connect(tmp_path / "transcript.sqlite")
+    text = "y" * (300 * 1024)
+    assert len(text) > 256 * 1024
+    connection.execute(
+        "INSERT INTO transcript_events(thread_id,event_seq,turn_seq,kind,payload_json)"
+        " VALUES (?,?,?,?,?)",
+        ("thread-a", 0, 1, "answer", json.dumps({"text": text})),
+    )
+    connection.execute(
+        "INSERT INTO transcript_meta(thread_id,total_turns,total_events) VALUES (?,?,?)",
+        ("thread-a", 1, 1),
+    )
+    connection.commit()
+    connection.close()
+
+    page = history_store.read_session_history_page(
+        _settings(tmp_path), ReadSessionHistoryQuery(REF, limit=1)
+    )
+    assert (page.start_turn, page.end_turn) == (1, 1)
+    assert [event.text for event in page.events] == [text]
+    frame = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "result": dataclasses.asdict(page)},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert len(frame) < MAX_FRAME_BYTES
 
 
 def test_history_malformed_json_raises_invalid_request(tmp_path) -> None:

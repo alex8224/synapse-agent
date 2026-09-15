@@ -133,7 +133,7 @@ export interface SessionListView {
 /**
  * Page sizes tried newest-first when the daemon rejects a page as too large.
  *
- * The runtime caps one history page at 256 KiB and answers `history_too_large`;
+ * The runtime caps one history page at 896 KiB and answers `history_too_large`;
  * content-rich sessions exceed that even at the default size, so the console
  * walks down to a single turn instead of rendering nothing.
  */

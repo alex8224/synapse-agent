@@ -49,16 +49,20 @@ from synapse.runtime.service.recovery import TurnCoverageProbe
 
 # Bounded page guards for history reads.  They are module-level so focused
 # tests can shrink them and prove the explicit overflow error deterministically.
-# Wire caps stay far below the transport frame budget (MAX_FRAME_BYTES is
-# 1 MiB) and are measured with the worst-case ``ensure_ascii=True`` encoder,
-# which never shrinks text, so a page that passes the cap always serializes
-# under the frame limit even before the JSON-RPC envelope is added.
+# Wire caps stay below the transport frame budget (MAX_FRAME_BYTES is 1 MiB) and
+# are measured with the worst-case ``ensure_ascii=True`` encoder, which never
+# shrinks text, so a page that passes the cap always serializes under the frame
+# limit even before the JSON-RPC envelope is added.
 _MAX_HISTORY_PAGE_EVENTS = 4096
 #: SQL payload-bytes preflight: the sum of ``length(payload_json AS BLOB)``
 #: over the requested turn window.  Rejected before any payload row is read.
-_MAX_HISTORY_RAW_BYTES = 256 * 1024
+#: History pages page by *turn*, so the smallest possible page is one turn and a
+#: single content-rich turn (a large tool result or file read) sets the floor for
+#: the cap: at 256 KiB one such turn made every page size in the console's shrink
+#: ladder fail. 896 KiB keeps a 128 KiB reserve under the 1 MiB frame budget.
+_MAX_HISTORY_RAW_BYTES = 896 * 1024
 #: Wire-bytes cap for one canonical events-JSON page (``ensure_ascii=True``).
-_MAX_HISTORY_PAGE_BYTES = 256 * 1024
+_MAX_HISTORY_PAGE_BYTES = 896 * 1024
 #: SQL scalar-bytes preflight for one session-list window.
 _MAX_SESSION_LIST_RAW_BYTES = 256 * 1024
 #: Wire-bytes cap for a single session metadata item.
