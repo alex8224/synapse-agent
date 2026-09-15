@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown16Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   TURN_RAIL_ACTIVE_SLACK_PX,
@@ -11,7 +12,7 @@ import {
 } from '../stores/turnRail.ts';
 
 /** Rows the rail maps turns onto; a row is 6px of bar plus a 1px gap. */
-const RAIL_ROWS = 30;
+const MAX_RAIL_ROWS = 24;
 
 /**
  * How long a bar grows while it is pointed at, or while its turn is the one on
@@ -42,8 +43,10 @@ const TRANSCRIPT_PORT_SELECTOR = '.console-gutter';
 export const TurnRail: React.FC = () => {
   const messages = useConsoleStore((state) => state.messages);
   const turns = useMemo(() => transcriptTurns(messages), [messages]);
-  const slots = useMemo(() => turnRailTickSlots(turns.length, RAIL_ROWS), [turns.length]);
+  const railRows = useMemo(() => Math.min(MAX_RAIL_ROWS, Math.max(turns.length, 1)), [turns.length]);
+  const slots = useMemo(() => turnRailTickSlots(turns.length, railRows), [turns.length, railRows]);
   const [activeTurn, setActiveTurn] = useState(-1);
+  const [isAtBottom, setIsAtBottom] = useState(false);
   /** Anchor offsets inside the scrollable content, measured on the scroll frame. */
   const offsetsRef = useRef<number[]>([]);
   const frameRef = useRef<number | null>(null);
@@ -73,6 +76,9 @@ export const TurnRail: React.FC = () => {
         scroller.scrollHeight - scroller.clientHeight,
       );
       setActiveTurn((current) => (current === next ? current : next));
+      const atBottom =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= TURN_RAIL_ACTIVE_SLACK_PX;
+      setIsAtBottom(atBottom);
     };
     const schedule = () => {
       if (frameRef.current !== null) return;
@@ -104,44 +110,70 @@ export const TurnRail: React.FC = () => {
     anchor?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   };
 
+  const jumpToBottom = () => {
+    const port = document.querySelector(TRANSCRIPT_PORT_SELECTOR);
+    if (port === null) return;
+    const scroller = port as HTMLElement;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+    window.dispatchEvent(new CustomEvent('transcript:jump-bottom'));
+  };
+
   return (
     <div className="pointer-events-none absolute left-2.5 top-1/2 z-20 -translate-y-1/2 select-none">
       <div
-        data-turn-rail
         title="会话轮次快速导航"
-        className="pointer-events-auto flex flex-col items-center gap-1 rounded-full border border-line/60 bg-surface/75 px-1 py-2 shadow-card backdrop-blur-md transition-colors hover:bg-surface/90"
+        className="pointer-events-auto flex flex-col items-center gap-1.5 rounded-full border border-line/70 bg-surface/85 px-1.5 py-2.5 shadow-flyout backdrop-blur-md transition-all duration-200 hover:border-line hover:bg-surface/95"
       >
-        {slots.map((indices, row) => {
-          if (indices.length === 0) {
-            return <div key={`gap-${row}`} className="h-1 w-2.5" />;
-          }
-          const previews = indices.map((i) => turns[i].user);
-          const label = turnRailSlotLabel(indices, previews);
-          // A denser bucket reads as a longer bar, so the shape of the session
-          // is visible at a glance.
-          const resting = indices.length === 1 ? 'w-2' : indices.length < 4 ? 'w-3' : 'w-4';
-          // The row on screen takes the lengthened width outright instead of
-          // through the hover variant, so the two can never fight over it.
-          const onScreen = row === activeRow;
-          return (
-            <button
-              key={`row-${row}`}
-              type="button"
-              onClick={() => jumpTo(indices[0])}
-              title={indices.length === 1 ? turnRailHoverText(turns[indices[0]]) : label}
-              className="group relative flex h-2 w-5 cursor-pointer items-center justify-center"
-            >
-              <span
-                // `shrink-0`: the bar outgrows its 20px hit area when it is
-                // lengthened, and a flex item would otherwise be squeezed back
-                // to the button's width instead of overflowing it.
-                className={`${onScreen ? BAR_LENGTHENED : resting} h-[3px] shrink-0 rounded-full ${
-                  onScreen ? 'bg-accent' : 'bg-gray-400/70'
-                } ${BAR_ANIMATION} group-hover:w-5 group-hover:bg-accent`}
-              />
-            </button>
-          );
-        })}
+        <div data-turn-rail className="flex flex-col items-center gap-1.5">
+          {slots.map((indices, row) => {
+            if (indices.length === 0) {
+              return <div key={`gap-${row}`} className="h-1 w-2.5" />;
+            }
+            const previews = indices.map((i) => turns[i].user);
+            const label = turnRailSlotLabel(indices, previews);
+            // A denser bucket reads as a longer bar, so the shape of the session
+            // is visible at a glance.
+            const resting = indices.length === 1 ? 'w-2' : indices.length < 4 ? 'w-3' : 'w-4';
+            // The row on screen takes the lengthened width outright instead of
+            // through the hover variant, so the two can never fight over it.
+            const onScreen = row === activeRow;
+            return (
+              <button
+                key={`row-${row}`}
+                type="button"
+                onClick={() => jumpTo(indices[0])}
+                title={indices.length === 1 ? turnRailHoverText(turns[indices[0]]) : label}
+                className="group relative flex h-2.5 w-5 cursor-pointer items-center justify-center"
+              >
+                <span
+                  // `shrink-0`: the bar outgrows its 20px hit area when it is
+                  // lengthened, and a flex item would otherwise be squeezed back
+                  // to the button's width instead of overflowing it.
+                  className={`${onScreen ? BAR_LENGTHENED : resting} h-[3px] shrink-0 rounded-full ${
+                    onScreen ? 'bg-accent' : 'bg-gray-400/70'
+                  } ${BAR_ANIMATION} group-hover:w-5 group-hover:bg-accent`}
+                />
+              </button>
+            );
+          })}
+        </div>
+        <div className="my-0.5 h-px w-2.5 bg-line/50" />
+        <button
+          type="button"
+          data-jump-bottom
+          onClick={jumpToBottom}
+          title="跳转到会话尾部"
+          aria-label="跳转到会话尾部"
+          className="group relative flex h-4 w-5 cursor-pointer items-center justify-center rounded-full text-gray-400 transition-colors hover:text-accent"
+        >
+          <ArrowDown16Regular
+            aria-hidden="true"
+            className={`shrink-0 transition-colors ${
+              isAtBottom ? 'text-accent' : 'text-gray-400/80 group-hover:text-accent'
+            }`}
+            style={{ fontSize: '12px' }}
+          />
+        </button>
       </div>
     </div>
   );

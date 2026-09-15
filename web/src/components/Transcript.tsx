@@ -375,6 +375,14 @@ export const Transcript: React.FC = () => {
     pinnedToBottom.current = true;
   }, [messages]);
 
+  useEffect(() => {
+    const handleJumpBottom = () => {
+      pinnedToBottom.current = true;
+    };
+    window.addEventListener('transcript:jump-bottom', handleJumpBottom);
+    return () => window.removeEventListener('transcript:jump-bottom', handleJumpBottom);
+  }, []);
+
   /**
    * Expand/collapse one fold.
    *

@@ -52,6 +52,15 @@ test('a rail bar lengthens under the pointer and settles back', () => {
   );
 });
 
+test('the rail provides a jump-to-bottom control that syncs transcript follow', () => {
+  assert.ok(rail.includes('data-jump-bottom'), 'the rail must render a jump-to-bottom action');
+  assert.ok(rail.includes('transcript:jump-bottom'), 'jumping to bottom must notify the transcript');
+  assert.ok(
+    transcript.includes('transcript:jump-bottom'),
+    'the transcript must restore auto-follow on jump-bottom',
+  );
+});
+
 test('the rail follows the transcript and animates the turn on screen', () => {
   assert.ok(
     rail.includes("addEventListener('scroll'"),
