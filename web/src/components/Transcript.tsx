@@ -35,7 +35,14 @@ import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
 import type { TranscriptMessage } from '../stores/historyMapper.ts';
-import { formatWorkDuration, workGroups, workSeconds } from '../stores/turnWork.ts';
+import {
+  formatWorkDuration,
+  getGroupIntentStatus,
+  workGroups,
+  workSeconds,
+  type GroupIntentStatus,
+  type WorkGroup,
+} from '../stores/turnWork.ts';
 
 /**
  * How close to the bottom the view still counts as "following the stream", in
@@ -81,6 +88,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     isFirst: boolean;
     isExpanded: boolean;
     totalDurationText: string;
+    groupStatus: GroupIntentStatus | null;
     onToggleExpand: () => void;
   };
 }) {
@@ -216,28 +224,34 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} className="max-w-[85%]">
         {processMeta && !processMeta.isExpanded ? (
           <div className="transcript-fold-header">
-            <button
-              type="button"
-              onClick={processMeta.onToggleExpand}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-            >
-              <span>已工作 {processMeta.totalDurationText}</span>
-              <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-            </button>
+            <div className="flex items-center gap-2 py-1 min-w-0">
+              <button
+                type="button"
+                onClick={processMeta.onToggleExpand}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+              >
+                <span>已工作 {processMeta.totalDurationText}</span>
+                <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+              </button>
+              {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
+            </div>
             <div className="border-b border-line/60 my-2.5" />
           </div>
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
               <div className="transcript-fold-header">
-                <button
-                  type="button"
-                  onClick={processMeta.onToggleExpand}
-                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-                >
-                  <span>已工作 {processMeta.totalDurationText}</span>
-                  <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                </button>
+                <div className="flex items-center gap-2 py-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={processMeta.onToggleExpand}
+                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+                  >
+                    <span>已工作 {processMeta.totalDurationText}</span>
+                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                  </button>
+                  {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
+                </div>
                 {/* The rule belongs to the header, in both folds: the steps below it
                     are the fold's content, so the block must not draw a second rule
                     at their end.  Header and rule stay in flow with the steps they
@@ -287,28 +301,34 @@ const TranscriptRow = React.memo(function TranscriptRow({
       <div key={m.id} className="max-w-[85%] py-1">
         {processMeta && !processMeta.isExpanded ? (
           <div className="transcript-fold-header">
-            <button
-              type="button"
-              onClick={processMeta.onToggleExpand}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-            >
-              <span>已工作 {processMeta.totalDurationText}</span>
-              <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-            </button>
+            <div className="flex items-center gap-2 py-1 min-w-0">
+              <button
+                type="button"
+                onClick={processMeta.onToggleExpand}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+              >
+                <span>已工作 {processMeta.totalDurationText}</span>
+                <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+              </button>
+              {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
+            </div>
             <div className="border-b border-line/60 my-2.5" />
           </div>
         ) : (
           <>
             {processMeta && processMeta.isFirst && (
               <div className="transcript-fold-header">
-                <button
-                  type="button"
-                  onClick={processMeta.onToggleExpand}
-                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-                >
-                  <span>已工作 {processMeta.totalDurationText}</span>
-                  <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                </button>
+                <div className="flex items-center gap-2 py-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={processMeta.onToggleExpand}
+                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+                  >
+                    <span>已工作 {processMeta.totalDurationText}</span>
+                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                  </button>
+                  {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
+                </div>
                 {/* Same header rule as the thought fold: the tool rows hang below it,
                     and the block ends without a second rule.  The header stays in flow
                     with the tool rows it names. */}
@@ -485,6 +505,54 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
 }
 
 /**
+ * What a fold group is doing, printed beside the header chevron.
+ *
+ * The fold header is the only line of a collapsed group, so this is where the
+ * reader learns whether the turn is reasoning, running a tool or done -- without
+ * opening the fold.  The icon and the tint carry the state (running / completed /
+ * failed); the label carries the tool and its intent, truncated so one long intent
+ * cannot push the elapsed time out of the header.
+ */
+function FoldStatusPill({ status }: { status: GroupIntentStatus }) {
+  const badge = 'inline-flex shrink-0 items-center gap-1 rounded-control border px-1.5 py-0.5 font-mono text-xs';
+  if (status.kind === 'thinking') {
+    return status.state === 'running' ? (
+      <span className={`${badge} border-blue-200/50 bg-blue-50/80 text-blue-600`}>
+        <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse" style={{ fontSize: '12px' }} />
+        <span>{status.text}</span>
+      </span>
+    ) : (
+      <span className={`${badge} border-line bg-sunken/60 text-gray-500`}>
+        <BrainCircuit20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '12px' }} />
+        <span>{status.text}</span>
+      </span>
+    );
+  }
+  if (status.state === 'running') {
+    return (
+      <span className={`${badge} max-w-[24rem] border-blue-200 bg-blue-50/90 text-blue-700`}>
+        <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-600" style={{ fontSize: '12px' }} />
+        <span className="truncate" title={status.text}>{status.text}</span>
+      </span>
+    );
+  }
+  if (status.state === 'failed') {
+    return (
+      <span className={`${badge} max-w-[24rem] border-red-200/60 bg-red-50/80 text-red-600`}>
+        <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '12px' }} />
+        <span className="truncate" title={status.text}>{status.text}</span>
+      </span>
+    );
+  }
+  return (
+    <span className={`${badge} max-w-[24rem] border-line bg-sunken/60 text-gray-600`}>
+      <Checkmark16Regular aria-hidden="true" className="shrink-0 text-green-600" style={{ fontSize: '12px' }} />
+      <span className="truncate" title={status.text}>{status.text}</span>
+    </span>
+  );
+}
+
+/**
  * The "已工作" header of a turn whose own rows have not landed yet.
  *
  * A turn paints that header -- and the rule under it -- from its first thought /
@@ -504,33 +572,39 @@ function PendingTurnRow({
   turnKey,
   text,
   expanded,
+  group,
   activity,
   onToggleExpand,
 }: {
   turnKey: string;
   text: string;
   expanded: boolean;
+  group: WorkGroup;
   activity: ActivityView | null;
   onToggleExpand: (turnKey: string) => void;
 }) {
+  const pendingStatus = getGroupIntentStatus(group, activity);
   return (
     // The process rows bound the assistant column to 85% of its width; the same
     // bound is a width here, so the rule under this header is exactly as long as the
     // one the first thought row draws.
     <div className="w-[85%]">
       <div className="transcript-fold-header">
-        <button
-          type="button"
-          onClick={() => onToggleExpand(turnKey)}
-          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-        >
-          <span>已工作 {text}</span>
-          {expanded ? (
-            <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-          ) : (
-            <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-          )}
-        </button>
+        <div className="flex items-center gap-2 py-1 min-w-0">
+          <button
+            type="button"
+            onClick={() => onToggleExpand(turnKey)}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
+          >
+            <span>已工作 {text}</span>
+            {expanded ? (
+              <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+            ) : (
+              <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+            )}
+          </button>
+          {pendingStatus && <FoldStatusPill status={pendingStatus} />}
+        </div>
         <div className="border-b border-line/60 my-2.5" />
       </div>
       {expanded && <ActivityLine activity={activity} />}
@@ -604,19 +678,22 @@ export const Transcript: React.FC = () => {
       isExpanded: boolean;
       totalDurationText: string;
       turnKey: string;
+      groupStatus: GroupIntentStatus | null;
     }>();
     for (const group of groups) {
+      const groupStatus = getGroupIntentStatus(group, activity);
       group.rows.forEach((row, i) => {
         map.set(row.id, {
           isFirst: i === 0,
           isExpanded: group.anchor.workExpanded === true,
           totalDurationText: formatWorkDuration(workSeconds(group, now)),
           turnKey: group.anchor.id,
+          groupStatus,
         });
       });
     }
     return map;
-  }, [groups, now]);
+  }, [groups, now, activity]);
   /**
    * Whether the view is following the newest content.
    *
@@ -818,6 +895,7 @@ export const Transcript: React.FC = () => {
                         isFirst: meta.isFirst,
                         isExpanded: meta.isExpanded,
                         totalDurationText: meta.totalDurationText,
+                        groupStatus: meta.groupStatus,
                         onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
                       }
                     : undefined
@@ -828,6 +906,7 @@ export const Transcript: React.FC = () => {
                   turnKey={m.id}
                   text={formatWorkDuration(workSeconds(pending, now))}
                   expanded={m.workExpanded === true}
+                  group={pending}
                   activity={pending.running ? activity : null}
                   onToggleExpand={toggleTurnExpanded}
                 />

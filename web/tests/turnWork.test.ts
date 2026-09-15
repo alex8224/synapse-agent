@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import { mapHistoryEvents, historyToolItem, type TranscriptMessage } from '../src/stores/historyMapper.ts';
-import { workGroups, workSeconds, formatWorkDuration, bindWorkTurn } from '../src/stores/turnWork.ts';
+import { workGroups, workSeconds, formatWorkDuration, bindWorkTurn, getGroupIntentStatus } from '../src/stores/turnWork.ts';
 import { reduceRuntimeEvent, type LiveReducibleState } from '../src/stores/liveEventReducer.ts';
 import { readTranscriptViews, restoreTranscriptViews, saveTranscriptViews, clearTranscriptViews } from '../src/stores/transcriptCache.ts';
 import type { HistoryEvent, RuntimeEvent } from '../src/client/types.ts';
@@ -167,4 +167,58 @@ test('a submit receipt binds only the pending user, never previous completed his
   const bound=bindWorkTurn(messages,'B',123);
   assert.equal(bound.at(-1)!.turnId,'B'); assert.equal(bound.at(-1)!.work?.startedAt,10);
   assert.equal(bindWorkTurn(bound,'B',999),bound);
+});
+const tool = (id: string, name: string, extra: Partial<ReturnType<typeof historyToolItem>> = {}) =>
+  ({ ...historyToolItem(id, name), ...extra });
+const activity = (phase: string, detail = '', active = true) =>
+  ({ phase, detail, startedAt: 1000, active });
+
+test('fold status reports streaming reasoning while the group runs', () => {
+  const live = workGroups([user(), row('t','thought',{turnId:'A',duration:'streaming'})],'A',true)[0];
+  assert.deepEqual(getGroupIntentStatus(live), { kind:'thinking', state:'running', text:'正在思考...' });
+  // The `streaming` flag on the row says the same thing as the `duration` marker.
+  const flagged = workGroups([user(), row('t','thought',{turnId:'A',streaming:true})],'A',true)[0];
+  assert.equal(getGroupIntentStatus(flagged)?.state,'running');
+  // A settled group whose last row is reasoning reports a finished thought.
+  const done = workGroups([user(), row('t','thought',{turnId:'A',duration:'done'})],'A',false)[0];
+  assert.deepEqual(getGroupIntentStatus(done), { kind:'thinking', state:'completed', text:'思考完成' });
+  // With rows present the rows are the authority, so a live activity cannot override them.
+  assert.deepEqual(getGroupIntentStatus(done, activity('thinking')), getGroupIntentStatus(done));
+});
+test('fold status reports a running tool with its name and intent', () => {
+  const messages = [user(), row('x','tool_group',{turnId:'A',tools:[tool('i','execute',{status:'running',label:'run checks'})]})];
+  const status = getGroupIntentStatus(workGroups(messages,'A',true)[0]);
+  assert.equal(status?.kind,'tool'); assert.equal(status?.state,'running');
+  assert.equal(status?.toolName,'execute'); assert.equal(status?.intent,'run checks');
+  assert.equal(status?.text,'execute · run checks');
+  // A running tool in an earlier group row wins over a later settled thought.
+  const trailing = [user(),
+    row('x','tool_group',{turnId:'A',tools:[tool('i','execute',{status:'pending',label:'run checks'})]}),
+    row('t','thought',{turnId:'A',duration:'done'})];
+  assert.equal(getGroupIntentStatus(workGroups(trailing,'A',true)[0])?.state,'running');
+});
+test('fold status reports the last tool of a settled group and drops an empty intent', () => {
+  const messages = [user(), row('x','tool_group',{turnId:'A',tools:[
+    tool('i','execute',{status:'completed',label:'run checks'}),
+    tool('j','read_file',{status:'completed'}),
+  ]})];
+  const status = getGroupIntentStatus(workGroups(messages,null,false)[0]);
+  assert.equal(status?.kind,'tool'); assert.equal(status?.state,'completed');
+  assert.equal(status?.toolName,'read_file'); assert.equal(status?.intent,undefined);
+  assert.equal(status?.text,'read_file');
+  const failed = [user(), row('x','tool_group',{turnId:'A',tools:[tool('i','execute',{status:'failed',error:true,label:'run checks'})]})];
+  assert.equal(getGroupIntentStatus(workGroups(failed,null,false)[0])?.state,'failed');
+});
+test('a turn with no process row reports the runtime activity, and nothing once it is stale', () => {
+  const group = workGroups([row('pending','user',{work:{startedAt:1000,ended:false}})],null,true)[0];
+  assert.deepEqual(group.rows,[]);
+  assert.deepEqual(getGroupIntentStatus(group, activity('thinking')), { kind:'thinking', state:'running', text:'正在思考...' });
+  assert.deepEqual(getGroupIntentStatus(group, activity('model')), { kind:'thinking', state:'running', text:'正在思考...' });
+  assert.deepEqual(getGroupIntentStatus(group, activity('tool','execute')),
+    { kind:'tool', state:'running', text:'执行工具 · execute' });
+  assert.deepEqual(getGroupIntentStatus(group, activity('tool')), { kind:'tool', state:'running', text:'执行工具中...' });
+  // A stopped activity keeps its phase, so only an active one may be painted.
+  assert.equal(getGroupIntentStatus(group, activity('thinking','',false)), null);
+  assert.equal(getGroupIntentStatus(group, activity('idle')), null);
+  assert.equal(getGroupIntentStatus(group), null);
 });

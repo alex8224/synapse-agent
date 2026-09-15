@@ -1,10 +1,99 @@
 import type { TranscriptMessage } from './historyMapper.ts';
+import type { ActivityView } from './liveEventReducer.ts';
 
 export interface WorkGroup {
   key: string;
   anchor: TranscriptMessage;
   rows: TranscriptMessage[];
   running: boolean;
+}
+
+/**
+ * What a fold group is doing right now.
+ *
+ * The fold header reports this beside the chevron, so a reader can tell a running
+ * tool from a finished one (and reasoning from tool use) without opening the fold.
+ * `text` is the rendered label; `toolName` / `intent` keep the two parts separate
+ * for callers that need them apart.
+ */
+export interface GroupIntentStatus {
+  kind: 'thinking' | 'tool';
+  state: 'running' | 'completed' | 'failed';
+  toolName?: string;
+  intent?: string;
+  text: string;
+}
+
+/** The label of a tool call, falling back to its name when no intent was lifted. */
+function toolIntent(tool: { name: string; label: string }): string | undefined {
+  return tool.label && tool.label !== tool.name ? tool.label : undefined;
+}
+
+function toolText(tool: { name: string; label: string }): string {
+  const intent = toolIntent(tool);
+  return intent ? `${tool.name} · ${intent}` : tool.name;
+}
+
+/**
+ * The intent / activity to paint beside a fold header's chevron.
+ *
+ * The rows are the authority while the turn has any: a running tool anywhere in the
+ * group wins (the group is doing work the reader cannot see yet), otherwise the last
+ * row says whether reasoning is still streaming or the turn is between steps.  Only
+ * a group with no rows at all -- a turn whose first step has not landed -- falls back
+ * to the runtime's transient `activity` phase.  `null` means "nothing to report", so
+ * a settled or plain-question turn paints no pill.
+ */
+export function getGroupIntentStatus(
+  group: WorkGroup, activity?: ActivityView | null,
+): GroupIntentStatus | null {
+  for (const row of group.rows) {
+    if (row.type !== 'tool_group' || !row.tools?.length) continue;
+    const running = row.tools.find(
+      (tool) => tool.status === 'running' || tool.status === 'pending',
+    );
+    if (!running) continue;
+    return {
+      kind: 'tool', state: 'running', toolName: running.name,
+      intent: toolIntent(running), text: toolText(running),
+    };
+  }
+
+  const lastIndex = group.rows.length - 1;
+  const last = group.rows[lastIndex];
+  if (last?.type === 'thought') {
+    // The last row is the thought, so no tool row follows it: a still-running group
+    // is reasoning.  A live stream also flags itself on the row.
+    const laterTool = group.rows.slice(lastIndex + 1).some((row) => row.type === 'tool_group');
+    const streaming = last.duration === 'streaming' || last.streaming === true
+      || (group.running && !laterTool);
+    return streaming
+      ? { kind: 'thinking', state: 'running', text: '正在思考...' }
+      : { kind: 'thinking', state: 'completed', text: '思考完成' };
+  }
+  if (last?.type === 'tool_group' && last.tools?.length) {
+    const tool = last.tools[last.tools.length - 1];
+    return {
+      kind: 'tool',
+      state: tool.error || tool.status === 'failed' ? 'failed' : 'completed',
+      toolName: tool.name,
+      intent: toolIntent(tool),
+      text: toolText(tool),
+    };
+  }
+
+  if (activity?.active) {
+    if (activity.phase === 'thinking' || activity.phase === 'model') {
+      return { kind: 'thinking', state: 'running', text: '正在思考...' };
+    }
+    if (activity.phase === 'tool') {
+      return {
+        kind: 'tool', state: 'running',
+        text: activity.detail ? `执行工具 · ${activity.detail}` : '执行工具中...',
+      };
+    }
+  }
+  return null;
 }
 
 /** Group by runtime identity, not by assistant narration or the latest steer row. */
