@@ -6,11 +6,15 @@ Skills 是 Synapse 的可扩展插件系统，位于项目 `skills/` 目录下�
 
 ```
 skills/
+├── cua-driver/
+│   └── SKILL.md
+├── file-cleanup/
+│   └── SKILL.md
+├── project-session-reader/
+│   └── SKILL.md
 ├── session-cache-analysis/
 │   └── SKILL.md
-├── session-crash-repair/
-│   └── SKILL.md
-└── project-session-reader/
+└── session-crash-repair/
     └── SKILL.md
 ```
 
@@ -45,13 +49,15 @@ allowed_tools: execute, read_file, write_file, search_files, find_files, search_
 
 ## 内置 Skills
 
-Synapse 自带三个 Skills：
+Synapse 自带五个 Skills：
 
 | Skill | 说明 |
 |---|---|
-| `session-crash-repair` | 检测并修复异常退出后 checkpoint 不一致的会话（悬挂工具调用、挂起图任务、过期转录投影） |
-| `session-cache-analysis` | 分析会话的 prompt 缓存命中率，区分增量 miss 与全量逐出并定位根因 |
+| `cua-driver` | 通过 cua-driver 的 MCP 工具（`cua_` 前缀）操作本机 Windows 真实桌面：枚举应用与窗口、读无障碍树与截图、按元素索引或坐标点击/输入/滚动/拖拽，并验证动作是否真的生效（需已安装 cua-driver 并在 `~/.synapse/mcp.json` 启用 cua 服务器） |
+| `file-cleanup` | 扫描并清理磁盘空间：定位大目录与可清理内容（包管理器缓存、浏览器缓存、IDE 索引、updater 安装包、容器镜像、构建产物、日志等），按「可立即清理」与「需用户确认」两类执行并验证释放量 |
 | `project-session-reader` | 读取或搜索指定项目（workspace 目录）`.synapse/` 下的会话：列出、全文搜索、按 thread_id 读取并分页 |
+| `session-cache-analysis` | 分析会话的 prompt 缓存命中率，区分增量 miss 与全量逐出并定位根因 |
+| `session-crash-repair` | 检测并修复异常退出后 checkpoint 不一致的会话（悬挂工具调用、挂起图任务、过期转录投影） |
 
 ## 如何编写自定义 Skill
 
