@@ -1019,6 +1019,47 @@ body {
 }
 
 /*
+  Table contrast and surface styling.
+
+  - The table has an opaque surface role (`--surface`, pure white in light theme)
+    so cells do not show the semi-transparent mica backdrop behind the chat.
+  - Body rows alternate with 6% opacity of the foreground role (`rgb(var(--gray-900) / 0.06)`),
+    producing a clear, comfortable ~#F0F2F5 band on light and a subtle tint on dark,
+    resolving row-tracking contrast.
+  - Body rows highlight on hover (`--surface-hover`), giving immediate visual feedback.
+  - The header text is reinforced to `--gray-900` with a 2px bottom border in `--gray-300`
+    (`colorNeutralStroke1`), clearly demarcating head from body.
+  - Inline code within table cells receives a subtle 1px border so it does not muddy
+    into the zebra stripes.
+
+  Declared outside `@layer utilities` on purpose: inside it these rules would lose
+  to a utility of equal specificity on the cells, which is the same reason the
+  column floor above lives out here.
+*/
+.markdown-body table {
+  background-color: rgb(var(--surface));
+  border-style: hidden;
+}
+
+.markdown-body tbody tr:nth-child(even) > td {
+  background-color: rgb(var(--gray-900) / 0.06);
+}
+
+.markdown-body tbody tr:hover > td {
+  background-color: rgb(var(--surface-hover));
+}
+
+.markdown-body thead th {
+  color: rgb(var(--gray-900));
+  border-bottom-width: 2px;
+  border-bottom-color: rgb(var(--gray-300));
+}
+
+.markdown-body td code {
+  border: 1px solid rgb(var(--line));
+}
+
+/*
   Window Controls Overlay: the installed console owns the caption strip.
 
   The manifest asks for `window-controls-overlay` first, so in an installed

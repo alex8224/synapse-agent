@@ -187,8 +187,15 @@ function renderBlocks(blocks: Block[], keyPrefix: string): React.ReactNode[] {
         // 16px chat prose instead of looking like a footnote; the header keeps the
         // same size and only differs by weight.  `overflow-x-auto` keeps a wide
         // table scrolling inside its own box rather than stretching the column.
-        <div key={key} className="my-2 max-w-full overflow-x-auto">
-          <table className="border-collapse text-sm">
+        // The wrapper carries the frame and the opaque surface: the cells stay on
+        // a solid `--surface` instead of the semi-transparent mica behind the
+        // chat, and `index.css` hides the table's own outer border so the frame
+        // is drawn once.
+        <div
+          key={key}
+          className="my-2 max-w-full overflow-x-auto rounded-control border border-line bg-surface"
+        >
+          <table className="w-full border-collapse text-sm">
             <thead>
               <tr>
                 {block.header.map((cell, cellIndex) => (
