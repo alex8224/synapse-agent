@@ -10,6 +10,8 @@
  *   an unterminated fence stays a visible code block instead of vanishing.
  */
 
+import { sanitizeImageSrc } from './imageRefs.ts';
+
 export interface SpanText {
   type: 'text';
   text: string;
@@ -35,6 +37,19 @@ export interface SpanLink {
   href: string;
   spans: Span[];
 }
+/**
+ * An image reference, `![alt](src)`.
+ *
+ * Only the shape is decided here: `src` already passed `sanitizeImageSrc`, so it
+ * is either a local workspace path or an `http(s)` URL.  What the console then
+ * does with it -- read it through the bounded artifact surface, or show a link
+ * instead of fetching it -- is the renderer's decision (`imageRefs.ts`).
+ */
+export interface SpanImage {
+  type: 'image';
+  alt: string;
+  src: string;
+}
 /** Inline math (`$...$`), carried as raw TeX with no delimiters. */
 export interface SpanMath {
   type: 'math';
@@ -58,6 +73,7 @@ export type Span =
   | SpanEm
   | SpanDel
   | SpanLink
+  | SpanImage
   | SpanMath
   | SpanBreak;
 
@@ -243,6 +259,27 @@ export function parseInline(text: string): Span[] {
       buffer += ch;
       i += 1;
       continue;
+    }
+
+    if (ch === '!' && text[i + 1] === '[') {
+      // Image: `![alt](src)`.  Same target grammar as a link (one level of
+      // parentheses is allowed inside it), but the source is validated by
+      // `sanitizeImageSrc`: a `data:` payload or a `javascript:` target is not
+      // an image, so the `!` falls through and the reference stays plain text
+      // rather than becoming an image node.
+      const image =
+        /^!\[([^\]]*)\]\([ \t]*((?:[^()\s]|\([^()\s]*\))+)(?:[ \t]+"[^"]*")?[ \t]*\)/.exec(
+          text.slice(i),
+        );
+      if (image) {
+        const src = sanitizeImageSrc(image[2]);
+        if (src !== null) {
+          flush();
+          spans.push({ type: 'image', alt: image[1], src });
+          i += image[0].length;
+          continue;
+        }
+      }
     }
 
     if (ch === '[') {

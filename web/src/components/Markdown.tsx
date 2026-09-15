@@ -1,8 +1,9 @@
 import React, { useMemo } from 'react';
-import { useConsoleStore } from '../stores/useConsoleStore';
 import { parseMarkdown, type Block, type Span } from '../markdown/parse.ts';
 import { looksLikeFileRef, splitFileRefs } from '../markdown/filePaths.ts';
 import { CodeBlock } from './CodeBlock.tsx';
+import { FileRefButton } from './FileRefButton.tsx';
+import { MarkdownImage } from './MarkdownImage.tsx';
 import { DisplayMath, InlineMath } from './MathTex.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
 
@@ -10,28 +11,6 @@ import { MermaidBlock } from './MermaidBlock.tsx';
 const PARSE_MAX_CHARS = 200_000;
 
 const HEADING_CLASS = ['text-lg', 'text-base', 'text-sm', 'text-sm', 'text-xs', 'text-xs'];
-
-/**
- * A file path the model wrote, rendered as a link-styled button.  Clicking it
- * opens the workspace file manager centered on that file (`FileViewerHost`).
- */
-const FileRefButton: React.FC<{ text: string; code?: boolean }> = ({ text, code = false }) => {
-  const openFileViewer = useConsoleStore((state) => state.openFileViewer);
-  return (
-    <button
-      type="button"
-      onClick={() => openFileViewer(text)}
-      title={`打开文件：${text}`}
-      className={
-        code
-          ? 'inline break-all rounded-control bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-600'
-          : 'inline break-all font-mono text-[0.92em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-600'
-      }
-    >
-      {text}
-    </button>
-  );
-};
 
 function renderSpans(spans: Span[], keyPrefix: string, linkify = true): React.ReactNode[] {
   return spans.map((span, index) => {
@@ -57,6 +36,11 @@ function renderSpans(spans: Span[], keyPrefix: string, linkify = true): React.Re
     }
     if (span.type === 'math') {
       return <InlineMath key={key} tex={span.tex} />;
+    }
+    if (span.type === 'image') {
+      // The reference decides for itself whether it may be read (a local
+      // workspace path) or only linked (a remote URL): see `imageRefs.ts`.
+      return <MarkdownImage key={key} alt={span.alt} src={span.src} />;
     }
     if (span.type === 'code') {
       // Models usually wrap a path in backticks; a code span that is exactly a

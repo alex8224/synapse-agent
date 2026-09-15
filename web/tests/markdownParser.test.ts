@@ -30,6 +30,7 @@ function plainText(spans: ReturnType<typeof parseInline>): string {
       if (span.type === 'strong') return `[b]${plainText(span.spans)}[/b]`;
       if (span.type === 'em') return `[i]${plainText(span.spans)}[/i]`;
       if (span.type === 'break') return '[br]';
+      if (span.type === 'image') return `[img:${span.src}]${span.alt}`;
       return `[del]${plainText(span.spans)}[/del]`;
     })
     .join('');
@@ -219,4 +220,69 @@ test('a table cell can stack values with <br>', () => {
   const table = blocks[0] as BlockTable;
   assert.equal(plainText(table.rows[0][0]), 'x[br]y');
   assert.deepEqual(table.rows[0][0].map((span) => span.type), ['text', 'break', 'text']);
+});
+
+test('an image reference becomes its own span, not a link with a stray bang', () => {
+  assert.deepEqual(parseInline('![今日用量](.tmp/token_report.png)'), [
+    { type: 'image', alt: '今日用量', src: '.tmp/token_report.png' },
+  ]);
+  assert.deepEqual(parseInline('见图 ![a](b.png) 说明').map((span) => span.type), [
+    'text',
+    'image',
+    'text',
+  ]);
+  assert.equal(plainText(parseInline('见图 ![a](b.png)')), '见图 [img:b.png]a');
+});
+
+test('an image keeps the link target grammar, including one level of parentheses', () => {
+  assert.deepEqual(parseInline('![a](docs/(old)/a.png)'), [
+    { type: 'image', alt: 'a', src: 'docs/(old)/a.png' },
+  ]);
+  assert.deepEqual(parseInline('![a](b.png "标题")'), [{ type: 'image', alt: 'a', src: 'b.png' }]);
+  // An empty alt is still an image: the reference is what carries the meaning.
+  assert.deepEqual(parseInline('![](b.png)'), [{ type: 'image', alt: '', src: 'b.png' }]);
+});
+
+test('an http(s) source is an image too, and is left for the renderer to gate', () => {
+  assert.deepEqual(parseInline('![a](https://example.com/a.png)'), [
+    { type: 'image', alt: 'a', src: 'https://example.com/a.png' },
+  ]);
+});
+
+test('a source that may not be an image never produces an image span', () => {
+  for (const sample of [
+    '![a](javascript:alert(1))',
+    '![a](data:image/png;base64,AAAA)',
+    '![a](//example.com/a.png)',
+    '![a](file:///C:/a.png)',
+    '![a]()',
+  ]) {
+    const spans = parseInline(sample);
+    assert.equal(
+      spans.some((span) => span.type === 'image'),
+      false,
+      `parseInline(${JSON.stringify(sample)}) must not produce an image`,
+    );
+  }
+});
+
+test('an escaped bang stays literal text', () => {
+  assert.deepEqual(parseInline('\\![a](b.png)').map((span) => span.type), ['text', 'link']);
+  assert.equal(plainText(parseInline('\\![a](b.png)')), '![link:b.png]a');
+});
+
+test('a lone bang and an unfinished reference stay text', () => {
+  for (const sample of ['!', '!x', '![a]', '![a](b.png', '![a] (b.png)']) {
+    assert.equal(
+      parseInline(sample).some((span) => span.type === 'image'),
+      false,
+      `parseInline(${JSON.stringify(sample)}) must not produce an image`,
+    );
+  }
+});
+
+test('an image inside a table cell is parsed like anywhere else', () => {
+  const blocks = parseMarkdown('| a | b |\n| --- | --- |\n| ![x](c.png) | 2 |');
+  const table = blocks[0] as BlockTable;
+  assert.deepEqual(table.rows[0][0], [{ type: 'image', alt: 'x', src: 'c.png' }]);
 });
