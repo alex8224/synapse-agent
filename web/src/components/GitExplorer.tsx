@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Branch20Regular, ArrowSync20Regular, Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   MalformedGitPayloadError,
@@ -36,6 +37,12 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [diff, setDiff] = useState<GitDiffView | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // The branch chip that opens this dialog keeps the focus, so the explorer has
+  // to claim it -- and only once the file list has been read: the first row is
+  // the initial focus, which a header button must not steal.
+  const onKeyDown = useDialogKeyboardNav(dialogRef, status !== null, '#git-file-list button');
 
   const loadStatus = useCallback(async () => {
     if (client === null) return;
@@ -102,6 +109,9 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       <div
         role="dialog"
         aria-label="Git Explorer"
+        ref={dialogRef}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
         onClick={(event) => event.stopPropagation()}
         className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-line/70 material-flyout flyout-in text-left shadow-flyout"
       >
@@ -149,7 +159,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <div className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
+          <div id="git-file-list" className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
             {statusError !== null && (
               <p className="px-3 py-2 text-[11px] leading-relaxed text-amber-700">
                 {statusError}

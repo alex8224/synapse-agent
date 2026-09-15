@@ -1,7 +1,8 @@
 import { ChevronLeft20Regular, Dismiss20Regular, Folder20Regular } from '@fluentui/react-icons';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Portal } from './Portal.tsx';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import type { DirectoryListing } from '../client/types.ts';
 
@@ -37,6 +38,13 @@ export const AddProjectDialog: React.FC<AddProjectDialogProps> = ({ onClose }) =
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // The `+` that opens this dialog keeps the focus. Focus enters on the first
+  // directory row -- not on the header controls -- and `listing !== null` waits
+  // for that row to exist. It deliberately does *not* follow `loading`: a
+  // drill-in must keep the focus in the dialog while the next level loads.
+  const onKeyDown = useDialogKeyboardNav(dialogRef, listing !== null, '#add-project-list button');
 
   const load = useCallback(
     async (path: string | null, initial = false) => {
@@ -94,6 +102,9 @@ export const AddProjectDialog: React.FC<AddProjectDialogProps> = ({ onClose }) =
         <div
           role="dialog"
           aria-label="添加项目"
+          ref={dialogRef}
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
           className="no-scrollbar flex max-h-[85vh] w-full max-w-lg flex-col rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
           onClick={(event) => event.stopPropagation()}
         >
@@ -169,7 +180,7 @@ export const AddProjectDialog: React.FC<AddProjectDialogProps> = ({ onClose }) =
             </button>
           </form>
 
-          <div className="no-scrollbar mt-2 min-h-[12rem] flex-1 overflow-y-auto rounded border border-line/60 bg-canvas/60 p-1">
+          <div id="add-project-list" className="no-scrollbar mt-2 min-h-[12rem] flex-1 overflow-y-auto rounded border border-line/60 bg-canvas/60 p-1">
             {loading ? (
               <p className="px-2 py-3 text-sm text-gray-500">正在读取目录…</p>
             ) : listing === null || listing.entries.length === 0 ? (

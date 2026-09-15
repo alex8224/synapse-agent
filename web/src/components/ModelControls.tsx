@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 
 /**
  * The model and reasoning-level pickers, rendered inside the composer's control
@@ -51,7 +52,24 @@ export const ModelControls: React.FC = () => {
   const [modelSearch, setModelSearch] = useState('');
   const modelRef = useRef<HTMLDivElement | null>(null);
   const thinkingRef = useRef<HTMLDivElement | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
+  const thinkingPickerRef = useRef<HTMLDivElement | null>(null);
   const popoverOpen = showModelPicker || showThinkingPicker;
+
+  // Both panels are opened by their trigger, which keeps the focus: the hook
+  // moves it inside, walks the rows with the arrows, and hands it back on close.
+  // The model list opens on its filter field (type to narrow, ArrowDown into the
+  // rows); the thinking list opens on the level that is in force.
+  const onModelPickerKeyDown = useDialogKeyboardNav(
+    modelPickerRef,
+    showModelPicker,
+    '#model-filter',
+  );
+  const onThinkingPickerKeyDown = useDialogKeyboardNav(
+    thinkingPickerRef,
+    showThinkingPicker,
+    '[aria-pressed="true"]',
+  );
 
   const closeOthers = () => {
     setShowModelPicker(false);
@@ -104,7 +122,7 @@ export const ModelControls: React.FC = () => {
           <ChevronDown20Regular aria-hidden="true" />
         </button>
         {showModelPicker && (
-          <div id="model-picker" role="group" aria-label="选择模型" className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-80 max-w-[calc(100vw-4rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in p-2.5 shadow-flyout">
+          <div id="model-picker" ref={modelPickerRef} role="group" aria-label="选择模型" tabIndex={-1} onKeyDown={onModelPickerKeyDown} className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-80 max-w-[calc(100vw-4rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in p-2.5 shadow-flyout">
             <div className="flex items-center justify-between border-b border-line/60 px-1 pb-2 text-xs font-semibold text-gray-700">
               <span>选择模型 ({availableModels.length} 个可用)</span>
               <span className="ui-kbd">F2</span>
@@ -173,7 +191,7 @@ export const ModelControls: React.FC = () => {
           )}
         </button>
         {showThinkingPicker && (
-          <div id="thinking-picker" role="group" aria-label="推理等级" className="absolute bottom-full right-0 mb-2 z-50 w-52 space-y-1.5 rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout">
+          <div id="thinking-picker" ref={thinkingPickerRef} role="group" aria-label="推理等级" tabIndex={-1} onKeyDown={onThinkingPickerKeyDown} className="absolute bottom-full right-0 mb-2 z-50 w-52 space-y-1.5 rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout">
             <div className="border-b border-line/60 px-2 pb-1.5 text-xs font-semibold text-gray-700">
               推理等级
             </div>

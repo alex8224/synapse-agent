@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Dismiss16Regular, ChevronUp16Regular, ChevronDown16Regular } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { mcpServerPhase } from '../stores/mcpRuntimeView.ts';
 import type { McpServerPhase } from '../stores/mcpRuntimeView.ts';
@@ -69,6 +70,12 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // persisted selection", so a refresh can never clobber an in-progress edit.
   const [draft, setDraft] = useState<Record<string, string[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // F5 / the trigger button keeps the focus, so the panel has to take it: the
+  // hook lands on the first server row and walks the panel's controls with the
+  // arrows (server row -> expand -> tool checkboxes -> save).
+  const onKeyDown = useDialogKeyboardNav(panelRef, true, '#mcp-server-list button');
 
   /** The persisted selection: an empty include_tools means "every tool". */
   const persistedSelection = (name: string): string[] => {
@@ -107,8 +114,11 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   return (
     <div
+      ref={panelRef}
       role="dialog"
       aria-label="MCP 工具与服务器"
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
       className="absolute bottom-8 left-0 z-50 w-96 max-w-[calc(100vw-2rem)] space-y-2.5 rounded-card border border-line/80 material-flyout flyout-in p-3.5 shadow-flyout"
     >
       <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
@@ -137,7 +147,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </p>
       )}
 
-      <div className="fluent-scrollbar max-h-64 space-y-1.5 overflow-y-auto pr-1">
+      <div id="mcp-server-list" className="fluent-scrollbar max-h-64 space-y-1.5 overflow-y-auto pr-1">
         {mcpServers.length === 0 ? (
           <div className="py-2 text-center font-sans text-xs text-gray-400">
             未配置任何 MCP 服务器
@@ -155,13 +165,21 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 key={srv.name}
                 className="rounded-control border border-line/60 bg-surface/50 p-2 text-xs transition-all hover:border-line hover:bg-surface/80 shadow-card"
               >
-                <div
-                  className="flex cursor-pointer items-center justify-between"
-                  onClick={() => {
-                    void toggleMcpServer(srv.name);
-                  }}
-                  title={srv.enabled ? '点击停用该服务器' : '点击启用该服务器'}
-                >
+                {/*
+                  The row that toggles the server is a real `<button>`: as a
+                  clickable `<div>` it was unreachable without a pointer.  The
+                  expand control is its *sibling*, not a child -- a button inside
+                  a button is invalid markup, and the browser would split it.
+                */}
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void toggleMcpServer(srv.name);
+                    }}
+                    title={srv.enabled ? '点击停用该服务器' : '点击启用该服务器'}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center justify-between text-left"
+                  >
                   <div className="flex min-w-0 items-center space-x-2 truncate">
                     <span className={`h-2 w-2 shrink-0 rounded-full ${PHASE_DOT[phase]}`} />
                     <span className="truncate font-medium text-gray-800">{srv.name}</span>
@@ -175,7 +193,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         : ''}
                     </span>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2 pl-2">
                     <div
                       className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
                         srv.enabled ? 'bg-accent' : 'bg-gray-300'
@@ -188,19 +206,18 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         }`}
                       />
                     </div>
-                    {srv.enabled && discovered.length > 0 && (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setExpanded((prev) => ({ ...prev, [srv.name]: !open }));
-                        }}
-                        title={open ? '收起工具列表' : '展开工具列表'}
-                        className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
-                      >
-                        {open ? <ChevronUp16Regular aria-hidden="true" /> : <ChevronDown16Regular aria-hidden="true" />}
-                      </button>
-                    )}
                   </div>
+                  </button>
+                  {srv.enabled && discovered.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setExpanded((prev) => ({ ...prev, [srv.name]: !open }))}
+                      title={open ? '收起工具列表' : '展开工具列表'}
+                      className="ui-icon-button ui-compact shrink-0 text-gray-400 hover:text-gray-700"
+                    >
+                      {open ? <ChevronUp16Regular aria-hidden="true" /> : <ChevronDown16Regular aria-hidden="true" />}
+                    </button>
+                  )}
                 </div>
 
                 {srv.enabled && phase !== 'connecting' && discovered.length === 0 && (

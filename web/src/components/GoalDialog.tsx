@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
@@ -79,6 +80,12 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
   // bound to the goal on display: if the live goal changes, the armed
   // confirmation no longer matches and is dropped (see `clearPending`).
   const [confirmingClear, setConfirmingClear] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // F6 / the status-strip button keeps the focus, and the dialog is portalled to
+  // the body: without this, Tab would walk the console behind it before reaching
+  // the first field. The objective is where a keyboard user starts.
+  const onKeyDown = useDialogKeyboardNav(dialogRef, true, '#goal-objective');
 
   // A goal is bound to a live session; before one is attached the store refuses
   // the write, so the dialog disables its controls instead of pretending.
@@ -148,6 +155,12 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
         onClick={onClose}
       >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="目标 (Goal)"
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
         className="w-full max-w-md space-y-2 rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
         onClick={(e) => e.stopPropagation()}
       >

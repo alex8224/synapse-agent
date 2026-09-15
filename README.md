@@ -174,6 +174,13 @@ origin；它不直连 daemon、不注入任何凭据、不读 token 文件，`se
 loopback 默认值，因此不构成认证旁路，宿主也不因 dev 放宽任何校验。dev 下同样需要
 配对码（从宿主 stderr 读取）。完整命令与参数见 `docs/web-console/formal-host.md`。
 
+控制台里的每个弹框/浮层都能只用键盘操作（F2 模型选择、F5 MCP 面板、F6 目标、
+输入框左侧 `+` 的添加项目、顶栏分支 chip 的 Git Explorer、设置对话框）：打开后焦点
+立刻进入框内（模型选择器落在过滤输入框、推理等级落在当前等级，目录 / Git 变更 /
+MCP 服务器列表落在第一行），`↑`/`↓` 按阅读顺序在框内控件之间移动并首尾相接，
+`Enter`/`Space` 触发聚焦项，`Esc` 关闭，关闭后焦点回到触发它的那个控件。
+回归验收：`cd web && node tests/dialogKeyboardNav.verify.ts`。
+
 Open a session in any registered project from the global catalog:
 
 ```bash

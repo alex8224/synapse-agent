@@ -1,8 +1,9 @@
 import { Dismiss20Regular } from '@fluentui/react-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
 import { Portal } from './Portal.tsx';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -113,6 +114,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   // but a write that succeeds must say so instead of leaving the user to guess
   // whether the default was persisted.
   const [projectNotice, setProjectNotice] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  // The sidebar's settings button keeps the focus, and the dialog is portalled
+  // to the body, so without this the arrows and Tab would walk the console
+  // behind it before ever reaching a control inside.
+  const onKeyDown = useDialogKeyboardNav(dialogRef, true);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -133,6 +140,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
         <div
           role="dialog"
           aria-label="设置"
+          ref={dialogRef}
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
           // No visible scrollbar: a dialog is a window of its own, and the wheel /
           // keyboard still move it (the console hides its other scrollers too).
           className="no-scrollbar max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-card border border-line/70 material-flyout flyout-in p-5 font-sans shadow-flyout"
