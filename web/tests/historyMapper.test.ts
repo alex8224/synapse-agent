@@ -102,7 +102,7 @@ test('mapHistoryEvents renders user/answer/thought/tools and skips meta and empt
   assert.deepEqual(messages.map((m) => m.type), ['user', 'tool_group', 'assistant']);
   assert.equal(messages[0].content, 'fix the build');
   assert.equal(messages[0].timestamp, 'Turn 7');
-  assert.deepEqual(messages[1].tools, [historyToolItem('hist-x-latest-2-0', 'read')]);
+  assert.deepEqual(messages[1].tools, [historyToolItem('hist-x-history:7-2-0', 'read')]);
   assert.equal(messages[1].finished, true);
   assert.equal(messages[2].content, 'done');
   assert.equal(messages[2].timestamp, 'Turn 7'); // answer stays on the same turn

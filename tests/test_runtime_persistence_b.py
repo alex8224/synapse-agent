@@ -25,6 +25,8 @@ from synapse.runtime.service.history import ListSessionsQuery, ReadSessionHistor
 from synapse.runtime.sessions import RuntimeManager, SessionRuntime
 from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
 from synapse.runtime.sessions.ref import SessionRef
+from synapse.sessions.transcript import UiTranscriptEvent
+from synapse.sessions.transcript_projection import TranscriptProjection
 
 
 def run(coro):
@@ -63,6 +65,7 @@ class _ControlledTurnRuntime:
                 final_text="done" if status is TurnStatus.COMPLETED else "",
                 input_tokens=1,
                 output_tokens=1,
+                elapsed_s=12.5,
             )
         )
         return turn
@@ -164,6 +167,7 @@ def test_submit_binds_the_first_user_message_as_the_session_title(tmp_path: Path
         await service.submit_turn(
             SubmitTurnCommand(session=SessionRef("p1", "t1"), text="  bind   me  ")
         )
+        await _settle(factory, "t1")
 
         page = await service.list_sessions(ListSessionsQuery(project_id="p1"))
         titles = {item.thread_id: item.title for item in page.items}
@@ -193,6 +197,8 @@ def test_consumer_style_service_persists_history_and_survives_restart(tmp_path: 
         assert page.total_turns == 1
         kinds = [event.kind for event in page.events]
         assert "user" in kinds and "answer" in kinds
+        user = next(event for event in page.events if event.kind == "user")
+        assert user.elapsed_s == 12.5
         listing = await service.list_sessions(ListSessionsQuery(project_id="p1"))
         assert any(item.thread_id == "t1" for item in listing.items)
         await manager.shutdown()
@@ -212,6 +218,27 @@ def test_consumer_style_service_persists_history_and_survives_restart(tmp_path: 
 
     run(first_pass())
     run(second_pass())
+
+
+def test_runtime_timing_survives_checkpoint_projection_rebuild(tmp_path: Path) -> None:
+    """A checkpoint rebuild must not erase completed-turn timing metadata."""
+
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    try:
+        projection.append_turn(
+            "t1",
+            [
+                # Stored by runtime persistence after settlement.
+                UiTranscriptEvent(kind="user", text="hello", turn_id="turn-1", elapsed_s=12.5),
+                UiTranscriptEvent(kind="answer", text="done"),
+            ],
+        )
+        projection.replace_events("t1", [event for event in projection.load_tail("t1").events])
+        user = projection.load_tail("t1").events[0]
+        assert user.turn_id == "turn-1"
+        assert user.elapsed_s == 12.5
+    finally:
+        projection.close()
 
 
 def test_no_persist_result_wiring_still_leaves_history_unavailable(tmp_path: Path) -> None:

@@ -8,8 +8,8 @@ import { todoPreviewFromArgs } from './todoView.ts';
  * runner (`node --test`) and reused from `useConsoleStore`.
  *
  * The transcript projection is a light-weight per-turn projection, NOT a full
- * checkpoint snapshot: it carries no LangChain messages, no exact event
- * sequences, and no turn ids. Mapping here must never pretend otherwise.
+ * checkpoint snapshot: it carries no LangChain messages or exact event
+ * sequences. Runtime identity/timing are optional on older projections.
  */
 
 import { HISTORY_PAGE_SIZE } from '../client/types.ts';
@@ -52,6 +52,13 @@ export interface TranscriptMessage {
   id: string;
   type: 'user' | 'thought' | 'tool_group' | 'assistant' | 'info';
   timestamp: string;
+  /** Runtime turn identity, or a stable history cursor for legacy projections. */
+  turnId?: string;
+  /** Turn-level clock lives on its anchor, never on a component instance. */
+  work?: { startedAt?: number; elapsed?: number; ended: boolean };
+  workExpanded?: boolean;
+  /** A steer message belongs to the existing runtime turn, not a new clock. */
+  steer?: boolean;
   content?: string;
   duration?: string;
   tools?: ToolItemView[];
@@ -227,24 +234,28 @@ export function toSessionListView(page: {
  * `answer` / `thought` map to text messages, `tools` to a tool chip group;
  * `meta` and empty payloads are skipped (they have no visible representation).
  *
- * `pageTag` must be unique per loaded page (e.g. derived from `start_turn`)
- * so earlier pages prepended to the transcript never collide on React keys.
+ * Keys use the durable turn identity/cursor, so pagination and refresh preserve
+ * fold identity. `pageTag` remains accepted for existing callers.
  */
 export function mapHistoryEvents(
   events: HistoryEvent[],
   opts: { startTurn: number; pageTag: string },
 ): TranscriptMessage[] {
-  const { startTurn, pageTag } = opts;
+  const { startTurn } = opts;
   const out: TranscriptMessage[] = [];
   // The first `user` event of the page opens `startTurn`; every later `user`
   // starts the next turn, and non-user events keep the latest turn label.
   let turn = Math.max(0, startTurn - 1);
+  let turnId = `history:${turn}`;
   let ordinal = 0;
   for (const ev of events) {
-    const tag = `${pageTag}-${ordinal}`;
-    ordinal += 1;
     if (ev.kind === 'user') {
       turn += 1;
+      ordinal = 0;
+      turnId = ev.turn_id || `history:${turn}`;
+    }
+    const tag = `${turnId}-${ordinal++}`;
+    if (ev.kind === 'user') {
       const content = (ev.text || '').trim();
       // An attachment-only turn persists with empty text, so the row is kept
       // whenever there is either text or at least one attachment to show.
@@ -254,6 +265,12 @@ export function mapHistoryEvents(
           id: `hist-u-${tag}`,
           type: 'user',
           timestamp: `Turn ${turn}`,
+          turnId,
+          work: {
+            ended: true,
+            ...(typeof ev.elapsed_s === 'number' && Number.isFinite(ev.elapsed_s) && ev.elapsed_s >= 0
+              ? { elapsed: ev.elapsed_s } : {}),
+          },
           content,
           ...(attachments.length > 0 ? { attachments } : {}),
         });
@@ -265,6 +282,7 @@ export function mapHistoryEvents(
           id: `hist-t-${tag}`,
           type: 'thought',
           timestamp: `Turn ${turn}`,
+          turnId,
           content,
           expanded: false,
         });
@@ -276,6 +294,7 @@ export function mapHistoryEvents(
           id: `hist-a-${tag}`,
           type: 'assistant',
           timestamp: `Turn ${turn}`,
+          turnId,
           content,
         });
       }
@@ -305,10 +324,28 @@ export function mapHistoryEvents(
           id: `hist-x-${tag}`,
           type: 'tool_group',
           timestamp: `Turn ${turn}`,
+          turnId,
           tools: names.map((name, i) => {
             const item = historyToolItem(`hist-x-${tag}-${i}`, name);
-            const preview = previews[i] ?? null;
-            return preview === null ? item : { ...item, preview };
+            const call = ev.tool_calls[i];
+            const callId = typeof call?.id === 'string' && call.id ? call.id : null;
+            const result = callId !== null
+              ? ev.tool_results.find((r) => r.id === callId)
+              : ev.tool_results[i];
+            const args = call?.args !== null && typeof call?.args === 'object' && !Array.isArray(call.args)
+              ? call.args : {};
+            const status = typeof result?.status === 'string' ? result.status : 'completed';
+            const error = status === 'error' || status === 'failed';
+            return {
+              ...item, callId,
+              label: typeof args.intent === 'string' ? args.intent : name,
+              path: typeof args.file_path === 'string' ? args.file_path : null,
+              preview: previews[i] ?? (typeof result?.content === 'string'
+                ? result.content.slice(0, 4000) : null),
+              status: error ? 'failed' : status === 'ok' || status === 'success' ? 'completed' : status,
+              error,
+              subagentName: typeof args.subagent_type === 'string' ? args.subagent_type : null,
+            };
           }),
           finished: true,
         });

@@ -169,6 +169,8 @@ class SessionPersistence:
                     kind="user",
                     text=user_text,
                     attachments=[dict(item) for item in attachments],
+                    turn_id=result.turn_id,
+                    elapsed_s=max(0.0, result.elapsed_s),
                 )
             )
         if result.reasoning_text:

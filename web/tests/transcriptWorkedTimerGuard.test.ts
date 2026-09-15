@@ -20,14 +20,12 @@ const transcript = readFileSync(
 );
 
 test('the running latch comes from the store, not from the rows', () => {
-  // The header is a stopwatch only while the runtime says a turn is running: an
-  // unfinished thought row is not the same thing (a dropped connection leaves one).
   assert.ok(
     transcript.includes('runtimeStatus: state.runtimeStatus'),
     'the transcript must read the running latch off the store',
   );
   assert.ok(
-    transcript.includes("if (runtimeStatus !== 'running') return null;"),
+    transcript.includes("workGroups(messages, activeTurnId, runtimeStatus === 'running')"),
     'the stopwatch must only run while the runtime reports a running turn',
   );
 });
@@ -44,26 +42,15 @@ test('the elapsed time is re-read once per second', () => {
   // Read from the clock rather than incremented: a throttled background tab fires
   // the interval late, and a counter would then resume seconds behind the truth.
   assert.ok(
-    /Math\.floor\(\(Date\.now\(\) - startedAt\) \/ 1000\)/.test(transcript),
+    transcript.includes('setNow(Date.now())'),
     'the tick must read the elapsed time off the wall clock',
   );
 });
 
 test('the final elapsed time is frozen per turn', () => {
-  // The turn's entry is left in place when it stops, so the header keeps the number
-  // it counted to instead of dropping back to the durations summed off its rows.
-  assert.ok(
-    transcript.includes('turnSeconds.get(currentTurnKey)'),
-    'a turn this console watched run must report its stopwatch',
-  );
-  assert.ok(
-    transcript.includes('prev.get(runningTurnKey) === seconds ? prev'),
-    'a tick that did not change the second must not re-render the transcript',
-  );
-  assert.ok(
-    transcript.includes('useState<ReadonlyMap<string, number>>'),
-    'the elapsed time must be remembered per turn',
-  );
+  assert.ok(transcript.includes('workSeconds(group, now)'));
+  assert.equal(transcript.includes('turnSeconds'), false,
+    'durations must not live in a component-local map lost on refresh');
 });
 
 test('a turn with no process row yet still shows the header and its rule', () => {
@@ -80,11 +67,11 @@ test('a turn with no process row yet still shows the header and its rule', () =>
     'the header must show a closed and an opened chevron',
   );
   assert.ok(
-    transcript.includes('pendingTurns.has(m.id)'),
+    transcript.includes('pendingTurns.get(m.id)'),
     'the pending row must be rendered under its own user row',
   );
   assert.ok(
-    transcript.includes('m.id === runningTurnKey'),
+    transcript.includes('g.anchor.work || g.running'),
     'the header must be on screen from the submit, before the first tick',
   );
   assert.ok(
@@ -133,9 +120,8 @@ test('the running status is painted once, by the row that owns it', () => {
   // A pending row prints the status inside its own fold, so the transcript must not
   // also hold a second one at the bottom of the column.
   assert.ok(
-    /activity !== null &&\s*\n?\s*pendingTurns\.size === 0 && <ActivityLine activity=\{activity\} \/>/.test(
-      transcript,
-    ),
+    transcript.includes('![...pendingTurns.values()].some((g) => g.running)') &&
+      transcript.includes('activity={pending.running ? activity : null}'),
     'the trailing status line must stay off screen while a pending row carries it',
   );
 });
@@ -177,11 +163,11 @@ test('a process row keeps its rule under the header in both folds', () => {
 
 test('a thought or tool row owns the header once it lands', () => {
   assert.ok(
-    transcript.includes("m.type === 'thought' || m.type === 'tool_group'"),
+    transcript.includes('group.rows.forEach'),
     'a process row must take the header over from the pending row',
   );
   assert.ok(
-    transcript.includes('if (!hasProcessRow && (turnSeconds.has(m.id) || m.id === runningTurnKey))'),
+    transcript.includes('g.rows.length === 0 && (g.anchor.work || g.running)'),
     'the pending row must be skipped for a turn that already has a process row',
   );
 });

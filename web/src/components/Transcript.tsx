@@ -30,27 +30,7 @@ import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
 import type { TranscriptMessage } from '../stores/historyMapper.ts';
-
-function formatProcessDuration(totalSeconds: number, isStreaming: boolean): string {
-  if (isStreaming && totalSeconds === 0) return '进行中…';
-  const sec = Math.max(1, Math.round(totalSeconds));
-  if (sec < 60) return `${sec} 秒`;
-  const mins = Math.floor(sec / 60);
-  const remSec = sec % 60;
-  return remSec > 0 ? `${mins} 分 ${remSec} 秒` : `${mins} 分钟`;
-}
-
-/**
- * Whole seconds a turn has been running.
- *
- * Floored rather than rounded, so the stopwatch never prints a second the clock
- * has not reached yet.  It is read from the wall clock instead of counted off the
- * interval, because a background tab throttles timers to about once a minute and
- * an incremented counter would then resume seconds behind the truth.
- */
-function elapsedSeconds(startedAt: number): number {
-  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-}
+import { formatWorkDuration, workGroups, workSeconds } from '../stores/turnWork.ts';
 
 /**
  * How close to the bottom the view still counts as "following the stream", in
@@ -525,6 +505,8 @@ export const Transcript: React.FC = () => {
     messages,
     activity,
     runtimeStatus,
+    activeTurnId,
+    toggleWorkExpand,
     toggleMessageExpand,
     pendingApproval,
     resolveApproval,
@@ -541,6 +523,8 @@ export const Transcript: React.FC = () => {
       activity: state.activity,
       runtimeStatus: state.runtimeStatus,
       toggleMessageExpand: state.toggleMessageExpand,
+      activeTurnId: state.activeTurnId,
+      toggleWorkExpand: state.toggleWorkExpand,
       pendingApproval: state.pendingApproval,
       resolveApproval: state.resolveApproval,
       historyLoading: state.historyLoading,
@@ -554,87 +538,28 @@ export const Transcript: React.FC = () => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const skipAutoScroll = useRef(false);
 
-  const [expandedTurns, setExpandedTurns] = useState<Set<string>>(new Set());
   const toggleTurnExpanded = useCallback((turnKey: string) => {
-    setExpandedTurns((prev) => {
-      const next = new Set(prev);
-      if (next.has(turnKey)) next.delete(turnKey);
-      else next.add(turnKey);
-      return next;
-    });
-  }, []);
-
-  /**
-   * The turn being worked on, as the id of its user row, or null when nothing runs.
-   *
-   * `runtimeStatus` is the store's running latch -- a submit sets it and any
-   * terminal turn event clears it -- so it is what decides whether the "已工作"
-   * header counts up or reports a fixed number.  The turn's user row is the anchor
-   * its thought / tool rows are grouped under (see `processMetaMap` below), which is
-   * why the timing is remembered under that same id.
-   */
-  const runningTurnKey = useMemo(() => {
-    if (runtimeStatus !== 'running') return null;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].type === 'user') return messages[i].id;
-    }
-    return null;
-  }, [runtimeStatus, messages]);
-
-  /**
-   * Whole seconds each turn has taken, keyed by its user row.
-   *
-   * A turn is only recorded once this console has seen it run, and its entry is
-   * kept after the turn ends: that is what fixes the final elapsed time in the
-   * header instead of letting it fall back to the durations summed off the turn's
-   * rows -- a sum an unfinished turn cannot report at all.
-   */
-  const [turnSeconds, setTurnSeconds] = useState<ReadonlyMap<string, number>>(() => new Map());
-
-  // The stopwatch: while a turn runs, re-read the clock once per second so the
-  // header counts up (已工作 1 秒, 2 秒, 3 秒 ...).  The turn's entry is left in place
-  // when it stops, so the last value stays on screen as its elapsed time.
+    skipAutoScroll.current = true;
+    toggleWorkExpand(turnKey);
+  }, [toggleWorkExpand]);
+  const groups = useMemo(
+    () => workGroups(messages, activeTurnId, runtimeStatus === 'running'),
+    [messages, activeTurnId, runtimeStatus],
+  );
+  const runningTurnKey = groups.find((group) => group.running)?.key ?? null;
+  const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (runningTurnKey === null) return;
-    const startedAt = Date.now();
-    const read = () => {
-      const seconds = elapsedSeconds(startedAt);
-      setTurnSeconds((prev) =>
-        prev.get(runningTurnKey) === seconds ? prev : new Map(prev).set(runningTurnKey, seconds),
-      );
-    };
+    const read = () => setNow(Date.now());
     read();
     const timer = window.setInterval(read, 1000);
     return () => window.clearInterval(timer);
   }, [runningTurnKey]);
 
-  /**
-   * Turns whose "已工作" header has no row of its own to hang off.
-   *
-   * A turn paints that header from its first thought / tool row, so a turn that has
-   * not produced one yet -- the window right after a submit, and a plain question
-   * and answer for good -- needs a row of its own or the left column stays empty.
-   * The running turn is included before its first tick has landed, so the header is
-   * on screen with the submit itself.  The walk runs backwards, so the rows seen
-   * before a user row are exactly the rows of that user row's turn.
-   */
-  const pendingTurns = useMemo(() => {
-    const pending = new Set<string>();
-    let hasProcessRow = false;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const m = messages[i];
-      if (m.type === 'user') {
-        if (!hasProcessRow && (turnSeconds.has(m.id) || m.id === runningTurnKey)) {
-          pending.add(m.id);
-        }
-        hasProcessRow = false;
-      } else if (m.type === 'thought' || m.type === 'tool_group') {
-        hasProcessRow = true;
-      }
-    }
-    return pending;
-  }, [messages, turnSeconds, runningTurnKey]);
-
+  const pendingTurns = useMemo(() => new Map(
+    groups.filter((g) => g.rows.length === 0 && (g.anchor.work || g.running))
+      .map((g) => [g.anchor.id, g]),
+  ), [groups]);
   const processMetaMap = useMemo(() => {
     const map = new Map<string, {
       isFirst: boolean;
@@ -642,66 +567,18 @@ export const Transcript: React.FC = () => {
       totalDurationText: string;
       turnKey: string;
     }>();
-
-    let currentTurnKey = "";
-    let currentGroup: TranscriptMessage[] = [];
-
-    const flushGroup = () => {
-      if (currentGroup.length === 0) return;
-      let totalSec = 0;
-      let isStreaming = false;
-      for (const item of currentGroup) {
-        if (item.type === "thought") {
-          if (item.duration === "streaming") isStreaming = true;
-          else if (item.duration) {
-            const matched = String(item.duration).match(/([0-9.]+)/);
-            if (matched) totalSec += parseFloat(matched[1]);
-          }
-        } else if (item.type === "tool_group") {
-          const tools = item.tools || [];
-          if (tools.some((t: { status?: string }) => t.status === "running" || t.status === "pending")) {
-            isStreaming = true;
-          }
-          totalSec += Math.max(1, tools.length);
-        }
-      }
-      // A turn this console watched run reports the stopwatch it was counted with
-      // -- live while it runs, then frozen on the value it stopped at -- rather than
-      // the durations summed off its rows.
-      const watched = turnSeconds.get(currentTurnKey);
-      const durationText =
-        watched === undefined
-          ? formatProcessDuration(totalSec, isStreaming)
-          : formatProcessDuration(watched, false);
-      for (let i = 0; i < currentGroup.length; i++) {
-        const item = currentGroup[i];
-        map.set(item.id, {
+    for (const group of groups) {
+      group.rows.forEach((row, i) => {
+        map.set(row.id, {
           isFirst: i === 0,
-          isExpanded: expandedTurns.has(currentTurnKey),
-          totalDurationText: durationText,
-          turnKey: currentTurnKey,
+          isExpanded: group.anchor.workExpanded === true,
+          totalDurationText: formatWorkDuration(workSeconds(group, now)),
+          turnKey: group.anchor.id,
         });
-      }
-      currentGroup = [];
-    };
-
-    for (const m of messages) {
-      if (m.type === "user") {
-        flushGroup();
-        currentTurnKey = m.id;
-      } else if (m.type === "thought" || m.type === "tool_group") {
-        if (!currentTurnKey) currentTurnKey = m.id;
-        currentGroup.push(m);
-      } else if (m.type === "assistant") {
-        flushGroup();
-        currentTurnKey = "";
-      } else {
-        flushGroup();
-      }
+      });
     }
-    flushGroup();
     return map;
-  }, [messages, expandedTurns, turnSeconds]);
+  }, [groups, now]);
   /**
    * Whether the view is following the newest content.
    *
@@ -891,11 +768,7 @@ export const Transcript: React.FC = () => {
         )}
         {messages.map((m) => {
           const meta = processMetaMap.get(m.id);
-          // A running turn with no thought / tool row yet owns no header of its own,
-          // so it gets one right under its user row (0 until the first tick lands).
-          const pendingSeconds = pendingTurns.has(m.id)
-            ? (turnSeconds.get(m.id) ?? 0)
-            : undefined;
+          const pending = pendingTurns.get(m.id);
           return (
             <React.Fragment key={m.id}>
               <TranscriptRow
@@ -912,12 +785,12 @@ export const Transcript: React.FC = () => {
                     : undefined
                 }
               />
-              {pendingSeconds !== undefined && (
+              {pending && (
                 <PendingTurnRow
                   turnKey={m.id}
-                  text={formatProcessDuration(pendingSeconds, false)}
-                  expanded={expandedTurns.has(m.id)}
-                  activity={activity}
+                  text={formatWorkDuration(workSeconds(pending, now))}
+                  expanded={m.workExpanded === true}
+                  activity={pending.running ? activity : null}
                   onToggleExpand={toggleTurnExpanded}
                 />
               )}
@@ -961,7 +834,7 @@ export const Transcript: React.FC = () => {
             activity that arrived before any turn at all.  A pending row prints the
             same line inside its own fold, so painting it here as well put "model
             waiting for model" on screen twice. */}
-        {activity !== null && pendingTurns.size === 0 && <ActivityLine activity={activity} />}
+        {activity !== null && ![...pendingTurns.values()].some((g) => g.running) && <ActivityLine activity={activity} />}
         <div ref={bottomRef} />
       </div>
     </div>

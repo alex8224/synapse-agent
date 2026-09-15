@@ -43,6 +43,10 @@ import {
 } from './historyMapper.ts';
 import type { TranscriptMessage, SessionItem } from './historyMapper.ts';
 import { toWorkspacePath } from '../markdown/filePaths.ts';
+import { bindWorkTurn } from './turnWork.ts';
+import {
+  clearTranscriptViews, readTranscriptViews, restoreTranscriptViews, saveTranscriptViews,
+} from './transcriptCache.ts';
 import { mapRuntimeConfig } from './runtimeConfigMapper.ts';
 import {
   mcpRuntimePatch,
@@ -79,7 +83,6 @@ import {
 } from './sessionList.ts';
 import {
   GOAL_OBJECTIVE_MAX_CHARS,
-  normalizeGoalBudget,
   normalizeGoalObjective,
   parseSessionGoal,
   parseSessionGoalResult,
@@ -410,6 +413,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     projectSessions: {},
     loadingProjectIds: [],
     messages: [],
+    settledTurnIds: [],
     activeTurnId: null,
     runtimeStatus: 'idle',
     steerQueueCount: 0,
@@ -854,9 +858,11 @@ interface ConsoleStore {
 
   // Timeline Transcript
   messages: TranscriptMessage[];
+  settledTurnIds?: string[];
   steerQueueCount: number;
   addUserMessage: (text: string, attachments?: TranscriptAttachment[]) => void;
   toggleMessageExpand: (id: string) => void;
+  toggleWorkExpand: (id: string) => void;
 }
 
 // Monotonic epoch guarding every async session attach/load so a stale response
@@ -900,7 +906,10 @@ function cancelPendingDeltaTimer(): void {
 function applyLiveEvents(entries: readonly LiveEventEntry[]): void {
   if (entries.length === 0) return;
   const merged = coalesceLiveEvents(entries);
-  useConsoleStore.setState((state) => foldLiveEvents(state, merged));
+  useConsoleStore.setState((state) => {
+    const next = foldLiveEvents(state, merged);
+    return { ...next, messages: restoreTranscriptViews(next.messages, readTranscriptViews(state.currentSession)) };
+  });
   let turnEnded = false;
   for (const entry of merged) {
     // A finished turn changes the session's cumulative totals.
@@ -1115,7 +1124,9 @@ function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
   );
   const pending = applyCoverageDedupe
     ? buffered.filter(
-        (entry) => !isCoveredTurn(attachCoverage, entry.event.turn_id ?? null),
+        (entry) => isTurnTerminalKind(entry.event.kind) ||
+          entry.event.turn_id === state.activeTurnId ||
+          !isCoveredTurn(attachCoverage, entry.event.turn_id ?? null),
       )
     : buffered;
   store.setState({ liveEventBuffer: [] });
@@ -1175,7 +1186,6 @@ async function refreshRuntimeConfig(epoch: number): Promise<void> {
   };
   try {
     const view = await client.getRuntimeConfig({ session: currentSession });
-    if (epoch !== sessionEpoch) return;
     const latest = store.getState();
     if (
       latest.currentSession.project_id !== target.project_id ||
@@ -1416,6 +1426,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     currentSession: session,
     sessionTitle: resolveSessionTitle(session, title),
     messages: [],
+    settledTurnIds: [],
     liveEventBuffer: [],
     liveBufferDroppedCount: 0,
     recoveryState: 'idle',
@@ -1471,13 +1482,34 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
         sessionUsage: parseSessionUsage(opened.view.usage),
       });
     }
-    // Start watching at the session's current sequence: no full replay of
-    // already-completed turns (they come from the history projection instead).
-    const watch = await client.watchEvents(session, opened.view?.latest_sequence ?? 0);
+    // Only an intact active turn may replay from its first event. Settled turns
+    // come from history; never silently replay the entire session from zero.
+    await captureLiveEpoch(epoch);
+    if (epoch !== sessionEpoch) return;
+    const coverage = attachCoverage as SessionRecoverabilityResult | null;
+    const active = opened.view?.status === 'running' ? opened.view.active_turn_id : null;
+    const replayActive = active && coverage?.latest_turn_id === active &&
+      coverage.latest_turn_intact && coverage.latest_turn_first_sequence !== null;
+    const after = replayActive ? coverage.latest_turn_first_sequence! - 1 : opened.view?.latest_sequence ?? 0;
+    let watch;
+    if (epoch !== sessionEpoch) return;
+    try {
+      watch = await client.watchEvents(session, after);
+    } catch (err) {
+      if (epoch !== sessionEpoch) return;
+      const code = (err as RpcCallError)?.service_code;
+      if (!replayActive || (code !== 'replay_gap' && code !== 'invalid_cursor')) throw err;
+      const fresh = await client.openSession(session);
+      if (epoch !== sessionEpoch) return;
+      watch = await client.watchEvents(session, fresh.view?.latest_sequence ?? 0);
+      store.setState({ recoveryState: 'incomplete', recoveryDetail: '运行轮次的早期事件已过期，部分步骤暂不可恢复。' });
+    }
     if (epoch !== sessionEpoch) return;
     store.setState({ activeSubscriptionId: watch.subscription_id });
     markAttached(session, epoch);
-    await captureLiveEpoch(epoch);
+    if (active && !replayActive) {
+      store.setState({ recoveryState: 'incomplete', recoveryDetail: '运行轮次的早期步骤不可完整恢复；已保存历史不受影响。' });
+    }
     void refreshSessionGoal(epoch);
     await loadInitialHistory(epoch);
     await refreshRuntimeConfig(epoch);
@@ -1658,8 +1690,24 @@ async function loadInitialHistory(epoch: number): Promise<void> {
     );
     if (epoch !== sessionEpoch) return;
     if (res.available) {
+      let messages = mapHistoryEvents(res.events, { startTurn: res.start_turn, pageTag: 'latest' });
+      const state = store.getState();
+      const active = state.runtimeStatus === 'running' ? state.activeTurnId : null;
+      if (active && messages.some((m) => m.turnId === active)) {
+        messages = messages.map((m) => m.turnId === active && m.work
+          ? { ...m, work: { ...m.work, ended: false } } : m);
+      }
+      if (active && !messages.some((m) => m.turnId === active)) {
+        // The projection is settlement-only: never attach active replay to the
+        // previous history user. No invented prompt is stored in this placeholder.
+        messages.push({
+          id: `work-${active}`, type: 'info', timestamp: '', turnId: active,
+          content: '当前轮次运行中', work: { ended: false },
+        });
+      }
+      messages = restoreTranscriptViews(messages, readTranscriptViews(currentSession));
       store.setState({
-        messages: mapHistoryEvents(res.events, { startTurn: res.start_turn, pageTag: 'latest' }),
+        messages,
         historyLoading: false,
         historyAvailable: true,
         historyError: null,
@@ -1672,6 +1720,11 @@ async function loadInitialHistory(epoch: number): Promise<void> {
       // No transcript projection: show an explicit unavailable state instead of
       // pretending the conversation is empty; never fall back to a checkpoint.
       store.setState({
+        messages: store.getState().activeTurnId ? restoreTranscriptViews([{
+          id: `work-${store.getState().activeTurnId}`, type: 'info', timestamp: '',
+          turnId: store.getState().activeTurnId!, content: '当前轮次历史尚未保存',
+          work: { ended: false },
+        }], readTranscriptViews(currentSession)) : [],
         historyLoading: false,
         historyAvailable: false,
         historyError: null,
@@ -1768,6 +1821,7 @@ async function activateProject(projectId: string): Promise<boolean> {
     sessionsNextOffset: null,
     sessionsTotal: 0,
     messages: [],
+    settledTurnIds: [],
     activeTurnId: null,
     runtimeStatus: 'idle',
     steerQueueCount: 0,
@@ -1910,6 +1964,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       sessionTitle: newTitle,
       sessionActionError: null,
       messages: [],
+      settledTurnIds: [],
       liveEventBuffer: [],
       liveBufferDroppedCount: 0,
       recoveryState: 'idle',
@@ -2466,7 +2521,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         pageTag: `earlier-${res.start_turn}`,
       });
       set((s) => ({
-        messages: [...earlier, ...s.messages],
+        messages: [...restoreTranscriptViews(earlier, readTranscriptViews(currentSession)), ...s.messages],
         historyLoading: false,
         historyAvailable: true,
         historyError: null,
@@ -2801,6 +2856,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (epoch !== authEpoch) return;
     if (client) client.disconnect();
     clearAttached();
+    clearTranscriptViews();
     // Every upload is bound to the authenticated session; cancel the in-flight
     // ones (best-effort abort) and drop the composer before the state reset.
     get().cancelAttachments();
@@ -2848,6 +2904,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       projectSessions: {},
       loadingProjectIds: [],
       messages: [],
+      settledTurnIds: [],
       activeTurnId: null,
       runtimeStatus: 'idle',
       steerQueueCount: 0,
@@ -2974,6 +3031,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // present); a fully empty submit still does nothing.
     if (body === '' && refs.length === 0) return;
     const { currentSession, runtimeStatus, activeTurnId } = state;
+    const epoch = sessionEpoch;
 
     if (runtimeStatus === 'running' && activeTurnId) {
       if (refs.length > 0) {
@@ -3008,19 +3066,22 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
 
     set({ attachmentError: null });
     get().addUserMessage(body, attachmentDisplaysOf(pending));
-    set({ runtimeStatus: 'running' });
+    set({ runtimeStatus: 'running', activeTurnId: null, activity: null });
     try {
       const opened = await client.openSession(currentSession);
       // Re-sync the authoritative totals here: this call is already being made,
       // and it is what corrects a session that was also used elsewhere.
+      if (epoch !== sessionEpoch) return;
       set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
       if (!get().activeSubscriptionId) {
         const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
+        if (epoch !== sessionEpoch) return;
         set({ activeSubscriptionId: watch.subscription_id });
       }
     } catch (err) {
       console.warn('Ensure open session note:', err);
     }
+    if (epoch !== sessionEpoch) return;
     try {
       const receipt = await client.submitTurn({
         session: currentSession,
@@ -3029,8 +3090,14 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         // reads "absent" as "no attachments" and rejects an explicit null.
         ...(refs.length > 0 ? { attachment_refs: refs } : {}),
       });
+      if (epoch !== sessionEpoch) return;
       if (receipt.turn_id) {
-        set({ activeTurnId: receipt.turn_id, recoveryState: 'idle', recoveryDetail: null });
+        set((s) => ({
+          messages: bindWorkTurn(s.messages, receipt.turn_id!, Date.now()),
+          activeTurnId: s.messages.some((m) => m.turnId === receipt.turn_id && m.work?.ended)
+            ? null : receipt.turn_id,
+          recoveryState: 'idle', recoveryDetail: null,
+        }));
       }
       // The turn was accepted, so the composer no longer owns these rows. The
       // finalized attachments stay server-side (never auto-deleted) and the
@@ -3041,6 +3108,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       // the placeholder.
       refreshSessionTitleAfterTurn(currentSession, get().sessionTitle);
     } catch (err) {
+      if (epoch !== sessionEpoch) return;
       if (err instanceof ConnectionLostError && err.unknownOutcome) {
         // The submit may have reached the daemon and started a turn; the
         // receipt was lost in the drop. Do NOT re-submit (duplicate tool
@@ -3053,8 +3121,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         });
       } else {
         const reason = String((err as Error)?.message ?? err);
+        set((s) => ({ messages: s.messages.map((m) => !m.turnId && m.work && !m.work.ended
+          ? { ...m, work: { ...m.work, ended: true, elapsed: Math.max(0, (Date.now() - (m.work.startedAt ?? Date.now())) / 1000) } }
+          : m) }));
         set({
           runtimeStatus: 'idle',
+          activeTurnId: null,
           recoveryState: 'failed',
           recoveryDetail: reason,
           attachmentError: `发送失败：${reason}`,
@@ -3111,15 +3183,29 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     set({ attachments: [], attachmentError: null });
   },
   addUserMessage: (text: string, attachments?: TranscriptAttachment[]) => {
+    const state = get();
     const newMsg: TranscriptMessage = {
-      id: `usr-${Date.now()}`,
+      id: `usr-${Date.now()}-${state.messages.length}`,
       type: 'user',
       timestamp: new Date().toLocaleTimeString().slice(0, 5),
       content: text,
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(state.runtimeStatus === 'running' && state.activeTurnId
+        ? { turnId: state.activeTurnId, steer: true }
+        : { work: { startedAt: Date.now(), ended: false } }),
     };
     set((s) => ({ messages: [...s.messages, newMsg] }));
   },
   toggleMessageExpand: (id) =>
     set((s) => ({ messages: s.messages.map((m) => (m.id === id ? { ...m, expanded: !m.expanded } : m)) })),
+  toggleWorkExpand: (id) =>
+    set((s) => ({ messages: s.messages.map((m) => (m.id === id ? { ...m, workExpanded: !m.workExpanded } : m)) })),
 }));
+
+// Store only view metadata on changes, never a per-second write or transcript
+// content. Session storage is scoped to this tab/origin and cleared on logout.
+useConsoleStore.subscribe((state, previous) => {
+  if (state.pairingState === 'paired' && !state.historyLoading && state.messages !== previous.messages) {
+    saveTranscriptViews(state.currentSession, state.messages);
+  }
+});

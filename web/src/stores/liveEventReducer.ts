@@ -23,6 +23,7 @@
 import type { RuntimeEvent } from '../client/types.ts';
 import type { ApprovalActionPayload } from '../runtime-client/contract.generated.ts';
 import type { ToolItemView, TranscriptMessage } from './historyMapper.ts';
+import { bindWorkTurn, finishWorkTurn } from './turnWork.ts';
 import { formatUsageMetrics, parseUsagePayload, type UsageView } from './usageView.ts';
 
 /**
@@ -56,6 +57,8 @@ export interface ActivityView {
 export interface LiveReducibleState {
   messages: TranscriptMessage[];
   activeTurnId: string | null;
+  /** Bounded tombstones for turns observed without a user/history anchor. */
+  settledTurnIds?: string[];
   runtimeStatus: 'idle' | 'running';
   steerQueueCount: number;
   pendingApproval: PendingApproval | null;
@@ -492,6 +495,18 @@ export function reduceRuntimeEvent(
   const at = date.getTime();
   const next: Partial<LiveReducibleState> = {};
 
+  // A late event from a settled turn must neither revive it nor seize the next
+  // turn's status/approval/activity. The anchor is the durable terminal marker.
+  if (turnId && (state.settledTurnIds?.includes(turnId) ||
+    state.messages.some((m) => m.turnId === turnId && m.work?.ended)) &&
+    !(isTurnTerminalKind(kind) && state.activeTurnId === turnId)) return {};
+  const foreignTurn = !!turnId && !!state.activeTurnId && turnId !== state.activeTurnId;
+  if (foreignTurn && state.runtimeStatus === 'running' && kind !== 'activity_started') return {};
+  const bound = bindWorkTurn(state.messages, turnId, at);
+  if (bound !== state.messages) {
+    state = { ...state, messages: bound };
+    next.messages = bound;
+  }
   if (turnId) next.activeTurnId = turnId;
 
   if (kind === 'activity_started') {
@@ -562,7 +577,7 @@ export function reduceRuntimeEvent(
     const patched = patchTurnToolItem(
       state.messages,
       turnId,
-      (t) => (callId !== null && t.callId === callId) || t.name === name,
+      (t) => callId !== null ? t.callId === callId : t.name === name,
       (t) => ({
         ...t,
         status,
@@ -613,6 +628,7 @@ export function reduceRuntimeEvent(
     next.runtimeStatus = 'running';
   } else if (isTurnTerminalKind(kind)) {
     next.runtimeStatus = 'idle';
+    next.activeTurnId = null;
     next.steerQueueCount = 0;
     next.activity = null;
     next.pendingApproval = null;
@@ -631,5 +647,19 @@ export function reduceRuntimeEvent(
     }
   }
 
+  if (next.messages) {
+    const existing = new Set(state.messages.map((m) => m.id));
+    let hasAnchor = next.messages.some((m) => m.turnId === turnId && m.work);
+    next.messages = next.messages.map((m) => {
+      if (existing.has(m.id) || !turnId) return m;
+      const work = hasAnchor ? undefined : { startedAt: at, ended: false };
+      hasAnchor = true;
+      return { ...m, turnId, ...(work ? { work } : {}) };
+    });
+  }
+  if (isTurnTerminalKind(kind)) {
+    next.settledTurnIds = [...(state.settledTurnIds ?? []).filter((id) => id !== turnId), turnId].slice(-100);
+    next.messages = finishWorkTurn(next.messages ?? state.messages, turnId, at, payload.elapsed_s, kind);
+  }
   return next;
 }

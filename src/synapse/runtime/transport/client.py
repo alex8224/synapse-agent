@@ -769,12 +769,24 @@ def _history_event(value: object) -> HistoryEvent:
         if not isinstance(raw_attachments, list):
             raise ProtocolTransportError()
         attachments = tuple(_history_attachment(item) for item in raw_attachments)
+        turn_id = event.get("turn_id")
+        if turn_id is not None:
+            turn_id = _text(turn_id, "turn_id", 256)
+        elapsed = event.get("elapsed_s")
+        if elapsed is not None and (
+            type(elapsed) not in (int, float)
+            or not math.isfinite(elapsed)
+            or elapsed < 0
+        ):
+            raise ProtocolTransportError()
         return HistoryEvent(
             kind=kind,
             text=text,
             tool_calls=tuple(dict(item) for item in calls),
             tool_results=tuple(dict(item) for item in results),
             attachments=attachments,
+            turn_id=turn_id,
+            elapsed_s=elapsed,
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None

@@ -2994,6 +2994,28 @@
           "required": true,
           "ts_type": "HistoryAttachment[]",
           "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "elapsed_s",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
         }
       ],
       "notes": [

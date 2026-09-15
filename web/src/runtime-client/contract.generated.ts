@@ -692,6 +692,14 @@ export interface HistoryEvent {
    * python_default_kind=value python_default=[]
    */
   attachments: HistoryAttachment[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  turn_id: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  elapsed_s: number | null;
 }
 
 export interface JsonRpcError {

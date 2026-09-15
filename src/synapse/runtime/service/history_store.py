@@ -490,12 +490,18 @@ def _history_event(row: sqlite3.Row) -> HistoryEvent:
         raise InvalidRequestError(
             "transcript history payload must be a JSON object"
         )
+    turn_id = parsed.get("turn_id")
+    elapsed = parsed.get("elapsed_s")
+    if type(elapsed) not in (int, float) or elapsed < 0:
+        elapsed = None
     return HistoryEvent(
         kind=str(row["kind"] or ""),
         text=str(parsed.get("text") or ""),
         tool_calls=_dict_tuple(parsed.get("tool_calls")),
         tool_results=_dict_tuple(parsed.get("tool_results")),
         attachments=_attachment_tuple(parsed.get("attachments")),
+        turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
+        elapsed_s=elapsed,
     )
 
 

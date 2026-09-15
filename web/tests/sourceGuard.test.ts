@@ -3,7 +3,9 @@
  *
  * The console holds no daemon token, never reads a token file, never puts a
  * credential in a URL, never injects an `Authorization` header and never
- * persists anything in browser storage.  These are static assertions over the
+ * persists credentials in browser storage. Only transcriptCache may store
+ * bounded view metadata (behavior/privacy tests in turnWork.test.ts).
+ * These are static assertions over the
  * shipped sources (`src/**` + `vite.config.ts`), so a future edit that
  * reintroduces one of those paths fails here.
  *
@@ -95,7 +97,12 @@ function credentialViolations(fileName: string, text: string): string[] {
 test('C-12 frontend sources contain no credential path', () => {
   assert.ok(files.length > 10, 'the source guard must actually scan the frontend');
   for (const file of files) {
-    const violations = credentialViolations(file, readFileSync(file, 'utf8'));
+    const source = readFileSync(file, 'utf8');
+    const viewCache = file === join(webRoot, 'src', 'stores', 'transcriptCache.ts');
+    if (viewCache) assert.equal(/localStorage/.test(source), false);
+    const violations = credentialViolations(file, source).filter(
+      (rule) => !(viewCache && rule === 'browser credential persistence'),
+    );
     assert.deepEqual(
       violations,
       [],

@@ -511,6 +511,9 @@ class UiTranscriptEvent:
     # Durable attachment references for a user turn (JSON-safe metadata only;
     # never base64 bytes).  Empty for every non-user event and for legacy rows.
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    # Optional runtime identity/timing; checkpoint-only legacy rows lack these.
+    turn_id: str | None = None
+    elapsed_s: float | None = None
 
 
 

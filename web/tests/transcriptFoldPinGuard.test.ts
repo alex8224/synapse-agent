@@ -44,8 +44,8 @@ test('every "已工作" header is the pinned strip', () => {
     'every header must be the pinned strip',
   );
   assert.equal(
-    (transcript.match(/已工作 /g) ?? []).length,
-    (transcript.match(/transcript-fold-header/g) ?? []).length,
+    (transcript.match(/<span>已工作 /g) ?? []).length,
+    (transcript.match(/className="transcript-fold-header material-titlebar"/g) ?? []).length,
     'no header may be printed outside the strip',
   );
 });

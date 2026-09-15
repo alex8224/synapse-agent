@@ -140,6 +140,9 @@ class HistoryEvent:
     tool_calls: tuple[dict[str, Any], ...]
     tool_results: tuple[dict[str, Any], ...]
     attachments: tuple[HistoryAttachment, ...] = ()
+    # Additive metadata: older/checkpoint-rebuilt history reports unknown, not zero.
+    turn_id: str | None = None
+    elapsed_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
