@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Branch20Regular, ArrowSync20Regular, Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
+import { OpenWithMenu } from './OpenWithMenu.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   MalformedGitPayloadError,
@@ -38,6 +39,8 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
 }) => {
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
+  const openExternalError = useConsoleStore((s) => s.openExternalError);
+  const dismissOpenExternalError = useConsoleStore((s) => s.dismissOpenExternalError);
   const [status, setStatus] = useState<GitStatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(initialPath ?? null);
@@ -140,6 +143,12 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
             </span>
           )}
           <span className="flex-1" />
+          {/* The reader's own editor for the selected file: a host-side launch, so it
+              is offered here (a title-bar action) and never silently retried. */}
+          <OpenWithMenu
+            path={selected}
+            disabledReason={selected === null ? '先选择一个文件' : '打开方式不可用'}
+          />
           <label className="flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-600">
             <input
               id="git-explorer-staged"
@@ -169,6 +178,19 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
             <Dismiss20Regular aria-hidden="true" />
           </button>
         </div>
+
+        {openExternalError !== null && (
+          <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-3 py-1.5 text-[11px] leading-relaxed text-amber-800">
+            <span className="min-w-0 flex-1">{openExternalError}</span>
+            <button
+              type="button"
+              onClick={dismissOpenExternalError}
+              className="ui-button ui-compact shrink-0 text-[11px]"
+            >
+              知道了
+            </button>
+          </div>
+        )}
 
         <div className="git-responsive-body flex min-h-0 flex-1" data-detail={mobileDetail}>
           <div id="git-file-list" className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">

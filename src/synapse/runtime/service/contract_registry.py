@@ -34,6 +34,7 @@ from typing import Final
 
 from synapse.runtime.service.access import (
     ALL_RUNTIME_CAPABILITIES,
+    APPS_LIST,
     ARTIFACTS_LIST,
     ARTIFACTS_READ,
     ARTIFACTS_STAT,
@@ -66,6 +67,7 @@ from synapse.runtime.service.access import (
     TURN_CANCEL,
     TURN_STEER,
     TURN_SUBMIT,
+    WORKSPACE_OPEN_EXTERNAL,
     WORKSPACE_REVERT,
 )
 from synapse.runtime.service.artifacts import (
@@ -175,6 +177,18 @@ from synapse.runtime.service.events import (
     EventPage,
     ReadEventsQuery,
     RuntimeEvent,
+)
+from synapse.runtime.service.external_apps import (
+    APPS_LIST_LIMIT,
+    EXTERNAL_APP_ICON_KINDS,
+    EXTERNAL_APP_KINDS,
+    EXTERNAL_APP_MODES,
+    ExternalApp,
+    ExternalAppIcon,
+    ExternalAppPage,
+    ListExternalAppsQuery,
+    OpenExternalCommand,
+    OpenExternalResult,
 )
 from synapse.runtime.service.fs_browse import (
     DIRECTORY_LIST_LIMIT_DEFAULT,
@@ -326,6 +340,11 @@ APPROVAL_DECISION_KINDS: Final[tuple[str, ...]] = (
 #: ``runtime.codex.reset_credits.consume``.  It is derived from the DTO's own
 #: ``CODEX_CONSUME_OUTCOMES`` so the contract cannot drift from the decoder.
 CODEX_CONSUME_OUTCOME_TS: Final = " | ".join(f"'{value}'" for value in CODEX_CONSUME_OUTCOMES)
+#: The closed unions the external-program surface declares, built from the module
+#: constants so the contract cannot drift from the decoder.
+EXTERNAL_APP_KIND_TS: Final = " | ".join(f"'{value}'" for value in EXTERNAL_APP_KINDS)
+EXTERNAL_APP_ICON_KIND_TS: Final = " | ".join(f"'{value}'" for value in EXTERNAL_APP_ICON_KINDS)
+EXTERNAL_APP_MODE_TS: Final = " | ".join(f"'{value}'" for value in EXTERNAL_APP_MODES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,6 +748,83 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
             "``delete`` (the turn created the file, so it is gone again) or",
             "``already_reverted`` (the file already held its pre-turn state and",
             "nothing was written); ``bytes_written`` is 0 unless content was restored.",
+        ),
+    ),
+    _dto(
+        ListExternalAppsQuery,
+        role="request",
+        notes=(
+            "``limit`` is bounded to 1.." + str(APPS_LIST_LIMIT) + "; the catalog is a",
+            "host property, so the query carries no session.",
+        ),
+    ),
+    _dto(
+        ExternalAppPage,
+        role="result",
+        notes=(
+            "One bounded page of the host's application catalog; ``truncated`` is true",
+            "when the probe table found more than the page holds.",
+        ),
+    ),
+    _dto(
+        ExternalApp,
+        role="value",
+        field_metadata=(
+            (
+                "kind",
+                FieldMetadata(
+                    ts_type=EXTERNAL_APP_KIND_TS,
+                    note="One of EXTERNAL_APP_KINDS.",
+                ),
+            ),
+        ),
+        notes=(
+            "``extensions`` are the extensions the application claims (the console",
+            "groups its recommendations by them); ``short_name`` is the label a title",
+            "bar can hold.  No field names a path on the host.",
+        ),
+    ),
+    _dto(
+        ExternalAppIcon,
+        role="value",
+        field_metadata=(
+            (
+                "kind",
+                FieldMetadata(
+                    ts_type=EXTERNAL_APP_ICON_KIND_TS,
+                    note="One of EXTERNAL_APP_ICON_KINDS.",
+                ),
+            ),
+        ),
+        notes=(
+            "``glyph`` names a mark the console ships; ``data_url`` is an inline image.",
+            "An executable's own path is never an icon value.",
+        ),
+    ),
+    _dto(
+        OpenExternalCommand,
+        role="request",
+        field_metadata=(
+            (
+                "mode",
+                FieldMetadata(
+                    ts_type=EXTERNAL_APP_MODE_TS,
+                    note="One of EXTERNAL_APP_MODES; absent means ``open``.",
+                ),
+            ),
+        ),
+        notes=(
+            "``path`` is workspace-relative and must resolve inside the session's own",
+            "workspace; ``app_id`` names an application the host enumerated (absent",
+            "means the system association).  The request never carries a command line.",
+        ),
+    ),
+    _dto(
+        OpenExternalResult,
+        role="result",
+        notes=(
+            "``app_id`` is the id the host actually started (``system`` when the",
+            "association was used) and ``mode`` is the mode it ran in.",
         ),
     ),
     _dto(
@@ -1283,6 +1379,49 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "the turn left there, and refused when the turn's record is gone; the refusal",
             "is a typed error whose `service_code` names the condition.  Never touches",
             "`HEAD`, the index, or any other file.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.apps.list",
+        method_class="service",
+        request="ListExternalAppsQuery",
+        result="ExternalAppPage",
+        capability=APPS_LIST,
+        scope="catalog",
+        scope_location=None,
+        service_method="list_external_apps",
+        wire_defaults=(("limit", APPS_LIST_LIMIT),),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable."
+        ),
+        notes=(
+            "Host-scoped catalog of the applications this machine can start.  Read-only",
+            "and bounded: names, roles, claimed extensions and glyph ids travel; a",
+            "program's own path does not.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.workspace.open_external",
+        method_class="service",
+        request="OpenExternalCommand",
+        result="OpenExternalResult",
+        capability=WORKSPACE_OPEN_EXTERNAL,
+        scope="session",
+        scope_location="params.session",
+        service_method="open_external",
+        in_process=(
+            "Optional delegate method, same degradation rule as `runtime.git.status`."
+        ),
+        notes=(
+            "Starts one host-side program for exactly one workspace-relative path.  The",
+            "program is named by an id the host itself enumerated -- the request never",
+            "carries a command line -- and the target must resolve inside the session's",
+            "own workspace.  Refusals are named in `service_code`",
+            "(`external_app_path_invalid`, `external_app_outside_workspace`,",
+            "`external_app_file_missing`, `external_app_unknown`,",
+            "`external_app_launch_failed`, `external_app_unavailable`).  A launch never",
+            "modifies the workspace.",
         ),
     ),
     WireMethod(

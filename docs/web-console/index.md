@@ -249,11 +249,39 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）与 `web/tests/artifactImages.test.ts`
 （光栅白名单不含 SVG、4 MiB 上限先于读取、分块校验、blob URL 生命周期）守护。
 
+### 2.5 打开方式：把文件交给宿主的本机程序（本轮新增）
+
+Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/components/OpenWithMenu.tsx`）：
+左半用当前应用打开选中文件，右半展开应用列表。它把文件**交给宿主机器上的程序**，所以两侧职责分得很清：
+
+- **宿主**（`runtime/service/external_apps.py`）是唯一权威：`runtime.apps.list` 回一张**有界**的
+  目录（名称、短名、角色、声称的扩展名、图标字形 id、是否系统默认），`runtime.workspace.open_external`
+  接受 `{session, path, app_id?, mode: open|reveal}`。路径必须是工作区相对的，解析后仍要落在会话自己的
+  工作区内（symlink 逃逸同样拒绝），文件必须存在；`app_id` 必须是宿主自己枚举出来的 id，**请求里没有
+  命令行、没有参数、没有可执行文件路径**——宿主只做一次固定 argv 的启动。
+- **应用集合是固定候选表 + 运行时探测**：表里列出常见编辑器 / 终端 / 资源管理器及其各平台探测位置
+  （`shutil.which` 或已知安装路径），装了才出现，表里没有的应用不会出现；「系统默认应用」永远可用
+  （走操作系统关联），所以读者不会卡死。这是本期**已知限制**：动态枚举（Windows `App Paths`、
+  Linux `.desktop`、macOS `/Applications`）留待后续，且不会改变本契约的字段。
+- **拒绝是具名的**：`service_code` 取 `external_app_path_invalid`、`external_app_outside_workspace`、
+  `external_app_file_missing`、`external_app_unknown`、`external_app_launch_failed`、
+  `external_app_unavailable`（无工作区 / 无桌面会话）。控制台把这些翻成一行可读原因渲染在窗口内，
+  当前选择回退到可用应用，绝不静默。
+- **授权位独立**：读目录要 `apps.list`，启动要 `workspace.open_external`；`git.status`、`apps.list`
+  或 `session.read` 都**不**授权启动。启动不修改工作区（与 `workspace.revert` 的唯一写面互不相干）。
+- **控制台侧**：菜单 portal 到 `document.body`（两个宿主窗口的标题栏是拖拽把手且裁剪溢出），打开时由它
+  在 capture 阶段接管 `Escape`（先关菜单、再关窗口），点击触发器与菜单之外关闭；方向键走行、`Enter`
+  打开；「始终用 X 打开 .ext 文件」记在非机密的 `appearance.openWith`，最近用过的应用只在本次会话内记住。
+- 守护：`web/tests/externalApps.test.ts`（严格解码、推荐/记忆策略、请求形状）、
+  `web/tests/openWithMenuGuard.test.ts`（portal / Escape / 外部点击 / split button / 只对文件开放）、
+  `web/tests/openWithMenu.verify.ts`（真浏览器 32 项）、`tests/test_runtime_service_external_apps.py`
+  （路径拒绝、应用发现、启动 argv、wire 解码、ACL 隔离）。
+
 ---
 
 ## 3. 通信与协议层契约
 
-严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 44 个方法）。控制台涉及的子集：
+严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 50 个方法）。控制台涉及的子集：
 
 | 协议方法 | 方向 | 用途 |
 |---|---|---|
@@ -291,6 +319,8 @@ Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）�
 | `runtime.artifacts.read` | Request -> Response | 分块读取工作区文件（差异浏览的文本来源） |
 | `runtime.attachments.begin` / `.append` / `.finish` / `.abort` | Request -> Response | 图片上传（声明大小/MIME、分块、校验落盘、丢弃） |
 | `runtime.attachments.stat` / `.read` | Request -> Response | 已落盘附件的元数据与分块字节 |
+| `runtime.apps.list` | Request -> Response | 宿主可启动的本机应用目录（图标字形 + 声称的扩展名，有界；catalog 作用域，`apps.list`） |
+| `runtime.workspace.open_external` | Request -> Response | 用指定应用打开一个工作区相对路径（`mode: open` 或 `reveal`；授权位 `workspace.open_external`） |
 
 ### 3.1 控制台实际调用的方法
 
@@ -307,7 +337,8 @@ Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）�
 `runtime.events.watch`、`runtime.events.unwatch`、
 `runtime.artifacts.stat`、`runtime.artifacts.list`、`runtime.artifacts.read`、
 `runtime.attachments.begin`、`runtime.attachments.append`、`runtime.attachments.finish`、
-`runtime.attachments.abort`、`runtime.attachments.read`。
+`runtime.attachments.abort`、`runtime.attachments.read`、`runtime.apps.list`、
+`runtime.workspace.open_external`。
 
 其中 `runtime.workspace.revert` 是控制台唯一**写读者自己文件**的方法（改动卡片上的撤销）：
 请求为 `{session, turn_id, path}`，结果是 `{action: restore|delete|already_reverted, bytes_written}`。

@@ -167,6 +167,8 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.codex.usage.get": "get_codex_usage",
     "runtime.codex.reset_credits.get": "get_codex_reset_credits",
     "runtime.codex.reset_credits.consume": "consume_codex_reset",
+    "runtime.apps.list": "list_external_apps",
+    "runtime.workspace.open_external": "open_external",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -188,6 +190,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "fs.list",
         "codex.usage.read",
         "codex.reset.consume",
+        "apps.list",
+        "workspace.open_external",
     }
 )
 

@@ -87,6 +87,13 @@ from synapse.runtime.service.events import (
     MAX_SCAN_LIMIT,
     MIN_EVENT_BYTES,
 )
+from synapse.runtime.service.external_apps import (
+    APPS_LIST_LIMIT,
+    EXTERNAL_APP_MODES,
+    MAX_APP_ID_BYTES,
+    ListExternalAppsQuery,
+    OpenExternalCommand,
+)
 from synapse.runtime.service.fs_browse import (
     DIRECTORY_LIST_LIMIT_DEFAULT,
     DIRECTORY_LIST_LIMIT_MAX,
@@ -924,6 +931,35 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else None
             ),
         )
+    if method == "runtime.apps.list":
+        # Catalog-scoped: the host's own probe table, one bounded page.
+        _optional_fields(params, set(), {"limit"})
+        return ListExternalAppsQuery(
+            limit=_bounded_integer(
+                params.get("limit", APPS_LIST_LIMIT),
+                minimum=1,
+                maximum=APPS_LIST_LIMIT,
+            ),
+        )
+    if method == "runtime.workspace.open_external":
+        _optional_fields(params, {"session", "path"}, {"app_id", "mode", "command_id"})
+        raw_app_id = params.get("app_id")
+        raw_mode = params.get("mode", "open")
+        if raw_mode not in EXTERNAL_APP_MODES:
+            raise ProtocolError(-32602, "invalid_params")
+        return OpenExternalCommand(
+            session=_session(params["session"]),
+            path=_bounded_text(params["path"], MAX_PATH_BYTES),
+            app_id=(
+                None
+                if raw_app_id is None
+                else _bounded_text(raw_app_id, MAX_APP_ID_BYTES)
+            ),
+            mode=raw_mode,
+            command_id=(
+                _command_id(params["command_id"]) if "command_id" in params else None
+            ),
+        )
     if method == "runtime.attachments.begin":
         _optional_fields(params, {"session", "size", "mime"}, {"display_name"})
         display_name = params.get("display_name")
@@ -1184,6 +1220,10 @@ async def dispatch(
         return await service.git_diff(dto)  # type: ignore[arg-type]
     if method == "runtime.workspace.revert":
         return await service.revert_turn_change(dto)  # type: ignore[arg-type]
+    if method == "runtime.apps.list":
+        return await service.list_external_apps(dto)  # type: ignore[arg-type]
+    if method == "runtime.workspace.open_external":
+        return await service.open_external(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.begin":
         return await service.begin_attachment(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.append":

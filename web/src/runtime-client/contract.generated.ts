@@ -26,11 +26,12 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 48 wire methods: 46 service methods
+ * The 50 wire methods: 48 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
 export const WIRE_METHODS = [
+  "runtime.apps.list",
   "runtime.artifacts.list",
   "runtime.artifacts.read",
   "runtime.artifacts.stat",
@@ -78,6 +79,7 @@ export const WIRE_METHODS = [
   "runtime.turn.cancel",
   "runtime.turn.steer",
   "runtime.turn.submit",
+  "runtime.workspace.open_external",
   "runtime.workspace.revert",
 ] as const;
 export type WireMethod = (typeof WIRE_METHODS)[number];
@@ -94,8 +96,9 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (33). */
+/** Authorization capabilities enforced by the ACL layer (35). */
 export const AUTHORIZATION_CAPABILITIES = [
+  "apps.list",
   "artifacts.list",
   "artifacts.read",
   "artifacts.stat",
@@ -128,6 +131,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "turn.cancel",
   "turn.steer",
   "turn.submit",
+  "workspace.open_external",
   "workspace.revert",
 ] as const;
 export type AuthorizationCapability =
@@ -159,6 +163,7 @@ export const TRANSPORT_NOTIFICATIONS = [
 export const WIRE_METHOD_CAPABILITIES: Partial<
   Record<WireMethod, AuthorizationCapability>
 > = {
+  "runtime.apps.list": "apps.list",
   "runtime.artifacts.list": "artifacts.list",
   "runtime.artifacts.read": "artifacts.read",
   "runtime.artifacts.stat": "artifacts.stat",
@@ -204,6 +209,7 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.turn.cancel": "turn.cancel",
   "runtime.turn.steer": "turn.steer",
   "runtime.turn.submit": "turn.submit",
+  "runtime.workspace.open_external": "workspace.open_external",
   "runtime.workspace.revert": "workspace.revert",
 };
 
@@ -649,6 +655,46 @@ export interface EventPage {
   scanned_through: EventCursor | null;
 }
 
+/**
+ * ``extensions`` are the extensions the application claims (the console
+ * groups its recommendations by them); ``short_name`` is the label a title
+ * bar can hold.  No field names a path on the host.
+ */
+export interface ExternalApp {
+  id: string;
+  name: string;
+  short_name: string;
+  /**
+   * One of EXTERNAL_APP_KINDS.
+   */
+  kind: 'editor' | 'viewer' | 'terminal' | 'shell' | 'system';
+  extensions: string[];
+  icon: ExternalAppIcon;
+  is_system_default: boolean;
+  available: boolean;
+}
+
+/**
+ * ``glyph`` names a mark the console ships; ``data_url`` is an inline image.
+ * An executable's own path is never an icon value.
+ */
+export interface ExternalAppIcon {
+  /**
+   * One of EXTERNAL_APP_ICON_KINDS.
+   */
+  kind: 'glyph' | 'data_url';
+  value: string;
+}
+
+/**
+ * One bounded page of the host's application catalog; ``truncated`` is true
+ * when the probe table found more than the page holds.
+ */
+export interface ExternalAppPage {
+  apps: ExternalApp[];
+  truncated: boolean;
+}
+
 export interface FinishAttachmentCommand {
   ref: AttachmentRef;
   expected_size: number;
@@ -863,6 +909,17 @@ export interface ListDirectoriesQuery {
 }
 
 /**
+ * ``limit`` is bounded to 1..64; the catalog is a
+ * host property, so the query carries no session.
+ */
+export interface ListExternalAppsQuery {
+  /**
+   * python_default_kind=value python_default=64
+   */
+  limit?: number;
+}
+
+/**
  * ``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire
  * decoder; the visibility filter is applied before pagination.
  */
@@ -955,6 +1012,39 @@ export interface Negotiation {
 export interface NegotiationClient {
   name: string;
   version: string;
+}
+
+/**
+ * ``path`` is workspace-relative and must resolve inside the session's own
+ * workspace; ``app_id`` names an application the host enumerated (absent
+ * means the system association).  The request never carries a command line.
+ */
+export interface OpenExternalCommand {
+  session: SessionRef;
+  path: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  app_id?: string | null;
+  /**
+   * python_default_kind=value python_default="open"
+   * One of EXTERNAL_APP_MODES; absent means ``open``.
+   */
+  mode?: 'open' | 'reveal';
+  /**
+   * python_default_kind=value python_default=null
+   */
+  command_id?: string | null;
+}
+
+/**
+ * ``app_id`` is the id the host actually started (``system`` when the
+ * association was used) and ``mode`` is the mode it ran in.
+ */
+export interface OpenExternalResult {
+  opened: boolean;
+  app_id: string;
+  mode: string;
 }
 
 export interface OpenSessionCommand {

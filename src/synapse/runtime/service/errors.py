@@ -19,6 +19,10 @@ __all__ = [
     "ConfigOverflowError",
     "EventOverflowError",
     "EventTooLargeError",
+    "ExternalAppLaunchError",
+    "ExternalAppPathError",
+    "ExternalAppsUnavailableError",
+    "ExternalAppUnknownError",
     "GitUnavailableError",
     "HistoryTooLargeError",
     "InvalidCursorError",
@@ -98,6 +102,30 @@ class ArtifactChangedError(RuntimeServiceError):
     """The artifact revision changed during an operation or did not match."""
 
     code = "artifact_changed"
+
+
+class ExternalAppsUnavailableError(RuntimeServiceError):
+    """The host cannot offer external programs (no workspace, no desktop session)."""
+
+    code = "external_apps_unavailable"
+
+
+class ExternalAppUnknownError(RuntimeServiceError):
+    """The requested application is not one this host enumerated."""
+
+    code = "external_app_unknown"
+
+
+class ExternalAppPathError(RuntimeServiceError):
+    """The path cannot be opened externally (unsafe, outside, or absent)."""
+
+    code = "external_app_path_invalid"
+
+
+class ExternalAppLaunchError(RuntimeServiceError):
+    """The host refused to start the requested application."""
+
+    code = "external_app_launch_failed"
 
 
 class GitUnavailableError(RuntimeServiceError):

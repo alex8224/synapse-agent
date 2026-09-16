@@ -205,6 +205,7 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 | 静态路径 | 解码后含 `..`/反斜杠/NUL 直接 404；文件与目录 index 的符号链接逃逸 404 且不抛异常 |
 | 资源上限 | 帧上限 `--max-message-bytes`、并发上限 `--max-sockets`、HTTP 体上限 `--max-body-bytes`、**中继出站缓冲上界**（64 帧 / 8 MiB，取先到者）、每帧发送超时、daemon 握手超时 |
 | 缓存规则 | `index.html` 与 SPA 回退 `no-store`；`assets/**`（内容哈希）`immutable`；其它静态 `no-cache`；404/405/异常 `no-store` |
+| 本机程序启动（`runtime.workspace.open_external`） | 宿主**不**中继出任何命令行：请求只带工作区相对路径与宿主自己枚举出的 `app_id`，daemon 侧再校验路径落在会话自己的工作区内（symlink 逃逸拒绝）并只做一次固定 argv 的启动；授权位独立（`apps.list` / `workspace.open_external` 与 `git.status`、`session.read` 互不授权）；不修改工作区。宿主中继层对这一帧仍是原样转发，边界在 daemon（见 §4.1 的口径） |
 
 浏览器断开不会取消 daemon 中运行中的 turn（只有显式 `runtime.turn.cancel`
 取消）；中继在任一端关闭后立即关闭另一端并清理任务。
@@ -439,6 +440,10 @@ pytest**，含单文件与 `--collect-only`）：
   `protocol.decode_params` 无源码级绑定，安全性依赖 daemon 的严格校验。
 - Windows 下 token 文件符号链接不被拒绝（无 `O_NOFOLLOW`）；Linux/macOS 会拒绝。
 - 活动 WS 不因会话 TTL 到期被断开。
+- 「打开方式」的可用应用是 daemon 侧 `runtime/service/external_apps.py` 的**固定候选表 + 运行时探测**：
+  装了才出现，表里没有的编辑器不会出现；图标只回字形 id（不提取真实图标，也不回可执行文件路径）。
+  动态枚举（Windows `App Paths`、Linux `.desktop`、macOS `/Applications`）是后续项，不会改变契约字段；
+  「系统默认应用」永远可用，因此不会出现「没有任何应用可选」的死路。
 - 前端 `PairingGate` 只有类型检查与源码级断言，无 DOM 渲染测试（`web/` 未引入
   jsdom/测试渲染依赖）；配对失败只能靠重新输入码或刷新页面恢复。
 - 文档构建保留既有 anchor INFO：`tutorial.md` 的 16 个 `#N-…` 链接找不到对应

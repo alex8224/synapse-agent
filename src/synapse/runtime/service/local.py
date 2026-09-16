@@ -115,6 +115,14 @@ from synapse.runtime.service.events import (
     matches_event,
     project_payload,
 )
+from synapse.runtime.service.external_apps import (
+    ExternalAppPage,
+    ListExternalAppsQuery,
+    OpenExternalCommand,
+    OpenExternalResult,
+    list_external_apps_host,
+    open_external_workspace,
+)
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -1362,6 +1370,42 @@ class LocalAgentRuntimeService:
         self._check_project(manager, command.session)
         session = self._resolve_session(manager, command.session)
         return await asyncio.to_thread(revert_turn_change_workspace, command, session)
+
+    # -- external program port ---------------------------------------------
+
+    async def list_external_apps(self, query: ListExternalAppsQuery) -> ExternalAppPage:
+        """List the applications this host can start, as one bounded page.
+
+        Host-scoped and read-only: the probe table is checked on a worker thread (it
+        touches the filesystem), and nothing about the session, the workspace or a
+        program's own path is involved.
+        """
+        if type(query) is not ListExternalAppsQuery:
+            raise InvalidRequestError(
+                "list external apps query must be a ListExternalAppsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        return await asyncio.to_thread(list_external_apps_host, query)
+
+    async def open_external(self, command: OpenExternalCommand) -> OpenExternalResult:
+        """Start one host application on one workspace-relative path.
+
+        Session-scoped, authorized by ``workspace.open_external``.  The workspace is
+        the session's own (never a path from the request), the path must resolve inside
+        it, and the application is one the host enumerated -- the request never carries
+        a command line.  The probes, the path checks and the launch run on a worker
+        thread.
+        """
+        if type(command) is not OpenExternalCommand:
+            raise InvalidRequestError(
+                "open external command must be an OpenExternalCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        session = self._resolve_session(manager, command.session)
+        return await asyncio.to_thread(open_external_workspace, command, session)
 
     # -- attachment port ---------------------------------------------------
 

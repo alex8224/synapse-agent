@@ -71,6 +71,12 @@ from synapse.runtime.service.errors import (
     PermissionDeniedError,
 )
 from synapse.runtime.service.events import EventFilter, EventPage, ReadEventsQuery
+from synapse.runtime.service.external_apps import (
+    ExternalAppPage,
+    ListExternalAppsQuery,
+    OpenExternalCommand,
+    OpenExternalResult,
+)
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -150,7 +156,9 @@ __all__ = [
     "ARTIFACTS_READ",
     "ATTACHMENTS_READ",
     "ATTACHMENTS_WRITE",
+    "APPS_LIST",
     "WORKSPACE_REVERT",
+    "WORKSPACE_OPEN_EXTERNAL",
     "CODEX_RESET_CONSUME",
     "CODEX_USAGE_READ",
     "SESSION_OPEN",
@@ -245,6 +253,16 @@ CODEX_USAGE_READ = "codex.usage.read"
 #: account state, so ``codex.usage.read`` must never authorize it.
 CODEX_RESET_CONSUME = "codex.reset.consume"
 
+#: List the applications this host can start on a workspace file.  A catalog-scoped
+#: read of the host's own probe table: it reports names and glyph ids, never a
+#: program's path, and it authorizes no launch.
+APPS_LIST = "apps.list"
+#: Start one host application on one workspace-relative path.  This is the only
+#: capability that starts a program on the reader's own machine, so it is its own
+#: grant -- ``apps.list``, ``session.read`` and ``git.status`` must never authorize
+#: it, and a launch never modifies the workspace.
+WORKSPACE_OPEN_EXTERNAL = "workspace.open_external"
+
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
         SESSION_OPEN,
@@ -280,6 +298,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         ATTACHMENTS_WRITE,
         CODEX_USAGE_READ,
         CODEX_RESET_CONSUME,
+        APPS_LIST,
+        WORKSPACE_OPEN_EXTERNAL,
     }
 )
 
@@ -1017,6 +1037,45 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "revert_turn_change", None)
         if not callable(delegate):
             raise InvalidRequestError("reverting a turn's change is unavailable")
+        return await delegate(command)
+
+    async def list_external_apps(self, query: ListExternalAppsQuery) -> ExternalAppPage:
+        """Authorize the host application catalog and delegate it.
+
+        Catalog-scoped and read-only, gated by a project-wide grant of ``apps.list``
+        (the same shape as ``fs.list``).  The catalog names applications and glyph ids
+        only: a program's own path never reaches the caller.
+        """
+        if type(query) is not ListExternalAppsQuery:
+            raise InvalidRequestError(
+                "list external apps query must be a ListExternalAppsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        visible = self._authorizer.visible_project_ids(self._principal, APPS_LIST)
+        if visible is not None and not visible:
+            raise PermissionDeniedError()
+        delegate = getattr(self._delegate, "list_external_apps", None)
+        if not callable(delegate):
+            raise InvalidRequestError("external application listing is unavailable")
+        return await delegate(query)
+
+    async def open_external(self, command: OpenExternalCommand) -> OpenExternalResult:
+        """Authorize ``workspace.open_external`` per session, then delegate (optional).
+
+        The one call that starts a program on the reader's own machine, so it is
+        authorized by a capability of its own: ``apps.list``, ``git.status`` and
+        ``session.read`` must never reach it.  Optional delegate method, like
+        ``git_status``: the ACL check runs first either way.
+        """
+        session = self._session_from_dto(
+            command, OpenExternalCommand, "open external command"
+        )
+        self._authorize(session, WORKSPACE_OPEN_EXTERNAL)
+        delegate = getattr(self._delegate, "open_external", None)
+        if not callable(delegate):
+            raise InvalidRequestError(
+                "opening a file with an external program is unavailable"
+            )
         return await delegate(command)
 
     async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:

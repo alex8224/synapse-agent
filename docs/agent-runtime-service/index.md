@@ -78,13 +78,14 @@ flowchart LR
 
 ### S10 之后的 wire 增量（会话管理 / goal / 附件 / project list / 项目登记 / 宿主目录浏览）
 
-契约冻结（v1）后 wire 表继续**只做 additive** 扩展，当前共 44 个 wire 方法（42 个 service + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）与 30 个授权 capability，权威仍是 `service/contract_registry.py` / `service/access.py`：
+契约冻结（v1）后 wire 表继续**只做 additive** 扩展。本小节列举到「宿主目录浏览」为止的那一批；**当前**（含下方的外部程序面）权威计数是 **50 个 wire 方法**（48 个 service + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）与 **35 个授权 capability**，可与 `service/contract_manifest.json`（`methods` 48 条、`authorization_capabilities` 35 条）交叉核对；真源仍是 `service/contract_registry.py` / `service/access.py`：
 
 - **会话管理**：`runtime.session.create` / `rename` / `delete` / `search`（各自独立 capability）；`create` 由服务端分配身份，`delete` 只删元数据行与 thread goal 并在结果里报告 `retained_history`（checkpoint 与 transcript projection 保留），`search` 是**元数据搜索**而非全文检索。
 - **会话 goal 写**：`runtime.session.goal.set` / `edit` / `clear` / `pause` / `resume`（独立 `session.goal` capability，`session.read` 不授权写入；`expected_goal_id` 做乐观并发）。
 - **附件**：`runtime.attachments.begin` / `append` / `finish` / `abort` / `stat` / `read`（`attachments.write` / `attachments.read`），以及 `runtime.turn.submit` 的可选 `attachment_refs`；`read_session_history` 的 `HistoryEvent.attachments` 只带 durable 元数据。
 - **项目列举**：`runtime.project.list`（`project.list`，只读、服务端计算可见集合、先过滤再分页）。
 - **项目登记与宿主目录浏览**：`runtime.project.register`（`project.register`，写面：daemon 解析并校验宿主目录后 upsert 用户层项目 catalog，按 workspace 路径幂等、重复登记复用同一 `project_id`）与 `runtime.fs.list`（`fs.list`，只读有界：只枚举一个宿主目录的直接子目录，从不返回文件、从不递归，`limit` 默认 200 / 1..1000）。两者都是 catalog scope、无 per-request 项目位置。
+- **用外部程序打开工作区文件**：`runtime.apps.list`（`apps.list`，catalog scope、只读有界：宿主侧一张**固定候选表 + 运行时探测**得到的应用目录，`limit` 默认 64；只回名称、短名、角色、声称的扩展名与图标字形 id，**不回**可执行文件路径）与 `runtime.workspace.open_external`（`workspace.open_external`，会话级、`{session, path, app_id?, mode: open|reveal}`：路径必须是工作区相对且解析后仍在会话自己的工作区内，`app_id` 必须是宿主自己枚举出的 id，请求里没有命令行；具名拒绝 `external_app_path_invalid` / `external_app_outside_workspace` / `external_app_file_missing` / `external_app_unknown` / `external_app_launch_failed` / `external_app_unavailable`）。启动不修改工作区。控制台侧见 [web-console/index.md §2.5](../web-console/index.md)。
 
 实际门禁数字、附件限额常量、`retained history` 语义与**仍未 wire 的后端能力矩阵**见 [progress.md](progress.md)；逐方法参数/结果见 [S7 wire 协议表](s7-wire-protocol.md)。
 

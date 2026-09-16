@@ -6,6 +6,7 @@
     "reject_always"
   ],
   "authorization_capabilities": [
+    "apps.list",
     "artifacts.list",
     "artifacts.read",
     "artifacts.stat",
@@ -38,6 +39,7 @@
     "turn.cancel",
     "turn.steer",
     "turn.submit",
+    "workspace.open_external",
     "workspace.revert"
   ],
   "contract_version": 1,
@@ -266,6 +268,26 @@
     "session_title_max": 120
   },
   "methods": [
+    {
+      "capability": "apps.list",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.",
+      "method": "runtime.apps.list",
+      "notes": [
+        "Host-scoped catalog of the applications this machine can start.  Read-only",
+        "and bounded: names, roles, claimed extensions and glyph ids travel; a",
+        "program's own path does not."
+      ],
+      "request": "ListExternalAppsQuery",
+      "result": "ExternalAppPage",
+      "result_nullable": false,
+      "scope": "catalog",
+      "scope_location": null,
+      "service_method": "list_external_apps",
+      "wire_defaults": {
+        "limit": 64
+      }
+    },
     {
       "capability": "artifacts.list",
       "class": "service",
@@ -1044,6 +1066,29 @@
       "scope": "session",
       "scope_location": "params.session",
       "service_method": "submit_turn",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "workspace.open_external",
+      "class": "service",
+      "in_process": "Optional delegate method, same degradation rule as `runtime.git.status`.",
+      "method": "runtime.workspace.open_external",
+      "notes": [
+        "Starts one host-side program for exactly one workspace-relative path.  The",
+        "program is named by an id the host itself enumerated -- the request never",
+        "carries a command line -- and the target must resolve inside the session's",
+        "own workspace.  Refusals are named in `service_code`",
+        "(`external_app_path_invalid`, `external_app_outside_workspace`,",
+        "`external_app_file_missing`, `external_app_unknown`,",
+        "`external_app_launch_failed`, `external_app_unavailable`).  A launch never",
+        "modifies the workspace."
+      ],
+      "request": "OpenExternalCommand",
+      "result": "OpenExternalResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "open_external",
       "wire_defaults": {}
     },
     {
@@ -2910,6 +2955,147 @@
       "origin": "python",
       "role": "result"
     },
+    "ExternalApp": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "short_name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "kind",
+          "note": "One of EXTERNAL_APP_KINDS.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "'editor' | 'viewer' | 'terminal' | 'shell' | 'system'",
+          "wire": "json"
+        },
+        {
+          "name": "extensions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "icon",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ExternalAppIcon",
+          "required": true,
+          "ts_type": "ExternalAppIcon",
+          "wire": "json"
+        },
+        {
+          "name": "is_system_default",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "available",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``extensions`` are the extensions the application claims (the console",
+        "groups its recommendations by them); ``short_name`` is the label a title",
+        "bar can hold.  No field names a path on the host."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "ExternalAppIcon": {
+      "fields": [
+        {
+          "name": "kind",
+          "note": "One of EXTERNAL_APP_ICON_KINDS.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "'glyph' | 'data_url'",
+          "wire": "json"
+        },
+        {
+          "name": "value",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``glyph`` names a mark the console ships; ``data_url`` is an inline image.",
+        "An executable's own path is never an icon value."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "ExternalAppPage": {
+      "fields": [
+        {
+          "name": "apps",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalApp, ...]",
+          "required": true,
+          "ts_type": "ExternalApp[]",
+          "wire": "json"
+        },
+        {
+          "name": "truncated",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One bounded page of the host's application catalog; ``truncated`` is true",
+        "when the probe table found more than the page holds."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
     "FinishAttachmentCommand": {
       "fields": [
         {
@@ -3783,6 +3969,27 @@
       "origin": "python",
       "role": "request"
     },
+    "ListExternalAppsQuery": {
+      "fields": [
+        {
+          "default": 64,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``limit`` is bounded to 1..64; the catalog is a",
+        "host property, so the query carries no session."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ListProjectsQuery": {
       "fields": [
         {
@@ -4069,6 +4276,106 @@
       ],
       "origin": "transport",
       "role": "value"
+    },
+    "OpenExternalCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "app_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": "open",
+          "default_kind": "value",
+          "name": "mode",
+          "note": "One of EXTERNAL_APP_MODES; absent means ``open``.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "'open' | 'reveal'",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "command_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``path`` is workspace-relative and must resolve inside the session's own",
+        "workspace; ``app_id`` names an application the host enumerated (absent",
+        "means the system association).  The request never carries a command line."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "OpenExternalResult": {
+      "fields": [
+        {
+          "name": "opened",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "app_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "mode",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``app_id`` is the id the host actually started (``system`` when the",
+        "association was used) and ``mode`` is the mode it ran in."
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "OpenSessionCommand": {
       "fields": [

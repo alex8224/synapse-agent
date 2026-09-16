@@ -45,13 +45,14 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 
 ## Methods
 
-契约冻结后 wire 表共 **47 个方法**（45 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
+契约冻结后 wire 表共 **50 个方法**（48 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
 
 | method | params 的主要字段 | result |
 |---|---|---|
 | `runtime.artifacts.list` | `session`, optional `path/cursor/limit` | `ArtifactPage` |
 | `runtime.artifacts.read` | `ref: {session,path}`, optional `offset/limit/expected_revision` | `ArtifactChunk` |
 | `runtime.artifacts.stat` | `ref: {session,path}` | `ArtifactMetadata` |
+| `runtime.apps.list` | optional `limit` | `ExternalAppPage` |
 | `runtime.attachments.begin` | `session`, `size`, `mime`, optional `display_name` | `BeginAttachmentResult` |
 | `runtime.attachments.append` | `ref: {session,attachment_id}`, `expected_offset`, `data_base64` | `AppendAttachmentChunkResult` |
 | `runtime.attachments.finish` | `ref`, `expected_size`, `expected_mime` | `FinishAttachmentResult` |
@@ -63,6 +64,8 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.events.unwatch` | `subscription_id` | `{removed}` |
 | `runtime.events.watch` | `session`, optional `after/queue_size/filter/max_event_bytes` | `{subscription_id,cursor}` then notifications |
 | `runtime.fs.list` | optional `path/limit` | `DirectoryListing` |
+| `runtime.git.diff` | `session`, `path`, optional `staged` | `GitDiffResult` |
+| `runtime.git.status` | `session` | `GitStatusResult` |
 | `runtime.project.list` | optional `limit/offset` | `ProjectListPage` |
 | `runtime.project.register` | `workspace_path` | `ProjectListItem` |
 | `runtime.project.thinking.set` | `project_id`, `level`, optional `command_id` | `SetProjectThinkingLevelResult` |
@@ -86,6 +89,8 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 | `runtime.session.rename` | `session`, `title`, optional `command_id` | `RenameSessionResult` |
 | `runtime.session.search` | `project_id`, optional `text/limit/offset` | `SessionSearchPage` |
 | `runtime.session.thinking.set` | `session`, `level`, optional `command_id` | `SetThinkingLevelResult` |
+| `runtime.workspace.open_external` | `session`, `path`, optional `app_id/mode/command_id` | `OpenExternalResult` |
+| `runtime.workspace.revert` | `session`, `turn_id`, `path`, optional `command_id` | `RevertTurnChangeResult` |
 | `runtime.turn.approval.get` | `session`, `expected_turn_id` | `PendingApprovalView` |
 | `runtime.turn.approval.resume` | `session`, `expected_turn_id`, `decisions`, optional `command_id` | `ResumeTurnResult` |
 | `runtime.turn.cancel` | `session`, `expected_turn_id`, optional `reason/command_id` | `CancelTurnResult` |

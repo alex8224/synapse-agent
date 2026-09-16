@@ -98,6 +98,8 @@ import {
 import type { ArtifactChunkView, ArtifactEntry, ArtifactPageView } from './artifacts.ts';
 import { parseGitDiff, parseGitStatus } from './git.ts';
 import type { GitDiffView, GitStatusView } from './git.ts';
+import { parseExternalAppPage, parseOpenExternalResult } from './externalApps.ts';
+import type { ExternalAppsView, OpenExternalMode, OpenExternalResultView } from './externalApps.ts';
 import {
   CODEX_RESET_CONSUME_METHOD,
   CODEX_RESET_CREDITS_METHOD,
@@ -754,6 +756,43 @@ export class SynapseRuntimeClient {
     };
     if (params.command_id !== undefined) payload.command_id = params.command_id;
     return this.call<RevertTurnChangeResult>('runtime.workspace.revert', payload);
+  }
+
+  /**
+   * List the applications the host can start on a workspace file (`runtime.apps.list`).
+   *
+   * A host property, not a session one, so it takes no parameters and is read once
+   * per console: the answer carries names, roles, claimed extensions and glyph ids.
+   * An application's own path never travels, and this call authorizes no launch.
+   */
+  public async listExternalApps(): Promise<ExternalAppsView> {
+    return parseExternalAppPage(await this.call('runtime.apps.list', {}));
+  }
+
+  /**
+   * Start one host application on one workspace-relative path
+   * (`runtime.workspace.open_external`).
+   *
+   * The program is named by an id the host itself enumerated (absent means the
+   * operating system's association) and the path must resolve inside the session's
+   * own workspace.  Refusals carry a `service_code` that names the condition, so a
+   * failure here is always something the console can word.
+   */
+  public async openExternal(params: {
+    session: SessionRef;
+    path: string;
+    appId?: string;
+    mode?: OpenExternalMode;
+  }): Promise<OpenExternalResultView> {
+    const payload: Record<string, unknown> = {
+      session: params.session,
+      path: params.path,
+    };
+    if (params.appId !== undefined) payload.app_id = params.appId;
+    if (params.mode !== undefined) payload.mode = params.mode;
+    return parseOpenExternalResult(
+      await this.call('runtime.workspace.open_external', payload),
+    );
   }
 
   /**

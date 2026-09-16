@@ -15,6 +15,15 @@
 ## 契约冻结与生成物门禁（ADR-S-019，已完成）
 
 - 权威：`service/contract_registry.py` 登记 **44 个 wire 方法**（42 个 `method_class="service"` + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个 `method_class="transport"` 连接态方法）、24 个 kind → payload schema、4 个协议功能 flag、**30 个授权 capability**（`service/access.py` 仍是常量真源）与 schema 清单；`transport/protocol.py` 从它派生 `METHODS` / `CAPABILITIES`，契约层运行时不回读任何生成物。计数可用 `service/contract_manifest.json` 交叉核对（`"class": "service"` 42 条、`"class": "transport"` 2 条、`authorization_capabilities` 30 条、`events` 24 条）。
+
+> **计数更新（外部程序面之后）**：上段是当时那一批的计数。当前 `service/contract_manifest.json`
+> 是 `methods` 48 条（service）+ 2 个连接态方法 = **50 个 wire 方法**、**35 个授权 capability**；
+> `transport/protocol.py` 的 `METHODS` 为 50。新增的两个方法是
+> `runtime.apps.list`（`apps.list`，catalog scope、只读有界，宿主侧应用目录：固定候选表 + 运行时探测，
+> 只回名称/角色/声称的扩展名/图标字形 id，不回可执行文件路径）与
+> `runtime.workspace.open_external`（`workspace.open_external`，会话级，用宿主自己枚举出的 `app_id`
+> 打开一个工作区相对路径，`mode: open|reveal`；请求里没有命令行，启动不修改工作区）。
+> 实现见 `src/synapse/runtime/service/external_apps.py`，测试见 `tests/test_runtime_service_external_apps.py`。
 - 生成物：`src/synapse/runtime/service/contract_manifest.json` 与 `web/src/runtime-client/contract.generated.ts`，由 `scripts/export_contract_manifest.py` 经 `service/contract_export.py` 渲染；`--check` 对提交内容做逐字节校验，漂移即失败。
 - 事件契约：24 个 kind 与全部 payload dataclass 上移到 `service/event_types.py`，`runtime/streaming/events.py` 原样 re-export 同一批对象；`info` 保持裸 `str`，`RuntimeEvent.turn_sequence` 与 `ToolBatchPayload.items` 保留；影子 kind 不进枚举与 manifest，但 TUI/web 的历史兼容分支**保留**（未清理，也不声称已清理）。
 - 契约层边界：`CONTRACT_FILES` 补齐 `recovery.py` / `runtime_config.py` / `artifacts.py` / `access.py` / `event_types.py`；`artifacts.py`（纯 DTO）/ `artifact_filesystem.py`（FS 实现）拆分；`service/__init__.py` 改为 PEP 562 懒 re-export（导入子模块仍会执行父包，但不再拉入 `local` / `routing` / 会话执行栈）。

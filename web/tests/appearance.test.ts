@@ -24,8 +24,10 @@ import {
   frameColorFor,
   initAppearance,
   readStoredAppearance,
+  readStoredOpenWith,
   themeFor,
   useAppearanceStore,
+  OPEN_WITH_STORAGE_KEY,
 } from '../src/stores/appearance.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -66,6 +68,47 @@ function withStorage<T>(store: unknown, body: () => T): T {
 test('an explicit choice beats the operating system', () => {
   assert.equal(themeFor('light', true), LIGHT_THEME, 'light stays Fluent light on a dark system');
   assert.equal(themeFor('dark', false), DARK_THEME, 'dark stays dark on a light system');
+});
+
+test('the remembered "open with" choice round-trips per extension', () => {
+  const store = memoryStorage();
+  withStorage(store, () => {
+    assert.deepEqual(readStoredOpenWith(), {}, 'nothing is remembered yet');
+    useAppearanceStore.getState().rememberOpenWith('.tsx', 'vscode');
+    assert.equal(useAppearanceStore.getState().openWith['.tsx'], 'vscode');
+    assert.equal(store.getItem(OPEN_WITH_STORAGE_KEY), '{".tsx":"vscode"}');
+    assert.deepEqual(readStoredOpenWith(), { '.tsx': 'vscode' }, 'it survives a reload');
+
+    // Unticking the checkbox forgets exactly that extension.
+    useAppearanceStore.getState().rememberOpenWith('.tsx', null);
+    assert.equal(useAppearanceStore.getState().openWith['.tsx'], undefined);
+    assert.deepEqual(readStoredOpenWith(), {});
+  });
+});
+
+test('a stored "open with" entry that is not an application id is dropped', () => {
+  // The value has to look like an id the host published: a hand-edited path, a
+  // command line or a credential-shaped string must never become a menu entry.
+  withStorage(
+    memoryStorage({
+      [OPEN_WITH_STORAGE_KEY]: JSON.stringify({
+        '.tsx': 'vscode',
+        '.py': 'C:/tools/python.exe',
+        '.sh': 'sh -c "rm -rf /"',
+        'not-an-extension': 'vscode',
+        '.md': 'Zed',
+      }),
+    }),
+    () => {
+      assert.deepEqual(readStoredOpenWith(), { '.tsx': 'vscode' });
+    },
+  );
+  withStorage(memoryStorage({ [OPEN_WITH_STORAGE_KEY]: 'not json' }), () => {
+    assert.deepEqual(readStoredOpenWith(), {}, 'a malformed blob is not an error');
+  });
+  withStorage(undefined, () => {
+    assert.deepEqual(readStoredOpenWith(), {}, 'a browser without storage still works');
+  });
 });
 
 test('system follows the operating system', () => {

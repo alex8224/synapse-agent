@@ -1,18 +1,21 @@
 /**
- * Console appearance: which theme the document carries, and the reader's choice.
+ * The console's persisted, non-secret preferences.
  *
- * The look itself is CSS (`src/index.css`): this module only decides *which*
- * `data-theme` value is applied, and keeps following the operating system while
- * the reader asked for "system".
+ * Two of them live here: the appearance (which theme the document carries, and the
+ * reader's choice) and the "open with" memory (which host application the reader
+ * picked for an extension).  The look itself is CSS (`src/index.css`): the theme
+ * half of this module only decides *which* `data-theme` value is applied, and keeps
+ * following the operating system while the reader asked for "system".
  *
- * The choice is persisted in `localStorage`.  That is the one deliberate
- * exception to the console's C-12 invariant, which forbids *credential*
- * persistence: the only secret this app may hold is the host's HttpOnly session
- * cookie, and a theme name is not one.  `tests/sourceGuard.test.ts` keeps the
- * rule intact by allowing a storage API in this file and in
- * `stores/transcriptCache.ts` only.  Storage that is unavailable (private
- * window, "block all cookies") degrades to "follow the system" instead of
- * raising -- see {@link readStoredAppearance}.
+ * Both are persisted in `localStorage`.  That is the deliberate exception to the
+ * console's C-12 invariant, which forbids *credential* persistence: the only secret
+ * this app may hold is the host's HttpOnly session cookie, and neither a theme name
+ * nor an application id is one -- an application id is a label the host itself
+ * published, never a path or a command.  `tests/sourceGuard.test.ts` keeps the rule
+ * intact by allowing a storage API in this file and in
+ * `stores/transcriptCache.ts` only.  Storage that is unavailable (private window,
+ * "block all cookies") degrades to the default instead of raising -- see
+ * {@link readStoredAppearance} and {@link readStoredOpenWith}.
  */
 import { create } from 'zustand';
 
@@ -20,6 +23,15 @@ export type Appearance = 'system' | 'light' | 'dark';
 
 /** Where the reader's choice is persisted (non-secret, per browser origin). */
 export const APPEARANCE_STORAGE_KEY = 'synapse.console.appearance';
+
+/** Where the remembered "open with" application per extension is persisted. */
+export const OPEN_WITH_STORAGE_KEY = 'synapse.console.openWith';
+
+/** How many extensions the "open with" memory keeps before the oldest is dropped. */
+export const OPEN_WITH_MEMORY_LIMIT = 32;
+
+/** Remembered application id per extension key (`'.tsx'`, or `''` for none). */
+export type OpenWithMemory = Readonly<Record<string, string>>;
 
 /** Both appearances use the same Fluent component language. */
 export const LIGHT_THEME = 'fluent-light';
@@ -96,7 +108,10 @@ function applyAppearance(theme: string | null): void {
 
 interface AppearanceStore {
   appearance: Appearance;
+  openWith: OpenWithMemory;
   setAppearance: (appearance: Appearance) => void;
+  /** Remember (or, with `null`, forget) the application for one extension. */
+  rememberOpenWith: (extension: string, appId: string | null) => void;
 }
 
 function isAppearance(value: unknown): value is Appearance {
@@ -149,6 +164,49 @@ function root(): { dataset: DOMStringMap } | null {
   return typeof document === 'undefined' ? null : document.documentElement;
 }
 
+/** An application id the host published: a bounded label, never a path. */
+function isAppId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value);
+}
+
+/**
+ * The persisted "open with" memory, or `{}`.
+ *
+ * Only canonical extension keys and published-looking application ids survive: a
+ * stored value that does not look like either is dropped, so a hand-edited entry
+ * cannot make the menu claim an application the host never offered.
+ */
+export function readStoredOpenWith(): OpenWithMemory {
+  const store = storage();
+  if (store === null) return {};
+  try {
+    const raw = store.getItem(OPEN_WITH_STORAGE_KEY);
+    if (raw === null) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const memory: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!/^(\.[a-z0-9]{1,16})?$/.test(key) || !isAppId(value)) continue;
+      memory[key] = value;
+      if (Object.keys(memory).length >= OPEN_WITH_MEMORY_LIMIT) break;
+    }
+    return memory;
+  } catch {
+    return {};
+  }
+}
+
+/** Best-effort write: blocked storage must not break opening a file. */
+function persistOpenWith(memory: OpenWithMemory): void {
+  const store = storage();
+  if (store === null) return;
+  try {
+    store.setItem(OPEN_WITH_STORAGE_KEY, JSON.stringify(memory));
+  } catch {
+    /* Quota or blocked storage: the choice still applies to this session. */
+  }
+}
+
 function prefersDark(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -156,10 +214,23 @@ function prefersDark(): boolean {
 
 export const useAppearanceStore = create<AppearanceStore>((set) => ({
   appearance: 'system',
+  openWith: {},
   setAppearance: (appearance) => {
     applyAppearance(themeFor(appearance, prefersDark()));
     persistAppearance(appearance);
     set({ appearance });
+  },
+  rememberOpenWith: (extension, appId) => {
+    set((state) => {
+      const next: Record<string, string> = { ...state.openWith };
+      if (appId === null) delete next[extension];
+      else next[extension] = appId;
+      const bounded = Object.fromEntries(
+        Object.entries(next).slice(-OPEN_WITH_MEMORY_LIMIT),
+      );
+      persistOpenWith(bounded);
+      return { openWith: bounded };
+    });
   },
 }));
 
@@ -176,7 +247,7 @@ export const useAppearanceStore = create<AppearanceStore>((set) => ({
 export function initAppearance(): void {
   const stored = readStoredAppearance();
   applyAppearance(themeFor(stored, prefersDark()));
-  useAppearanceStore.setState({ appearance: stored });
+  useAppearanceStore.setState({ appearance: stored, openWith: readStoredOpenWith() });
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     const { appearance } = useAppearanceStore.getState();

@@ -14,6 +14,7 @@ import { CodeBlock } from './CodeBlock.tsx';
 import { Markdown } from './Markdown.tsx';
 import { FloatingPanel } from './FloatingPanel.tsx';
 import { FloatingWindow } from './FloatingWindow.tsx';
+import { OpenWithMenu } from './OpenWithMenu.tsx';
 import {
   ARTIFACT_CHUNK_BYTES,
   ARTIFACT_HARD_MAX_BYTES,
@@ -135,6 +136,8 @@ export const ArtifactsPanel: React.FC<{
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
   const paired = useConsoleStore((s) => s.pairingState === 'paired');
+  const openExternalError = useConsoleStore((s) => s.openExternalError);
+  const dismissOpenExternalError = useConsoleStore((s) => s.dismissOpenExternalError);
 
   const [dir, setDir] = useState('.');
   const [entries, setEntries] = useState<ArtifactEntry[]>([]);
@@ -439,6 +442,10 @@ export const ArtifactsPanel: React.FC<{
           <span className="text-[14px] font-semibold text-gray-900">工作区文件</span>
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate font-mono text-[12px] text-gray-500">{dir}</span>
+            <OpenWithMenu
+              path={shownEntry !== null && shownEntry.kind === 'file' ? shownEntry.path : null}
+              disabledReason="先选择一个文件"
+            />
             <button
               type="button"
               onClick={onClose}
@@ -449,6 +456,19 @@ export const ArtifactsPanel: React.FC<{
               <Dismiss16Regular aria-hidden="true" />
             </button>
           </div>
+        </div>
+      )}
+
+      {openExternalError !== null && (
+        <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-3 py-1.5 text-[12px] leading-relaxed text-amber-800">
+          <span className="min-w-0 flex-1">{openExternalError}</span>
+          <button
+            type="button"
+            onClick={dismissOpenExternalError}
+            className="ui-button ui-compact shrink-0 text-[12px]"
+          >
+            知道了
+          </button>
         </div>
       )}
 
@@ -795,19 +815,31 @@ export const ArtifactsPanel: React.FC<{
           </>
         }
         actions={
-          <button
-            type="button"
-            onClick={() => { setTreeVisible((visible) => !visible); setMobileDetail(false); }}
-            title={treeVisible ? '收起文件树' : '展开文件树'}
-            aria-label={treeVisible ? '收起文件树' : '展开文件树'}
-            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
-          >
-            {treeVisible ? (
-              <PanelLeftContract16Regular aria-hidden="true" />
-            ) : (
-              <PanelLeftExpand16Regular aria-hidden="true" />
-            )}
-          </button>
+          <>
+            {/* The file the window is showing, opened in the reader's own program.
+                A directory is not offered: locating one is the shell's job. */}
+            <OpenWithMenu
+              path={shownEntry !== null && shownEntry.kind === 'file' ? shownEntry.path : null}
+              disabledReason={
+                shownEntry !== null && shownEntry.kind === 'directory'
+                  ? '目录不能用外部程序打开'
+                  : '先选择一个文件'
+              }
+            />
+            <button
+              type="button"
+              onClick={() => { setTreeVisible((visible) => !visible); setMobileDetail(false); }}
+              title={treeVisible ? '收起文件树' : '展开文件树'}
+              aria-label={treeVisible ? '收起文件树' : '展开文件树'}
+              className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
+            >
+              {treeVisible ? (
+                <PanelLeftContract16Regular aria-hidden="true" />
+              ) : (
+                <PanelLeftExpand16Regular aria-hidden="true" />
+              )}
+            </button>
+          </>
         }
       >
         {panel}

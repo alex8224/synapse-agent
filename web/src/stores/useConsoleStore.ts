@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { SynapseRuntimeClient } from '../client/SynapseRuntimeClient.ts';
 import type { GitStatusView } from '../runtime-client/git.ts';
+import { describeOpenExternalFailure } from '../runtime-client/externalApps.ts';
+import type { ExternalAppView } from '../runtime-client/externalApps.ts';
+import type { OpenExternalMode } from '../runtime-client/externalApps.ts';
 import {
   ConsoleAuthRequiredError,
   deriveRuntimeSocketUrl,
@@ -726,6 +729,41 @@ interface ConsoleStore {
   fileViewer: { path: string; requestId: number } | null;
   openFileViewer: (rawPath: string) => void;
   closeFileViewer: () => void;
+
+  /**
+   * The host's application catalog (`runtime.apps.list`).
+   *
+   * A host property, read once per console and shared by every window that offers
+   * "open with"; `null` means "not read yet" and `externalAppsError` says why a read
+   * failed, so the menu can distinguish "still loading" from "the host refused".
+   */
+  externalApps: ExternalAppView[] | null;
+  externalAppsError: string | null;
+  loadExternalApps: () => Promise<void>;
+
+  /**
+   * The last "open with" refusal, or null.
+   *
+   * A launch is the console's only host-side side effect, so a refusal is never
+   * swallowed: it is reported here and rendered next to the control that asked.
+   */
+  openExternalError: string | null;
+  dismissOpenExternalError: () => void;
+  /**
+   * The application the reader used last, for this session only.
+   *
+   * Not persisted: the per-extension default is the reader's explicit choice
+   * (`appearance.openWith`), while this only keeps the trigger pointing at what they
+   * just used instead of snapping back to the host's recommendation.
+   */
+  lastOpenWithAppId: string | null;
+  /**
+   * Start one application on one workspace-relative path.
+   *
+   * `appId` absent means the operating system's association.  Returns true only when
+   * the host reported a launch.
+   */
+  openExternal: (path: string, appId?: string, mode?: OpenExternalMode) => Promise<boolean>;
 
   // Session
   currentSession: SessionRef;
@@ -1995,6 +2033,58 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     set((s) => ({ fileViewer: { path, requestId: (s.fileViewer?.requestId ?? 0) + 1 } }));
   },
   closeFileViewer: () => set({ fileViewer: null }),
+
+  externalApps: null,
+  externalAppsError: null,
+  loadExternalApps: async () => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    // One read per console: the catalog is a host property, and a menu that is
+    // opened again must not re-probe the machine.  A failed read is remembered as
+    // a failure (not as an empty catalog), so the menu can say so.
+    if (get().externalApps !== null) return;
+    try {
+      const page = await client.listExternalApps();
+      set({ externalApps: page.apps, externalAppsError: null });
+    } catch (err) {
+      console.error('Failed to read the host application catalog:', err);
+      set({
+        externalApps: [],
+        externalAppsError: describeError(err),
+      });
+    }
+  },
+
+  openExternalError: null,
+  dismissOpenExternalError: () => set({ openExternalError: null }),
+  lastOpenWithAppId: null,
+  openExternal: async (path, appId, mode) => {
+    const client = requireRuntimeClient();
+    if (!client) return false;
+    const session = get().currentSession;
+    if (!session.thread_id) return false;
+    if (!path) return false;
+    const apps = get().externalApps ?? [];
+    const named = apps.find((app) => app.id === appId);
+    const label = named?.shortName ?? (appId === undefined ? '系统默认应用' : String(appId));
+    set({ openExternalError: null });
+    try {
+      await client.openExternal({ session, path, appId, mode });
+    } catch (err) {
+      console.error('Failed to open a file with an external program:', err);
+      const code = err instanceof RpcCallError ? err.service_code : undefined;
+      set({
+        openExternalError: describeOpenExternalFailure(
+          code,
+          describeError(err),
+          label,
+        ),
+      });
+      return false;
+    }
+    if (appId !== undefined) set({ lastOpenWithAppId: appId });
+    return true;
+  },
 
   // Explicitly empty until the host reports the authenticated project context.
   currentSession: {

@@ -69,6 +69,12 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.external_apps import (
+    ExternalAppPage,
+    ListExternalAppsQuery,
+    OpenExternalCommand,
+    OpenExternalResult,
+)
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -460,6 +466,32 @@ class AgentRuntimeService(Protocol):
 
         Optional delegate method: an older delegate without it keeps the wrapper
         constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def list_external_apps(self, query: ListExternalAppsQuery) -> ExternalAppPage:
+        """List the applications this host can start on a workspace file.
+
+        Catalog-scoped and read-only, gated by a project-wide grant of ``apps.list``.
+        It reports names, roles, claimed extensions and glyph ids -- never a program's
+        own path, which stays on the host.  The catalog is bounded and says when it was
+        truncated.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def open_external(self, command: OpenExternalCommand) -> OpenExternalResult:
+        """Start one host application on one workspace-relative path.
+
+        Session-scoped, authorized by the dedicated ``workspace.open_external``
+        capability -- never ``session.read`` or ``git.status``.  This is the one call
+        that starts a program on the reader's own machine: the request names an
+        application id the host itself enumerated, never a command line, and the target
+        must resolve inside the session's own workspace.
+
+        Optional delegate method: see ``list_external_apps``.
         """
         ...
 
