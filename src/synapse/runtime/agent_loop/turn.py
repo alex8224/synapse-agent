@@ -18,6 +18,38 @@ from synapse.runtime.agent_loop.model import (
 )
 from synapse.runtime.async_runtime import AsyncRuntime, get_async_runtime
 from synapse.runtime.streaming import AgentEventSink
+from synapse.runtime.turn_reverts import build_record, save_record
+from synapse.runtime.workspace_changes import changes_between, snapshot_workspace
+
+
+def _record_turn_reverts(
+    workspace: Any,
+    *,
+    thread_id: str,
+    turn_id: str,
+    before: Any,
+    after: Any,
+    changes: tuple[Any, ...],
+) -> None:
+    """Keep this turn's pre-change copies, so one file of it can be undone later.
+
+    Bookkeeping, like the change report itself: it runs at settlement, on the turn's own
+    thread, and an unwritable state directory costs the reader the undo -- never the turn.
+    Only the files the turn reports are kept, which are exactly the ones a card shows.
+    """
+    if not changes:
+        return
+    try:
+        record = build_record(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            before=before,
+            after=after,
+            changes=changes,
+        )
+        save_record(workspace, record)
+    except (OSError, ValueError, TypeError):
+        return
 
 
 class _SafeEventSink:
@@ -152,6 +184,31 @@ class AgentTurnRuntime:
     ) -> TurnResult:
         settings = context.settings
         safe_sink = _SafeEventSink(sink) if sink is not None else None
+        workspace = getattr(settings, "workspace", None)
+        # The workspace as the turn finds it.  What the turn changes cannot be read off
+        # the workspace afterwards: the standing delta against `HEAD` already holds
+        # every earlier turn's edits, so the turn's own contribution needs the state it
+        # started from.  Taken here, on the turn's own thread, and never able to fail
+        # the turn (an unreadable workspace simply reports nothing).
+        before = snapshot_workspace(workspace) if workspace is not None else None
+
+        def turn_changes() -> tuple[tuple[Any, ...], int]:
+            if before is None:
+                return (), 0
+            after = snapshot_workspace(workspace)
+            if after is None:
+                return (), 0
+            changes, total = changes_between(before, after)
+            _record_turn_reverts(
+                workspace,
+                thread_id=context.thread_id,
+                turn_id=context.turn_id,
+                before=before,
+                after=after,
+                changes=changes,
+            )
+            return changes, total
+
         try:
             from synapse.integrations.describe_image import (
                 normalize_payload_for_text_model_sync,
@@ -186,10 +243,13 @@ class AgentTurnRuntime:
                 turn_id=context.turn_id,
                 error=exc,
             )
+            changes, changes_total = turn_changes()
             return TurnResult(
                 turn_id=context.turn_id,
                 thread_id=context.thread_id,
                 status=TurnStatus.FAILED,
+                changes=changes,
+                changes_total=changes_total,
                 cancel_reason=token.reason if token.cancelled else None,
                 error_type=type(exc).__name__,
                 error_message=exception_message(exc),
@@ -201,6 +261,7 @@ class AgentTurnRuntime:
             status = TurnStatus.WAITING_APPROVAL
         else:
             status = TurnStatus.COMPLETED
+        changes, changes_total = turn_changes()
         return TurnResult(
             turn_id=context.turn_id,
             thread_id=context.thread_id,
@@ -223,6 +284,8 @@ class AgentTurnRuntime:
             last_rate_basis=result.last_rate_basis,
             model_calls=result.model_calls,
             compact_events=result.compact_events,
+            changes=changes,
+            changes_total=changes_total,
             cancel_reason=(
                 token.reason or result.cancel_reason
                 if status is TurnStatus.CANCELLED

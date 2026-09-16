@@ -191,6 +191,10 @@ export const Transcript: React.FC = () => {
     historyAvailable,
     historyError,
     loadEarlierHistory,
+    openGitExplorer,
+    revertTurnChange,
+    revertError,
+    dismissRevertError,
   } = useConsoleStore(
     // Only the fields this column paints: an activity tick or a usage update must
     // not re-render the transcript.
@@ -208,6 +212,10 @@ export const Transcript: React.FC = () => {
       historyAvailable: state.historyAvailable,
       historyError: state.historyError,
       loadEarlierHistory: state.loadEarlierHistory,
+      openGitExplorer: state.openGitExplorer,
+      revertTurnChange: state.revertTurnChange,
+      revertError: state.revertError,
+      dismissRevertError: state.dismissRevertError,
     })),
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -668,8 +676,12 @@ export const Transcript: React.FC = () => {
       onToggleExpand: handleToggleExpand,
       onToggleTool: handleToggleTool,
       onToggleSubagent: handleToggleSubagent,
+      onReviewFile: openGitExplorer,
+      onRevertFile: (turnId, path) => {
+        void revertTurnChange(turnId, path);
+      },
     }),
-    [handleToggleExpand, handleToggleTool, handleToggleSubagent],
+    [handleToggleExpand, handleToggleTool, handleToggleSubagent, openGitExplorer, revertTurnChange],
   );
 
   /**
@@ -727,6 +739,25 @@ export const Transcript: React.FC = () => {
           >
             {historyError}
             以下只显示建立连接后的实时内容，不回退到 checkpoint。
+          </div>
+        )}
+
+        {/* A refused revert says which condition failed, and stays until it is dismissed:
+            the reader asked for something that did not happen, and the file is untouched. */}
+        {revertError !== null && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-2 rounded-card border border-red-200 bg-red-50 p-3 text-xs text-red-800 font-mono leading-relaxed"
+          >
+            <span>{revertError}</span>
+            <button
+              type="button"
+              onClick={dismissRevertError}
+              aria-label="关闭撤销提示"
+              className="shrink-0 cursor-pointer select-none rounded-control px-1.5 py-0.5 text-[10px] text-red-700 transition-colors hover:bg-red-100"
+            >
+              关闭
+            </button>
           </div>
         )}
 

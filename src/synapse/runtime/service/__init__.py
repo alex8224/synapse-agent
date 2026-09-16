@@ -242,6 +242,11 @@ __all__ = [
     "TURN_SUBMIT",
     "TurnMismatchError",
     "UsageView",
+    "WORKSPACE_REVERT",
+    "WorkspaceRevertError",
+    "RevertTurnChangeCommand",
+    "RevertTurnChangeResult",
+    "MAX_TURN_ID_BYTES",
     "bind_access",
 ]
 
@@ -295,6 +300,11 @@ _LAZY_EXPORTS = {
     "GitFileChange": "git",
     "GitStatusQuery": "git",
     "GitStatusResult": "git",
+    "WORKSPACE_REVERT": "access",
+    "WorkspaceRevertError": "errors",
+    "RevertTurnChangeCommand": "revert",
+    "RevertTurnChangeResult": "revert",
+    "MAX_TURN_ID_BYTES": "revert",
     "TURN_APPROVAL_READ": "access",
     "TURN_APPROVAL_RESUME": "access",
     "TURN_CANCEL": "access",

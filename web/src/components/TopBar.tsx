@@ -57,7 +57,9 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
       loadGitStatus: state.loadGitStatus,
     })),
   );
-  const [explorerOpen, setExplorerOpen] = useState(false);
+  const gitExplorer = useConsoleStore((state) => state.gitExplorer);
+  const openGitExplorer = useConsoleStore((state) => state.openGitExplorer);
+  const closeGitExplorer = useConsoleStore((state) => state.closeGitExplorer);
   const [infoOpen, setInfoOpen] = useState(false);
   // The panel anchors to the title.  The element is held in state rather than read
   // off a ref while rendering, so the anchor belongs to the render that uses it.
@@ -77,7 +79,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
   // is otherwise invisible until the next attach).
   const refreshAndOpenExplorer = () => {
     void loadGitStatus();
-    setExplorerOpen(true);
+    openGitExplorer();
   };
 
   // The project label comes from the project list the sidebar already holds, and
@@ -204,7 +206,9 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
       <div className="wco-caption-reserve" />
     </header>
-    {explorerOpen && <GitExplorer onClose={() => setExplorerOpen(false)} />}
+    {gitExplorer !== null && (
+      <GitExplorer initialPath={gitExplorer.path} onClose={closeGitExplorer} />
+    )}
     {infoOpen && <SessionInfoPanel anchor={titleAnchor} onClose={() => setInfoOpen(false)} />}
     </>
   );

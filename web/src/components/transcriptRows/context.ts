@@ -30,6 +30,16 @@ export interface RowActions {
   onToggleTool: (messageId: string, toolKey: string, hasDetail: boolean) => void;
   /** Open or close one subagent card's steps. */
   onToggleSubagent: (messageId: string, subagentKey: string) => void;
+  /** Open the read-only git explorer on one file, for a change card. */
+  onReviewFile: (path: string) => void;
+  /**
+   * Put one file of one turn back the way that turn found it.
+   *
+   * The only action here that writes to the reader's own files: the runtime refuses
+   * while a turn is running or when the file has moved on since, and the refusal is
+   * reported back in the transcript rather than swallowed.
+   */
+  onRevertFile: (turnId: string, path: string) => void;
 }
 
 /** What every row renderer is handed. */

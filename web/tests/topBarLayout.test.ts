@@ -185,7 +185,7 @@ test('the sidebar keeps its actions and the header owns the session info', () =>
 test('the combined branch and statistics chip opens the git explorer', () => {
   const opens = source.match(/onClick=\{refreshAndOpenExplorer\}/g) ?? [];
   assert.equal(opens.length, 1, 'the combined chip must call the refresh-and-open handler');
-  assert.ok(source.includes('setExplorerOpen(true)'), 'the handler must open the explorer');
+  assert.ok(source.includes('openGitExplorer()'), 'the handler must open the explorer');
   assert.ok(
     /refreshAndOpenExplorer[\s\S]*?loadGitStatus\(\)/.test(source),
     'the handler must re-read runtime.git.status before opening',

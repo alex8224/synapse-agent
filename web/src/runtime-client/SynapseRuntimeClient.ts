@@ -68,6 +68,8 @@ import type {
   PauseSessionGoalParams,
   ResumeSessionGoalParams,
   SessionGoalResult,
+  RevertTurnChangeCommand,
+  RevertTurnChangeResult,
 } from './types.ts';
 import { EVENT_VERSION, WIRE_VERSION } from './contract.generated.ts';
 import type {
@@ -731,6 +733,27 @@ export class SynapseRuntimeClient {
     staged = false,
   ): Promise<GitDiffView> {
     return parseGitDiff(await this.call('runtime.git.diff', { session, path, staged }));
+  }
+
+  /**
+   * Undo one file's part in one finished turn (`runtime.workspace.revert`).
+   *
+   * The one call in this client that writes to the reader's own files: it restores that
+   * single path from the copy the runtime kept before the turn.  The runtime refuses --
+   * with a typed `service_code` on the error -- while a turn is running, when the file no
+   * longer holds what the turn left there, and when the turn's record is gone, so a
+   * failure here is always a refusal to explain rather than a half-done edit.
+   */
+  public async revertTurnChange(
+    params: RevertTurnChangeCommand,
+  ): Promise<RevertTurnChangeResult> {
+    const payload: Record<string, unknown> = {
+      session: params.session,
+      turn_id: params.turn_id,
+      path: params.path,
+    };
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<RevertTurnChangeResult>('runtime.workspace.revert', payload);
   }
 
   /**

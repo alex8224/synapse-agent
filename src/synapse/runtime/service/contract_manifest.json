@@ -37,7 +37,8 @@
     "turn.approval.resume",
     "turn.cancel",
     "turn.steer",
-    "turn.submit"
+    "turn.submit",
+    "workspace.revert"
   ],
   "contract_version": 1,
   "event_version": 1,
@@ -190,6 +191,13 @@
       "kind": "turn_cancelled",
       "legacy": false,
       "payload": "TurnTerminalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "turn_changes",
+      "legacy": false,
+      "payload": "TurnChangesPayload",
       "status": "v1",
       "transient": false
     },
@@ -1036,6 +1044,27 @@
       "scope": "session",
       "scope_location": "params.session",
       "service_method": "submit_turn",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "workspace.revert",
+      "class": "service",
+      "in_process": "Optional delegate method, same degradation rule as `runtime.git.status`.",
+      "method": "runtime.workspace.revert",
+      "notes": [
+        "The one write that touches the reader's own files: it restores exactly one",
+        "workspace-relative path from the copy the runtime kept before that turn.",
+        "Refused while a turn is running, refused when the file no longer holds what",
+        "the turn left there, and refused when the turn's record is gone; the refusal",
+        "is a typed error whose `service_code` names the condition.  Never touches",
+        "`HEAD`, the index, or any other file."
+      ],
+      "request": "RevertTurnChangeCommand",
+      "result": "RevertTurnChangeResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "revert_turn_change",
       "wire_defaults": {}
     }
   ],
@@ -3405,6 +3434,39 @@
           "wire": "json"
         },
         {
+          "default": [],
+          "default_kind": "value",
+          "name": "changes",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[TurnChange, ...]",
+          "required": true,
+          "ts_type": "TurnChange[]",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "changes_total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "reverted_paths",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
           "default": null,
           "default_kind": "value",
           "name": "turn_id",
@@ -5015,6 +5077,104 @@
           "ts_type": "boolean",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "RevertTurnChangeCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "command_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``turn_id`` names the stored record of one finished turn and is bounded to",
+        "128 bytes; ``path`` is workspace-relative and must be",
+        "one of the paths that",
+        "turn is reported to have changed."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "RevertTurnChangeResult": {
+      "fields": [
+        {
+          "name": "turn_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "action",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "bytes_written",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``action`` is ``restore`` (the pre-turn content was written back),",
+        "``delete`` (the turn created the file, so it is gone again) or",
+        "``already_reverted`` (the file already held its pre-turn state and",
+        "nothing was written); ``bytes_written`` is 0 unless content was restored."
       ],
       "origin": "python",
       "role": "result"
@@ -6713,6 +6873,97 @@
       ],
       "notes": [
         "Legacy per-item fallback; still emitted and rendered by every shell, so not deprecated."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "TurnChange": {
+      "fields": [
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "insertions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "deletions",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "binary",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "TurnChangesPayload": {
+      "fields": [
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "changes",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[TurnChange, ...]",
+          "required": true,
+          "ts_type": "TurnChange[]",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The files one turn created, modified or deleted, emitted once as the turn",
+        "settles.  ``total`` is how many files changed and ``changes`` is the",
+        "bounded list of them; a count is that turn's own contribution, not the",
+        "workspace's standing delta against ``HEAD``."
       ],
       "origin": "python",
       "role": "result"

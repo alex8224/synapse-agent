@@ -1,4 +1,34 @@
 /**
+ * Put a turn's change cards at the end of that turn, wherever the turn now sits.
+ *
+ * The event arrives after the turn's terminal one, so by then a newer turn may have
+ * started: the row belongs to *its* turn, not to the newest one.  Applying the same
+ * event twice rewrites the row in place, so a replayed batch cannot stack duplicates.
+ */
+function appendTurnChanges(
+  messages: TranscriptMessage[],
+  turnId: string,
+  stamp: string,
+  changes: TurnChangeView[],
+  total: number,
+): TranscriptMessage[] {
+  const id = `changes-${turnId}`;
+  const row: TranscriptMessage = {
+    id,
+    type: 'changes',
+    timestamp: stamp,
+    turnId,
+    changes,
+    changesTotal: total,
+  };
+  const existing = messages.findIndex((m) => m.id === id);
+  if (existing !== -1) return messages.map((m, i) => (i === existing ? row : m));
+  const lastOfTurn = messages.findLastIndex((m) => m.turnId === turnId);
+  const at = lastOfTurn === -1 ? messages.length : lastOfTurn + 1;
+  return [...messages.slice(0, at), row, ...messages.slice(at)];
+}
+
+/**
  * Pure reducer folding one runtime event into console transcript state.
  *
  * Extracted from `useConsoleStore` so the runtime event contract can be
@@ -22,7 +52,7 @@
  */
 import type { RuntimeEvent } from '../client/types.ts';
 import type { ApprovalActionPayload } from '../runtime-client/contract.generated.ts';
-import type { ToolItemView, TranscriptMessage } from './historyMapper.ts';
+import { turnChangeViews, type ToolItemView, type TranscriptMessage, type TurnChangeView } from './historyMapper.ts';
 import { bindWorkTurn, finishWorkTurn } from './turnWork.ts';
 import { formatUsageMetrics, parseUsagePayload, type UsageView } from './usageView.ts';
 
@@ -534,9 +564,22 @@ export function reduceRuntimeEvent(
 
   // A late event from a settled turn must neither revive it nor seize the next
   // turn's status/approval/activity. The anchor is the durable terminal marker.
-  if (turnId && (state.settledTurnIds?.includes(turnId) ||
-    state.messages.some((m) => m.turnId === turnId && m.work?.ended)) &&
-    !(isTurnTerminalKind(kind) && state.activeTurnId === turnId)) return {};
+  const settledTurn = turnId !== '' && (state.settledTurnIds?.includes(turnId) === true ||
+    state.messages.some((m) => m.turnId === turnId && m.work?.ended === true));
+  if (settledTurn && kind === 'turn_changes') {
+    // The one late event that is welcome: it is emitted *as* the turn settles, so it
+    // always arrives after the terminal one, and adding the turn's change cards is its
+    // whole job.  It touches no status, activity or active-turn state, so it is folded
+    // here and returns -- a settled turn stays settled.
+    const changes = turnChangeViews(payload.changes);
+    if (changes.length > 0) {
+      const total = typeof payload.total === 'number' && payload.total > 0
+        ? payload.total : changes.length;
+      next.messages = appendTurnChanges(state.messages, turnId, stamp, changes, total);
+    }
+    return next;
+  }
+  if (settledTurn && !(isTurnTerminalKind(kind) && state.activeTurnId === turnId)) return {};
   const foreignTurn = !!turnId && !!state.activeTurnId && turnId !== state.activeTurnId;
   if (foreignTurn && state.runtimeStatus === 'running' && kind !== 'activity_started') return {};
   const bound = bindWorkTurn(state.messages, turnId, at);

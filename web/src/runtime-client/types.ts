@@ -68,6 +68,8 @@ export type {
   RenameSessionParams,
   RenameSessionResult,
   ResumeSessionGoalParams,
+  RevertTurnChangeCommand,
+  RevertTurnChangeResult,
   RuntimeConfigResult,
   RuntimeEvent,
   SearchSessionsParams,

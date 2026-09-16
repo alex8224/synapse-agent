@@ -26,13 +26,21 @@ function describe(err: unknown): string {
  * `runtime.git.status` / `runtime.git.diff`, so nothing here can stage, commit or
  * otherwise write — and a workspace where git cannot answer says so instead of
  * showing an empty tree.
+ *
+ * `initialPath` is the file to open on: a turn's change card asks for the file it
+ * names, and the branch chip asks for none (the explorer picks its own first row).  A
+ * path that is no longer in the changed list is not forced: the reader sees the list,
+ * which is the honest answer to "review this file" once it is no longer changed.
  */
-export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string | null }> = ({
+  onClose,
+  initialPath,
+}) => {
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
   const [status, setStatus] = useState<GitStatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialPath ?? null);
   const [mobileDetail, setMobileDetail] = useState(false);
   const [staged, setStaged] = useState(false);
   const [diff, setDiff] = useState<GitDiffView | null>(null);
@@ -203,7 +211,7 @@ export const GitExplorer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             {diffError !== null && <p className="text-[11px] text-amber-700">{diffError}</p>}
             {diffError === null && diff !== null && diff.empty && (
               <p className="text-[11px] text-gray-400">
-                没有差异（未修改或未跟踪；未跟踪文件请用「工作区文件」面板查看内容）。
+                没有差异（该文件与所选基线一致；可用上方「暂存区」比较另一侧）。
               </p>
             )}
             {diffError === null && diff !== null && diff.binary && (

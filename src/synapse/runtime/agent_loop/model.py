@@ -104,6 +104,13 @@ class TurnResult:
     last_rate_basis: str = "end_to_end"
     model_calls: int = 0
     compact_events: int = 0
+    #: The files this turn created, modified or deleted, with this turn's own line
+    #: counts (see `runtime.workspace_changes`).  Empty when the workspace did not
+    #: change, and also when the bookkeeping could not be taken -- a turn never fails
+    #: over it.
+    changes: tuple[Any, ...] = ()
+    #: How many files changed in total; `changes` is the bounded list of them.
+    changes_total: int = 0
     cancel_reason: str | None = None
     error_type: str | None = None
     error_message: str | None = None

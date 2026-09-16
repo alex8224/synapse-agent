@@ -1,5 +1,6 @@
 import type { TranscriptMessage } from '../../stores/historyMapper.ts';
 import { AssistantRow } from './AssistantRow.tsx';
+import { ChangesRow } from './ChangesRow.tsx';
 import { InfoRow } from './InfoRow.tsx';
 import { ThoughtRow } from './ThoughtRow.tsx';
 import { ToolGroupRow } from './ToolGroupRow.tsx';
@@ -21,4 +22,5 @@ export const ROW_RENDERERS: Record<TranscriptMessage['type'], RowRenderer> = {
   tool_group: ToolGroupRow,
   assistant: AssistantRow,
   info: InfoRow,
+  changes: ChangesRow,
 };

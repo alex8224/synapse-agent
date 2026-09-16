@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from synapse.runtime.service.errors import HistoryTooLargeError, InvalidRequestError
+from synapse.runtime.service.event_types import TurnChange
 from synapse.runtime.service.history import (
     HistoryAttachment,
     HistoryEvent,
@@ -46,6 +47,7 @@ from synapse.runtime.service.history import (
     SessionMetadataItem,
 )
 from synapse.runtime.service.recovery import TurnCoverageProbe
+from synapse.runtime.turn_reverts import TurnRevertRefused, load_reverted_paths
 
 # Bounded page guards for history reads.  They are module-level so focused
 # tests can shrink them and prove the explicit overflow error deterministically.
@@ -365,6 +367,7 @@ def read_session_history_page(
                 f"exceeding the {_MAX_HISTORY_PAGE_EVENTS} event limit"
             )
         events = tuple(_history_event(row) for row in rows)
+        events = _with_reverted_paths(settings, thread_id, events)
         wire_bytes = _events_wire_bytes(events)
         if wire_bytes > _MAX_HISTORY_PAGE_BYTES:
             raise HistoryTooLargeError(
@@ -478,6 +481,35 @@ def _reject_non_finite(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value!r} is not allowed")
 
 
+def _with_reverted_paths(
+    settings: object, thread_id: str, events: tuple[HistoryEvent, ...]
+) -> tuple[HistoryEvent, ...]:
+    """Attach each turn's reverted files, so a change card can say so after a reload.
+
+    The revert records live beside the session database in the workspace, one small file
+    per turn on this page.  A runtime that keeps none reports none, and a record that
+    cannot be read costs the undo state of that one turn -- never the history itself.
+    """
+    turn_ids = tuple(
+        event.turn_id for event in events if event.kind == "changes" and event.turn_id
+    )
+    workspace = getattr(settings, "workspace", None)
+    if not turn_ids or not workspace:
+        return events
+    try:
+        reverted = load_reverted_paths(workspace, thread_id, turn_ids)
+    except (OSError, ValueError, TurnRevertRefused):
+        return events
+    if not reverted:
+        return events
+    return tuple(
+        dataclasses.replace(event, reverted_paths=reverted[event.turn_id])
+        if event.kind == "changes" and event.turn_id in reverted
+        else event
+        for event in events
+    )
+
+
 def _history_event(row: sqlite3.Row) -> HistoryEvent:
     raw = row["payload_json"]
     if not isinstance(raw, (str, bytes, bytearray)):
@@ -504,9 +536,45 @@ def _history_event(row: sqlite3.Row) -> HistoryEvent:
         tool_calls=_dict_tuple(parsed.get("tool_calls")),
         tool_results=_dict_tuple(parsed.get("tool_results")),
         attachments=_attachment_tuple(parsed.get("attachments")),
+        changes=_change_tuple(parsed.get("changes")),
+        changes_total=_non_negative_int(parsed.get("changes_total")),
         turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
         elapsed_s=elapsed,
     )
+
+
+def _change_tuple(value: object) -> tuple[TurnChange, ...]:
+    """Parse a turn's persisted change list (missing -> empty).
+
+    A row written before change tracking existed has no ``changes`` key, and a
+    malformed entry is skipped rather than failing the whole page: history is read by
+    the console, and one bad line must not hide a session.
+    """
+    if not isinstance(value, list):
+        return ()
+    items: list[TurnChange] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        items.append(
+            TurnChange(
+                path=path,
+                status=str(item.get("status") or "modified"),
+                insertions=_non_negative_int(item.get("insertions")),
+                deletions=_non_negative_int(item.get("deletions")),
+                binary=item.get("binary") is True,
+            )
+        )
+    return tuple(items)
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 def _attachment_tuple(value: object) -> tuple[HistoryAttachment, ...]:

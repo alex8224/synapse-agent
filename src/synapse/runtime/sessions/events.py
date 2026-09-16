@@ -17,6 +17,7 @@ _LOSSLESS = {
     TurnEventKind.TOOL_FINISHED,
     TurnEventKind.TOOL_RESULT,
     TurnEventKind.TOOL_BATCH_FINISHED,
+    TurnEventKind.TURN_CHANGES,
     TurnEventKind.USAGE_UPDATED,
     TurnEventKind.TURN_COMPLETED,
     TurnEventKind.TURN_CANCELLED,

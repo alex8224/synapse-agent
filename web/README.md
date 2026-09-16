@@ -33,6 +33,12 @@
   以及 `BottomBar`（运行态、MCP、goal 与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
   转录区据此预留底部空间，避免最新内容被输入卡遮挡。
 
+**只读 Git Explorer 能看未跟踪文件的内容。** `git diff` 对未跟踪路径什么都不输出，所以服务端
+（`runtime/service/git.py`）在 diff 为空且未比较暂存区时读该文件（有界、二进制安全），按「新文件」
+返回统一 diff（`--- /dev/null` / `+++ b/<path>` / `+行`），前端用同一套 `diffLineClass` 着色——
+**不会**为了看内容而 `git add --intent-to-add`，索引与仓库始终只读。符号链接显示其目标，空文件与
+目录仍报「没有差异」，超限截断（`truncated`），二进制显示「二进制文件，不显示 diff」。
+
 **底栏是「静态清单 + 条目模块」的宿主。** `BottomBar.tsx` 只拥有所有条目共有的规则：三轨栅格、
 唯一的 `openId`（同一个键关闭、另一个键替换，所以 F1／F5／F6 天然互斥）、按键映射、遮罩归属、
 窄屏策略，以及「会话切换 / 条目不再可达即关闭」。每个条目是 `src/components/bottomBar/*Item.tsx`
@@ -139,6 +145,27 @@ Fluent 图标同一视觉尺寸）。由 `tests/codexUsageEntry.test.ts` 守护�
 渲染、测量与轮次跳转共用过滤后的索引，待完成跳转按消息 ID 跟踪。与纯列表的 `null` 行不占空间一致。
 由 `tests/transcriptVirtualization.test.ts` 静态守护、`tests/transcriptFoldSpace.verify.ts`
 用真实浏览器验收长折叠轮次、展开后收起及流式追加隐藏步骤。
+
+**每轮的工作区改动以卡片列出**：轮次结束时，运行时会给出"这一轮改了哪些文件、每个文件增删多少行"
+（每轮自己的贡献，不是工作区对 `HEAD` 的存量差，见 `runtime/workspace_changes.py`），控制台把它
+渲染成该轮末尾的一张卡片列表（`transcriptRows/ChangesRow.tsx`，注册表与折叠策略各一行）。它不是
+折叠步骤，所以**折叠的轮次照样看得到**；点某张卡片会打开只读的 Git Explorer 并定位到该文件
+（`openGitExplorer(path)`，与顶栏分支 chip 共用入口）。列表有界（超出时写明"共 N 个 · 显示前 M 个"），
+无法计数的改动（二进制/超大）不编造 0 行。由 `tests/turnChanges.test.ts`（含"事件晚于终止事件到达"
+与刷新后从投影重放）、`tests/transcriptRowContract.test.ts` 与真机 `tests/transcriptChanges.verify.ts` 守护。
+
+**每张卡片可以撤销这一个文件**（`runtime.workspace.revert`）：运行时会记下每轮改动前的文件内容
+（`runtime/turn_reverts.py`，存在工作区自己的 `.synapse/turn-snapshots/` 下，有界保留最近若干轮），
+撤销就是把那一份写回去——这是控制台里**唯一会写读者自己文件**的动作，所以它只做三件事：只还原卡片
+上那一个路径、只在文件**仍然等于本轮留下的内容**时才写（之后被别的轮次或你自己改过就拒绝，绝不静默
+丢弃）、**从不碰 `HEAD`、索引或任何其它文件**。写入是原子的（同目录临时文件 + `os.replace`）；本轮
+新建的文件撤销时删除；符号链接一律拒绝写入。有回合在运行时直接拒绝（不会替你取消）。点"撤销"只是
+**就地武装**，必须再点"确认撤销"才发出请求；成功后卡片显示"已撤销"并去掉行数（那些数字已不再描述
+工作区），同时重读 git 状态；被拒绝时按具体原因在转录里给出可读提示（`revert_content_drift` /
+`revert_turn_running` / `revert_record_expired` / `revert_head_moved` / `revert_before_unknown` …）。
+刷新后卡片仍显示"已撤销"，因为历史读取会带上该轮已被撤销的路径（`HistoryEvent.reverted_paths`），
+控制台据此重放同一形状——**不得**自己从 `git.status` 反推撤销状态。由 `tests/turnRevert.test.ts`
+与真机 `tests/turnRevert.verify.ts` 守护。
 
 `tests/shellLayout.verify.ts` 另测 360/390/430/640px 手机布局、768/900px 平板和桌面回归。
 根布局采用 `100dvh`（保留 `100vh` 回退），视口声明启用安全区和支持浏览器的键盘布局缩放。

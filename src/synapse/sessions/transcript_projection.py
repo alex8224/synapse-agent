@@ -656,7 +656,7 @@ def compact_transcript_events(events: list[UiTranscriptEvent]) -> list[UiTranscr
     """Remove large provider payloads while preserving the visible transcript."""
     compact: list[UiTranscriptEvent] = []
     for event in events:
-        if event.kind != "tools":
+        if event.kind not in {"tools", "changes"}:
             compact.append(
                 UiTranscriptEvent(
                     kind=event.kind,
@@ -665,6 +665,19 @@ def compact_transcript_events(events: list[UiTranscriptEvent]) -> list[UiTranscr
                     attachments=[dict(item) for item in event.attachments],
                     turn_id=event.turn_id,
                     elapsed_s=event.elapsed_s,
+                )
+            )
+            continue
+        if event.kind == "changes":
+            # Bounded already (the runtime caps the list), and it is what the console
+            # paints as the turn's change cards: keep it whole, including the turn it
+            # belongs to (a revert is matched to that turn).
+            compact.append(
+                UiTranscriptEvent(
+                    kind="changes",
+                    changes=[dict(item) for item in event.changes],
+                    changes_total=event.changes_total,
+                    turn_id=event.turn_id,
                 )
             )
             continue
@@ -709,6 +722,7 @@ def _event_payload_json(event: UiTranscriptEvent) -> str:
 def _event_from_row(row: sqlite3.Row) -> UiTranscriptEvent:
     payload = json.loads(str(row["payload_json"]))
     attachments = payload.get("attachments")
+    changes = payload.get("changes")
     return UiTranscriptEvent(
         kind=str(row["kind"]),
         text=str(payload.get("text") or ""),
@@ -718,6 +732,12 @@ def _event_from_row(row: sqlite3.Row) -> UiTranscriptEvent:
         # Legacy rows have no ``attachments`` key: default to empty so an old
         # projection stays readable.
         attachments=[dict(item) for item in attachments] if isinstance(attachments, list) else [],
+        # Legacy rows have no ``changes`` key either: a turn that predates them simply
+        # shows no change cards.
+        changes=[dict(item) for item in changes] if isinstance(changes, list) else [],
+        changes_total=payload.get("changes_total")
+        if isinstance(payload.get("changes_total"), int)
+        else 0,
         turn_id=payload.get("turn_id"),
         elapsed_s=payload.get("elapsed_s"),
     )

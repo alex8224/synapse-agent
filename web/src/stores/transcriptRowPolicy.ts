@@ -25,6 +25,8 @@ export const ROW_POLICY: Record<TranscriptMessage['type'], RowKindPolicy> = {
   tool_group: { step: true, paints: (message) => (message.tools?.length ?? 0) > 0 },
   assistant: { step: false },
   info: { step: false },
+  // The turn's outcome, not its process: a folded turn still shows what it changed.
+  changes: { step: false },
 };
 
 /** True when the row is a step of its turn's fold and has something to show. */

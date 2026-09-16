@@ -13,6 +13,7 @@ import pytest
 
 from synapse.runtime.service.errors import GitUnavailableError, InvalidRequestError
 from synapse.runtime.service.git import (
+    MAX_DIFF_BYTES,
     MAX_STATUS_FILES,
     GitDiffQuery,
     GitStatusQuery,
@@ -148,6 +149,81 @@ def test_an_unchanged_path_is_an_empty_diff_not_an_error(repo: Path) -> None:
     diff = git_diff_workspace(GitDiffQuery(REF, "tracked.txt"), _session(repo))
     assert diff.empty is True
     assert diff.text == ""
+
+
+def test_an_untracked_file_shows_its_content_as_a_new_file(repo: Path) -> None:
+    # `git diff` says nothing about a path it does not track, so the explorer used to list
+    # an untracked file and then show nothing at all.  Nothing is staged to fix that.
+    (repo / "fresh.txt").write_text("one\ntwo\n", encoding="utf-8")
+
+    diff = git_diff_workspace(GitDiffQuery(REF, "fresh.txt"), _session(repo))
+
+    assert diff.empty is False
+    assert diff.binary is False
+    assert diff.truncated is False
+    assert diff.text.splitlines()[0] == "--- /dev/null"
+    assert diff.text.splitlines()[1] == "+++ b/fresh.txt"
+    assert [line for line in diff.text.splitlines() if line.startswith("+")] == [
+        "+++ b/fresh.txt",
+        "+one",
+        "+two",
+    ]
+    status = git_status_workspace(GitStatusQuery(REF), _session(repo))
+    fresh = next(change for change in status.files if change.path == "fresh.txt")
+    assert (fresh.index_status, fresh.worktree_status) == ("?", "?"), (
+        "reading an untracked file must not stage it"
+    )
+
+
+def test_an_untracked_file_in_a_subdirectory_is_read_the_same_way(repo: Path) -> None:
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "deep.txt").write_text("x\n", encoding="utf-8")
+    diff = git_diff_workspace(GitDiffQuery(REF, "pkg/deep.txt"), _session(repo))
+    assert diff.text.splitlines()[1] == "+++ b/pkg/deep.txt"
+    assert "+x" in diff.text.splitlines()
+
+
+def test_an_empty_untracked_file_has_no_hunks(repo: Path) -> None:
+    # Exactly what git reports for a new empty file: the headers, and nothing else.
+    (repo / "blank.txt").write_text("", encoding="utf-8")
+    diff = git_diff_workspace(GitDiffQuery(REF, "blank.txt"), _session(repo))
+    assert diff.empty is True
+    assert diff.text == ""
+
+
+def test_an_untracked_binary_file_is_not_decoded(repo: Path) -> None:
+    (repo / "blob.bin").write_bytes(bytes(range(256)))
+    diff = git_diff_workspace(GitDiffQuery(REF, "blob.bin"), _session(repo))
+    assert diff.binary is True
+    assert diff.text == ""
+
+
+def test_an_untracked_file_past_the_diff_cap_is_truncated(repo: Path) -> None:
+    line = "x" * 99 + "\n"
+    (repo / "big.txt").write_text(line * (MAX_DIFF_BYTES // 100 + 10), encoding="utf-8")
+    diff = git_diff_workspace(GitDiffQuery(REF, "big.txt"), _session(repo))
+    assert diff.truncated is True
+    assert len(diff.text.encode("utf-8")) <= MAX_DIFF_BYTES
+
+
+def test_an_untracked_directory_is_not_read_as_a_file(repo: Path) -> None:
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "deep.txt").write_text("x\n", encoding="utf-8")
+    diff = git_diff_workspace(GitDiffQuery(REF, "pkg"), _session(repo))
+    assert diff.empty is True
+
+
+def test_a_staged_new_file_comes_from_git_itself(repo: Path) -> None:
+    # A file added to the index is diffable by git, so nothing is synthesized for it.
+    (repo / "added.txt").write_text("one\n", encoding="utf-8")
+    _git(repo, "add", "added.txt")
+    staged = git_diff_workspace(GitDiffQuery(REF, "added.txt", staged=True), _session(repo))
+    assert staged.empty is False
+    assert "+one" in staged.text
+    # The worktree side of a staged, unmodified file is empty, and stays empty: the
+    # synthesized new-file view is only for a path git does not track at all.
+    worktree = git_diff_workspace(GitDiffQuery(REF, "added.txt"), _session(repo))
+    assert worktree.empty is True
 
 
 def test_unsafe_paths_are_refused(repo: Path) -> None:

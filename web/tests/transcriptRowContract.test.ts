@@ -1,3 +1,59 @@
+test('the change cards are the turn\'s outcome, not another step of its fold', () => {
+  // A folded turn still shows what it changed: the row is not a step, so the fold
+  // neither hides it nor reads its status from it.
+  const changes = rowSource('ChangesRow');
+  assert.equal(ROW_POLICY.changes.step, false, 'a change row is not a fold step');
+  assert.equal(isFoldStep({ type: 'changes' } as never), false);
+  assert.ok(changes.includes('本轮工作区改动'), 'the block names itself');
+  assert.ok(changes.includes('{total} 个文件'), 'and counts the files it lists');
+  assert.ok(
+    changes.includes('显示前 ${changes.length} 个'),
+    'a bounded list says how many it is not showing',
+  );
+  assert.ok(changes.includes('{change.path}'), 'each card prints the file it names');
+  assert.ok(changes.includes('+{change.insertions}'), 'and its own added lines');
+  assert.ok(changes.includes('-{change.deletions}'), 'and its own removed lines');
+  assert.ok(
+    changes.includes('{!change.binary && !change.reverted && ('),
+    'a file whose change could not be counted prints no counts at all',
+  );
+  assert.ok(
+    changes.includes('actions.onReviewFile(change.path)'),
+    'a card opens the explorer on the file it names',
+  );
+  assert.equal(
+    changes.includes('gitStatus'),
+    false,
+    'the row paints the turn\'s own list, not the workspace\'s standing state',
+  );
+});
+
+test('undoing a file is offered on the card, armed before it fires', () => {
+  // The one control in the transcript that writes to the reader's files: it is on the
+  // card it belongs to, it says what it will do, and one click only arms it.
+  const changes = rowSource('ChangesRow');
+  assert.ok(
+    changes.includes('actions.onRevertFile(message.turnId ?? \'\', change.path)'),
+    'a card raises the revert for its own turn and path',
+  );
+  assert.ok(changes.includes('恢复到本轮开始前？'), 'arming states what will happen');
+  assert.ok(changes.includes('确认撤销'), 'a second, explicit click carries it out');
+  assert.ok(changes.includes('已撤销'), 'a reverted file says so on the card');
+  assert.ok(
+    changes.includes('{armed ? \'取消\' : \'撤销\'}'),
+    'the same control disarms itself',
+  );
+  assert.equal(
+    changes.includes('window.confirm'),
+    false,
+    'the confirmation is part of the card, not a browser dialog',
+  );
+  assert.ok(
+    changes.includes('!change.binary && ('),
+    'a file the runtime kept no copy of is never offered for undo',
+  );
+});
+
 /**
  * Contract guards for the transcript's rows.
  *
@@ -118,8 +174,8 @@ test('the user turn and the assistant body share the reading column', () => {
   );
   assert.equal(
     count(allRowSources(), 'max-w-[85%]'),
-    3,
-    'the thought, tool and info rows stay inside the left column',
+    4,
+    'the thought, tool, info and change rows stay inside the left column',
   );
 });
 

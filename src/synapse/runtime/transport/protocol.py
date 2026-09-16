@@ -130,6 +130,7 @@ from synapse.runtime.service.recovery import (
     MAX_RECONCILE_PROBE_TURNS,
     MAX_RECONCILE_TURN_ID_BYTES,
 )
+from synapse.runtime.service.revert import RevertTurnChangeCommand
 from synapse.runtime.service.session_management import (
     SESSION_SEARCH_LIMIT_DEFAULT,
     SESSION_SEARCH_LIMIT_MAX,
@@ -911,6 +912,18 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             path=_bounded_text(params["path"], MAX_PATH_BYTES),
             staged=_boolean(params.get("staged", False)),
         )
+    if method == "runtime.workspace.revert":
+        _optional_fields(params, {"session", "turn_id", "path"}, {"command_id"})
+        return RevertTurnChangeCommand(
+            session=_session(params["session"]),
+            turn_id=_bounded_text(params["turn_id"], MAX_TURN_ID_BYTES),
+            path=_bounded_text(params["path"], MAX_PATH_BYTES),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else None
+            ),
+        )
     if method == "runtime.attachments.begin":
         _optional_fields(params, {"session", "size", "mime"}, {"display_name"})
         display_name = params.get("display_name")
@@ -1169,6 +1182,8 @@ async def dispatch(
         return await service.git_status(dto)  # type: ignore[arg-type]
     if method == "runtime.git.diff":
         return await service.git_diff(dto)  # type: ignore[arg-type]
+    if method == "runtime.workspace.revert":
+        return await service.revert_turn_change(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.begin":
         return await service.begin_attachment(dto)  # type: ignore[arg-type]
     if method == "runtime.attachments.append":

@@ -37,6 +37,12 @@ from synapse.runtime.sessions.events import (
     SessionSubscription,
 )
 from synapse.runtime.steer import get_agent_steer_queue
+from synapse.runtime.streaming import (
+    EVENT_VERSION,
+    TurnChangesPayload,
+    TurnEvent,
+    TurnEventKind,
+)
 
 
 class SessionStatus(StrEnum):
@@ -1138,6 +1144,7 @@ class SessionRuntime:
                 pending = self._persist_result(context, result)
                 if asyncio.iscoroutine(pending):
                     await pending
+                self._emit_turn_changes(context, result)
             except Exception as exc:  # noqa: BLE001 - checkpoint result remains valid
                 persist_error = f"{type(exc).__name__}: {exc}"[:2000]
         usage = SessionUsage(
@@ -1202,6 +1209,36 @@ class SessionRuntime:
                 self._last_activity_at = _utcnow()
         if publish_terminal:
             self._notify_status()
+
+    def _emit_turn_changes(self, context: TurnContext, result: TurnResult) -> None:
+        """Report what the turn changed, once it has settled.
+
+        The turn's own stream has already emitted its terminal event by now, so this
+        arrives after it: the console appends the change cards to the turn it just
+        finished, and the projection holds the same list for a reload.  A broker that
+        has already closed drops it silently -- the persisted copy is the durable one,
+        and neither outcome may fail a settled turn.
+        """
+        if not result.changes:
+            return
+        try:
+            self.broker.emit(
+                TurnEvent(
+                    version=EVENT_VERSION,
+                    thread_id=context.thread_id,
+                    turn_id=context.turn_id,
+                    # The broker assigns the delivered cursor; this field is the
+                    # producer's own stream position, and a settlement-time event has
+                    # none of its own.
+                    sequence=0,
+                    kind=TurnEventKind.TURN_CHANGES,
+                    payload=TurnChangesPayload(
+                        changes=tuple(result.changes), total=result.changes_total
+                    ),
+                )
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping is never the turn's owner
+            pass
 
     async def _settle_goal(self, result: TurnResult, handle: TurnHandle) -> None:
         service = self._goal_service

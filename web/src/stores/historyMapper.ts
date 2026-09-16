@@ -58,9 +58,96 @@ export interface ToolItemView {
   duration?: string;
 }
 
+/**
+ * One file a turn changed, as the console paints it.
+ *
+ * The counts are that turn's own contribution (`runtime/workspace_changes`), so the
+ * same file may appear in several turns' lists, each with its own numbers.
+ */
+export interface TurnChangeView {
+  path: string;
+  /** `added` | `modified` | `deleted` | `renamed`. */
+  status: string;
+  insertions: number;
+  deletions: number;
+  /** Changed, but with no line counts to report (binary, or too large to count). */
+  binary: boolean;
+  /**
+   * True once this file's part in the turn was undone.  The turn did change it -- the
+   * card keeps saying so -- but the file no longer holds that change, so its counts no
+   * longer describe the workspace.
+   */
+  reverted: boolean;
+}
+
+/**
+ * Map the wire's change list into the row's view model, dropping malformed entries.
+ *
+ * `revertedPaths` are the paths the runtime reports as already undone for this turn (the
+ * history read carries them), so a reload paints the card the way the workspace is now.
+ */
+export function turnChangeViews(raw: unknown, revertedPaths?: unknown): TurnChangeView[] {
+  if (!Array.isArray(raw)) return [];
+  const reverted = new Set<string>();
+  if (Array.isArray(revertedPaths)) {
+    for (const entry of revertedPaths) {
+      if (typeof entry === 'string' && entry !== '') reverted.add(entry);
+    }
+  }
+  const views: TurnChangeView[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path : '';
+    if (path === '') continue;
+    views.push({
+      path,
+      status: typeof record.status === 'string' && record.status !== '' ? record.status : 'modified',
+      insertions: countOf(record.insertions),
+      deletions: countOf(record.deletions),
+      binary: record.binary === true,
+      reverted: reverted.has(path),
+    });
+  }
+  return views;
+}
+
+/** A line count as the wire may report it: a non-negative integer, or nothing. */
+function countOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+/**
+ * Mark one file of one turn as reverted, right after the runtime did it.
+ *
+ * The same shape the history read produces, so a card painted from a live revert and one
+ * painted from a reload cannot disagree.  A turn with no change row -- or one that does
+ * not report this path -- is returned unchanged.
+ */
+export function markRevertedPath(
+  messages: TranscriptMessage[],
+  turnId: string,
+  path: string,
+): TranscriptMessage[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    const changes = message.changes;
+    if (message.type !== 'changes' || message.turnId !== turnId || !changes) return message;
+    if (!changes.some((change) => change.path === path && !change.reverted)) return message;
+    changed = true;
+    return {
+      ...message,
+      changes: changes.map((change) =>
+        change.path === path ? { ...change, reverted: true } : change,
+      ),
+    };
+  });
+  return changed ? next : messages;
+}
+
 export interface TranscriptMessage {
   id: string;
-  type: 'user' | 'thought' | 'tool_group' | 'assistant' | 'info';
+  type: 'user' | 'thought' | 'tool_group' | 'assistant' | 'info' | 'changes';
   timestamp: string;
   /** Runtime turn identity, or a stable history cursor for legacy projections. */
   turnId?: string;
@@ -96,6 +183,10 @@ export interface TranscriptMessage {
    * simply renders no thumbnails.
    */
   attachments?: TranscriptAttachment[];
+  /** The files this turn changed, on a `changes` row (see `TurnChangeView`). */
+  changes?: TurnChangeView[];
+  /** How many files the turn changed in total; `changes` is the bounded list. */
+  changesTotal?: number;
 }
 
 /** Minimal tool item for a projected history row (no live status/preview). */
@@ -359,6 +450,24 @@ export function mapHistoryEvents(
             };
           }),
           finished: true,
+        });
+      }
+    } else if (ev.kind === 'changes') {
+      // What the turn did to the workspace, as its own row: a turn that changed
+      // nothing carries no list, and a row that predates change tracking carries
+      // none either -- neither paints an empty card block.
+      // The runtime also reports which of these files have since been undone, so a
+      // reload paints a reverted card as reverted instead of as a standing edit.
+      const changes = turnChangeViews(ev.changes, ev.reverted_paths);
+      if (changes.length > 0 && turn >= startTurn) {
+        out.push({
+          id: `hist-c-${tag}`,
+          type: 'changes',
+          timestamp: `Turn ${turn}`,
+          turnId,
+          changes,
+          changesTotal: typeof ev.changes_total === 'number' && ev.changes_total > 0
+            ? ev.changes_total : changes.length,
         });
       }
     }

@@ -298,6 +298,33 @@ def test_projection_compacts_tool_results_and_drops_image_bytes(tmp_path) -> Non
         projection.close()
 
 
+def test_a_turns_change_list_survives_the_projection(tmp_path) -> None:
+    """The change cards come from the projection, so they must round-trip whole."""
+    changes = [
+        {
+            "path": "web/src/components/Transcript.tsx",
+            "status": "modified",
+            "insertions": 12,
+            "deletions": 3,
+            "binary": False,
+        }
+    ]
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    try:
+        projection.replace_events(
+            "t1",
+            [
+                UiTranscriptEvent(kind="user", text="edit something"),
+                UiTranscriptEvent(kind="changes", changes=changes),
+            ],
+        )
+        page = projection.load_tail("t1")
+        assert [event.kind for event in page.events] == ["user", "changes"]
+        assert page.events[1].changes == changes
+    finally:
+        projection.close()
+
+
 def test_replace_from_messages_folds_and_persists_usage(tmp_path) -> None:
     projection = TranscriptProjection(tmp_path / "transcript.sqlite")
     messages = [

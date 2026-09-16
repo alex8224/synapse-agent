@@ -114,6 +114,10 @@ from synapse.runtime.service.recovery import (
     ReconcileSessionQuery,
     SessionRecoverabilityView,
 )
+from synapse.runtime.service.revert import (
+    RevertTurnChangeCommand,
+    RevertTurnChangeResult,
+)
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
 from synapse.runtime.service.session_management import (
     CreateSessionCommand,
@@ -146,6 +150,7 @@ __all__ = [
     "ARTIFACTS_READ",
     "ATTACHMENTS_READ",
     "ATTACHMENTS_WRITE",
+    "WORKSPACE_REVERT",
     "CODEX_RESET_CONSUME",
     "CODEX_USAGE_READ",
     "SESSION_OPEN",
@@ -221,6 +226,10 @@ ARTIFACTS_READ = "artifacts.read"
 #: are reads, and both are thread-scoped because a session owns the workspace.
 GIT_STATUS = "git.status"
 GIT_DIFF = "git.diff"
+#: Undo one file's part in one finished turn.  A write surface -- the only one that
+#: touches the reader's own files -- so it has its own capability, and ``git.status`` or
+#: ``session.read`` must never authorize it.
+WORKSPACE_REVERT = "workspace.revert"
 #: Read one session's durable image attachments (stat + bounded read).  Session
 #: scoped: the grant is bound to one ``SessionRef`` and never to a project.
 ATTACHMENTS_READ = "attachments.read"
@@ -263,6 +272,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         EVENTS_WATCH,
         GIT_STATUS,
         GIT_DIFF,
+        WORKSPACE_REVERT,
         ARTIFACTS_STAT,
         ARTIFACTS_LIST,
         ARTIFACTS_READ,
@@ -991,6 +1001,23 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("git diff is unavailable")
         return await delegate(query)
+
+    async def revert_turn_change(
+        self, command: RevertTurnChangeCommand
+    ) -> RevertTurnChangeResult:
+        """Authorize ``workspace.revert`` per session, then delegate (optional).
+
+        This is the one method that writes to the reader's own files, so it is
+        authorized by a capability of its own: a read grant (``git.status``,
+        ``session.read``) must never reach it.  Optional delegate method, like
+        ``git_status``: the ACL check runs first either way.
+        """
+        session = self._session_from_dto(command, RevertTurnChangeCommand, "revert command")
+        self._authorize(session, WORKSPACE_REVERT)
+        delegate = getattr(self._delegate, "revert_turn_change", None)
+        if not callable(delegate):
+            raise InvalidRequestError("reverting a turn's change is unavailable")
+        return await delegate(command)
 
     async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:
         """Authorize ``attachments.write`` per session, then reserve an upload.

@@ -34,6 +34,8 @@ __all__ = [
     "ToolResultPayload",
     "TurnEvent",
     "TurnEventKind",
+    "TurnChange",
+    "TurnChangesPayload",
     "TurnTerminalPayload",
     "UsagePayload",
 ]
@@ -64,6 +66,7 @@ class TurnEventKind(StrEnum):
     USAGE_UPDATED = "usage_updated"
     APPROVAL_REQUIRED = "approval_required"
     INFO = "info"
+    TURN_CHANGES = "turn_changes"
     TURN_COMPLETED = "turn_completed"
     TURN_CANCELLED = "turn_cancelled"
     TURN_WAITING_APPROVAL = "turn_waiting_approval"
@@ -240,6 +243,36 @@ class UsagePayload:
     # Carried on the usage event because the step count is only known to the
     # streaming parser, while the chrome that renders it is fed by usage events.
     model_calls: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TurnChange:
+    """One file a turn created, modified or deleted, with its own line counts.
+
+    Counts are this *turn's* contribution, not the workspace's standing delta against
+    ``HEAD``: a file edited by three turns carries three deltas, and reverting one turn
+    means undoing its own numbers.  ``binary`` means the file changed but has no line
+    counts to report.
+    """
+
+    path: str
+    #: ``added`` | ``modified`` | ``deleted`` | ``renamed``
+    status: str
+    insertions: int = 0
+    deletions: int = 0
+    binary: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TurnChangesPayload:
+    """The files one turn touched, emitted once as the turn settles.
+
+    ``total`` is how many files changed and ``changes`` is the bounded list of them, so
+    a turn that rewrote a whole tree says so without sending it.
+    """
+
+    changes: tuple[TurnChange, ...] = ()
+    total: int = 0
 
 
 @dataclass(frozen=True, slots=True)

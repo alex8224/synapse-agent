@@ -1,3 +1,6 @@
+| `turn_changes` | 该轮的工作区改动（`changes` 有界列表 + `total` 总数；结算时发出，晚于终止事件到达，控制台追加为该轮末尾的改动卡片） |
+| Transcript | 每轮改动卡片（本轮新增） | 轮次结束时，该轮末尾出现一张**本轮工作区改动**卡片列表：每行是一个文件（状态图标 / 路径 / 该轮自己的 `+N -M`），点卡片打开只读 Git Explorer 并定位到该文件（与顶栏分支 chip 共用 `openGitExplorer(path)` 入口）。数字来自运行时的按轮次快照差分（`runtime/workspace_changes.py`：轮次前后各取一次工作区状态再相减），**不是**工作区对 `HEAD` 的存量差——所以同一文件在多轮各有一份自己的数字。卡片行**不是折叠步骤**（`transcriptRowPolicy` 里 `step: false`），折叠的轮次照样看得到；列表有界（超出时写「共 N 个 · 显示前 M 个」），无法计数的改动（二进制 / 超大）不显示行数。投影里以 `changes` 事件随轮次落库，刷新后卡片仍在；实时由结算时发出的 `turn_changes` 事件补上（**晚于终止事件**到达，控制台按事件自己的 `turn_id` 追加到该轮末尾） | 已实现（本轮） |
+| Transcript | 卡片上的单文件撤销（本轮新增） | 每张卡片多一个「撤销」：点它只是**就地武装**（出现「恢复到本轮开始前？」+「确认撤销」），再点「确认撤销」才发一次 `runtime.workspace.revert`。运行时每轮会把改动前的文件内容留一份（`runtime/turn_reverts.py`，存在工作区自己的 `.synapse/turn-snapshots/<thread>/`，有界保留最近 20 轮 / 32 MiB，超出丢弃最旧），撤销就是把那一份写回：本轮新建的文件被删除，本轮删除的文件被写回，本轮改过的文件恢复原内容（改动前**干净**的文件取其在本轮开始时 `HEAD` 所指提交的版本，且此后 `HEAD` 变了就拒绝）。写入是原子的（同目录临时文件 + `os.replace`），符号链接一律拒绝写入，**从不**碰 `HEAD` / 索引 / 其它文件。有回合在运行时拒绝（不替你取消）；文件在本轮之后又被改过则拒绝（不静默丢弃）。成功后卡片显示「已撤销」并去掉行数（那些数字不再描述工作区），同时重读 git 状态；刷新后仍显示「已撤销」，因为历史读取带上该轮被撤销的路径（`HistoryEvent.reverted_paths`），控制台只据此重放、**不**从 `git.status` 反推 | 已实现（本轮） |
 | BottomBar | Codex 用量与重置额度（本轮新增） | 左区（activity 与 MCP 之间，与 TUI 同一 `order`）新增**可用性自持**条目：只在服务端确认该会话有效模型是启用的 Codex OAuth profile 时才存在（`runtime.config.get` 的 `codex_usage_enabled`，由 daemon 按会话**实际** profile 的 `auth` 判定，不按模型名猜；旧 peer 缺该字段则隐藏且不发任何 RPC）。行文按 TUI 语义但**不沿用其硬编码窗口名**：`5h 82%/3h · 7d 60%/2d · resets 2`（窗口长度取 RPC 的真实 `window_minutes`，倒计时为本地 1s tick，不发请求）；剩余低于 50% 转红。点开面板（`popover`）显示两个窗口、捕获时间与额度列表，`刷新` 强制绕过 300s 读缓存；列表每行按 `status == available` 且未过期才可兑换。**兑换是真实写操作**：先弹确认「兑换会真实消耗 1 次账户级 Codex 重置额度（不可撤销）」，只有确认按钮发一次 `runtime.codex.reset_credits.consume`（携带用户所见 `expected_model` 与一次性 `command_id`）；取消零请求，结果未知或断线**不自动重试、不换新键重放**，提示刷新核对。窄屏（<768px）策略为「更多」，经既有入口可达。授权为独立能力位 `codex.usage.read`（两个读方法）与 `codex.reset.consume`（兑换），`session.read` 不授权其中任何一个。由 `web/tests/codexUsageClient.test.ts` / `codexUsageController.test.ts` / `codexUsageEntry.test.ts` 守护，`web/tests/codexUsage.verify.ts` 用真实浏览器 + 模拟 runtime 验收（隐藏期完成发现、真实窗口标注、确认前零请求、消费后刷新、禁用后条目与分隔符一并消失、360px 经「更多」可达） | 已实现（本轮） |
 # Synapse Web Console 设计方案与技术规范
 
@@ -109,6 +112,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | TopBar | 项目 | 有（`runtime.project.list` 里当前项目的目录名，hover 出完整路径；列表未加载时不渲染占位名） | 已实现（本轮新增 chip） |
 | TopBar | 变更统计（跟随分支 chip） | 有（脏/干净状态点 + `runtime.git.status` 的**真实 tracked 增删行数** `+N -M`，不是文件数；**点击打开只读 Git Explorer**，与分支 chip 同为入口；行数未知（git 无法作答）时只显示状态点、不渲染数字，避免虚构的 `+0 -0`；不再带 `difference` 图标） | 已实现（本轮移到分支 chip 之后） |
 | TopBar | 变更统计口径 | 服务端 `git diff --numstat HEAD`：staged 与 unstaged **合并计一次**（不会重复累加）；**二进制**变更（numstat 报 `-`）与**未跟踪**文件（不在任何 diff 中）不计入行数；`HEAD` 尚未产生提交时与空树比较；git 无法作答时 `insertions`/`deletions` 为 `null`，前端不显示数字而非伪造 `0` | 已实现 |
+| Git Explorer | 未跟踪文件的内容（本轮修正） | `git diff` 对**未跟踪**路径什么都不输出，所以以前在左侧列表里点开一个 `??` 文件，右侧只会说「没有差异，请用工作区文件面板查看内容」——列出来了却看不到。现在服务端在 `git diff` 为空且**未加 `--cached`** 时读该文件（有界、二进制安全），按「新文件」生成统一 diff 返回：`--- /dev/null` / `+++ b/<path>` / `@@ -0,0 +1,N @@` + 逐行 `+`，与 git 对新增文件的输出同形。**不会**为了看内容而 `git add --intent-to-add`（索引与仓库保持只读）；符号链接按其目标路径一行显示；空文件与目录仍报「没有差异」；超过 `MAX_DIFF_BYTES` 截断并标 `truncated`；二进制标 `binary`（前端显示「二进制文件，不显示 diff」）。已加进暂存区的文件仍由 git 自己出 diff，不走这条路径 | 已实现（本轮） |
 | TopBar | 右侧上下文/Token 统计指标 | **已移至底栏中区**（见下） | 已实现（位置调整） |
 | TopBar | （规范外）`layers` / `terminal` / `folder_open` / `logout` 图标 | **已移至侧栏底部的操作行**（与设置入口同排）：`layers` = 会话信息弹层（工作区/项目/分支/会话/模型/连接/用量）；`terminal` = 运行时诊断弹层（按需读取宿主只读端点）；`folder_open` = 只读工作区文件树 | 已实现（位置调整） |
 | SideBar | 240px 宽度 | 240px | 已实现 |
@@ -304,6 +308,16 @@ Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）�
 `runtime.artifacts.stat`、`runtime.artifacts.list`、`runtime.artifacts.read`、
 `runtime.attachments.begin`、`runtime.attachments.append`、`runtime.attachments.finish`、
 `runtime.attachments.abort`、`runtime.attachments.read`。
+
+其中 `runtime.workspace.revert` 是控制台唯一**写读者自己文件**的方法（改动卡片上的撤销）：
+请求为 `{session, turn_id, path}`，结果是 `{action: restore|delete|already_reverted, bytes_written}`。
+它只还原卡片上那一个 workspace 相对路径，且只在文件仍等于本轮留下的内容时才写；授权位是独立的
+`workspace.revert`（`git.status` / `session.read` 都不授权它）。拒绝是**具名**的：错误载荷的
+`service_code` 给出条件（`revert_turn_running`、`revert_content_drift`、`revert_head_moved`、
+`revert_record_expired`、`revert_path_not_in_turn`、`revert_before_unknown`、`revert_content_not_kept`、
+`revert_no_before_content`、`revert_symlink_refused`、`revert_too_large`、`revert_write_failed`、
+`revert_turn_state_unknown`、`revert_workspace_unavailable`），控制台据此给出可读文案并在转录里
+显示，而不是吞掉。它**从不**碰 `HEAD`、索引或任何其它文件。
 
 两个方法已在共享客户端实现但当前没有 UI 路径调用，因此不计入「实际使用」：
 `runtime.attachments.stat`（`statAttachment`）与 `runtime.turn.approval.get`

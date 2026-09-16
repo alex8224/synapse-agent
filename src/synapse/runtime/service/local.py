@@ -169,6 +169,11 @@ from synapse.runtime.service.recovery import (
     ReconcileSessionQuery,
     SessionRecoverabilityView,
 )
+from synapse.runtime.service.revert import (
+    RevertTurnChangeCommand,
+    RevertTurnChangeResult,
+    revert_turn_change_workspace,
+)
 from synapse.runtime.service.routing import RouterClosedError, RuntimeManagerRouter
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
 from synapse.runtime.service.session_management import (
@@ -1332,6 +1337,31 @@ class LocalAgentRuntimeService:
         self._check_project(manager, query.session)
         session = self._resolve_session(manager, query.session)
         return await asyncio.to_thread(git_diff_workspace, query, session)
+
+    # -- revert port -------------------------------------------------------
+
+    async def revert_turn_change(
+        self, command: RevertTurnChangeCommand
+    ) -> RevertTurnChangeResult:
+        """Undo one file's part in one finished turn.
+
+        Session-scoped write authorized by ``workspace.revert``: it restores one
+        workspace-relative path from the copy the runtime kept before that turn.  The
+        workspace is the session's own (never a path from the request), a running turn is
+        refused before anything is read, and the decision -- including whether the file
+        still holds what the turn left -- belongs to the module, which only ever touches
+        that one file.  The blocking reads and the write run on a worker thread.
+        """
+        if not isinstance(command, RevertTurnChangeCommand):
+            raise InvalidRequestError(
+                "revert command must be a RevertTurnChangeCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        session = self._resolve_session(manager, command.session)
+        return await asyncio.to_thread(revert_turn_change_workspace, command, session)
 
     # -- attachment port ---------------------------------------------------
 

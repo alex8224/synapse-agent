@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
@@ -254,6 +254,20 @@ class SessionPersistence:
         answer_text = result.final_text or _last_answer_text(state_events)
         if answer_text:
             events.append(UiTranscriptEvent(kind="answer", text=answer_text))
+        if result.changes:
+            # The turn's own change list, last of all: it is the turn's outcome, and it
+            # is what the console paints as its change cards (a reload included).
+            # The runtime turn id travels with it so the row names the turn it belongs
+            # to on its own: the console matches a later revert to that turn, and the
+            # live event and the reloaded row then agree on which turn this is.
+            events.append(
+                UiTranscriptEvent(
+                    kind="changes",
+                    changes=[asdict(change) for change in result.changes],
+                    changes_total=result.changes_total,
+                    turn_id=result.turn_id,
+                )
+            )
         return events
 
     def _persist_summary(

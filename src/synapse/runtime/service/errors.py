@@ -35,6 +35,7 @@ __all__ = [
     "RuntimeServiceError",
     "SteeringUnavailableError",
     "TurnMismatchError",
+    "WorkspaceRevertError",
 ]
 
 
@@ -103,6 +104,17 @@ class GitUnavailableError(RuntimeServiceError):
     """Git cannot answer for this workspace (no binary, no repository, timeout)."""
 
     code = "git_unavailable"
+
+
+class WorkspaceRevertError(RuntimeServiceError):
+    """A workspace revert was refused, or could not be carried out.
+
+    ``code`` names the specific condition (``revert_content_drift``,
+    ``revert_record_expired``, ``revert_turn_running``, ...) so a client can word the
+    refusal itself, while ``message`` is always safe to show as it is.
+    """
+
+    code = "workspace_revert_failed"
 
 
 class ArtifactUnavailableError(RuntimeServiceError):

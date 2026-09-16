@@ -3,7 +3,9 @@
 The TUI shells out to ``git`` in-process (``ui/git_explore/provider.py``); the
 console has no such channel, so the same two questions are answered here and
 exposed over the wire: what the working tree looks like, and what one file's
-diff is.  Nothing here writes: no staging, no commits, no checkout.
+diff is.  Nothing here writes: no staging, no commits, no checkout.  An untracked
+file has no diff to ask git for, so its content is read (bounded, binary-safe) and
+reported as the diff a new file would produce -- never by staging it first.
 
 Every result is bounded — the file list, the diff size and the subprocess
 timeout — and every failure the caller can act on is a typed error rather than
@@ -12,6 +14,8 @@ an empty result that would look like "no changes".
 
 from __future__ import annotations
 
+import difflib
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -273,6 +277,12 @@ def git_diff_workspace(query: GitDiffQuery, session: object) -> GitDiffResult:
         return GitDiffResult(path=path, text="", binary=True, truncated=False, empty=False)
     truncated = len(raw) > MAX_DIFF_BYTES
     body = raw[:MAX_DIFF_BYTES].decode("utf-8", errors="replace")
+    if body.strip() == "" and not query.staged:
+        # `git diff` says nothing about a path it does not track, so an untracked file used
+        # to be listed with nothing to show for it.  Its content is read here instead.
+        new_file = _new_file_diff(root, path)
+        if new_file is not None:
+            return new_file
     return GitDiffResult(
         path=path,
         text=body,
@@ -280,5 +290,67 @@ def git_diff_workspace(query: GitDiffQuery, session: object) -> GitDiffResult:
         truncated=truncated,
         # An empty diff is a real answer: unchanged, untracked, or a path git
         # cannot diff.  The caller renders it instead of an error.
+        empty=body.strip() == "",
+    )
+
+
+def _untracked_paths(root: Path, path: str) -> set[str] | None:
+    """The untracked, non-ignored paths a pathspec names, or `None` if git cannot answer."""
+    raw = _run_git(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", path])
+    if raw is None:
+        return None
+    return {item for item in raw.decode("utf-8", errors="replace").split("\0") if item}
+
+
+def _new_file_diff(root: Path, path: str) -> GitDiffResult | None:
+    """The diff of an untracked file against nothing, or `None` when it is not one.
+
+    Built here rather than asked of `git diff --no-index` because that needs a second path
+    to compare against, and because nothing in this module may touch the repository or its
+    index -- in particular an untracked file is *not* added with `--intent-to-add` just to
+    make it visible.  A symlink reports its target, which is what git shows for one.
+    """
+    untracked = _untracked_paths(root, path)
+    if untracked is None or path not in untracked:
+        return None
+    target = root.joinpath(*PurePosixPath(path).parts)
+    try:
+        if target.is_symlink():
+            # A symlink's "content" is its target, as one line, the way git shows it.
+            content = f"{os.readlink(target)}\n"
+            size = len(content)
+        elif target.is_file():
+            size = target.stat().st_size
+            with target.open("rb") as stream:
+                raw = stream.read(MAX_DIFF_BYTES)
+            if b"\x00" in raw:
+                return GitDiffResult(path=path, text="", binary=True, truncated=False, empty=False)
+            content = raw.decode("utf-8", errors="replace")
+        else:
+            # A directory (or something that is neither): git shows no file diff for it.
+            return None
+    except OSError:
+        return None
+    body = "".join(
+        difflib.unified_diff(
+            [],
+            content.splitlines(keepends=True),
+            fromfile="/dev/null",
+            tofile=f"b/{path}",
+            lineterm="\n",
+        )
+    )
+    encoded = body.encode("utf-8")
+    truncated = size > MAX_DIFF_BYTES
+    if len(encoded) > MAX_DIFF_BYTES:
+        body = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="replace")
+        truncated = True
+    return GitDiffResult(
+        path=path,
+        text=body,
+        binary=False,
+        truncated=truncated,
+        # A new empty file has no hunks: the headers alone are the whole diff, exactly as
+        # git reports one.
         empty=body.strip() == "",
     )

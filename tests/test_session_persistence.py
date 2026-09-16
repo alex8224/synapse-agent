@@ -326,6 +326,38 @@ def test_a_checkpoint_without_reasoning_falls_back_to_the_turn_reasoning() -> No
     assert events[1].text == "thought from the stream"
 
 
+def test_a_turn_that_changed_files_projects_its_change_list() -> None:
+    """A reload paints the turn's change cards from this event."""
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from synapse.runtime.service.event_types import TurnChange
+
+    messages = [HumanMessage("edit a file"), AIMessage("done")]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        final_text="done",
+        changes=(
+            TurnChange(path="a.py", status="modified", insertions=2, deletions=1),
+            TurnChange(path="b.py", status="added", insertions=4),
+        ),
+        changes_total=2,
+    )
+
+    events = SessionPersistence._events(
+        "edit a file", result, state_messages=messages, turn_events=None
+    )
+
+    # Last of all: the change list is the turn's outcome, after what it said.
+    assert [event.kind for event in events] == ["user", "answer", "changes"]
+    assert events[-1].changes == [
+        {"path": "a.py", "status": "modified", "insertions": 2, "deletions": 1, "binary": False},
+        {"path": "b.py", "status": "added", "insertions": 4, "deletions": 0, "binary": False},
+    ]
+
+
 def test_an_unreadable_checkpoint_degrades_to_the_stream_state() -> None:
     """A settlement must survive a checkpoint that cannot be read."""
 

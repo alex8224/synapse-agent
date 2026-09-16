@@ -132,9 +132,15 @@ test('the explorer stays read-only and is reachable from the branch chip', () =>
   for (const write of ['gitAdd', 'gitCommit', 'gitCheckout', 'gitStage']) {
     assert.equal(explorer.includes(write), false, `the explorer must not call ${write}`);
   }
-  // The header chip opens it, and shows the tracking counts the status carries.
+  // The header chip opens it (through the store, because a turn's change cards open
+  // the same explorer on the file they name), and shows the tracking counts the
+  // status carries.
   assert.ok(topBar.includes('<GitExplorer'), 'the header must render the explorer');
-  assert.ok(topBar.includes('setExplorerOpen(true)'), 'the chip must open it');
+  assert.ok(topBar.includes('openGitExplorer()'), 'the chip must open it');
+  assert.ok(
+    topBar.includes('initialPath={gitExplorer.path}'),
+    'a change card must be able to open it on its own file',
+  );
   assert.ok(topBar.includes('gitStatus.ahead'), 'the chip must show the ahead count');
   assert.ok(topBar.includes('gitStatus.behind'), 'the chip must show the behind count');
   // The change statistics are the real tracked added/removed lines, not the file
@@ -148,4 +154,26 @@ test('the explorer stays read-only and is reachable from the branch chip', () =>
     false,
     'the chip must not fall back to the changed-file count',
   );
+});
+
+test('an untracked file is read here instead of being sent elsewhere', () => {
+  // The runtime reports an untracked file as the new-file diff it would produce, so the
+  // explorer paints it like any other diff -- the empty pane no longer tells the reader to
+  // go to another panel for a file the list just offered them.
+  const explorer = read('components/GitExplorer.tsx');
+  assert.equal(
+    explorer.includes('未跟踪文件请用'),
+    false,
+    'the empty state must not hand an untracked file to another panel',
+  );
+  assert.ok(
+    explorer.includes('没有差异（该文件与所选基线一致'),
+    'the empty state is about the file and the baseline it is compared with',
+  );
+  // A new-file diff is ordinary unified diff text: the header lines and the added lines
+  // are coloured by the same rule as any other diff.
+  assert.equal(diffLineClass('+++ b/fresh.txt'), 'text-gray-500');
+  assert.equal(diffLineClass('--- /dev/null'), 'text-gray-500');
+  assert.equal(diffLineClass('@@ -0,0 +1,2 @@'), 'text-blue-700');
+  assert.equal(diffLineClass('+one'), 'text-green-700');
 });

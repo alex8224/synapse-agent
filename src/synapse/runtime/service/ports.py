@@ -111,6 +111,10 @@ from synapse.runtime.service.recovery import (
     ReconcileSessionQuery,
     SessionRecoverabilityView,
 )
+from synapse.runtime.service.revert import (
+    RevertTurnChangeCommand,
+    RevertTurnChangeResult,
+)
 from synapse.runtime.service.runtime_config import (
     GetRuntimeConfigQuery,
     RuntimeConfigView,
@@ -441,6 +445,23 @@ class AgentRuntimeService(Protocol):
     async def git_status(self, query: GitStatusQuery) -> GitStatusResult: ...
 
     async def git_diff(self, query: GitDiffQuery) -> GitDiffResult: ...
+
+    async def revert_turn_change(
+        self, command: RevertTurnChangeCommand
+    ) -> RevertTurnChangeResult:
+        """Put one file of one finished turn back the way that turn found it.
+
+        Session-scoped write authorized by the dedicated ``workspace.revert``
+        capability -- never ``session.read``.  It restores exactly one workspace-relative
+        path from the copy the runtime kept before that turn, and refuses unless the file
+        still holds what the turn left there, so a later edit is never discarded.  It
+        never touches ``HEAD``, the index, or any other file, and it refuses while a turn
+        is running.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
 
     async def begin_attachment(
         self, command: BeginAttachmentCommand

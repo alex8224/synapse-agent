@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from synapse.runtime.service.event_types import TurnChange
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
@@ -128,10 +129,18 @@ class HistoryAttachment:
 class HistoryEvent:
     """One structured, transport-safe transcript event.
 
-    ``kind`` is one of ``user``, ``answer``, ``thought``, ``tools``, ``meta``.
+    ``kind`` is one of ``user``, ``answer``, ``thought``, ``tools``, ``changes``,
+    ``meta``.
     ``tool_calls`` and ``tool_results`` are plain dicts safe for JSON encoding.
     ``attachments`` is empty for every non-user event and for a user event that
     carried no durable attachment references (legacy rows default to empty).
+    ``changes`` is the files the turn touched (see ``TurnChange``), empty for every
+    other kind and for turns that changed nothing -- a row written before change
+    tracking existed simply carries none.
+    ``reverted_paths`` are the files of that turn whose change has since been undone, so a
+    change card can say so after a reload instead of still claiming the edit stands.  It is
+    empty for every other kind, for a turn nothing was reverted from, and for a runtime
+    that keeps no revert records.
     No LangChain message objects are ever exposed.
     """
 
@@ -140,6 +149,12 @@ class HistoryEvent:
     tool_calls: tuple[dict[str, Any], ...]
     tool_results: tuple[dict[str, Any], ...]
     attachments: tuple[HistoryAttachment, ...] = ()
+    #: The files one turn created, modified or deleted, with that turn's own line counts.
+    changes: tuple[TurnChange, ...] = ()
+    #: How many files changed in total; `changes` is the bounded list of them.
+    changes_total: int = 0
+    #: Paths of this turn's changes that have since been reverted, in report order.
+    reverted_paths: tuple[str, ...] = ()
     # Additive metadata: older/checkpoint-rebuilt history reports unknown, not zero.
     turn_id: str | None = None
     elapsed_s: float | None = None

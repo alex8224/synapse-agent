@@ -502,7 +502,7 @@ def load_thread_messages(
 class UiTranscriptEvent:
     """One renderable unit for TUI/history replay."""
 
-    kind: str  # user | answer | thought | tools | meta
+    kind: str  # user | answer | thought | tools | changes | meta
     text: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
@@ -511,6 +511,14 @@ class UiTranscriptEvent:
     # Durable attachment references for a user turn (JSON-safe metadata only;
     # never base64 bytes).  Empty for every non-user event and for legacy rows.
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    # The files the turn created, modified or deleted, each with the turn's own line
+    # counts (see `runtime/workspace_changes`).  Plain dicts, like the tool rows: the
+    # projection stores JSON, and the console renders it as the turn's change cards.
+    # Empty for every other kind and for turns that changed nothing.
+    changes: list[dict[str, Any]] = field(default_factory=list)
+    #: How many files the turn changed in total; `changes` is the bounded list, so a
+    #: turn that rewrote a whole tree says so without storing it.
+    changes_total: int = 0
     # Optional runtime identity/timing; checkpoint-only legacy rows lack these.
     turn_id: str | None = None
     elapsed_s: float | None = None

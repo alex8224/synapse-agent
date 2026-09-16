@@ -161,6 +161,7 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.attachments.read": "read_attachment",
     "runtime.git.status": "git_status",
     "runtime.git.diff": "git_diff",
+    "runtime.workspace.revert": "revert_turn_change",
     "runtime.project.register": "register_project",
     "runtime.fs.list": "list_directories",
     "runtime.codex.usage.get": "get_codex_usage",
@@ -182,6 +183,7 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "attachments.write",
         "git.status",
         "git.diff",
+        "workspace.revert",
         "project.register",
         "fs.list",
         "codex.usage.read",
@@ -232,6 +234,9 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "ListDirectoriesResult",
         "DirectoryEntry",
         "DirectoryListing",
+        # Reverting one file of one turn (the change cards' undo).
+        "RevertTurnChangeCommand",
+        "RevertTurnChangeResult",
     }
 )
 
@@ -536,10 +541,10 @@ def test_protocol_features_stay_separate_from_authorization_capabilities() -> No
 
 
 def test_every_event_kind_declares_a_payload_schema() -> None:
-    """All 24 kinds are declared, each with a resolvable payload schema."""
+    """All 25 kinds are declared, each with a resolvable payload schema."""
     kinds = {event.kind for event in contract_registry.EVENTS}
     assert kinds == {kind.value for kind in TurnEventKind}
-    assert len(kinds) == 24
+    assert len(kinds) == 25
     schemas = contract_export.schema_names()
     for event in contract_registry.EVENTS:
         assert event.status in {"v1", "v1-ui-ignored"}

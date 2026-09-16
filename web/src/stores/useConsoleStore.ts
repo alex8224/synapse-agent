@@ -38,6 +38,7 @@ import {
   earlierHistoryParams,
   latestHistoryParams,
   mapHistoryEvents,
+  markRevertedPath,
   readHistoryPage,
   toSessionListView,
 } from './historyMapper.ts';
@@ -552,6 +553,56 @@ function describeSessionActionError(error: unknown, fallback: string): string {
 }
 
 /**
+ * User-facing text for a refused revert.
+ *
+ * Every refusal names its own condition, because "why can this file not be put back" is
+ * the whole question the reader has: a running turn, a file that moved on since the turn,
+ * a turn whose record is gone, a file the runtime never kept a copy of.  The runtime's
+ * own message is the fallback, so an unmapped refusal still says something true.
+ */
+function describeRevertFailure(error: unknown, path: string): string {
+  if (error instanceof RpcCallError) {
+    const code = error.service_code;
+    if (code === 'revert_turn_running') {
+      return '有回合正在运行，无法撤销：请等它结束（不会自动取消）。';
+    }
+    if (code === 'revert_content_drift') {
+      return `${path} 在本轮之后又被改过，已保持原样，未撤销。`;
+    }
+    if (code === 'revert_head_moved') {
+      return '仓库在本轮之后有了新的提交，无法安全还原本轮开始前的内容。';
+    }
+    if (code === 'revert_record_expired') {
+      return '这一轮的改动前副本已不再保留（超出保留条数或已被清理），无法撤销。';
+    }
+    if (code === 'revert_path_not_in_turn') {
+      return '该文件不属于这一轮的改动，无法按轮次撤销。';
+    }
+    if (code === 'revert_before_unknown' || code === 'revert_content_not_kept') {
+      return `${path} 的改动前内容未被保留（二进制或过大），无法撤销。`;
+    }
+    if (code === 'revert_no_before_content') {
+      return `${path} 在本轮开始时的内容不在当前提交中，无法还原。`;
+    }
+    if (code === 'revert_symlink_refused') {
+      return `${path} 是符号链接，不会透过它写入。`;
+    }
+    if (code === 'revert_too_large' || code === 'revert_not_a_file') {
+      return `${path} 过大或不是普通文件，无法安全撤销。`;
+    }
+    if (code === 'revert_write_failed') {
+      return `${path} 写入失败：文件可能被占用或没有权限。`;
+    }
+    if (code === 'permission_denied') return '没有权限撤销工作区改动。';
+    if (code === 'revert_turn_state_unknown' || code === 'revert_workspace_unavailable') {
+      return '运行时无法确认工作区状态，已拒绝写入。';
+    }
+    if (error.message) return error.message;
+  }
+  return describeError(error);
+}
+
+/**
  * User-facing text for a failed goal write.
  *
  * `conflict` is the one failure with a specific fix: either the goal was replaced
@@ -639,6 +690,16 @@ interface ConsoleStore {
   // Layout
   isSidebarCollapsed: boolean;
   toggleSidebar: () => void;
+  /**
+   * The read-only git explorer's open state.
+   *
+   * It lives here rather than in the header because more than the header opens it: a
+   * turn's change cards open it too, on the file the reader clicked.  `path` is the
+   * file to select, or null to let the explorer pick its own first row.
+   */
+  gitExplorer: { path: string | null } | null;
+  openGitExplorer: (path?: string | null) => void;
+  closeGitExplorer: () => void;
 
   // Workspace & Branch
   workspacePath: string;
@@ -646,6 +707,18 @@ interface ConsoleStore {
   gitDirty: boolean;
   /** Live git status for the attached session's workspace, or null while unknown. */
   gitStatus: GitStatusView | null;
+
+  /**
+   * Undo one file's part in one finished turn (`runtime.workspace.revert`).
+   *
+   * The only console action that writes to the reader's own files.  The runtime decides
+   * whether it is safe -- it refuses while a turn is running or once the file has moved
+   * on since -- and a refusal is reported in `revertError` instead of being swallowed.
+   */
+  revertTurnChange: (turnId: string, path: string) => Promise<boolean>;
+  /** Visible reason the last revert was refused, or null (cleared on the next attempt). */
+  revertError: string | null;
+  dismissRevertError: () => void;
 
   // A file path the model wrote in its answer, opened by a click.  The path is
   // already normalised to workspace-relative POSIX; `requestId` makes a repeat
@@ -1852,6 +1925,7 @@ async function activateProject(projectId: string): Promise<boolean> {
     historyHasMore: false,
     historyAvailable: null,
     historyError: null,
+    revertError: null,
     activeSubscriptionId: null,
   });
   await store.getState().fetchSessions();
@@ -1903,11 +1977,16 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   loadingProjectIds: [],
   isSidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ isSidebarCollapsed: !s.isSidebarCollapsed })),
+  gitExplorer: null,
+  openGitExplorer: (path) => set({ gitExplorer: { path: path ?? null } }),
+  closeGitExplorer: () => set({ gitExplorer: null }),
 
   workspacePath: '',
   gitBranch: '',
   gitDirty: false,
   gitStatus: null,
+  revertError: null,
+  dismissRevertError: () => set({ revertError: null }),
 
   fileViewer: null,
   openFileViewer: (rawPath) => {
@@ -1974,6 +2053,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       currentSession: nextSession,
       sessionTitle: newTitle,
       sessionActionError: null,
+      revertError: null,
       messages: [],
       settledTurnIds: [],
       liveEventBuffer: [],
@@ -3011,6 +3091,33 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       // no binary) keeps the host-reported branch and shows no counts.
       set({ gitStatus: null });
     }
+  },
+  /**
+   * Undo one file's part in one finished turn.
+   *
+   * The runtime owns the decision and the write; this only asks, and then repaints what
+   * changed: the file's card says 已撤销 (the same shape a reload produces, so the two
+   * cannot disagree) and the git chrome is re-read, because the workspace just moved.
+   * A refusal -- a running turn, a file edited since, a record no longer kept -- is
+   * shown as it comes, and nothing is repainted on failure.
+   */
+  revertTurnChange: async (turnId, path) => {
+    const client = requireRuntimeClient();
+    if (!client) return false;
+    if (!turnId || !path) return false;
+    const session = get().currentSession;
+    if (!session.thread_id) return false;
+    set({ revertError: null });
+    try {
+      await client.revertTurnChange({ session, turn_id: turnId, path });
+    } catch (err) {
+      console.error('Failed to revert a turn change:', err);
+      set({ revertError: describeRevertFailure(err, path) });
+      return false;
+    }
+    set((s) => ({ messages: markRevertedPath(s.messages, turnId, path), revertError: null }));
+    void get().loadGitStatus();
+    return true;
   },
   resolveApproval: async (kind: 'allow_once' | 'reject_once') => {
     const client = requireRuntimeClient();

@@ -146,6 +146,25 @@
     "status": "cancelled",
     "tool_calls": 1
   },
+  "turn_changes": {
+    "changes": [
+      {
+        "binary": false,
+        "deletions": 3,
+        "insertions": 12,
+        "path": "web/src/components/Transcript.tsx",
+        "status": "modified"
+      },
+      {
+        "binary": false,
+        "deletions": 0,
+        "insertions": 40,
+        "path": "web/src/components/transcriptRows/ChangesRow.tsx",
+        "status": "added"
+      }
+    ],
+    "total": 2
+  },
   "turn_completed": {
     "cache_tokens": 0,
     "compact_events": 0,

@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 47 wire methods: 45 service methods
+ * The 48 wire methods: 46 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -78,6 +78,7 @@ export const WIRE_METHODS = [
   "runtime.turn.cancel",
   "runtime.turn.steer",
   "runtime.turn.submit",
+  "runtime.workspace.revert",
 ] as const;
 export type WireMethod = (typeof WIRE_METHODS)[number];
 
@@ -93,7 +94,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (32). */
+/** Authorization capabilities enforced by the ACL layer (33). */
 export const AUTHORIZATION_CAPABILITIES = [
   "artifacts.list",
   "artifacts.read",
@@ -127,6 +128,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "turn.cancel",
   "turn.steer",
   "turn.submit",
+  "workspace.revert",
 ] as const;
 export type AuthorizationCapability =
   (typeof AUTHORIZATION_CAPABILITIES)[number];
@@ -202,6 +204,7 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.turn.cancel": "turn.cancel",
   "runtime.turn.steer": "turn.steer",
   "runtime.turn.submit": "turn.submit",
+  "runtime.workspace.revert": "workspace.revert",
 };
 
 // --- DTOs, event payloads, and transport-only shapes ----------------------
@@ -771,6 +774,18 @@ export interface HistoryEvent {
    */
   attachments: HistoryAttachment[];
   /**
+   * python_default_kind=value python_default=[]
+   */
+  changes: TurnChange[];
+  /**
+   * python_default_kind=value python_default=0
+   */
+  changes_total: number;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  reverted_paths: string[];
+  /**
    * python_default_kind=value python_default=null
    */
   turn_id: string | null;
@@ -1227,6 +1242,35 @@ export interface ResumeTurnResult {
   accepted: boolean;
 }
 
+/**
+ * ``turn_id`` names the stored record of one finished turn and is bounded to
+ * 128 bytes; ``path`` is workspace-relative and must be
+ * one of the paths that
+ * turn is reported to have changed.
+ */
+export interface RevertTurnChangeCommand {
+  session: SessionRef;
+  turn_id: string;
+  path: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  command_id?: string | null;
+}
+
+/**
+ * ``action`` is ``restore`` (the pre-turn content was written back),
+ * ``delete`` (the turn created the file, so it is gone again) or
+ * ``already_reverted`` (the file already held its pre-turn state and
+ * nothing was written); ``bytes_written`` is 0 unless content was restored.
+ */
+export interface RevertTurnChangeResult {
+  turn_id: string;
+  path: string;
+  action: string;
+  bytes_written: number;
+}
+
 export interface RuntimeConfigView {
   current_model: string;
   available_models: string[];
@@ -1633,6 +1677,40 @@ export interface ToolResultPayload {
   call_id: string | null;
 }
 
+export interface TurnChange {
+  path: string;
+  status: string;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  insertions: number;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  deletions: number;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  binary: boolean;
+}
+
+/**
+ * The files one turn created, modified or deleted, emitted once as the turn
+ * settles.  ``total`` is how many files changed and ``changes`` is the
+ * bounded list of them; a count is that turn's own contribution, not the
+ * workspace's standing delta against ``HEAD``.
+ */
+export interface TurnChangesPayload {
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  changes: TurnChange[];
+  /**
+   * python_default_kind=value python_default=0
+   */
+  total: number;
+}
+
 export interface TurnCoverageProbe {
   turn_id: string;
   covered: boolean;
@@ -1818,6 +1896,7 @@ export interface RuntimeEventPayloadMap {
   tool_started: ToolItemPayload;
   tool_updated: ToolItemPayload;
   turn_cancelled: TurnTerminalPayload;
+  turn_changes: TurnChangesPayload;
   turn_completed: TurnTerminalPayload;
   turn_failed: TurnTerminalPayload;
   turn_waiting_approval: TurnTerminalPayload;
@@ -1847,6 +1926,7 @@ export const RUNTIME_EVENT_KINDS = [
   "tool_started",
   "tool_updated",
   "turn_cancelled",
+  "turn_changes",
   "turn_completed",
   "turn_failed",
   "turn_waiting_approval",

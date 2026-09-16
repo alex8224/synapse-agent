@@ -66,6 +66,7 @@ from synapse.runtime.service.access import (
     TURN_CANCEL,
     TURN_STEER,
     TURN_SUBMIT,
+    WORKSPACE_REVERT,
 )
 from synapse.runtime.service.artifacts import (
     DEFAULT_CHUNK_BYTES,
@@ -157,6 +158,8 @@ from synapse.runtime.service.event_types import (
     ToolFinishedPayload,
     ToolItemPayload,
     ToolResultPayload,
+    TurnChange,
+    TurnChangesPayload,
     TurnTerminalPayload,
     UsagePayload,
 )
@@ -236,6 +239,11 @@ from synapse.runtime.service.recovery import (
     ReconcileSessionQuery,
     SessionRecoverabilityView,
     TurnCoverageProbe,
+)
+from synapse.runtime.service.revert import (
+    MAX_TURN_ID_BYTES,
+    RevertTurnChangeCommand,
+    RevertTurnChangeResult,
 )
 from synapse.runtime.service.runtime_config import (
     MAX_RUNTIME_CONFIG_MCP_SERVERS,
@@ -704,6 +712,26 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(
+        RevertTurnChangeCommand,
+        role="request",
+        notes=(
+            "``turn_id`` names the stored record of one finished turn and is bounded to",
+            str(MAX_TURN_ID_BYTES) + " bytes; ``path`` is workspace-relative and must be",
+            "one of the paths that",
+            "turn is reported to have changed.",
+        ),
+    ),
+    _dto(
+        RevertTurnChangeResult,
+        role="result",
+        notes=(
+            "``action`` is ``restore`` (the pre-turn content was written back),",
+            "``delete`` (the turn created the file, so it is gone again) or",
+            "``already_reverted`` (the file already held its pre-turn state and",
+            "nothing was written); ``bytes_written`` is 0 unless content was restored.",
+        ),
+    ),
+    _dto(
         BeginAttachmentCommand,
         role="request",
         notes=(
@@ -995,6 +1023,17 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
     _dto(DiffPayload, role="result"),
     _dto(ToolItemPayload, role="result"),
     _dto(UsagePayload, role="result"),
+    _dto(TurnChange, role="value"),
+    _dto(
+        TurnChangesPayload,
+        role="result",
+        notes=(
+            "The files one turn created, modified or deleted, emitted once as the turn",
+            "settles.  ``total`` is how many files changed and ``changes`` is the",
+            "bounded list of them; a count is that turn's own contribution, not the",
+            "workspace's standing delta against ``HEAD``.",
+        ),
+    ),
     _dto(
         TurnTerminalPayload,
         role="result",
@@ -1223,6 +1262,27 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "Read-only unified diff for one workspace-relative path, staged or worktree.",
             "Bounded to " + str(MAX_DIFF_BYTES) + " bytes and binary-safe; an unchanged or",
             "untracked path is an empty diff, not an error.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.workspace.revert",
+        method_class="service",
+        request="RevertTurnChangeCommand",
+        result="RevertTurnChangeResult",
+        capability=WORKSPACE_REVERT,
+        scope="session",
+        scope_location="params.session",
+        service_method="revert_turn_change",
+        in_process=(
+            "Optional delegate method, same degradation rule as `runtime.git.status`."
+        ),
+        notes=(
+            "The one write that touches the reader's own files: it restores exactly one",
+            "workspace-relative path from the copy the runtime kept before that turn.",
+            "Refused while a turn is running, refused when the file no longer holds what",
+            "the turn left there, and refused when the turn's record is gone; the refusal",
+            "is a typed error whose `service_code` names the condition.  Never touches",
+            "`HEAD`, the index, or any other file.",
         ),
     ),
     WireMethod(
@@ -1989,6 +2049,7 @@ EVENTS: Final[tuple[EventDeclaration, ...]] = (
             "InfoPayload wrapper is introduced.",
         ),
     ),
+    EventDeclaration(kind="turn_changes", payload="TurnChangesPayload", status="v1"),
     EventDeclaration(kind="turn_completed", payload="TurnTerminalPayload", status="v1"),
     EventDeclaration(kind="turn_cancelled", payload="TurnTerminalPayload", status="v1"),
     EventDeclaration(kind="turn_waiting_approval", payload="TurnTerminalPayload", status="v1"),
