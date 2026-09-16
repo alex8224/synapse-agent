@@ -11,8 +11,8 @@ import {
   isTerminalTool,
   thoughtIcon,
   thoughtLabel,
-  toolGroupLabel,
-  toolGroupIcon,
+  toolCommand,
+  toolFailureReason,
   toolPreviewLanguage,
   toolStatusLabel,
 } from '../src/stores/transcriptLabels.ts';
@@ -34,13 +34,6 @@ test('toolStatusLabel is case-insensitive and never hides an unknown status', ()
   assert.equal(toolStatusLabel(''), '');
 });
 
-test('toolGroupLabel uses the design-spec wording and pluralises', () => {
-  assert.equal(toolGroupLabel(1), '1 tool executed');
-  assert.equal(toolGroupLabel(15), '15 tools executed');
-  assert.equal(toolGroupLabel(0), '0 tools executed');
-  assert.equal(toolGroupLabel(2, true), '2 tools executed (parallel)');
-});
-
 test('thoughtLabel distinguishes streaming, completed and projected rows', () => {
   assert.equal(thoughtLabel('streaming'), 'Thinking...');
   assert.equal(thoughtLabel('0.1s'), 'Thought for 0.1s');
@@ -60,11 +53,65 @@ test('a reasoning row carries a thinking glyph, wired while it runs', () => {
   assert.equal(thoughtIcon(true), 'neurology');
 });
 
-test('a tool-batch header carries its own outcome', () => {
-  assert.equal(toolGroupIcon({ running: 0, failed: 0 }), 'build');
-  assert.equal(toolGroupIcon({ running: 2, failed: 0 }), 'progress_activity');
-  assert.equal(toolGroupIcon({ running: 1, failed: 1 }), 'error');
-  assert.equal(toolGroupIcon({ running: 0, failed: 3 }), 'error');
+test('toolCommand reads the invocation out of a history row\'s own args', () => {
+  assert.equal(toolCommand({ args: { command: 'pytest -q' } }), 'pytest -q');
+  assert.equal(toolCommand({ args: { cmd: 'ls -la' } }), 'ls -la');
+  assert.equal(toolCommand({ args: { script: 'echo hi' } }), 'echo hi');
+  // `command` wins over the other keys, and the value is trimmed.
+  assert.equal(toolCommand({ args: { script: 'echo hi', command: '  npm test  ' } }), 'npm test');
+  // A call with no invocation prints nothing rather than an empty prompt.
+  assert.equal(toolCommand({ args: { file_path: '/a.ts' } }), '');
+  assert.equal(toolCommand({ args: { command: 42 } }), '');
+  assert.equal(toolCommand({ args: {} }), '');
+  assert.equal(toolCommand({ args: null }), '');
+  assert.equal(toolCommand({}), '');
+});
+
+test('toolCommand reads the invocation back out of a live args_preview repr', () => {
+  // A live batch event carries only `repr(args)`, so the command has to be read
+  // back out of it -- including the escapes Python wrote.
+  assert.equal(
+    toolCommand({ argsPreview: "{'command': 'cd /f/x && git status', 'timeout_s': 30}" }),
+    'cd /f/x && git status',
+  );
+  assert.equal(toolCommand({ argsPreview: "{'cmd': 'ls -la'}" }), 'ls -la');
+  // Python switches to double quotes for a value that contains a single quote.
+  assert.equal(
+    toolCommand({ argsPreview: "{'command': \"echo 'x'\"}" }),
+    "echo 'x'",
+  );
+  assert.equal(toolCommand({ argsPreview: "{'intent': 'run tests', 'command': 'pytest -q'}" }), 'pytest -q');
+  assert.equal(
+    toolCommand({ argsPreview: "{'command': 'echo \\'quoted\\' && ls'}" }),
+    "echo 'quoted' && ls",
+  );
+  assert.equal(toolCommand({ argsPreview: "{'command': 'a\\nb'}" }), 'a\nb');
+  // A repr without the key, a non-string value, or nothing at all yields no prompt.
+  assert.equal(toolCommand({ argsPreview: "{'file_path': '/a.ts'}" }), '');
+  assert.equal(toolCommand({ argsPreview: "{'command': 42}" }), '');
+  assert.equal(toolCommand({ argsPreview: null }), '');
+  assert.equal(toolCommand({ argsPreview: 'not a repr' }), '');
+});
+
+test('toolFailureReason keeps a failure reason for the detail and nothing else', () => {
+  // The runtime's status for a failure is the error's own first line.
+  assert.equal(
+    toolFailureReason('ENOENT: no such file or directory', true),
+    'ENOENT: no such file or directory',
+  );
+  assert.equal(toolFailureReason('error: command not found', true), 'error: command not found');
+  assert.equal(toolFailureReason('  timeout after 30s  ', true), 'timeout after 30s');
+  // A success digest is not a reason, and neither is a state word.
+  assert.equal(toolFailureReason('ok (48 chars, 2 lines)', true), '');
+  assert.equal(toolFailureReason('ok', true), '');
+  assert.equal(toolFailureReason('failed', true), '');
+  assert.equal(toolFailureReason('FAILED', true), '');
+  assert.equal(toolFailureReason('error', true), '');
+  assert.equal(toolFailureReason('cancelled', true), '');
+  assert.equal(toolFailureReason('', true), '');
+  // Only a failed call has a reason at all.
+  assert.equal(toolFailureReason('ok (48 chars, 2 lines)', false), '');
+  assert.equal(toolFailureReason('ENOENT: no such file or directory', false), '');
 });
 
 test('formatToolArgs prints the call arguments as one bounded line', () => {

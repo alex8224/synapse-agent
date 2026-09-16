@@ -91,7 +91,7 @@ test('only a view that is already at the bottom follows the stream', () => {
 test('opening a fold never scrolls the transcript to the bottom', () => {
   assert.ok(transcript.includes('skipAutoScroll'), 'the transcript must have a scroll guard');
   assert.ok(
-    /handleToggleExpand = [\s\S]{0,80}skipAutoScroll\.current = true;/.test(transcript),
+    /handleToggleExpand = [\s\S]{0,160}skipAutoScroll\.current = true;/.test(transcript),
     'an expand toggle must raise the guard before it mutates the messages array',
   );
   // Every fold toggle goes through the guarded handler; a direct call would
@@ -101,9 +101,9 @@ test('opening a fold never scrolls the transcript to the bottom', () => {
     'no fold may call toggleMessageExpand directly',
   );
   assert.equal(
-    (transcript.match(/onClick=\{\(\) => handleToggleExpand\(m\.id\)\}/g) ?? []).length,
-    2,
-    'both the thought fold and the tool group must use the guarded handler',
+    (transcript.match(/handleToggleExpand\(m\.id\)/g) ?? []).length,
+    1,
+    'the thought fold is the only row-level fold left, and it must use the guarded handler',
   );
 });
 

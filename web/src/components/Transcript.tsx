@@ -22,11 +22,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   expandHint,
-  formatToolArgs,
   groupToolsForView,
   isTerminalTool,
   thoughtLabel,
-  toolGroupLabel,
+  toolCommand,
+  toolFailureReason,
   toolPreviewLanguage,
   toolStatusLabel,
   type SubagentToolGroup,
@@ -78,6 +78,10 @@ const USER_SCROLL_SETTLE_MS = 150;
  * oldest loaded turn is a fallback rather than the only way in.
  */
 const EARLIER_HISTORY_TRIGGER_PX = 48;
+const EMPTY_TOOL_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({});
+const EMPTY_SESSION_TOOL_EXPANSIONS: Readonly<
+  Record<string, Readonly<Record<string, boolean>>>
+> = Object.freeze({});
 
 /**
  * One transcript row.
@@ -91,10 +95,18 @@ const EARLIER_HISTORY_TRIGGER_PX = 48;
 const TranscriptRow = React.memo(function TranscriptRow({
   message: m,
   handleToggleExpand,
+  toolExpansions,
+  subagentExpansions,
+  onToggleTool,
+  onToggleSubagent,
   processMeta,
 }: {
   message: TranscriptMessage;
   handleToggleExpand: (id: string) => void;
+  toolExpansions: Readonly<Record<string, boolean>>;
+  subagentExpansions: Readonly<Record<string, boolean>>;
+  onToggleTool: (messageId: string, toolKey: string, hasDetail: boolean) => void;
+  onToggleSubagent: (messageId: string, subagentKey: string) => void;
   processMeta?: {
     isFirst: boolean;
     isExpanded: boolean;
@@ -112,20 +124,6 @@ const TranscriptRow = React.memo(function TranscriptRow({
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(m.content ?? '');
   const [copied, setCopied] = useState(false);
-  /**
-   * Which subagent cards are open, keyed by the call that started them.
-   *
-   * A subagent's steps are a fold of their own inside the tool batch, so opening one
-   * must not be a store write: the transcript's fold flags live on the message and
-   * flipping one re-creates the messages array (and re-parses the Markdown of every
-   * row).  A card is closed by default -- the batch it lives in already says the
-   * subagent ran, and the steps are there for a reader who asks for them -- and
-   * only a deliberate expansion is remembered.
-   */
-  const [expandedSubagents, setExpandedSubagents] = useState<Record<string, boolean>>({});
-  const toggleSubagent = (id: string) =>
-    setExpandedSubagents((prev) => ({ ...prev, [id]: !(prev[id] ?? false) }));
-
   const handleCopy = (text: string) => {
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
     if (!clipboard || !text) return;
@@ -312,86 +310,147 @@ const TranscriptRow = React.memo(function TranscriptRow({
   }
   if (m.type === 'tool_group') {
     const toolList = m.tools || [];
-    const failed = toolList.filter((t) => t.error || t.status === 'failed').length;
-    const running = toolList.filter(
-      (t) => t.status === 'running' || t.status === 'pending',
-    ).length;
-    const expanded = m.expanded === true;
     // The batch is flat on the wire; this is where a subagent's own steps are put
     // back under the call that started it, so they can be painted as one card
     // instead of as N more rows of the main agent's list.
     const toolNodes = groupToolsForView(toolList);
     /**
-     * One tool row: the call's name, the intent the model gave it, its bounded
-     * arguments and its body.  Shared by a main-agent row and by a subagent step,
-     * so a nested call reads exactly like a top-level one.
+     * One tool row: the call's own name, the intent the model gave it and its body.
+     * Shared by a main-agent row and by a subagent step, so a nested call reads
+     * exactly like a top-level one.
+     *
+     * A batch is a data boundary, not a visual one: its calls are painted as
+     * sibling rows, so what ran is on screen without opening a group first.
      */
-    const renderToolRow = (t: ToolItemView) => {
-      const argsLine = formatToolArgs(t.args);
-      // A run tool returns a program's terminal output, so it is painted
-      // (escapes and all) rather than tokenized as source code.
+    const renderToolRow = (t: ToolItemView, nested = false) => {
+      // A live batch first identifies a call by call_id and later replaces it
+      // with the item_id from tool_started.  Prefer call_id so the local fold does
+      // not close while that lifecycle update arrives.
+      const toolKey = t.callId || t.id;
+      const toolExpanded = toolExpansions[toolKey] === true;
+      const intent = t.label && t.label !== t.name ? t.label : '';
+      // A run tool's detail is its terminal session: the invocation, then what the
+      // program wrote.  The invocation is known before the output is, so a call
+      // that is still running can be opened to read what it is running.
       const terminal = isTerminalTool(t.name);
-      // A read / edit body is a file (or a patch), so it gets the same
-      // highlighter the markdown fences use; anything else stays plain.
-      const previewLang = t.preview && !terminal
+      const command = terminal ? toolCommand(t) : '';
+      // A failure's reason belongs to the detail, not to the row: the row only
+      // turns red.  It is skipped when the body already opens with it, because the
+      // runtime's summary is the body's own first line.
+      const reason = toolFailureReason(t.status, t.error);
+      const reasonShown = reason !== '' && !(t.preview ?? '').trimStart().startsWith(reason);
+      // A row opens when it has a body -- or, for a run tool, an invocation.
+      const hasDetail = Boolean(t.preview) || command !== '' || reasonShown;
+      // A call in flight is shown, not spelled out: the leading spinner carries
+      // "still working" the way a terminal's cursor does.  Words are left for a
+      // call that ended badly -- and a settled call says nothing at all, because a
+      // badge repeating "完成" on every row is the loudest thing in the log and the
+      // least informative one.
+      const active = t.status === 'running' || t.status === 'pending';
+      // A failure is colour, not copy: the row and the call's name turn red.  The
+      // runtime's status is not a state to print either way -- a success carries a
+      // body digest ("ok (48 chars, 2 lines)", see
+      // `runtime/pathing.py::summarize_tool_result`) and a failure its reason.
+      // Only a cancellation, which is neither success nor failure, keeps its word,
+      // and a subagent's own phase is never dropped.
+      const statusText = t.status === 'cancelled' || t.status === 'canceled'
+        ? [toolStatusLabel(t.status), t.subagentStatus].filter(Boolean).join(' · ')
+        : (t.subagentStatus ?? '');
+      const previewLang = toolExpanded && t.preview && !terminal
         ? toolPreviewLanguage(t.name, t.path, t.preview)
         : '';
       return (
-        <div
-          key={t.id}
-          onMouseMove={updateSpotlight}
-          className={"rounded-control border px-2.5 py-1.5 font-mono text-xs fluent-spotlight " + (t.error ? "border-red-200 bg-red-50" : "border-line bg-surface")}
-        >
-          <div className="flex items-center space-x-2">
-            {t.name === 'execute' ? (
-              <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
-            ) : (
-              <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '13px' }} />
+        // A run-log line, not a card.  The batch it belongs to is no longer on
+        // screen as a container, so a border and a fill per call would give the
+        // log the same visual weight as the answer it is subordinate to.
+        <div key={t.id} className="group">
+          <button
+            type="button"
+            onClick={() => onToggleTool(m.id, toolKey, hasDetail)}
+            aria-expanded={hasDetail ? toolExpanded : undefined}
+            title={hasDetail ? (toolExpanded ? '收起工具详情' : '展开工具详情') : undefined}
+            onMouseMove={updateSpotlight}
+            className={"flex w-full min-w-0 cursor-pointer select-none items-center gap-2 rounded-control px-2 py-1 text-left font-mono text-xs transition-colors hover:bg-surface-hover active:bg-surface-pressed fluent-spotlight " + (t.error ? "text-red-600" : "text-gray-600")}
+          >
+            {/* A nested step's activity is already on its card's rail, so the row
+                must not animate a second time beside it. */}
+            {active && !nested && (
+              <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '12px' }} />
             )}
-            {/* The tool's own name is never replaced: it is what the call
-                *was*, while the intent beside it is what the model said it
-                was for.  The icon carries the kind, so no word repeats it. */}
-            <span className="shrink-0 font-medium text-gray-900">{t.name}</span>
-            {t.label && t.label !== t.name && (
-              <span className="truncate text-gray-600" title={t.label}>
-                {t.label}
+            {t.name === 'execute' ? (
+              <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+            ) : (
+              <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+            )}
+            <span className={"shrink-0 font-medium " + (t.error ? "text-red-700" : "text-gray-900")}>{t.name}</span>
+            {intent !== '' && (
+              <span className="min-w-0 truncate text-gray-500" title={intent}>
+                {intent}
+              </span>
+            )}
+            {t.path && (
+              <span className="min-w-0 truncate text-gray-400" title={t.path}>
+                · {t.path}
               </span>
             )}
             {t.sub && (
-              <span className="rounded-control bg-sunken px-1 text-[10px] text-gray-500">
+              <span className="shrink-0 rounded-control bg-sunken px-1 text-[10px] text-gray-500">
                 sub
               </span>
             )}
             {t.subagentName && (
-              <span className="text-[10px] text-gray-400">@{t.subagentName}</span>
+              <span className="shrink-0 text-[10px] text-gray-400">@{t.subagentName}</span>
             )}
-            {t.path && <span className="truncate text-gray-500">{t.path}</span>}
-            <span
-              className={"ml-auto shrink-0 rounded-control px-1 text-[10px] " + (t.error ? "bg-red-100 text-red-700" : t.status === "completed" ? "bg-green-100 text-green-700" : "bg-blue-50 text-blue-500")}
-            >
-              {t.subagentStatus
-                ? (toolStatusLabel(t.status) + " · " + t.subagentStatus)
-                : toolStatusLabel(t.status)}
+            {/* The row's own words stay next to the content they describe: a
+                right-aligned tail would put them -- and the fold's chevron -- at a
+                fixed end position that says nothing about this call. */}
+            <span className="flex min-w-0 items-center gap-2">
+              {statusText !== '' && (
+                <span
+                  className="min-w-0 truncate text-[10px] text-gray-500"
+                  title={statusText}
+                >
+                  {statusText}
+                </span>
+              )}
+              {hasDetail && (
+                // The fold stays quiet until the row is pointed at or focused: the
+                // detail is there for a reader who asks for it, not an invitation
+                // repeated on every line.
+                <span className={"flex shrink-0 text-gray-400 " + (toolExpanded ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100")}>
+                  {toolExpanded ? (
+                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                  ) : (
+                    <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+                  )}
+                </span>
+              )}
             </span>
-          </div>
-          {/* The call's own arguments, bounded by `formatToolArgs`: an
-              argument can be a whole command or file, so it is one
-              collapsed line rather than a payload. */}
-          {argsLine !== '' && (
-            <div className="mt-1 break-all text-gray-500" title={argsLine}>
-              {argsLine}
+          </button>
+          {toolExpanded && (
+            <div className="ml-4 border-l border-line pb-1.5 pl-2.5 pr-2 pt-1">
+              {/* Result bodies can be large or expensive to parse, so they are
+                  mounted only for the individual call the reader opened. */}
+              {reasonShown && (
+                <div className="whitespace-pre-wrap break-all font-mono text-[12px] leading-5 text-red-600">
+                  {reason}
+                </div>
+              )}
+              {terminal && (t.preview || command !== '') ? (
+                <TerminalOutput text={t.preview ?? ''} command={command} />
+              ) : previewLang !== '' && t.preview ? (
+                <CodeBlock
+                  lang={previewLang}
+                  code={t.preview}
+                />
+              ) : (
+                t.preview && (
+                  <div className="whitespace-pre-wrap break-all text-gray-600">
+                    {t.preview}
+                  </div>
+                )
+              )}
             </div>
-          )}
-          {terminal && t.preview ? (
-            <TerminalOutput text={t.preview} />
-          ) : previewLang !== '' && t.preview ? (
-            <CodeBlock lang={previewLang} code={t.preview} />
-          ) : (
-            t.preview && (
-              <div className="mt-1 whitespace-pre-wrap break-all text-gray-600">
-                {t.preview}
-              </div>
-            )
           )}
         </div>
       );
@@ -402,7 +461,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
      * glance -- a step hangs off the card, not off the main agent's list.
      */
     const renderSubagentCard = (node: SubagentToolGroup, key: string) => {
-      const subExpanded = expandedSubagents[key] === true;
+      const subExpanded = subagentExpansions[key] === true;
       const subRunning = node.parent.status === 'running'
         || node.tools.some((s) => s.status === 'running' || s.status === 'pending');
       // Only the task call itself decides the card's outcome: a subagent that
@@ -416,7 +475,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
               takes the pressed step to stay visible when it is hovered. */}
           <button
             type="button"
-            onClick={() => toggleSubagent(key)}
+            onClick={() => onToggleSubagent(m.id, key)}
             aria-expanded={subExpanded}
             title={subExpanded ? '收起子代理步骤' : '展开子代理步骤'}
             className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-pressed"
@@ -453,7 +512,12 @@ const TranscriptRow = React.memo(function TranscriptRow({
               <ChevronRight16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
             )}
           </button>
-          <div className="fluent-accordion" data-expanded={subExpanded}>
+          <div
+            className="fluent-accordion"
+            data-expanded={subExpanded}
+            aria-hidden={!subExpanded}
+            inert={!subExpanded}
+          >
             <div className="fluent-accordion-content">
               {/* The guide rail: one line the steps hang off, with a state circle
                   per step sitting on it.  The circle is offset by the rail's own
@@ -461,7 +525,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
               <div className="border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
                 {node.tools.map((t) => {
                   // The step's own outcome, so the circle can carry it at a glance;
-                  // the row's badge still prints the word beside it.
+                  // the row therefore prints no state of its own while it runs.
                   const stepRunning = t.status === 'running' || t.status === 'pending';
                   const stepFailed = t.error || t.status === 'failed';
                   return (
@@ -478,7 +542,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
                           <Checkmark16Regular aria-hidden="true" style={{ fontSize: '10px' }} />
                         )}
                       </span>
-                      {renderToolRow(t)}
+                      {renderToolRow(t, true)}
                     </div>
                   );
                 })}
@@ -529,45 +593,17 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 <div className="border-b border-line/60 my-2.5" />
               </div>
             )}
-            <div
-              onClick={() => handleToggleExpand(m.id)}
-              title={expanded ? '收起工具详情' : '展开工具详情'}
-              onMouseMove={updateSpotlight}
-              className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
-            >
-              {failed > 0 ? (
-                <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '14px' }} />
-              ) : running > 0 ? (
-                <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '14px' }} />
-              ) : (
-                <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
+            <div className="space-y-0.5 pt-1">
+              {toolNodes.map((node: ToolRenderNode, index) =>
+                node.type === 'subagent' ? (
+                  renderSubagentCard(
+                    node,
+                    node.parent.callId || node.parent.id || `${node.subagentName}-${index}`,
+                  )
+                ) : (
+                  renderToolRow(node.tool)
+                ),
               )}
-              <span>{toolGroupLabel(toolList.length, m.parallel === true)}</span>
-              {running > 0 && (
-                <span className="font-medium text-blue-500">{running} running</span>
-              )}
-              {failed > 0 && <span className="font-medium text-red-600">{failed} failed</span>}
-              {!expanded && toolList.length > 0 && (
-                <span className="truncate text-gray-400">
-                  {toolList.slice(0, 4).map((t) => t.name).join(' · ')}
-                  {toolList.length > 4 ? ' +' + (toolList.length - 4) : ''}
-                </span>
-              )}
-              <span className="text-gray-400">{expandHint(expanded)}</span>
-            </div>
-            <div className="fluent-accordion" data-expanded={expanded}>
-              <div className="fluent-accordion-content pt-1.5 space-y-1.5">
-                {toolNodes.map((node: ToolRenderNode, index) =>
-                  node.type === 'subagent' ? (
-                    renderSubagentCard(
-                      node,
-                      node.parent.id || node.parent.callId || `${node.subagentName}-${index}`,
-                    )
-                  ) : (
-                    renderToolRow(node.tool)
-                  ),
-                )}
-              </div>
             </div>
           </>
         )}
@@ -783,11 +819,90 @@ export const Transcript: React.FC = () => {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const skipAutoScroll = useRef(false);
+  const suppressPinnedReflow = useRef(false);
+  const suppressPinnedReflowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [toolExpansions, setToolExpansions] = useState<{
+    sessionKey: string;
+    views: Record<string, Record<string, boolean>>;
+  }>({ sessionKey: '', views: {} });
+  const [subagentExpansions, setSubagentExpansions] = useState<{
+    sessionKey: string;
+    views: Record<string, Record<string, boolean>>;
+  }>({ sessionKey: '', views: {} });
+  const sessionKey = useConsoleStore((state) =>
+    state.currentSession ? `${state.currentSession.project_id}:${state.currentSession.thread_id}` : '',
+  );
+
+  const suppressPinnedReflowForInteraction = useCallback(() => {
+    suppressPinnedReflow.current = true;
+    if (suppressPinnedReflowTimer.current !== null) {
+      clearTimeout(suppressPinnedReflowTimer.current);
+    }
+    // The accordion transition lasts 220ms. Keep the guard beyond the nominal
+    // duration because virtualizer measurements can land one frame later.
+    suppressPinnedReflowTimer.current = setTimeout(() => {
+      suppressPinnedReflow.current = false;
+      suppressPinnedReflowTimer.current = null;
+    }, 350);
+  }, []);
+
+  const handleToggleTool = useCallback((messageId: string, toolKey: string, hasDetail: boolean) => {
+    if (!hasDetail) return;
+    suppressPinnedReflowForInteraction();
+    setToolExpansions((previous) => {
+      const sessionViews = previous.sessionKey === sessionKey ? previous.views : {};
+      const messageViews = sessionViews[messageId] ?? {};
+      const nextExpanded = !(messageViews[toolKey] ?? false);
+      const nextMessageViews = { ...messageViews };
+      if (nextExpanded) nextMessageViews[toolKey] = true;
+      else delete nextMessageViews[toolKey];
+      return {
+        sessionKey,
+        views: {
+          ...sessionViews,
+          [messageId]: nextMessageViews,
+        },
+      };
+    });
+  }, [sessionKey, suppressPinnedReflowForInteraction]);
+  const handleToggleSubagent = useCallback((messageId: string, subagentKey: string) => {
+    suppressPinnedReflowForInteraction();
+    setSubagentExpansions((previous) => {
+      const messageViews = previous.sessionKey === sessionKey ? previous.views[messageId] ?? {} : {};
+      const nextViews = { ...messageViews };
+      if (nextViews[subagentKey]) delete nextViews[subagentKey];
+      else nextViews[subagentKey] = true;
+      return {
+        sessionKey,
+        views: {
+          ...(previous.sessionKey === sessionKey ? previous.views : {}),
+          [messageId]: nextViews,
+        },
+      };
+    });
+  }, [sessionKey, suppressPinnedReflowForInteraction]);
+  const sessionToolExpansions = toolExpansions.sessionKey === sessionKey
+    ? toolExpansions.views
+    : EMPTY_SESSION_TOOL_EXPANSIONS;
+  const toolExpansionsFor = useCallback(
+    (messageId: string): Readonly<Record<string, boolean>> =>
+      sessionToolExpansions[messageId] ?? EMPTY_TOOL_EXPANSIONS,
+    [sessionToolExpansions],
+  );
+  const sessionSubagentExpansions = subagentExpansions.sessionKey === sessionKey
+    ? subagentExpansions.views
+    : EMPTY_SESSION_TOOL_EXPANSIONS;
+  const subagentExpansionsFor = useCallback(
+    (messageId: string): Readonly<Record<string, boolean>> =>
+      sessionSubagentExpansions[messageId] ?? EMPTY_TOOL_EXPANSIONS,
+    [sessionSubagentExpansions],
+  );
 
   const toggleTurnExpanded = useCallback((turnKey: string) => {
+    suppressPinnedReflowForInteraction();
     skipAutoScroll.current = true;
     toggleWorkExpand(turnKey);
-  }, [toggleWorkExpand]);
+  }, [suppressPinnedReflowForInteraction, toggleWorkExpand]);
   const groups = useMemo(
     () => workGroups(messages, activeTurnId, runtimeStatus === 'running'),
     [messages, activeTurnId, runtimeStatus],
@@ -977,6 +1092,7 @@ export const Transcript: React.FC = () => {
   useLayoutEffect(() => {
     // A prepend anchor or an unlanded jump owns the scroll position while armed.
     if (prependAnchor.current !== null || pendingJump.current !== null) return;
+    if (suppressPinnedReflow.current) return;
     if (!pinnedToBottom.current) return;
     const scroller = scrollerRef.current;
     if (scroller === null) return;
@@ -1139,10 +1255,11 @@ export const Transcript: React.FC = () => {
   // defeat the row-level memo below.
   const handleToggleExpand = useCallback(
     (id: string) => {
+      suppressPinnedReflowForInteraction();
       skipAutoScroll.current = true;
       toggleMessageExpand(id);
     },
-    [toggleMessageExpand],
+    [suppressPinnedReflowForInteraction, toggleMessageExpand],
   );
 
   return (
@@ -1244,6 +1361,10 @@ export const Transcript: React.FC = () => {
               <TranscriptRow
                 message={m}
                 handleToggleExpand={handleToggleExpand}
+                toolExpansions={toolExpansionsFor(m.id)}
+                subagentExpansions={subagentExpansionsFor(m.id)}
+                onToggleTool={handleToggleTool}
+                onToggleSubagent={handleToggleSubagent}
                 processMeta={
                   meta
                     ? {

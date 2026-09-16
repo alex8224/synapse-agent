@@ -45,6 +45,15 @@ test('only the rows near the viewport are mounted', () => {
   );
 });
 
+test('individual tool folds live above virtual rows and do not pin a reflow', () => {
+  assert.ok(transcript.includes('const [toolExpansions, setToolExpansions]'), 'tool folds must survive row unmounts');
+  assert.ok(transcript.includes('sessionKey'), 'tool folds must be isolated by session');
+  assert.ok(transcript.includes('suppressPinnedReflow'), 'opening a detail must not follow the resized bottom');
+  assert.ok(transcript.includes('toolExpansionsFor(m.id)'), 'rows must receive their own call folds');
+  assert.ok(transcript.includes('subagentExpansionsFor(m.id)'), 'subagent folds must survive row unmounts');
+  assert.ok(transcript.includes('onToggleSubagent={handleToggleSubagent}'), 'subagent toggles must use the parent state');
+});
+
 test('row identity is the message id, so a prepend keeps its measurements', () => {
   assert.ok(
     /getItemKey: \(index\) => visibleMessages\[index\]\?\.id/.test(transcript),

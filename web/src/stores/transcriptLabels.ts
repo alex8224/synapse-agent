@@ -1,12 +1,11 @@
 /**
  * Pure display labels for transcript rows.
  *
- * The design spec names two rows explicitly (`Thought for Xs`,
- * `N tools executed`); their leading glyph is a real icon now (`thoughtIcon` /
- * `toolGroupIcon`), so the labels carry words only.  The runtime status strings
- * are English, so they are mapped to the Chinese vocabulary the rest of the
- * console uses.  Unknown values fall back to the raw string instead of being
- * hidden.
+ * The design spec names the reasoning row explicitly (`Thought for Xs`); its
+ * leading glyph is a real icon now (`thoughtIcon`), so the label carries words
+ * only.  The runtime status strings are English, so they are mapped to the
+ * Chinese vocabulary the rest of the console uses.  Unknown values fall back to
+ * the raw string instead of being hidden.
  */
 import { isHighlightedLanguage } from '../markdown/highlight.ts';
 import { extensionOf } from '../runtime-client/artifacts.ts';
@@ -22,12 +21,6 @@ export function toolStatusLabel(status: string): string {
   if (value === 'error') return '错误';
   if (value === 'cancelled' || value === 'canceled') return '已取消';
   return status;
-}
-
-/** Tool group header, e.g. `3 tools executed` (the spec wording). */
-export function toolGroupLabel(count: number, parallel = false): string {
-  const noun = count === 1 ? 'tool' : 'tools';
-  return `${count} ${noun} executed${parallel ? ' (parallel)' : ''}`;
 }
 
 /**
@@ -58,20 +51,23 @@ export function thoughtIcon(streaming: boolean): string {
   return streaming ? 'neurology' : 'psychology';
 }
 
-/** What a tool-batch header reports about its own items. */
-export interface ToolGroupCounts {
-  running: number;
-  failed: number;
-}
-
 /**
- * Material Symbols glyph for a tool-batch header: the batch's own outcome, so
- * the row reads at a glance instead of only through its coloured counters.
+ * The failure reason a row should print in its detail, or `''`.
+ *
+ * The runtime's status is not a state word.  For a failure it is the first line of
+ * the error (`summarize_tool_result`); for a success it is a body digest
+ * (`ok (48 chars, 2 lines)`), which is not worth a reader's attention at all.  The
+ * row itself only turns red, so this is what the opened detail shows instead.
  */
-export function toolGroupIcon(counts: ToolGroupCounts): string {
-  if (counts.failed > 0) return 'error';
-  if (counts.running > 0) return 'progress_activity';
-  return 'build';
+export function toolFailureReason(status: string, error: boolean): string {
+  if (!error) return '';
+  const text = (status ?? '').trim();
+  if (text === '') return '';
+  if (/^ok( \(\d+ chars, \d+ lines\))?$/.test(text)) return '';
+  const lowered = text.toLowerCase();
+  if (lowered === 'failed' || lowered === 'error') return '';
+  if (lowered === 'cancelled' || lowered === 'canceled') return '';
+  return text;
 }
 
 /** Argument keys already printed as a field of the row itself. */
@@ -296,4 +292,64 @@ const RUN_TOOLS = new Set(['execute', 'run', 'shell', 'bash']);
 /** True when a tool row's body is a program's terminal output. */
 export function isTerminalTool(name: string): boolean {
   return RUN_TOOLS.has((name || '').toLowerCase());
+}
+
+/** Argument keys carrying a run tool's invocation (mirrors the runtime's `_CMD_KEYS`). */
+const COMMAND_KEYS = ['command', 'cmd', 'code', 'script'];
+
+/**
+ * Read one string field back out of a bounded `repr(args)`.
+ *
+ * A live batch event carries `args_preview` (Python's `repr`, bounded) instead of
+ * the args object, so the only way to a field there is through the repr itself.
+ * Only the quoted value after `'key': ` is taken, with the common escapes decoded;
+ * anything that does not look like a plain repr yields `''`, and the caller then
+ * paints what it already had.
+ */
+function reprField(preview: string | null | undefined, keys: readonly string[]): string {
+  if (!preview) return '';
+  for (const key of keys) {
+    const at = preview.indexOf(`'${key}': `);
+    if (at === -1) continue;
+    let index = at + key.length + 4;
+    const quote = preview[index];
+    if (quote !== "'" && quote !== '"') continue;
+    index += 1;
+    let value = '';
+    while (index < preview.length) {
+      const char = preview[index];
+      if (char === '\\') {
+        const escaped = preview[index + 1];
+        if (escaped === undefined) break;
+        value += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped === 'r' ? '\r' : escaped;
+        index += 2;
+        continue;
+      }
+      if (char === quote) break;
+      value += char;
+      index += 1;
+    }
+    if (value.trim() !== '') return value.trim();
+  }
+  return '';
+}
+
+/**
+ * The invocation a run tool was called with, for its terminal header.
+ *
+ * A history row keeps the call's own args, so the command comes straight out of
+ * them.  A live row has no args object -- only the bounded repr above -- so the
+ * same key is read back out of that.  No command means the block paints its
+ * output alone, which is what it did before the prompt line existed.
+ */
+export function toolCommand(tool: Pick<ToolItemView, 'args' | 'argsPreview'>): string {
+  const args = tool.args;
+  if (args !== null && args !== undefined && typeof args === 'object' && !Array.isArray(args)) {
+    for (const key of COMMAND_KEYS) {
+      const value = (args as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+    return '';
+  }
+  return reprField(tool.argsPreview, COMMAND_KEYS);
 }

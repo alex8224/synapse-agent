@@ -130,11 +130,13 @@ test('a process row keeps its rule under the header in both folds', () => {
   // Same structure as the pending row: the rule is the stopwatch's separator, so an
   // opened fold hangs its steps below it and draws no second rule at their end --
   // the rule must not move (or double up) when the fold is toggled.
+  // The first step a fold hangs below its rule: the thought's own toggle, and --
+  // since a batch is no longer a fold of its own -- the tool rows themselves.
   const folds = [
-    ["if (m.type === 'thought')", "if (m.type === 'tool_group')"],
-    ["if (m.type === 'tool_group')", "if (m.type === 'assistant')"],
+    ["if (m.type === 'thought')", "if (m.type === 'tool_group')", 'handleToggleExpand(m.id)'],
+    ["if (m.type === 'tool_group')", "if (m.type === 'assistant')", 'toolNodes.map('],
   ];
-  for (const [start, end] of folds) {
+  for (const [start, end, step] of folds) {
     const block = transcript.slice(transcript.indexOf(start), transcript.indexOf(end));
     assert.equal(
       (block.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
@@ -149,7 +151,7 @@ test('a process row keeps its rule under the header in both folds', () => {
     const opened = block.slice(block.indexOf(') : ('));
     const button = opened.indexOf('</button>');
     const rule = opened.indexOf('<div className="border-b border-line/60 my-2.5" />');
-    const firstStep = opened.indexOf('onClick={() => handleToggleExpand(m.id)}');
+    const firstStep = opened.indexOf(step, rule);
     assert.ok(button !== -1, 'an opened fold must start with its header button');
     assert.ok(rule > button, 'the rule must sit under the opened header button');
     assert.ok(firstStep > rule, 'the steps must hang below the rule');
