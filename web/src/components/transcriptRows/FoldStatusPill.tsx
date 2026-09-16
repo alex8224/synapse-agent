@@ -42,38 +42,37 @@ function StatusContent({ status }: { status: GroupIntentStatus }) {
 
 export function FoldStatusPill({ status }: { status: GroupIntentStatus }) {
   const basePill =
-    'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors select-none max-w-[26rem] leading-none';
+    'inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line/35 bg-sunken/40 px-2.5 py-0.5 text-xs text-gray-600 transition-colors select-none max-w-[26rem] leading-none';
   if (status.kind === 'thinking') {
-    return status.state === 'running' ? (
-      <span className={`${basePill} border-blue-500/25 bg-blue-500/10 text-blue-500`}>
-        <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse" style={{ fontSize: '13px' }} />
-        <StatusContent status={status} />
-      </span>
-    ) : (
-      <span className={`${basePill} border-line/40 bg-sunken/40 text-gray-500`}>
-        <BrainCircuit20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '13px' }} />
+    return (
+      <span className={basePill}>
+        {status.state === 'running' ? (
+          <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-gray-400" style={{ fontSize: '13px' }} />
+        ) : (
+          <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+        )}
         <StatusContent status={status} />
       </span>
     );
   }
   if (status.state === 'running') {
     return (
-      <span className={`${basePill} border-blue-500/25 bg-blue-500/10 text-blue-500`}>
-        <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '12px' }} />
+      <span className={basePill}>
+        <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-gray-400" style={{ fontSize: '12px' }} />
         <StatusContent status={status} />
       </span>
     );
   }
   if (status.state === 'failed') {
     return (
-      <span className={`${basePill} border-danger/25 bg-danger/10 text-danger`}>
+      <span className={basePill}>
         <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-danger" style={{ fontSize: '13px' }} />
         <StatusContent status={status} />
       </span>
     );
   }
   return (
-    <span className={`${basePill} border-line/35 bg-sunken/40 text-gray-600`}>
+    <span className={basePill}>
       <Checkmark16Regular aria-hidden="true" className="shrink-0 text-green-600" style={{ fontSize: '12px' }} />
       <StatusContent status={status} />
     </span>
