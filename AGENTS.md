@@ -2,7 +2,8 @@
 
 ## Architecture
 
-- Domain packages live under `src/synapse/` (each `synapse.<package>`); tests mirror the corresponding package under `tests/`. Rust/PyO3 crates live under `rust/`; the MkDocs site lives under `docs/` + `mkdocs.yml`.
+- Domain packages live under `src/synapse/` (each `synapse.<package>`); their tests are flat files named after the domain under `tests/` (`tests/test_<area>*.py`, plus `tests/fixtures/`) — do not add per-package subdirectories there. Rust/PyO3 crates live under `rust/`; the MkDocs site lives under `docs/` + `mkdocs.yml`.
+- Repository Agent Skills live in `skills/<name>/SKILL.md` (YAML front matter: `name`, `description`, `license`, `compatibility`, `allowed_tools`). The default `skills_paths` is `["skills"]` relative to the project root (`src/synapse/settings/schema.py`); `src/synapse/content/skills_catalog.py` discovers them and feeds `/skills`, and `docs/skills.md` documents the feature. `skills/` is excluded from the sdist (`[tool.hatch.build.targets.sdist]`), so the skills travel with the checkout, not with the wheel. Keep the front matter accurate — it is what the catalog surfaces.
 - `src/synapse/app/agent.py` is the assembly composition root; the reusable assembly contracts (middleware build, typed resource wiring) live in `src/synapse/app/agent_assembly.py`. Keep domain algorithms in their own packages.
 - New features belong in the matching domain package; cross-domain wiring goes in `app/` or an explicit runtime middleware.
 - Console-script entry points live in `src/synapse/entry.py` (`synapse`), `src/synapse/web.py` (`synapse-web`, textual-serve TUI in the browser), `src/synapse/web_console/entry.py` (`synapse-web-console`, loopback React console host), `src/synapse/acp/server.py` (`synapse-acp`), and `src/synapse/runtime/daemon/entry.py` (`synapse-runtime`). Keep entry modules thin; delegate to a domain package. These scripts only exist after an install/sync step (`uv sync`); in a stale source checkout run the module form (`python -m synapse.web_console.entry`) instead, and start the console host/daemon detached with redirected stdout/stderr — see `README.md` section "Web 控制台".
@@ -10,10 +11,11 @@
 - `__init__.py` exports are public API. Keep necessary re-exports when moving implementations.
 - Config merges user and project layers. When changing Settings, update `src/synapse/settings/schema.py`, `src/synapse/settings/config_paths.py`, `tests/test_config.py`, `tests/test_layered_config.py`, and the user docs (`README.md`, `docs/config.md`).
 - `AGENTS.md` is statically injected by the agent-md middleware (`src/synapse/app/agent_md.py`), independent of writable memory; never route it back into memory writes.
+- The browser console frontend lives in `web/` (React 19 + TypeScript + Vite, built to `web/dist/`); its conventions are in `web/AGENTS.md`. Read that file before changing anything under `web/` — this root file is the only one the agent-md middleware injects, so `web/AGENTS.md` is not loaded automatically.
 
 ## Coding standards
 
-- Ruff is the only automated Python baseline: line length 100, target Python 3.12, rules `E/F/I/B/UP`.
+- Ruff is the only automated Python baseline: line length 100, target Python 3.12, rules `E/F/I/B/UP` with `B008` ignored (see `[tool.ruff]` in `pyproject.toml`).
 - Annotate new or modified public functions, complex state transitions, and compatibility branches.
 - Catch broad exceptions only at explicit degradation boundaries, and explain the fallback; never swallow core business errors silently.
 - Avoid unbounded reads, searches, and terminal output; cap logs, tool results, and external data.
@@ -41,6 +43,8 @@ uv run --no-sync pytest tests/test_x.py::test_case_name -q
 | TUI/widgets/dialogs | `tests/test_tui_*`, `tests/test_stream_*`, `tests/test_dialogs.py`, component tests |
 
 CI runs lint on ubuntu-latest and tests on Windows/Linux with Python 3.12/3.13. Platform-specific changes must at least pass on the current machine and be reviewed for the other platform.
+
+A separate ubuntu `contract` job is the only gate on the generated contract: it runs `uv run --no-sync python scripts/export_contract_manifest.py --check`, the targeted `tests/test_runtime_contract_manifest.py`, `tests/test_runtime_architecture_boundaries.py`, `tests/test_runtime_service_import_purity.py`, `tests/test_runtime_transport_client_compatibility.py` subset, and then `npx tsc -b` plus the web console's `runtimeContractFixture` / `runtimeClientBoundary` / `sourceGuard` tests. A wire-contract change has to keep all of those green.
 
 Docs and packaging:
 
@@ -75,7 +79,7 @@ cargo fmt --manifest-path rust/<crate>/Cargo.toml --check
 
 If Python bindings/APIs change, rebuild via `uv sync --reinstall-package <crate>` and run the related Python tests.
 
-Keep the Apache-2.0 SPDX headers, attribution, `LICENSE`, and `NOTICE` under `rust/synapse-tool-compress-core/src/headroom_port/`; do not introduce excluded network calls or model downloads.
+Keep the Apache-2.0 SPDX headers in `rust/synapse-tool-compress-core/src/headroom_port/*.rs`, the crate's `LICENSE` and `NOTICE` at `rust/synapse-tool-compress-core/`, and the upstream attribution intact; do not introduce excluded network calls or model downloads.
 
 ## Release process
 
@@ -96,7 +100,3 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1
 ```
 
 8. The script creates and pushes the `v{version}` tag; `release.yml` extracts the matching CHANGELOG section, runs `uv build`, and creates the GitHub Release.
-
-## search_files 功能调用范例
-1. 正确范例 注意: 不传递description字段
-   ```{'path': 'src/synapse', 'pattern': 'compile_task_specs', 'intent': '查看compile_task_specs与子agent构建的使用点'}```
