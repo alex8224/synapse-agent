@@ -1,37 +1,30 @@
-import { Info20Regular, FolderOpen20Regular, WindowConsole20Regular, SignOut20Regular, Dismiss20Regular } from '@fluentui/react-icons';
+import { FolderOpen20Regular, WindowConsole20Regular, SignOut20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { ArtifactsPanel } from './ArtifactsPanel.tsx';
-import { FloatingPanel } from './FloatingPanel.tsx';
+import { ConsolePanel, ConsolePanelRow } from './consolePanel.tsx';
 
 /**
- * The console's context actions: session info, the read-only workspace file
- * browser, runtime diagnostics and logout.
+ * The console's context actions: the read-only workspace file browser, runtime
+ * diagnostics and logout.
  *
  * They live at the sidebar's settings row rather than in the header, so the
  * header keeps only identity (workspace, branch, session) and the actions sit
- * with the other app-level entry point.  `orientation` picks the layout: a row
- * for the expanded sidebar's footer, a column for the collapsed 44px rail.
+ * with the other app-level entry point.  The session info is not one of them: it
+ * opens from the session title in the header (see `SessionInfoPanel`), which is
+ * where a reader looks for what the console knows about the session.  `orientation`
+ * picks the layout: a row for the expanded sidebar's footer, a column for the
+ * collapsed 44px rail.
  *
- * Each panel opens *above* its trigger because the triggers are at the bottom of
- * the window; Escape closes the open one.  They are `FloatingPanel`s, not boxes
- * inside the rail: nested in it they could not blur the transcript (the rail's own
- * `backdrop-filter` is a backdrop root) and their height stretched the rail's
- * footer, pushing the session tree up.
+ * Each panel opens *above* its trigger because the triggers are at the bottom of the
+ * window; Escape closes the open one.  They share the `ConsolePanel` shell, which
+ * floats rather than laying out inside the rail (see that module for why).
  */
 export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   orientation = 'row',
 }) => {
   const {
-    workspacePath,
-    gitBranch,
-    sessionTitle,
-    currentSession,
-    modelName,
-    connectionState,
-    usage,
-    metricsLabel,
     logoutConsole,
     runtimeDiagnostics,
     loadRuntimeDiagnostics,
@@ -39,21 +32,13 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
     // Only the fields these actions paint: a reasoning delta must not re-render
     // them.
     useShallow((state) => ({
-      workspacePath: state.workspacePath,
-      gitBranch: state.gitBranch,
-      sessionTitle: state.sessionTitle,
-      currentSession: state.currentSession,
-      modelName: state.modelName,
-      connectionState: state.connectionState,
-      usage: state.usage,
-      metricsLabel: state.metricsLabel,
       logoutConsole: state.logoutConsole,
       runtimeDiagnostics: state.runtimeDiagnostics,
       loadRuntimeDiagnostics: state.loadRuntimeDiagnostics,
     })),
   );
 
-  const [openPanel, setOpenPanel] = useState<'info' | 'diagnostics' | 'artifacts' | null>(null);
+  const [openPanel, setOpenPanel] = useState<'diagnostics' | 'artifacts' | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -71,15 +56,6 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   return (
     <div className="shrink-0" ref={rowRef}>
       <div className={orientation === 'row' ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'}>
-        <button
-          onClick={() => setOpenPanel((v) => (v === 'info' ? null : 'info'))}
-          title="会话信息"
-          aria-label="会话信息"
-          aria-expanded={openPanel === 'info'}
-          className={trigger}
-        >
-          <Info20Regular aria-hidden="true" />
-        </button>
         <button
           onClick={() => setOpenPanel((v) => (v === 'artifacts' ? null : 'artifacts'))}
           title="工作区文件（只读，按块读取）"
@@ -113,27 +89,10 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
         </button>
       </div>
 
-      {openPanel === 'info' && (
-        <Panel title="会话信息" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
-          <Row label="工作区" value={workspacePath || '-'} />
-          <Row label="项目" value={currentSession.project_id || '-'} />
-          <Row label="分支" value={gitBranch || '-'} />
-          <Row label="会话" value={sessionTitle || '-'} />
-          <Row label="thread_id" value={currentSession.thread_id || '-'} />
-          <Row label="模型" value={modelName || '-'} />
-          <Row label="连接" value={connectionState} />
-          <Row label="用量" value={metricsLabel || '-'} />
-          <Row
-            label="上下文"
-            value={usage === null || usage.contextSize === null ? '-' : usage.contextSize}
-          />
-        </Panel>
-      )}
-
       {openPanel === 'diagnostics' && (
-        <Panel title="运行时诊断" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
-          <Row label="状态" value={diagnostics.status} />
-          <Row
+        <ConsolePanel title="运行时诊断" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
+          <ConsolePanelRow label="状态" value={diagnostics.status} />
+          <ConsolePanelRow
             label="daemon"
             value={
               diagnostics.view?.endpoint
@@ -141,13 +100,15 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
                 : 'unknown'
             }
           />
-          <Row label="state dir" value={diagnostics.view?.state_dir ?? '-'} />
-          <Row label="hint" value={diagnostics.view?.hint ?? '-'} />
-          {diagnostics.reason !== null && <Row label="失败原因" value={diagnostics.reason} />}
+          <ConsolePanelRow label="state dir" value={diagnostics.view?.state_dir ?? '-'} />
+          <ConsolePanelRow label="hint" value={diagnostics.view?.hint ?? '-'} />
+          {diagnostics.reason !== null && (
+            <ConsolePanelRow label="失败原因" value={diagnostics.reason} />
+          )}
           <p className="pt-1 text-[10px] leading-relaxed text-gray-500">
             取自宿主只读端点 GET /api/runtime-status（endpoint / state_dir / hint），不含任何凭据。
           </p>
-        </Panel>
+        </ConsolePanel>
       )}
 
       {openPanel === 'artifacts' && (
@@ -156,45 +117,3 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
     </div>
   );
 };
-
-function Panel({
-  title,
-  anchor,
-  onClose,
-  children,
-}: {
-  title: string;
-  anchor: HTMLElement | null;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <FloatingPanel
-      anchor={anchor}
-      label={title}
-      className="w-96 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3.5 text-left shadow-flyout"
-    >
-      <div className="mb-2.5 flex items-center justify-between border-b border-line/60 pb-2">
-        <span className="text-xs font-bold text-gray-900">{title}</span>
-        <button
-          onClick={onClose}
-          title="关闭 (Esc)"
-          aria-label="关闭"
-          className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
-        >
-          <Dismiss20Regular aria-hidden="true" />
-        </button>
-      </div>
-      <div className="space-y-1">{children}</div>
-    </FloatingPanel>
-  );
-}
-
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-control border-b border-line/40 px-1 py-1.5 last:border-b-0">
-      <span className="shrink-0 font-mono text-[10px] font-medium text-gray-500">{label}</span>
-      <span className="break-all text-right text-[11px] font-sans text-gray-900">{value}</span>
-    </div>
-  );
-}

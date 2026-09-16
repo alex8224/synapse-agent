@@ -282,11 +282,15 @@ test('the sidebar popovers are windows of their own, not boxes in the rail', () 
   //
   // They are `FloatingPanel`s now: portalled to the body and positioned from the
   // trigger's viewport rect.
+  // The shell is shared: the session info opens from the header's title instead of
+  // the rail, and it has to paint the same box as the panels that stayed there.
+  const shell = read('components/consolePanel.tsx');
   const actions = read('components/ConsoleActions.tsx');
   const artifacts = read('components/ArtifactsPanel.tsx');
-  assert.ok(actions.includes('<FloatingPanel'), 'the rail panels must float');
+  assert.ok(shell.includes('<FloatingPanel'), 'the shared panel shell must float');
+  assert.ok(actions.includes('<ConsolePanel'), 'the rail panels must use that shell');
   assert.ok(artifacts.includes('<FloatingPanel'), 'the file browser must float too');
-  for (const source of [actions, artifacts]) {
+  for (const source of [shell, actions, artifacts]) {
     assert.equal(
       /className="absolute bottom-full/.test(source),
       false,
@@ -294,6 +298,30 @@ test('the sidebar popovers are windows of their own, not boxes in the rail', () 
     );
   }
   const floating = read('components/FloatingPanel.tsx');
+  // Alignment offsets `left` and nothing else: `transform` belongs to the entrance
+  // animation (`fill-mode: both`), which would interpolate an inline one (the panel
+  // sliding in from the side instead of the designed flyout), and the CSS build
+  // transpiles a `translate` back into `transform`.
+  assert.ok(
+    floating.includes('rect.left + rect.width / 2 - CENTRED_PANEL_WIDTH / 2'),
+    'a centred panel must offset its own start edge from the anchor centre',
+  );
+  assert.equal(
+    /transform:|translate:/.test(floating),
+    false,
+    'alignment must not ride on transform or translate',
+  );
+  // The offset is a constant because the panel does not exist yet when the anchor is
+  // measured, so it has to match the width those panels paint.
+  assert.ok(
+    floating.includes('const CENTRED_PANEL_WIDTH = 384'),
+    'the centred width constant must stay the width the panels paint',
+  );
+  assert.ok(
+    read('components/SessionInfoPanel.tsx').includes('w-96')
+      || read('components/consolePanel.tsx').includes('w-96'),
+    'the centred panel must paint that width (`w-96` = 24rem = 384px)',
+  );
   assert.ok(floating.includes("from './Portal.tsx'"), 'it must portal, or the rail stays its backdrop root');
   assert.ok(
     floating.includes('fixed z-50'),

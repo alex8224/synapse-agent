@@ -1,9 +1,10 @@
 import { PanelLeft20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel } from '../stores/sessionList.ts';
 import { GitExplorer } from './GitExplorer.tsx';
+import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 
 /**
  * Header of the workspace column: the session title on the centre line.
@@ -19,9 +20,10 @@ import { GitExplorer } from './GitExplorer.tsx';
  * `runtime.git.status` and then open the read-only git explorer, so the explorer
  * stays reachable even before
  * `runtime.git.status` has been read.  The workspace path moved to the sidebar's
- * identity row, the context actions (session info, workspace files, runtime
- * diagnostics, logout) live with the settings entry there, and the telemetry
- * lives in the status strip under the composer.
+ * identity row, the workspace files, runtime diagnostics and logout live with the
+ * settings entry there, and the telemetry lives in the status strip under the
+ * composer.  The session info opens from the title itself: the title is the
+ * session's identity, so it is also where what the console knows about it belongs.
  *
  * In an installed window this bar *is* the caption: the manifest asks for
  * `window-controls-overlay`, so the browser stops drawing the app name and the
@@ -56,6 +58,19 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     })),
   );
   const [explorerOpen, setExplorerOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  // The panel anchors to the title.  The element is held in state rather than read
+  // off a ref while rendering, so the anchor belongs to the render that uses it.
+  const [titleAnchor, setTitleAnchor] = useState<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!infoOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setInfoOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [infoOpen]);
 
   // The chrome is a snapshot taken when the session was attached, so a click
   // re-reads it before opening the explorer (a commit made outside the console
@@ -163,14 +178,23 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           both side tracks are equal `1fr`.  The chip is capped and truncates, so
           a long title cannot widen its track past the cap -- wide enough to read
           a session name instead of a fragment of it -- and `min-w-0` lets a
-          narrow window shrink the chip rather than push the side tracks. */}
-      <div
-        className="ui-session-title flex min-w-0 max-w-[32rem] items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 hover:bg-surface-hover/50 transition-colors"
+          narrow window shrink the chip rather than push the side tracks.
+
+          The title opens the session info, so it is a control and has to opt out
+          of the caption's drag region (`wco-caption-controls`), or an installed
+          window would swallow the click. */}
+      <button
+        type="button"
+        ref={setTitleAnchor}
+        onClick={() => setInfoOpen((open) => !open)}
+        aria-expanded={infoOpen}
+        aria-label={sessionTitle === '' ? '会话信息' : `会话信息：${sessionTitle}`}
         title={sessionTitle}
+        className="ui-session-title wco-caption-controls flex min-w-0 max-w-[32rem] cursor-pointer items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 transition-colors hover:bg-surface-hover/50"
       >
         <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />
         <span className="truncate font-medium">{sessionTitle}</span>
-      </div>
+      </button>
 
       {/* Right track: deliberately empty.  The change statistics used to sit here
           on the right edge; they now hang off the branch chip, so the numbers are
@@ -181,6 +205,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
       <div className="wco-caption-reserve" />
     </header>
     {explorerOpen && <GitExplorer onClose={() => setExplorerOpen(false)} />}
+    {infoOpen && <SessionInfoPanel anchor={titleAnchor} onClose={() => setInfoOpen(false)} />}
     </>
   );
 };

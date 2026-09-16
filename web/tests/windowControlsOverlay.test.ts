@@ -78,7 +78,7 @@ test('the header is the caption and keeps its three tracks', () => {
   );
 });
 
-test('the chips stay clickable and the session title stays draggable', () => {
+test('the chips and the session title stay clickable inside the caption', () => {
   const controlsOpen = /<div className="[^"]*wco-caption-controls[^"]*">/.exec(topBar);
   assert.ok(controlsOpen, 'the track holding the chips must opt out of the drag region');
   const track = topBar.slice(topBar.indexOf(controlsOpen[0]));
@@ -87,9 +87,11 @@ test('the chips stay clickable and the session title stays draggable', () => {
   const titleAt = topBar.indexOf('ui-session-title');
   assert.ok(titleAt > 0, 'the centre track still carries the session title');
   const titleTag = topBar.slice(titleAt, topBar.indexOf('>', titleAt));
-  assert.equal(
+  // The title opens the session info, so it is a control like the chips: without the
+  // opt-out the caption would swallow the click in an installed window.  The rest of
+  // the strip stays draggable.
+  assert.ok(
     titleTag.includes('wco-caption-controls'),
-    false,
-    'the centre title is the empty space that stays draggable',
+    'the title opens a panel, so the caption must not swallow its click',
   );
 });

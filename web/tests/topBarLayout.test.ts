@@ -29,6 +29,7 @@ import { test } from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'components', 'TopBar.tsx'), 'utf8');
 const sideBar = readFileSync(join(here, '..', 'src', 'components', 'SideBar.tsx'), 'utf8');
+const sessionInfo = readFileSync(join(here, '..', 'src', 'components', 'SessionInfoPanel.tsx'), 'utf8');
 
 function classNamesOf(anchor: string): string {
   const index = source.indexOf(anchor);
@@ -142,16 +143,37 @@ test('the toggle is the first control of the workspace column', () => {
   );
 });
 
-test('the context actions and the settings entry live in the sidebar', () => {
+test('the sidebar keeps its actions and the header owns the session info', () => {
   assert.ok(sideBar.includes('<ConsoleActions'), 'the sidebar must host the context actions');
-  // The header keeps identity only: no file browser, no diagnostics, no logout.
-  for (const trigger of ['folder_open', 'terminal', 'logoutConsole', '会话信息']) {
+  // The header keeps identity plus the session's own details: no file browser, no
+  // diagnostics, no logout.
+  for (const trigger of ['folder_open', 'terminal', 'logoutConsole']) {
     assert.equal(
       source.includes(trigger),
       false,
       `the header must not keep ${trigger}`,
     );
   }
+  // The session info hangs off the title, which is the session's identity, and the
+  // sidebar's footer no longer carries an info icon of its own: two triggers for one
+  // panel only left the reader guessing which one to use.
+  assert.ok(source.includes('<SessionInfoPanel'), 'the title must open the session info');
+  // It hangs from the title: below it (the default opens upwards, which is where a
+  // footer trigger lives) and centred on it, because the title is itself centred and
+  // a panel aligned to one of its edges reads as belonging to that half.
+  assert.ok(
+    sessionInfo.includes('side="bottom"'),
+    'the panel must open below the title, not above it',
+  );
+  assert.ok(
+    sessionInfo.includes('align="center"'),
+    'the panel must be centred under the title',
+  );
+  assert.equal(
+    sideBar.includes('会话信息'),
+    false,
+    'the sidebar must not keep a session-info trigger',
+  );
   // The version is shown inside the settings panel, not next to its label.
   assert.equal(
     sideBar.includes('CONSOLE_VERSION'),
