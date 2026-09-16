@@ -225,22 +225,32 @@ class SessionPersistence:
                     elapsed_s=max(0.0, result.elapsed_s),
                 )
             )
-        if result.reasoning_text:
-            events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
         source = (
             state_messages
             if state_messages is not None
             else list(result.state.get("messages") or [])
         )
         state_events = fold_messages_for_ui(list(source))
-        tool_events = [event for event in state_events if event.kind == "tools"]
+        # The checkpoint's own order is the order the reader watched: each step's
+        # reasoning, then the batch it asked for.  Keeping only the batches and
+        # prefixing the turn's aggregated reasoning put every call of the turn after
+        # every thought of the turn, so a reload re-ordered the whole turn.
+        ordered = [event for event in state_events if event.kind in {"thought", "tools"}]
+        tool_events = [event for event in ordered if event.kind == "tools"]
         if not tool_events and turn_events:
             tool_event = _tools_from_turn_events(turn_events)
             if tool_event is not None:
                 tool_events.append(tool_event)
+                ordered.append(tool_event)
         if tool_events and turn_events:
             _annotate_tool_calls_with_subagent_snapshots(tool_events, turn_events)
-        events.extend(tool_events)
+        if result.reasoning_text and not any(
+            event.kind == "thought" for event in ordered
+        ):
+            # A checkpoint that kept no reasoning at all: the live accumulator is
+            # then the only record of it, and it belongs ahead of the batches.
+            events.append(UiTranscriptEvent(kind="thought", text=result.reasoning_text))
+        events.extend(ordered)
         answer_text = result.final_text or _last_answer_text(state_events)
         if answer_text:
             events.append(UiTranscriptEvent(kind="answer", text=answer_text))

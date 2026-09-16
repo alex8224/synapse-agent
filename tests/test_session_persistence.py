@@ -240,6 +240,92 @@ def test_tool_rows_are_read_from_the_checkpoint_not_the_stream_delta() -> None:
     assert events[0].elapsed_s == 12.5
 
 
+def test_a_multi_step_turn_is_projected_in_the_order_it_ran() -> None:
+    """The checkpoint's step order is what a reload has to show.
+
+    Keeping only the batches and prefixing the turn's aggregated reasoning instead
+    put every call of the turn after every thought of the turn, so a reload showed
+    one thought and then one merged batch -- the turn's own order, re-arranged.
+    """
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("run both"),
+        AIMessage(
+            "",
+            additional_kwargs={"reasoning_content": "read first"},
+            tool_calls=[{"id": "c1", "name": "read_file", "args": {}}],
+        ),
+        ToolMessage("body", tool_call_id="c1", name="read_file"),
+        AIMessage(
+            "",
+            additional_kwargs={"reasoning_content": "now run"},
+            tool_calls=[{"id": "c2", "name": "execute", "args": {}}],
+        ),
+        ToolMessage("2 passed", tool_call_id="c2", name="execute"),
+        AIMessage("both done", additional_kwargs={"reasoning_content": "wrap up"}),
+    ]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        # The live accumulator holds the whole turn's reasoning concatenated.
+        reasoning_text="read firstnow runwrap up",
+        final_text="both done",
+        elapsed_s=8.0,
+    )
+
+    events = SessionPersistence._events(
+        "run both", result, state_messages=messages, turn_events=None
+    )
+
+    assert [event.kind for event in events] == [
+        "user",
+        "thought",
+        "tools",
+        "thought",
+        "tools",
+        "thought",
+        "answer",
+    ]
+    assert [event.text for event in events if event.kind == "thought"] == [
+        "read first",
+        "now run",
+        "wrap up",
+    ]
+    assert [
+        call["name"] for event in events if event.kind == "tools" for call in event.tool_calls
+    ] == ["read_file", "execute"]
+
+
+def test_a_checkpoint_without_reasoning_falls_back_to_the_turn_reasoning() -> None:
+    """A checkpoint that kept no reasoning leaves the live accumulator as the record."""
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("use a tool"),
+        AIMessage("", tool_calls=[{"id": "c1", "name": "execute", "args": {}}]),
+        ToolMessage("output", tool_call_id="c1", name="execute"),
+        AIMessage("done"),
+    ]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        reasoning_text="thought from the stream",
+        final_text="done",
+    )
+
+    events = SessionPersistence._events(
+        "use a tool", result, state_messages=messages, turn_events=None
+    )
+
+    assert [event.kind for event in events] == ["user", "thought", "tools", "answer"]
+    assert events[1].text == "thought from the stream"
+
+
 def test_an_unreadable_checkpoint_degrades_to_the_stream_state() -> None:
     """A settlement must survive a checkpoint that cannot be read."""
 

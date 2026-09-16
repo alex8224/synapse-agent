@@ -659,6 +659,13 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             reasoning = _message_reasoning(msg).strip()
             text = _message_content(msg).strip()
             calls = _tool_calls(msg)
+            # A new model step closes the step before it: that step's results are
+            # already in `pending_results`, so the batch boundary is here -- ahead of
+            # this step's own reasoning.  Holding them open instead merged every batch
+            # of the turn into one, and the one batch then landed after every thought
+            # of the turn.
+            if pending_calls:
+                flush_tools()
             if reasoning:
                 # Thought before tools/answer for this model turn.
                 events.append(UiTranscriptEvent(kind="thought", text=reasoning))
