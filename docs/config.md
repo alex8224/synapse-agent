@@ -162,6 +162,7 @@ You are a security reviewer. Inspect diffs for...
 | `MAX_CONCURRENCY` | `8` | 最大并行度 |
 | `STREAM_CHUNK_TIMEOUT` | — | 流式块超时（秒，None=禁用） |
 | `AGENT_SHOW_REASONING_PLACEHOLDERS` | `true` | 网关仅返回推理 token 数、不暴露推理文本时，是否显示占位思考节点；设为 `false` 可隐藏 Codex 等加密推理占位 |
+| `AGENT_ENABLE_PROMPT_CACHE_BOUNDARY` | `false` | 启用「按构建环境上下文 + prompt-cache 分界断点」这一整组功能：向系统提示词追加 Environment / Git Context / Current Date 动态段落，并在 stable/dynamic 分界处打 `cache_control` 断点，使这些易变内容不落在被缓存的前缀里（断点本身不改变提示词文本）。关闭时不追加动态段落，提示词与旧版逐字节一致。DeepAgents 已有两处断点，开启前请先在真实请求上核对缓存命中率 |
 | `LANGSMITH_TRACING` | `false` | 启用 LangSmith 追踪 |
 | `LANGSMITH_API_KEY` | — | LangSmith API Key |
 | `LANGSMITH_PROJECT` | `coding-agent` | LangSmith 项目名 |

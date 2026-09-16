@@ -13,8 +13,8 @@ from typing import Any
 from synapse.app.agent_assembly import (
     MiddlewareContext,
     build_agent_middleware,
+    resolve_system_prompt,
 )
-from synapse.content.prompts import build_system_prompt
 
 # 长程目标（goal）子系统：工具 + 记账 middleware + 进程级服务
 from synapse.goals.runtime import get_goal_service, init_goal_service
@@ -641,6 +641,19 @@ def build_coding_agent(
     if steer_queue is None:
         steer_queue = SteerQueue()
     output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    prompt, prompt_stable_prefix = resolve_system_prompt(
+        system_prompt=system_prompt,
+        root=root,
+        shell_executable=backend.shell_executable,
+        excluded_tools=model_request_excluded_tools,
+        model_spec=model_spec,
+        # One switch owns both halves: the per-build context sections are only
+        # appended when the request-time breakpoint that keeps them out of the
+        # cached prefix is also enabled.
+        include_dynamic_context=bool(
+            getattr(settings, "enable_prompt_cache_boundary", False)
+        ),
+    )
     middleware = build_agent_middleware(
         MiddlewareContext(
             settings=settings,
@@ -654,6 +667,7 @@ def build_coding_agent(
             goal_service=goal_service,
             steer_queue=steer_queue,
             prompt_cache_key=prompt_cache_key,
+            prompt_stable_prefix=prompt_stable_prefix,
             turbo=bool(
                 getattr(settings, "turbo", False)
                 or getattr(selected_profile, "turbo", False)
@@ -664,11 +678,6 @@ def build_coding_agent(
     if progress is not None:
         progress("compiling agent graph")
     with span("create_deep_agent"):
-        prompt = system_prompt if system_prompt is not None else build_system_prompt(
-            root,
-            shell_executable=backend.shell_executable,
-            excluded_tools=model_request_excluded_tools,
-        )
         agent = create_deep_agent(
             model=model,
             # Subagents must inherit the delta-stored ``messages`` channel. deepagents

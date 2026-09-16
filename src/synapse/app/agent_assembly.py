@@ -7,10 +7,14 @@ entry point is a composition root rather than a domain implementation.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from synapse.content.environment import build_context_sections
+from synapse.content.prompt_sections import render_system_prompt, stable_prefix
+from synapse.content.prompts import build_system_prompt_sections
 from synapse.integrations.describe_image import VisionModelConfig
 from synapse.models.registry import model_supports_image_input
 from synapse.runtime.fs_permissions import build_filesystem_permissions
@@ -28,7 +32,11 @@ from synapse.runtime.middleware import (
 from synapse.runtime.model_request_compression_middleware import (
     build_model_request_compression_middleware,
 )
+from synapse.runtime.prompt_cache_boundary_middleware import (
+    build_prompt_cache_boundary_middleware,
+)
 from synapse.runtime.steer import SteerQueue, build_steer_middleware
+from synapse.runtime.tool_contract import readonly_excluded_tools
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
@@ -74,7 +82,7 @@ class AgentResources:
         )
         excluded = set(effective_excluded) | {"ls", "glob", "grep"}
         if settings.readonly:
-            excluded.update({"execute", "write_file", "edit_file", "patch"})
+            excluded.update(readonly_excluded_tools())
         return excluded
 
     def ensure_steer_queue(self) -> SteerQueue:
@@ -98,6 +106,10 @@ class MiddlewareContext:
     goal_service: Any | None
     steer_queue: SteerQueue
     prompt_cache_key: Any | None = None
+    # Rendered stable prefix of the system prompt, when a real stable/dynamic
+    # boundary exists. Empty when the caller supplied its own prompt, or when the
+    # dynamic context sections are disabled -- see ``resolve_system_prompt``.
+    prompt_stable_prefix: str = ""
     # Turbo mode: model traffic is routed through a headroom-turbo proxy, so
     # the built-in reversible tool-output compression is skipped (they are
     # mutually exclusive).
@@ -179,6 +191,12 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
             build_model_request_compression_middleware(context.output_repository),
         ]
     )
+    if context.prompt_stable_prefix and getattr(
+        settings, "enable_prompt_cache_boundary", False
+    ):
+        middleware.append(
+            build_prompt_cache_boundary_middleware(context.prompt_stable_prefix)
+        )
     if getattr(context.model, "_synapse_openai_oauth", False) is True:
         from synapse.integrations.openai_oauth_middleware import (
             build_openai_oauth_compat_middleware,
@@ -211,6 +229,46 @@ def resolve_image_context(
         getattr(selected_profile, "base_url", None) or getattr(settings, "openai_base_url", None),
     )
     return primary, VisionModelConfig.from_registry(registry, settings)
+
+
+def resolve_system_prompt(
+    *,
+    system_prompt: str | None,
+    root: Path,
+    shell_executable: str | None,
+    excluded_tools: Iterable[str] | None,
+    model_spec: Any,
+    include_dynamic_context: bool = False,
+) -> tuple[str, str]:
+    """Return the rendered system prompt and its cacheable stable prefix.
+
+    ``include_dynamic_context`` appends the per-build environment, git, and date
+    sections. They change on every build, so they are only worth their prompt
+    tokens when the caller also splits the rendered prompt at the returned stable
+    prefix (``enable_prompt_cache_boundary``): without that split a volatile tail
+    sits inside the cached system prefix and invalidates it on every build. Left
+    off, the rendered prompt is byte-identical to the pre-registry prompt.
+
+    The stable prefix is empty when no real boundary exists: either the caller
+    supplied its own prompt, or every section is stable (nothing follows it).
+    """
+    if system_prompt is not None:
+        return system_prompt, ""
+    sections = build_system_prompt_sections(
+        root,
+        shell_executable=shell_executable,
+        excluded_tools=excluded_tools,
+    )
+    if include_dynamic_context:
+        sections = [
+            *sections,
+            *build_context_sections(root, shell=shell_executable, model_spec=model_spec),
+        ]
+    prompt = render_system_prompt(sections)
+    prefix = stable_prefix(sections)
+    # A prefix equal to the whole prompt is not a split point: splitting there
+    # would only re-tag the message without freeing anything from the cache.
+    return prompt, prefix if len(prefix) < len(prompt) else ""
 
 
 def build_permissions(settings: Any) -> Any:

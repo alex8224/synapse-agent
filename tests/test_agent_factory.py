@@ -539,3 +539,55 @@ def test_build_coding_agent_subagents_share_cached_models(tmp_path: Path, monkey
     ]
     assert len(sub_shared) == 2
     assert sub_shared[0] is sub_shared[1]
+
+
+def test_resolve_system_prompt_defaults_to_the_static_prompt(tmp_path: Path) -> None:
+    """With the feature off the prompt is the pre-registry one, and has no seam."""
+    from synapse.app.agent_assembly import resolve_system_prompt
+
+    prompt, prefix = resolve_system_prompt(
+        system_prompt=None,
+        root=tmp_path,
+        shell_executable="pwsh",
+        excluded_tools=None,
+        model_spec="openai:gpt-4.1",
+    )
+
+    assert prompt == build_system_prompt(tmp_path, shell_executable="pwsh")
+    assert "## Environment" not in prompt
+    # No dynamic tail, so there is no boundary to split at: the caller must not
+    # be told to add a cache breakpoint.
+    assert prefix == ""
+
+
+def test_resolve_system_prompt_exposes_a_cacheable_prefix(tmp_path: Path) -> None:
+    from synapse.app.agent_assembly import resolve_system_prompt
+
+    prompt, prefix = resolve_system_prompt(
+        system_prompt=None,
+        root=tmp_path,
+        shell_executable="pwsh",
+        excluded_tools=None,
+        model_spec="openai:gpt-4.1",
+        include_dynamic_context=True,
+    )
+
+    assert prefix
+    assert prompt.startswith(prefix)
+    assert "## Environment" not in prefix
+    assert "## Environment" in prompt
+
+
+def test_resolve_system_prompt_leaves_caller_prompts_untouched() -> None:
+    from synapse.app.agent_assembly import resolve_system_prompt
+
+    prompt, prefix = resolve_system_prompt(
+        system_prompt="CUSTOM PROMPT",
+        root=Path("."),
+        shell_executable=None,
+        excluded_tools=None,
+        model_spec=None,
+    )
+
+    assert prompt == "CUSTOM PROMPT"
+    assert prefix == ""

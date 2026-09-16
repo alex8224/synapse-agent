@@ -255,6 +255,7 @@ Three ways to talk to it:
 - **Long-running goals** — `/goal <objective>` survives turn boundaries, tracks tokens and elapsed time, and steers the next turn automatically until the goal is completed, paused, blocked, or budget-limited.
 - **Token-aware tool output** — search results, logs, diffs, JSON, and code are classified and compressed before they re-enter the model context; large originals stay recoverable through references.
 - **Managed long context** — automatic summarization and `/compact` keep sessions inside the model window, with occupancy and savings visible in the TUI.
+- **Structured system prompt** — the prompt is assembled from named, cache-hinted sections whose stable instructions stay byte-identical. `AGENT_ENABLE_PROMPT_CACHE_BOUNDARY` (off by default) additionally appends the per-build environment, git snapshot, and current date as dynamic context and marks the stable/dynamic seam with a prompt-cache breakpoint, so the volatile tail never invalidates the cached prefix.
 - **Direct Codex OAuth** — sign in with the Codex-compatible browser flow or import an existing Codex grant. No API key required; tokens refresh automatically.
 - **Your model, your choice** — OpenAI-compatible providers via `models.json` profiles (OpenAI, DeepSeek, local gateways, and more), including a persistent WebSocket mode.
 - **MCP built in** — attach MCP servers and their tools appear in the agent automatically.

@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from synapse.runtime.tool_contract import approval_required_tools
+
 SafetyProfileName = Literal["dev-autopass", "dev-approve", "readonly"]
 
 # Patterns considered dangerous on developer machines.
@@ -160,12 +162,7 @@ def build_interrupt_on(*, require_approval: bool) -> dict[str, bool] | None:
     """
     if not require_approval:
         return None
-    return {
-        "execute": True,
-        "write_file": True,
-        "edit_file": True,
-        "patch": True,
-    }
+    return {name: True for name in sorted(approval_required_tools())}
 
 
 def format_safety_status(settings: Any) -> list[str]:

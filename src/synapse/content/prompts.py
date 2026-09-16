@@ -15,6 +15,12 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from synapse.content.prompt_sections import (
+    STABLE,
+    SYSTEM_TARGET,
+    PromptSection,
+    render_system_prompt,
+)
 from synapse.settings.config_paths import project_config_dir, user_config_dir
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
@@ -348,6 +354,69 @@ def _shell_prompt(shell_executable: str) -> str:
     return f"## Shell environment\n- The `execute` tool uses `{shell}`.\n{rules}"
 
 
+def build_system_prompt_sections(
+    workspace: Path,
+    *,
+    ensure_user_file: bool = False,
+    shell_executable: str | None = None,
+    excluded_tools: Iterable[str] | None = None,
+) -> list[PromptSection]:
+    """Split the coding system prompt into named, cache-hint-tagged sections.
+
+    Every section is ``stable``: the list is built once per agent build and the
+    rendered result is byte-identical to the pre-registry single-string prompt.
+    Request-time sections (project instructions, memory, environment) are added
+    later in the middleware chain, not here.
+    """
+    root = Path(workspace).resolve()
+    body = load_coding_system_prompt(root, ensure_user_file=ensure_user_file)
+    effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
+    workspace_block = (
+        "## Current workspace\n"
+        f"- Host root (shell/git only): `{root}`\n"
+        "- File-tool virtual root: `/` maps to the host root above\n"
+        f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
+        "- Shell commands run on the host, inside the workspace root."
+    )
+    return [
+        PromptSection(
+            name="Coding Body",
+            source="body",
+            content=body,
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Mandatory Rules",
+            source="mandatory_rules",
+            content=MANDATORY_CODING_RULES,
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Workspace",
+            source="workspace",
+            content=workspace_block,
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Filesystem Tools",
+            source="filesystem_tools",
+            content=filesystem_tool_prompt(excluded_tools),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Shell",
+            source="shell",
+            content=_shell_prompt(effective_shell),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+    ]
+
+
 def build_system_prompt(
     workspace: Path,
     *,
@@ -356,17 +425,11 @@ def build_system_prompt(
     excluded_tools: Iterable[str] | None = None,
 ) -> str:
     """Build a system prompt with workspace and effective host-shell context."""
-    root = Path(workspace).resolve()
-    body = load_coding_system_prompt(root, ensure_user_file=ensure_user_file)
-    effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
-    return (
-        f"{body}\n\n"
-        f"{MANDATORY_CODING_RULES}\n"
-        f"## Current workspace\n"
-        f"- Host root (shell/git only): `{root}`\n"
-        f"- File-tool virtual root: `/` maps to the host root above\n"
-        f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
-        f"- Shell commands run on the host, inside the workspace root.\n\n"
-        f"{filesystem_tool_prompt(excluded_tools)}\n"
-        f"{_shell_prompt(effective_shell)}"
+    return render_system_prompt(
+        build_system_prompt_sections(
+            workspace,
+            ensure_user_file=ensure_user_file,
+            shell_executable=shell_executable,
+            excluded_tools=excluded_tools,
+        )
     )

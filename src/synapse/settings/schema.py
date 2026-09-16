@@ -198,6 +198,17 @@ class Settings(BaseSettings):
     enable_native_tool_output_compression: bool = Field(
         default=True, validation_alias="AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION"
     )
+    # Prompt cache: append the per-build environment / git / date sections to the
+    # system prompt and split the system message at the stable/dynamic boundary,
+    # tagging the stable half with a cache breakpoint. One switch owns both: the
+    # volatile sections are only worth including when the split keeps them out of
+    # the cached prefix, so leaving this off reproduces the pre-registry prompt
+    # byte for byte. Off by default because DeepAgents already places two
+    # breakpoints of its own, so the net effect has to be measured on the wire
+    # before enabling it broadly.
+    enable_prompt_cache_boundary: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_PROMPT_CACHE_BOUNDARY"
+    )
 
     # Session / checkpoint
     checkpoint_backend: Literal["memory", "sqlite"] = Field(
