@@ -21,9 +21,12 @@ from synapse.runtime.service import (
     ArtifactRef,
     CancelTurnCommand,
     CloseSessionCommand,
+    ConsumeCodexResetCommand,
     CreateSessionCommand,
     DeleteSessionCommand,
     EventFilter,
+    GetCodexResetCreditsQuery,
+    GetCodexUsageQuery,
     GetRuntimeConfigQuery,
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -794,6 +797,45 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     if method == "runtime.config.get":
         _fields(params, {"session"})
         return GetRuntimeConfigQuery(_session(params["session"]))
+    if method == "runtime.codex.usage.get":
+        _optional_fields(params, {"session"}, {"force"})
+        try:
+            return GetCodexUsageQuery(
+                session=_session(params["session"]),
+                force=_boolean(params.get("force", False)),
+            )
+        except ValueError:
+            raise ProtocolError(-32602, "invalid_params") from None
+    if method == "runtime.codex.reset_credits.get":
+        _optional_fields(params, {"session"}, {"force"})
+        try:
+            return GetCodexResetCreditsQuery(
+                session=_session(params["session"]),
+                force=_boolean(params.get("force", False)),
+            )
+        except ValueError:
+            raise ProtocolError(-32602, "invalid_params") from None
+    if method == "runtime.codex.reset_credits.consume":
+        _fields(
+            params,
+            {"session", "expected_model", "credit_id", "command_id", "confirmed"},
+        )
+        # ``confirmed`` is the literal true (never a truthy stand-in): the
+        # consent gate is enforced here and again by the command DTO.
+        if params["confirmed"] is not True:
+            raise ProtocolError(-32602, "invalid_params")
+        try:
+            return ConsumeCodexResetCommand(
+                session=_session(params["session"]),
+                expected_model=_bounded_text(
+                    params["expected_model"], MAX_SESSION_TEXT_BYTES
+                ),
+                credit_id=_bounded_text(params["credit_id"], MAX_COMMAND_ID_BYTES),
+                command_id=_command_id(params["command_id"]),
+                confirmed=True,
+            )
+        except ValueError:
+            raise ProtocolError(-32602, "invalid_params") from None
     if method == "runtime.events.read":
         _optional_fields(
             params,
@@ -1109,6 +1151,12 @@ async def dispatch(
         return await service.resume_session_goal(dto)  # type: ignore[arg-type]
     if method == "runtime.config.get":
         return await service.get_runtime_config(dto)  # type: ignore[arg-type]
+    if method == "runtime.codex.usage.get":
+        return await service.get_codex_usage(dto)  # type: ignore[arg-type]
+    if method == "runtime.codex.reset_credits.get":
+        return await service.get_codex_reset_credits(dto)  # type: ignore[arg-type]
+    if method == "runtime.codex.reset_credits.consume":
+        return await service.consume_codex_reset(dto)  # type: ignore[arg-type]
     if method == "runtime.events.read":
         return await service.read_events(dto)  # type: ignore[arg-type]
     if method == "runtime.artifacts.stat":

@@ -97,6 +97,20 @@ import type { ArtifactChunkView, ArtifactEntry, ArtifactPageView } from './artif
 import { parseGitDiff, parseGitStatus } from './git.ts';
 import type { GitDiffView, GitStatusView } from './git.ts';
 import {
+  CODEX_RESET_CONSUME_METHOD,
+  CODEX_RESET_CREDITS_METHOD,
+  CODEX_USAGE_METHOD,
+  parseCodexConsumeResult,
+  parseCodexResetCreditsView,
+  parseCodexUsageView,
+} from './codexUsage.ts';
+import type {
+  CodexConsumeResult,
+  CodexResetCreditsView,
+  CodexUsageView,
+  ConsumeCodexResetParams,
+} from './codexUsage.ts';
+import {
   ATTACHMENT_READ_BYTES,
   parseAbortAttachmentResult,
   parseAppendAttachmentChunkResult,
@@ -717,6 +731,57 @@ export class SynapseRuntimeClient {
     staged = false,
   ): Promise<GitDiffView> {
     return parseGitDiff(await this.call('runtime.git.diff', { session, path, staged }));
+  }
+
+  /**
+   * Read the session's Codex OAuth usage windows (`runtime.codex.usage.get`).
+   *
+   * Read-only and strictly decoded: the peer returns the primary/secondary
+   * windows with their *real* `window_minutes`, so the console labels a 7-day
+   * window as `7d` instead of assuming a length.  No credential is part of the
+   * result — the daemon owns the OAuth exchange.
+   */
+  public async getCodexUsage(session: SessionRef, force = false): Promise<CodexUsageView> {
+    return parseCodexUsageView(
+      await this.call(CODEX_USAGE_METHOD, { session, force }),
+    );
+  }
+
+  /**
+   * Read the session's reset-credit rows (`runtime.codex.reset_credits.get`).
+   *
+   * A read, so `force` only bypasses the daemon's own cache; the console keeps
+   * its own 300s read cache on top (see the Codex usage controller).
+   */
+  public async getCodexResetCredits(
+    session: SessionRef,
+    force = false,
+  ): Promise<CodexResetCreditsView> {
+    return parseCodexResetCreditsView(
+      await this.call(CODEX_RESET_CREDITS_METHOD, { session, force }),
+    );
+  }
+
+  /**
+   * Redeem one reset credit (`runtime.codex.reset_credits.consume`).
+   *
+   * This is the *only* write on this surface and it really spends one credit of
+   * the account's quota, so the caller has to have shown the user a confirmation
+   * first: `confirmed` is typed as the literal `true`, and `command_id` is the
+   * caller's own idempotency key (minted once, never regenerated for a replay).
+   */
+  public async consumeCodexResetCredit(
+    params: ConsumeCodexResetParams,
+  ): Promise<CodexConsumeResult> {
+    return parseCodexConsumeResult(
+      await this.call(CODEX_RESET_CONSUME_METHOD, {
+        session: params.session,
+        expected_model: params.expected_model,
+        credit_id: params.credit_id,
+        command_id: params.command_id,
+        confirmed: params.confirmed,
+      }),
+    );
   }
 
   /**

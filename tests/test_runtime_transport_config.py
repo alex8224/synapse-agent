@@ -59,6 +59,7 @@ def _config_result(**overrides: object) -> dict[str, object]:
         "project_thinking_level": "low",
         "can_set_project_thinking": True,
         "context_window": None,
+        "codex_usage_enabled": False,
     }
     data.update(overrides)
     return data

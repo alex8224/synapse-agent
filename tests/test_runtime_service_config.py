@@ -160,6 +160,7 @@ def test_view_wire_projection_is_whitelisted_json() -> None:
         "project_thinking_level": None,
         "can_set_project_thinking": False,
         "context_window": None,
+        "codex_usage_enabled": False,
     }
     # A view can never carry arbitrary settings keys, so a secret sentinel that
     # exists only on the source settings object cannot leak into JSON.
@@ -307,6 +308,7 @@ def test_config_source_projects_whitelist_without_secret_fields(monkeypatch) -> 
         "project_thinking_level",
         "can_set_project_thinking",
         "context_window",
+        "codex_usage_enabled",
     }
 
 

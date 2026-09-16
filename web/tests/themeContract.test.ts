@@ -119,7 +119,9 @@ test('a modal is portaled, so an acrylic ancestor cannot anchor it', () => {
     'GoalDialog.tsx',
     'GitExplorer.tsx',
     'ImageLightbox.tsx',
-    'BottomBar.tsx',
+    // The strip's modals are their own components now (its popovers are
+    // portalled by `FloatingPanel`).
+    'HelpDialog.tsx',
     // The rail's popovers are windows of their own too: `FloatingPanel` portals them
     // for the same reason (an acrylic ancestor caps their backdrop).
     'ConsoleActions.tsx',

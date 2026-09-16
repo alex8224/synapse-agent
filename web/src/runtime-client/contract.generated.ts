@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 44 wire methods: 42 service methods
+ * The 47 wire methods: 45 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -40,6 +40,9 @@ export const WIRE_METHODS = [
   "runtime.attachments.finish",
   "runtime.attachments.read",
   "runtime.attachments.stat",
+  "runtime.codex.reset_credits.consume",
+  "runtime.codex.reset_credits.get",
+  "runtime.codex.usage.get",
   "runtime.config.get",
   "runtime.events.read",
   "runtime.events.unwatch",
@@ -90,13 +93,15 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (30). */
+/** Authorization capabilities enforced by the ACL layer (32). */
 export const AUTHORIZATION_CAPABILITIES = [
   "artifacts.list",
   "artifacts.read",
   "artifacts.stat",
   "attachments.read",
   "attachments.write",
+  "codex.reset.consume",
+  "codex.usage.read",
   "events.read",
   "events.watch",
   "fs.list",
@@ -161,6 +166,9 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.attachments.finish": "attachments.write",
   "runtime.attachments.read": "attachments.read",
   "runtime.attachments.stat": "attachments.read",
+  "runtime.codex.reset_credits.consume": "codex.reset.consume",
+  "runtime.codex.reset_credits.get": "codex.usage.read",
+  "runtime.codex.usage.get": "codex.usage.read",
   "runtime.config.get": "session.read",
   "runtime.events.read": "events.read",
   "runtime.events.watch": "events.watch",
@@ -425,6 +433,48 @@ export interface CloseSessionResult {
   cancellation_requested: boolean;
 }
 
+export interface CodexConsumeResult {
+  session: SessionRef;
+  model: string;
+  command_id: string;
+  /**
+   * One of CODEX_CONSUME_OUTCOMES.
+   */
+  outcome: 'reset' | 'alreadyRedeemed' | 'nothingToReset' | 'noCredit' | 'unknown';
+}
+
+export interface CodexResetCredit {
+  id: string;
+  reset_type: string;
+  status: string;
+  granted_at: number | null;
+  expires_at: number | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface CodexResetCreditsView {
+  session: SessionRef;
+  model: string;
+  available_count: number;
+  credits: CodexResetCredit[];
+}
+
+export interface CodexUsageView {
+  session: SessionRef;
+  model: string;
+  primary: CodexUsageWindow | null;
+  secondary: CodexUsageWindow | null;
+  captured_at: number;
+  available_reset_count: number | null;
+}
+
+export interface CodexUsageWindow {
+  used_percent: number | null;
+  window_minutes: number | null;
+  reset_at: number | null;
+}
+
 /**
  * A receipt is returned only after the turn actually started; it never
  * carries a runtime handle.  There is no ``accepted_at`` field.
@@ -437,6 +487,18 @@ export interface CommandReceipt {
    * python_default_kind=value python_default=true
    */
   accepted: boolean;
+}
+
+/**
+ * ``confirmed`` must be the literal true; the wire rejects anything else, so
+ * a caller cannot redeem a credit without explicit confirmation.
+ */
+export interface ConsumeCodexResetCommand {
+  session: SessionRef;
+  expected_model: string;
+  credit_id: string;
+  command_id: string;
+  confirmed: boolean;
 }
 
 /**
@@ -595,6 +657,22 @@ export interface FinishAttachmentResult {
   size: number;
   mime: string;
   revision: string;
+}
+
+export interface GetCodexResetCreditsQuery {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  force?: boolean;
+}
+
+export interface GetCodexUsageQuery {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  force?: boolean;
 }
 
 export interface GetRuntimeConfigQuery {
@@ -1176,6 +1254,10 @@ export interface RuntimeConfigView {
    * python_default_kind=value python_default=null
    */
   context_window: number | null;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  codex_usage_enabled: boolean;
 }
 
 /**
@@ -1798,9 +1880,14 @@ export interface TypedRuntimeEvent<K extends RuntimeEventKind> {
 
 export type CancelTurnParams = CancelTurnCommand;
 export type ClearSessionGoalParams = ClearSessionGoalCommand;
+export type CodexResetCreditsResult = CodexResetCreditsView;
+export type CodexUsageResult = CodexUsageView;
+export type ConsumeCodexResetParams = ConsumeCodexResetCommand;
 export type CreateSessionParams = CreateSessionCommand;
 export type DeleteSessionParams = DeleteSessionCommand;
 export type EditSessionGoalParams = EditSessionGoalCommand;
+export type GetCodexResetCreditsParams = GetCodexResetCreditsQuery;
+export type GetCodexUsageParams = GetCodexUsageQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;

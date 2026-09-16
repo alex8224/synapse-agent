@@ -32,6 +32,14 @@ from synapse.runtime.service.attachments import (
     ReadAttachmentQuery,
     StatAttachmentQuery,
 )
+from synapse.runtime.service.codex_usage import (
+    CodexConsumeResult,
+    CodexResetCreditsView,
+    CodexUsageView,
+    ConsumeCodexResetCommand,
+    GetCodexResetCreditsQuery,
+    GetCodexUsageQuery,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -293,6 +301,36 @@ class AgentRuntimeService(Protocol):
     async def get_runtime_config(
         self, query: GetRuntimeConfigQuery
     ) -> RuntimeConfigView: ...
+
+    async def get_codex_usage(self, query: GetCodexUsageQuery) -> CodexUsageView:
+        """Read one open session's Codex rate-limit windows.
+
+        Session-scoped and authorized by the dedicated ``codex.usage.read``
+        capability -- never ``session.read``.  Optional delegate method: an older
+        delegate without it keeps the wrapper constructible and reports the
+        feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def get_codex_reset_credits(
+        self, query: GetCodexResetCreditsQuery
+    ) -> CodexResetCreditsView:
+        """Read one open session's reset-credit rows (``codex.usage.read``).
+
+        Optional delegate method: see ``get_codex_usage``.
+        """
+        ...
+
+    async def consume_codex_reset(
+        self, command: ConsumeCodexResetCommand
+    ) -> CodexConsumeResult:
+        """Redeem one reset credit (the only write on this surface).
+
+        Authorized by the dedicated ``codex.reset.consume`` capability -- never
+        ``codex.usage.read``: a read-only grant must not change account state.
+        Optional delegate method: see ``get_codex_usage``.
+        """
+        ...
 
     async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage: ...
 

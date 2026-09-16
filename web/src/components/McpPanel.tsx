@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Dismiss16Regular, ChevronUp16Regular, ChevronDown16Regular } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
+import { withChord } from './consoleShortcuts.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { mcpServerPhase } from '../stores/mcpRuntimeView.ts';
 import type { McpServerPhase } from '../stores/mcpRuntimeView.ts';
@@ -13,6 +14,11 @@ import type { McpServerPhase } from '../stores/mcpRuntimeView.ts';
  * 已连接 / 未连接 / 已停用), the discovered tools can be checked one by one and
  * saved to the same `include_tools` whitelist the TUI writes, and the daemon's
  * warnings (connection failures) are shown instead of being swallowed.
+ *
+ * It is the *content* of the strip's MCP entry: the box, the `dialog` role and
+ * the portal belong to that entry's `FloatingPanel` (`bottomBar/mcpItem.tsx`),
+ * so the panel keeps its own keyboard navigation and store subscription here and
+ * nothing about the strip's positioning leaks into this file.
  */
 
 /** Per-phase dot + label, mirroring the TUI MCP panel states. */
@@ -115,14 +121,14 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   return (
     <div
       ref={panelRef}
-      role="dialog"
-      aria-label="MCP 工具与服务器"
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="absolute bottom-8 left-0 z-50 w-96 max-w-[calc(100vw-2rem)] space-y-2.5 rounded-card border border-line/80 material-flyout flyout-in p-3.5 shadow-flyout"
+      className="space-y-2.5"
     >
       <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
-        <span className="text-xs font-bold text-gray-900">MCP 工具与服务器 (F5)</span>
+        <span className="text-xs font-bold text-gray-900">
+          {withChord('MCP 工具与服务器', 'F5')}
+        </span>
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => void refreshMcpRuntime()}

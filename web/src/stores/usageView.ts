@@ -310,6 +310,22 @@ export function turnStatSegments(usage: UsageView | null): UsageSegment[] {
 }
 
 /**
+ * The segments a *narrow* strip prints, capped at `limit`.
+ *
+ * The phone band cannot afford the full telemetry row, so the strip prints the
+ * numbers worth a glance: the emphasized ones first (this turn's rate, the
+ * context occupancy), then the rest in their original order.  Nothing is lost —
+ * the strip entry's own overlay prints the complete list, which is what keeps
+ * "simplified" from meaning "hidden".
+ */
+export function compactSegments(segments: UsageSegment[], limit = 2): UsageSegment[] {
+  if (segments.length <= limit) return segments;
+  const emphasized = segments.filter((segment) => segment.emphasis);
+  const rest = segments.filter((segment) => !segment.emphasis);
+  return [...emphasized, ...rest].slice(0, limit);
+}
+
+/**
  * Full-precision hover breakdown for the usage bar.
  *
  * Carries every number the compact bar compresses, including the cache share

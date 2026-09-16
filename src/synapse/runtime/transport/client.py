@@ -654,6 +654,7 @@ def _runtime_config_view(value: object) -> RuntimeConfigView:
                 else None
             ),
             can_set_project_thinking=view["can_set_project_thinking"],
+            codex_usage_enabled=view.get("codex_usage_enabled", False),
         )
     except (KeyError, TypeError, ValueError, ProtocolTransportError):
         raise ProtocolTransportError() from None

@@ -777,6 +777,17 @@ interface ConsoleStore {
   // Metrics
   metricsLabel: string;
   modelName: string;
+  /**
+   * Bumped whenever the runtime *confirms* a new model binding for the session.
+   *
+   * `setModel` publishes the target optimistically (the picker label must not lag
+   * a round-trip), so `modelName` alone cannot tell a consumer whether the server
+   * has caught up: a read issued right after the publish is answered by the
+   * *previous* binding.  This counter is the confirmed-binding signal, so a
+   * server-side reader can re-ask when the rebind actually lands.  It is not a
+   * display value.
+   */
+  modelRevision: number;
   availableModels: string[];
   thinkingLevel: string | null;
   thinkingLevels: string[];
@@ -2544,6 +2555,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   // read (`runtime.config.get`) of the authenticated session.
   metricsLabel: '',
   modelName: '',
+  modelRevision: 0,
   availableModels: [],
   thinkingLevel: null,
   thinkingLevels: [],
@@ -2606,6 +2618,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         return;
       }
       set({ modelName: result.model });
+      // The binding is confirmed now: consumers that read the server's own view of
+      // this session (the Codex usage gate) re-ask, because the read they issued
+      // against the optimistic publish was answered by the previous binding.
+      set((state) => ({ modelRevision: state.modelRevision + 1 }));
     } catch (e) {
       if (epoch === sessionEpoch) {
         set({ modelName });

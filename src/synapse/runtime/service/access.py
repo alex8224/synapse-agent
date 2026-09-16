@@ -35,6 +35,14 @@ from synapse.runtime.service.attachments import (
     ReadAttachmentQuery,
     StatAttachmentQuery,
 )
+from synapse.runtime.service.codex_usage import (
+    CodexConsumeResult,
+    CodexResetCreditsView,
+    CodexUsageView,
+    ConsumeCodexResetCommand,
+    GetCodexResetCreditsQuery,
+    GetCodexUsageQuery,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -138,6 +146,8 @@ __all__ = [
     "ARTIFACTS_READ",
     "ATTACHMENTS_READ",
     "ATTACHMENTS_WRITE",
+    "CODEX_RESET_CONSUME",
+    "CODEX_USAGE_READ",
     "SESSION_OPEN",
     "SESSION_CLOSE",
     "SESSION_READ",
@@ -218,6 +228,13 @@ ATTACHMENTS_READ = "attachments.read"
 #: surface with its own blast radius (it reserves quota and stores bytes), so
 #: ``attachments.read`` must never authorize it.
 ATTACHMENTS_WRITE = "attachments.write"
+#: Read one session's Codex rate-limit usage and reset-credit rows.  A read
+#: surface with its own capability -- never ``session.read``: it is bound to one
+#: open session and reaches an account-scoped upstream.
+CODEX_USAGE_READ = "codex.usage.read"
+#: Redeem one reset credit.  A write surface with its own capability: it changes
+#: account state, so ``codex.usage.read`` must never authorize it.
+CODEX_RESET_CONSUME = "codex.reset.consume"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -251,6 +268,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         ARTIFACTS_READ,
         ATTACHMENTS_READ,
         ATTACHMENTS_WRITE,
+        CODEX_USAGE_READ,
+        CODEX_RESET_CONSUME,
     }
 )
 
@@ -874,6 +893,60 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("runtime config is unavailable")
         return await delegate(query)
+
+    async def get_codex_usage(self, query: GetCodexUsageQuery) -> CodexUsageView:
+        """Authorize ``codex.usage.read`` per session, then delegate the read.
+
+        Deliberately *not* authorized by ``session.read``: this is a distinct
+        account-scoped read.  Optional delegate method (like
+        ``get_runtime_config``): an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable.  The ACL check runs
+        before the delegate is consulted, so a caller without the capability is
+        denied either way.
+        """
+        session = self._session_from_dto(query, GetCodexUsageQuery, "codex usage query")
+        self._authorize(session, CODEX_USAGE_READ)
+        delegate = getattr(self._delegate, "get_codex_usage", None)
+        if not callable(delegate):
+            raise InvalidRequestError("codex usage is unavailable")
+        return await delegate(query)
+
+    async def get_codex_reset_credits(
+        self, query: GetCodexResetCreditsQuery
+    ) -> CodexResetCreditsView:
+        """Authorize ``codex.usage.read`` per session, then delegate the read.
+
+        The same read capability as ``get_codex_usage``: both project the same
+        account-scoped snapshot.  Optional delegate method; the ACL check runs
+        before the delegate is consulted.
+        """
+        session = self._session_from_dto(
+            query, GetCodexResetCreditsQuery, "codex reset credits query"
+        )
+        self._authorize(session, CODEX_USAGE_READ)
+        delegate = getattr(self._delegate, "get_codex_reset_credits", None)
+        if not callable(delegate):
+            raise InvalidRequestError("codex reset credits are unavailable")
+        return await delegate(query)
+
+    async def consume_codex_reset(
+        self, command: ConsumeCodexResetCommand
+    ) -> CodexConsumeResult:
+        """Authorize ``codex.reset.consume`` per session, then delegate the write.
+
+        Deliberately a distinct capability from ``codex.usage.read``: redeeming a
+        credit changes account state, so a read-only grant must not authorize it.
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        session = self._session_from_dto(
+            command, ConsumeCodexResetCommand, "codex consume command"
+        )
+        self._authorize(session, CODEX_RESET_CONSUME)
+        delegate = getattr(self._delegate, "consume_codex_reset", None)
+        if not callable(delegate):
+            raise InvalidRequestError("codex reset consumption is unavailable")
+        return await delegate(command)
 
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView:
         session = self._session_from_dto(query, PendingApprovalQuery, "approval query")

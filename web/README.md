@@ -15,7 +15,8 @@
 
 手机导航支持遮罩、关闭按钮、Esc、焦点约束与关闭后恢复焦点；切换项目或会话会关闭抽屉。
 手机顶栏是两轨：导航按钮 + 会话标题，Git 入口收成 44px 的图标按钮（保留 `aria-label` 与 `title`）；
-底栏只保留运行态、MCP、目标入口，省略本轮遥测。Git／文件预览在手机上使用列表与详情切换，
+底栏收成单行：左轨自己横向滚动（不裁剪任何入口），中区遥测收成紧凑指标芯片（点开是完整分段），
+窄屏策略为「更多」的条目进右侧「更多」菜单（该入口不随左轨滚动）。Git／文件预览在手机上使用列表与详情切换，
 列表占满宽度，选中文件后切到详情并显示「返回文件列表」。轮次导轨在手机上隐藏（正文太窄）。
 
 - 左列 `SideBar` 占满整个视口高度：导航（新建任务 `Ctrl+N`、搜索 `Ctrl+K`，与折叠轨上
@@ -26,8 +27,64 @@
   右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
   分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
   `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、浮动的 `CommandInput`，
-  以及 `BottomBar`（运行态与用量遥测、MCP、goal）。输入卡通过 ResizeObserver 发布实际高度，
+  以及 `BottomBar`（运行态、MCP、goal 与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
   转录区据此预留底部空间，避免最新内容被输入卡遮挡。
+
+**底栏是「静态清单 + 条目模块」的宿主。** `BottomBar.tsx` 只拥有所有条目共有的规则：三轨栅格、
+唯一的 `openId`（同一个键关闭、另一个键替换，所以 F1／F5／F6 天然互斥）、按键映射、遮罩归属、
+窄屏策略，以及「会话切换 / 条目不再可达即关闭」。每个条目是 `src/components/bottomBar/*Item.tsx`
+里的一个 `BottomBarItemDefinition`，声明 `region`（left / center / right）、`order`、业务可见性
+`visible`、弹层种类（`popover` / `modal`）、窄屏策略（`keep` / `compact` / `more`）以及自己的
+Trigger / Content；**新增条目 = 一个模块 + `manifest.tsx` 里一行**，宿主不改，也没有可变注册中心、
+外部插件或用户布局文件。条目各自订阅自己绘制的 store 字段（推理增量不会重绘底栏），隐藏的条目
+根本不进布局（既不留包装元素，也不留分隔符）。
+
+弹层归属写死在契约里：`popover` 由宿主 portal 成 `FloatingPanel` 并从**该条目自己的 trigger**
+定位，外点关闭只认「本条目 trigger + 面板」（绝不整条底栏，也不是整条轨道），Esc 也只由它自己处理；
+`modal`（`GoalDialog` / `HelpDialog`）自带遮罩、Esc 与焦点往返，宿主不再为它注册第二个监听。
+F1 的条目没有 Trigger（右轨仍是空的对称占位列），只在 `src/components/consoleShortcuts.ts` 的
+快捷键表里占一行——F1／F5／F6 的按键、帮助列表文案、触发器 tooltip、面板标题里的「(F5)」都取自
+这张表。窄屏（<768px，与外壳同一断点）按条目策略收窄：中区条目默认进「更多」，而没有弹层可开的
+条目不会被丢进「更多」（否则就不可达了）。「更多」菜单本身走控制台共享的
+`useDialogKeyboardNav`（打开即聚焦首行、方向键在行间移动并环绕、关闭时把焦点交回「更多」按钮）；
+菜单行打开的弹层即将随菜单卸载，所以该行在开弹层前先把焦点交回仍然挂载的「更多」按钮，
+使 modal 自带的焦点恢复落在该按钮上、而不是落在已卸载的行上（否则关闭后焦点会掉到 `<body>`）。
+底栏只认领 `consoleShortcuts` 里带 `key` 的那几行：命中的按键一律 `preventDefault`（长按 F5
+不能触发浏览器刷新），随后再忽略 `repeat`；未认领的按键完全不拦截。
+
+**条目可以自己决定「存不存在」**（`availability`）：Codex 用量条目
+（`src/components/bottomBar/codexUsageItem.tsx`）只在**服务端**确认该会话的有效模型是启用的 Codex
+OAuth profile 时才存在，所以它声明一个 `availability` 源而不是 `visible` 规则。宿主用
+`useSyncExternalStore` 在解析布局**之前**过滤清单，于是「不可用」严格等于无包装、无分隔符、
+无「更多」行、无快捷键、无残留面板。该源的 `subscribe` 同时负责启动/停止条目自己的控制器
+（`src/stores/codexUsage.ts` 的 `codexUsageAvailability`）——如果只有挂载的 Trigger 才能启动它，
+条目就永远无法从「隐藏」翻到「显示」。条目状态刻意**不**放进 `useConsoleStore`：它是一个独立
+生命周期，控制器只读主 store 的 client / session / model / 连接状态；模型切换是**乐观发布**的
+（先改 `modelName`，rebind 之后才落地），所以控制器还读 `modelRevision`——否则 rebind 之前发出的
+判定会被上一个 profile 回答，而确认后的模型字符串又没变化、不会再通知任何消费者，条目会一直隐藏
+到下一次上下文变化（实践中就是重新加载页面）。
+
+条目画的是**产品自己的标识**（`src/components/bottomBar/CodexMark.tsx`，OpenAI 的六瓣结，内联
+单条 path，不引图标包）。两条规则和相邻图标一致：单色（`fill="currentColor"`，由调用方给颜色，
+这样「剩余低于 50% 转红」与深色主题都成立，品牌彩色会同时破坏这两者），以及 15px（与两侧
+Fluent 图标同一视觉尺寸）。由 `tests/codexUsageEntry.test.ts` 守护。
+
+兑换重置额度是**真实写操作**（消耗该 OAuth 账户的 1 次额度，不可撤销），所以面板先弹确认、
+只有确认按钮才会发送一次请求；`unresolved` 记录在写发出**之前**落盘，只有写之后发出的额度读取
+或确定的结果才能解除它，因此「结果未知」不会被自动重试、也不会用新幂等键重放。
+`tests/codexUsage.verify.ts` 用真实浏览器 + 模拟 runtime 验收（可用性来源在隐藏期完成发现、
+窗口按真实 `window_minutes` 标注、兑换零请求直到确认、消费后刷新、禁用后条目与分隔符一并消失、
+360px 下经「更多」可达），`tests/codexUsage{Client,Controller,Entry}.test.ts` 覆盖协议解码、
+生命周期竞态与确认流程（全部使用 fake transport，绝不触碰真实账户）。
+
+契约与真实渲染的 DOM 由 `tests/bottomBarContract.test.ts` 覆盖（分区/顺序/可见性/紧凑策略/
+单 `openId`/会话切换规则，以及用 `react-dom/server` 渲染出的轨道），宿主接线由
+`tests/bottomBarLayout.test.ts` 与 `tests/bottomBarDismiss.test.ts` 守护，
+`tests/bottomBarInteraction.verify.ts` 用真实浏览器验收（F1/F5/F6 开合与互斥、按键重复被忽略
+且仍 `preventDefault`、未认领按键不被拦截、外点只关当前弹层、modal 的 Esc 与焦点回归、切换会话
+确实换到另一会话并关掉旧弹层、360px 下各入口仍可达、紧凑指标面板完整可读），
+`tests/bottomBarMore.verify.ts` 用 fixture（把真实条目改为「更多」策略）验收「更多」菜单的键盘
+路径：键盘打开菜单→方向键移动/环绕→选择 modal→Esc→焦点回到「更多」按钮，选择 popover 同样如此。
 
 聊天列与输入卡片共用同一套留白几何（`src/index.css` 的 `.console-gutter` + `.console-column`），
 但**宽度是解耦的**：桌面端（≥ `lg`，1024px）每侧留白为工作区宽度的 10%，聊天列取工作区的
@@ -58,6 +115,13 @@
 句柄按索引取偏移与跳转，跳转落点手动应用 `scroll-padding-top` 预留量。由
 `tests/transcriptVirtualization.test.ts` 静态守护，`tests/transcriptVirtual.verify.ts` 用真实
 浏览器验收（1,200 行只挂载几十行、开屏贴底、向上滚动换窗、跳转到尚未挂载的轮次、前插保持视口）。
+
+**折叠隐藏的行不占任何空间**：窗口化后每个「索引」都有一个定位用包装元素，若把行间隙无条件下在
+它上面，折叠轮次里每个被隐藏的步骤都会留下 20px 空白（折叠得越多空白越大，末尾状态行也随之漂远）；
+`rowPaints` 在虚拟化之前过滤隐藏行，避免离屏隐藏步骤仍保留估算高度或展开时的缓存高度；
+渲染、测量与轮次跳转共用过滤后的索引，待完成跳转按消息 ID 跟踪。与纯列表的 `null` 行不占空间一致。
+由 `tests/transcriptVirtualization.test.ts` 静态守护、`tests/transcriptFoldSpace.verify.ts`
+用真实浏览器验收长折叠轮次、展开后收起及流式追加隐藏步骤。
 
 `tests/shellLayout.verify.ts` 另测 360/390/430/640px 手机布局、768/900px 平板和桌面回归。
 根布局采用 `100dvh`（保留 `100vh` 回退），视口声明启用安全区和支持浏览器的键盘布局缩放。

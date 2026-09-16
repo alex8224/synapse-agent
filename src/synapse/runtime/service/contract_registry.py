@@ -39,6 +39,8 @@ from synapse.runtime.service.access import (
     ARTIFACTS_STAT,
     ATTACHMENTS_READ,
     ATTACHMENTS_WRITE,
+    CODEX_RESET_CONSUME,
+    CODEX_USAGE_READ,
     EVENTS_READ,
     EVENTS_WATCH,
     FS_LIST,
@@ -102,6 +104,17 @@ from synapse.runtime.service.attachments import (
     FinishAttachmentResult,
     ReadAttachmentQuery,
     StatAttachmentQuery,
+)
+from synapse.runtime.service.codex_usage import (
+    CODEX_CONSUME_OUTCOMES,
+    CodexConsumeResult,
+    CodexResetCredit,
+    CodexResetCreditsView,
+    CodexUsageView,
+    CodexUsageWindow,
+    ConsumeCodexResetCommand,
+    GetCodexResetCreditsQuery,
+    GetCodexUsageQuery,
 )
 from synapse.runtime.service.commands import (
     ApprovalDecision,
@@ -300,6 +313,11 @@ APPROVAL_DECISION_KINDS: Final[tuple[str, ...]] = (
     "reject_once",
     "reject_always",
 )
+
+#: TypeScript literal union for the five wire outcomes of
+#: ``runtime.codex.reset_credits.consume``.  It is derived from the DTO's own
+#: ``CODEX_CONSUME_OUTCOMES`` so the contract cannot drift from the decoder.
+CODEX_CONSUME_OUTCOME_TS: Final = " | ".join(f"'{value}'" for value in CODEX_CONSUME_OUTCOMES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,6 +606,16 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(GetRuntimeConfigQuery, role="request"),
+    _dto(GetCodexUsageQuery, role="request"),
+    _dto(GetCodexResetCreditsQuery, role="request"),
+    _dto(
+        ConsumeCodexResetCommand,
+        role="request",
+        notes=(
+            "``confirmed`` must be the literal true; the wire rejects anything else, so",
+            "a caller cannot redeem a credit without explicit confirmation.",
+        ),
+    ),
     _dto(ListSessionsQuery, role="request"),
     _dto(
         CreateSessionCommand,
@@ -753,6 +781,23 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(RuntimeConfigView, role="result"),
+    _dto(CodexUsageWindow, role="result"),
+    _dto(CodexResetCredit, role="result"),
+    _dto(CodexUsageView, role="result"),
+    _dto(CodexResetCreditsView, role="result"),
+    _dto(
+        CodexConsumeResult,
+        role="result",
+        field_metadata=(
+            (
+                "outcome",
+                FieldMetadata(
+                    ts_type=CODEX_CONSUME_OUTCOME_TS,
+                    note="One of CODEX_CONSUME_OUTCOMES.",
+                ),
+            ),
+        ),
+    ),
     _dto(
         McpServerView,
         role="result",
@@ -1277,6 +1322,60 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         in_process=(
             "Optional delegate method: an in-process delegate without it keeps the "
             "wrapper constructible and reports the feature as unavailable."
+        ),
+    ),
+    WireMethod(
+        method="runtime.codex.usage.get",
+        method_class="service",
+        request="GetCodexUsageQuery",
+        result="CodexUsageView",
+        capability=CODEX_USAGE_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="get_codex_usage",
+        params_alias="GetCodexUsageParams",
+        result_alias="CodexUsageResult",
+        wire_defaults=(("force", False),),
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+    ),
+    WireMethod(
+        method="runtime.codex.reset_credits.get",
+        method_class="service",
+        request="GetCodexResetCreditsQuery",
+        result="CodexResetCreditsView",
+        capability=CODEX_USAGE_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="get_codex_reset_credits",
+        params_alias="GetCodexResetCreditsParams",
+        result_alias="CodexResetCreditsResult",
+        wire_defaults=(("force", False),),
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+    ),
+    WireMethod(
+        method="runtime.codex.reset_credits.consume",
+        method_class="service",
+        request="ConsumeCodexResetCommand",
+        result="CodexConsumeResult",
+        capability=CODEX_RESET_CONSUME,
+        scope="session",
+        scope_location="params.session",
+        service_method="consume_codex_reset",
+        params_alias="ConsumeCodexResetParams",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "The only write on this surface: ``confirmed`` must be the literal true and",
+            "``expected_model`` must still be the session's effective model (otherwise",
+            "``conflict``), so a stale dialog never redeems against an unseen model.",
         ),
     ),
     WireMethod(

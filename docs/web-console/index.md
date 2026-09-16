@@ -1,3 +1,4 @@
+| BottomBar | Codex 用量与重置额度（本轮新增） | 左区（activity 与 MCP 之间，与 TUI 同一 `order`）新增**可用性自持**条目：只在服务端确认该会话有效模型是启用的 Codex OAuth profile 时才存在（`runtime.config.get` 的 `codex_usage_enabled`，由 daemon 按会话**实际** profile 的 `auth` 判定，不按模型名猜；旧 peer 缺该字段则隐藏且不发任何 RPC）。行文按 TUI 语义但**不沿用其硬编码窗口名**：`5h 82%/3h · 7d 60%/2d · resets 2`（窗口长度取 RPC 的真实 `window_minutes`，倒计时为本地 1s tick，不发请求）；剩余低于 50% 转红。点开面板（`popover`）显示两个窗口、捕获时间与额度列表，`刷新` 强制绕过 300s 读缓存；列表每行按 `status == available` 且未过期才可兑换。**兑换是真实写操作**：先弹确认「兑换会真实消耗 1 次账户级 Codex 重置额度（不可撤销）」，只有确认按钮发一次 `runtime.codex.reset_credits.consume`（携带用户所见 `expected_model` 与一次性 `command_id`）；取消零请求，结果未知或断线**不自动重试、不换新键重放**，提示刷新核对。窄屏（<768px）策略为「更多」，经既有入口可达。授权为独立能力位 `codex.usage.read`（两个读方法）与 `codex.reset.consume`（兑换），`session.read` 不授权其中任何一个。由 `web/tests/codexUsageClient.test.ts` / `codexUsageController.test.ts` / `codexUsageEntry.test.ts` 守护，`web/tests/codexUsage.verify.ts` 用真实浏览器 + 模拟 runtime 验收（隐藏期完成发现、真实窗口标注、确认前零请求、消费后刷新、禁用后条目与分隔符一并消失、360px 经「更多」可达） | 已实现（本轮） |
 # Synapse Web Console 设计方案与技术规范
 
 > 文档状态：Active<br>
@@ -76,7 +77,7 @@
 | **SideBar (侧栏)** | 240px 宽度、**占满整个视口高度**，可折叠收起为极简轨；顶部导航含 新建任务 (Ctrl+N) 与 搜索 (Ctrl+K)；项目 → 会话两级树按时间分组；会话树**不显示滚动条但可正常滚动**（wheel / touch / 键盘，跨浏览器）；底栏为工作区身份行 + 纯净设置入口，无头像与通知铃铛杂音 |
 | **Transcript (主画布)** | 助手回复（左）与用户提问（右）为正文排版，且两者右边缘同线：助手正文限宽列宽 80%，用户行因此右侧内缩 20%，气泡不再伸到助手正文之外；◆ Thought for Xs / ▾ N tools executed / info 是紧凑的次要日志行（在左侧、限宽 85%，展开后才成面板） · Markdown 代码块与流式输出 |
 | **CommandBar (输入区)** | 工作区列**最后一行**的卡片（不是覆盖聊天区的浮层，转录滚动容器在其上方，最新一行就在可见底边上）：与聊天列同宽同边（`.console-gutter` + `.console-column`；转录不显示滚动条，故两侧都不被占用、边缘完全对齐）；文本在上，附件预览在其上方一行；控制行**左侧的 `+` 是「添加项目」**（打开宿主目录浏览器，见 §2.3），右侧是模型 / 推理强度 / 发送；若有正在运行的任务则浮现 Steer queue 状态 |
-| **BottomBar (底栏)** | 工作区列底部常驻（不再横跨侧栏）：MCP 工具池状态 · Agent 活跃态 (● 运行中/○ 空闲) · 中区本轮/会话遥测 · 目标；模型与推理级别选择已移入输入卡片 |
+| **BottomBar (底栏)** | 工作区列底部常驻（不再横跨侧栏）：Agent 活跃态 (● 运行中/○ 空闲) · Codex 用量与重置额度（仅 OAuth 会话存在） · MCP 工具池状态 · 中区本轮/会话遥测 · 目标；模型与推理级别选择已移入输入卡片。它是**静态清单 + 条目模块**的宿主（见 §2.1 底栏条目清单） |
 
 > **布局对齐（本轮）**：窗口改为「全高侧栏 + 右列工作区」两列，顶栏与底栏只属于右列；
 > 顶栏为三轨栅格（两侧等宽 `1fr`，会话标题真正居中、窄屏不重叠），侧栏会话树不显示滚动条
@@ -116,6 +117,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | Transcript | 流式自动跟随 | 有：贴底时每次更新都把最新一行带到可见底边，并在行高测量修正后继续保持贴底；**只有读者的滚轮 / 触摸 / 键盘手势能结束跟随**（滚回底部自动恢复），应用自身的滚动与浏览器的滚动锚定不会被误判为「用户已离开底部」——否则流式期间上方内容高度变化会把视口顶上去，跟随从此永久停住（表现为推理能跟随、推理结束后的工具调用不再跟随） | 已实现（本轮修复） |
 | Transcript | 更早历史 | **滚到顶部自动加载上一页**（`scrollTop ≤ 48px` 且 `historyHasMore`、未在加载中时触发，走与按钮同一条守卫路径）；前插会**保住读者当前看的位置**（按「距底部距离」这个不变量还原 `scrollTop`，并在新行测量完成后继续校正），不会把视图拽到底部也不会跳走；「加载更早历史」按钮保留为手动入口与「还有更多」提示 | 已实现（本轮修复） |
 | Transcript | 长会话虚拟滚动（本轮新增） | 只挂载视口附近的若干行（`@tanstack/react-virtual`，估算行高 + `measureElement` 实测校正，上下各留 `OVERSCAN_ROWS` 行），其余行由占位高度撑出滚动条：一个 1,200 行的会话只挂载几十行，整轮替换约 30ms（此前一次 commit 挂载全部行会导致页面卡死）。滚动容器、跟随、贴底闩锁、折叠守卫仍由 `Transcript` 自己持有，虚拟化只决定「哪些行存在」；TurnRail 改为通过 `TranscriptViewport` 句柄按索引取偏移与跳转（离屏轮次没有 `[data-turn-id]` 元素可查），跳转落点应用 `scroll-padding-top` 预留量 | 已实现（本轮） |
+| Transcript | 折叠隐藏的行不占空间 | 行间隙只下在**会渲染**的行上（`rowPaints` 同时决定「是否渲染」与「是否留间隙」）：包装元素是按**索引**存在的，若无条件下间隙，折叠轮次里每个被隐藏的步骤都会留下 20px 空白，折叠步数越多空白越大、末尾状态行越漂越远；折叠展开后这些行正常参与布局。与虚拟化前的纯列表行为一致（`null` 行不产生元素，`space-y-5` 不会为它留缝） | 已修复（本轮） |
 | TurnRail（左边缘轮次导航） | 当前轮次高亮 | 有：悬停加长变蓝，视口所在轮次播放同一动画；**在底部时固定高亮最后一轮**（末轮很短、其锚点仍在视口内时，纯「锚点在视口顶边之上」的规则会误判为倒数第二轮）；滚回底部自动恢复 | 已实现（本轮修正） |
 | SideBar | 折叠收起为「极简工作区」 | 44px 极简轨：展开 / 新建会话 / 搜索（点击即展开并聚焦）/ 已加载计数 | 已实现 |
 | SideBar | 新建任务 (Ctrl+N) | 有：展开态顶部是**带文字的**「新建任务」导航行（右侧标 `Ctrl+N`），折叠轨是同一个动作的 `+` 按钮，两者都作用于**当前项目**；`Ctrl+N` 快捷键不变 | 已实现（本轮补上展开态入口） |
@@ -142,6 +144,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | BottomBar | Agent 活跃态 (● 运行中/○ 空闲) | 有，置于底栏最左侧 | 已实现 |
 | BottomBar | 中区遥测（规范外，本轮新增） | 顶栏指标整体移入：`↑tokens ↓tokens │ tok/s │ N 步 │ 首字 Xs`，细竖线分隔、`tabular-nums`、hover 出完整明细（缓存占比 / 首字 / 上次调用）；无数据时显示「尚无本轮指标」。**布局定为保持中区居中**：`grid-cols-[1fr_auto_1fr]` + 中区 `justify-self-center`，右列保留为空对称占位列（不改为右对齐） | 已实现 |
 | BottomBar | 目标与常用快捷键提示 | **底栏不再显示快捷键行**（已按评审移除，`F1` 打开完整列表，含 Ctrl+N / Ctrl+K）；**目标已接入**：新增只读 `runtime.session.goal`，底栏左区按 TUI 语义渲染 `goal·active 250/1.0k` / `goal·active 42s`（无目标则整段不渲染，hover 出目标原文与用量） | 已实现 |
+| BottomBar | 底栏条目清单（静态注册契约，本轮新增） | 宿主 `web/src/components/BottomBar.tsx` 只保留条目共有的规则：三轨栅格、**唯一 `openId`**（同键关闭、异键替换，F1／F5／F6 因此天然互斥）、按键映射、遮罩归属、窄屏策略、会话切换／条目不可达即关闭。每个条目是 `web/src/components/bottomBar/*Item.tsx` 导出的一个 `BottomBarItemDefinition`，声明 `region`（left/center/right）、`order`、业务可见性 `visible`、弹层种类 `popover`/`modal`、窄屏策略 `keep`/`compact`/`more` 及自身 Trigger/Content；**新增条目 = 一个模块 + `manifest.tsx` 一行**，宿主不改，且没有可变注册中心、外部插件或用户布局配置。条目各自订阅自己绘制的 store 字段；隐藏条目不进布局（无包装、无分隔符）。`popover` 由宿主 portal 成 `FloatingPanel` 并从该条目自己的 trigger 定位，外点关闭只认「本条目 trigger + 面板」（不是整条底栏、也不是整条轨道），Esc 只由它自己处理；`modal`（`GoalDialog`/`HelpDialog`）自带遮罩、Esc 与焦点往返，宿主不再为它注册第二个监听。F1 条目没有 Trigger（右轨仍是空对称占位列），只在 `consoleShortcuts.ts` 的快捷键表占一行——F1／F5／F6 按键、帮助文案、tooltip 与面板标题里的「(F5)」都取自该表。窄屏（<768px，与外壳同断点）按条目策略收窄：左轨横向滚动不裁剪、中区遥测收成紧凑芯片（点开为完整分段）、策略为「更多」的条目进右侧「更多」菜单，而没有弹层可开的条目不会被丢进「更多」。「更多」菜单走共享的 `useDialogKeyboardNav`（打开即聚焦首行、方向键在行间环绕、关闭时把焦点交回「更多」按钮）；菜单行打开的 modal 即将随菜单卸载，因此该行开弹层前先把焦点交回仍挂载的「更多」按钮，modal 关闭后焦点落回该按钮而不是 `<body>`。命中 `consoleShortcuts` 中带 `key` 的按键一律先 `preventDefault`（长按 F5 不会触发浏览器刷新）再忽略 `repeat`，未认领的按键不拦截。由 `web/tests/bottomBarContract.test.ts`（分区/顺序/可见性/紧凑策略/单 openId/会话切换 + `react-dom/server` 渲染出的轨道）、`web/tests/bottomBarLayout.test.ts`、`web/tests/bottomBarDismiss.test.ts` 守护，`web/tests/bottomBarInteraction.verify.ts` 用真实浏览器验收（F1/F5/F6 开合与互斥、按键重复忽略且仍 `preventDefault`、未认领按键不拦截、外点只关当前弹层、modal 的 Esc 与焦点回归、切换会话确实换到另一会话并关掉旧弹层、360px 下入口仍可达），`web/tests/bottomBarMore.verify.ts` 用 fixture 验收「更多」菜单键盘路径（键盘打开→方向键环绕→选择 modal/popover→Esc→焦点回到「更多」按钮） | 已实现（本轮） |
 | TopBar | 工作区文件面板（规范外，本轮新增） | `folder_open` 打开只读文件树 + 文本查看 + **真实行级差异**，走 `runtime.artifacts.stat/list/read`：分页（`next_cursor` + 「加载更多」）、按路径子串过滤（只过滤已加载条目，显示 `已过滤/已加载` 计数）、单块 64 KiB、自动续读止于 256 KiB，之后由「继续读取（+64 KiB）」显式续读、硬上限 4 MiB，界面始终标注已读字节范围与是否 EOF；二进制文件拒绝解码、错误全部可见 | 已实现 |
 | TopBar | 文件面板的文本判定口径 | 服务端对未知类型统一报 `application/octet-stream`，前端仅在该默认值（或空值）时按**扩展名**兜底；**点文件视为自带扩展名**（`.gitignore` → `gitignore`、`.dockerignore` → `dockerignore`、`.python-version` → `python-version`），无扩展名的已知文本名（`LICENSE`/`NOTICE`/`Dockerfile`/`Makefile`/`CODEOWNERS` 等）按 basename 兜底。因此点文件与 `LICENSE` 这类文件可正常查看；**未知名字仍拒绝解码**（宁可不读也不乱码），如 `x.bin`、`mystery` | 已实现 |
 | TopBar | 文件面板的真实差异（规范外，本轮新增） | 差异比较**两个真实文本**：打开文件时的基线快照 与 当前内容（可用「重新读取」拉取磁盘上的新版本、「重设基准」重设基线），渲染真实行级差异（LCS，含行号与 `+N/-M` 计数）；中段超过 LCS 预算时按整块替换报告并标注「非最小差异」，达到渲染上限标注「已截断」，两侧一致时明确说明「无差异」。wire 无 revision 历史（`revision` 只是 stat 指纹），因此不做跨会话的旧版本比对，见交接报告 | 已实现（客户端基线对比） |
@@ -162,6 +165,10 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 - **`context_size` 运行时从不填充**（`runtime/streaming/parser.py` 的 `_note_usage`
   未传该键），所以「上下文」段实际不出现；此时强调落在 token 对上（输入量即上下文占用的
   代理指标）。若后端将来开始上报 `context_size`，该段会自动出现并接管强调。
+- 底栏在窄屏（<768px）收成单行：左轨自己横向滚动（`overflow-x-auto` + `no-scrollbar`），
+  中区遥测变成紧凑指标芯片（没有数据时显示图标 + `-`，点开是完整分段），右轨只在有条目被
+  「更多」收走时才出现。`src/index.css` 的 `@media (max-width: 767px)` 因此不再用
+  `nth-child` 隐藏中／右轨——那种写法会把入口裁成不可达。
 
 ### 2.2 MCP 面板运行态（与 TUI 面板对齐）
 
@@ -289,6 +296,7 @@ Markdown 默认预览且源码保留高亮、过期读取不覆盖新选择）�
 `runtime.session.history`、`runtime.session.reconcile`、`runtime.session.rebind`、
 `runtime.session.mcp.reload`、`runtime.session.thinking.set`、`runtime.project.thinking.set`、
 `runtime.project.list`、`runtime.project.register`、`runtime.fs.list`、`runtime.session.goal`、
+`runtime.codex.usage.get`、`runtime.codex.reset_credits.get`、`runtime.codex.reset_credits.consume`、
 `runtime.session.goal.set` /
 `.edit` / `.clear` / `.pause` / `.resume`、`runtime.config.get`、`runtime.turn.submit`、
 `runtime.turn.steer`、`runtime.turn.cancel`、`runtime.turn.approval.resume`、

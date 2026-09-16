@@ -163,6 +163,9 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.git.diff": "git_diff",
     "runtime.project.register": "register_project",
     "runtime.fs.list": "list_directories",
+    "runtime.codex.usage.get": "get_codex_usage",
+    "runtime.codex.reset_credits.get": "get_codex_reset_credits",
+    "runtime.codex.reset_credits.consume": "consume_codex_reset",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -181,6 +184,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "git.diff",
         "project.register",
         "fs.list",
+        "codex.usage.read",
+        "codex.reset.consume",
     }
 )
 

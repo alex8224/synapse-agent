@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   cacheHitRate,
   compactCount,
+  compactSegments,
   contextOccupancy,
   EMPTY_USAGE,
   formatSessionUsage,
@@ -78,6 +79,31 @@ test('the context occupancy falls back to the last call input', () => {
   // An explicit metric wins when a runtime does send one.
   assert.equal(contextOccupancy({ ...EMPTY_USAGE, contextSize: 45000, lastInput: 20978 }), 45000);
   assert.equal(contextOccupancy(EMPTY_USAGE), null);
+});
+
+test('the narrow strip prints the emphasized metrics first, and nothing is lost', () => {
+  const segments = [
+    { key: 'steps', label: '', value: '3 步', emphasis: false },
+    { key: 'rate', label: '', value: '42.0 tok/s', emphasis: true },
+    { key: 'context', label: '', value: '45.0k/23%', emphasis: true },
+    { key: 'session', label: '', value: '20.3k/19.8k/93', emphasis: false },
+  ] as const;
+  // Emphasized first, then the rest in their own order, capped at the limit.
+  assert.deepEqual(
+    compactSegments([...segments]).map((segment) => segment.key),
+    ['rate', 'context'],
+  );
+  assert.deepEqual(
+    compactSegments([...segments], 3).map((segment) => segment.key),
+    ['rate', 'context', 'steps'],
+  );
+  // Nothing is dropped when the list already fits: the compact form never
+  // reorders a short list.
+  assert.deepEqual(
+    compactSegments([...segments].slice(0, 2)).map((segment) => segment.key),
+    ['steps', 'rate'],
+  );
+  assert.deepEqual(compactSegments([]), []);
 });
 
 test('the usage tooltip leads with the session totals when they exist', () => {

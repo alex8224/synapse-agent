@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Dismiss20Regular } from '@fluentui/react-icons';
 import { Portal } from './Portal.tsx';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
@@ -86,6 +86,19 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
   // the body: without this, Tab would walk the console behind it before reaching
   // the first field. The objective is where a keyboard user starts.
   const onKeyDown = useDialogKeyboardNav(dialogRef, true, '#goal-objective');
+
+  // The dialog owns its dismissal: it is the only surface that knows what is on
+  // screen (a half-typed objective, an armed clear).  The status strip therefore
+  // keeps no second Escape listener for a modal — one owner, one listener — and
+  // `useDialogKeyboardNav` hands focus back to whatever held it (the F6 trigger)
+  // when this unmounts.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   // A goal is bound to a live session; before one is attached the store refuses
   // the write, so the dialog disables its controls instead of pretending.

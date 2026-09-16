@@ -21,6 +21,7 @@ from synapse.runtime.daemon.auth import (
     ScopedConnectionAuthenticator,
     load_token,
 )
+from synapse.runtime.daemon.codex_usage import CodexUsageAdapter
 from synapse.runtime.daemon.config import DaemonConfig
 from synapse.runtime.daemon.lease import DaemonLease
 from synapse.runtime.service import (
@@ -300,6 +301,7 @@ class RuntimeDaemon:
         self._token_loader = token_loader
         self._signal_installer = signal_installer
         self._stdout = stdout
+        self._codex_usage_adapter: CodexUsageAdapter | None = None
         self.settings: Any | None = None
         self.catalog: ProjectCatalog | Any | None = None
         self.lease: DaemonLease | Any | None = None
@@ -465,6 +467,7 @@ class RuntimeDaemon:
                 self.router,
                 project_list_provider=self._project_list_provider(),
                 project_registrar=self._project_registrar(),
+                codex_usage_provider=self._codex_usage_provider(),
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -499,6 +502,21 @@ class RuntimeDaemon:
         if catalog is None:
             return None
         return CatalogProjectRegistrar(catalog)
+
+    def _codex_usage_provider(self) -> CodexUsageAdapter:
+        """The one daemon-level Codex usage provider (shared by every connection).
+
+        A single instance is deliberate: the adapter owns the idempotency ledger
+        and the unresolved-credit set, so building one per connection would let a
+        replayed ``runtime.codex.reset_credits.consume`` redeem a credit twice.
+        It is created lazily and kept for the daemon's lifetime; constructing it
+        issues no request (the client is created on first use).
+        """
+        adapter = self._codex_usage_adapter
+        if adapter is None:
+            adapter = CodexUsageAdapter()
+            self._codex_usage_adapter = adapter
+        return adapter
 
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:

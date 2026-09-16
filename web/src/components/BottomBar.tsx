@@ -1,282 +1,290 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Flash20Regular, ChevronDown16Regular, Flag20Regular, Dismiss20Regular } from '@fluentui/react-icons';
-import { Portal } from './Portal.tsx';
+/**
+ * The status strip: the host of the bottom-bar entry manifest.
+ *
+ * The strip itself owns only what is common to every entry:
+ *
+ *  - the three tracks (`BottomBarRegions`) and the strip's own chrome,
+ *  - the **one** open overlay (`openId`): the same entry closes, another
+ *    replaces it, so F1 / F5 / F6 are mutually exclusive by construction,
+ *  - the advertised keys, resolved through `consoleShortcuts`: a key the strip
+ *    claims is always `preventDefault`ed — the browser's own action for it (F5
+ *    reloads the page) must never run, on a press *or* on any repeat of a held
+ *    key — and the repeat itself is then ignored, so holding F5 must not flap
+ *    the panel either,
+ *  - the dismissal split: a *popover* is closed by a click outside its own
+ *    trigger+panel and by Escape (both handled by the overlay host below), while
+ *    a *modal* owns its own scrim, Escape and focus — the strip keeps no second
+ *    listener for it,
+ *  - the compact (phone) band: a narrow window moves the entries whose policy is
+ *    `more` into the 更多 menu instead of clipping them, and the left track
+ *    scrolls rather than cutting a control off,
+ *  - the availability filter: an entry may declare a subscribable
+ *    `availability` source (the Codex usage entry is only there for an enabled
+ *    OAuth profile), and the strip reads the manifest through those sources with
+ *    `useSyncExternalStore` *before* resolving the layout.  An entry that answers
+ *    "no" is therefore not in any track, in the 更多 menu, or in the shortcut
+ *    table, leaves no separator behind, and its open panel goes with it,
+ *  - closing the overlay when the session switches or the entry stops being in
+ *    the layout (a hidden entry must not keep a stale panel on screen).
+ *
+ * Everything an entry paints lives in its own module under `bottomBar/`, with
+ * its own store subscription, so a reasoning delta re-renders one entry at most
+ * and never the strip.
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import { useShallow } from 'zustand/react/shallow';
+import { FloatingPanel } from './FloatingPanel.tsx';
+import { BOTTOM_BAR_ITEMS } from './bottomBar/manifest.tsx';
+import { MORE_ENTRY } from './bottomBar/moreEntry.tsx';
+import { BottomBarRegions } from './bottomBar/regions.ts';
 import {
-  contextOccupancy,
-  sessionUsageSegments,
-  turnStatSegments,
-} from '../stores/usageView.ts';
-import { goalLabel, goalTooltip } from '../stores/goalView.ts';
-import { McpPanel } from './McpPanel.tsx';
-import { GoalDialog } from './GoalDialog.tsx';
+  COMPACT_QUERY,
+  MORE_ENTRY_ID,
+  availabilityGate,
+  itemById,
+  isSessionSwitch,
+  layoutEntries,
+  resolveBottomBarLayout,
+  shortcutEntries,
+  toggleOpenId,
+} from './bottomBar/contract.ts';
+import type { BottomBarContext, BottomBarItemDefinition } from './bottomBar/contract.ts';
 
-/** Goal status label -> text colour, mirroring the TUI goal indicator styles. */
-const GOAL_STATUS_CLASS: Record<string, string> = {
-  active: 'font-medium text-gray-900',
-  paused: 'text-gray-400',
-  stalled: 'text-yellow-600',
-  'usage limited': 'text-yellow-600',
-  'limited by budget': 'text-yellow-600',
-  complete: 'text-green-600',
+/*
+  Layout decision (kept deliberately): three tracks `1fr auto 1fr` keep the
+  telemetry block in the exact horizontal centre of the bar, because both
+  flexible tracks resolve to the same leftover width.  The left column carries
+  activity + MCP + goal, the centre carries the current turn's telemetry, and the
+  right track stays an empty, symmetric spacer (F1 opens the full shortcut list,
+  and its entry paints no control).  Do not switch the centre to a right-aligned
+  column: the bar must stay centre-weighted.
+
+  `whitespace-nowrap` is load-bearing: the bar is a fixed 28px strip, and a
+  squeezed label that wraps would double a row's line box and push the whole bar
+  out of alignment.  Labels that can grow truncate at their own `max-w`.
+
+  Deliberately *not* `overflow-hidden`: it once hid an `absolute` popover.  The
+  popovers are portalled `FloatingPanel`s now, and the compact track scrolls
+  instead of clipping, so no control is cut off.
+
+  It is a real flex child of the app column rather than an overlay: while it was
+  `fixed`, the middle row still stretched to the viewport bottom and the bar
+  covered the sidebar's own footer (its settings entry), leaving a strip of it
+  unreachable.
+*/
+const STRIP_BASE =
+  'material-strip relative z-40 h-status w-full whitespace-nowrap border-t border-line px-3 font-numeric text-[11px] text-gray-500 shrink-0 select-none';
+/** Wide window: the symmetric three-track grid (see the layout note above). */
+const DESKTOP_STRIP = `${STRIP_BASE} grid grid-cols-[1fr_auto_1fr] items-center gap-4`;
+/** Phone band: one row; the left track scrolls, the centre/right stay pinned. */
+const COMPACT_STRIP = `${STRIP_BASE} flex items-center gap-2`;
+
+/** The strip's one open overlay: which entry, and the element it hangs from. */
+interface OpenOverlay {
+  id: string;
+  /** The trigger that opened it; `null` for an entry that paints no control. */
+  anchor: HTMLElement | null;
+}
+
+/** The phone band, from the same breakpoint the shell lays out for. */
+function useCompactStrip(): boolean {
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches);
+  useEffect(() => {
+    const query = window.matchMedia(COMPACT_QUERY);
+    const update = () => setCompact(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return compact;
+}
+
+/** One entry's control.  A keyboard-only entry paints nothing at all. */
+const BottomBarEntry: React.FC<{
+  item: BottomBarItemDefinition;
+  context: BottomBarContext;
+  register: (id: string, element: HTMLElement | null) => void;
+}> = ({ item, context, register }) => {
+  const { id } = item;
+  // The entry hands the strip its own element, so a popover hangs from the
+  // trigger it belongs to (and a click on that trigger never closes it).
+  const anchorRef = useCallback(
+    (element: HTMLElement | null) => register(id, element),
+    [id, register],
+  );
+  const Trigger = item.Trigger;
+  if (Trigger === undefined) return null;
+  return <Trigger context={context} open={context.openId === id} anchorRef={anchorRef} />;
 };
 
-/** Full shortcut list for the F1 dialog. */
-const HELP_ROWS: Array<{ keys: string; label: string }> = [
-  { keys: 'Enter', label: '发送指令 / 运行态下排队插话' },
-  { keys: 'Ctrl + C', label: '中止当前运行中的轮次' },
-  { keys: 'Ctrl + B', label: '展开 / 收起侧边栏' },
-  { keys: 'Ctrl + N', label: '新建会话' },
-  { keys: 'Ctrl + K', label: '搜索会话' },
-  { keys: 'F1', label: '打开快捷键帮助' },
-  { keys: 'F2', label: '切换大语言模型' },
-  { keys: 'F5', label: 'MCP 服务器' },
-  { keys: 'F6', label: '目标管理 (Goal)' },
-];
-
-export const BottomBar: React.FC = () => {
-  const {
-    mcpStatus,
-    mcpServers,
-    runtimeStatus,
-    usage,
-    sessionUsage,
-    contextWindow,
-    goal,
-  } = useConsoleStore(
-    // Only the fields this strip paints: a reasoning delta must not re-render it.
-    useShallow((state) => ({
-      mcpStatus: state.mcpStatus,
-      mcpServers: state.mcpServers,
-      runtimeStatus: state.runtimeStatus,
-      usage: state.usage,
-      sessionUsage: state.sessionUsage,
-      contextWindow: state.contextWindow,
-      goal: state.goal,
-    })),
-  );
-
-  const [showMcpPanel, setShowMcpPanel] = useState(false);
-  const [showGoalDialog, setShowGoalDialog] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
-
-  const closeOthers = () => {
-    setShowMcpPanel(false);
-  };
-
-  // The MCP popover closes as soon as it loses focus: a click anywhere outside
-  // its own trigger+panel closes it. The trigger is part of the same wrapper on
-  // purpose, so its own click toggles the popover instead of fighting this
-  // handler. (The model / reasoning pickers keep the same contract, but they now
-  // live in the composer — see `ModelControls`.)
-  const mcpRef = useRef<HTMLDivElement | null>(null);
-  const popoverOpen = showMcpPanel;
+/** The open entry's overlay: a portalled popover, or a self-contained modal. */
+const BottomBarOverlay: React.FC<{
+  item: BottomBarItemDefinition;
+  context: BottomBarContext;
+  anchor: HTMLElement | null;
+}> = ({ item, context, anchor }) => {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const popover = item.overlay === 'popover';
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F1') {
-        e.preventDefault();
-        setShowHelp((v) => !v);
-      } else if (e.key === 'F5') {
-        e.preventDefault();
-        closeOthers();
-        setShowMcpPanel((v) => !v);
-      } else if (e.key === 'F6') {
-        e.preventDefault();
-        closeOthers();
-        setShowGoalDialog((v) => !v);
-      } else if (e.key === 'Escape') {
-        // The popover titles promise "关闭 (Esc)": honour it here as well as in
-        // the top bar, so every advertised dismissal path really works.
-        closeOthers();
-        setShowHelp(false);
-        setShowGoalDialog(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  useEffect(() => {
-    if (!popoverOpen) return;
+    // A modal is not this component's business: it renders its own scrim and
+    // owns its own Escape and focus (see `GoalDialog` / `HelpDialog`), so the
+    // strip keeps exactly one listener per overlay kind instead of two.
+    if (!popover) return;
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
       if (target === null) return;
-      const inside = [mcpRef].some((ref) =>
-        ref.current?.contains(target),
-      );
-      if (!inside) closeOthers();
+      // Only *this* entry's trigger and panel keep the popover open: a click
+      // anywhere else — the rest of the strip included — closes it.  A wrapper
+      // around the whole bar would swallow those clicks instead.
+      const inside =
+        (anchor?.contains(target) ?? false) || (panelRef.current?.contains(target) ?? false);
+      if (!inside) context.close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') context.close();
     };
     document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [popoverOpen]);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [anchor, context, popover]);
 
-  const busy = runtimeStatus === 'running';
-  // The bar reports this turn's speed/latency/steps, then the session's usage as
-  // two raw groups (totals, then context/hit share).  No label and no tooltip:
-  // the numbers are printed as the runtime reported them.
-  const telemetry = [
-    ...turnStatSegments(usage),
-    ...sessionUsageSegments(sessionUsage, contextOccupancy(usage), contextWindow),
-  ];
-  // An absent goal renders nothing at all (never a placeholder).
-  const goalText = goalLabel(goal);
-  const goalClass = goal === null ? '' : (GOAL_STATUS_CLASS[goal.label] ?? 'text-gray-600');
+  const Content = item.Content;
+  if (Content === undefined) return null;
+  if (!popover) return <Content context={context} />;
+  return (
+    <FloatingPanel
+      anchor={anchor}
+      side="top"
+      align="start"
+      offset={8}
+      label={item.panelLabel}
+      className={item.panelClassName ?? ''}
+      panelRef={panelRef}
+    >
+      <Content context={context} />
+    </FloatingPanel>
+  );
+};
+
+export const BottomBar: React.FC = () => {
+  // Only the facts the strip itself decides on: what each entry paints is its
+  // own subscription (a reasoning delta must not re-render the strip).
+  const sessionOpen = useConsoleStore((state) => state.currentSession.thread_id !== '');
+  const compact = useCompactStrip();
+  const [open, setOpen] = useState<OpenOverlay | null>(null);
+  const barRef = useRef<HTMLElement | null>(null);
+  // Only the keyboard path needs this registry: a click hands the strip the
+  // trigger element itself, and the element the open overlay hangs from is part
+  // of the open state (never read from a ref while rendering).
+  const anchors = useRef(new Map<string, HTMLElement>());
+  const openId = open?.id ?? null;
+
+  const toggle = useCallback((id: string, anchor: HTMLElement | null = null) => {
+    setOpen((current) =>
+      toggleOpenId(current?.id ?? null, id) === null ? null : { id, anchor },
+    );
+  }, []);
+  const close = useCallback(() => setOpen(null), []);
+  const registerAnchor = useCallback((id: string, element: HTMLElement | null) => {
+    if (element === null) anchors.current.delete(id);
+    else anchors.current.set(id, element);
+  }, []);
+
+  const visibility = useMemo(() => ({ sessionOpen, compact }), [sessionOpen, compact]);
+  // Entries that answer their own existence at runtime (the Codex usage entry is
+  // only there for an enabled OAuth profile) are filtered *before* the layout is
+  // resolved.  The gate subscribes to each source, which is also what starts and
+  // stops that source's discovery — a source started only by a painted Trigger
+  // could never become painted in the first place.  Filtering here is what makes
+  // "unavailable" mean no wrapper, no separator, no 更多 row, no shortcut, and no
+  // stale panel: every one of those is derived from the resolved layout.
+  const gate = useMemo(() => availabilityGate(BOTTOM_BAR_ITEMS), []);
+  const availableItems = useSyncExternalStore(gate.subscribe, gate.getSnapshot);
+  const layout = useMemo(
+    () => resolveBottomBarLayout(availableItems, visibility, MORE_ENTRY),
+    [availableItems, visibility],
+  );
+  const shortcuts = useMemo(() => shortcutEntries(layout), [layout]);
+  const reachable = useMemo(() => layoutEntries(layout), [layout]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // A key the strip does not answer is left alone entirely: it must reach the
+      // browser and every other listener untouched.
+      const item = shortcuts.get(event.key);
+      if (item === undefined) return;
+      // ...but a claimed key is the strip's own, so its browser default never
+      // runs.  This is deliberately before the repeat check: a held F5 repeats,
+      // and a repeat that returned first would let the browser reload the page.
+      event.preventDefault();
+      // Holding a key down repeats it; the strip answers the press once.
+      if (event.repeat) return;
+      // A keypress has no element of its own, so a popover hangs from the
+      // trigger the entry paints (or from the 更多 entry / the strip itself when
+      // the entry was compacted away).
+      toggle(
+        item.id,
+        anchors.current.get(item.id) ?? anchors.current.get(MORE_ENTRY_ID) ?? barRef.current,
+      );
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [shortcuts, toggle]);
+
+  useEffect(
+    () =>
+      useConsoleStore.subscribe((state, previous) => {
+        // A panel belongs to the session that opened it.
+        if (isSessionSwitch(state.currentSession, previous.currentSession)) setOpen(null);
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    // A hidden entry (its business rule, or the compact band) closes its own
+    // overlay rather than leaving it on screen with no trigger behind it.
+    if (openId === null) return;
+    if (!reachable.some((item) => item.id === openId)) setOpen(null);
+  }, [openId, reachable]);
+
+  const context: BottomBarContext = useMemo(
+    () => ({
+      openId,
+      anchor: open?.anchor ?? null,
+      toggle,
+      close,
+      compact,
+      sessionOpen,
+      overflow: layout.overflow,
+    }),
+    [open, openId, toggle, close, compact, sessionOpen, layout],
+  );
+
+  // Resolved from the *available* entries (plus the host's own 更多 entry): an
+  // entry that stopped being available takes its overlay off screen in the same
+  // render, instead of leaving one stale panel for a frame.
+  const openItem =
+    openId === null ? null : (itemById([...availableItems, MORE_ENTRY], openId) ?? null);
 
   return (
     <>
-      {/*
-        Layout decision (kept deliberately): three tracks `1fr auto 1fr` keep the
-        telemetry block in the exact horizontal centre of the bar, because both
-        flexible tracks resolve to the same leftover width. The left column
-        carries activity + model / reasoning / MCP / goal, the centre carries the
-        current turn's telemetry, and the right track stays an empty, symmetric
-        spacer (F1 opens the full shortcut list). Do not switch the centre to a
-        right-aligned column: the bar must stay centre-weighted.
-      */}
-      {/*
-        `whitespace-nowrap` is load-bearing: the bar is a fixed 28px strip, and a
-        squeezed label that wraps would double a row's line box and push the whole
-        bar out of alignment.  Labels that can grow are truncated at their own
-        `max-w` instead of wrapping.
-
-        Deliberately *not* `overflow-hidden`: the MCP popover is anchored inside
-        this bar (`absolute bottom-8` on its trigger), so clipping the bar hid the
-        popover entirely — it mounted, and was invisible.  Nothing here overflows
-        the viewport now that every growable label truncates.
-
-        It is a real flex child of the app column rather than an overlay: while
-        it was `fixed`, the middle row still stretched to the viewport bottom and
-        the bar covered the sidebar's own footer (its settings entry), leaving a
-        strip of it unreachable.
-      */}
-      <footer className="material-strip relative z-40 grid h-status w-full grid-cols-[1fr_auto_1fr] items-center gap-4 whitespace-nowrap border-t border-line px-3 font-numeric text-[11px] text-gray-500 shrink-0 select-none">
-        {/* Left: activity + configuration */}
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span
-            className={`flex shrink-0 items-center gap-1.5 font-sans text-[11px] font-medium ${
-              busy ? 'text-blue-600' : 'text-gray-500'
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${busy ? 'animate-pulse bg-blue-600' : 'bg-gray-400'}`}
-            />
-            {busy ? '运行中' : '空闲'}
-          </span>
-
-          <span className="text-gray-200">|</span>
-
-          {/* MCP (the model and reasoning pickers moved into the composer) */}
-          <div className="relative" ref={mcpRef}>
-            <button
-              type="button"
-              onClick={() => {
-                const next = !showMcpPanel;
-                closeOthers();
-                setShowMcpPanel(next);
-              }}
-              title="管理 MCP 服务器 (F5)"
-              className="flex items-center gap-1 cursor-pointer transition-colors hover:text-gray-900"
-            >
-              <Flash20Regular aria-hidden="true" className={`shrink-0 ${mcpServers.some((s) => s.enabled) ? 'text-green-600' : 'text-gray-400'}`} style={{ fontSize: '15px' }} />
-              <span className="text-gray-700">mcp: {mcpStatus}</span>
-              <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" />
-            </button>
-            {showMcpPanel && (
-              <McpPanel onClose={() => setShowMcpPanel(false)} />
-            )}
-          </div>
-
-          {/* Goal: the trigger is always visible so a goal can be set; the label
-              shows the live goal when there is one and "未设置" otherwise. */}
-          <span className="text-gray-200">|</span>
-          <button
-            type="button"
-            onClick={() => {
-              closeOthers();
-              setShowGoalDialog(true);
-            }}
-            title={goal === null ? '设置目标 (F6)' : goalTooltip(goal)}
-            className={`flex min-w-0 items-center gap-1 cursor-pointer transition-colors hover:text-gray-900 ${goalClass}`}
-          >
-            <Flag20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '15px' }} />
-            <span className="max-w-[18rem] truncate">
-              {goalText === '' ? 'goal: 未设置' : goalText}
-            </span>
-          </button>
-        </div>
-
-        {/* Centre: all turn telemetry (tokens + speed / latency / steps) */}
-        <div
-          className="flex shrink-0 items-center justify-self-center gap-2 tabular-nums"
-        >
-          {telemetry.length === 0 ? (
-            <span className="font-sans text-[11px] text-gray-300">尚无本轮指标</span>
-          ) : (
-            telemetry.map((segment, index) => (
-              <span key={segment.key} className="flex items-center gap-2">
-                {index > 0 && <span className="text-gray-200">|</span>}
-                <span className="flex items-baseline gap-1">
-                  {segment.label !== '' && (
-                    <span className="font-sans text-[10px] text-gray-400">{segment.label}</span>
-                  )}
-                  <span
-                    className={segment.emphasis ? 'font-medium text-gray-800' : 'text-gray-600'}
-                  >
-                    {segment.value}
-                  </span>
-                </span>
-              </span>
-            ))
+      <footer ref={barRef} className={compact ? COMPACT_STRIP : DESKTOP_STRIP}>
+        <BottomBarRegions
+          layout={layout}
+          compact={compact}
+          slot={(item) => (
+            <BottomBarEntry key={item.id} item={item} context={context} register={registerAnchor} />
           )}
-        </div>
-
-        {/* Right slot intentionally empty (symmetric spacer): F1 opens the list. */}
-        <div className="min-w-0" />
+        />
       </footer>
 
-      {showHelp && (
-        // `Portal`: a modal belongs to the window, not to the status strip that
-        // opened it.
-        <Portal>
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm p-4 scrim-in"
-          onClick={() => setShowHelp(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-card border border-line/80 material-flyout flyout-in p-5 font-sans shadow-flyout"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between border-b pb-2">
-              <span className="text-sm font-bold text-gray-900">快捷键与使用帮助</span>
-              <button
-                onClick={() => setShowHelp(false)}
-                title="关闭 (Esc)"
-                className="ui-icon-button ui-compact text-gray-400 hover:text-gray-600"
-              >
-                <Dismiss20Regular aria-hidden="true" />
-              </button>
-            </div>
-            <div className="space-y-1.5 font-mono text-xs text-gray-600">
-              {HELP_ROWS.map((row) => (
-                <div
-                  key={row.keys}
-                  className="flex items-center justify-between border-b border-gray-50 py-1 last:border-b-0"
-                >
-                  <span className="ui-kbd">
-                    {row.keys}
-                  </span>
-                  <span className="font-sans">{row.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-        </Portal>
+      {openItem !== null && (
+        <BottomBarOverlay item={openItem} context={context} anchor={open?.anchor ?? null} />
       )}
-
-      {showGoalDialog && <GoalDialog onClose={() => setShowGoalDialog(false)} />}
     </>
   );
 };

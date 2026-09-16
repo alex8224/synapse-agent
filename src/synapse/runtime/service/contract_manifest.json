@@ -11,6 +11,8 @@
     "artifacts.stat",
     "attachments.read",
     "attachments.write",
+    "codex.reset.consume",
+    "codex.usage.read",
     "events.read",
     "events.watch",
     "fs.list",
@@ -402,6 +404,59 @@
       "scope_location": "params.ref.session",
       "service_method": "stat_attachment",
       "wire_defaults": {}
+    },
+    {
+      "capability": "codex.reset.consume",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.codex.reset_credits.consume",
+      "notes": [
+        "The only write on this surface: ``confirmed`` must be the literal true and",
+        "``expected_model`` must still be the session's effective model (otherwise",
+        "``conflict``), so a stale dialog never redeems against an unseen model."
+      ],
+      "params_alias": "ConsumeCodexResetParams",
+      "request": "ConsumeCodexResetCommand",
+      "result": "CodexConsumeResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "consume_codex_reset",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "codex.usage.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.codex.reset_credits.get",
+      "params_alias": "GetCodexResetCreditsParams",
+      "request": "GetCodexResetCreditsQuery",
+      "result": "CodexResetCreditsView",
+      "result_alias": "CodexResetCreditsResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_codex_reset_credits",
+      "wire_defaults": {
+        "force": false
+      }
+    },
+    {
+      "capability": "codex.usage.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.codex.usage.get",
+      "params_alias": "GetCodexUsageParams",
+      "request": "GetCodexUsageQuery",
+      "result": "CodexUsageView",
+      "result_alias": "CodexUsageResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_codex_usage",
+      "wire_defaults": {
+        "force": false
+      }
     },
     {
       "capability": "session.read",
@@ -1957,6 +2012,253 @@
       "origin": "python",
       "role": "result"
     },
+    "CodexConsumeResult": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "outcome",
+          "note": "One of CODEX_CONSUME_OUTCOMES.",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Literal['reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit', 'unknown']",
+          "required": true,
+          "ts_type": "'reset' | 'alreadyRedeemed' | 'nothingToReset' | 'noCredit' | 'unknown'",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CodexResetCredit": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "reset_type",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "granted_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "expires_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "description",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CodexResetCreditsView": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "available_count",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "credits",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[CodexResetCredit, ...]",
+          "required": true,
+          "ts_type": "CodexResetCredit[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CodexUsageView": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "primary",
+          "nullable": true,
+          "optional": false,
+          "python_type": "CodexUsageWindow | None",
+          "required": true,
+          "ts_type": "CodexUsageWindow | null",
+          "wire": "json"
+        },
+        {
+          "name": "secondary",
+          "nullable": true,
+          "optional": false,
+          "python_type": "CodexUsageWindow | None",
+          "required": true,
+          "ts_type": "CodexUsageWindow | null",
+          "wire": "json"
+        },
+        {
+          "name": "captured_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "float",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "available_reset_count",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CodexUsageWindow": {
+      "fields": [
+        {
+          "name": "used_percent",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "window_minutes",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "reset_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
     "CommandReceipt": {
       "fields": [
         {
@@ -2004,6 +2306,61 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "ConsumeCodexResetCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "expected_model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "credit_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "confirmed",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``confirmed`` must be the literal true; the wire rejects anything else, so",
+        "a caller cannot redeem a credit without explicit confirmation."
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "CreateSessionCommand": {
       "fields": [
@@ -2598,6 +2955,58 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "GetCodexResetCreditsQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "force",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GetCodexUsageQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "force",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "GetRuntimeConfigQuery": {
       "fields": [
@@ -4719,6 +5128,17 @@
           "python_type": "int | None",
           "required": true,
           "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "codex_usage_enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
           "wire": "json"
         }
       ],

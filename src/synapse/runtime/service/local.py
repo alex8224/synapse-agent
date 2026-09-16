@@ -8,6 +8,7 @@ provider; execution always flows through ``RuntimeManager.submit_ref`` ->
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -17,7 +18,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Final, Self
 
 import synapse.runtime.service.attachment_store as attachment_store
@@ -48,6 +49,16 @@ from synapse.runtime.service.attachments import (
     FinishAttachmentResult,
     ReadAttachmentQuery,
     StatAttachmentQuery,
+)
+from synapse.runtime.service.codex_usage import (
+    CodexConsumeResult,
+    CodexResetCreditsView,
+    CodexUsageConflictError,
+    CodexUsageProvider,
+    CodexUsageView,
+    ConsumeCodexResetCommand,
+    GetCodexResetCreditsQuery,
+    GetCodexUsageQuery,
 )
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
@@ -339,6 +350,7 @@ class LocalAgentRuntimeService:
         | None = None,
         project_list_provider: ProjectListProvider | None = None,
         project_registrar: Callable[[RegisterProjectCommand], ProjectListItem] | None = None,
+        codex_usage_provider: CodexUsageProvider | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -352,6 +364,12 @@ class LocalAgentRuntimeService:
         # an adapter; without one the optional ``register_project`` method
         # reports itself as unavailable.
         self._project_registrar = project_registrar
+        # The Codex usage / reset-credit surface is optional: without an
+        # injected provider (the daemon supplies a real Codex client adapter)
+        # the three optional methods report themselves as unavailable and the
+        # ``runtime.config.get`` gate stays False, so a console never offers a
+        # control the server cannot serve.
+        self._codex_usage_provider = codex_usage_provider
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -885,9 +903,152 @@ class LocalAgentRuntimeService:
                 # has a project-level writer wired up.
                 project_settings=manager.settings,
                 can_set_project_thinking=manager.project_thinking_writer is not None,
+                # The Codex usage entry needs all three facts at once: a wired
+                # provider, an already-open session, and that session's *actual*
+                # selected profile using Codex OAuth.  A model name that merely
+                # looks like a Codex model never enables it.
+                codex_usage_enabled=(
+                    self._codex_usage_provider is not None
+                    and session is not None
+                    and config_source.is_codex_oauth_profile(settings)
+                ),
             )
 
         return await asyncio.to_thread(_read)
+
+    # -- codex usage port --------------------------------------------------
+
+    def _require_codex_provider(self) -> CodexUsageProvider:
+        """The injected Codex usage provider, or a fixed "unavailable" refusal."""
+        provider = self._codex_usage_provider
+        if provider is None:
+            raise InvalidRequestError("codex usage is unavailable")
+        return provider
+
+    def _codex_model(self, settings: Any) -> str:
+        """The session's effective model (bounded by the result DTOs)."""
+        model = getattr(settings, "active_model", None) or getattr(settings, "model", None)
+        if type(model) is not str or not model.strip():
+            raise InvalidRequestError("codex usage requires a selected model")
+        return model.strip()
+
+    @contextlib.asynccontextmanager
+    async def _codex_bound_session(
+        self, ref: SessionRef
+    ) -> AsyncIterator[tuple[Any, str]]:
+        """Bind the Codex surface to the session's *currently open* runtime.
+
+        The manager's per-session lifecycle coordinator stays held for the whole
+        provider call (see ``RuntimeManager.session_binding_guard``), so the
+        profile verdict, the effective model, and the request all describe one
+        binding even when a rebind or close races them.  An unopened session is
+        ``not_found``, and a profile that is not Codex OAuth is refused here:
+        the security boundary for a UI action never trusts the client's idea of
+        which profile is active.
+        """
+        from synapse.runtime.service import config_source
+
+        manager = self._resolve_manager(ref)
+        self._check_project(manager, ref)
+        async with manager.session_binding_guard(ref) as binding:
+            session = binding.session
+            if session is None:
+                raise NotFoundError(f"session {ref.global_id!r} not found")
+            settings = session.settings
+            if not config_source.is_codex_oauth_profile(settings):
+                raise InvalidRequestError("codex usage is not enabled for this session")
+            yield binding, self._codex_model(settings)
+
+    async def _codex_provider_call(
+        self, binding: Any, awaitable: Any, expected: type, ref: SessionRef
+    ) -> Any:
+        """Await one provider step and enforce the wire contract on its answer.
+
+        Every failure the provider raises is replaced with fixed copy: an
+        upstream status line, response body, token, or account id must never
+        reach a client through an error message.  A replay the provider refused
+        (``CodexUsageConflictError``) becomes the fixed conflict copy instead.
+        """
+        try:
+            result = await binding.run_worker(awaitable)
+        except CodexUsageConflictError as exc:
+            raise ConflictError("reset request conflicts with an earlier one") from exc
+        except Exception as exc:  # noqa: BLE001 - upstream failures are redacted here
+            raise RuntimeServiceError("codex usage request failed") from exc
+        if type(result) is not expected or getattr(result, "session", None) != ref:
+            raise RuntimeServiceError("codex usage request failed")
+        return result
+
+    async def get_codex_usage(self, query: GetCodexUsageQuery) -> CodexUsageView:
+        """Read the session's Codex rate-limit windows through the provider.
+
+        The provider owns the blocking HTTP call; this method only enforces the
+        boundary (open session, Codex OAuth profile, session-resolved model) and
+        redacts upstream failures.
+        """
+        if type(query) is not GetCodexUsageQuery:
+            raise InvalidRequestError(
+                "codex usage query must be a GetCodexUsageQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        provider = self._require_codex_provider()
+        async with self._codex_bound_session(query.session) as (binding, model):
+            return await self._codex_provider_call(
+                binding,
+                provider.get_usage(query.session, model, query.force),
+                CodexUsageView,
+                query.session,
+            )
+
+    async def get_codex_reset_credits(
+        self, query: GetCodexResetCreditsQuery
+    ) -> CodexResetCreditsView:
+        """Read the session's reset-credit rows through the provider."""
+        if type(query) is not GetCodexResetCreditsQuery:
+            raise InvalidRequestError(
+                "codex reset credits query must be a GetCodexResetCreditsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        provider = self._require_codex_provider()
+        async with self._codex_bound_session(query.session) as (binding, model):
+            return await self._codex_provider_call(
+                binding,
+                provider.get_reset_credits(query.session, model, query.force),
+                CodexResetCreditsView,
+                query.session,
+            )
+
+    async def consume_codex_reset(
+        self, command: ConsumeCodexResetCommand
+    ) -> CodexConsumeResult:
+        """Redeem one reset credit (the only write on this surface).
+
+        This is the security boundary for a confirmed UI action: the session
+        must be open, its *actual* profile must be Codex OAuth, the command must
+        carry the explicit confirmation the DTO enforces, and ``expected_model``
+        must still be the session's effective model.  A stale dialog is a
+        conflict, never a silent redemption against a model the user did not
+        see.  The provider keeps the idempotency ledger, so a replay returns the
+        recorded outcome and a credit whose earlier attempt never resolved is
+        never re-sent with a new key.
+        """
+        if type(command) is not ConsumeCodexResetCommand:
+            raise InvalidRequestError(
+                "codex consume command must be a ConsumeCodexResetCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        if command.confirmed is not True:
+            raise InvalidRequestError("reset requires explicit confirmation")
+        provider = self._require_codex_provider()
+        async with self._codex_bound_session(command.session) as (binding, model):
+            if command.expected_model != model:
+                raise ConflictError("session model changed since the reset was confirmed")
+            return await self._codex_provider_call(
+                binding,
+                provider.consume_reset(command, model),
+                CodexConsumeResult,
+                command.session,
+            )
 
     async def pending_approval(self, query: PendingApprovalQuery) -> PendingApprovalView:
         self._validate_ref(query.session)

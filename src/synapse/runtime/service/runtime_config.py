@@ -142,6 +142,12 @@ class RuntimeConfigView:
     # declare one.  Clients need the denominator to render context occupancy
     # ("14.2k/200k"); the TUI reads the same number off the model profile.
     context_window: int | None = None
+    # Whether the Codex usage / reset-credit entry is usable for this session.
+    # True only when the composition root injected a usage provider, the session
+    # is already open, and its *actual selected profile* uses Codex OAuth (never
+    # inferred from the model name).  The console treats any other value as
+    # "hidden, send no usage RPC", so the default is a hard False.
+    codex_usage_enabled: bool = False
 
     def __post_init__(self) -> None:
         _bounded_text(self.current_model, name="current_model")
@@ -186,6 +192,7 @@ class RuntimeConfigView:
             "can_set_thinking",
             "can_toggle_mcp_global",
             "can_set_project_thinking",
+            "codex_usage_enabled",
         ):
             if type(getattr(self, flag)) is not bool:
                 raise ValueError(f"{flag} must be a boolean")

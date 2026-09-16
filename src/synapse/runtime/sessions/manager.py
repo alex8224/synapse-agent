@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from synapse.runtime.agent_loop import TurnHandle
 from synapse.runtime.async_runtime import AsyncRuntime, get_async_runtime
@@ -26,6 +26,8 @@ from synapse.runtime.sessions.runtime import (
     UserTurn,
 )
 from synapse.runtime.steer import SteerQueue
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,48 @@ class _QueuedOwner:
     submit_lock: asyncio.Lock
     cleanup: asyncio.Future[None]
     released: bool = False
+
+
+class SessionBindingGuard:
+    """Handle yielded by :meth:`RuntimeManager.session_binding_guard`.
+
+    ``session`` is the runtime that was open when the guard was entered (or
+    ``None``), read while the per-session lifecycle coordinator was held so a
+    caller cannot observe a session that a concurrent close/delete already
+    detached.  ``run_worker`` dispatches the one blocking step of the guarded
+    section and keeps the coordinator tied to *that* step's completion instead
+    of the (cancellable) caller.
+    """
+
+    __slots__ = ("session", "_lock", "_worker")
+
+    def __init__(self, session: SessionRuntime | None, lock: asyncio.Lock) -> None:
+        self.session = session
+        self._lock = lock
+        self._worker: asyncio.Future[Any] | None = None
+
+    async def run_worker(self, awaitable: Awaitable[_T]) -> _T:
+        """Await ``awaitable`` without letting a cancel release the guard early.
+
+        The dispatched step (a blocked worker thread or an in-flight request)
+        cannot be cancelled, so a cancelled caller waits for it to settle before
+        the guard may release the coordinator.  The cancellation is still
+        propagated once the step finished, and the step's own result is
+        discarded in that case.
+        """
+        worker: asyncio.Future[_T] = asyncio.ensure_future(awaitable)
+        self._worker = worker
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(worker)
+            raise
+
+    @property
+    def worker_pending(self) -> bool:
+        worker = self._worker
+        return worker is not None and not worker.done()
 
 
 class RuntimeManager:
@@ -183,6 +227,53 @@ class RuntimeManager:
 
     def get_session_ref(self, ref: SessionRef) -> SessionRuntime | None:
         return self.get_session(self._check_ref(ref))
+
+    @contextlib.asynccontextmanager
+    async def session_binding_guard(
+        self, ref: SessionRef
+    ) -> AsyncIterator[SessionBindingGuard]:
+        """Hold the per-session lifecycle coordinator across a check→call section.
+
+        Unwinding an ``async with lock`` on cancellation releases the
+        coordinator immediately, but a step the body already dispatched keeps
+        running.  Releasing there would let an ``open``/``close``/``delete``/
+        ``rebind`` for the same session interleave with a request that is still
+        in flight (for example a redemption posted for a model the session no
+        longer uses).  The guard therefore hands the coordinator to that step:
+        it is released by the step's own completion rather than by the cancelled
+        caller, and the session read under the coordinator stays the binding the
+        body acts on.
+
+        A closed manager raises :class:`RuntimeClosedError`, like
+        :meth:`open_session_ref` and :meth:`delete_session_ref`.
+        """
+        thread_id = self._check_ref(ref)
+        with self._lock:
+            if self._closed:
+                raise RuntimeClosedError("RuntimeManager is closed")
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+        await lock.acquire()
+        guard = SessionBindingGuard(None, lock)
+        try:
+            with self._lock:
+                if self._closed or thread_id in self._closing:
+                    raise RuntimeClosedError("session is closing")
+                guard.session = self._sessions.get(thread_id)
+            yield guard
+        finally:
+            worker = guard._worker
+            if worker is None or worker.done():
+                lock.release()
+            else:
+                # The caller was cancelled while its step was still running: the
+                # step owns the coordinator until it settles.
+                def release_worker(future: asyncio.Future[Any]) -> None:
+                    lock.release()
+                    if not future.cancelled():
+                        # Retrieve a late exception after a repeated cancellation.
+                        future.exception()
+
+                worker.add_done_callback(release_worker)
 
     async def open_session(self, thread_id: str) -> SessionRuntime:
         """Legacy single-project convenience wrapper over :meth:`open_session_ref`."""

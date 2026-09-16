@@ -1,3 +1,35 @@
+
+Codex 用量 / 重置额度是**独立的账户级**面（三个方法，全部按 `SessionRef` 限定路由）：
+
+- `runtime.codex.usage.get`（`codex.usage.read`，只读）：返回 `CodexUsageView`
+  `{session, model, primary, secondary, captured_at, available_reset_count}`，两个窗口各有
+  `used_percent` / `window_minutes` / `reset_at`，全部必有且可空。`window_minutes` 是上游真实窗口
+  长度（控制台据此标注 `5h` / `7d`，不再沿用 TUI 的硬编码 `1d`）。`captured_at` 与 `reset_at`
+  都是 Unix **秒**。
+- `runtime.codex.reset_credits.get`（`codex.usage.read`，只读）：返回
+  `CodexResetCreditsView` `{session, model, available_count, credits}`，每行
+  `{id, reset_type, status, granted_at, expires_at, title, description}`（`granted_at` /
+  `expires_at` 是**额度自身**的到期时间）。
+- `runtime.codex.reset_credits.consume`（`codex.reset.consume`，**写**）：`expected_model` 必须
+  等于会话当时的有效模型（否则 `conflict`），`confirmed` 必须是字面量 `true`（DTO 与 wire
+  decoder 各校验一次），`command_id` 是客户端生成的幂等键并作为上游 `redeem_request_id`。
+  返回 `CodexConsumeResult` `{session, model, command_id, outcome}`，`outcome` 是五个字面量之一
+  （`reset` / `alreadyRedeemed` / `nothingToReset` / `noCredit` / `unknown`）；未知上游动词一律
+  归一为 `unknown`，不原样透传上游文本。
+
+两个读能力与写能力**互相独立**：`codex.usage.read` 不授权兑换，`session.read` 也不授权其中任何一个。
+兑换是不可撤销的账户级操作（消耗该 OAuth 账户的 1 次重置额度，**不只影响当前会话**），因此
+daemon 侧还有一层：`command_id` 幂等账本（同键同指纹复用结果、异键同指纹 `conflict`）、同额度
+未决请求不再以新键重发、以及“兑换前重新读取额度列表并确认该额度为 `available` 且未过期”。
+
+该面**不投影任何凭据**：没有 access token、account id、请求头、URL，也没有 OAuth 授权的
+`expires_at`（那是令牌到期时间，不是额度重置时间）。上游异常与响应正文被替换为固定文案，
+不进入 RPC 错误。`runtime.config.get` 因此新增一个只读字段 `codex_usage_enabled`（默认
+`false`）：只有在「daemon 已注入 provider + 会话已打开 + 该会话**实际**选中的 profile
+`auth == "openai_oauth"`」三者同时成立时才为 `true`；客户端不得按模型名猜测。
+| `runtime.codex.reset_credits.consume` | `session`, `expected_model`, `credit_id`, `command_id`, `confirmed` | `CodexConsumeResult` |
+| `runtime.codex.reset_credits.get` | `session`, optional `force` | `CodexResetCreditsView` |
+| `runtime.codex.usage.get` | `session`, optional `force` | `CodexUsageView` |
 # S7 Wire 协议表
 
 ## Envelope
@@ -13,7 +45,7 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 
 ## Methods
 
-契约冻结后 wire 表共 **44 个方法**（42 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
+契约冻结后 wire 表共 **47 个方法**（45 个 service 方法 + `runtime.protocol.negotiate` / `runtime.events.unwatch` 两个连接态方法）。下表按方法名排序，与 `service/contract_registry.py` 的 `WIRE_METHODS` 一一对应。
 
 | method | params 的主要字段 | result |
 |---|---|---|

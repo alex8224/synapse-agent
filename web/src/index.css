@@ -1158,18 +1158,16 @@ body {
   .console-workspace > header .wco-caption-controls .ui-button { width: 44px; padding: 0; }
   .console-workspace > header .wco-caption-controls .ui-button > :not(svg) { display: none; }
   .console-workspace > footer {
-    grid-template-columns: minmax(0, 1fr); gap: 0;
+    /* The strip switches itself to a single row in the phone band
+       (`COMPACT_STRIP`); the band only owns the touch sizing and the safe area.
+       It deliberately no longer hides the centre/right tracks by position: that
+       clipped the telemetry and the 更多 entry out of reach. */
+    gap: 8px;
     height: auto; min-height: 44px;
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .console-workspace > footer > div:first-child { min-height: 44px; }
-  .console-workspace > footer > div:nth-child(2) { display: none; }
-  .console-workspace > footer > div:last-child { display: none; }
   .console-workspace > footer button { min-height: 44px; }
-  .console-workspace > footer [role="dialog"] {
-    position: fixed; left: 12px; right: 12px; bottom: calc(52px + env(safe-area-inset-bottom, 0px));
-    width: auto; max-width: none; max-height: calc(100dvh - 120px);
-  }
   .console-column .max-w-\[80\%\], .console-column .max-w-\[85\%\] { max-width: 100%; }
   .console-column .mr-\[20\%\] { margin-right: 0; }
   .console-column .w-\[85\%\] { width: 100%; }

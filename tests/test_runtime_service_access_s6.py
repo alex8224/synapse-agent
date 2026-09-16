@@ -215,6 +215,10 @@ _V1_CAPABILITIES = frozenset(
         ARTIFACTS_READ,
         TURN_APPROVAL_READ,
         TURN_APPROVAL_RESUME,
+        # Codex usage / reset credits: an account-scoped read and the one
+        # account-scoped write, each independent of session.read.
+        "codex.usage.read",
+        "codex.reset.consume",
     }
 )
 

@@ -42,7 +42,7 @@ from synapse.runtime.service.runtime_config import (
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.settings.config_paths import read_project_thinking_default
 
-__all__ = ["build_config_view", "resolve_thinking_levels"]
+__all__ = ["build_config_view", "is_codex_oauth_profile", "resolve_thinking_levels"]
 
 
 def _attr(settings: Any, name: str, default: Any = None) -> Any:
@@ -147,6 +147,7 @@ def build_config_view(
     session: SessionRef,
     project_settings: Any | None = None,
     can_set_project_thinking: bool = False,
+    codex_usage_enabled: bool = False,
 ) -> RuntimeConfigView:
     """Project one effective settings object into a read-only config view.
 
@@ -166,6 +167,13 @@ def build_config_view(
     loaded object cannot distinguish "the project asked for low" from "the
     profile happens to be low".  When the project layer sets nothing, the
     profile-derived label is reported as the inherited default.
+
+    ``codex_usage_enabled`` is the caller's verdict on the Codex usage gate: it
+    is only ever True when the composition root wired a usage provider *and* the
+    target session is already open *and* its selected profile uses Codex OAuth
+    (see :func:`is_codex_oauth_profile`).  It defaults to False so a caller that
+    knows nothing about the surface keeps the entry hidden instead of promising
+    an RPC it cannot serve.
     """
     del session  # display context only; values come from whitelisted settings
     registry = registry_from_settings(settings)
@@ -250,6 +258,31 @@ def build_config_view(
             ),
             can_set_project_thinking=bool(can_set_project_thinking),
             context_window=_context_window_of(registry, current),
+            codex_usage_enabled=bool(codex_usage_enabled),
         )
     except ValueError as exc:
         raise ConfigOverflowError("runtime config exceeds the safety bound") from exc
+
+
+def is_codex_oauth_profile(settings: Any) -> bool:
+    """Whether the settings' *actual selected profile* uses Codex OAuth.
+
+    The verdict is the resolved model profile's own ``auth`` field, never the
+    model name: an alias that merely looks like a Codex model is not an OAuth
+    profile, and an ``auth=openai_oauth`` profile behind any alias is.  A
+    registry that cannot be resolved (or that has no matching profile) reports
+    "not OAuth" — this predicate gates a UI entry, so it degrades to disabled
+    and never raises.
+    """
+    try:
+        registry = registry_from_settings(settings)
+        if registry is None:
+            return False
+        selected = _attr(settings, "active_model") or getattr(registry, "default", None)
+        try:
+            profile = registry.get(selected)
+        except KeyError:
+            profile = registry.get(getattr(registry, "default", None))
+    except Exception:  # noqa: BLE001 - the gate degrades to "disabled", never raises
+        return False
+    return getattr(profile, "auth", None) == "openai_oauth"
