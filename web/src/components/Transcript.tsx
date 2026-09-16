@@ -556,7 +556,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
       );
     };
     return (
-      <div key={m.id} className="max-w-[85%] py-1">
+      <div key={m.id} className="max-w-[85%]">
         {processMeta && !processMeta.isExpanded ? (
           <div className="transcript-fold-header">
             <div className="flex items-center gap-2 py-1 min-w-0">
@@ -593,7 +593,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
                 <div className="border-b border-line/60 my-2.5" />
               </div>
             )}
-            <div className="space-y-0.5 pt-1">
+            <div className="space-y-0.5">
               {toolNodes.map((node: ToolRenderNode, index) =>
                 node.type === 'subagent' ? (
                   renderSubagentCard(
@@ -1349,13 +1349,24 @@ export const Transcript: React.FC = () => {
           // unconditionally put 20px of blank in place of every step the fold hides --
           // a collapsed turn's dead space grew with each step it took.
           const paints = rowPaints(m, meta);
+          // A batch boundary is not a paragraph break: the first call of the next
+          // batch is as close to the last call of this one as two calls of a single
+          // batch are, because a batch is no longer a container on screen.  Every
+          // other pair of rows keeps the transcript's own rhythm.
+          const next = visibleMessages[item.index + 1];
+          const continuesCalls = m.type === 'tool_group'
+            && next !== undefined
+            && next.type === 'tool_group'
+            && next.turnId === m.turnId;
           return (
             <div
               key={item.key}
               data-index={item.index}
               ref={virtualizer.measureElement}
               // `pb-5` is the `space-y-5` gap the plain list used to contribute.
-              className={paints ? 'absolute left-0 top-0 w-full pb-5' : 'absolute left-0 top-0 w-full'}
+              className={paints
+                ? `absolute left-0 top-0 w-full ${continuesCalls ? 'pb-0.5' : 'pb-5'}`
+                : 'absolute left-0 top-0 w-full'}
               style={{ transform: `translateY(${item.start - scrollMargin}px)` }}
             >
               <TranscriptRow

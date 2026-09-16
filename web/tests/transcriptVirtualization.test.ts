@@ -116,7 +116,7 @@ test('a row the fold hides reserves no space', () => {
   // step a collapsed turn hides, and the dead space grew with each step.  The plain
   // list had no such gap: a `null` row produced no element for `space-y-5` to space.
   assert.ok(
-    /className=\{paints \? '[^']*pb-5' : '[^']*'\}/.test(transcript),
+    /className=\{paints\s*\?[\s\S]{0,160}?: 'absolute left-0 top-0 w-full'\}/.test(transcript),
     'the row gap must be conditional on the row painting',
   );
   assert.ok(

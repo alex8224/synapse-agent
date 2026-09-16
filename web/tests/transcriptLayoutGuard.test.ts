@@ -245,6 +245,23 @@ test('a tool row is a bare summary with its own detail fold', () => {
   // A right-aligned tail would pin the words and the chevron to the end of the
   // line, at a fixed position that says nothing about this call.
   assert.equal(row.includes('ml-auto'), false, 'the row tail must not be pinned to the end');
+  // Calls are one list whatever batch they came in: the batch wrapper adds no
+  // padding of its own, and the row gap shrinks to the in-batch gap when the next
+  // row is another batch of the same turn.  Otherwise the boundary between two
+  // batches would space calls differently than the batch itself does -- which read
+  // as "parallel calls are closer" when it was only a container edge.
+  assert.ok(
+    tools.includes('<div key={m.id} className="max-w-[85%]">'),
+    'a batch must add no vertical padding of its own',
+  );
+  assert.ok(
+    transcript.includes("continuesCalls ? 'pb-0.5' : 'pb-5'"),
+    'a batch boundary must not open a gap between two calls',
+  );
+  assert.ok(
+    transcript.includes("next.type === 'tool_group'"),
+    'the tighter gap is for a following batch, not for any following row',
+  );
   assert.ok(
     row.includes('group-hover:opacity-100'),
     'the detail chevron must stay quiet until the row is pointed at',
