@@ -47,7 +47,7 @@ test('only the rows near the viewport are mounted', () => {
 
 test('row identity is the message id, so a prepend keeps its measurements', () => {
   assert.ok(
-    /getItemKey: \(index\) => messages\[index\]\?\.id/.test(transcript),
+    /getItemKey: \(index\) => visibleMessages\[index\]\?\.id/.test(transcript),
     'measurements keyed by index would be re-labelled by a prepended page',
   );
 });
@@ -91,4 +91,31 @@ test('a prepended page keeps the distance from the bottom', () => {
 test('the window is sized for a chat row, not a line', () => {
   assert.ok(ESTIMATED_ROW_PX >= 40, 'a row is a message, not a log line');
   assert.ok(OVERSCAN_ROWS >= 2, 'the wheel needs slack beyond each edge');
+});
+
+test('a row the fold hides reserves no space', () => {
+  assert.ok(transcript.includes('const visibleMessages = useMemo(() => messages.filter('));
+  assert.ok(transcript.includes('rowPaints(m, processMetaMap.get(m.id))'));
+  assert.ok(transcript.includes('count: visibleMessages.length'));
+  assert.ok(transcript.includes('const m = visibleMessages[item.index]'));
+  assert.ok(transcript.includes('new Map(visibleMessages.map('));
+  assert.ok(transcript.includes('pendingJump.current = { id, reserved }'));
+  assert.ok(transcript.includes('visibleMessages.findIndex((m) => m.id === jump.id)'));
+
+  // The wrapper exists per index -- it is what the virtualizer positions and
+  // measures -- so an unconditional row gap put 20px of blank in place of every
+  // step a collapsed turn hides, and the dead space grew with each step.  The plain
+  // list had no such gap: a `null` row produced no element for `space-y-5` to space.
+  assert.ok(
+    /className=\{paints \? '[^']*pb-5' : '[^']*'\}/.test(transcript),
+    'the row gap must be conditional on the row painting',
+  );
+  assert.ok(
+    transcript.includes('rowPaints(m, meta)'),
+    'the wrapper must ask the same rule the row does',
+  );
+  assert.ok(
+    transcript.includes('if (!rowPaints(m, processMeta)) return null;'),
+    'a hidden row must render nothing, so it measures as nothing',
+  );
 });

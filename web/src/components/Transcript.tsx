@@ -48,6 +48,7 @@ import type { ToolItemView, TranscriptMessage } from '../stores/historyMapper.ts
 import {
   formatWorkDuration,
   getGroupIntentStatus,
+  rowPaints,
   workGroups,
   workSeconds,
   type GroupIntentStatus,
@@ -136,6 +137,11 @@ const TranscriptRow = React.memo(function TranscriptRow({
       })
       .catch(() => undefined);
   };
+
+  // A row the fold hides paints nothing -- and must therefore measure as nothing (see
+  // `rowPaints`: the list's wrapper is per index, so a hidden row that still reported
+  // a height would leave a blank of its own in the middle of the turn).
+  if (!rowPaints(m, processMeta)) return null;
 
   if (m.type === 'user') {
     return (
@@ -240,9 +246,6 @@ const TranscriptRow = React.memo(function TranscriptRow({
     );
   }
   if (m.type === 'thought') {
-    if (processMeta && !processMeta.isExpanded && !processMeta.isFirst) {
-      return null;
-    }
     return (
       <div key={m.id} className="max-w-[85%]">
         {processMeta && !processMeta.isExpanded ? (
@@ -309,17 +312,11 @@ const TranscriptRow = React.memo(function TranscriptRow({
   }
   if (m.type === 'tool_group') {
     const toolList = m.tools || [];
-    if (toolList.length === 0) {
-      return null;
-    }
     const failed = toolList.filter((t) => t.error || t.status === 'failed').length;
     const running = toolList.filter(
       (t) => t.status === 'running' || t.status === 'pending',
     ).length;
     const expanded = m.expanded === true;
-    if (processMeta && !processMeta.isExpanded && !processMeta.isFirst) {
-      return null;
-    }
     // The batch is flat on the wire; this is where a subagent's own steps are put
     // back under the call that started it, so they can be painted as one card
     // instead of as N more rows of the main agent's list.
@@ -852,6 +849,12 @@ export const Transcript: React.FC = () => {
     return map;
   }, [groups, now, activity]);
 
+  // Hidden rows must not enter the size model: unmounted rows otherwise retain
+  // estimated (or previously measured expanded) heights and push activity away.
+  const visibleMessages = useMemo(() => messages.filter(
+    (m) => rowPaints(m, processMetaMap.get(m.id)),
+  ), [messages, processMetaMap]);
+
   /**
    * The virtualizer: only the rows near the viewport are mounted.
    *
@@ -876,11 +879,11 @@ export const Transcript: React.FC = () => {
    */
   const [scrollMargin, setScrollMargin] = useState(0);
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: visibleMessages.length,
     getScrollElement: () => scrollerRef.current,
     estimateSize: () => ESTIMATED_ROW_PX,
     overscan: OVERSCAN_ROWS,
-    getItemKey: (index) => messages[index]?.id ?? index,
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
     scrollMargin,
   });
   const totalSize = virtualizer.getTotalSize();
@@ -900,7 +903,7 @@ export const Transcript: React.FC = () => {
    * and the offset is re-applied until it stops moving.  Converges in two or three
    * passes, and never fights the reader (a gesture clears it, like the prepend).
    */
-  const pendingJump = useRef<{ index: number; reserved: number } | null>(null);
+  const pendingJump = useRef<{ id: string; reserved: number } | null>(null);
 
   // Measure where the list starts, once per chrome change rather than per render.
   const chromeKey = `${historyAvailable}|${historyError}|${historyHasMore}|${historyLoading}|${
@@ -938,7 +941,12 @@ export const Transcript: React.FC = () => {
     const jump = pendingJump.current;
     if (jump === null) return;
     const scroller = scrollerRef.current;
-    const offset = virtualizer.getOffsetForIndex(jump.index, 'start');
+    const index = visibleMessages.findIndex((m) => m.id === jump.id);
+    if (index < 0) {
+      pendingJump.current = null;
+      return;
+    }
+    const offset = virtualizer.getOffsetForIndex(index, 'start');
     if (scroller === null || offset === undefined) return;
     const target = Math.max(0, offset[0] - jump.reserved);
     if (Math.abs(target - scroller.scrollTop) <= 2) {
@@ -946,7 +954,7 @@ export const Transcript: React.FC = () => {
       return;
     }
     scroller.scrollTop = target;
-  }, [totalSize, virtualizer]);
+  }, [totalSize, virtualizer, visibleMessages]);
 
   useLayoutEffect(() => {
     const distance = prependAnchor.current;
@@ -988,7 +996,7 @@ export const Transcript: React.FC = () => {
       // Built once per message list, not per call: the rail asks for every turn's
       // offset on each scroll frame, and rebuilding a 1000+ entry map there would
       // put O(rows) work back on the scroll path this change exists to shorten.
-      const indexById = new Map(messages.map((m, index) => [m.id, index]));
+      const indexById = new Map(visibleMessages.map((m, index) => [m.id, index]));
       return {
         scroller: () => scrollerRef.current,
         offsetsOf: (ids: readonly string[]): number[] =>
@@ -1012,13 +1020,13 @@ export const Transcript: React.FC = () => {
           // The jump is instant and then converges (see the effect above): the offset
           // of a row that has never been rendered is an estimate, and a smooth pass
           // is exactly when the virtualizer stops compensating for that estimate.
-          pendingJump.current = { index, reserved };
+          pendingJump.current = { id, reserved };
           const offset = virtualizer.getOffsetForIndex(index, 'start');
           if (offset !== undefined) scroller.scrollTop = Math.max(0, offset[0] - reserved);
         },
       };
     },
-    [messages, virtualizer],
+    [visibleMessages, virtualizer],
   );
 
   // Stable identity: the scroll listener below triggers the same guarded path the
@@ -1215,17 +1223,22 @@ export const Transcript: React.FC = () => {
         style={{ position: 'relative', height: totalSize }}
       >
         {virtualizer.getVirtualItems().map((item) => {
-          const m = messages[item.index];
+          const m = visibleMessages[item.index];
           if (m === undefined) return null;
           const meta = processMetaMap.get(m.id);
           const pending = pendingTurns.get(m.id);
+          // Only a row that paints gets the gap: the wrapper exists for every index
+          // (it is what the virtualizer positions and measures), so padding it
+          // unconditionally put 20px of blank in place of every step the fold hides --
+          // a collapsed turn's dead space grew with each step it took.
+          const paints = rowPaints(m, meta);
           return (
             <div
               key={item.key}
               data-index={item.index}
               ref={virtualizer.measureElement}
               // `pb-5` is the `space-y-5` gap the plain list used to contribute.
-              className="absolute left-0 top-0 w-full pb-5"
+              className={paints ? 'absolute left-0 top-0 w-full pb-5' : 'absolute left-0 top-0 w-full'}
               style={{ transform: `translateY(${item.start - scrollMargin}px)` }}
             >
               <TranscriptRow

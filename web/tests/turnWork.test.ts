@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import { mapHistoryEvents, historyToolItem, type TranscriptMessage } from '../src/stores/historyMapper.ts';
-import { workGroups, workSeconds, formatWorkDuration, bindWorkTurn, getGroupIntentStatus } from '../src/stores/turnWork.ts';
+import { workGroups, workSeconds, formatWorkDuration, bindWorkTurn, getGroupIntentStatus, rowPaints } from '../src/stores/turnWork.ts';
 import { reduceRuntimeEvent, type LiveReducibleState } from '../src/stores/liveEventReducer.ts';
 import { readTranscriptViews, restoreTranscriptViews, saveTranscriptViews, clearTranscriptViews } from '../src/stores/transcriptCache.ts';
 import type { HistoryEvent, RuntimeEvent } from '../src/client/types.ts';
@@ -221,4 +221,29 @@ test('a turn with no process row reports the runtime activity, and nothing once 
   assert.equal(getGroupIntentStatus(group, activity('thinking','',false)), null);
   assert.equal(getGroupIntentStatus(group, activity('idle')), null);
   assert.equal(getGroupIntentStatus(group), null);
+});
+
+test('a collapsed fold paints its first step only, and the open fold paints them all', () => {
+  const steps = [
+    row('t','thought',{turnId:'A'}),
+    row('x','tool_group',{turnId:'A',tools:[tool('i','execute')]}),
+    row('t2','thought',{turnId:'A'}),
+  ];
+  const group = workGroups([user(), ...steps],'A',true)[0];
+  const collapsed = steps.map((m, i) => rowPaints(m, { isFirst: i === 0, isExpanded: false }));
+  assert.deepEqual(collapsed, [true, false, false], 'only the header row of a folded turn is on screen');
+  const open = steps.map((m, i) => rowPaints(m, { isFirst: i === 0, isExpanded: true }));
+  assert.deepEqual(open, [true, true, true]);
+  assert.equal(group.rows.length, steps.length);
+});
+test('rows that own no fold step never paint, and narration always does', () => {
+  // A group with no items is not a fold step (`workGroups` skips it), so it paints
+  // nothing even while the turn is open.
+  assert.equal(rowPaints(row('x','tool_group',{turnId:'A',tools:[]}), { isFirst: false, isExpanded: true }), false);
+  assert.equal(rowPaints(row('x','tool_group',{turnId:'A'}), { isFirst: true, isExpanded: false }), false);
+  // A fold-less row (no process meta) is never hidden by the fold.
+  assert.equal(rowPaints(row('t','thought')), true);
+  for (const type of ['user','assistant','info'] as const) {
+    assert.equal(rowPaints(row('r', type), { isFirst: false, isExpanded: false }), true);
+  }
 });

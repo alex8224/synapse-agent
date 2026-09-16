@@ -96,6 +96,38 @@ export function getGroupIntentStatus(
   return null;
 }
 
+/**
+ * The fold state a row's own visibility depends on (`Transcript`'s `processMeta`).
+ */
+export interface RowFold {
+  isFirst: boolean;
+  isExpanded: boolean;
+}
+
+/**
+ * Whether a transcript row paints anything at all.
+ *
+ * A collapsed turn shows one header -- the "已工作 N 秒" strip of its *first* step --
+ * and hides every other step of its fold, so a long turn owns N rows of which at most
+ * a few are on screen.  The hidden ones must also occupy no space: the plain list
+ * rendered them as `null` (no element, so the column's `space-y-5` gave them no gap
+ * either), and the windowed list has to keep that promise, because its positioning
+ * wrapper exists per *index*, not per painted row.  `Transcript` and its rows both
+ * ask this function so the two can never disagree about which rows are hidden.
+ */
+export function rowPaints(message: TranscriptMessage, fold?: RowFold): boolean {
+  if (message.type === 'thought') {
+    return fold === undefined || fold.isExpanded || fold.isFirst;
+  }
+  if (message.type === 'tool_group') {
+    // A group with no items is not a fold step at all (see `workGroups`): it paints
+    // nothing even when the turn is open.
+    if (!message.tools?.length) return false;
+    return fold === undefined || fold.isExpanded || fold.isFirst;
+  }
+  return true;
+}
+
 /** Group by runtime identity, not by assistant narration or the latest steer row. */
 export function workGroups(
   messages: readonly TranscriptMessage[], activeTurnId: string | null, running: boolean,

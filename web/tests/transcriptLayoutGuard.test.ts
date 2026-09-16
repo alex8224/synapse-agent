@@ -15,6 +15,10 @@ const transcript = readFileSync(
   join(here, '..', 'src', 'components', 'Transcript.tsx'),
   'utf8',
 );
+const foldRules = readFileSync(
+  join(here, '..', 'src', 'stores', 'turnWork.ts'),
+  'utf8',
+);
 
 test('the user turn sits on the right, the assistant turn on the left', () => {
   assert.ok(
@@ -142,14 +146,15 @@ test('the scroller scrolls with no visible scrollbar', () => {
 test('a tool group without items paints nothing', () => {
   // A batch opens its group before the first item lands (and a batch can end up
   // carrying none), so the row must be skipped until it has items - the TUI never
-  // paints an empty "0 tools" placeholder either.
-  const tools = transcript.slice(
-    transcript.indexOf("if (m.type === 'tool_group')"),
-    transcript.indexOf("if (m.type === 'assistant')"),
+  // paints an empty "0 tools" placeholder either.  The rule lives in `rowPaints`,
+  // which both the row and its list wrapper ask, so it cannot drift between them.
+  assert.ok(
+    /if \(!message\.tools\?\.length\) return false;/.test(foldRules),
+    'an empty tool group must paint nothing',
   );
   assert.ok(
-    tools.includes('if (toolList.length === 0)'),
-    'an empty tool group must render nothing',
+    transcript.includes('if (!rowPaints(m, processMeta)) return null;'),
+    'the transcript must apply that rule to every row',
   );
 });
 
