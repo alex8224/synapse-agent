@@ -114,12 +114,40 @@ export function toolItemFromPayload(payload: Record<string, any>): ToolItemView 
     path: asText(payload.path) || null,
     status: asText(payload.status) || 'running',
     preview: asText(payload.preview) || null,
+    argsPreview: asText(payload.args_preview) || null,
     error: payload.error === true,
     sub: payload.sub === true,
     parentId: asText(payload.parent_id) || null,
     subagentStatus: null,
     subagentName: asText(payload.subagent_name) || null,
     icon: TOOL_ICON,
+  };
+}
+
+/** Apply the bounded call arguments carried by `tool_batch_started` to its item. */
+function toolCallPreviewItem(
+  call: Record<string, any>,
+  index: number,
+): ToolItemView {
+  const name = asText(call.name) || 'tool';
+  const callId = asText(call.call_id) || asText(call.id) || null;
+  const argsPreview = asText(call.args_preview) || null;
+  return {
+    id: callId || `batch-call-${index}`,
+    callId,
+    name,
+    label: name,
+    category: 'other',
+    path: null,
+    status: 'pending',
+    preview: null,
+    error: false,
+    sub: false,
+    parentId: null,
+    subagentStatus: null,
+    subagentName: null,
+    icon: TOOL_ICON,
+    argsPreview,
   };
 }
 
@@ -158,6 +186,7 @@ function mergeToolItem(previous: ToolItemView, incoming: ToolItemView): ToolItem
   return {
     ...previous,
     ...incoming,
+    argsPreview: incoming.argsPreview ?? previous.argsPreview,
     subagentStatus: incoming.subagentStatus ?? previous.subagentStatus,
     subagentName: incoming.subagentName ?? previous.subagentName,
   };
@@ -165,7 +194,9 @@ function mergeToolItem(previous: ToolItemView, incoming: ToolItemView): ToolItem
 
 function upsertToolItem(group: TranscriptMessage, item: ToolItemView): TranscriptMessage {
   const tools = group.tools ?? [];
-  const index = tools.findIndex((t) => t.id === item.id);
+  const index = tools.findIndex((t) =>
+    t.id === item.id || (t.id === t.callId && t.callId !== null && item.callId !== null && t.callId === item.callId),
+  );
   const next =
     index === -1
       ? [...tools, item]
@@ -190,11 +221,17 @@ function mergeTurnToolItem(
   let changed = false;
   const next = messages.map((m) => {
     if (m.type !== 'tool_group' || !m.id.startsWith(prefix)) return m;
-    if (!m.tools?.some((t) => t.id === item.id)) return m;
+    if (!m.tools?.some((t) =>
+      t.id === item.id || (t.id === t.callId && t.callId !== null && item.callId !== null && t.callId === item.callId),
+    )) return m;
     changed = true;
     return {
       ...m,
-      tools: m.tools.map((t) => (t.id === item.id ? mergeToolItem(t, item) : t)),
+      tools: m.tools.map((t) =>
+        t.id === item.id || (t.id === t.callId && t.callId !== null && item.callId !== null && t.callId === item.callId)
+          ? mergeToolItem(t, item)
+          : t,
+      ),
     };
   });
   return changed ? next : messages;
@@ -551,6 +588,13 @@ export function reduceRuntimeEvent(
   } else if (kind === 'tool_batch_started') {
     // One batch is one group: seal whatever is still open and start the next.
     next.messages = openToolGroup(state.messages, turnId, stamp, payload.parallel === true);
+    const calls = Array.isArray(payload.calls) ? payload.calls : [];
+    if (calls.length > 0) {
+      const groupIndex = next.messages.length - 1;
+      next.messages = next.messages.map((message, index) => index === groupIndex
+        ? { ...message, tools: calls.map((call, callIndex) => toolCallPreviewItem(asRecord(call), callIndex)) }
+        : message);
+    }
   } else if (kind === 'tool_started' || kind === 'tool_updated') {
     const item = toolItemFromPayload(payload);
     // A late update for a row that already exists (a subagent item refreshed

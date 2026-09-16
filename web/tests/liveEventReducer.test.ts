@@ -60,6 +60,7 @@ function toolItem(overrides: Record<string, unknown> = {}): Record<string, unkno
     status: 'running',
     preview: null,
     error: false,
+    args_preview: null,
     sub: false,
     parent_id: null,
     ...overrides,
@@ -239,6 +240,22 @@ test('tool_batch_started marks the group and tool_batch_finished closes it', () 
 
   s = apply(s, event('tool_batch_finished', { group_id: 'g1' }));
   assert.equal(s.messages[0].finished, true);
+});
+
+test('tool batch call previews appear before lifecycle items and merge by call id', () => {
+  let s = apply(baseState(), event('tool_batch_started', {
+    parallel: false,
+    calls: [{ call_id: 'c1', name: 'execute', args_preview: "{'command': 'pytest -q'}" }],
+  }));
+  assert.equal(s.messages[0].tools?.length, 1);
+  assert.equal(s.messages[0].tools?.[0].argsPreview, "{'command': 'pytest -q'}");
+  assert.equal(s.messages[0].tools?.[0].status, 'pending');
+
+  s = apply(s, event('tool_started', toolItem({ item_id: 'i1', call_id: 'c1', label: 'run tests' })));
+  assert.equal(s.messages[0].tools?.length, 1);
+  assert.equal(s.messages[0].tools?.[0].id, 'i1');
+  assert.equal(s.messages[0].tools?.[0].label, 'run tests');
+  assert.equal(s.messages[0].tools?.[0].argsPreview, "{'command': 'pytest -q'}");
 });
 
 test('tool_batch_finished never creates an empty group', () => {

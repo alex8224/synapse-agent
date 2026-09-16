@@ -45,6 +45,8 @@ export interface ToolItemView {
    * arguments) and for legacy projections.
    */
   args?: Record<string, unknown> | null;
+  /** Bounded live-stream argument preview from the batch-start event. */
+  argsPreview?: string | null;
   /** True for nested subagent tool items. */
   sub: boolean;
   parentId: string | null;
