@@ -11,6 +11,13 @@ A file the turn created is all insertions, one it deleted is all deletions, and 
 edited is counted from the two versions line by line (the same shape `git diff
 --numstat` reports, without asking git to reconstruct a state we already hold).
 
+The two states are not compared by *which files git calls changed*.  A turn that commits
+(or stashes, or `git checkout --`es) what it found ends with a clean tree, and every file
+it had changed would then look deleted, with the file's whole line count as the count.  So
+the second snapshot carries the first one's paths, and each of them is read from disk like
+any other: gone is a deletion, the same content is nothing at all, anything else is a
+modification.
+
 Nothing here is a policy: the caller decides when to snapshot, how many files to keep
 and what to do with the result.
 """
@@ -20,6 +27,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +49,10 @@ GIT_TIMEOUT_S = 5.0
 _ADDED = "A"
 _DELETED = "D"
 _UNTRACKED = "??"
+#: A carried path (see `snapshot_workspace`) that is no longer dirty: unchanged in the
+#: worktree.  Recorded so that "no longer in `git status`" is never read as "no longer on
+#: disk".
+_CLEAN = " "
 
 #: The runtime's own bookkeeping inside a workspace (`<workspace>/.synapse/logs/...`,
 #: see `observability/error_log.py`).  It is not something the reader asked a turn to
@@ -67,6 +79,9 @@ class SnapshotFile:
     #: The content itself, or `None` when the file was too large, binary or unreadable.
     content: str | None
     binary: bool = False
+    #: Whether the path is a file on disk at all.  A path that merely stopped being dirty
+    #: is still present; only a deletion is not.
+    present: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,35 +165,61 @@ def _numstat_entries(raw: str) -> dict[str, tuple[int, int, bool]]:
 
 def _read_file(
     root: Path, path: str, *, budget: int
-) -> tuple[str | None, int | None, bool, bool]:
-    """Read one file for the snapshot: `(content, lines, binary, skipped)`.
+) -> tuple[str | None, int | None, bool, bool, bool]:
+    """Read one file for the snapshot: `(content, lines, binary, skipped, present)`.
 
     A file that cannot be counted (too large for the remaining budget, binary, or
     unreadable) is still a changed file; it just reports no lines.  ``skipped`` says the
     file exists but its content was not kept, so its absence from another snapshot can
-    never be read as "unchanged".
+    never be read as "unchanged".  ``present`` says whether the path is a file on disk at
+    all -- the only way to tell a file the turn deleted from one that merely stopped being
+    dirty.
     """
     target = root / path
     try:
         if not target.is_file():
-            return None, None, False, False
+            return None, None, False, False, False
         size = target.stat().st_size
         if size > budget or size > MAX_FILE_BYTES:
-            return None, None, False, True
+            return None, None, False, True, True
         raw = target.read_bytes()
     except OSError:
-        return None, None, False, True
+        return None, None, False, True, True
     if b"\x00" in raw:
-        return None, None, True, True
+        return None, None, True, True, True
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None, None, True, True
-    return text, len(text.splitlines()), False, False
+        return None, None, True, True, True
+    return text, len(text.splitlines()), False, False, True
 
 
-def snapshot_workspace(root: Path | str) -> WorkspaceSnapshot | None:
+def _digest_of(content: str | None, workspace: Path, path: str) -> str:
+    """The digest of one version, or the file's own identity when there is no content.
+
+    No content to compare means the identity is the file's own -- its size and mtime -- so
+    a file that did not change between two snapshots is still recognised as unchanged.
+    """
+    if content is not None:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    try:
+        stat = (workspace / path).stat()
+    except OSError:
+        return "stat:missing"
+    return f"stat:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def snapshot_workspace(
+    root: Path | str, *, carry: Iterable[str] = ()
+) -> WorkspaceSnapshot | None:
     """Record every file the workspace has changed, as it stands right now.
+
+    ``carry`` names the paths a *previous* snapshot described, and each of them is recorded
+    as it stands now even when it is no longer dirty.  A turn that commits, stashes or
+    `git checkout --`es what it found ends with a clean tree, and without the carry every
+    file it had changed would look deleted: "not in `git status` any more" is not "not on
+    disk".  The second snapshot of a pair is therefore taken with ``carry=before.files``
+    (the first one has nothing to carry).
 
     `None` when git cannot answer at all (not a repository, git missing, timeout): a
     turn must not fail because its bookkeeping could not be taken.
@@ -201,26 +242,40 @@ def snapshot_workspace(root: Path | str) -> WorkspaceSnapshot | None:
         if len(files) >= MAX_SNAPSHOT_FILES:
             truncated = True
             break
-        content, lines, binary, skipped = _read_file(workspace, path, budget=budget)
+        content, lines, binary, skipped, present = _read_file(workspace, path, budget=budget)
         content_skipped = content_skipped or skipped
         if content is not None:
             budget -= len(content.encode("utf-8"))
-            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        else:
-            # No content to compare: fall back to the file's own identity, so a file
-            # that did not change between two snapshots is still recognised.
-            try:
-                stat = (workspace / path).stat()
-                digest = f"stat:{stat.st_size}:{stat.st_mtime_ns}"
-            except OSError:
-                digest = "stat:missing"
         files[path] = SnapshotFile(
             path=path,
             status=letter,
-            digest=digest,
+            digest=_digest_of(content, workspace, path),
             lines=lines,
             content=content,
             binary=binary,
+            present=present,
+        )
+    # The paths the previous snapshot described, as they stand now.  Bounded by that
+    # snapshot, which is capped at `MAX_SNAPSHOT_FILES` already, and by the same byte
+    # budget, so this cannot grow with the workspace.
+    for path in sorted(set(carry)):
+        if path in files or _is_ignored(path):
+            continue
+        content, lines, binary, skipped, present = _read_file(workspace, path, budget=budget)
+        content_skipped = content_skipped or skipped
+        if content is not None:
+            budget -= len(content.encode("utf-8"))
+        files[path] = SnapshotFile(
+            path=path,
+            # A path that is gone is the one thing a carried path can be that is not
+            # "unchanged"; `_read_file` says so directly instead of leaving it to be
+            # inferred from the absent content.
+            status=_CLEAN if present else _DELETED,
+            digest=_digest_of(content, workspace, path),
+            lines=lines,
+            content=content,
+            binary=binary,
+            present=present,
         )
     return WorkspaceSnapshot(
         files=files,
@@ -254,6 +309,9 @@ def changes_between(
     Pure over two snapshots: the caller decides when each was taken.  A file whose
     versions were not both kept reports that it changed and no line counts, rather than
     a fabricated zero.
+
+    A path the second snapshot does not describe at all is reported as deleted; that is
+    what it means when a snapshot is taken without ``carry`` (see `snapshot_workspace`).
     """
     changes: list[TurnChange] = []
     paths = sorted(set(before.files) | set(after.files))
@@ -273,7 +331,12 @@ def changes_between(
             # is what the snapshot recorded from `git diff --numstat`.
             created = now.status in {_UNTRACKED, _ADDED}
             standing = after.standing.get(path)
-            if standing is None:
+            if not now.present:
+                # The turn deleted a file that was clean at its start: the standing delta
+                # is exactly this turn's deletion, and the file is gone, not modified.
+                status = "deleted"
+                insertions, deletions, binary = standing or (0, 0, True)
+            elif standing is None:
                 status = "added" if created else "modified"
                 insertions, deletions, binary = (now.lines or 0), 0, now.binary
             else:
@@ -281,6 +344,12 @@ def changes_between(
                 insertions, deletions, binary = standing
         elif now is None:
             status, insertions, deletions, binary = "deleted", 0, was.lines or 0, was.binary
+        elif not now.present:
+            # Gone from disk: the turn removed the file, so the whole pre-turn file is what
+            # went away.  A version that was never kept (too large, binary) is reported as
+            # changed without a count, like any other uncountable version.
+            status, insertions, binary = "deleted", 0, was.lines is None
+            deletions = was.lines or 0
         elif was.content is not None and now.content is not None:
             insertions, deletions = _count_lines(was.content, now.content)
             status, binary = "modified", False

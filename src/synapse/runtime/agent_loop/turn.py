@@ -195,7 +195,10 @@ class AgentTurnRuntime:
         def turn_changes() -> tuple[tuple[Any, ...], int]:
             if before is None:
                 return (), 0
-            after = snapshot_workspace(workspace)
+            # The files the turn started with are carried into the second snapshot: a turn
+            # that commits (or stashes) its own work ends with a clean tree, and without
+            # them every file it had changed would be reported as deleted.
+            after = snapshot_workspace(workspace, carry=before.files)
             if after is None:
                 return (), 0
             changes, total = changes_between(before, after)

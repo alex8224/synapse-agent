@@ -34,6 +34,30 @@ def _file(
     )
 
 
+def _repository(tmp_path: Path) -> Path:
+    """A workspace holding one committed, two-line file."""
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "test")
+    (tmp_path / "tracked.py").write_text("one\ntwo\n", encoding="utf-8")
+    git("add", "tracked.py")
+    git("commit", "-q", "-m", "init")
+    return tmp_path
+
+
+def _commit(workspace: Path, message: str) -> None:
+    subprocess.run(
+        ["git", "commit", "-q", "-am", message],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+    )
+
+
 def test_a_new_file_is_all_insertions() -> None:
     before = WorkspaceSnapshot(files={})
     after = WorkspaceSnapshot(files={"a.py": _file("a.py", "one\ntwo\n", status="??")})
@@ -156,3 +180,68 @@ def test_the_snapshot_bounds_how_many_files_it_describes(tmp_path: Path) -> None
     assert snapshot is not None
     assert len(snapshot.files) == MAX_SNAPSHOT_FILES
     assert snapshot.truncated is True
+
+
+def test_a_commit_inside_a_turn_is_not_a_deletion(tmp_path: Path) -> None:
+    """A turn that commits what it found leaves every file exactly as it was."""
+    workspace = _repository(tmp_path)
+    (workspace / "tracked.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    before = snapshot_workspace(workspace)
+    assert before is not None
+    _commit(workspace, "the turn commits its own work")
+
+    # The tree is clean now, so no file is dirty any more -- which is not the same as every
+    # file having been deleted.  The carried path is what tells the two apart.
+    after = snapshot_workspace(workspace, carry=before.files)
+    assert after is not None
+    assert set(after.files) == {"tracked.py"}, "the carried path is still described"
+    changes, total = changes_between(before, after)
+    assert (changes, total) == ((), 0)
+    assert (workspace / "tracked.py").read_text(encoding="utf-8") == "one\ntwo\nthree\n"
+
+
+def test_a_carried_path_that_is_gone_from_disk_is_a_deletion(tmp_path: Path) -> None:
+    """A deletion the turn also commits is still a deletion, and still all of it."""
+    workspace = _repository(tmp_path)
+    (workspace / "tracked.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    before = snapshot_workspace(workspace)
+    assert before is not None
+    (workspace / "tracked.py").unlink()
+    _commit(workspace, "delete it")
+
+    after = snapshot_workspace(workspace, carry=before.files)
+    assert after is not None
+    changes, total = changes_between(before, after)
+    assert total == 1
+    assert [(c.path, c.status, c.insertions, c.deletions) for c in changes] == [
+        ("tracked.py", "deleted", 0, 3)
+    ]
+
+
+def test_a_file_the_turn_deletes_is_all_deletions(tmp_path: Path) -> None:
+    workspace = _repository(tmp_path)
+    (workspace / "tracked.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    before = snapshot_workspace(workspace)
+    assert before is not None
+    (workspace / "tracked.py").unlink()
+
+    after = snapshot_workspace(workspace, carry=before.files)
+    assert after is not None
+    changes, total = changes_between(before, after)
+    assert total == 1
+    assert [(c.status, c.insertions, c.deletions) for c in changes] == [("deleted", 0, 3)]
+
+
+def test_a_file_the_turn_deletes_that_was_clean_is_all_deletions(tmp_path: Path) -> None:
+    # Nothing was kept for it: the turn's delta is the file's standing delta against `HEAD`,
+    # which for a file that was clean is exactly this turn's deletion.
+    workspace = _repository(tmp_path)
+    before = snapshot_workspace(workspace)
+    assert before is not None
+    (workspace / "tracked.py").unlink()
+
+    after = snapshot_workspace(workspace, carry=before.files)
+    assert after is not None
+    changes, total = changes_between(before, after)
+    assert total == 1
+    assert [(c.status, c.insertions, c.deletions) for c in changes] == [("deleted", 0, 2)]

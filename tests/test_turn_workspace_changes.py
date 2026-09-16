@@ -86,6 +86,53 @@ def test_a_turn_without_a_workspace_reports_nothing(tmp_path: Path) -> None:
     assert (result.changes, result.changes_total) == ((), 0)
 
 
+def test_a_turn_that_commits_its_own_work_reports_nothing(tmp_path: Path) -> None:
+    """A commit does not change the workspace, so there is nothing to report.
+
+    The tree is dirty when the turn starts -- earlier turns' work is still uncommitted --
+    and clean when it ends, and every one of those files would be reported as deleted if
+    the second snapshot did not carry the first one's paths.
+    """
+    workspace = _workspace(tmp_path)
+    (workspace / "tracked.py").write_text("one\ntwo\n", encoding="utf-8")
+    runtime_loop = AsyncRuntime(name="turn-changes-commit")
+
+    def runner(*args: object, **kwargs: object) -> StreamResult:
+        _git(workspace, "commit", "-q", "-am", "the turn commits its own work")
+        return _result()
+
+    try:
+        result = AgentTurnRuntime(runtime_loop, stream_runner=runner).run(
+            _context(workspace), timeout=10
+        )
+    finally:
+        runtime_loop.close()
+
+    assert result.status is TurnStatus.COMPLETED
+    assert (result.changes, result.changes_total) == ((), 0)
+
+
+def test_a_turn_that_deletes_a_file_reports_the_whole_file(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    runtime_loop = AsyncRuntime(name="turn-changes-delete")
+
+    def runner(*args: object, **kwargs: object) -> StreamResult:
+        (workspace / "tracked.py").unlink()
+        return _result()
+
+    try:
+        result = AgentTurnRuntime(runtime_loop, stream_runner=runner).run(
+            _context(workspace), timeout=10
+        )
+    finally:
+        runtime_loop.close()
+
+    assert result.status is TurnStatus.COMPLETED
+    assert [(c.path, c.status, c.insertions, c.deletions) for c in result.changes] == [
+        ("tracked.py", "deleted", 0, 1)
+    ]
+
+
 def test_a_failed_turn_still_reports_what_it_changed(tmp_path: Path) -> None:
     # A turn that wrote a file and then failed leaves the file behind; the reader is
     # owed the same list as for a turn that finished.
