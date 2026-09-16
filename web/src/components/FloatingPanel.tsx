@@ -24,8 +24,12 @@ export interface FloatingPanelProps {
   anchor: HTMLElement | null;
   /** Which edge of the anchor the panel hangs from. */
   side?: 'top' | 'bottom';
-  /** Which edge of the panel lines up with the anchor's. */
-  align?: 'start' | 'end';
+  /**
+   * Where the panel lines up with the anchor: its start edge, its end edge, or the
+   * anchor's own centre line.  A trigger that is itself centred (the header's
+   * session title) wants `center`, or the panel reads as belonging to one half of it.
+   */
+  align?: 'start' | 'end' | 'center';
   /** Gap between the anchor and the panel, in px. */
   offset?: number;
   /** The panel's own classes: fill, width, padding. */
@@ -38,6 +42,20 @@ export interface FloatingPanelProps {
 
 /** Never let a panel hang off the left edge of the window. */
 const EDGE = 8;
+
+/**
+ * The width of a panel the console centres, in px -- `w-96`, which is what every
+ * caller of `align="center"`/`"end"` paints.
+ *
+ * The offset has to be known before the panel exists, and none of the alternatives
+ * survives: `transform` and `translate` are both taken by the entrance animation
+ * (an inline `transform` is interpolated through it -- the panel sliding in from the
+ * side -- and the CSS build transpiles a `translate` back to `transform`), while a
+ * box whose auto margins would centre the panel is over-constrained whenever the
+ * panel is wider than the box, and the browser then ignores the second edge instead
+ * of splitting the difference.  `tests/shellLayout.test.ts` pins this pairing.
+ */
+const CENTRED_PANEL_WIDTH = 384;
 
 export const FloatingPanel: React.FC<FloatingPanelProps> = ({
   anchor,
@@ -59,7 +77,16 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
     const measure = () => {
       const rect = anchor.getBoundingClientRect();
       setBox({
-        left: Math.max(EDGE, align === 'end' ? rect.right : rect.left),
+        // The anchor's start edge, or the panel's own start edge once it is aligned
+        // to the anchor's end edge or centred on it.
+        left: Math.max(
+          EDGE,
+          align === 'end'
+            ? rect.right - CENTRED_PANEL_WIDTH
+            : align === 'center'
+              ? rect.left + rect.width / 2 - CENTRED_PANEL_WIDTH / 2
+              : rect.left,
+        ),
         // `top` for a panel that hangs below its anchor, `bottom` (measured from
         // the viewport's bottom edge, as `position: fixed` wants) for one above.
         top: rect.bottom + offset,
@@ -81,7 +108,6 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
         style={{
           left: box.left,
           ...(side === 'top' ? { bottom: box.bottom } : { top: box.top }),
-          ...(align === 'end' ? { transform: 'translateX(-100%)' } : null),
         }}
         className={`responsive-floating-panel fixed z-50 ${className}`}
       >
