@@ -51,7 +51,10 @@ test('individual tool folds live above virtual rows and do not pin a reflow', ()
   assert.ok(transcript.includes('suppressPinnedReflow'), 'opening a detail must not follow the resized bottom');
   assert.ok(transcript.includes('toolExpansionsFor(m.id)'), 'rows must receive their own call folds');
   assert.ok(transcript.includes('subagentExpansionsFor(m.id)'), 'subagent folds must survive row unmounts');
-  assert.ok(transcript.includes('onToggleSubagent={handleToggleSubagent}'), 'subagent toggles must use the parent state');
+  assert.ok(
+    transcript.includes('onToggleSubagent: handleToggleSubagent'),
+    'subagent toggles must reach the rows through the action bag the parent builds',
+  );
 });
 
 test('row identity is the message id, so a prepend keeps its measurements', () => {
@@ -124,7 +127,7 @@ test('a row the fold hides reserves no space', () => {
     'the wrapper must ask the same rule the row does',
   );
   assert.ok(
-    transcript.includes('if (!rowPaints(m, processMeta)) return null;'),
+    transcript.includes('if (!rowPaints(message, processMeta)) return null;'),
     'a hidden row must render nothing, so it measures as nothing',
   );
 });

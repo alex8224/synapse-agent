@@ -1,50 +1,19 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import {
-  BrainCircuit20Regular,
-  Sparkle20Regular,
-  Wrench20Regular,
-  SpinnerIos20Regular,
-  Warning20Regular,
-  Info20Regular,
-  ArrowSort20Regular,
-  DismissCircle20Regular,
-  Shield20Regular,
-  Copy16Regular,
-  Checkmark16Regular,
-  Edit16Regular,
-  ChevronRight16Regular,
-  ChevronDown16Regular,
-  WindowConsole20Regular,
-  Bot20Regular,
-} from '@fluentui/react-icons';
+import { ArrowSort20Regular, ChevronDown16Regular, ChevronRight16Regular, Shield20Regular } from '@fluentui/react-icons';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
-import {
-  expandHint,
-  groupToolsForView,
-  isTerminalTool,
-  thoughtLabel,
-  toolCommand,
-  toolFailureReason,
-  toolPreviewLanguage,
-  toolStatusLabel,
-  type SubagentToolGroup,
-  type ToolRenderNode,
-} from '../stores/transcriptLabels.ts';
-import { CodeBlock } from './CodeBlock.tsx';
-import { TerminalOutput } from './TerminalOutput.tsx';
-import { Markdown } from './Markdown.tsx';
-import { AttachmentThumb } from './AttachmentThumb.tsx';
 import { TurnRail } from './TurnRail.tsx';
 import { TodoPanel } from './TodoPanel.tsx';
+import { FoldStatusPill } from './transcriptRows/FoldStatusPill.tsx';
+import { ROW_RENDERERS } from './transcriptRows/registry.tsx';
+import type { RowActions, RowProcessMeta, RowRenderProps } from './transcriptRows/context.ts';
 import {
   ESTIMATED_ROW_PX,
   OVERSCAN_ROWS,
   anchoredScrollTop,
 } from './transcriptViewport.ts';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
-import type { ToolItemView, TranscriptMessage } from '../stores/historyMapper.ts';
 import {
   formatWorkDuration,
   getGroupIntentStatus,
@@ -93,565 +62,28 @@ const EMPTY_SESSION_TOOL_EXPANSIONS: Readonly<
  * invalidate the memo.
  */
 const TranscriptRow = React.memo(function TranscriptRow({
-  message: m,
-  handleToggleExpand,
+  message,
   toolExpansions,
   subagentExpansions,
-  onToggleTool,
-  onToggleSubagent,
   processMeta,
-}: {
-  message: TranscriptMessage;
-  handleToggleExpand: (id: string) => void;
-  toolExpansions: Readonly<Record<string, boolean>>;
-  subagentExpansions: Readonly<Record<string, boolean>>;
-  onToggleTool: (messageId: string, toolKey: string, hasDetail: boolean) => void;
-  onToggleSubagent: (messageId: string, subagentKey: string) => void;
-  processMeta?: {
-    isFirst: boolean;
-    isExpanded: boolean;
-    totalDurationText: string;
-    groupStatus: GroupIntentStatus | null;
-    onToggleExpand: () => void;
-  };
-}) {
-  const updateSpotlight = (e: React.MouseEvent<HTMLElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    e.currentTarget.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
-    e.currentTarget.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
-  };
-  const submitPrompt = useConsoleStore((state) => state.submitPrompt);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editText, setEditText] = useState(m.content ?? '');
-  const [copied, setCopied] = useState(false);
-  const handleCopy = (text: string) => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
-    if (!clipboard || !text) return;
-    void clipboard
-      .writeText(text)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      })
-      .catch(() => undefined);
-  };
-
+  actions,
+}: RowRenderProps) {
   // A row the fold hides paints nothing -- and must therefore measure as nothing (see
   // `rowPaints`: the list's wrapper is per index, so a hidden row that still reported
   // a height would leave a blank of its own in the middle of the turn).
-  if (!rowPaints(m, processMeta)) return null;
-
-  if (m.type === 'user') {
-    return (
-      // Chat layout: the user's turn sits on the right, the assistant's on
-      // the left, and the side it is on is the role — so no "User" /
-      // "Assistant" heading is needed.
-      // The 20% right inset shares the assistant body's right edge: that block is
-      // capped at 80% of the reading column, so the user's turn is held back by
-      // whatever is left. The two numbers must keep summing to 100% (pinned by
-      // `transcriptLayoutGuard.test.ts`), which is what keeps the bubble from
-      // hanging past the answer it belongs to.
-      // `data-turn-id` is the anchor the turn rail scrolls to.
-      <div key={m.id} data-turn-id={m.id} className="flex justify-end">
-        <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5 group">
-          {isEditing ? (
-            <div className="w-full flex flex-col gap-2 rounded-card border border-accent bg-surface p-2.5 shadow-card">
-              <textarea
-                value={editText}
-                onChange={(e) => setEditText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    const trimmed = editText.trim();
-                    if (trimmed) {
-                      void submitPrompt(trimmed);
-                      setIsEditing(false);
-                    }
-                  } else if (e.key === "Escape") {
-                    setIsEditing(false);
-                  }
-                }}
-                className="w-full resize-none bg-transparent text-sm text-gray-900 focus:outline-none font-sans"
-                rows={Math.min(8, Math.max(2, editText.split('\n').length))}
-                autoFocus
-              />
-              <div className="flex items-center justify-end gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(false)}
-                  className="rounded px-2.5 py-1 text-gray-500 hover:bg-surface-hover cursor-pointer"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const trimmed = editText.trim();
-                    if (trimmed) {
-                      void submitPrompt(trimmed);
-                      setIsEditing(false);
-                    }
-                  }}
-                  disabled={!editText.trim()}
-                  className="rounded bg-accent px-3 py-1 text-on-accent font-medium hover:bg-blue-700 cursor-pointer disabled:opacity-50"
-                >
-                  发送
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              {m.content !== "" && (
-                <div
-                  onMouseMove={updateSpotlight}
-                  className="ui-user-bubble fluent-spotlight whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900"
-                >
-                  {m.content}
-                </div>
-              )}
-              {m.attachments !== undefined && m.attachments.length > 0 && (
-                <div className="flex flex-wrap justify-end gap-2">
-                  {m.attachments.map((attachment) => (
-                    <AttachmentThumb key={attachment.attachmentId} attachment={attachment} />
-                  ))}
-                </div>
-              )}
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => handleCopy(m.content ?? '')}
-                  title={copied ? "已复制" : "复制消息"}
-                  aria-label="复制消息"
-                  className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
-                >
-                  {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setIsEditing(true); setEditText(m.content ?? ''); }}
-                  title="编辑并重新发送"
-                  aria-label="编辑并重新发送"
-                  className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
-                >
-                  <Edit16Regular aria-hidden="true" />
-                </button>
-                <span className="font-mono text-[10px] text-gray-400 ml-1">{m.timestamp}</span>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
-  if (m.type === 'thought') {
-    return (
-      <div key={m.id} className="max-w-[85%]">
-        {processMeta && !processMeta.isExpanded ? (
-          <div className="transcript-fold-header">
-            <div className="flex items-center gap-2 py-1 min-w-0">
-              <button
-                type="button"
-                onClick={processMeta.onToggleExpand}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-              >
-                <span>已工作 {processMeta.totalDurationText}</span>
-                <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-              </button>
-              {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
-            </div>
-            <div className="border-b border-line/60 my-2.5" />
-          </div>
-        ) : (
-          <>
-            {processMeta && processMeta.isFirst && (
-              <div className="transcript-fold-header">
-                <div className="flex items-center gap-2 py-1 min-w-0">
-                  <button
-                    type="button"
-                    onClick={processMeta.onToggleExpand}
-                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-                  >
-                    <span>已工作 {processMeta.totalDurationText}</span>
-                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                  </button>
-                  {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
-                </div>
-                {/* The rule belongs to the header, in both folds: the steps below it
-                    are the fold's content, so the block must not draw a second rule
-                    at their end.  Header and rule stay in flow with the steps they
-                    name, so nothing of the fold is masked while the column scrolls. */}
-                <div className="border-b border-line/60 my-2.5" />
-              </div>
-            )}
-            <div
-              onClick={() => handleToggleExpand(m.id)}
-              onMouseMove={updateSpotlight}
-              className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
-            >
-              {m.duration === 'streaming' ? (
-                <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
-              ) : (
-                <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
-              )}
-              <span>{thoughtLabel(m.duration)}</span>
-              <span className="text-gray-400">{expandHint(m.expanded === true)}</span>
-            </div>
-            <div className="fluent-accordion" data-expanded={m.expanded === true}>
-              <div className="fluent-accordion-content pt-1.5">
-                <div className="material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
-                  <Markdown text={m.content ?? ''} />
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  }
-  if (m.type === 'tool_group') {
-    const toolList = m.tools || [];
-    // The batch is flat on the wire; this is where a subagent's own steps are put
-    // back under the call that started it, so they can be painted as one card
-    // instead of as N more rows of the main agent's list.
-    const toolNodes = groupToolsForView(toolList);
-    /**
-     * One tool row: the call's own name, the intent the model gave it and its body.
-     * Shared by a main-agent row and by a subagent step, so a nested call reads
-     * exactly like a top-level one.
-     *
-     * A batch is a data boundary, not a visual one: its calls are painted as
-     * sibling rows, so what ran is on screen without opening a group first.
-     */
-    const renderToolRow = (t: ToolItemView, nested = false) => {
-      // A live batch first identifies a call by call_id and later replaces it
-      // with the item_id from tool_started.  Prefer call_id so the local fold does
-      // not close while that lifecycle update arrives.
-      const toolKey = t.callId || t.id;
-      const toolExpanded = toolExpansions[toolKey] === true;
-      const intent = t.label && t.label !== t.name ? t.label : '';
-      // A run tool's detail is its terminal session: the invocation, then what the
-      // program wrote.  The invocation is known before the output is, so a call
-      // that is still running can be opened to read what it is running.
-      const terminal = isTerminalTool(t.name);
-      const command = terminal ? toolCommand(t) : '';
-      // A failure's reason belongs to the detail, not to the row: the row only
-      // turns red.  It is skipped when the body already opens with it, because the
-      // runtime's summary is the body's own first line.
-      const reason = toolFailureReason(t.status, t.error);
-      const reasonShown = reason !== '' && !(t.preview ?? '').trimStart().startsWith(reason);
-      // A row opens when it has a body -- or, for a run tool, an invocation.
-      const hasDetail = Boolean(t.preview) || command !== '' || reasonShown;
-      // A call in flight is shown, not spelled out: the leading spinner carries
-      // "still working" the way a terminal's cursor does.  Words are left for a
-      // call that ended badly -- and a settled call says nothing at all, because a
-      // badge repeating "完成" on every row is the loudest thing in the log and the
-      // least informative one.
-      const active = t.status === 'running' || t.status === 'pending';
-      // A failure is colour, not copy: the row and the call's name turn red.  The
-      // runtime's status is not a state to print either way -- a success carries a
-      // body digest ("ok (48 chars, 2 lines)", see
-      // `runtime/pathing.py::summarize_tool_result`) and a failure its reason.
-      // Only a cancellation, which is neither success nor failure, keeps its word,
-      // and a subagent's own phase is never dropped.
-      const statusText = t.status === 'cancelled' || t.status === 'canceled'
-        ? [toolStatusLabel(t.status), t.subagentStatus].filter(Boolean).join(' · ')
-        : (t.subagentStatus ?? '');
-      const previewLang = toolExpanded && t.preview && !terminal
-        ? toolPreviewLanguage(t.name, t.path, t.preview)
-        : '';
-      return (
-        // A run-log line, not a card.  The batch it belongs to is no longer on
-        // screen as a container, so a border and a fill per call would give the
-        // log the same visual weight as the answer it is subordinate to.
-        <div key={t.id} className="group">
-          <button
-            type="button"
-            onClick={() => onToggleTool(m.id, toolKey, hasDetail)}
-            aria-expanded={hasDetail ? toolExpanded : undefined}
-            title={hasDetail ? (toolExpanded ? '收起工具详情' : '展开工具详情') : undefined}
-            onMouseMove={updateSpotlight}
-            className={"flex w-full min-w-0 cursor-pointer select-none items-center gap-2 rounded-control px-2 py-1 text-left font-mono text-xs transition-colors hover:bg-surface-hover active:bg-surface-pressed fluent-spotlight " + (t.error ? "text-red-600" : "text-gray-600")}
-          >
-            {/* A nested step's activity is already on its card's rail, so the row
-                must not animate a second time beside it. */}
-            {active && !nested && (
-              <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-500" style={{ fontSize: '12px' }} />
-            )}
-            {t.name === 'execute' ? (
-              <WindowConsole20Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
-            ) : (
-              <Wrench20Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
-            )}
-            <span className={"shrink-0 font-medium " + (t.error ? "text-red-700" : "text-gray-900")}>{t.name}</span>
-            {intent !== '' && (
-              <span className="min-w-0 truncate text-gray-500" title={intent}>
-                {intent}
-              </span>
-            )}
-            {t.path && (
-              <span className="min-w-0 truncate text-gray-400" title={t.path}>
-                · {t.path}
-              </span>
-            )}
-            {t.sub && (
-              <span className="shrink-0 rounded-control bg-sunken px-1 text-[10px] text-gray-500">
-                sub
-              </span>
-            )}
-            {t.subagentName && (
-              <span className="shrink-0 text-[10px] text-gray-400">@{t.subagentName}</span>
-            )}
-            {/* The row's own words stay next to the content they describe: a
-                right-aligned tail would put them -- and the fold's chevron -- at a
-                fixed end position that says nothing about this call. */}
-            <span className="flex min-w-0 items-center gap-2">
-              {statusText !== '' && (
-                <span
-                  className="min-w-0 truncate text-[10px] text-gray-500"
-                  title={statusText}
-                >
-                  {statusText}
-                </span>
-              )}
-              {hasDetail && (
-                // The fold stays quiet until the row is pointed at or focused: the
-                // detail is there for a reader who asks for it, not an invitation
-                // repeated on every line.
-                <span className={"flex shrink-0 text-gray-400 " + (toolExpanded ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100")}>
-                  {toolExpanded ? (
-                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                  ) : (
-                    <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                  )}
-                </span>
-              )}
-            </span>
-          </button>
-          {toolExpanded && (
-            <div className="ml-4 border-l border-line pb-1.5 pl-2.5 pr-2 pt-1">
-              {/* Result bodies can be large or expensive to parse, so they are
-                  mounted only for the individual call the reader opened. */}
-              {reasonShown && (
-                <div className="whitespace-pre-wrap break-all font-mono text-[12px] leading-5 text-red-600">
-                  {reason}
-                </div>
-              )}
-              {terminal && (t.preview || command !== '') ? (
-                <TerminalOutput text={t.preview ?? ''} command={command} />
-              ) : previewLang !== '' && t.preview ? (
-                <CodeBlock
-                  lang={previewLang}
-                  code={t.preview}
-                />
-              ) : (
-                t.preview && (
-                  <div className="whitespace-pre-wrap break-all text-gray-600">
-                    {t.preview}
-                  </div>
-                )
-              )}
-            </div>
-          )}
-        </div>
-      );
-    };
-    /**
-     * One subagent: the call that started it, the goal it was given, and its own
-     * steps behind a rail.  The rail is what makes the nesting readable at a
-     * glance -- a step hangs off the card, not off the main agent's list.
-     */
-    const renderSubagentCard = (node: SubagentToolGroup, key: string) => {
-      const subExpanded = subagentExpansions[key] === true;
-      const subRunning = node.parent.status === 'running'
-        || node.tools.some((s) => s.status === 'running' || s.status === 'pending');
-      // Only the task call itself decides the card's outcome: a subagent that
-      // recovered from a failed step still completed, and its own tool errors are
-      // counted on the step line instead of painting the whole card red.
-      const parentFailed = node.parent.error || node.parent.status === 'failed';
-      const failedSteps = node.tools.filter((s) => s.error || s.status === 'failed').length;
-      return (
-        <div key={key} className="rounded-control border border-line bg-raised">
-          {/* The raised fill equals the dark palette's hover step, so the header
-              takes the pressed step to stay visible when it is hovered. */}
-          <button
-            type="button"
-            onClick={() => onToggleSubagent(m.id, key)}
-            aria-expanded={subExpanded}
-            title={subExpanded ? '收起子代理步骤' : '展开子代理步骤'}
-            className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-pressed"
-          >
-            {/* The subagent's own mark: purple is the identity accent, and the card
-                surface stays a neutral layer like every other in-page card. */}
-            <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-control border border-purple-200/60 bg-purple-50 text-purple-700">
-              <Bot20Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-            </span>
-            <span className="shrink-0 rounded-control bg-purple-50 text-purple-700 border border-purple-200/60 font-mono text-[10px] px-1">
-              @{node.subagentName}
-            </span>
-            <span className="truncate text-xs text-gray-900" title={node.subagentGoal}>
-              {node.subagentGoal}
-            </span>
-            <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-400">
-              {failedSteps > 0 ? `${node.tools.length} 步骤 (${failedSteps} 失败)` : `${node.tools.length} 步骤`}
-            </span>
-            <span
-              className={"flex shrink-0 items-center gap-1 rounded-control px-1 font-mono text-[10px] " + (parentFailed ? "bg-red-100 text-red-700" : subRunning ? "bg-blue-50 text-blue-500" : "bg-green-100 text-green-700")}
-            >
-              {parentFailed ? (
-                <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '11px' }} />
-              ) : subRunning ? (
-                <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '11px' }} />
-              ) : (
-                <Checkmark16Regular aria-hidden="true" style={{ fontSize: '11px' }} />
-              )}
-              {parentFailed ? '失败' : subRunning ? '运行中' : '完成'}
-            </span>
-            {subExpanded ? (
-              <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
-            ) : (
-              <ChevronRight16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
-            )}
-          </button>
-          <div
-            className="fluent-accordion"
-            data-expanded={subExpanded}
-            aria-hidden={!subExpanded}
-            inert={!subExpanded}
-          >
-            <div className="fluent-accordion-content">
-              {/* The guide rail: one line the steps hang off, with a state circle
-                  per step sitting on it.  The circle is offset by the rail's own
-                  inset, so it stays centred on the line at any text size. */}
-              <div className="border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
-                {node.tools.map((t) => {
-                  // The step's own outcome, so the circle can carry it at a glance;
-                  // the row therefore prints no state of its own while it runs.
-                  const stepRunning = t.status === 'running' || t.status === 'pending';
-                  const stepFailed = t.error || t.status === 'failed';
-                  return (
-                    <div key={t.id} className="relative">
-                      <span
-                        aria-hidden="true"
-                        className={"absolute -left-[19px] top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full " + (stepFailed ? "bg-red-100 text-red-700" : stepRunning ? "bg-blue-50 text-blue-500" : "bg-green-100 text-green-700")}
-                      >
-                        {stepFailed ? (
-                          <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '10px' }} />
-                        ) : stepRunning ? (
-                          <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '10px' }} />
-                        ) : (
-                          <Checkmark16Regular aria-hidden="true" style={{ fontSize: '10px' }} />
-                        )}
-                      </span>
-                      {renderToolRow(t, true)}
-                    </div>
-                  );
-                })}
-                {node.tools.length === 0 && (
-                  <div className="font-mono text-[10px] text-gray-400">等待子代理步骤…</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    };
-    return (
-      <div key={m.id} className="max-w-[85%]">
-        {processMeta && !processMeta.isExpanded ? (
-          <div className="transcript-fold-header">
-            <div className="flex items-center gap-2 py-1 min-w-0">
-              <button
-                type="button"
-                onClick={processMeta.onToggleExpand}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-              >
-                <span>已工作 {processMeta.totalDurationText}</span>
-                <ChevronRight16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-              </button>
-              {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
-            </div>
-            <div className="border-b border-line/60 my-2.5" />
-          </div>
-        ) : (
-          <>
-            {processMeta && processMeta.isFirst && (
-              <div className="transcript-fold-header">
-                <div className="flex items-center gap-2 py-1 min-w-0">
-                  <button
-                    type="button"
-                    onClick={processMeta.onToggleExpand}
-                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 py-1 cursor-pointer select-none font-sans transition-colors"
-                  >
-                    <span>已工作 {processMeta.totalDurationText}</span>
-                    <ChevronDown16Regular aria-hidden="true" style={{ fontSize: '13px' }} />
-                  </button>
-                  {processMeta.groupStatus && <FoldStatusPill status={processMeta.groupStatus} />}
-                </div>
-                {/* Same header rule as the thought fold: the tool rows hang below it,
-                    and the block ends without a second rule.  The header stays in flow
-                    with the tool rows it names. */}
-                <div className="border-b border-line/60 my-2.5" />
-              </div>
-            )}
-            <div className="space-y-0.5">
-              {toolNodes.map((node: ToolRenderNode, index) =>
-                node.type === 'subagent' ? (
-                  renderSubagentCard(
-                    node,
-                    node.parent.callId || node.parent.id || `${node.subagentName}-${index}`,
-                  )
-                ) : (
-                  renderToolRow(node.tool)
-                ),
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    );
-  }
-  if (m.type === 'assistant') {
-    return (
-      <div key={m.id} className="flex max-w-[80%] flex-col items-start gap-1.5">
-        <div className="text-base leading-relaxed font-sans text-gray-900">
-          <Markdown text={m.content ?? ''} />
-        </div>
-        <div className="flex items-center gap-1.5 pt-0.5">
-          <button
-            type="button"
-            onClick={() => handleCopy(m.content ?? '')}
-            title={copied ? '已复制' : '复制回答'}
-            aria-label="复制回答"
-            className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
-          >
-            {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
-          </button>
-          <span className="font-mono text-[10px] text-gray-400">{m.timestamp}</span>
-        </div>
-      </div>
-    );
-  }
-  if (m.type === 'info') {
-    const warning = m.infoLevel === 'warning';
-    return (
-      <div
-        key={m.id}
-        className={`flex max-w-[85%] items-start gap-1.5 rounded-control border px-2.5 py-1.5 font-mono text-xs leading-relaxed ${
-          warning
-            ? 'border-amber-200 bg-amber-50 text-amber-800'
-            : 'border-line bg-surface text-gray-600'
-        }`}
-      >
-        {warning ? (
-          <Warning20Regular aria-hidden="true" className="shrink-0 text-amber-600" style={{ fontSize: '14px' }} />
-        ) : (
-          <Info20Regular aria-hidden="true" className="shrink-0 text-blue-500" style={{ fontSize: '14px' }} />
-        )}
-        <span className="whitespace-pre-wrap break-all">{m.content}</span>
-      </div>
-    );
-  }
-  return null;
+  if (!rowPaints(message, processMeta)) return null;
+  // The kind picks its renderer from the registry: no branch to extend, and no kind can
+  // be forgotten, because the table is a `Record` over the union of kinds.
+  const Row = ROW_RENDERERS[message.type];
+  return (
+    <Row
+      message={message}
+      toolExpansions={toolExpansions}
+      subagentExpansions={subagentExpansions}
+      processMeta={processMeta}
+      actions={actions}
+    />
+  );
 });
 
 /**
@@ -683,44 +115,6 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
  * failed); the label carries the tool and its intent, truncated so one long intent
  * cannot push the elapsed time out of the header.
  */
-function FoldStatusPill({ status }: { status: GroupIntentStatus }) {
-  const badge = 'inline-flex shrink-0 items-center gap-1 rounded-control border px-1.5 py-0.5 font-mono text-xs';
-  if (status.kind === 'thinking') {
-    return status.state === 'running' ? (
-      <span className={`${badge} border-blue-200/50 bg-blue-50/80 text-blue-600`}>
-        <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse" style={{ fontSize: '12px' }} />
-        <span>{status.text}</span>
-      </span>
-    ) : (
-      <span className={`${badge} border-line bg-sunken/60 text-gray-500`}>
-        <BrainCircuit20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '12px' }} />
-        <span>{status.text}</span>
-      </span>
-    );
-  }
-  if (status.state === 'running') {
-    return (
-      <span className={`${badge} max-w-[24rem] border-blue-200 bg-blue-50/90 text-blue-700`}>
-        <SpinnerIos20Regular aria-hidden="true" className="shrink-0 animate-spin text-blue-600" style={{ fontSize: '12px' }} />
-        <span className="truncate" title={status.text}>{status.text}</span>
-      </span>
-    );
-  }
-  if (status.state === 'failed') {
-    return (
-      <span className={`${badge} max-w-[24rem] border-red-200/60 bg-red-50/80 text-red-600`}>
-        <DismissCircle20Regular aria-hidden="true" className="shrink-0 text-red-500" style={{ fontSize: '12px' }} />
-        <span className="truncate" title={status.text}>{status.text}</span>
-      </span>
-    );
-  }
-  return (
-    <span className={`${badge} max-w-[24rem] border-line bg-sunken/60 text-gray-600`}>
-      <Checkmark16Regular aria-hidden="true" className="shrink-0 text-green-600" style={{ fontSize: '12px' }} />
-      <span className="truncate" title={status.text}>{status.text}</span>
-    </span>
-  );
-}
 
 /**
  * The "已工作" header of a turn whose own rows have not landed yet.
@@ -1262,6 +656,43 @@ export const Transcript: React.FC = () => {
     [suppressPinnedReflowForInteraction, toggleMessageExpand],
   );
 
+  /**
+   * Everything a row may raise, built once.
+   *
+   * One object rather than a prop per callback: a row kind that needs a new action
+   * takes it from here, and a row that ignores it is not re-rendered by it -- the
+   * identity only changes when a handler does.
+   */
+  const rowActions = useMemo<RowActions>(
+    () => ({
+      onToggleExpand: handleToggleExpand,
+      onToggleTool: handleToggleTool,
+      onToggleSubagent: handleToggleSubagent,
+    }),
+    [handleToggleExpand, handleToggleTool, handleToggleSubagent],
+  );
+
+  /**
+   * The fold each row is part of, keyed by row, built once per fold state.
+   *
+   * `processMetaMap` is rebuilt whenever the clock ticks, so handing its entries
+   * straight to the rows would re-create the object every second and defeat the
+   * row-level memo.  Only the *text* changes on a tick, and only for the running turn.
+   */
+  const rowMetaById = useMemo(() => {
+    const byId = new Map<string, RowProcessMeta>();
+    for (const [id, meta] of processMetaMap) {
+      byId.set(id, {
+        isFirst: meta.isFirst,
+        isExpanded: meta.isExpanded,
+        totalDurationText: meta.totalDurationText,
+        groupStatus: meta.groupStatus,
+        onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
+      });
+    }
+    return byId;
+  }, [processMetaMap, toggleTurnExpanded]);
+
   return (
     <>
       {/* Minimap of the transcript, centred on the left edge (see TurnRail). */}
@@ -1371,22 +802,10 @@ export const Transcript: React.FC = () => {
             >
               <TranscriptRow
                 message={m}
-                handleToggleExpand={handleToggleExpand}
                 toolExpansions={toolExpansionsFor(m.id)}
                 subagentExpansions={subagentExpansionsFor(m.id)}
-                onToggleTool={handleToggleTool}
-                onToggleSubagent={handleToggleSubagent}
-                processMeta={
-                  meta
-                    ? {
-                        isFirst: meta.isFirst,
-                        isExpanded: meta.isExpanded,
-                        totalDurationText: meta.totalDurationText,
-                        groupStatus: meta.groupStatus,
-                        onToggleExpand: () => toggleTurnExpanded(meta.turnKey),
-                      }
-                    : undefined
-                }
+                processMeta={rowMetaById.get(m.id)}
+                actions={rowActions}
               />
               {pending && (
                 <PendingTurnRow

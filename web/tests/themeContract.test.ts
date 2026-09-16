@@ -34,6 +34,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+import { rowModules } from './helpers/transcriptSource.ts';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(here, '..');
 const styles = readFileSync(join(webRoot, 'src', 'index.css'), 'utf8');
@@ -288,8 +290,9 @@ test('a card in the page is painted, not blurred', () => {
   // material *by name*: the fill, the blur radius and the grain stay the theme's
   // decision, so a component can never pick its own frosted look.
   const transcript = readFileSync(join(webRoot, 'src', 'components', 'Transcript.tsx'), 'utf8');
+  const rows = rowModules().map((row) => row.text).join('\n');
   assert.equal(
-    (transcript.match(/material-card/g) ?? []).length,
+    ((transcript + rows).match(/material-card/g) ?? []).length,
     1,
     'the acrylic card must be the thought panel, through the card material',
   );

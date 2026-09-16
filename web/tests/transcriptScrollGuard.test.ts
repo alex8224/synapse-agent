@@ -13,6 +13,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+import { allRowSources } from './helpers/transcriptSource.ts';
+
+/** The dispatcher and every registered row module, as one blob. */
+const allRows = allRowSources();
 const here = dirname(fileURLToPath(import.meta.url));
 const transcript = readFileSync(
   join(here, '..', 'src', 'components', 'Transcript.tsx'),
@@ -101,9 +105,9 @@ test('opening a fold never scrolls the transcript to the bottom', () => {
     'no fold may call toggleMessageExpand directly',
   );
   assert.equal(
-    (transcript.match(/handleToggleExpand\(m\.id\)/g) ?? []).length,
+    (allRows.match(/onToggleExpand\(message\.id\)/g) ?? []).length,
     1,
-    'the thought fold is the only row-level fold left, and it must use the guarded handler',
+    'the thought fold is the only row-level fold left, and it takes the guarded handler',
   );
 });
 

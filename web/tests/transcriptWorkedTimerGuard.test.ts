@@ -13,6 +13,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+import { allRowSources, rowSource } from './helpers/transcriptSource.ts';
+
+/** The dispatcher and every registered row module, as one blob. */
+const allRows = allRowSources();
 const here = dirname(fileURLToPath(import.meta.url));
 const transcript = readFileSync(
   join(here, '..', 'src', 'components', 'Transcript.tsx'),
@@ -128,36 +132,26 @@ test('the running status is painted once, by the row that owns it', () => {
 
 test('a process row keeps its rule under the header in both folds', () => {
   // Same structure as the pending row: the rule is the stopwatch's separator, so an
-  // opened fold hangs its steps below it and draws no second rule at their end --
-  // the rule must not move (or double up) when the fold is toggled.
-  // The first step a fold hangs below its rule: the thought's own toggle, and --
-  // since a batch is no longer a fold of its own -- the tool rows themselves.
-  const folds = [
-    ["if (m.type === 'thought')", "if (m.type === 'tool_group')", 'handleToggleExpand(m.id)'],
-    ["if (m.type === 'tool_group')", "if (m.type === 'assistant')", 'toolNodes.map('],
-  ];
-  for (const [start, end, step] of folds) {
-    const block = transcript.slice(transcript.indexOf(start), transcript.indexOf(end));
+  // opened fold hangs its steps below it and draws no second rule at their end -- the
+  // rule must not move (or double up) when the fold is toggled.  Each fold row is its
+  // own module, so the rule is counted where it is written, and the order of the button,
+  // the rule and the first step is measured in `transcriptFoldSpace.verify.ts`, where
+  // "under" and "below" can actually be read off the DOM.
+  for (const name of ['ThoughtRow', 'ToolGroupRow']) {
+    const block = rowSource(name);
     assert.equal(
       (block.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
       2,
-      `${start} must draw the header rule once per fold and nothing at the end`,
+      `${name} must draw the header rule once per fold and nothing at the end`,
     );
     assert.equal(
       block.includes('isLast'),
       false,
       'the end of the steps must not draw a second rule',
     );
-    const opened = block.slice(block.indexOf(') : ('));
-    const button = opened.indexOf('</button>');
-    const rule = opened.indexOf('<div className="border-b border-line/60 my-2.5" />');
-    const firstStep = opened.indexOf(step, rule);
-    assert.ok(button !== -1, 'an opened fold must start with its header button');
-    assert.ok(rule > button, 'the rule must sit under the opened header button');
-    assert.ok(firstStep > rule, 'the steps must hang below the rule');
   }
   assert.equal(
-    (transcript.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
+    (allRows.match(/<div className="border-b border-line\/60 my-2\.5" \/>/g) ?? []).length,
     5,
     'the rule is drawn with a header only: a thought fold, a tool fold and the pending row',
   );

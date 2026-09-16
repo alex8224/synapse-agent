@@ -50,11 +50,18 @@ test('every subscription change lands or drops the queue first', () => {
 
 test('no component subscribes to the whole store any more', () => {
   const offenders: string[] = [];
-  for (const entry of readdirSync(join(webRoot, 'src', 'components'), { withFileTypes: true })) {
-    if (!entry.name.endsWith('.tsx')) continue;
-    const text = read(join('src', 'components', entry.name));
-    if (text.includes('useConsoleStore()')) offenders.push(entry.name);
-  }
+  // Recursive: the components are grouped into directories (the transcript's row kinds
+  // live under `transcriptRows/`), and a scan that stopped at the top level would stop
+  // covering a component the moment it moved into one.
+  const walk = (relative: string): void => {
+    for (const entry of readdirSync(join(webRoot, relative), { withFileTypes: true })) {
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) { walk(path); continue; }
+      if (!entry.name.endsWith('.tsx')) continue;
+      if (read(path).includes('useConsoleStore()')) offenders.push(path);
+    }
+  };
+  walk('src/components');
   assert.deepEqual(
     offenders,
     [],

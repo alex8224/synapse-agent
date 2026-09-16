@@ -116,6 +116,25 @@ window.__lastPaintedBottom = () => {
   return last === undefined ? null : last.top + last.h;
 };
 /** Click the running turn's own fold header (the newest one on screen). */
+/**
+ * Where a fold header puts its rule.
+ *
+ * The order the reader relies on -- the header button, then the rule that belongs to
+ * it -- is geometry, not source order, so it is measured here where the DOM can be
+ * read.  (That the steps then hang below the rule is what the narration-gap and
+ * last-painted-row checks above measure on an opened fold.)
+ */
+window.__foldOrder = () => {
+  const header = [...document.querySelectorAll('.console-gutter .transcript-fold-header')].pop();
+  if (header === undefined) return null;
+  const button = header.querySelector('button');
+  const rule = header.querySelector('div[class*="border-b"]');
+  if (button === null || rule === null) return null;
+  return {
+    buttonBottom: Math.round(button.getBoundingClientRect().bottom),
+    ruleTop: Math.round(rule.getBoundingClientRect().top),
+  };
+};
 window.__toggleFold = () => {
   const rows = [...document.querySelectorAll('.console-gutter [data-index]')]
     .filter((el) => (el.textContent || '').includes('已工作'));
@@ -209,6 +228,13 @@ try {
     const p = ${probe};
     const first = p.segments[0];
     return first.top - (p.header.top + p.header.h) <= 20;
+  })()`);
+  // The order the reader relies on -- the header button, then the rule that belongs to
+  // it -- is geometry, not source order: it is measured here, while the strip is on
+  // screen (an opened fold's header scrolls out of the window in this fixture).
+  await check('a fold header keeps its rule under its button', `(() => {
+    const order = window.__foldOrder();
+    return order !== null && order.ruleTop >= order.buttonBottom;
   })()`);
   await check('two segments of the folded turn are one row apart', `(() => {
     const s = ${probe}.segments;

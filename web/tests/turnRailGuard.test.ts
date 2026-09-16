@@ -11,6 +11,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+import { rowSource } from './helpers/transcriptSource.ts';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (name: string) => readFileSync(join(here, '..', 'src', 'components', name), 'utf8');
 
@@ -39,8 +41,8 @@ test('clicking a rail row scrolls to that turn', () => {
     'the rail must not look for an anchor that may not be mounted',
   );
   assert.ok(
-    transcript.includes('data-turn-id={m.id}'),
-    'the transcript must anchor each user turn with its id',
+    rowSource('UserRow').includes('data-turn-id={message.id}'),
+    'the user turn must anchor itself with its id, where the rail scrolls to it',
   );
   assert.ok(
     transcript.includes('<TurnRail viewport={viewport} />'),

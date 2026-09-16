@@ -1,4 +1,5 @@
 import type { TranscriptMessage } from './historyMapper.ts';
+import { ROW_POLICY, isFoldStep } from './transcriptRowPolicy.ts';
 import type { ActivityView } from './liveEventReducer.ts';
 
 export interface WorkGroup {
@@ -116,16 +117,12 @@ export interface RowFold {
  * ask this function so the two can never disagree about which rows are hidden.
  */
 export function rowPaints(message: TranscriptMessage, fold?: RowFold): boolean {
-  if (message.type === 'thought') {
-    return fold === undefined || fold.isExpanded || fold.isFirst;
-  }
-  if (message.type === 'tool_group') {
-    // A group with no items is not a fold step at all (see `workGroups`): it paints
-    // nothing even when the turn is open.
-    if (!message.tools?.length) return false;
-    return fold === undefined || fold.isExpanded || fold.isFirst;
-  }
-  return true;
+  const policy = ROW_POLICY[message.type];
+  // A step with nothing in it is not a step at all (see `workGroups`): it paints
+  // nothing even when the turn is open.
+  if (policy.paints !== undefined && !policy.paints(message)) return false;
+  if (!policy.step) return true;
+  return fold === undefined || fold.isExpanded || fold.isFirst;
 }
 
 /** Group by runtime identity, not by assistant narration or the latest steer row. */
@@ -143,7 +140,7 @@ export function workGroups(
         groups.set(key, current);
       }
     }
-    if (message.type === 'thought' || (message.type === 'tool_group' && message.tools?.length)) {
+    if (isFoldStep(message)) {
       current.rows.push(message);
     }
   }
