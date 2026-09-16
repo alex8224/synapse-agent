@@ -20,11 +20,11 @@ export const activityItem: BottomBarItemDefinition = {
       <span
         data-entry={ACTIVITY_ITEM_ID}
         className={`flex shrink-0 items-center gap-1.5 font-sans text-[11px] font-medium ${
-          busy ? 'text-blue-600' : 'text-gray-500'
+          busy ? 'text-green-600' : 'text-gray-500'
         }`}
       >
         <span
-          className={`h-1.5 w-1.5 rounded-full ${busy ? 'animate-pulse bg-blue-600' : 'bg-gray-400'}`}
+          className={`h-1.5 w-1.5 rounded-full ${busy ? 'animate-pulse bg-green-600' : 'bg-gray-400'}`}
         />
         {busy ? '运行中' : '空闲'}
       </span>
