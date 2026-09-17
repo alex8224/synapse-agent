@@ -1,54 +1,65 @@
-import { Add20Regular, Dismiss20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
-import React, { useEffect, useRef, useState } from 'react';
-import { AttachmentPreview } from './AttachmentPreview.tsx';
+import { Add20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
+import { RichComposer, type RichComposerHandle } from './composer/RichComposer.tsx';
+import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useShallow } from 'zustand/react/shallow';
-import { formatBytes } from '../runtime-client/artifacts.ts';
-import { ATTACHMENT_MAX_COUNT } from '../runtime-client/attachments.ts';
 
 /**
- * Floating command card: the prompt line, then one control row inside the same
+ * Floating command card: the prompt, then one control row inside the same
  * rounded box — add-project on the left, the model and reasoning level the next
  * turn will run on, and the primary action on the right.  Those two pickers used
  * to sit in the status bar; they configure the next turn, so they belong next to
  * the input that starts it.
  *
- * The primary button represents the current state: `↑`
- * sends when idle, and becomes an enabled `■` stop button while a turn is
- * running (the previous behaviour left it looking disabled because the input
- * was empty, with no way to interrupt from the UI).  Typing while busy still
- * queues a steer — that path is Enter, not the button.
+ * The input itself is `RichComposer`: multi-line text with inline atomic pills
+ * (an `@`-reference, an image).  This card keeps everything that is *not* the
+ * editor — the store wiring, the submit/steer decision, the drag-and-drop target
+ * and the pickers — so rich editing stays one component deep while the
+ * submission path stays exactly what it was: one `text` string plus the store's
+ * own attachment refs.
  *
- * The `+` on the left is "add project": it opens `AddProjectDialog`, which walks
- * the host filesystem and registers a workspace directory as a new project (then
- * switches to it and opens a session).  Images are added by pasting them into the
- * card or dropping them onto it — both end in the same `handleFiles` path.  Only
+ * The primary button represents the current state: `↑` sends when idle, and
+ * becomes an enabled `■` stop button while a turn is running (the previous
+ * behaviour left it looking disabled because the input was empty, with no way to
+ * interrupt from the UI).  Typing while busy still queues a steer — that path is
+ * Enter, not the button.
+ *
+ * Images enter through three routes and all three end in the same `handleFiles`:
+ * a paste into the card, a drop onto it, or the `+` button's file picker.  Only
  * the image types the runtime accepts are taken, at most eight per submit and
  * 4 MB each; every refusal is shown next to the composer instead of being
- * silently dropped.  A chunk still uploading disables sending, and an
- * attachment-only turn may be submitted with empty text.  Each pending row is the
- * picked image itself (`AttachmentPreview`) rather than a file-name chip, and
- * hovering it enlarges the copy, so what will be sent is verifiable before the
- * turn is submitted.
+ * silently dropped.  Each accepted pick becomes an inline pill at the caret
+ * (`ImagePillView`) whose hover reveals the enlarged copy, so what will be sent
+ * is verifiable before the turn is submitted.  A chunk still uploading disables
+ * sending, and an attachment-only turn may be submitted with empty text.
+ *
+ * The `+` on the left is also "add project": `AddProjectDialog` walks the host
+ * filesystem and registers a workspace directory as a new project (then switches
+ * to it and opens a session).
  *
  * The card floats over the transcript (`.console-pane-inset` reserves its height
  * in the scroller), which is what makes its own acrylic visible: a blur needs
  * content behind it.  The reserved height is the card's *measured* height, not a
- * guess, so growing the card (attachments, a wrapped control row) can never hide
- * the newest line behind it.
+ * guess, so growing the card (a wrapped line, a pill, a wrapped control row) can
+ * never hide the newest line behind it.
  */
 export const CommandInput: React.FC = () => {
-  const [text, setText] = useState('');
   const [dragging, setDragging] = useState(false);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [hasContent, setHasContent] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<RichComposerHandle | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const updateSpotlight = (e: React.MouseEvent<HTMLElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     e.currentTarget.style.setProperty('--mouse-x', `${e.clientX - rect.left}px`);
     e.currentTarget.style.setProperty('--mouse-y', `${e.clientY - rect.top}px`);
   };
+
   useEffect(() => {
     const card = cardRef.current;
     if (card === null) return;
@@ -63,6 +74,7 @@ export const CommandInput: React.FC = () => {
       root.style.removeProperty('--composer-h');
     };
   }, []);
+
   const {
     runtimeStatus,
     submitPrompt,
@@ -88,26 +100,38 @@ export const CommandInput: React.FC = () => {
   const busy = runtimeStatus === 'running';
   const uploading = attachments.some((entry) => entry.status === 'uploading');
   const readyAttachment = attachments.some((entry) => entry.status === 'ready');
-  const ready = text.trim() !== '' || readyAttachment;
-  const canSend = ready && !uploading;
+  const canSend = (hasContent || readyAttachment) && !uploading;
 
-  const handleSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (uploading) {
-      // The store refuses too (and publishes the reason); this only keeps the
-      // optimistic input text in place.
-      void submitPrompt(text);
-      return;
-    }
-    if (!ready) return;
-    void submitPrompt(text);
-    setText('');
-  };
+  /**
+   * One submit path, shared by the editor's Enter, the primary button and the
+   * form.
+   *
+   * A refused submit (an upload still in flight) keeps the draft exactly as it
+   * is: the store publishes the reason, and the reader's own text is the one
+   * thing a failed send must never throw away.
+   */
+  const handleSubmit = useCallback(
+    (draft?: ComposerSnapshot) => {
+      const snapshot = draft ?? composerRef.current?.snapshot();
+      if (snapshot === undefined) return;
+      if (uploading) {
+        void submitPrompt(snapshot.text);
+        return;
+      }
+      if (isSnapshotEmpty(snapshot) && !readyAttachment) return;
+      void submitPrompt(snapshot.text);
+      composerRef.current?.reset();
+    },
+    [submitPrompt, uploading, readyAttachment],
+  );
 
-  const handleFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    void addAttachments(Array.from(files));
-  };
+  const handleFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      void addAttachments(Array.from(files));
+    },
+    [addAttachments],
+  );
 
   return (
     // The card floats over the transcript's bottom edge, so the transcript scrolls
@@ -131,8 +155,10 @@ export const CommandInput: React.FC = () => {
           handleFiles(e.dataTransfer?.files ?? null);
         }}
         onPaste={(e) => {
-          // Only an image paste is intercepted: a text paste keeps its default
-          // behaviour, because the composer is an ordinary text input.
+          // Only an image paste is intercepted here: the editor handles its own
+          // text paste, and a paste that carries no file keeps its default
+          // behaviour.  A file-carrying paste is routed to `handleFiles`, the
+          // same single path a pick or a drop takes.
           const files = e.clipboardData?.files;
           if (!files || files.length === 0) return;
           e.preventDefault();
@@ -144,7 +170,7 @@ export const CommandInput: React.FC = () => {
         }`}
       >
         {/* The card's acrylic is a layer, not the card's own material.
-            `backdrop-filter` makes an element a *backdrop root*, so the two pickers
+            `backdrop-filter` makes an element a *backdrop root*, so the pickers
             that hang above this card could only blur what the card painted itself --
             the transcript behind them stayed sharp and they read as transparent
             instead of frosted.  The card still gets the material; the pickers get
@@ -153,55 +179,6 @@ export const CommandInput: React.FC = () => {
           aria-hidden="true"
           className="material-chrome pointer-events-none absolute inset-0 -z-10 rounded-card"
         />
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 px-3.5 pt-2.5">
-            {attachments.map((entry) => {
-              const percent =
-                entry.size > 0
-                  ? Math.min(100, Math.round((entry.uploadedBytes / entry.size) * 100))
-                  : 0;
-              const failed = entry.status === 'failed';
-              return (
-                <div
-                  key={entry.localId}
-                  // The chip is the image, not a file row: the name, type and size
-                  // live in the tooltip and the hover preview, and a failure is
-                  // still spelled out in the alert below the composer.
-                  className={`relative rounded border p-1 ${
-                    failed ? 'border-red-200 bg-red-50/70' : 'border-gray-200 bg-canvas'
-                  }`}
-                  title={entry.error ?? `${entry.name} · ${entry.mime} · ${formatBytes(entry.size)}`}
-                >
-                  <AttachmentPreview
-                    source={entry.source}
-                    label={entry.name}
-                    mime={entry.mime}
-                    size={entry.size}
-                    failed={failed}
-                  />
-                  {entry.status === 'uploading' && (
-                    <span className="pointer-events-none absolute inset-1 flex items-center justify-center rounded bg-surface/70 font-mono text-[10px] tabular-nums text-blue-700">
-                      {percent}%
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(entry.localId)}
-                    title={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    aria-label={entry.status === 'uploading' ? '取消上传' : '移除附件'}
-                    className="ui-icon-button ui-compact absolute -right-1.5 -top-1.5 border border-line bg-surface shadow-card"
-                  >
-                    <Dismiss20Regular aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
-            {/* The cap belongs with the chips: there is no separate status row. */}
-            <span className="font-mono text-[10px] text-gray-400">
-              {attachments.length}/{ATTACHMENT_MAX_COUNT}
-            </span>
-          </div>
-        )}
 
         {attachmentError !== null && (
           <div
@@ -212,32 +189,22 @@ export const CommandInput: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex flex-col">
-          <input
-            id="console-composer"
-            name="prompt"
-            type="text"
-            // The console renders no suggestion list of its own: that dropdown is
-            // the browser's own "previously entered values" history for this
-            // field, which is noise in a chat box (the same guard the pairing
-            // field already uses).
-            autoComplete="off"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
-            // The busy state lives in the placeholder (as in the reference
-            // composer) instead of a status row; the steer count is already shown
-            // on the transcript's own status strip.
-            // No "/ for commands, @ for files" hint either: neither a command
-            // palette nor file mention exists in this console.
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSubmit();
+          }}
+          className="flex flex-col"
+        >
+          <RichComposer
+            handleRef={composerRef}
             placeholder={busy ? '继续输入以排队后续修改' : 'Build anything'}
-            aria-label="消息输入"
-            className="ui-composer-input w-full bg-transparent text-gray-900 placeholder:text-gray-500 font-sans"
+            busy={busy}
+            attachments={attachments}
+            onSubmit={handleSubmit}
+            onFiles={handleFiles}
+            onRemoveAttachment={removeAttachment}
+            onContentChange={setHasContent}
           />
           {/* Control row: add on the left, what the next turn runs on the right.
               It is also the pickers' anchor (`relative`): anchored to their own
@@ -245,39 +212,59 @@ export const CommandInput: React.FC = () => {
           <div className="ui-composer-toolbar relative">
             <button
               type="button"
-              onClick={() => setProjectDialogOpen(true)}
-              title="添加项目（选择本地目录并新建会话）"
-              aria-label="添加项目"
+              onClick={() => fileInputRef.current?.click()}
+              title="插入图片"
+              aria-label="插入图片"
               className="ui-icon-button"
             >
               <Add20Regular aria-hidden="true" />
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                handleFiles(e.target.files);
+                // Reset so picking the same file twice still fires a change.
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => setProjectDialogOpen(true)}
+              title="添加项目（选择本地目录并新建会话）"
+              className="ui-button ui-model-trigger"
+            >
+              添加项目
+            </button>
             <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
               <ModelControls />
             </div>
-          {busy ? (
-            <button
-              type="button"
-              onClick={() => {
-                void cancelActiveTurn();
-              }}
-              title="停止当前轮次 (Ctrl+C)"
-              aria-label="停止当前轮次"
-              className="ui-icon-button ui-danger ui-round"
-            >
-              <Stop20Filled aria-hidden="true" />
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!canSend}
-              title={uploading ? '附件仍在上传中' : 'Send (Enter)'}
-              aria-label="发送消息"
-              className="ui-icon-button ui-primary ui-round"
-            >
-              <ArrowUp20Regular aria-hidden="true" />
-            </button>
-          )}
+            {busy ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void cancelActiveTurn();
+                }}
+                title="停止当前轮次 (Ctrl+C)"
+                aria-label="停止当前轮次"
+                className="ui-icon-button ui-danger ui-round"
+              >
+                <Stop20Filled aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!canSend}
+                title={uploading ? '附件仍在上传中' : 'Send (Enter)'}
+                aria-label="发送消息"
+                className="ui-icon-button ui-primary ui-round"
+              >
+                <ArrowUp20Regular aria-hidden="true" />
+              </button>
+            )}
           </div>
         </form>
       </div>

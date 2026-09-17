@@ -50,6 +50,8 @@ import type {
   SessionSearchResult,
   ListDirectoriesParams,
   ListDirectoriesResult,
+  ListSkillsParams,
+  ListSkillsResult,
   ListProjectsParams,
   ProjectListResult,
   ReadSessionHistoryParams,
@@ -616,6 +618,20 @@ export class SynapseRuntimeClient {
     return this.call<ListDirectoriesResult>('runtime.fs.list', {
       path: params.path ?? null,
       limit: params.limit ?? DIRECTORY_LIST_PAGE_SIZE,
+    });
+  }
+
+  /**
+   * List discoverable Agent Skills (`runtime.skills.list`).
+   *
+   * An optional `project_id` parameter resolves project-specific skills paths;
+   * when omitted, default skills paths are searched.
+   */
+  public async listSkills(
+    params: ListSkillsParams = {},
+  ): Promise<ListSkillsResult> {
+    return this.call<ListSkillsResult>('runtime.skills.list', {
+      project_id: params.project_id ?? null,
     });
   }
 

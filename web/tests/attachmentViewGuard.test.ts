@@ -18,7 +18,14 @@ const read = (name: string) => readFileSync(join(here, '..', 'src', 'components'
 const thumb = read('AttachmentThumb.tsx');
 const preview = read('AttachmentPreview.tsx');
 const lightbox = read('ImageLightbox.tsx');
-const composer = readFileSync(join(here, '..', 'src', 'components', 'CommandInput.tsx'), 'utf8');
+const richComposer = readFileSync(
+  join(here, '..', 'src', 'components', 'composer', 'RichComposer.tsx'),
+  'utf8',
+);
+const previewFlyout = readFileSync(
+  join(here, '..', 'src', 'components', 'composer', 'ImagePreviewFlyout.tsx'),
+  'utf8',
+);
 
 test('images keep their aspect ratio instead of being cropped into a square', () => {
   for (const [name, source] of [
@@ -48,26 +55,36 @@ test('the lightbox is a dialog with three dismissal paths', () => {
 });
 
 test('a composer row is the image, not a file-name chip', () => {
+  // The pill keeps the name and the failure reason in its tooltip rather than
+  // spending a row on them, and the file size is never printed inline.
   assert.ok(
-    !composer.includes('>{entry.name}</span>'),
-    'the composer must not print the file name next to the thumbnail',
+    richComposer.includes('title={entry.error ??'),
+    'the pill tooltip must carry the name and the failure reason',
   );
   assert.ok(
-    !composer.includes("tabular-nums text-gray-400"),
-    'the composer must not print the file size next to the thumbnail',
+    !richComposer.includes('formatBytes'),
+    'the composer must not print the file size inside the pill',
   );
-  // The name stays reachable without occupying the row.
-  assert.ok(composer.includes('title={entry.error ??'), 'the chip tooltip must carry the name');
 });
 
-test('hovering a composer row reveals the enlarged copy', () => {
-  assert.ok(preview.includes('group relative'), 'the hover target must be the chip wrapper');
-  assert.ok(preview.includes('group-hover:block'), 'hovering must reveal the enlarged copy');
+test('hovering a composer pill reveals the enlarged copy', () => {
+  assert.ok(preview.includes('thumbRef'), 'the thumbnail must be assigned the object URL');
+  // The enlarged copy is a portalled flyout anchored to the thumbnail: inside the
+  // editor's own scroller it would be clipped by the composer card.
   assert.ok(
-    preview.includes('hidden w-max'),
-    'the enlarged copy must be hidden until hover, not a modal',
+    richComposer.includes('<ImagePreviewFlyout'),
+    'hovering a pill must mount the enlarged copy',
   );
-  // Both <img> nodes share the single object URL of the blob.
-  assert.ok(preview.includes('thumbRef'), 'the chip image must be assigned the URL');
-  assert.ok(preview.includes('zoomRef'), 'the enlarged copy must be assigned the same URL');
+  assert.ok(
+    richComposer.includes('onMouseEnter={(event) => onHover(event.currentTarget, entry)}'),
+    'the hover target must be the pill',
+  );
+  assert.ok(
+    previewFlyout.includes('createPortal') || previewFlyout.includes('<Portal'),
+    'the enlarged copy must not be clipped by the editor',
+  );
+  assert.ok(
+    previewFlyout.includes('anchor.getBoundingClientRect()'),
+    'the enlarged copy must be anchored to the thumbnail, not to the card',
+  );
 });

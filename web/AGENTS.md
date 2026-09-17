@@ -66,6 +66,7 @@ They launch headless Chrome/Edge through `tests/helpers/cdp.ts` (`SYNAPSE_CDP_BR
 
 | Change area | Preferred tests |
 | --- | --- |
+| composer (input, mentions, images) | `tests/composerSerialization.test.ts`, `composerMentions.test.ts`, `composerKeyboardGuard.test.ts`, `composerAttachmentGuard.test.ts`, `attachmentViewGuard.test.ts`, `composerEditing.verify.ts` |
 | bottom bar / shortcuts | `tests/bottomBarContract.test.ts`, `bottomBarLayout.test.ts`, `bottomBarDismiss.test.ts`, `bottomBarInteraction.verify.ts`, `bottomBarMore.verify.ts` |
 | shell / top bar / transcript layout | `tests/shellLayout.test.ts`, `topBarLayout.test.ts`, `transcriptLayoutGuard.test.ts`, `transcriptScrollGuard.test.ts`, plus the matching `.verify.ts` |
 | transcript view model | `tests/historyMapper.test.ts`, `liveEventReducer.test.ts`, `liveDeltaBatch.test.ts`, `transcriptLabels.test.ts`, `transcriptVirtualization.test.ts` |

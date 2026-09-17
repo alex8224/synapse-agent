@@ -15,6 +15,10 @@ import { test } from 'node:test';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const composer = readFileSync(join(here, '..', 'src', 'components', 'CommandInput.tsx'), 'utf8');
+const richComposer = readFileSync(
+  join(here, '..', 'src', 'components', 'composer', 'RichComposer.tsx'),
+  'utf8',
+);
 const preview = readFileSync(join(here, '..', 'src', 'components', 'AttachmentPreview.tsx'), 'utf8');
 const bar = readFileSync(join(here, '..', 'src', 'components', 'BottomBar.tsx'), 'utf8');
 
@@ -51,9 +55,14 @@ test('a pasted image goes through the same path as a picked one', () => {
 });
 
 test('the composer previews the pick before submit', () => {
-  assert.ok(composer.includes('<AttachmentPreview'), 'each pending row must render the preview');
+  // The pending image is rendered as an inline pill inside the editor, so the
+  // preview lives in the rich composer rather than in the card that hosts it.
   assert.ok(
-    composer.includes('source={entry.source}'),
+    richComposer.includes('<AttachmentPreview'),
+    'each pending row must render the preview',
+  );
+  assert.ok(
+    richComposer.includes('source={entry.source}'),
     'the preview must render the local pick, not a remote read',
   );
 });

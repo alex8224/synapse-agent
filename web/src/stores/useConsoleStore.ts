@@ -24,6 +24,7 @@ import type {
   ApprovalDecision,
   ProjectListItem,
   ListDirectoriesResult,
+  ListSkillsResult,
   ReloadMcpResult,
   SessionRecoverabilityResult,
 } from '../client/types.ts';
@@ -92,6 +93,7 @@ import {
   parseSessionGoalResult,
 } from './goalView.ts';
 import type { SessionGoalView } from './goalView.ts';
+import type { ArtifactPageView } from '../runtime-client/artifacts.ts';
 
 // Re-exported for callers that imported these from the store in earlier phases.
 export type { TranscriptMessage, SessionItem } from './historyMapper';
@@ -827,6 +829,27 @@ interface ConsoleStore {
    * listing fails; the dialog surfaces the reason.
    */
   listDirectories: (path: string | null) => Promise<ListDirectoriesResult>;
+
+  /**
+   * List one workspace directory (`runtime.artifacts.list`).
+   *
+   * Backs the composer's `@` file list.  One page per call, and the caller
+   * decides the path: the composer only ever asks for the directory the typed
+   * query names, so no keystroke can turn into a whole-workspace scan.
+   */
+  listArtifacts: (
+    session: SessionRef,
+    path: string,
+    cursor?: string | null,
+    limit?: number,
+  ) => Promise<ArtifactPageView>;
+
+  /**
+   * List discoverable Agent Skills (`runtime.skills.list`).
+   *
+   * Backs the composer's `@` skill list.
+   */
+  listSkills: (projectId?: string | null) => Promise<ListSkillsResult>;
 
   // History pagination / availability state.
   historyLoading: boolean;
@@ -2644,6 +2667,16 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const client = requireRuntimeClient();
     if (!client) throw new Error(RUNTIME_RPC_NOT_READY);
     return client.listDirectories({ path });
+  },
+  listArtifacts: async (session, path, cursor = null, limit) => {
+    const client = requireRuntimeClient();
+    if (!client) throw new Error(RUNTIME_RPC_NOT_READY);
+    return client.listArtifacts(session, path, cursor, limit);
+  },
+  listSkills: async (projectId = null) => {
+    const client = requireRuntimeClient();
+    if (!client) throw new Error(RUNTIME_RPC_NOT_READY);
+    return client.listSkills({ project_id: projectId });
   },
   cancelActiveTurn: async () => {
     const client = requireRuntimeClient();

@@ -273,7 +273,32 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 | 控件 | 常规按钮/输入框 32px，行内操作 24px；hover、pressed、disabled 和键盘焦点保持一致 |
 | 排印 | UI 14px、分组/辅助标签 12px；`font-sans` / `font-mono` 均接入主题字体，代码和遥测保留专用字体 |
 | 会话列表 | 当前会话使用品牌浅底、左侧标记及 `aria-current`；项目与时间分组有独立层级 |
-| 输入区 | 单张紧凑卡片，宽度另受 `--composer-max` 封顶（比聊天列窄，同中轴）；文本区在上、控制行共用同一表面，聚焦时卡片描边转为强调色，字段本身不画焦点环；发送/停止为圆形图标按钮；模型/推理选项为可键盘操作的按钮，窄屏工具栏可换行；控制行左侧 `+` 为「添加项目」（见下节） |
+| 输入区 | 单张紧凑卡片，宽度另受 `--composer-max` 封顶（比聊天列窄，同中轴）；文本区在上、控制行共用同一表面，聚焦时卡片描边转为强调色，字段本身不画焦点环；发送/停止为圆形图标按钮；模型/推理选项为可键盘操作的按钮，窄屏工具栏可换行；控制行左侧 `+` 为「插入图片」（见下节），其右为「添加项目」 |
+
+### 输入区：多行编辑与内联引用
+
+输入区是一个可多行编辑的富文本表面（`src/components/composer/RichComposer.tsx`），但**提交协议没有变化**：
+仍是 `submitPrompt(text)` 加 store 自己持有的 `attachment_refs`。富编辑只发生在编辑阶段，提交时由
+`composerDocument.ts` 把文档结构投影回纯文本。
+
+| 交互 | 行为 |
+|---|---|
+| 换行 / 发送 | `Enter` 发送（运行中则排队为插话），`Shift+Enter` 换行；换行由 `insertLineBreak` 显式插入，避免浏览器用 `<div>` 包裹导致文本还原依赖布局 |
+| 输入法 | 组合输入（IME）期间 `Enter` 属于候选词，不触发发送或选中 |
+| 图片 | 粘贴、拖放或 `+` 点选都走同一条 `handleFiles`；每次最多 8 张、每张 ≤ 4 MB，被拒时显示原因 |
+| 图片 Holder | 接受后作为**行内 Pill** 插在光标处（约 24px 高：微缩略图 + 文件名 + 进度 + 移除按钮），鼠标悬停在缩略图上弹出放大预览（`ImagePreviewFlyout`，贴合缩略图上方 8px，视口不足时翻到下方） |
+| `@` 引用 | 键入 `@` 就地弹出候选（原生 Fluent 列表：分组标题、`aria-activedescendant` 指示、`.fluent-scrollbar`），`↑` `↓` 移动、`Enter` / `Tab` 插入、`Esc` 关闭 |
+| `@` 类别 | 工作区文件（`runtime.artifacts.list` 按查询目录按需读取，不扫描整个工作区）、Agent 技能、运行上下文 |
+| 序列化 | 文本原样、换行 `\n`、文件 `@path`、技能 `@skill:name`、上下文 `@context:name`、图片只进 `attachment_refs` 不进文本 |
+
+Pill 是 `contenteditable="false"` 的原子节点，其含义存在按本地 id 索引的注册表里，**不从 DOM 读回**，
+因此文件名、进度百分比、按钮文案都不可能混进 prompt。`composerDocument.ts` 的序列化只认结构与注册表，
+不认识标签内容。
+
+关于技能与上下文：控制台目前**没有**对应 RPC（`skills/` 由 Python 侧 `synapse.content.skills_catalog`
+读取），所以 `mentionCatalog.ts` 里的技能清单是仓库 `skills/<name>/SKILL.md` 的静态镜像，
+`tests/composerMentions.test.ts` 会把它与检出目录逐一比对——新增技能必须同时补一行。
+
 
 保留两列布局、240px 侧栏、44px 折叠轨、聊天列宽度及发送/停止/附件处理逻辑。
 
@@ -508,7 +533,7 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 
 | 操作 | wire 方法 | 说明 |
 |---|---|---|
-| 粘贴/拖放 | — | 把文件粘贴到输入卡片，或直接拖放到卡片上（`+` 按钮已改作「添加项目」，不再点选图片）；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒的文件名与原因会显示在输入区 |
+| 粘贴 / 拖放 / 点选 | — | 三条入口都走同一条 `handleFiles`：粘贴到输入卡片、直接拖放到卡片上、或用控制行的 `+` 点选文件；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒的文件名与原因会显示在输入区 |
 | 上传 | `runtime.attachments.begin/append/finish` | 每个附件独立串流并显示进度；「取消/移除」会在块间中止（best-effort `runtime.attachments.abort`）。失败只显示原因，不会把文件名当成 prompt 发送 |
 | 发送 | `runtime.turn.submit` 的 `attachment_refs` | 有附件仍在上传时禁止发送；仅附件（文本为空）可以提交；已 finalize 的 ref 不会被前端删除 |
 | 历史 | `runtime.attachments.read` | 历史里的用户消息只带 metadata，缩略图按需分块读取并生成 blob URL；卸载或切换会话时 revoke，超过 4 MB 或非图片类型不加载 |
@@ -546,7 +571,8 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 （daemon 校验其为已存在目录并 upsert 用户层 catalog，按路径幂等、复用稳定的 `project_id`）。
 注册成功后控制台切到该项目并新建一个会话。
 
-图片附件仍可通过**粘贴/拖放**加入输入卡片；点选图片的入口已移除，8 张 / 4 MB 上限与预览行为不变。
+图片附件除**粘贴/拖放**外，也可用控制行的 `+` 点选（`+` 仍是插入图片，不是菜单）；三条入口共用同一
+校验与上传管线，8 张 / 4 MB 上限与行内 Pill + 悬停预览行为一致。
 
 ## 契约与生成类型
 
