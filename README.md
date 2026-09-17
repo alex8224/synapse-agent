@@ -137,8 +137,19 @@ synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0
 ```
 
 打开 <http://127.0.0.1:8080/> 输入该 8 位配对码完成配对（单次使用，默认 300s
-过期）。会话 cookie 只在 `POST /api/pair` 成功时签发；`GET /api/bootstrap` 已删除，
+过期）。会话 cookie 默认只在 `POST /api/pair` 成功时签发；`GET /api/bootstrap` 已删除，
 恒返回 405 且不签发 cookie。
+
+本地调试（例如用 CDP/devtools 驱动控制台、不想每次重启宿主都重新输码）可以**显式**加
+`--no-pairing`（默认关闭）：宿主不创建、也不打印配对码，`GET /api/session` 会为**任何**同源
+loopback 浏览器直接签发会话（200 + `Set-Cookie`，属性与配对签发一致），stderr 改打一条
+`WARNING pairing is disabled (--no-pairing) …`，stdout 元数据行的 `pairing_required` 变为
+`false`；`POST /api/pair` 在该模式下返回 400，跨站 POST 仍被 403 拒绝。它只保护到「同源
+loopback 浏览器」这一层（`Host`/`Origin`/`Sec-Fetch-Site` 都是客户端可伪造的头，只算纵深
+防御），**没有**任何持有证明，因此只用于本机调试，不要用在共享或对外暴露的控制台上。其余
+边界不变：会话只在宿主进程内存、上限 8、默认 12h TTL，宿主重启即失效（该模式下由下一次
+会话探测自动重新签发），`/runtime-ws` 中继仍要求有效会话 cookie，daemon bearer 依旧不出现
+在任何 HTTP 响应、stdout 或中继帧里。
 
 宿主默认且仅支持 loopback（127.0.0.1/localhost/::1，配置层强制），是 loopback
 单用户工具，不是公网多租户安全产品。已建立的边界：浏览器始终拿不到 daemon
@@ -155,8 +166,10 @@ cookie；浏览器断线不会取消 daemon 中仍在运行的 turn。静态服�
 （响应不含 token；`POST` → 405）。
 
 **明确不承诺**（详见 `docs/web-console/formal-host.md` §4、§9）：`Host`/`Origin`/
-`Sec-Fetch-Site` 都是客户端可伪造的头，只算纵深防御，真正的门是配对码；本切片
-不支持 TLS/反向代理（外部端口 ≠ 绑定端口）；会话不持久化，宿主重启后需重新配对；
+`Sec-Fetch-Site` 都是客户端可伪造的头，只算纵深防御，默认模式下真正的门是配对码
+（显式 `--no-pairing` 的豁免见上，它没有任何持有证明）；本切片不支持
+TLS/反向代理（外部端口 ≠ 绑定端口）；会话不持久化，宿主重启后需重新配对
+（`--no-pairing` 下由下一次会话探测自动重新签发，仍非持久化）；
 会话 TTL 到期不主动断开已建立的中继；中继缓冲上界是**进程内**上界（不含
 aiohttp/内核 socket 缓冲，**不等于进程 RSS 上界**）；跨项目拒绝对不可读/非文本帧
 fail-open，且白名单与 `protocol.decode_params` 无源码级绑定，安全性依赖 daemon 的
@@ -172,7 +185,8 @@ cd web && npm run dev     # 打开 http://127.0.0.1:5173
 Vite 只把 `/api` 与 `/runtime-ws` 代理到宿主，并把转发请求的 `Origin` 重写为宿主
 origin；它不直连 daemon、不注入任何凭据、不读 token 文件，`server.host` 保持
 loopback 默认值，因此不构成认证旁路，宿主也不因 dev 放宽任何校验。dev 下同样需要
-配对码（从宿主 stderr 读取）。完整命令与参数见 `docs/web-console/formal-host.md`。
+配对码（从宿主 stderr 读取；是否豁免完全由宿主的 `--pairing`/`--no-pairing` 决定）。
+完整命令与参数见 `docs/web-console/formal-host.md`。
 
 控制台里的每个弹框/浮层都能只用键盘操作（F2 模型选择、F5 MCP 面板、F6 目标、
 输入框左侧 `+` 的添加项目、顶栏分支 chip 的 Git Explorer、设置对话框）：打开后焦点
@@ -187,6 +201,7 @@ MCP 服务器列表落在第一行），`↑`/`↓` 按阅读顺序在框内控�
 （`display_override: window-controls-overlay`，浏览器只保留窗口按钮；不支持该模式的浏览器
 退回普通应用窗口）。安装只是外壳——**宿主仍然要在跑**
 （`synapse-web-console` 及其 daemon），页面关掉后不会有后台推送，宿主重启后也要重新配对。
+宿主若显式用 `--no-pairing`，则重启后由下一次会话探测自动重新签发会话（仍非持久化）。
 细节与边界见 `web/README.md`「可安装应用（PWA）」。
 
 Open a session in any registered project from the global catalog:

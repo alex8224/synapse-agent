@@ -43,6 +43,10 @@ class WebConsoleConfig:
     max_message_bytes: int = DEFAULT_MESSAGE_BYTES
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     pair_ttl_seconds: float = DEFAULT_PAIR_TTL_SECONDS
+    #: ``False`` only behind the explicit ``--no-pairing`` opt-in: the host then
+    #: mints a session for any same-origin loopback browser instead of asking for
+    #: the one-time code.  Local debugging only; never the shipped default.
+    pairing_required: bool = True
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     max_concurrent_sockets: int = DEFAULT_MAX_CONCURRENT_SOCKETS
     ws_heartbeat_seconds: int = DEFAULT_WS_HEARTBEAT_SECONDS
@@ -87,6 +91,8 @@ class WebConsoleConfig:
             raise ValueError("project_scope must be 'workspace' or 'all'")
         if type(self.pair_ttl_seconds) not in (int, float) or self.pair_ttl_seconds <= 0:
             raise ValueError("pair_ttl_seconds must be positive")
+        if type(self.pairing_required) is not bool:
+            raise ValueError("pairing_required must be a boolean")
         if (
             type(self.max_concurrent_sockets) is not int
             or not 1 <= self.max_concurrent_sockets <= 256

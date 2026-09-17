@@ -14,7 +14,8 @@
         ▼
 [synapse-web-console  薄 aiohttp 宿主]
    - 静态产物（web/dist，--static-dir）
-   - POST /api/pair（配对码换会话 cookie） / GET /api/session / POST /api/logout
+   - POST /api/pair（配对码换会话 cookie；--no-pairing 下拒绝） / GET /api/session
+     （--no-pairing 下无有效会话即签发，见 §3.1） / POST /api/logout
    - GET /api/runtime-status（只读：daemon 端点 / state dir / 启动提示）
    - /runtime-ws 中继（浏览器 ⇄ daemon，JSON-RPC 帧原样转发；唯一例外见 §4.1）
         │  Authorization: Bearer <daemon token>（服务端持有）
@@ -104,6 +105,7 @@ PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承
 | `--max-message-bytes INT` | `1048576` | 单帧上限；`1024..8388608` |
 | `--session-ttl-seconds INT` | `43200`（12h） | 会话 cookie 生命周期；正整数 |
 | `--pair-ttl-seconds INT` | `300` | 配对码生命周期；正整数 |
+| `--pairing` / `--no-pairing` | 开启（`--pairing`） | 默认要求一次性配对码；`--no-pairing` 是**显式本地调试豁免**（仅 loopback，见 §3.1）：宿主不创建也不打印配对码，`GET /api/session` 为任何同源 loopback 浏览器直接签发会话，启动时只在 stderr 打一条 WARNING；`WebConsoleConfig.pairing_required` 非布尔值时启动即报 `pairing_required must be a boolean` |
 | `--max-sockets INT` | `16` | 并发中继上限；`1..256` |
 | `--max-body-bytes INT` | `4096` | `/api/*` 请求体上限；`64..1048576` |
 | `--ws-heartbeat-seconds INT` | `30` | WS ping 间隔；`0` 关闭；`0..3600` |
@@ -130,11 +132,26 @@ install/start/stop/status 控制。
 {"schema_version":1,"host":"127.0.0.1","port":8080,"url":"http://127.0.0.1:8080/","websocket":"ws://127.0.0.1:8080/runtime-ws","project_id":"…","workspace":"…","pairing_required":true}
 ```
 
-- stderr：固定格式的配对码行（脚本与测试按此前缀抓取）：
+`pairing_required` 如实反映当前模式：默认 `true`，`--no-pairing` 下为 `false`（stdout 仍
+**恰好一行**，不因该开关增删行）。
+
+- stderr（默认）：固定格式的配对码行（脚本与测试按此前缀抓取）：
 
 ```
 synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
 ```
+
+- stderr（`--no-pairing`）：**不打印**配对码行，改为**恰好一条** WARNING（同样只在 stderr、
+  不进 stdout；前缀 `synapse-web-console: WARNING`，端口取实际绑定端口）：
+
+```
+synapse-web-console: WARNING pairing is disabled (--no-pairing): http://127.0.0.1:8080/ mints a session for any same-origin loopback browser without a code; local debugging only
+```
+
+该模式下宿主不会公告任何配对码：正常路径（启动、码 TTL 到期、logout、失败限速）根本不生成码，
+连内部强制轮换（`rotate_pairing_code()`，测试钩子）也只改内存、不打印。该 WARNING
+**不进入** `pairing_notices`（那是「码」的公告日志，不是豁免日志），因此按 `pairing_notices`
+或配对码行前缀判断状态的脚本在该模式下会看到「零条公告」，这正是「无码」而非「码还没打出来」。
 
 配对码为 8 字符 Crockford base32（字母表 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`，
 不含 I/L/O/U，40 bit 熵），单次使用，只存在于宿主进程内存与 stderr；不落盘、
@@ -144,8 +161,8 @@ synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0
 
 | 方法 | 路径 | 语义 | 成功 | 失败 |
 |---|---|---|---|---|
-| `POST` | `/api/pair` | 用配对码换会话（体 `{"code":"XXXXXXXX"}`） | 200 `{"project":{…}}` + `Set-Cookie` | 400 体不合法 / 401 码无效 / 403 CSRF 链 / 405 方法错 / 413 体过大 / 415 Content-Type / 429 限速 |
-| `GET` | `/api/session` | 查询当前会话与项目上下文 | 200 `{"project":{…},"expires_in":<int 秒>}` | 401 无/无效会话 |
+| `POST` | `/api/pair` | 用配对码换会话（体 `{"code":"XXXXXXXX"}`）；`--no-pairing` 下**不是**会话来源（见 §3.1） | 200 `{"project":{…}}` + `Set-Cookie` | 400 体不合法 / 400 `{"error":"pairing is disabled on this host"}`（`--no-pairing`，CSRF 链通过后）/ 401 码无效 / 403 CSRF 链 / 405 方法错 / 413 体过大 / 415 Content-Type / 429 限速 |
+| `GET` | `/api/session` | 查询当前会话与项目上下文；`--no-pairing` 且无有效会话 cookie 时**直接签发**新会话（见 §3.1） | 200 `{"project":{…},"expires_in":<int 秒>}`；`--no-pairing` 的自动签发另带 `Set-Cookie` | 默认：401 无/无效会话；`--no-pairing`：403（`Host`/`Sec-Fetch-Site`/`Origin` 守卫失败） |
 | `GET` | `/api/runtime-status` | **只读** daemon 状态（daemon 不可用时给出可操作提示） | 200 `{"runtime":{"endpoint":{"host":…,"port":…}\|null,"state_dir":…,"hint":"start synapse-runtime --state-dir …"}}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
 | `GET` | `/api/projects` | **deprecated 兼容**（不再是业务入口）：可切换项目列表 | 200 `{"projects":[{"project_id","workspace_path","workspace_name","git_branch","session_count","last_active_at"}]}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
 | `POST` | `/api/logout` | 作废全部会话（体 `{}`） | 204（无体） | 401 / 403 / 405 |
@@ -182,12 +199,40 @@ loopback daemon 端点（`daemon.json` 缺失或端点不可解析时为 `null`�
 | `HttpOnly` / `SameSite` / `Path` | 必须 / `Strict` / `/` |
 | `Domain` / `Secure` | **不设置**（host-only；本切片仅 http，设 `Secure` 会让浏览器直接丢弃 cookie） |
 | `Max-Age` | `--session-ttl-seconds`（默认 43200） |
-| 签发时机 | **仅** `POST /api/pair` 成功时（`GET /api/bootstrap` 不再签发） |
+| 签发时机 | 默认**仅** `POST /api/pair` 成功时（`GET /api/bootstrap` 不再签发）；`--no-pairing` 下额外由 `GET /api/session` 在无有效会话时自动签发（见 §3.1） |
 | 上限 / 过期 | 注册表 ≤ 8（先清过期再淘汰最旧）；TTL 到期后 HTTP → 401、WS 升级 → 403 |
-| 持久化 | 不持久化（内存注册表）；宿主重启 → 全部会话失效 → 重新配对 |
+| 持久化 | 不持久化（内存注册表）；宿主重启 → 全部会话失效 → 默认模式重新配对，`--no-pairing` 下由下一次会话探测自动重新签发（见 §3.1） |
 
-不变式：只要当前不存在有效会话，宿主就持有一个未过期未消费的配对码且已打印到
-stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时重印）。
+不变式（默认模式）：只要当前不存在有效会话，宿主就持有一个未过期未消费的配对码且已打印到
+stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时重印）。该不变式在
+`--no-pairing` 下**不适用**：该模式没有码，也不启动配对维护循环，所以「无有效会话 ⇒ 有已
+公告的码」是空真（vacuous）而非被打破——它只是不再描述任何东西（见 §3.1）。
+
+### 3.1 `--no-pairing`：唯一的 GET 签发豁免（显式 opt-in，仅 loopback）
+
+`--no-pairing` 下宿主不创建也不打印任何配对码（见 §2.3），`GET /api/session` 在没有有效
+会话 cookie 时**不再返回 401，而是直接签发一个新会话**：
+
+- 响应：`200`，体 `{"project":{…},"expires_in":<--session-ttl-seconds 秒>}`，并带
+  `Set-Cookie: synapse_web_session=…; HttpOnly; Max-Age=<--session-ttl-seconds>; Path=/; SameSite=strict`
+  与 `Cache-Control: no-store`。cookie 属性与配对签发共用同一条写入路径，不会漂移。
+  已有有效会话时行为不变：`200` + `expires_in`，**不**重复签发、不带 `Set-Cookie`。
+- 该 GET 走**收窄版**守卫链：不要求 `Content-Type: application/json`，也不要求
+  `X-Synapse-Console`（那两个只针对状态变更请求）。判定顺序为
+  ① `Host` 主机名 ∈ loopback 允许表且端口（写了的话）== 实际绑定端口，否则 `403 forbidden host`；
+  ② `Sec-Fetch-Site` 存在时必须 ∈ {`same-origin`,`none`}，否则 `403 cross-site request is not allowed`；
+  ③ `Origin` **存在**时必须精确等于 `http://{127.0.0.1|localhost|[::1]}:<绑定端口>`，
+  否则 `403 cross-origin request is not allowed`。
+- 只有 `GET /api/session` 会签发：`/api/runtime-status`、`/api/projects`、`/runtime-ws`
+  的会话检查一律不变。
+- `POST /api/pair` 在该模式下**不是**会话来源：完整状态变更 CSRF 链照常先跑（跨站 POST 仍是
+  403），链通过后返回 `400 {"error":"pairing is disabled on this host"}`，且**不带** `Set-Cookie`。
+- 它打破的正是默认姿态里「**没有 GET 能签发会话**」这一条（`/api/bootstrap` 被删除、恒返回
+  405，正是为了让这一点可被断言）：这是唯一一处、显式传参才生效、只对 loopback 生效的有意豁免。
+- **代价**（不夸大）：该模式**没有**任何持有证明——任何同源 loopback 浏览器都能拿到会话，
+  `Host`/`Origin`/`Sec-Fetch-Site` 又是客户端可伪造的头，只算纵深防御。因此它只用于本地调试
+  （例如用 CDP/devtools 驱动控制台、不想每次重启宿主都重新输码），**不要**用于共享或对外
+  暴露的控制台。
 
 ## 4 安全边界（如实，不夸大）
 
@@ -196,7 +241,7 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 | 机制 | 现状 |
 |---|---|
 | loopback-only 绑定 | host 配置层只允许 127.0.0.1 / localhost / ::1；拒绝 0.0.0.0，不自动开放 LAN/公网 |
-| 配对码（真正的门） | 单次使用、TTL 300s、失败限速 5 次/60s、40 bit、`hmac.compare_digest`、仅内存 + stderr |
+| 配对码（默认模式下真正的门） | 单次使用、TTL 300s、失败限速 5 次/60s、40 bit、`hmac.compare_digest`、仅内存 + stderr。**唯一例外**是显式 `--no-pairing`：该模式不创建任何码，`GET /api/session` 直接签发会话（条件、形状与代价见 §3.1） |
 | Host 允许表 | 所有请求的 `Host` 主机名必须在 loopback 集合内且端口 == 绑定端口 ⇒ 防 DNS-rebinding 与端口漂移 |
 | 同源检查 | 状态变更端点要求 `Origin` 存在且精确匹配（含端口）；WS 升级同样要求 |
 | 会话 cookie | HttpOnly + SameSite=Strict + Path=/；值不可猜测；绝不放进 URL |
@@ -213,10 +258,17 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 **明确不承诺**（不要把 `Host`/`Origin` 检查表述为「严格同源即可信」）：
 
 - `Host`、`Origin`、`Sec-Fetch-Site` 都是客户端可伪造的头，只算纵深防御；同机
-  另一进程可伪造它们，真正的门是配对码。
+  另一进程可伪造它们。默认模式下真正的门是配对码；**唯一的例外**是显式 `--no-pairing`
+  （§3.1）：该模式不创建码、`GET /api/session` 直接签发，代价是**任何**同源 loopback
+  浏览器都无需任何持有证明即可拿到会话——它只用于本地调试，不要用于共享或对外暴露的控制台。
 - 不支持 TLS / 反向代理：外部端口 ≠ 绑定端口时 Origin 校验必然失败；将来若支持，
   必须同时加显式 `--public-origin`、cookie `Secure`、拒绝非 https 的配对请求。
-- 会话不持久化：宿主重启后必须重新配对。
+- 会话不持久化：宿主重启后默认必须重新配对（`--no-pairing` 下由 §3.1 的自动签发拿回会话，
+  仍然不是持久化）。
+- 「没有 GET 能签发会话」这条默认姿态有**一处**有意豁免：显式 `--no-pairing` 时
+  `GET /api/session` 会直接签发（§3.1）。它只在显式传参时生效、只对 loopback 生效、启动时
+  在 stderr 打一条 WARNING，且 `Host`/`Origin`/`Sec-Fetch-Site` 守卫仍然生效——但这些头都是
+  客户端可伪造的，所以这条豁免**不构成**任何持有证明。
 - 会话 TTL 到期**不主动断开**已建立的中继（仅新 HTTP/WS 请求被拒）。
 - 历史投影（`transcript.sqlite`）与实时事件 broker **不承诺**跨存储原子一致
   （见 `docs/sessions.md` 的「不承诺原子」）。
@@ -291,7 +343,7 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 | 网络路径 | 浏览器直连同源宿主 | `/api` 与 `/runtime-ws` 经 Vite 代理到宿主（`SYNAPSE_WEB_CONSOLE_URL`，默认 `http://127.0.0.1:8080`） |
 | `Origin` | 浏览器发送真实 origin，宿主精确匹配 | 代理把转发请求的 `Origin` 重写为宿主 origin（**dev-only 的代理侧重写；宿主不因 dev 放宽任何校验**） |
 | cookie 宿主 | 宿主 origin | dev origin（`localhost:5173`），经代理转发，`Path=/`、host-only、HttpOnly 仍成立 |
-| 配对 | 必需 | 同样必需（从宿主 stderr 读码） |
+| 配对 | 默认必需（宿主 `--no-pairing` 时见 §3.1） | 以宿主模式为准：默认必需（从宿主 stderr 读码）；宿主用 `--no-pairing` 时同样走 §3.1 的自动签发 |
 
 开发流程（宿主必须先运行）：
 
@@ -363,7 +415,8 @@ wheel 声明的 console script 与 `pyproject.toml`、各自 `--help` 一致：
 - 通知只能由运行中的控制台页面发出（本地宿主不使用 Web Push）；页面关闭后没有推送，
   角标也随之消失。
 - 会话 cookie 仍是宿主进程内存态、默认 12h TTL（§3、§9）：宿主重启后必须重新输入 stderr
-  打印的配对码，安装的应用没有例外。
+  打印的配对码，安装的应用没有例外；宿主若显式用 `--no-pairing`，则按 §3.1 由下一次会话探测
+  自动重新签发（同样不是持久化，也不改变安装本身不涉及鉴权的结论）。
 - 安装窗口的标题栏由控制台前端自己接管（`display_override:
   ["window-controls-overlay", "standalone"]`，见 `web/README.md`「标题栏（Window Controls
   Overlay）」）：纯前端声明，宿主不参与，不支持该显示模式的浏览器自动退回 `standalone`。
@@ -419,6 +472,10 @@ pytest**，含单文件与 `--collect-only`）：
   `test_b_a1_10`、`test_b_a2_05`、`test_b_a3_05`、`test_b_a4_05`、`test_b_a5_04`、
   `test_b_a8_05`、`test_b3_1_*`）显式断言无 `Set-Cookie`、daemon 0 连接 0 帧、
   响应体无 token/回显。
+  该文件另有 `--- --no-pairing: the explicit, opt-in exemption ---` 一节 6 项，钉住
+  §3.1 的两面：自动签发对真实浏览器生效（含中继与 `/api/runtime-status` 可用、存活期内
+  不重复签发），以及跨站/伪造 Host/错误 Origin 的探测仍 403 且不签发、`POST /api/pair`
+  仍先跑 CSRF 链再返回 400、默认模式仍要求配对码、`--no-pairing` 只打 WARNING 不打印码。
 - `tests/test_web_console_vertical.py`（32 项）：真实 `RuntimeDaemon` +
   `RuntimeWebSocketServer` + `AgentRuntimeService` + 真实宿主进程的纵向闭环
   （negotiate/open/submit/watch/cancel、断线语义、会话 TTL、资源边界、仅 loopback、
@@ -428,7 +485,12 @@ pytest**，含单文件与 `--collect-only`）：
 
 ## 9 已知边界与未决项
 
-- 仅 loopback 单用户；会话注册表在宿主进程内存（宿主重启失效，需重新配对）。
+- 仅 loopback 单用户；会话注册表在宿主进程内存（宿主重启失效；默认模式需重新配对，
+  `--no-pairing` 下由 §3.1 的自动签发拿回会话）。
+- `--no-pairing`（§3.1）不提供任何持有证明：同源 loopback 浏览器（以及能伪造
+  `Host`/`Origin` 的本机进程）可直接获得会话。它只在显式传参时生效、只对 loopback 生效、
+  启动时在 stderr 打一条 WARNING，定位是本地调试（例如用 CDP/devtools 驱动控制台、
+  避免每次重启宿主都重新输码），**不是**「配对可选」的常态部署姿势。
 - 本切片不支持 TLS / 反向代理（外部端口 ≠ 绑定端口）；将来支持时必须同时加
   显式 `--public-origin`、cookie `Secure`、拒绝非 https 的配对请求。
 - daemon 侧 `DaemonConfig.host` 仍只校验非空、未强制 loopback（宿主侧已收紧为

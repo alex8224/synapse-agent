@@ -399,6 +399,7 @@ class WebConsoleHost:
             raise ValueError("daemon token must not be empty")
         self._daemon_token = token
         self._sessions = SessionRegistry(ttl_seconds=config.session_ttl_seconds)
+        self._pairing_enabled = config.pairing_required
         generator = pairing_code_generator or (
             (lambda: pairing_code) if pairing_code is not None else generate_pairing_code
         )
@@ -497,8 +498,11 @@ class WebConsoleHost:
             raise RuntimeError("web console host did not bind")
         host, port = str(addrs[0][0]), int(addrs[0][1])
         self.bound = (host, port)
-        self._ensure_pairing_code()
-        self._pairing_task = asyncio.create_task(self._pairing_maintenance())
+        if self._pairing_enabled:
+            self._ensure_pairing_code()
+            self._pairing_task = asyncio.create_task(self._pairing_maintenance())
+        else:
+            self._warn_pairing_disabled(host, port)
         return {
             "schema_version": 1,
             "host": host,
@@ -507,7 +511,7 @@ class WebConsoleHost:
             "websocket": f"ws://{host}:{port}/runtime-ws",
             "project_id": self.project.project_id,
             "workspace": self.project.workspace_path,
-            "pairing_required": True,
+            "pairing_required": self._pairing_enabled,
         }
 
     async def close(self) -> None:
@@ -558,6 +562,10 @@ class WebConsoleHost:
         return self.config.port
 
     def _ensure_pairing_code(self) -> None:
+        if not self._pairing_enabled:
+            # ``--no-pairing``: no code exists at all, so the "no valid session
+            # implies a live announced code" invariant is vacuous, not broken.
+            return
         self._pairing.ensure_live(has_session=self._sessions.has_live())
 
     async def _pairing_maintenance(self) -> None:
@@ -569,12 +577,30 @@ class WebConsoleHost:
 
     def _announce_pairing_code(self, code: str, ttl: float) -> None:
         """Print the fixed-format pairing line to stderr (never to stdout/JSON)."""
+        if not self._pairing_enabled:
+            # Defensive: a rotation must never print a code this host will not
+            # honour, and no code is announced in the opt-in no-pairing mode.
+            return
         host, port = self.bound or (self.config.host, self.config.port)
         line = (
             f"synapse-web-console: pairing code {code} (expires in {int(ttl)}s; "
             f"open http://{host}:{port}/ and enter it)"
         )
         self.pairing_notices.append(line)
+        print(line, file=sys.stderr, flush=True)
+
+    def _warn_pairing_disabled(self, host: str, port: int) -> None:
+        """Announce the ``--no-pairing`` exemption once, on stderr (never stdout).
+
+        Kept out of ``pairing_notices``, which is the announcement log of *codes*:
+        this line exists so an operator reading the log cannot mistake a code-less
+        host for a code that simply has not been printed yet.
+        """
+        line = (
+            "synapse-web-console: WARNING pairing is disabled (--no-pairing): "
+            f"http://{host}:{port}/ mints a session for any same-origin loopback "
+            "browser without a code; local debugging only"
+        )
         print(line, file=sys.stderr, flush=True)
 
     def _project_payload(self) -> dict[str, Any]:
@@ -721,6 +747,12 @@ class WebConsoleHost:
         guard = self._state_change_guard(request)
         if guard is not None:
             return guard
+        if not self._pairing_enabled:
+            # ``--no-pairing``: there is no code to consume, so this endpoint is
+            # not a session source.  Fail loudly rather than silently minting on
+            # an endpoint whose whole contract is "code -> session"; the console
+            # gets its session from ``GET /api/session`` instead.
+            return _reject(400, "pairing is disabled on this host", json_body=True)
         payload, error = await self._read_json_object(request)
         if error is not None:
             return error
@@ -736,8 +768,15 @@ class WebConsoleHost:
         if outcome != "ok":
             self._ensure_pairing_code()
             return _reject(401, "invalid pairing code", json_body=True)
-        token = self._sessions.create()
         response = web.json_response(self._project_payload())
+        return self._set_session_cookie(response, self._sessions.create())
+
+    def _set_session_cookie(self, response: web.Response, token: str) -> web.Response:
+        """Attach the single-user session cookie plus ``no-store`` to a response.
+
+        Shared by the pairing handshake and the ``--no-pairing`` auto-mint so the
+        two paths cannot drift apart in cookie attributes.
+        """
         response.set_cookie(
             SESSION_COOKIE_NAME,
             token,
@@ -754,10 +793,49 @@ class WebConsoleHost:
             return _reject(403, "forbidden host", json_body=True)
         expires_in = self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME))
         if expires_in is None:
+            if not self._pairing_enabled:
+                return self._auto_pair(request)
             return _reject(401, "missing or invalid console session", json_body=True)
         response = web.json_response({**self._project_payload(), "expires_in": expires_in})
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    def _loopback_origin_guard(self, request: web.Request) -> web.Response | None:
+        """The ``Host``/``Origin``/``Sec-Fetch-Site`` half of the CSRF chain.
+
+        Shared with the ``--no-pairing`` auto-mint path, which is a ``GET`` and so
+        cannot carry the console's JSON content type or its CSRF header.  A
+        *present* ``Origin`` must match the bound origin; ``Sec-Fetch-Site`` is
+        enforced when the browser sends it.  Both are client-controlled headers,
+        i.e. defence in depth like the rest of the loopback guards -- which is
+        exactly why the caller is an explicit opt-in path.
+        """
+        bound_port = self._bound_port()
+        if not host_allowed(request.headers.get("host"), bound_port=bound_port):
+            return _reject(403, "forbidden host", json_body=True)
+        if not sec_fetch_site_ok(request.headers):
+            return _reject(403, "cross-site request is not allowed", json_body=True)
+        origin = request.headers.get("origin")
+        if origin is not None and not origin_allowed(origin, bound_port=bound_port):
+            return _reject(403, "cross-origin request is not allowed", json_body=True)
+        return None
+
+    def _auto_pair(self, request: web.Request) -> web.Response:
+        """``--no-pairing``: mint a session for the console's own session probe.
+
+        Only ``GET /api/session`` mints, so the exemption stays on the single path
+        the console already probes before it opens a socket; every other
+        session-gated route keeps its normal check.  Deliberate trade-off, opt-in
+        only: this is the one mode in which a ``GET`` can mint a session, which the
+        default posture forbids (see ``docs/web-console/formal-host.md``).
+        """
+        guard = self._loopback_origin_guard(request)
+        if guard is not None:
+            return guard
+        response = web.json_response(
+            {**self._project_payload(), "expires_in": self.config.session_ttl_seconds}
+        )
+        return self._set_session_cookie(response, self._sessions.create())
 
     async def _handle_logout(self, request: web.Request) -> web.Response:
         guard = self._state_change_guard(request)

@@ -1407,6 +1407,7 @@ def test_b_a8_04_cli_help_lists_every_knob() -> None:
         "--max-message-bytes",
         "--session-ttl-seconds",
         "--pair-ttl-seconds",
+        "--pairing",
         "--max-sockets",
         "--max-body-bytes",
         "--ws-heartbeat-seconds",
@@ -1532,5 +1533,185 @@ def test_h1_fail_open_frames_never_serve_another_project(tmp_path: Path) -> None
                 # ...and every fail-open frame reached the daemon verbatim.
                 assert daemon.frames == [*text_shapes, binary]
                 assert daemon.close_codes == [1003]
+
+    _run(run())
+
+
+# --- --no-pairing: the explicit, opt-in exemption -------------------------
+#
+# ``pairing_required=False`` (CLI ``--no-pairing``) is the one mode in which a
+# *GET* mints a session.  These cases pin both halves of that trade-off: the
+# exemption works for a real browser, and every other loopback guard is intact.
+
+
+async def session_probe(
+    session: ClientSession,
+    port: int,
+    *,
+    cookie: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> Reply:
+    """``GET /api/session`` that also reports the cookie the host handed back."""
+    request_headers = dict(headers or {})
+    if cookie is not None:
+        request_headers.update(cookie_header(cookie))
+    async with session.get(
+        f"http://127.0.0.1:{port}/api/session", headers=request_headers
+    ) as response:
+        stored = response.cookies.get(SESSION_COOKIE_NAME)
+        return Reply(
+            response.status,
+            {key.lower(): item for key, item in response.headers.items()},
+            await response.text(),
+            stored.value if stored is not None else "",
+        )
+
+
+def test_no_pairing_is_opt_in_and_the_default_still_demands_a_code(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with Console(tmp_path) as console:
+            assert console.metadata["pairing_required"] is True
+            assert console.host is not None
+            assert console.host.pairing_code is not None
+            async with ClientSession() as session:
+                reply = await session_probe(session, console.port)
+                assert reply.status == 401
+                assert reply.cookie == ""
+                assert "set-cookie" not in reply.headers
+
+    _run(run())
+
+
+def test_no_pairing_mints_a_session_for_the_console_probe(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with Console(tmp_path, pairing_required=False) as console:
+            assert console.metadata["pairing_required"] is False
+            assert console.host is not None
+            # No code exists at all, so nothing is announced and nothing can be
+            # guessed; the console never renders the pairing gate.
+            assert console.host.pairing_code is None
+            assert console.host.pairing_notices == []
+            async with ClientSession() as session:
+                reply = await session_probe(session, console.port)
+                assert reply.status == 200
+                assert reply.cookie
+                assert "HttpOnly" in reply.headers["set-cookie"]
+                assert "samesite=strict" in reply.headers["set-cookie"].lower()
+                payload = json.loads(reply.body)
+                assert payload["project"]["project_id"] == PROJECT_ID
+                assert payload["expires_in"] > 0
+                assert TOKEN not in reply.body
+
+                # The minted session is a real one: it is not re-minted while it
+                # lives, and both the read-only status route and the relay accept
+                # it, i.e. a debugger reaches the console and not just the probe.
+                second = await session_probe(session, console.port, cookie=reply.cookie)
+                assert second.status == 200
+                assert second.cookie == ""
+                async with session.get(
+                    console.base + "/api/runtime-status",
+                    headers=cookie_header(reply.cookie),
+                ) as status:
+                    assert status.status == 200
+                async with session.ws_connect(
+                    console.ws_url,
+                    origin=console.base,
+                    headers=cookie_header(reply.cookie),
+                ) as ws:
+                    await ws.send_str(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "runtime.project.list",
+                                "params": "{}",
+                            }
+                        )
+                    )
+                    relayed = await asyncio.wait_for(ws.receive(), 5)
+                    assert relayed.type == WSMsgType.TEXT, relayed.type
+                assert console.daemon.total_connections == 1
+
+    _run(run())
+
+
+def test_no_pairing_still_rejects_cross_site_and_forged_host_probes(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with Console(tmp_path, pairing_required=False) as console:
+            async with ClientSession() as session:
+                for headers in (
+                    {"Sec-Fetch-Site": "cross-site"},
+                    {"Sec-Fetch-Site": "same-site"},
+                    {"Origin": "http://evil.example"},
+                    {"Origin": f"http://127.0.0.1:{console.port + 1}"},
+                ):
+                    reply = await session_probe(session, console.port, headers=headers)
+                    assert reply.status == 403, headers
+                    assert reply.cookie == ""
+                    assert "set-cookie" not in reply.headers
+                # A matching Origin still works: the guard compares, not rejects.
+                allowed = await session_probe(
+                    session, console.port, headers={"Origin": console.base}
+                )
+                assert allowed.status == 200
+                assert allowed.cookie
+            for host in (f"evil.com:{console.port}", "127.0.0.1:9999"):
+                raw = await raw_request(
+                    console.port, "GET", "/api/session", extra_headers=(("Host", host),)
+                )
+                assert " 403 " in raw.split("\r\n", 1)[0], host
+                assert "set-cookie" not in raw.lower(), host
+
+    _run(run())
+
+
+def test_no_pairing_keeps_the_pair_endpoint_closed(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with Console(tmp_path, pairing_required=False) as console:
+            async with ClientSession() as session:
+                reply = await pair_call(session, console.port, code="AAAAAAAA")
+                assert reply.status == 400
+                assert reply.cookie == ""
+                assert "set-cookie" not in reply.headers
+                assert json.loads(reply.body)["error"] == "pairing is disabled on this host"
+                # The CSRF chain still runs first, so a cross-site POST is 403.
+                forged = await pair_call(
+                    session,
+                    console.port,
+                    code="AAAAAAAA",
+                    headers=pair_headers(console.port, **{"Sec-Fetch-Site": "cross-site"}),
+                )
+                assert forged.status == 403
+                assert console.daemon.total_connections == 0
+
+    _run(run())
+
+
+def test_no_pairing_announces_the_exemption_instead_of_a_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def run() -> None:
+        async with Console(tmp_path, pairing_required=False) as console:
+            assert console.host is not None
+            # Defensive: even a forced rotation must not print a code this host
+            # refuses to honour.
+            console.host.rotate_pairing_code()
+        captured = capsys.readouterr()
+        assert "WARNING pairing is disabled (--no-pairing)" in captured.err
+        assert PAIR_LINE_PREFIX not in captured.err
+        assert captured.out == ""
+
+    _run(run())
+
+
+def test_pairing_code_is_still_announced_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def run() -> None:
+        async with Console(tmp_path):
+            pass
+        captured = capsys.readouterr()
+        assert PAIR_LINE_PREFIX in captured.err
+        assert "WARNING pairing is disabled" not in captured.err
 
     _run(run())

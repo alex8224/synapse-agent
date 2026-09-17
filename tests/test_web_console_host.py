@@ -462,6 +462,8 @@ def test_web_console_config_rejects_unsafe_values(tmp_path: Path) -> None:
         WebConsoleConfig(workspace=workspace, ws_heartbeat_seconds=-1)
     with pytest.raises(ValueError, match="pair_ttl_seconds"):
         WebConsoleConfig(workspace=workspace, pair_ttl_seconds=0)
+    with pytest.raises(ValueError, match="pairing_required"):
+        WebConsoleConfig(workspace=workspace, pairing_required="yes")
     with pytest.raises(ValueError, match="project_scope"):
         WebConsoleConfig(workspace=workspace, project_scope="everything")
 
@@ -473,6 +475,9 @@ def test_web_console_config_defaults_to_the_all_project_scope(tmp_path: Path) ->
     assert WebConsoleConfig(workspace=workspace, project_scope="workspace").project_scope == (
         "workspace"
     )
+    # Pairing is required unless the explicit --no-pairing opt-in says otherwise.
+    assert WebConsoleConfig(workspace=workspace).pairing_required is True
+    assert WebConsoleConfig(workspace=workspace, pairing_required=False).pairing_required is False
 
 
 # --- integration: pairing and session -------------------------------------
@@ -1526,6 +1531,10 @@ def test_cli_parser_and_unresolvable_startup(tmp_path: Path) -> None:
     # explicit --runtime-port always means "use that daemon, do not start one".
     assert parser.parse_args([]).start_runtime is True
     assert parser.parse_args(["--no-start-runtime"]).start_runtime is False
+    # Pairing is on by default and only the explicit flag turns it off.
+    assert parser.parse_args([]).pairing is True
+    assert parser.parse_args(["--pairing"]).pairing is True
+    assert parser.parse_args(["--no-pairing"]).pairing is False
     assert should_start_runtime(start_runtime=True, runtime_port=None) is True
     assert should_start_runtime(start_runtime=True, runtime_port=9000) is False
     assert should_start_runtime(start_runtime=False, runtime_port=None) is False

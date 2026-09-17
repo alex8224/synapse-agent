@@ -84,6 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pairing code lifetime in seconds (default 300)",
     )
     parser.add_argument(
+        "--pairing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Require the one-time pairing code printed on stderr (default). "
+            "--no-pairing mints a session for any same-origin loopback browser "
+            "without a code: local debugging only, never for a console you share"
+        ),
+    )
+    parser.add_argument(
         "--max-sockets",
         type=int,
         default=DEFAULT_MAX_CONCURRENT_SOCKETS,
@@ -135,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             max_message_bytes=args.max_message_bytes,
             session_ttl_seconds=args.session_ttl_seconds,
             pair_ttl_seconds=args.pair_ttl_seconds,
+            pairing_required=args.pairing,
             max_concurrent_sockets=args.max_sockets,
             max_body_bytes=args.max_body_bytes,
             ws_heartbeat_seconds=args.ws_heartbeat_seconds,
