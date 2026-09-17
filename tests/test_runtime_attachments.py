@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -32,7 +33,6 @@ from synapse.runtime.service.attachments import (
     MAX_ATTACHMENTS_PER_SUBMIT,
     MAX_CHUNK_BASE64_CHARS,
     MAX_READ_BYTES,
-    MAX_STORED_ATTACHMENTS_PER_SESSION,
     AttachmentConflictError,
     AttachmentForbiddenError,
     AttachmentNotFoundError,
@@ -767,21 +767,31 @@ def test_abort_leaves_an_unreadable_payload_whose_data_bin_exists(tmp_path: Path
 # --- store: quotas, TTL sweep, and path safety ------------------------------
 
 
-def test_session_count_quota_is_a_hard_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_store_past_the_former_count_caps_still_accepts_uploads(tmp_path: Path) -> None:
+    """Regression: the removed cumulative count caps refused whole projects.
+
+    A project that had accumulated 128 images (the former
+    ``MAX_ATTACHMENTS_PER_PROJECT``, equal to the former per-session cap) refused
+    every later upload - in every session, including brand-new ones - with
+    ``attachment_quota``, and finalized attachments are never reclaimed, so that
+    wall was permanent and could only be removed by deleting files by hand.
+    Only the byte caps may refuse an upload now.
+    """
+    assert not hasattr(dto, "MAX_ATTACHMENTS_PER_PROJECT")
+    assert not hasattr(dto, "MAX_STORED_ATTACHMENTS_PER_SESSION")
     workspace = _workspace(tmp_path)
-    monkeypatch.setattr(store, "MAX_STORED_ATTACHMENTS_PER_SESSION", 3)
-    for _ in range(3):
-        _upload(workspace)
-    with pytest.raises(AttachmentQuotaError):
-        _begin(workspace)
+    seed_ref, _ = _upload(workspace)
+    seed_dir = _attachment_dir(workspace, seed_ref)
+    for index in range(129):
+        shutil.copytree(seed_dir, seed_dir.parent / ("%032x" % (index + 1)))
+    assert len(list(store.attachments_root(workspace).rglob("meta.json"))) == 130
+    started = _begin(workspace)
+    assert _attachment_exists(workspace, started.ref)
 
 
 def test_per_submit_cap_does_not_limit_a_session_lifetime(tmp_path: Path) -> None:
     # The image bank's 8 is a per-submit budget; a session keeps accepting new
-    # uploads across turns and only the larger storage quota is cumulative.
-    assert MAX_STORED_ATTACHMENTS_PER_SESSION > MAX_ATTACHMENTS_PER_SUBMIT
+    # uploads across turns, and the storage side has no cumulative count cap.
     workspace = _workspace(tmp_path)
     refs = [_upload(workspace)[0] for _ in range(MAX_ATTACHMENTS_PER_SUBMIT + 2)]
     assert len(store.resolve_attachments(workspace, refs[:MAX_ATTACHMENTS_PER_SUBMIT])) == (
@@ -791,7 +801,7 @@ def test_per_submit_cap_does_not_limit_a_session_lifetime(tmp_path: Path) -> Non
         store.resolve_attachments(workspace, refs)
 
 
-def test_session_and_project_byte_and_count_quotas_fail_closed(
+def test_session_and_project_byte_quotas_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _workspace(tmp_path)
@@ -800,7 +810,8 @@ def test_session_and_project_byte_and_count_quotas_fail_closed(
     with pytest.raises(AttachmentQuotaError):
         _begin(workspace)
     monkeypatch.setattr(store, "MAX_SESSION_ATTACHMENT_BYTES", dto.MAX_SESSION_ATTACHMENT_BYTES)
-    monkeypatch.setattr(store, "MAX_ATTACHMENTS_PER_PROJECT", 1)
+    # Another session of the same project is still refused by the project cap.
+    monkeypatch.setattr(store, "MAX_PROJECT_ATTACHMENT_BYTES", len(PNG_RED))
     with pytest.raises(AttachmentQuotaError):
         _begin(workspace, session=OTHER_THREAD)
 
@@ -864,7 +875,8 @@ def test_begin_sweeps_expired_uploads_before_enforcing_quota(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _workspace(tmp_path)
-    monkeypatch.setattr(store, "MAX_STORED_ATTACHMENTS_PER_SESSION", 3)
+    # Without the sweep the three stale slots would fill the whole session budget.
+    monkeypatch.setattr(store, "MAX_SESSION_ATTACHMENT_BYTES", len(PNG_RED))
     for _ in range(3):
         started = _begin(workspace)
         store.append_attachment_chunk(
@@ -1054,11 +1066,11 @@ def _slow_meta(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "_write_meta", _write)
 
 
-def test_parallel_begin_cannot_exceed_the_session_quota(
+def test_parallel_begin_cannot_exceed_the_session_byte_quota(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _workspace(tmp_path)
-    monkeypatch.setattr(store, "MAX_STORED_ATTACHMENTS_PER_SESSION", 3)
+    monkeypatch.setattr(store, "MAX_SESSION_ATTACHMENT_BYTES", 3 * len(PNG_RED))
     _slow_meta(monkeypatch)
     results = _run_parallel(lambda _: _begin(workspace), [None] * 10)
     created = [item for item in results if isinstance(item, dto.BeginAttachmentResult)]
@@ -1103,8 +1115,7 @@ def test_project_quota_is_atomic_across_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _workspace(tmp_path)
-    monkeypatch.setattr(store, "MAX_ATTACHMENTS_PER_PROJECT", 4)
-    monkeypatch.setattr(store, "MAX_STORED_ATTACHMENTS_PER_SESSION", 64)
+    monkeypatch.setattr(store, "MAX_PROJECT_ATTACHMENT_BYTES", 4 * len(PNG_RED))
     _slow_meta(monkeypatch)
     sessions = [SessionRef(project_id="shared", thread_id=f"thread-{i}") for i in range(12)]
     results = _run_parallel(lambda session: _begin(workspace, session=session), sessions)

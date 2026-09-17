@@ -81,14 +81,12 @@ from synapse.runtime.service.attachments import (
     IMAGE_MIME_ALLOWED,
     INCOMPLETE_TTL_SECONDS,
     MAX_ATTACHMENT_BYTES,
-    MAX_ATTACHMENTS_PER_PROJECT,
     MAX_ATTACHMENTS_PER_SUBMIT,
     MAX_CHUNK_BASE64_CHARS,
     MAX_CHUNK_BYTES,
     MAX_PROJECT_ATTACHMENT_BYTES,
     MAX_QUOTA_SCAN_ENTRIES,
     MAX_SESSION_ATTACHMENT_BYTES,
-    MAX_STORED_ATTACHMENTS_PER_SESSION,
     VERIFICATION_LEVELS,
     VERIFICATION_MAGIC,
     AbortAttachmentCommand,
@@ -620,20 +618,21 @@ def _scan_project_usage(project_dir: Path) -> tuple[int, int]:
 
 
 def _enforce_quota(project_dir: Path, session_dir: Path, *, size: int) -> None:
-    session_count, session_bytes = _scan_usage(session_dir, max_entries=MAX_QUOTA_SCAN_ENTRIES)
-    if session_count + 1 > MAX_STORED_ATTACHMENTS_PER_SESSION:
-        raise AttachmentQuotaError(
-            f"a session may hold at most {MAX_STORED_ATTACHMENTS_PER_SESSION} attachments"
-        )
+    """Refuse an upload that would exceed a session's or the project's byte cap.
+
+    Only bytes are capped.  A cumulative *count* cap would be permanent rather
+    than a rolling window - finalized attachments are never reclaimed because the
+    transcript keeps referencing them - so a project that had ever held that many
+    images would refuse every later upload, in every session, with no way back
+    except deleting files by hand.  Disk usage stays bounded by the byte caps,
+    which also keep the scan below bounded.
+    """
+    _session_count, session_bytes = _scan_usage(session_dir, max_entries=MAX_QUOTA_SCAN_ENTRIES)
     if session_bytes + size > MAX_SESSION_ATTACHMENT_BYTES:
         raise AttachmentQuotaError(
             f"a session may hold at most {MAX_SESSION_ATTACHMENT_BYTES} attachment bytes"
         )
-    project_count, project_bytes = _scan_project_usage(project_dir)
-    if project_count + 1 > MAX_ATTACHMENTS_PER_PROJECT:
-        raise AttachmentQuotaError(
-            f"a project may hold at most {MAX_ATTACHMENTS_PER_PROJECT} attachments"
-        )
+    _project_count, project_bytes = _scan_project_usage(project_dir)
     if project_bytes + size > MAX_PROJECT_ATTACHMENT_BYTES:
         raise AttachmentQuotaError(
             f"a project may hold at most {MAX_PROJECT_ATTACHMENT_BYTES} attachment bytes"

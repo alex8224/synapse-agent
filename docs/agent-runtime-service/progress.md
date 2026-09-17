@@ -55,14 +55,15 @@
   | `MAX_ATTACHMENT_BYTES` | 4_000_000（4 MB） | 单张图片上限（与 composer 图片库一致） |
   | `MAX_ATTACHMENTS_PER_SUBMIT` | 8 | 单次 submit 的 `attachment_refs` 上限 |
   | `MAX_ATTACHMENTS_PER_SESSION` | 8 | 同值别名（wire 用它约束 id 列表长度） |
-  | `MAX_STORED_ATTACHMENTS_PER_SESSION` | 128 | 单会话累计存储张数 |
-  | `MAX_ATTACHMENTS_PER_PROJECT` | 128 | 单项目累计存储张数 |
+  | `MAX_SESSION_ATTACHMENT_BYTES` | 512_000_000 | 单会话累计字节上限 |
   | `MAX_PROJECT_ATTACHMENT_BYTES` | 512_000_000 | 单项目累计字节上限 |
   | `MAX_CHUNK_BYTES` | 256 KiB | 单块解码上限（base64 上限 `MAX_CHUNK_BASE64_CHARS`） |
   | `DEFAULT_READ_BYTES` | 64 KiB | `attachments.read` 默认窗口（`MIN_READ_BYTES` 1 .. `MAX_READ_BYTES` 256 KiB） |
   | `INCOMPLETE_TTL_SECONDS` | 3600（1h） | 未完成上传被清理前的静默时长 |
 
-  清理是**有界的按操作 sweep**（`DEFAULT_SWEEP_ENTRIES` = 256、`MAX_QUOTA_SCAN_ENTRIES` = 4096），没有后台清理线程；配额扫描越界 fail closed。
+  **没有累计张数上限**（曾经的 `MAX_STORED_ATTACHMENTS_PER_SESSION` / `MAX_ATTACHMENTS_PER_PROJECT` = 128 已移除）：finalized 附件永不回收（历史持续引用），张数上限因此是**永久且不可恢复**的墙——项目一旦攒到该张数，此后所有会话（含新会话）的上传都被 `attachment_quota` 拒绝，只能手工删文件才能恢复；累计维度改由上面的字节上限约束，磁盘占用与扫描成本仍然有界。
+
+  清理是**有界的按操作 sweep**（`DEFAULT_SWEEP_ENTRIES` = 256、`MAX_QUOTA_SCAN_ENTRIES` = 32768），没有后台清理线程；配额扫描越界 fail closed。该扫描预算是**防损毁/恶意 store 的守卫，不是配额**：它远高于字节上限在现实图片尺寸下允许的条目数，因此不该成为合法上传被拒的原因。
 
 - **`retained history` 语义**：`runtime.session.delete` 只删元数据行与 thread goal，LangGraph checkpoint 与 transcript projection 保留，结果里的 `retained_history` 显式报告这一点，Web 删除确认框据此写明「对话未被删除」。附件的 durable 引用同样存活在 projection 中，`read_session_history` 的 `HistoryEvent.attachments` 只带元数据（不含 base64），字节由 `runtime.attachments.read` 按需分块读取；projection 重建（`synapse.sessions.transcript._message_attachment_refs`）与 append 路径（`synapse.runtime.sessions.persistence._durable_attachment_refs`）从同一处 message metadata 重新导出 refs，因此重建结果与写入结果一致。
 

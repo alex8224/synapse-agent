@@ -50,7 +50,6 @@ __all__ = [
     "FinishAttachmentResult",
     "IMAGE_MIME_ALLOWED",
     "INCOMPLETE_TTL_SECONDS",
-    "MAX_ATTACHMENTS_PER_PROJECT",
     "MAX_ATTACHMENTS_PER_SESSION",
     "MAX_ATTACHMENTS_PER_SUBMIT",
     "MAX_ATTACHMENT_BYTES",
@@ -61,7 +60,6 @@ __all__ = [
     "MAX_QUOTA_SCAN_ENTRIES",
     "MAX_READ_BYTES",
     "MAX_SESSION_ATTACHMENT_BYTES",
-    "MAX_STORED_ATTACHMENTS_PER_SESSION",
     "MIN_READ_BYTES",
     "ReadAttachmentQuery",
     "StatAttachmentQuery",
@@ -92,14 +90,14 @@ MAX_ATTACHMENT_BYTES = 4_000_000
 #: so both names carry the same value; this one names the per-submit intent.
 MAX_ATTACHMENTS_PER_SUBMIT = 8
 MAX_ATTACHMENTS_PER_SESSION = MAX_ATTACHMENTS_PER_SUBMIT
-#: Cumulative count/byte caps for one session's durable store.  A session may
-#: accumulate many uploads across turns, so the storage quota is deliberately
-#: larger than the per-submit budget while staying bounded (a session may hold
-#: the whole project budget; the project cap still bounds cross-session growth).
-MAX_STORED_ATTACHMENTS_PER_SESSION = 128
-MAX_SESSION_ATTACHMENT_BYTES = MAX_STORED_ATTACHMENTS_PER_SESSION * MAX_ATTACHMENT_BYTES
-#: Hard count/byte caps for one project's store; they bound the bounded sweep.
-MAX_ATTACHMENTS_PER_PROJECT = 128
+#: Cumulative **byte** caps for one session's / one project's durable store.
+#: There is deliberately no cumulative *count* cap: finalized attachments are
+#: never reclaimed (history keeps referencing them), so a count cap turns into a
+#: permanent, unrecoverable wall - once the store held that many images, every
+#: session of the project refused new uploads with ``attachment_quota``.  Disk
+#: usage stays bounded by these byte caps instead, and the store is small enough
+#: for the bounded quota scan below.
+MAX_SESSION_ATTACHMENT_BYTES = 512_000_000
 MAX_PROJECT_ATTACHMENT_BYTES = 512_000_000
 #: One upload chunk decodes to at most 256 KiB, well under the 1 MiB frame cap.
 MAX_CHUNK_BYTES = 256 * 1024
@@ -114,8 +112,11 @@ MAX_DISPLAY_NAME_CHARS = 120
 MAX_DISPLAY_NAME_BYTES = 240
 #: An unfinished upload is swept once it has been inactive for this long.
 INCOMPLETE_TTL_SECONDS = 3600
-#: Quota accounting must stay exact, so an oversized scan fails closed.
-MAX_QUOTA_SCAN_ENTRIES = 4096
+#: Quota accounting must stay exact, so an oversized scan fails closed.  This is
+#: a guard against a damaged or hostile store, not a quota: it sits far above the
+#: entry count the byte caps allow for any realistic image size, so it must never
+#: be the reason a legitimate upload is refused.
+MAX_QUOTA_SCAN_ENTRIES = 32768
 #: Bounded sweep budget per operation; no background cleanup thread exists.
 DEFAULT_SWEEP_ENTRIES = 256
 #: Opaque attachment ids are 128-bit hex digests generated server-side.
