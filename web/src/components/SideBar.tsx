@@ -1,7 +1,7 @@
 import {
   Add20Regular, Search20Regular, Settings20Regular, Dismiss20Regular,
   ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
-  CheckmarkCircle20Regular, Edit20Regular, Delete20Regular,
+  CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -478,17 +478,31 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                               >
                                 {/* A real status readout, unlike the hover-only write
                                     actions below: it must stay visible without focus.
-                                    Running is the pulsing dot the transcript uses;
-                                    an approval is amber and wins when both apply. */}
+                                    Running is the same in-flight spinner the transcript
+                                    paints for a tool call still executing
+                                    (transcriptRows/ToolGroupRow), so one motion means one
+                                    thing across the console; an approval is amber and wins
+                                    when both apply. The slot is a fixed 12px because the
+                                    two kinds differ in width (6px dot vs 12px spinner), so
+                                    without it a title would start 6px further right for one
+                                    kind than the other. */}
                                 {status !== undefined && (
                                   <span
                                     role="img"
                                     aria-label={status === 'approval' ? '等待审批' : '运行中'}
                                     title={status === 'approval' ? '等待审批' : '运行中'}
-                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                      status === 'approval' ? 'bg-amber-500' : 'bg-blue-600 animate-pulse'
-                                    }`}
-                                  />
+                                    className="flex h-3 w-3 shrink-0 items-center justify-center"
+                                  >
+                                    {status === 'approval' ? (
+                                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                    ) : (
+                                      <SpinnerIos20Regular
+                                        aria-hidden="true"
+                                        className="animate-spin text-blue-500"
+                                        style={{ fontSize: '12px' }}
+                                      />
+                                    )}
+                                  </span>
                                 )}
                                 <span className="min-w-0 flex-1 truncate">{sess.title}</span>
                               </button>

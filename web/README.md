@@ -581,8 +581,10 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 
 | 标记 | 条件 | 说明 |
 |---|---|---|
-| 蓝色脉冲圆点 | `subscriptionId !== null` 且 `runtimeStatus === 'running'` | 该会话有回合在跑（当前会话自己的状态也算） |
+| 蓝色旋转 spinner | `subscriptionId !== null` 且 `runtimeStatus === 'running'` | 该会话有回合在跑（当前会话自己的状态也算）。用的是转录区「工具调用执行中」那枚同一个图标与同一段动画（`SpinnerIos20Regular` + `animate-spin`），所以「转」在控制台里只有一个含义 |
 | 琥珀色圆点 | `subscriptionId !== null` 且 `pendingApproval !== null` | 该会话在等待人工审批；两者同时成立时审批优先 |
+
+两种标记都画在同一个固定 12px 的槽位里，所以有标记与没标记的行、以及两种标记之间的标题起点都对齐。
 
 已过期（`subscriptionId === null`）的视图状态视为「未知」，不显示任何标记：watch 已停止，它的最后状态不再是事实，不能让它永远亮着一个运行中指示或审批标记。
 
