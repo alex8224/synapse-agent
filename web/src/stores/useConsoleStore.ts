@@ -73,6 +73,8 @@ import type { UsageView } from './usageView.ts';
 import { parseSessionUsage, type SessionUsage } from './usageView.ts';
 import {
   AttachmentUploadCancelledError,
+  attachmentErrorMessage,
+  attachmentServiceCode,
   readUploadSource,
   selectAttachmentCandidates,
   uploadAttachment,
@@ -1218,7 +1220,9 @@ async function uploadPendingAttachment(
       }));
       return;
     }
-    const reason = describeError(err);
+    // The wire message is generic ("runtime service error"); the actionable
+    // condition is the server's `service_code` (quota, unsafe payload, ...).
+    const reason = attachmentErrorMessage(attachmentServiceCode(err), describeError(err));
     patch({ status: 'failed', error: reason });
     store.setState({ attachmentError: `附件「${entry.name}」上传失败：${reason}` });
   } finally {

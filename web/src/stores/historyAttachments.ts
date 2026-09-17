@@ -18,6 +18,8 @@
 import type { SessionRef } from '../client/types.ts';
 import {
   ATTACHMENT_MAX_BYTES,
+  attachmentErrorMessage,
+  attachmentServiceCode,
   isAllowedAttachmentMime,
   readAttachmentBytes,
 } from '../runtime-client/attachments.ts';
@@ -182,7 +184,12 @@ export function createAttachmentLoader(deps: AttachmentLoaderDeps): AttachmentLo
     } catch (err) {
       const failed: AttachmentResource = {
         status: 'error',
-        reason: err instanceof Error ? err.message : '附件读取失败',
+        // A deleted store (the files are gone) or a full one says so, instead of
+        // the generic wire message the server sends for every service failure.
+        reason: attachmentErrorMessage(
+          attachmentServiceCode(err),
+          err instanceof Error ? err.message : '附件读取失败',
+        ),
       };
       if (startedAt === generation) {
         entries.set(key, { resource: failed, url: null, generation: startedAt });

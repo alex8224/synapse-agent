@@ -280,6 +280,44 @@ export async function readUploadSource(source: AttachmentUploadSource): Promise<
   return new Uint8Array(await source.arrayBuffer());
 }
 
+// --- user-facing failure reasons ---------------------------------------------
+
+/**
+ * User-facing reason for an attachment RPC failure.
+ *
+ * The wire only carries a generic `message` ("runtime service error"); the
+ * machine-readable condition travels separately in `data.service_code`.  Mapping
+ * it here turns "the store is full" or "these bytes are not the image they claim
+ * to be" into a sentence the reader can act on, instead of a generic error.
+ */
+export function attachmentErrorMessage(serviceCode: string | null, fallback: string): string {
+  switch (serviceCode) {
+    case 'attachment_quota':
+      return '附件存储已达服务端上限（按会话/项目的字节配额拒绝）：清理工作区下的 .synapse/attachments 后可重试';
+    case 'attachment_too_large':
+      return '图片超过单张上限（4 MB）';
+    case 'attachment_unsafe':
+      return '图片数据未通过校验：声明的类型与实际内容不符，或文件已损坏';
+    case 'attachment_not_found':
+      return '附件不存在（服务端已没有这个文件）';
+    case 'attachment_forbidden':
+      return '该附件属于其他会话，无法读取';
+    case 'attachment_conflict':
+      return '上传状态冲突（分块偏移或大小不一致），请重新上传';
+    case 'attachment_unavailable':
+      return '附件存储当前不可用';
+    default:
+      return fallback;
+  }
+}
+
+/** The `service_code` an error carries, when it has one (never the message text). */
+export function attachmentServiceCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const code = (error as { service_code?: unknown }).service_code;
+  return typeof code === 'string' ? code : null;
+}
+
 // --- strict wire decoders -----------------------------------------------------
 
 const METADATA_KEYS = [

@@ -547,11 +547,30 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 |---|---|---|
 | `MAX_ATTACHMENT_BYTES` | 4 MB | 单张图片上限（`ATTACHMENT_MAX_BYTES`） |
 | `MAX_ATTACHMENTS_PER_SUBMIT` | 8 | 单次 submit 的 `attachment_refs` 上限（`ATTACHMENT_MAX_COUNT`） |
-| `MAX_STORED_ATTACHMENTS_PER_SESSION` | 128 | 单会话累计存储张数（前端不做累计配额提示，超出由服务端拒绝） |
-| `MAX_ATTACHMENTS_PER_PROJECT` | 128 | 单项目累计存储张数 |
+| `MAX_SESSION_ATTACHMENT_BYTES` | 512 MB | 单会话累计字节上限 |
+| `MAX_PROJECT_ATTACHMENT_BYTES` | 512 MB | 单项目累计字节上限 |
 | `MAX_CHUNK_BYTES` | 256 KiB | 单块解码上限（`ATTACHMENT_CHUNK_BYTES`） |
 | `DEFAULT_READ_BYTES` | 64 KiB | 历史缩略图每次读取窗口（`ATTACHMENT_READ_BYTES`） |
 | `INCOMPLETE_TTL_SECONDS` | 3600 | 未完成上传在服务端被清理前的静默时长（无后台清理线程，按操作有界 sweep） |
+
+累计维度**只限字节，不限张数**：曾经的单会话/单项目「累计张数 128」上限已移除。finalized
+附件永不回收（历史仍引用它们），所以张数上限会变成永久且不可恢复的墙——项目一旦攒够该张数，
+之后**任何**会话（包括新建会话）的粘贴/拖放/点选都会被服务端以 `attachment_quota` 拒绝。
+字节上限仍会拒绝超限上传。服务端对每种拒绝只发通用 `message`（`runtime service error`），
+具体条件在 `data.service_code` 里，前端由 `attachmentErrorMessage()`
+（`src/runtime-client/attachments.ts`）映射成可读原因，上传失败与历史缩略图读取失败共用它：
+
+| `service_code` | 输入区 / 缩略图显示的原因 |
+|---|---|
+| `attachment_quota` | 附件存储已达服务端上限（按会话/项目的字节配额拒绝）：清理工作区下的 `.synapse/attachments` 后可重试 |
+| `attachment_too_large` | 图片超过单张上限（4 MB） |
+| `attachment_unsafe` | 图片数据未通过校验：声明的类型与实际内容不符，或文件已损坏 |
+| `attachment_not_found` | 附件不存在（服务端已没有这个文件） |
+| `attachment_forbidden` | 该附件属于其他会话，无法读取 |
+| `attachment_conflict` | 上传状态冲突（分块偏移或大小不一致），请重新上传 |
+| `attachment_unavailable` | 附件存储当前不可用 |
+
+未映射的码回退到服务端 `message`，因此未知失败仍然说得出「发生了什么」，只是不够具体。
 
 服务端 `runtime.attachments.abort` **有** finalized 保护：对已 `finish` 的附件（或
 `finish` 崩溃窗口里已落盘的 `data.bin`）调用只返回 `removed=False` 且不删除字节，
