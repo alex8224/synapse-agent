@@ -20,7 +20,7 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {App} from '/src/App.tsx';
 import {useConsoleStore as store} from '/src/stores/useConsoleStore.ts';
-import {initAppearance} from '/src/stores/appearance.ts';
+import {initAppearance, useAppearanceStore} from '/src/stores/appearance.ts';
 import '/src/index.css';
 const titles = ['Fluent 主界面适配', '检查模型与工具调用', '整理项目文档'];
 store.setState({
@@ -43,6 +43,7 @@ store.setState({
 });
 initAppearance();
 window.fixtureStore = store;
+window.appearanceStore = useAppearanceStore;
 createRoot(document.getElementById('root')).render(React.createElement(App));
 `;
 const server = await createServer({
@@ -127,6 +128,33 @@ try {
   await check('collapsed rail still opens settings', `!!document.querySelector('[role="dialog"][aria-label="设置"]')`);
   await click('[aria-label="关闭设置"]');
   await click('[aria-label="切换侧栏"]');
+  // --- the one-click theme toggle --------------------------------------------
+  // The sidebar's toggle flips the palette in one click, and it does so from a
+  // "follow the system" preference too: it resolves the operating system first and
+  // then stores the opposite as an explicit choice.
+  await run(`window.appearanceStore.getState().setAppearance('system')`); await settle();
+  await media('dark');
+  await check('system dark is the starting palette',
+    `document.documentElement.dataset.theme === 'fluent-dark'`);
+  const themeToggle =
+    `[...document.querySelectorAll('[aria-label^="切换到"]')].find((el) => !el.closest('[inert]'))`;
+  await check('the toggle offers the theme it switches to',
+    `${themeToggle}.getAttribute('aria-label') === '切换到浅色主题'`);
+  await check('and names its chord', `${themeToggle}.title.endsWith('(Ctrl + Shift + L)')`);
+  await run(`${themeToggle}.click()`); await settle();
+  await check('one click flips the palette', `document.documentElement.dataset.theme === 'fluent-light'`);
+  await check('the flip is stored, so the system stops overriding it',
+    `window.appearanceStore.getState().appearance === 'light' && localStorage.getItem('synapse.console.appearance') === 'light'`);
+  await check('the button now offers the way back',
+    `${themeToggle}.getAttribute('aria-label') === '切换到深色主题'`);
+  await shot('theme-toggle');
+  // The same flip from the keyboard, with nothing focused: Ctrl(2) + Shift(8).
+  await run(`document.activeElement.blur()`);
+  await client.send('Input.dispatchKeyEvent', {type:'keyDown',key:'L',code:'KeyL',modifiers:10,text:'L',unmodifiedText:'L',windowsVirtualKeyCode:76}, page.sessionId);
+  await client.send('Input.dispatchKeyEvent', {type:'keyUp',key:'L',code:'KeyL',modifiers:10,windowsVirtualKeyCode:76}, page.sessionId);
+  await settle();
+  await check('Ctrl+Shift+L does the same from anywhere',
+    `document.documentElement.dataset.theme === 'fluent-dark' && window.appearanceStore.getState().appearance === 'dark'`);
   await run(`document.querySelector('#session-search').focus()`);
   await check('keyboard focus is visible', `getComputedStyle(document.querySelector('#session-search')).outlineWidth === '2px'`);
   await click('[aria-controls="model-picker"]');

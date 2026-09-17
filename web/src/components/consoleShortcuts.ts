@@ -10,10 +10,10 @@
  *  - `title` is the trigger tooltip's text; `withChord` appends the chord, so a
  *    tooltip can never advertise a key the help list does not mention.
  *
- * The other chords (Enter, Ctrl+C, Ctrl+B, Ctrl+N, Ctrl+K, F2) are implemented
- * by the composer, the shell and the model picker; they are listed here as copy
- * only, which is why `key` is optional.  Only the keys a bottom-bar entry claims
- * are answered by the bar itself.
+ * The other chords (Enter, Ctrl+C, Ctrl+B, Ctrl+N, Ctrl+K, Ctrl+Shift+L, F2) are
+ * implemented by the composer, the shell and the model picker; they are listed here
+ * as copy only, which is why `key` is optional.  Only the keys a bottom-bar entry
+ * claims are answered by the bar itself.
  *
  * Deliberately dependency-free (no React, no store) so the Node test runner can
  * exercise the table directly, like `usageView` / `goalView`.
@@ -34,6 +34,15 @@ export interface ConsoleShortcut {
 export const HELP_SHORTCUT_KEY = 'F1';
 
 /**
+ * The theme toggle's chord, shared by its two entry points.
+ *
+ * `Ctrl+Shift+L` is answered by the shell (`App.tsx`) and advertised by the
+ * sidebar's toggle button; both read this one string, so the tooltip can never
+ * print a chord the help list does not also carry.
+ */
+export const THEME_SHORTCUT_CHORD = 'Ctrl + Shift + L';
+
+/**
  * The help list, in the order it renders.
  *
  * The F1 / F5 / F6 rows are also the strip's own bindings: the bar resolves a
@@ -45,6 +54,7 @@ export const CONSOLE_SHORTCUTS: readonly ConsoleShortcut[] = [
   { chord: 'Ctrl + B', label: '展开 / 收起侧边栏' },
   { chord: 'Ctrl + N', label: '新建会话' },
   { chord: 'Ctrl + K', label: '搜索会话' },
+  { chord: THEME_SHORTCUT_CHORD, label: '切换浅色 / 深色主题' },
   { key: HELP_SHORTCUT_KEY, chord: 'F1', label: '打开快捷键帮助' },
   { chord: 'F2', label: '切换大语言模型' },
   { key: 'F5', chord: 'F5', label: 'MCP 服务器', title: '管理 MCP 服务器' },

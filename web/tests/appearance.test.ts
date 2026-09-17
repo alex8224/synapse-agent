@@ -23,12 +23,14 @@ import {
   applyTheme,
   frameColorFor,
   initAppearance,
+  oppositeAppearance,
   readStoredAppearance,
   readStoredOpenWith,
   themeFor,
   useAppearanceStore,
   OPEN_WITH_STORAGE_KEY,
 } from '../src/stores/appearance.ts';
+import { THEME_SHORTCUT_CHORD } from '../src/components/consoleShortcuts.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -243,4 +245,56 @@ test('the pre-paint script reads the same key and names the same themes', () => 
   for (const theme of [LIGHT_THEME, DARK_THEME]) {
     assert.ok(html.includes(theme), `index.html must name ${theme}`);
   }
+});
+
+test('one click flips the palette on screen, the system preference included', () => {
+  assert.equal(oppositeAppearance('light', false), 'dark');
+  assert.equal(oppositeAppearance('dark', false), 'light');
+  // While the preference is "system" the click resolves the operating system first,
+  // so it always changes what the reader is looking at instead of storing the mode
+  // the OS already paints.
+  assert.equal(oppositeAppearance('system', true), 'light');
+  assert.equal(oppositeAppearance('system', false), 'dark');
+});
+
+test('the toggle stores an explicit choice, so the system stops overriding it', () => {
+  const store = memoryStorage();
+  withStorage(store, () => {
+    useAppearanceStore.setState({ appearance: 'system' });
+    useAppearanceStore.getState().toggleAppearance();
+    // Node has no `matchMedia`, so "system" resolves to light here: the toggle must
+    // come out the other way, and it must be the *stored* choice from now on.
+    assert.equal(useAppearanceStore.getState().appearance, 'dark');
+    assert.equal(store.getItem(APPEARANCE_STORAGE_KEY), 'dark');
+    useAppearanceStore.getState().toggleAppearance();
+    assert.equal(useAppearanceStore.getState().appearance, 'light');
+    assert.equal(store.getItem(APPEARANCE_STORAGE_KEY), 'light');
+    useAppearanceStore.setState({ appearance: 'system' });
+  });
+});
+
+test('the sidebar row carries the toggle, and the shell answers its chord', () => {
+  const actions = readFileSync(join(here, '..', 'src', 'components', 'ConsoleActions.tsx'), 'utf8');
+  const app = readFileSync(join(here, '..', 'src', 'App.tsx'), 'utf8');
+  const shortcuts = readFileSync(
+    join(here, '..', 'src', 'components', 'consoleShortcuts.ts'),
+    'utf8',
+  );
+  // One button, two icons: the one shown is the theme the click switches *to*.
+  assert.ok(actions.includes('WeatherMoon20Regular'), 'the row must offer the moon');
+  assert.ok(actions.includes('WeatherSunny20Regular'), 'and the sun');
+  assert.ok(actions.includes('toggleAppearance'), 'and it must flip the appearance');
+  assert.ok(
+    actions.includes('THEME_SHORTCUT_CHORD'),
+    'its tooltip must take the chord from the one table',
+  );
+  assert.ok(shortcuts.includes(THEME_SHORTCUT_CHORD), 'the F1 list must carry the chord');
+  assert.ok(shortcuts.includes('切换浅色 / 深色主题'), 'with its own label');
+  // The shell answers the same chord from anywhere.  Ctrl+Shift+L is not claimed by
+  // Chrome or Edge, and it does not collide with the console's other bindings.
+  assert.ok(
+    /\(e\.ctrlKey \|\| e\.metaKey\) && e\.shiftKey && e\.key\.toLowerCase\(\) === 'l'/.test(app),
+    'the shell must answer Ctrl+Shift+L',
+  );
+  assert.ok(app.includes('toggleAppearance'), 'through the same store action as the button');
 });

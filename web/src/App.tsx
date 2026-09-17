@@ -10,6 +10,7 @@ import { FileViewerHost } from './components/FileViewerHost';
 import { BackgroundAlerts } from './components/BackgroundAlerts';
 import { PairingGate } from './components/PairingGate';
 import { NEW_SESSION_ACTION, readShortcutAction } from './client/deepLink';
+import { useAppearanceStore } from './stores/appearance.ts';
 import { useConsoleStore } from './stores/useConsoleStore';
 
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
   const createNewSession = useConsoleStore((s) => s.createNewSession);
   const runtimeStatus = useConsoleStore((s) => s.runtimeStatus);
   const requestSessionSearchFocus = useConsoleStore((s) => s.requestSessionSearchFocus);
+  const toggleAppearance = useAppearanceStore((s) => s.toggleAppearance);
 
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 767px)').matches);
   const [tablet, setTablet] = useState(() => window.matchMedia('(min-width: 768px) and (max-width: 1023px)').matches);
@@ -127,6 +129,11 @@ export function App() {
         if (mobile) setDrawerOpen(true);
         if (tablet) setTabletCollapsed(false);
         requestSessionSearchFocus();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
+        // The same one click the sidebar's toggle makes, from anywhere: the shell
+        // owns the chord and `consoleShortcuts` owns its copy (the F1 list).
+        e.preventDefault();
+        toggleAppearance();
       } else if (e.ctrlKey && e.key.toLowerCase() === 'c' && runtimeStatus === 'running') {
         e.preventDefault();
         cancelActiveTurn();
@@ -141,6 +148,7 @@ export function App() {
     cancelActiveTurn,
     createNewSession,
     requestSessionSearchFocus,
+    toggleAppearance,
     runtimeStatus,
   ]);
 

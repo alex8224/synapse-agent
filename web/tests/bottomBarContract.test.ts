@@ -46,6 +46,7 @@ import {
   helpRows,
   shortcutByKey,
   withChord,
+  THEME_SHORTCUT_CHORD,
 } from '../src/components/consoleShortcuts.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -340,7 +341,9 @@ test('only the strip keys are claimed, and each by exactly one row', () => {
   const copyOnly = CONSOLE_SHORTCUTS.filter((shortcut) => shortcut.key === undefined).map(
     (shortcut) => shortcut.chord,
   );
-  assert.deepEqual(copyOnly, ['Enter', 'Ctrl + C', 'Ctrl + B', 'Ctrl + N', 'Ctrl + K', 'F2']);
+  assert.deepEqual(copyOnly, [
+    'Enter', 'Ctrl + C', 'Ctrl + B', 'Ctrl + N', 'Ctrl + K', THEME_SHORTCUT_CHORD, 'F2',
+  ]);
   for (const chord of copyOnly) {
     assert.equal(shortcutByKey(chord), undefined, `${chord} must not be a strip binding`);
   }

@@ -1,13 +1,18 @@
-import { FolderOpen20Regular, WindowConsole20Regular, SignOut20Regular } from '@fluentui/react-icons';
+import {
+  FolderOpen20Regular, SignOut20Regular, WeatherMoon20Regular, WeatherSunny20Regular,
+  WindowConsole20Regular,
+} from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { DARK_THEME, prefersDark, themeFor, useAppearanceStore } from '../stores/appearance.ts';
 import { ArtifactsPanel } from './ArtifactsPanel.tsx';
 import { ConsolePanel, ConsolePanelRow } from './consolePanel.tsx';
+import { THEME_SHORTCUT_CHORD } from './consoleShortcuts.ts';
 
 /**
  * The console's context actions: the read-only workspace file browser, runtime
- * diagnostics and logout.
+ * diagnostics, the one-click theme toggle and logout.
  *
  * They live at the sidebar's settings row rather than in the header, so the
  * header keeps only identity (workspace, branch, session) and the actions sit
@@ -20,6 +25,11 @@ import { ConsolePanel, ConsolePanelRow } from './consolePanel.tsx';
  * Each panel opens *above* its trigger because the triggers are at the bottom of the
  * window; Escape closes the open one.  They share the `ConsolePanel` shell, which
  * floats rather than laying out inside the rail (see that module for why).
+ *
+ * The theme toggle is the exception among them: it opens nothing.  It flips the
+ * palette in one click (the settings dialog keeps the three-way choice, including
+ * "follow the system"), and its chord does the same from anywhere -- both entry
+ * points read the chord from `consoleShortcuts`, the table the F1 list prints.
  */
 export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   orientation = 'row',
@@ -40,6 +50,13 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
 
   const [openPanel, setOpenPanel] = useState<'diagnostics' | 'artifacts' | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const toggleAppearance = useAppearanceStore((state) => state.toggleAppearance);
+
+  // The palette *on screen* decides which way the next click goes: while the
+  // preference is still "system" the toggle resolves the operating system first.
+  const dark = themeFor(appearance, prefersDark()) === DARK_THEME;
+  const themeTitle = dark ? '切换到浅色主题' : '切换到深色主题';
 
   useEffect(() => {
     if (openPanel === null) return;
@@ -86,6 +103,19 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
           className={trigger}
         >
           <SignOut20Regular aria-hidden="true" />
+        </button>
+        {/* The icon is the theme the click switches *to*, so the button never reads
+            as a status badge of the current one.  It lands next to the settings entry
+            (`SideBar` paints that one), the console's other appearance preference. */}
+        <button
+          onClick={toggleAppearance}
+          title={`${themeTitle} (${THEME_SHORTCUT_CHORD})`}
+          aria-label={themeTitle}
+          className={trigger}
+        >
+          {dark
+            ? <WeatherSunny20Regular aria-hidden="true" />
+            : <WeatherMoon20Regular aria-hidden="true" />}
         </button>
       </div>
 

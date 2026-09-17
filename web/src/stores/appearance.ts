@@ -50,6 +50,19 @@ export function themeFor(appearance: Appearance, prefersDark: boolean): string {
   return prefersDark ? DARK_THEME : LIGHT_THEME;
 }
 
+/**
+ * The appearance one click of the sidebar's theme toggle switches to.
+ *
+ * It flips what is *on screen*, not what is stored: while the preference is still
+ * "system" the click resolves the operating system first and then stores the
+ * opposite as an explicit choice, so the button always changes the palette the
+ * reader is looking at (and stops following the system from then on).  "Follow the
+ * system" stays reachable from the settings dialog's three-way control.
+ */
+export function oppositeAppearance(appearance: Appearance, systemPrefersDark: boolean): Appearance {
+  return themeFor(appearance, systemPrefersDark) === DARK_THEME ? 'light' : 'dark';
+}
+
 /** Apply one theme id to the document root (`null` restores the shipped palette). */
 export function applyTheme(root: { dataset: DOMStringMap } | null, theme: string | null): void {
   if (root === null) return;
@@ -110,6 +123,8 @@ interface AppearanceStore {
   appearance: Appearance;
   openWith: OpenWithMemory;
   setAppearance: (appearance: Appearance) => void;
+  /** Flip to the explicit opposite of the palette on screen (button / Ctrl+Shift+L). */
+  toggleAppearance: () => void;
   /** Remember (or, with `null`, forget) the application for one extension. */
   rememberOpenWith: (extension: string, appId: string | null) => void;
 }
@@ -207,12 +222,18 @@ function persistOpenWith(memory: OpenWithMemory): void {
   }
 }
 
-function prefersDark(): boolean {
+/**
+ * Whether the operating system asks for the dark palette.
+ *
+ * Exported because the sidebar's one-click toggle has to know which way the next
+ * click goes while the preference is still "system".
+ */
+export function prefersDark(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-export const useAppearanceStore = create<AppearanceStore>((set) => ({
+export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
   appearance: 'system',
   openWith: {},
   setAppearance: (appearance) => {
@@ -220,6 +241,8 @@ export const useAppearanceStore = create<AppearanceStore>((set) => ({
     persistAppearance(appearance);
     set({ appearance });
   },
+  toggleAppearance: () =>
+    get().setAppearance(oppositeAppearance(get().appearance, prefersDark())),
   rememberOpenWith: (extension, appId) => {
     set((state) => {
       const next: Record<string, string> = { ...state.openWith };
