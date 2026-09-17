@@ -425,6 +425,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     // DOM yet makes the check answer "empty", which left the placeholder painted
     // over the pill the reader had just inserted.
     syncEmpty();
+    // A hover preview whose thumbnail just went away (its pill was removed, or
+    // the turn was submitted) must not stay on screen: nothing will ever fire a
+    // `mouseleave` for an element that no longer exists.
+    setPreview((current) =>
+      current !== null && !current.element.isConnected ? null : current,
+    );
   }, [pills, syncEmpty]);
 
   // Rows the card inserted arrive through `attachments`, so the editor mounts a

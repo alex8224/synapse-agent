@@ -584,6 +584,50 @@ try {
     return true;
   })()`);
   await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 0`);
+  await wait(
+    `![...document.querySelectorAll('div[aria-hidden="true"]')].some((d) => d.querySelector('img'))`,
+  );
+  await run(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 80;
+    canvas.height = 40;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#123456';
+    ctx.fillRect(0, 0, 80, 40);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'tiny.png', {type: 'image/png'}));
+    const event = new ClipboardEvent('paste', {bubbles: true, cancelable: true});
+    Object.defineProperty(event, 'clipboardData', {value: transfer});
+    document.querySelector('#console-composer').dispatchEvent(event);
+    return true;
+  })()`);
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill] img').length === 1`);
+  await run(`(() => {
+    const thumb = document.querySelector('#console-composer [data-composer-pill] img');
+    thumb.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
+    thumb.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+    return true;
+  })()`);
+  await wait(
+    `[...document.querySelectorAll('div[aria-hidden="true"]')].some((d) => d.querySelector('img'))`,
+  );
+  await check(
+    'a tiny image is enlarged, but never past 2x',
+    `(() => {
+      const box = [...document.querySelectorAll('div[aria-hidden="true"]')].find((d) => d.querySelector('img'));
+      const img = box.querySelector('img');
+      const natural = img.naturalWidth;
+      const width = img.getBoundingClientRect().width;
+      return natural === 80 && width > natural && width <= natural * 2 + 1;
+    })()`,
+  );
+  await run(`(() => {
+    const button = document.querySelector('#console-composer [data-composer-pill] button');
+    if (button) button.click();
+    return true;
+  })()`);
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 0`);
   await clearDraft();
   await run(`document.querySelector('#console-composer').focus()`);
 

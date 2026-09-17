@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Portal } from '../Portal.tsx';
 import { formatBytes } from '../../runtime-client/artifacts.ts';
 
@@ -13,11 +13,17 @@ import { formatBytes } from '../../runtime-client/artifacts.ts';
  * thumbnail on scroll/resize so a scrolled editor never leaves it behind.
  *
  * Size is the point of the preview, so the box takes what the viewport allows
- * (up to 64rem wide and 70vh tall) and the image is *scaled to it* in both
+ * (up to 92vw wide and 70vh tall) and the image is scaled to it in both
  * directions: a wide screenshot is no longer squeezed into a 21rem strip (a
  * 1900x88 capture used to render 336x15), and a small image is enlarged instead
- * of being shown at a size that cannot be read.
+ * of being shown at a size that cannot be read — but never past `MAX_UPSCALE`,
+ * because past that the preview is only blur.
  */
+/** Width a small image is enlarged towards (when the source allows it). */
+const ENLARGE_TO_WIDTH = 320;
+/** Ceiling on that enlargement: 2x, so a 80x40 capture reads at 160x80. */
+const MAX_UPSCALE = 2;
+
 export const ImagePreviewFlyout: React.FC<{
   anchor: HTMLElement | null;
   url: string | null;
@@ -26,7 +32,20 @@ export const ImagePreviewFlyout: React.FC<{
   size: number;
 }> = ({ anchor, url, label, mime, size }) => {
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  /**
+   * Size the image: natural size by default, enlarged towards
+   * `ENLARGE_TO_WIDTH` when it is smaller, and never past `MAX_UPSCALE` times
+   * its own pixels.  The classes cap the box (92vw / 70vh) from the other side.
+   */
+  const fitImage = useCallback((): void => {
+    const img = imgRef.current;
+    if (img === null || img.naturalWidth === 0) return;
+    const natural = img.naturalWidth;
+    img.style.width = `${Math.max(natural, Math.min(ENLARGE_TO_WIDTH, natural * MAX_UPSCALE))}px`;
+  }, []);
 
   useEffect(() => {
     if (anchor === null || url === null) {
@@ -57,6 +76,7 @@ export const ImagePreviewFlyout: React.FC<{
       setPosition({ top: Math.round(top), left: Math.round(left) });
     };
     place();
+    fitImage();
     // The image's own load changes the box height, so place again once it lands.
     const raf = window.requestAnimationFrame(place);
     window.addEventListener('scroll', place, true);
@@ -66,7 +86,7 @@ export const ImagePreviewFlyout: React.FC<{
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
     };
-  }, [anchor, url]);
+  }, [anchor, url, fitImage]);
 
   if (url === null || position === null) return null;
 
@@ -79,9 +99,11 @@ export const ImagePreviewFlyout: React.FC<{
         className="pointer-events-none fixed z-50 w-max max-w-[94vw] rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout"
       >
         <img
+          ref={imgRef}
           src={url}
           alt={label}
-          className="max-h-[70vh] min-w-[20rem] max-w-[92vw] rounded-control bg-sunken object-contain"
+          onLoad={fitImage}
+          className="max-h-[70vh] max-w-[92vw] rounded-control bg-sunken object-contain"
         />
         <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px]">
           <span className="max-w-[14rem] truncate text-gray-800">{label}</span>
