@@ -10,6 +10,8 @@ import { mentionOptionId } from './mentionOption.ts';
 import {
   CONTEXT_MENTIONS,
   fileMention,
+  MENTION_KIND_ICON,
+  MENTION_KIND_LABEL,
   rankMentions,
   SKILL_MENTIONS,
   skillMention,
@@ -264,6 +266,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
    * would skip the very first read (the ref starts at the value the guard
    * compares against).  `null` means the list is closed, which is what clears the
    * loaded rows.
+   *
+   * The trailing slash is this component's own "the query is inside that
+   * directory" bookkeeping.  The wire takes a canonical path and rejects a
+   * trailing one (`invalid_artifact_path`), so `@web/` has to be asked for as
+   * `web` — otherwise every nested query shows "runtime service error" and the
+   * list can never leave the workspace root.
    */
   const mentionDir =
     mention === null ? null : mention.query.slice(0, mention.query.lastIndexOf('/') + 1);
@@ -284,7 +292,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     setFilesLoading(true);
     void listArtifacts(
       currentSession,
-      mentionDir === '' ? '.' : mentionDir,
+      mentionDir === '' ? '.' : mentionDir.replace(/\/+$/, ''),
       null,
       ARTIFACT_LIST_LIMIT,
     )
@@ -348,9 +356,8 @@ export const RichComposer: React.FC<RichComposerProps> = ({
         return { kind: 'image', pillId, localId };
       });
       setPills((current) => [...current, ...mounted]);
-      syncEmpty();
     },
-    [syncEmpty],
+    [],
   );
 
   /**
@@ -364,36 +371,61 @@ export const RichComposer: React.FC<RichComposerProps> = ({
    */
   useLayoutEffect(() => {
     const editor = editorRef.current;
-    const anchor = pendingCaretRef.current;
-    if (editor === null || anchor === null) return;
-    pendingCaretRef.current = null;
-    let tail: ChildNode | null = null;
-    for (const row of pills) {
-      const pillId = row.kind === 'image' ? row.pillId : row.pill.pillId;
-      if (placedPillsRef.current.has(pillId)) continue;
-      const rendered = editor.querySelector<HTMLElement>(
-        `[${PILL_ID_ATTRIBUTE}="${pillId}"]`,
-      );
-      if (rendered === null) continue;
-      placedPillsRef.current.add(pillId);
-      anchor.insertNode(rendered);
-      let last: ChildNode = rendered;
-      if (row.kind === 'mention') {
-        // A token must not be glued to whatever is typed next: the space is part
-        // of the draft (the store trims a trailing one).
-        const space = document.createTextNode(' ');
-        rendered.after(space);
-        last = space;
+    if (editor === null) return;
+    // A pill the browser removed without telling us — select-all + Backspace, or
+    // any editing command that rewrote the subtree — has to leave the state too.
+    // React would otherwise try to remove a node that is no longer there, throw
+    // inside its own commit, and unmount the whole console.
+    const orphaned = pills.filter(
+      (row) =>
+        editor.querySelector(
+          `[${PILL_ID_ATTRIBUTE}="${row.kind === 'image' ? row.pillId : row.pill.pillId}"]`,
+        ) === null,
+    );
+    if (orphaned.length > 0) {
+      for (const row of orphaned) {
+        const pillId = row.kind === 'image' ? row.pillId : row.pill.pillId;
+        pillsRef.current.delete(pillId);
+        placedPillsRef.current.delete(pillId);
       }
-      anchor.setStartAfter(last);
-      anchor.collapse(true);
-      tail = last;
+      setPills((current) => current.filter((row) => !orphaned.includes(row)));
+      return;
     }
-    // Not `caretAfter`: a container-level caret would send the next keystroke
-    // into the text *before* the pill, so the reader's typing would appear to the
-    // left of the image they just pasted.
-    if (tail !== null) caretInTextAfter(tail);
-  }, [pills]);
+    const anchor = pendingCaretRef.current;
+    pendingCaretRef.current = null;
+    if (anchor !== null) {
+      let tail: ChildNode | null = null;
+      for (const row of pills) {
+        const pillId = row.kind === 'image' ? row.pillId : row.pill.pillId;
+        if (placedPillsRef.current.has(pillId)) continue;
+        const rendered = editor.querySelector<HTMLElement>(
+          `[${PILL_ID_ATTRIBUTE}="${pillId}"]`,
+        );
+        if (rendered === null) continue;
+        placedPillsRef.current.add(pillId);
+        anchor.insertNode(rendered);
+        let last: ChildNode = rendered;
+        if (row.kind === 'mention') {
+          // A token must not be glued to whatever is typed next: the space is
+          // part of the draft (the store trims a trailing one).
+          const space = document.createTextNode(' ');
+          rendered.after(space);
+          last = space;
+        }
+        anchor.setStartAfter(last);
+        anchor.collapse(true);
+        tail = last;
+      }
+      // Not `caretAfter`: a container-level caret would send the next keystroke
+      // into the text *before* the pill, so the reader's typing would appear to
+      // the left of the image they just pasted.
+      if (tail !== null) caretInTextAfter(tail);
+    }
+    // Emptiness is decided *here*, after the commit: a pill that is not in the
+    // DOM yet makes the check answer "empty", which left the placeholder painted
+    // over the pill the reader had just inserted.
+    syncEmpty();
+  }, [pills, syncEmpty]);
 
   // Rows the card inserted arrive through `attachments`, so the editor mounts a
   // pill for every row it has not seen and drops a pill whose row went away (a
@@ -462,9 +494,8 @@ export const RichComposer: React.FC<RichComposerProps> = ({
 
       pillsRef.current.set(pill.pillId, pill);
       setPills((current) => [...current, { kind: 'mention', pill }]);
-      syncEmpty();
     },
-    [syncEmpty],
+    [],
   );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -518,6 +549,22 @@ export const RichComposer: React.FC<RichComposerProps> = ({
   };
 
   const entries = mention === null ? [] : offersFor(mention.query);
+
+  /**
+   * Drop one pill the reader removed through its own `×`.
+   *
+   * Removing the element by hand would desynchronize React from the DOM (the
+   * next render would try to remove a node that is no longer where it left it),
+   * so the pill goes away by leaving the state, exactly like the `gone` path for
+   * an attachment row.
+   */
+  const removePill = useCallback((pillId: string) => {
+    pillsRef.current.delete(pillId);
+    placedPillsRef.current.delete(pillId);
+    setPills((current) =>
+      current.filter((row) => (row.kind === 'image' ? row.pillId : row.pill.pillId) !== pillId),
+    );
+  }, []);
 
   return (
     <div className="relative">
@@ -587,7 +634,11 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       >
         {pills.map((row) =>
           row.kind === 'mention' ? (
-            <MentionPillView key={row.pill.pillId} pill={row.pill} />
+            <MentionPillView
+              key={row.pill.pillId}
+              pill={row.pill}
+              onRemove={() => removePill(row.pill.pillId)}
+            />
           ) : (
             <ImagePill
               key={row.pillId}
@@ -678,26 +729,41 @@ const ImagePill: React.FC<{
 };
 
 /** One `@` pill, rendered as an atomic inline element inside the editor. */
-const MentionPillView: React.FC<{ pill: ComposerMentionPill }> = ({ pill }) => (
-  <span
-    {...{ [PILL_ATTRIBUTE]: '', [PILL_ID_ATTRIBUTE]: pill.pillId }}
-    contentEditable={false}
-    title={`${pill.label} · ${pill.detail}`}
-    className="mx-0.5 inline-flex select-none items-center gap-1 rounded-control border border-line bg-sunken px-1.5 py-px align-middle font-mono text-[11px] leading-[18px] text-gray-800"
-  >
-    <span className="max-w-[14rem] truncate">{pill.label}</span>
-    <button
-      type="button"
-      tabIndex={-1}
-      title="移除引用"
-      aria-label={`移除引用 ${pill.label}`}
-      onMouseDown={(event) => event.preventDefault()}
-      className="shrink-0 rounded-full p-0.5 text-gray-400 hover:bg-black/10 hover:text-red-600"
+const MentionPillView: React.FC<{ pill: ComposerMentionPill; onRemove: () => void }> = ({
+  pill,
+  onRemove,
+}) => {
+  const KindIcon = MENTION_KIND_ICON[pill.kind];
+  return (
+    <span
+      {...{ [PILL_ATTRIBUTE]: '', [PILL_ID_ATTRIBUTE]: pill.pillId }}
+      contentEditable={false}
+      title={`${pill.label} · ${MENTION_KIND_LABEL[pill.kind]} · ${pill.detail}`}
+      className="mx-0.5 inline-flex select-none items-center gap-1 rounded-control border border-line bg-sunken px-1.5 py-px align-middle font-mono text-[11px] leading-[18px] text-gray-800"
     >
-      <Dismiss20Regular aria-hidden="true" style={{ fontSize: '12px' }} />
-    </button>
-  </span>
-);
+      {/* A pill carries no kind text, so the icon names it: a file path, an Agent
+          Skill and a runtime fact must not look alike in the draft. */}
+      <KindIcon
+        role="img"
+        aria-label={MENTION_KIND_LABEL[pill.kind]}
+        className="shrink-0 text-gray-500"
+        style={{ fontSize: '12px' }}
+      />
+      <span className="max-w-[14rem] truncate">{pill.label}</span>
+      <button
+        type="button"
+        tabIndex={-1}
+        title="移除引用"
+        aria-label={`移除引用 ${pill.label}`}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onRemove}
+        className="shrink-0 rounded-full p-0.5 text-gray-400 hover:bg-black/10 hover:text-red-600"
+      >
+        <Dismiss20Regular aria-hidden="true" style={{ fontSize: '12px' }} />
+      </button>
+    </span>
+  );
+};
 
 /**
  * The enlarged copy of the hovered image.

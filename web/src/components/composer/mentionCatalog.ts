@@ -22,6 +22,8 @@
  */
 
 import type { ComposerPillKind } from './composerDocument.ts';
+import { Database20Regular, DocumentText20Regular, PuzzlePiece20Regular } from '@fluentui/react-icons';
+import type { ComponentType } from 'react';
 
 /** One offerable mention. */
 export interface MentionEntry {
@@ -48,6 +50,29 @@ export const MENTION_KIND_LABEL: Record<MentionEntry['kind'], string> = {
   file: '文件',
   skill: '技能',
   context: '上下文',
+};
+
+/**
+ * The icon that stands for one kind.
+ *
+ * A pill is only a label and a remove button, so without this a file path, an
+ * Agent Skill and a runtime fact are indistinguishable in the draft — and in the
+ * flyout the three kinds differed only by a trailing word.  Both surfaces read
+ * this one map, so a kind can never look like another one.
+ */
+export const MENTION_KIND_ICON: Record<
+  MentionEntry['kind'],
+  ComponentType<{
+    className?: string;
+    style?: { fontSize?: string };
+    role?: string;
+    'aria-hidden'?: boolean | 'true' | 'false';
+    'aria-label'?: string;
+  }>
+> = {
+  file: DocumentText20Regular,
+  skill: PuzzlePiece20Regular,
+  context: Database20Regular,
 };
 
 /**

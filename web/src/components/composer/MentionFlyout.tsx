@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Portal } from '../Portal.tsx';
-import { MENTION_GROUP_TITLE, MENTION_KIND_LABEL, type MentionEntry } from './mentionCatalog.ts';
+import {
+  MENTION_GROUP_TITLE,
+  MENTION_KIND_ICON,
+  MENTION_KIND_LABEL,
+  type MentionEntry,
+} from './mentionCatalog.ts';
 import { mentionOptionId } from './mentionOption.ts';
 
 export interface MentionFlyoutProps {
@@ -100,6 +105,7 @@ export const MentionFlyout: React.FC<MentionFlyoutProps> = ({
                   index += 1;
                   const active = index === activeIndex;
                   const own = index;
+                  const KindIcon = MENTION_KIND_ICON[entry.kind];
                   return (
                     <button
                       key={entry.id}
@@ -119,6 +125,13 @@ export const MentionFlyout: React.FC<MentionFlyoutProps> = ({
                         active ? 'bg-blue-50/80' : 'hover:bg-gray-100/70'
                       }`}
                     >
+                      {/* The kind is spelled out at the right edge, so the icon is
+                          decoration here and stays out of the accessible name. */}
+                      <KindIcon
+                        aria-hidden="true"
+                        className="shrink-0 text-gray-500"
+                        style={{ fontSize: '14px' }}
+                      />
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="truncate font-mono text-[12px] text-gray-900">
                           {entry.label}

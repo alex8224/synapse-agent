@@ -50,6 +50,7 @@ import '/src/index.css';
 
 window.__submitted = [];
 window.__attached = [];
+window.__artifactPaths = [];
 let attSeq = 0;
 store.setState({
   initClient: () => {}, pairingState: 'paired', connectionState: 'connected',
@@ -80,14 +81,17 @@ store.setState({
     // The store's RPC gate reads the connection state before forwarding, so the
     // synthetic client has to answer it.
     getState: () => 'connected',
-    listArtifacts: async (_session, p) => ({
-      path: p ?? '.', nextCursor: null, truncated: false,
-      entries: (p === null || p === '.' || p === '')
-        ? [{ path: 'src', kind: 'directory', size: 0, media_type: 'inode/directory', revision: null, modified_at: null },
-           { path: 'README.md', kind: 'file', size: 12, media_type: 'text/markdown', revision: 'r1', modified_at: null },
-           { path: 'alpha.ts', kind: 'file', size: 12, media_type: 'text/plain', revision: 'r1', modified_at: null }]
-        : [{ path: p + '/agent.py', kind: 'file', size: 12, media_type: 'text/x-python', revision: 'r1', modified_at: null }],
-    }),
+    listArtifacts: async (_session, p) => {
+      window.__artifactPaths.push(p ?? null);
+      return {
+        path: p ?? '.', nextCursor: null, truncated: false,
+        entries: (p === null || p === '.' || p === '')
+          ? [{ path: 'src', kind: 'directory', size: 0, media_type: 'inode/directory', revision: null, modified_at: null },
+             { path: 'README.md', kind: 'file', size: 12, media_type: 'text/markdown', revision: 'r1', modified_at: null },
+             { path: 'alpha.ts', kind: 'file', size: 12, media_type: 'text/plain', revision: 'r1', modified_at: null }]
+          : [{ path: p + '/agent.py', kind: 'file', size: 12, media_type: 'text/x-python', revision: 'r1', modified_at: null }],
+      };
+    },
   },
 });
 window.fixtureStore = store;
@@ -292,6 +296,13 @@ try {
     'the list groups the static sources even before the files arrive',
     `document.querySelector('#composer-mention-list').innerText.includes('Agent 技能')`,
   );
+  await check(
+    'every flyout row carries the icon of its kind',
+    `(() => {
+      const rows = [...document.querySelectorAll('#composer-mention-list [role="option"]')];
+      return rows.length > 0 && rows.every((row) => row.querySelector('svg') !== null);
+    })()`,
+  );
   // The workspace files are read asynchronously, so the group appears a beat
   // after the list opens; a reader sees the static groups first, then this one.
   try {
@@ -395,6 +406,23 @@ try {
     })()`,
   );
   await check(
+    'the pick hides the placeholder tip instead of painting it over the pill',
+    `(() => {
+      const card = document.querySelector('#console-composer').closest('form');
+      return ![...card.querySelectorAll('span[aria-hidden="true"]')].some(
+        (s) => (s.textContent || '').trim().length > 0,
+      );
+    })()`,
+  );
+  await check(
+    'the pill names the kind of reference it carries',
+    `(() => {
+      const pill = document.querySelector('#console-composer [data-composer-pill]');
+      const icon = pill && pill.querySelector('[role="img"]');
+      return !!icon && ['文件', '技能', '上下文'].includes(icon.getAttribute('aria-label'));
+    })()`,
+  );
+  await check(
     'accepting a suggestion does not submit the turn',
     `window.__submitted.length === 1`,
   );
@@ -413,6 +441,42 @@ try {
     `(() => {
       const text = window.__submitted[1];
       return !text.includes('data-composer-pill') && !text.includes('aria-label');
+    })()`,
+  );
+
+  // --- the × on a mention pill really removes it ---------------------------
+  await clearDraft();
+  await run(`document.querySelector('#console-composer').focus()`);
+  await press('@', 'Digit2', 50, 8, '@');
+  await wait(`!!document.querySelector('#composer-mention-list')`);
+  await run(`(() => {
+    const row = document.querySelector('#composer-mention-list [role="option"]');
+    row.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true}));
+    row.click();
+    return true;
+  })()`);
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 1`);
+  await check(
+    'a mention pill carries a working remove button',
+    `(() => {
+      const button = document.querySelector('#console-composer [data-composer-pill] button');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`,
+  );
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 0`);
+  await check(
+    'removing the only pill empties the draft and shows the placeholder again',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      const card = editor.closest('form');
+      return (
+        editor.textContent.trim() === '' &&
+        [...card.querySelectorAll('span[aria-hidden="true"]')].some(
+          (s) => (s.textContent || '').trim().length > 0,
+        )
+      );
     })()`,
   );
 
@@ -475,6 +539,54 @@ try {
     `window.__submitted[2] === '这是截图后'`,
   );
 
+  // --- the hover preview is big enough to read ----------------------------
+  await clearDraft();
+  await run(`document.querySelector('#console-composer').focus()`);
+  await run(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1900;
+    canvas.height = 88;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#123456';
+    ctx.fillRect(0, 0, 1900, 88);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'wide.png', {type: 'image/png'}));
+    const event = new ClipboardEvent('paste', {bubbles: true, cancelable: true});
+    Object.defineProperty(event, 'clipboardData', {value: transfer});
+    document.querySelector('#console-composer').dispatchEvent(event);
+    return true;
+  })()`);
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill] img').length === 1`);
+  await run(`(() => {
+    const thumb = document.querySelector('#console-composer [data-composer-pill] img');
+    thumb.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
+    thumb.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+    return true;
+  })()`);
+  await wait(
+    `[...document.querySelectorAll('div[aria-hidden="true"]')].some((d) => d.querySelector('img'))`,
+  );
+  await check(
+    'a wide screenshot is previewed at a size that can be read',
+    `(() => {
+      const box = [...document.querySelectorAll('div[aria-hidden="true"]')].find((d) => d.querySelector('img'));
+      const img = box.querySelector('img');
+      return (
+        img.getBoundingClientRect().width >= window.innerWidth * 0.8 &&
+        img.getBoundingClientRect().height >= 40
+      );
+    })()`,
+  );
+  await run(`(() => {
+    const button = document.querySelector('#console-composer [data-composer-pill] button');
+    if (button) button.click();
+    return true;
+  })()`);
+  await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 0`);
+  await clearDraft();
+  await run(`document.querySelector('#console-composer').focus()`);
+
   // --- a text paste keeps its own lines and never adds a blank one ---------
   await clearDraft();
   await run(`document.querySelector('#console-composer').focus()`);
@@ -483,7 +595,11 @@ try {
     'a whitespace-only paste leaves the draft alone',
     `(() => {
       const editor = document.querySelector('#console-composer');
-      return editor.childNodes.length === 0 && editor.getBoundingClientRect().height < 60;
+      return (
+        editor.textContent.trim() === '' &&
+        editor.querySelector('[data-composer-pill]') === null &&
+        editor.getBoundingClientRect().height < 60
+      );
     })()`,
   );
   await pasteText('第一行\n第二行');
@@ -496,6 +612,23 @@ try {
   await check(
     'the pasted text reaches the prompt with its newline intact',
     `window.__submitted[3] === '第一行\\n第二行'`,
+  );
+
+  // --- a nested directory query asks for a canonical path ------------------
+  await clearDraft();
+  await run(`document.querySelector('#console-composer').focus()`);
+  await type('@web/');
+  await wait(`!!document.querySelector('#composer-mention-list')`);
+  await check(
+    'a nested directory query lists that directory instead of failing',
+    `(() => {
+      const list = document.querySelector('#composer-mention-list');
+      return list.innerText.includes('agent.py') && !list.innerText.includes('runtime service error');
+    })()`,
+  );
+  await check(
+    'the directory is asked for as a canonical path, without the trailing slash',
+    `window.__artifactPaths.includes('web') && !window.__artifactPaths.includes('web/')`,
   );
 
   // --- the list closes on Escape and on a caret that leaves the query ------
