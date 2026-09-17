@@ -303,8 +303,8 @@ def build_coding_agent(
     change across sessions.
     """
     from deepagents import create_deep_agent
-    from deepagents.graph import DeepAgentState
 
+    from synapse.app.state_schema import SynapseAgentState
     from synapse.observability.startup_trace import dump as dump_startup_trace
     from synapse.observability.startup_trace import duration, ensure_started, mark, span
 
@@ -684,7 +684,9 @@ def build_coding_agent(
             # only defaults ``state_schema`` for the top-level graph, so without this
             # every subagent step rewrote the full message list into its own
             # checkpoint (measured: 83% of a 14 GB store came from those namespaces).
-            state_schema=DeepAgentState,
+            # ``SynapseAgentState`` keeps that channel but raises its snapshot cadence
+            # from deepagents' 50 to ``SNAPSHOT_FREQUENCY`` (see synapse.app.state_schema).
+            state_schema=SynapseAgentState,
             system_prompt=prompt,
             backend=backend,
             tools=tools,

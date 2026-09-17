@@ -142,9 +142,9 @@ def test_build_coding_agent_wires_create_deep_agent(tmp_path: Path):
         # Subagents must inherit the delta-stored ``messages`` channel; without an
         # explicit schema deepagents only defaults it for the top-level graph, so
         # every subagent step rewrote its full message list into a checkpoint.
-        from deepagents.graph import DeepAgentState
+        from synapse.app.state_schema import SynapseAgentState
 
-        assert kwargs["state_schema"] is DeepAgentState
+        assert kwargs["state_schema"] is SynapseAgentState
         search_tools = {
             tool.name: tool
             for tool in kwargs["tools"]
