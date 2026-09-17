@@ -11,6 +11,12 @@ import { formatBytes } from '../../runtime-client/artifacts.ts';
  * away from the image it describes.  It sits 8px above the thumbnail by default
  * and flips below only when the viewport has no room above, and it follows the
  * thumbnail on scroll/resize so a scrolled editor never leaves it behind.
+ *
+ * Size is the point of the preview, so the box takes what the viewport allows
+ * (up to 64rem wide and 70vh tall) and the image is *scaled to it* in both
+ * directions: a wide screenshot is no longer squeezed into a 21rem strip (a
+ * 1900x88 capture used to render 336x15), and a small image is enlarged instead
+ * of being shown at a size that cannot be read.
  */
 export const ImagePreviewFlyout: React.FC<{
   anchor: HTMLElement | null;
@@ -70,12 +76,12 @@ export const ImagePreviewFlyout: React.FC<{
         ref={boxRef}
         aria-hidden="true"
         style={{ top: position.top, left: position.left }}
-        className="pointer-events-none fixed z-50 w-max max-w-[22rem] rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout"
+        className="pointer-events-none fixed z-50 w-max max-w-[94vw] rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout"
       >
         <img
           src={url}
           alt={label}
-          className="max-h-64 max-w-[21rem] rounded-control bg-sunken object-contain"
+          className="max-h-[70vh] min-w-[20rem] max-w-[92vw] rounded-control bg-sunken object-contain"
         />
         <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px]">
           <span className="max-w-[14rem] truncate text-gray-800">{label}</span>
