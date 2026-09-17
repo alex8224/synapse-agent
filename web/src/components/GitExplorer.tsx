@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Branch20Regular, ArrowSync20Regular, Dismiss20Regular } from '@fluentui/react-icons';
-import { Portal } from './Portal.tsx';
+import { Branch20Regular, ArrowSync20Regular } from '@fluentui/react-icons';
+import { PanelLeftContract16Regular, PanelLeftExpand16Regular } from '@fluentui/react-icons';
+import { FloatingWindow } from './FloatingWindow.tsx';
+import { GitDiffView } from './GitDiffView.tsx';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { OpenWithMenu } from './OpenWithMenu.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -8,8 +10,7 @@ import {
   MalformedGitPayloadError,
   changeStatusLabel,
   changeStatusCode,
-  diffLineClass,
-  type GitDiffView,
+  type GitDiffView as GitDiffPayload,
   type GitStatusView,
 } from '../runtime-client/git.ts';
 
@@ -28,6 +29,11 @@ function describe(err: unknown): string {
  * otherwise write — and a workspace where git cannot answer says so instead of
  * showing an empty tree.
  *
+ * The window is the same one the file manager uses: a `FloatingWindow`, so it can
+ * be dragged by its title bar, resized from the bottom-right grip and maximized /
+ * restored (the double-click and the title-bar button), and its file-list column
+ * collapses with the title-bar toggle so the diff spreads across the whole width.
+ *
  * `initialPath` is the file to open on: a turn's change card asks for the file it
  * names, and the branch chip asks for none (the explorer picks its own first row).  A
  * path that is no longer in the changed list is not forced: the reader sees the list,
@@ -44,10 +50,14 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
   const [status, setStatus] = useState<GitStatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(initialPath ?? null);
+  const [treeVisible, setTreeVisible] = useState(true);
   const [mobileDetail, setMobileDetail] = useState(false);
   const [staged, setStaged] = useState(false);
-  const [diff, setDiff] = useState<GitDiffView | null>(null);
+  const [diff, setDiff] = useState<GitDiffPayload | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
+  // Bumped by the refresh button: the diff effect already keys off the selection,
+  // so re-reading the *same* file needs a second trigger to re-run it.
+  const [diffReloadToken, setDiffReloadToken] = useState(0);
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -97,40 +107,19 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
     return () => {
       cancelled = true;
     };
-  }, [client, currentSession, selected, staged]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [client, currentSession, selected, staged, diffReloadToken]);
 
   const files = status?.files ?? [];
-  const diffLines = diff === null ? [] : diff.text.replace(/\n$/, '').split('\n');
 
   return (
-    // `Portal`: this panel is a window of its own, so an acrylic ancestor cannot
-    // anchor its `fixed` box to itself.
-    <Portal>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm scrim-in"
-        onClick={onClose}
-      >
-      <div
-        role="dialog"
-        aria-label="Git Explorer"
-        ref={dialogRef}
-        tabIndex={-1}
-        onKeyDown={onKeyDown}
-        onClick={(event) => event.stopPropagation()}
-        className="flex h-[76vh] w-[72rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-card border border-line/70 material-flyout flyout-in text-left shadow-flyout"
-      >
-        <div className="responsive-dialog-toolbar flex items-center gap-2 border-b border-gray-200 px-3 py-2">
-          {mobileDetail && <button className="list-detail-back ui-button" onClick={() => setMobileDetail(false)}>
-            返回文件列表
-          </button>}
+    <FloatingWindow
+      label="Git Explorer"
+      scrim="soft"
+      initialWidth={1152}
+      initialHeight={680}
+      onClose={onClose}
+      title={
+        <div className="flex items-center gap-2">
           <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
           <span className="text-sm font-semibold text-gray-900">Git Explorer</span>
           <span className="font-mono text-xs text-gray-500">{status?.branch ?? 'git'}</span>
@@ -142,14 +131,45 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
               {status.behind > 0 && ` · ↓${status.behind}`}
             </span>
           )}
-          <span className="flex-1" />
+        </div>
+      }
+      actions={
+        <div className="flex items-center gap-1.5">
+          {/* Same collapse control as the file manager: the list column folds away
+              so the diff spreads across the whole window. */}
+          <button
+            type="button"
+            onClick={() => {
+              // On a phone the list and the diff share one column, so folding the
+              // list away has to land on the diff (not on the blank view where both
+              // are hidden) and unfolding it has to come back to the list.  On the
+              // desktop columns this only flips the hidden list.
+              const next = !treeVisible;
+              setTreeVisible(next);
+              setMobileDetail(!next);
+            }}
+            title={treeVisible ? '收起文件列表' : '展开文件列表'}
+            aria-label={treeVisible ? '收起文件列表' : '展开文件列表'}
+            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
+          >
+            {treeVisible ? (
+              <PanelLeftContract16Regular aria-hidden="true" />
+            ) : (
+              <PanelLeftExpand16Regular aria-hidden="true" />
+            )}
+          </button>
           {/* The reader's own editor for the selected file: a host-side launch, so it
               is offered here (a title-bar action) and never silently retried. */}
           <OpenWithMenu
             path={selected}
             disabledReason={selected === null ? '先选择一个文件' : '打开方式不可用'}
           />
-          <label className="flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-600">
+          {/* The checkbox is a title-bar control: keep its pointer sequence out of
+              the drag handler so a click toggles it instead of starting a drag. */}
+          <label
+            onPointerDown={(event) => event.stopPropagation()}
+            className="flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-600"
+          >
             <input
               id="git-explorer-staged"
               name="git-explorer-staged"
@@ -162,23 +182,22 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
           </label>
           <button
             type="button"
-            onClick={() => void loadStatus()}
+            onClick={() => {
+              void loadStatus();
+              // Re-read the open file too: the reader pressed refresh to see the
+              // current diff again, not only the file list.
+              if (selected !== null) setDiffReloadToken((token) => token + 1);
+            }}
             disabled={busy}
             title="刷新"
             className="ui-icon-button ui-compact text-gray-500 hover:text-gray-900 disabled:opacity-40"
           >
             <ArrowSync20Regular aria-hidden="true" className={busy ? 'animate-spin' : ''} />
           </button>
-          <button
-            type="button"
-            onClick={onClose}
-            title="关闭 (Esc)"
-            className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
-          >
-            <Dismiss20Regular aria-hidden="true" />
-          </button>
         </div>
-
+      }
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {openExternalError !== null && (
           <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-3 py-1.5 text-[11px] leading-relaxed text-amber-800">
             <span className="min-w-0 flex-1">{openExternalError}</span>
@@ -192,8 +211,21 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
           </div>
         )}
 
-        <div className="git-responsive-body flex min-h-0 flex-1" data-detail={mobileDetail}>
-          <div id="git-file-list" className="fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1">
+        <div
+          ref={dialogRef}
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
+          className="git-responsive-body flex min-h-0 min-w-0 flex-1"
+          data-detail={mobileDetail}
+        >
+          {/* The changed-file list.  Collapsed with the title-bar toggle: `hidden`
+              removes the column entirely, so the diff below fills the full width. */}
+          <div
+            id="git-file-list"
+            className={`fluent-scrollbar w-80 shrink-0 overflow-y-auto border-r border-gray-100 py-1 ${
+              treeVisible ? '' : 'hidden'
+            }`}
+          >
             {statusError !== null && (
               <p className="px-3 py-2 text-[11px] leading-relaxed text-amber-700">
                 {statusError}
@@ -207,10 +239,14 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
                 key={file.path}
                 type="button"
                 onClick={() => {
-                  // Clearing here (not in an effect) keeps the panel from showing
-                  // the previous file's diff while the new one loads.
-                  setDiff(null);
-                  setSelected(file.path);
+                  // Re-clicking the file already open keeps its diff: clearing here
+                  // would blank the pane the reader is looking at.  A *different*
+                  // file is cleared (not in an effect) so the previous file's diff
+                  // never flashes while the new one loads.
+                  if (file.path !== selected) {
+                    setDiff(null);
+                    setSelected(file.path);
+                  }
                   setMobileDetail(true);
                 }}
                 title={`${changeStatusLabel(file)} · ${changeStatusCode(file)}`}
@@ -228,33 +264,28 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
             ))}
           </div>
 
-          <div className="fluent-scrollbar min-w-0 flex-1 overflow-auto bg-canvas px-3 py-2">
-            {selected === null && <p className="text-[11px] text-gray-400">选择一个文件查看 diff。</p>}
-            {diffError !== null && <p className="text-[11px] text-amber-700">{diffError}</p>}
-            {diffError === null && diff !== null && diff.empty && (
-              <p className="text-[11px] text-gray-400">
-                没有差异（该文件与所选基线一致；可用上方「暂存区」比较另一侧）。
-              </p>
-            )}
-            {diffError === null && diff !== null && diff.binary && (
-              <p className="text-[11px] text-gray-500">二进制文件，不显示 diff。</p>
-            )}
-            {diffError === null && diff !== null && !diff.empty && !diff.binary && (
-              <pre className="whitespace-pre font-mono text-[11px] leading-relaxed">
-                {diffLines.map((line, index) => (
-                  <div key={`${index}-${line.slice(0, 12)}`} className={diffLineClass(line)}>
-                    {line === '' ? ' ' : line}
-                  </div>
-                ))}
-              </pre>
-            )}
-            {diffError === null && diff !== null && diff.truncated && (
-              <p className="pt-1 text-[10px] text-amber-700">diff 超过服务端单文件上限，已截断。</p>
-            )}
+          {/* The diff pane is the professional viewer: it owns the unified/split
+              toggle, the dual line numbers, the word-level highlights, the hunk
+              banners and the +/- statistics.  It also owns every terminal state,
+              including the empty one the reader sees when a file matches its
+              baseline -- 没有差异（该文件与所选基线一致；可用上方「暂存区」比较另一侧）。 */}
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+            <button
+              type="button"
+              className="list-detail-back ui-button"
+              onClick={() => {
+                setMobileDetail(false);
+                setTreeVisible(true);
+              }}
+            >
+              返回文件列表
+            </button>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <GitDiffView diff={diff} diffError={diffError} selectedPath={selected} />
+            </div>
           </div>
         </div>
       </div>
-      </div>
-    </Portal>
+    </FloatingWindow>
   );
 };

@@ -30,6 +30,23 @@ const KEEP_Y = 40;
 /** Matches `--motion-normal`: how long the maximize/restore transition runs. */
 const MOTION_MS = 200;
 
+/**
+ * Selector for the header controls that must keep their own pointer behavior.
+ *
+ * The title bar hosts a document's controls too (the file list toggle, the
+ * "open with" split button, the staged checkbox, the refresh button), and every
+ * one of them is a click target: a drag that starts on them would swallow the
+ * click, and a double-click on them would maximize the window instead of doing
+ * what the control says.  The `[data-no-drag]` escape hatch lets a window mark
+ * an extra region as hands-off without threading a prop through this component.
+ */
+const NO_DRAG_SELECTOR = 'button, input, label, select, textarea, [data-no-drag]';
+
+/** True when a pointer / click event landed on an interactive header control. */
+function isHeaderControl(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(NO_DRAG_SELECTOR) !== null;
+}
+
 interface Rect {
   x: number;
   y: number;
@@ -137,9 +154,22 @@ export const FloatingWindow: React.FC<FloatingWindowProps> = ({
 
   const onHeaderPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (maximized) return;
-    if ((event.target as HTMLElement).closest('button') !== null) return;
+    // A control in the title bar owns its own pointer sequence: starting a drag
+    // on it would steal the click (the checkbox, the refresh button, the file
+    // list toggle) and leave the window under the cursor.
+    if (isHeaderControl(event.target)) return;
     dragRef.current = { dx: event.clientX - rect.x, dy: event.clientY - rect.y };
     event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  /**
+   * Double-clicking the title bar toggles maximize -- but a double-click on a
+   * control is that control's own gesture (a double-click on the staged checkbox
+   * must not also blow the window up to full screen).
+   */
+  const onHeaderDoubleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    if (isHeaderControl(event.target)) return;
+    toggleMaximize();
   };
 
   const onHeaderPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -206,7 +236,7 @@ export const FloatingWindow: React.FC<FloatingWindowProps> = ({
             onPointerMove={onHeaderPointerMove}
             onPointerUp={onHeaderPointerUp}
             onPointerCancel={onHeaderPointerUp}
-            onDoubleClick={toggleMaximize}
+            onDoubleClick={onHeaderDoubleClick}
             className={`material-titlebar flex select-none items-center gap-2 border-b border-line/60 px-3 py-1.5 ${
               maximized ? '' : 'cursor-move'
             }`}
@@ -238,7 +268,7 @@ export const FloatingWindow: React.FC<FloatingWindowProps> = ({
               </button>
             </div>
           </div>
-          <div className="flex min-h-0 flex-1">{children}</div>
+          <div className="flex min-h-0 min-w-0 flex-1">{children}</div>
           {!maximized && (
             <div
               onPointerDown={onGripPointerDown}

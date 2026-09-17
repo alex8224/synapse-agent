@@ -42,6 +42,7 @@ store.setState({
       files: [
         {path: 'tmp_hello.py', indexStatus: '?', worktreeStatus: '?'},
         {path: 'staged_only.txt', indexStatus: 'A', worktreeStatus: ' '},
+        {path: 'docs/long-line.md', indexStatus: ' ', worktreeStatus: 'M'},
       ],
       truncated: false, insertions: null, deletions: null,
     }),
@@ -49,6 +50,10 @@ store.setState({
       window.__diffCalls.push({path: filePath, staged});
       if (filePath === 'tmp_hello.py' && staged !== true) {
         return {path: filePath, text: NEW_FILE_DIFF, binary: false, truncated: false, empty: false};
+      }
+      if (filePath === 'docs/long-line.md') {
+        const text = '--- a/docs/long-line.md\\n+++ b/docs/long-line.md\\n@@ -1,2 +1,2 @@\\n ' + 'context'.repeat(100) + '\\n-' + 'old'.repeat(300) + '\\n+' + 'new'.repeat(300) + '\\n';
+        return {path: filePath, text, binary: false, truncated: false, empty: false};
       }
       return {path: filePath, text: '', binary: false, truncated: false, empty: true};
     },
@@ -132,7 +137,7 @@ try {
 
   await check('the explorer lists the untracked file', `(() => {
     const p = window.__probe();
-    return p.open === true && p.files.length === 2 && p.files[0].includes('tmp_hello.py');
+    return p.open === true && p.files.length === 3 && p.files[0].includes('tmp_hello.py');
   })()`);
   await check('the untracked file is read as a new-file diff', `(() => {
     const p = window.__probe();
@@ -140,9 +145,13 @@ try {
   })()`);
   await check('its content is painted, not an empty pane', `(() => {
     const p = window.__probe();
-    return p.pane.includes('+++ b/tmp_hello.py')
+    // The professional viewer paints the new-file diff: the path in its toolbar,
+    // the hunk banner and the added lines.  The raw "+++ b/..." header is now
+    // behind the 文件头 toggle instead of being drawn as a plain pre.
+    return p.pane.includes('tmp_hello.py')
       && p.pane.includes('@@ -0,0 +1,2 @@')
-      && p.pane.includes('+print("hi")');
+      && p.pane.includes('+print("hi")')
+      && p.pane.includes('+print("there")');
   })()`);
   await check('and it no longer sends the reader to another panel', `(() => {
     const p = window.__probe();
@@ -162,8 +171,71 @@ try {
     return p.calls.some((call) => call.path === 'staged_only.txt' && call.staged === true)
       && p.pane.includes('没有差异（该文件与所选基线一致');
   })()`);
+  // Use real pointer sequences: HTMLElement.click() bypasses the header drag
+  // handler and cannot detect a click on an SVG being stolen by pointer capture.
+  const pointerClick = async (selector: string) => {
+    const point = await run(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      const r = el.getBoundingClientRect();
+      return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+    })()`) as { x: number; y: number };
+    await client!.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }, page.sessionId);
+    await client!.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 }, page.sessionId);
+    await settle();
+  };
+  await pointerClick('[aria-label="收起文件列表"] svg');
+  await check('clicking the sidebar SVG collapses the file list', `getComputedStyle(document.getElementById('git-file-list')).display === 'none'`);
+  await pointerClick('[aria-label="展开文件列表"] svg');
+  await check('clicking the sidebar SVG restores the file list', `getComputedStyle(document.getElementById('git-file-list')).display !== 'none'`);
+  await run('window.__clickFile(2)');
+  await settle();
+  const toolbarVisible = `(() => {
+    const button = document.querySelector('[title="分栏视图 (Split / Side-by-side)"]');
+    const r = button.getBoundingClientRect();
+    const win = document.querySelector('.responsive-file-window').getBoundingClientRect();
+    return r.left >= win.left && r.right <= win.right
+      && button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+  })()`;
+  await check('long lines do not push Split outside the window', toolbarVisible);
+  await check('unified long lines scroll inside the diff only', `(() => {
+    const scroller = document.querySelector('[aria-label="Diff 视图模式"]').parentElement.parentElement.parentElement.querySelector('.overflow-auto');
+    return scroller.scrollWidth > scroller.clientWidth
+      && document.querySelector('.responsive-file-window').scrollWidth <= document.querySelector('.responsive-file-window').clientWidth + 1;
+  })()`);
+  await pointerClick('[title="分栏视图 (Split / Side-by-side)"]');
+  await check('Split activates and long lines stay within each half', `(() => {
+    const button = document.querySelector('[title="分栏视图 (Split / Side-by-side)"]');
+    const cells = [...document.querySelectorAll('[aria-label="Git Explorer"] [class~="w-1/2"]')];
+    return button.getAttribute('aria-pressed') === 'true' && cells.length > 0
+      && cells.every(cell => cell.scrollWidth <= cell.clientWidth + 1);
+  })()`);
+  await run('window.__clickFile(0)');
+  await run('window.__toggleStaged()');
+  await settle();
+  await check('Split remains available and selected after changing files', `document.querySelector('[title="分栏视图 (Split / Side-by-side)"]').getAttribute('aria-pressed') === 'true'`);
+  await run('window.__clickFile(2)');
+  await settle();
+  await pointerClick('[aria-label="收起文件列表"] svg');
+  await check('Split stays visible with the sidebar collapsed', toolbarVisible);
+  await pointerClick('[aria-label="展开文件列表"] svg');
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 600, height: 900, deviceScaleFactor: 1, mobile: false }, page.sessionId);
+  await settle();
+  await run('window.__clickFile(2)');
+  await settle();
+  await check('Split stays visible on a narrow viewport', toolbarVisible);
+  // Return to desktop before exercising the other title-bar SVG controls.
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, page.sessionId);
+  await settle();
+  await pointerClick('[title="刷新"] svg');
+  await check('refresh SVG re-reads the current diff', `window.__diffCalls.filter(c => c.path === 'docs/long-line.md').length >= 3`);
+  await pointerClick('[aria-label="最大化窗口"] svg');
+  await check('maximize SVG works', `document.querySelector('[aria-label="还原窗口"]') !== null`);
+  await pointerClick('[aria-label="还原窗口"] svg');
+  await check('restore SVG works', `document.querySelector('[aria-label="最大化窗口"]') !== null`);
   const image = (await client.send('Page.captureScreenshot', { format: 'png' }, page.sessionId)) as { data: string };
   fs.writeFileSync(path.join(output, 'untracked.png'), Buffer.from(image.data, 'base64'));
+  await pointerClick('[aria-label="关闭"] svg');
+  await check('close SVG works', `document.querySelector('[aria-label="Git Explorer"]') === null`);
   console.log(`ALL ${checks} CHECKS PASSED; screenshots: ${output}`);
 } finally {
   client?.close();
