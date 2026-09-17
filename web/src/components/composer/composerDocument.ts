@@ -68,6 +68,24 @@ export const PILL_ATTRIBUTE = 'data-composer-pill';
 /** Attribute holding the pill's local id. */
 export const PILL_ID_ATTRIBUTE = 'data-pill-id';
 
+/**
+ * Zero-width space used as a caret anchor.
+ *
+ * An insertion point after an atomic pill (or after a pasted block) needs a real
+ * text node to live in: a caret parked *between* two nodes makes the next
+ * keystroke land in the text before the pill, which puts the reader's typing to
+ * the left of the image they just pasted.  An *empty* text node is not enough —
+ * the browser drops it while normalizing the editable, and the caret snaps back.
+ * The anchor therefore carries one zero-width space, which renders as nothing and
+ * is stripped from the projection below, so it can never reach the prompt.
+ */
+export const CARET_ANCHOR = '\u200B';
+
+/** Remove every caret anchor from a text value (never part of the prompt). */
+export function stripCaretAnchors(value: string): string {
+  return value.split(CARET_ANCHOR).join('');
+}
+
 /** What one submit needs: the prompt text, and the images that ride beside it. */
 export interface ComposerSnapshot {
   /** The prompt exactly as typed (never trimmed here; the store trims). */
@@ -102,7 +120,7 @@ function walk(node: Node, registry: ComposerRegistry, imageLocalIds: string[]): 
   let out = '';
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === TEXT_NODE) {
-      out += child.nodeValue ?? '';
+      out += stripCaretAnchors(child.nodeValue ?? '');
       continue;
     }
     if (child.nodeType !== ELEMENT_NODE) continue;
@@ -165,7 +183,7 @@ function isLastMeaningfulChild(parent: Node, child: Node): boolean {
  * anything to send at all" to decide whether the primary button is enabled.
  */
 export function isSnapshotEmpty(snapshot: ComposerSnapshot): boolean {
-  return snapshot.text.trim() === '' && snapshot.imageLocalIds.length === 0;
+  return stripCaretAnchors(snapshot.text).trim() === '' && snapshot.imageLocalIds.length === 0;
 }
 
 /** Monotonic local id for pills (DOM-only identity, never sent). */

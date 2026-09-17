@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  CARET_ANCHOR,
   isSnapshotEmpty,
   PILL_ATTRIBUTE,
   PILL_ID_ATTRIBUTE,
@@ -102,6 +103,26 @@ test('plain text and line breaks project onto the prompt verbatim', () => {
   const snapshot = serializeComposer(root as unknown as Node, registryOf([]));
   assert.equal(snapshot.text, '第一行\n第二行');
   assert.deepEqual(snapshot.imageLocalIds, []);
+});
+
+test('a caret anchor never reaches the prompt', () => {
+  // The editor parks the caret in a zero-width-space text node so the next
+  // keystroke lands *after* a pasted pill instead of in the text before it; the
+  // anchor is an insertion point, never content.
+  const node = pill('pill-img');
+  const root = new FakeElement('DIV')
+    .append(new FakeText('这是截图'))
+    .append(node)
+    .append(new FakeText(`${CARET_ANCHOR}后`));
+  const snapshot = serializeComposer(
+    root as unknown as Node,
+    registryOf([{ pillId: 'pill-img', kind: 'image', localId: 'att-9' }]),
+  );
+  assert.equal(snapshot.text, '这是截图后');
+  assert.deepEqual(snapshot.imageLocalIds, ['att-9']);
+  // An anchor on its own is not content: the composer stays empty.
+  const anchorOnly = new FakeElement('DIV').append(new FakeText(CARET_ANCHOR));
+  assert.equal(isSnapshotEmpty(serializeComposer(anchorOnly as unknown as Node, registryOf([]))), true);
 });
 
 test('a mention pill becomes its token, never its own markup', () => {

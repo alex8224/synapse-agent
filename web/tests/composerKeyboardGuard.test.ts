@@ -61,8 +61,16 @@ test('a pick replaces the typed @ instead of appending beside it', () => {
     'the `@` and the query must be deleted before the pill is inserted',
   );
   assert.ok(
-    composer.includes('range.insertNode(holder)'),
-    'the pill must land where the `@` was, not at the end',
+    composer.includes('pendingCaretRef.current = seat'),
+    'the place the `@` was deleted from must be handed to the placement effect',
+  );
+  assert.ok(
+    composer.includes('anchor.insertNode(rendered)'),
+    'the rendered pill must be moved to that place, not left where React appended it',
+  );
+  assert.ok(
+    !composer.includes('insertNode(holder)'),
+    'a placeholder node must not be left behind in the draft',
   );
   assert.ok(
     selection.includes('isRangeLive'),
@@ -71,7 +79,7 @@ test('a pick replaces the typed @ instead of appending beside it', () => {
   // A query is only ever a mention when it starts a token, so an email address
   // or a decorator in pasted code does not open the list.
   assert.ok(
-    selection.includes("!/\\s/.test(before[at - 1])"),
+    selection.includes("!/[\\s\\u200B]/.test(before[at - 1])"),
     'a mention must start at a token boundary',
   );
 });
@@ -79,18 +87,56 @@ test('a pick replaces the typed @ instead of appending beside it', () => {
 test('Shift+Enter breaks the line without submitting', () => {
   assert.ok(composer.includes("event.shiftKey"), 'the shift modifier must be honoured');
   assert.ok(
-    composer.includes('insertLineBreak'),
-    'the break must be inserted explicitly, not by letting the browser wrap a block',
+    composer.includes('insertLineBreakAtCaret(editor)'),
+    'the break must be inserted explicitly, in the browser-kept shape',
   );
   // Scoped to the handler: the module's own documentation names both, and a
   // comment must not be able to satisfy an ordering rule about code.
   const handler = composer.slice(composer.indexOf('const onKeyDown'));
   const shift = handler.indexOf('event.shiftKey');
-  const breakInsert = handler.indexOf('insertLineBreak');
+  const breakInsert = handler.indexOf('insertLineBreakAtCaret');
   assert.ok(shift < breakInsert, 'the line break must happen inside the Enter branch');
   assert.ok(
-    handler.indexOf('insertLineBreak') < handler.indexOf('onSubmit(snapshot())'),
+    handler.indexOf('insertLineBreakAtCaret') < handler.indexOf('onSubmit(snapshot())'),
     'the line-break branch must return before the submit branch',
+  );
+});
+
+test('the editor never lets execCommand pick the DOM shape', () => {
+  // `insertText` turns a newline into two block wrappers here (a blank line that
+  // also reached the prompt as a second newline) and `insertLineBreak` produced
+  // two wrappers as well, so every insertion goes through the explicit helpers.
+  assert.ok(
+    !composer.includes('document.execCommand('),
+    'the composer must not call document.execCommand',
+  );
+  assert.ok(
+    selection.includes('insertTextAtCaret'),
+    'plain text must be inserted as one literal text node',
+  );
+  assert.ok(
+    selection.includes('createTextNode(text)'),
+    'the payload must stay literal text, never browser-chosen markup',
+  );
+  assert.ok(
+    selection.includes('insertLineBreakAtCaret'),
+    'a break must be inserted in the shape the browser keeps, not asked for',
+  );
+});
+
+test('a whitespace-only paste is not content', () => {
+  // A clipboard holding only a bitmap offers a bare newline as its text; that
+  // used to leave a blank line above the image pasted next.
+  assert.ok(
+    composer.includes("text.trim() !== ''"),
+    'whitespace-only clipboard text must be dropped instead of inserted',
+  );
+});
+
+test('a pasted image pill lands at the caret', () => {
+  assert.ok(
+    composer.includes('anchor.insertNode(rendered)'),
+    'the rendered pill must be moved to the caret, not left where React appended it',
   );
 });
 

@@ -186,6 +186,24 @@ try {
     await client!.send('Input.insertText', { text }, page.sessionId);
     await settle();
   };
+  /**
+   * A clipboard paste that carries text and no file.
+   *
+   * That is what a bitmap-only clipboard looks like to the page (a screenshot the
+   * browser exposes as markup rather than as a `File`), and it is the shape that
+   * used to leave a blank line above the image pasted next.
+   */
+  const pasteText = async (text: string): Promise<void> => {
+    await run(`(() => {
+      const transfer = new DataTransfer();
+      transfer.setData('text/plain', ${JSON.stringify(text)});
+      const event = new ClipboardEvent('paste', {bubbles: true, cancelable: true});
+      Object.defineProperty(event, 'clipboardData', {value: transfer});
+      document.querySelector('#console-composer').dispatchEvent(event);
+      return true;
+    })()`);
+    await settle();
+  };
   const clearDraft = async (): Promise<void> => {
     const result = await run(`(() => {
       try {
@@ -358,6 +376,25 @@ try {
     `document.querySelectorAll('#console-composer [data-composer-pill]').length === 1`,
   );
   await check(
+    'the pick leaves the pill where the @ was, not at the end of the draft',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      const nodes = [...editor.childNodes];
+      const index = nodes.findIndex((n) => n.hasAttribute && n.hasAttribute('data-composer-pill'));
+      if (index < 0) return false;
+      return nodes.slice(0, index).map((n) => n.textContent).join('').includes('请看');
+    })()`,
+  );
+  await check(
+    'the pick leaves no placeholder node behind',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      return ![...editor.childNodes].some(
+        (n) => n.nodeType === 1 && !n.hasAttribute('data-composer-pill') && n.textContent === '',
+      );
+    })()`,
+  );
+  await check(
     'accepting a suggestion does not submit the turn',
     `window.__submitted.length === 1`,
   );
@@ -403,8 +440,29 @@ try {
   );
   await wait(`document.querySelectorAll('#console-composer [data-composer-pill]').length === 1`);
   await check(
-    'the accepted image appears as one inline pill at the caret',
-    `document.querySelectorAll('#console-composer [data-composer-pill]').length === 1`,
+    'the accepted image appears as one inline pill after the text it was pasted into',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      const nodes = [...editor.childNodes];
+      const index = nodes.findIndex((n) => n.hasAttribute && n.hasAttribute('data-composer-pill'));
+      if (index < 0) return false;
+      return nodes.slice(0, index).map((n) => n.textContent).join('') === '这是截图';
+    })()`,
+  );
+  await check(
+    'the pasted image pushes no blank line above itself',
+    `document.querySelector('#console-composer').getBoundingClientRect().height < 60`,
+  );
+  await type('后');
+  await check(
+    'the caret stays after the image, so typing continues there',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      const nodes = [...editor.childNodes];
+      const index = nodes.findIndex((n) => n.hasAttribute && n.hasAttribute('data-composer-pill'));
+      if (index < 0) return false;
+      return nodes.slice(index + 1).map((n) => n.textContent).join('').includes('后');
+    })()`,
   );
   await check(
     'the pasted file went to addAttachments under its own name',
@@ -414,7 +472,30 @@ try {
   await wait(`window.__submitted.length === 3`);
   await check(
     'the image pill contributes no text to the prompt',
-    `window.__submitted[2] === '这是截图'`,
+    `window.__submitted[2] === '这是截图后'`,
+  );
+
+  // --- a text paste keeps its own lines and never adds a blank one ---------
+  await clearDraft();
+  await run(`document.querySelector('#console-composer').focus()`);
+  await pasteText('\n');
+  await check(
+    'a whitespace-only paste leaves the draft alone',
+    `(() => {
+      const editor = document.querySelector('#console-composer');
+      return editor.childNodes.length === 0 && editor.getBoundingClientRect().height < 60;
+    })()`,
+  );
+  await pasteText('第一行\n第二行');
+  await check(
+    'a text paste keeps exactly its own lines',
+    `document.querySelector('#console-composer').innerText.split('\\n').length === 2`,
+  );
+  await enter();
+  await wait(`window.__submitted.length === 4`);
+  await check(
+    'the pasted text reaches the prompt with its newline intact',
+    `window.__submitted[3] === '第一行\\n第二行'`,
   );
 
   // --- the list closes on Escape and on a caret that leaves the query ------

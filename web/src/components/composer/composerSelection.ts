@@ -8,7 +8,7 @@
  * a range still belong to the live editor before anything is mutated.
  */
 
-import { PILL_ATTRIBUTE } from './composerDocument.ts';
+import { CARET_ANCHOR, PILL_ATTRIBUTE } from './composerDocument.ts';
 
 /** Whether `node` is inside `root` (or is `root`). */
 export function containsNode(root: Node, node: Node | null): boolean {
@@ -75,7 +75,9 @@ export function mentionQueryAt(root: HTMLElement): MentionQuery | null {
   const before = (node.nodeValue ?? '').slice(0, caret.startOffset);
   const at = before.lastIndexOf('@');
   if (at === -1) return null;
-  if (at > 0 && !/\s/.test(before[at - 1])) return null;
+  // A caret anchor is a boundary too: `@` typed right after a pasted image must
+  // still open the list.
+  if (at > 0 && !/[\s\u200B]/.test(before[at - 1])) return null;
 
   const query = before.slice(at + 1);
   // A second `@`, a newline or a long paste means this is not a mention query.
@@ -90,6 +92,73 @@ export function mentionQueryAt(root: HTMLElement): MentionQuery | null {
 /** Whether a range still points into the live editor (re-checked before use). */
 export function isRangeLive(root: HTMLElement, range: Range): boolean {
   return containsNode(root, range.startContainer) && containsNode(root, range.endContainer);
+}
+
+/**
+ * Insert plain text at the caret, as one literal text node.
+ *
+ * Deliberately *not* `document.execCommand('insertText', …)`: that lets the
+ * browser pick the DOM shape, and its choice does not match this editor's model.
+ * A newline becomes two block `<div>` wrappers (two lines rendered, and the wrong
+ * number of newlines projected onto the wire), and a whitespace-only payload
+ * still mutates the tree.  Here the payload is one text node holding its own
+ * literal `\n`s, which is exactly what the serializer reads back and what
+ * `white-space: pre-wrap` renders as line breaks.
+ */
+export function insertTextAtCaret(root: HTMLElement, text: string): void {
+  const selection = editorSelection(root);
+  const range = selection !== null ? selection.getRangeAt(0) : endOfEditor(root);
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  caretInTextAfter(node);
+}
+
+/**
+ * Insert one line break at the caret, in the shape the browser itself keeps.
+ *
+ * `document.execCommand('insertLineBreak')` leaves two literal `"\n"` text nodes
+ * here and puts the caret at the start of the second one: the first is the break,
+ * the second is the empty line the caret sits on (and which the next keystroke
+ * replaces).  That shape is reproduced explicitly rather than asked for, because
+ * the browser's own answer varies with context — it is what put an extra blank
+ * line in front of a pasted image, and a single `"\n"` (or a `<br>`) instead
+ * sends the following keystroke back into the line above the break.
+ */
+export function insertLineBreakAtCaret(root: HTMLElement): void {
+  const selection = editorSelection(root);
+  const range = selection !== null ? selection.getRangeAt(0) : endOfEditor(root);
+  range.deleteContents();
+  const seat = document.createTextNode('\n');
+  range.insertNode(seat);
+  seat.before(document.createTextNode('\n'));
+  const after = document.createRange();
+  after.setStart(seat, 0);
+  after.collapse(true);
+  placeCaret(after);
+}
+
+/**
+ * Put the caret at the start of a text node immediately after `node`.
+ *
+ * A container-level caret (an offset *between* two child nodes) is not enough: a
+ * keystroke then lands in the previous text node, which silently joins the line
+ * the caret was supposed to leave behind — that is what made a pasted image pill
+ * end up *after* the text typed next, and what put the text after a line break
+ * back onto the first line.  An explicit text node gives the caret somewhere
+ * real to sit, which is the shape the browser itself keeps after a line break.
+ */
+export function caretInTextAfter(node: ChildNode): void {
+  const next = node.nextSibling;
+  const tail =
+    next !== null && next.nodeType === Node.TEXT_NODE
+      ? (next as Text)
+      : document.createTextNode(CARET_ANCHOR);
+  if (tail !== next) node.after(tail);
+  const range = document.createRange();
+  range.setStart(tail, 0);
+  range.collapse(true);
+  placeCaret(range);
 }
 
 /** The pill element a range's start container sits in, or null. */

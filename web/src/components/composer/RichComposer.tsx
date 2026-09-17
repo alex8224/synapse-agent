@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dismiss20Regular } from '@fluentui/react-icons';
 import { flushSync } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
@@ -20,12 +20,17 @@ import {
   PILL_ATTRIBUTE,
   PILL_ID_ATTRIBUTE,
   serializeComposer,
+  stripCaretAnchors,
   type ComposerMentionPill,
   type ComposerPill,
   type ComposerSnapshot,
 } from './composerDocument.ts';
 import {
   caretAfter,
+  caretInTextAfter,
+  editorSelection,
+  insertLineBreakAtCaret,
+  insertTextAtCaret,
   isRangeLive,
   mentionQueryAt,
   placeCaret,
@@ -109,6 +114,16 @@ export const RichComposer: React.FC<RichComposerProps> = ({
    */
   const dismissedQueryRef = useRef<string | null>(null);
   const [pills, setPills] = useState<MountedPill[]>([]);
+  /**
+   * Where a pill that is about to mount has to go.
+   *
+   * Captured *before* React commits (the paste/pick happens while the caret is
+   * still where the reader put it) and consumed by the layout effect below, which
+   * is the first moment the rendered pill exists in the DOM.
+   */
+  const pendingCaretRef = useRef<Range | null>(null);
+  /** Pill ids already moved to their caret (so a re-render never moves them again). */
+  const placedPillsRef = useRef<Set<string>>(new Set());
   const [empty, setEmpty] = useState(true);
   /**
    * File offers read from the runtime, tagged with the directory they came from.
@@ -168,6 +183,8 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     queryRangeRef.current = null;
     queryRef.current = '';
     dismissedQueryRef.current = null;
+    pendingCaretRef.current = null;
+    placedPillsRef.current.clear();
     setFiles({ dir: '\u0000closed', entries: [] });
     setFilesError(null);
     setMention(null);
@@ -318,23 +335,65 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     (localIds: readonly string[]) => {
       const editor = editorRef.current;
       if (editor === null || localIds.length === 0) return;
+      // Remember where the caret is *now*: React renders the pills into the
+      // container's end, and the layout effect below moves them here once they
+      // exist.  Leaving them where React put them would drop a paste into the
+      // wrong line whenever the caret is not already at the end.
+      const selection = editorSelection(editor);
+      pendingCaretRef.current =
+        selection !== null ? selection.getRangeAt(0).cloneRange() : null;
       const mounted: MountedPill[] = localIds.map((localId) => {
         const pillId = nextPillId();
         pillsRef.current.set(pillId, { kind: 'image', pillId, localId });
         return { kind: 'image', pillId, localId };
       });
-      flushSync(() => setPills((current) => [...current, ...mounted]));
-      const last = mounted[mounted.length - 1];
-      if (last.kind === 'image') {
-        const rendered = editor.querySelector<HTMLElement>(
-          `[${PILL_ID_ATTRIBUTE}="${last.pillId}"]`,
-        );
-        if (rendered !== null) placeCaret(caretAfter(rendered));
-      }
+      setPills((current) => [...current, ...mounted]);
       syncEmpty();
     },
     [syncEmpty],
   );
+
+  /**
+   * Move freshly mounted pills to the caret, and put the caret behind them.
+   *
+   * A layout effect, not part of `mountImagePills`: React only commits the pill
+   * node during the render that follows, so a `querySelector` in the same tick
+   * finds nothing and the placement would silently do nothing (which is how a
+   * pasted image ended up at the end of the draft with the caret left *before*
+   * it, so the next keystroke appeared to the left of the image).
+   */
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    const anchor = pendingCaretRef.current;
+    if (editor === null || anchor === null) return;
+    pendingCaretRef.current = null;
+    let tail: ChildNode | null = null;
+    for (const row of pills) {
+      const pillId = row.kind === 'image' ? row.pillId : row.pill.pillId;
+      if (placedPillsRef.current.has(pillId)) continue;
+      const rendered = editor.querySelector<HTMLElement>(
+        `[${PILL_ID_ATTRIBUTE}="${pillId}"]`,
+      );
+      if (rendered === null) continue;
+      placedPillsRef.current.add(pillId);
+      anchor.insertNode(rendered);
+      let last: ChildNode = rendered;
+      if (row.kind === 'mention') {
+        // A token must not be glued to whatever is typed next: the space is part
+        // of the draft (the store trims a trailing one).
+        const space = document.createTextNode(' ');
+        rendered.after(space);
+        last = space;
+      }
+      anchor.setStartAfter(last);
+      anchor.collapse(true);
+      tail = last;
+    }
+    // Not `caretAfter`: a container-level caret would send the next keystroke
+    // into the text *before* the pill, so the reader's typing would appear to the
+    // left of the image they just pasted.
+    if (tail !== null) caretInTextAfter(tail);
+  }, [pills]);
 
   // Rows the card inserted arrive through `attachments`, so the editor mounts a
   // pill for every row it has not seen and drops a pill whose row went away (a
@@ -359,7 +418,10 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       setPills((current) => {
         const kept = current.filter((row) => row.kind !== 'image' || !gone.has(row.localId));
         for (const row of current) {
-          if (row.kind === 'image' && gone.has(row.localId)) pillsRef.current.delete(row.pillId);
+          if (row.kind === 'image' && gone.has(row.localId)) {
+            pillsRef.current.delete(row.pillId);
+            placedPillsRef.current.delete(row.pillId);
+          }
         }
         return kept;
       });
@@ -380,26 +442,26 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       };
       const range = queryRangeRef.current;
       const live = range !== null && isRangeLive(editor, range);
-      // The pill is inserted through the DOM so the caret never moves, then
-      // React paints its markup into the very node that was inserted.
-      const holder = document.createElement('span');
+      // The `@` and its query go away here; the pill React renders is moved into
+      // that place by the layout effect above.  No placeholder node is left
+      // behind, so a pick cannot leave stray markup in the draft.
       if (live && range !== null) {
         range.deleteContents();
-        range.insertNode(holder);
+        const seat = document.createRange();
+        seat.setStart(range.startContainer, range.startOffset);
+        seat.collapse(true);
+        pendingCaretRef.current = seat;
       } else {
-        editor.appendChild(holder);
+        // No live query (a stale range after a re-render): the pill lands at the
+        // end, which is where an unplaceable pick belongs.
+        pendingCaretRef.current = null;
       }
       queryRangeRef.current = null;
       queryRef.current = '';
       setMention(null);
 
       pillsRef.current.set(pill.pillId, pill);
-      flushSync(() => setPills((current) => [...current, { kind: 'mention', pill }]));
-      const rendered = editor.querySelector<HTMLElement>(`[${PILL_ID_ATTRIBUTE}="${pill.pillId}"]`);
-      const anchor = rendered ?? holder;
-      const space = document.createTextNode(' ');
-      anchor.after(space);
-      placeCaret(caretAfter(space));
+      setPills((current) => [...current, { kind: 'mention', pill }]);
       syncEmpty();
     },
     [syncEmpty],
@@ -441,9 +503,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     if (event.key === 'Enter') {
       event.preventDefault();
       if (event.shiftKey) {
-        // Inserted explicitly: a browser-made block wrapper would make the
-        // flattened newline depend on how the line happens to be laid out.
-        document.execCommand('insertLineBreak');
+        // One break, inserted in the shape the browser itself keeps: two literal
+        // newlines with the caret on the second one.  Leaving the shape to the
+        // browser's editing command is what put an extra blank line in front of a
+        // pasted image, while a single newline sends the next keystroke back up
+        // into the line above the break.
+        const editor = editorRef.current;
+        if (editor !== null) insertLineBreakAtCaret(editor);
         syncEmpty();
         return;
       }
@@ -502,7 +568,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
           // clipboard markup into the draft.
           event.preventDefault();
           const text = event.clipboardData?.getData('text/plain') ?? '';
-          document.execCommand('insertText', false, text);
+          // Whitespace-only clipboard text is not content: a clipboard holding
+          // only a bitmap (a screenshot, or an image the browser exposes as
+          // markup rather than as a `File`) offers exactly that, and inserting it
+          // left a blank line above the image the reader pasted next.
+          const editor = editorRef.current;
+          if (editor !== null && text.trim() !== '') insertTextAtCaret(editor, text);
           syncEmpty();
           refreshMention();
         }}
@@ -682,7 +753,9 @@ function clearUserContent(editor: HTMLElement): void {
 
 /** Whether the editor holds nothing but (at most) an empty line. */
 function isEmptyEditor(editor: HTMLElement): boolean {
-  const text = (editor.textContent ?? '').replace(/\n/g, '');
+  // Line breaks and caret anchors are not content: an editor holding only those
+  // is still empty (the placeholder stays, the primary button stays disabled).
+  const text = stripCaretAnchors(editor.textContent ?? '').replace(/\n/g, '');
   if (text.trim() !== '') return false;
   // A pill is content even when it contributes no text: an attachment-only turn
   // is legal on the wire.
