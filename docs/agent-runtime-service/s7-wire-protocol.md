@@ -104,7 +104,7 @@ Request 不支持 notification。SessionRef 在所有方法中都是精确的 `{
 - `runtime.session.list`（`session.list`，project scope，`limit` 1..100 / `offset` 0..100000）与 `runtime.session.history`（`session.read`，`limit` 1..100、`before_turn` ≥ 1）是只读面；`runtime.session.reconcile`（`session.read`）接受最多 32 个去重 `probe_turn_ids`。
 - `runtime.session.create`（`session.create`，project scope）写一条会话元数据行：`thread_id` 可省略，省略时**由服务端分配**并在结果里返回，客户端不得自行编造 id；`title` 可选、非空、≤ 120 字符。它**不是** `runtime.session.open`：不打开 runtime。
 - `runtime.session.rename`（`session.rename`）要求 `title` 非空且 ≤ 120 字符；会话不存在是 `not_found`，不会创建数据库文件或 schema。
-- `runtime.session.delete`（`session.delete`）只删元数据行与 thread goal；结果恒带 `retained_history: true`，checkpoint 与 transcript projection 保留，因此 UI **不得**声称对话被擦除。正在运行回合的会话原子地以 `conflict` 拒绝，且不取消该回合。
+- `runtime.session.delete`（`session.delete`）删元数据行与 thread goal，**并**把该 thread 从它留下的每一个存储里清掉：LangGraph checkpoint（含 `tools:*` 子代理命名空间）、transcript projection、全文检索索引、以及该会话的回滚快照。结果里的 `retained_history` 报告实际结果：`false` 表示四个存储都已清空，`true` 表示有存储拒绝（`purge_failures` 点名是哪一个），因此 UI 只在 `false` 时才可以声称对话已被擦除。行删除与清理都在同一个 lifecycle 临界区里完成；正在运行回合的会话原子地以 `conflict` 拒绝，且不取消该回合。
 - `runtime.session.search`（`session.search`，project scope）是**元数据搜索**（title / summary / thread_id / model / active_model），`text` ≤ 200 字符、`limit` 1..100、`offset` 0..100000；它**不是** transcript 全文检索，也不会创建数据库或构建 agent。
 
 ### goal 管理写（additive）

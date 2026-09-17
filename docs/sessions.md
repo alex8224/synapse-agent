@@ -23,6 +23,38 @@ synapse sessions list --all
 
 输出包含：thread_id、标题、模型、时间、消息数等信息。
 
+## 删除会话
+
+一个会话不只是一行元数据。它的对话同时存在于四个地方：checkpoint 数据库、transcript
+投影（`transcript.sqlite`）、全文检索索引（`search-index.sqlite`）以及该会话的回滚快照
+（`.synapse/turn-snapshots/<thread_id>/`）。只删元数据行的话，会话虽然从列表里消失，
+却仍然能被关键字搜到（`search_session` 的全文分支只查检索索引，不查元数据表），也就是
+「删了又冒出来」。
+
+```bash
+# 删除一个会话：记录 + 全部对话历史，不可恢复
+synapse sessions delete <thread_id>
+```
+
+Web 控制台里的「删除」走同一个 `runtime.session.delete`，行为一致；两者的结果都会报告
+是否真的清干净了（有存储拒绝时会点名，可用下面的命令补清）。
+
+### 清理遗留的孤儿历史
+
+在「删除只删元数据」的版本下删掉的会话，其对话仍留在磁盘上。扫描并清除这些没有元数据行
+的 thread：
+
+```bash
+# 只列出（默认，dry run）
+synapse sessions purge
+
+# 真正清除
+synapse sessions purge --apply
+```
+
+扫描以元数据表里的 thread 列表为前提：元数据文件缺失或读不出来时**不会**列出任何候选
+（否则每个会话都会被当成孤儿删掉）。已经在列表里的会话永远不是候选。
+
 ## 恢复会话
 
 通过 `--thread-id` 选项恢复之前的会话：

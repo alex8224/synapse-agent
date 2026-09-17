@@ -60,17 +60,150 @@ from synapse.runtime.transport.client import ProtocolTransportError
 from synapse.sessions.store import SessionStore
 
 
-def _settings(db_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(resolved_sessions_path=lambda: db_path)
+def _settings(
+    db_path: Path,
+    *,
+    checkpoint_path: Path | None = None,
+    workspace: Path | None = None,
+) -> SimpleNamespace:
+    """One project's path information, as the service reads it.
+
+    ``checkpoint_path`` and ``workspace`` are optional because a project may not
+    have either; a delete then purges the stores it can locate and reports the
+    rest as retained.
+    """
+    return SimpleNamespace(
+        resolved_sessions_path=lambda: db_path,
+        checkpoint_path=checkpoint_path,
+        workspace=workspace,
+    )
 
 
-def _service(db_path: Path, *, manager: Any | None = None) -> SessionMetadataService:
+def _service(
+    db_path: Path,
+    *,
+    manager: Any | None = None,
+    checkpoint_path: Path | None = None,
+    workspace: Path | None = None,
+) -> SessionMetadataService:
     def provider(project_id: str) -> SessionProjectContext:
         return SessionProjectContext(
-            project_id=project_id, settings=_settings(db_path), manager=manager
+            project_id=project_id,
+            settings=_settings(
+                db_path, checkpoint_path=checkpoint_path, workspace=workspace
+            ),
+            manager=manager,
         )
 
     return SessionMetadataService(provider)
+
+
+def _make_history_stores(tmp_path: Path) -> SimpleNamespace:
+    """Create an empty checkpoint store, transcript projection and search index.
+
+    ``_seed_history`` fills them per thread, so a test can seed a thread whose id
+    is only known later (an allocated one) and can still prove that a purge
+    removed exactly one conversation.
+    """
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    with sqlite3.connect(checkpoint_path) as conn:
+        conn.execute(
+            "CREATE TABLE checkpoints (thread_id TEXT NOT NULL, "
+            "checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, "
+            "parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+        )
+        conn.execute(
+            "CREATE TABLE writes (thread_id TEXT NOT NULL, "
+            "checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, "
+            "task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, "
+            "type TEXT, value BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))"
+        )
+
+    transcript_path = tmp_path / "transcript.sqlite"
+    with sqlite3.connect(transcript_path) as conn:
+        conn.execute(
+            "CREATE TABLE transcript_events (thread_id TEXT NOT NULL, "
+            "event_seq INTEGER NOT NULL, turn_seq INTEGER NOT NULL, kind TEXT NOT NULL, "
+            "payload_json TEXT NOT NULL, PRIMARY KEY (thread_id, event_seq))"
+        )
+        conn.execute(
+            "CREATE TABLE transcript_meta (thread_id TEXT PRIMARY KEY, "
+            "total_turns INTEGER NOT NULL DEFAULT 0, "
+            "total_events INTEGER NOT NULL DEFAULT 0, "
+            "source_message_count INTEGER NOT NULL DEFAULT 0, "
+            "source_checkpoint_id TEXT, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+
+    index_path = tmp_path / "search-index.sqlite"
+    with sqlite3.connect(index_path) as conn:
+        conn.execute(
+            "CREATE TABLE indexed (thread_id TEXT PRIMARY KEY, "
+            "checkpoint_id TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, "
+            "role TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY (thread_id, seq))"
+        )
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".synapse" / "turn-snapshots").mkdir(parents=True)
+
+    return SimpleNamespace(
+        checkpoint=checkpoint_path,
+        transcript=transcript_path,
+        index=index_path,
+        workspace=workspace,
+    )
+
+
+def _seed_history(stores: SimpleNamespace, thread_id: str) -> None:
+    """Give one thread a conversation in every store.
+
+    The checkpoint store gets a ``tools:`` namespace too: a subagent's state is
+    part of the conversation it ran in and must go with it.
+    """
+    with sqlite3.connect(stores.checkpoint) as conn:
+        conn.execute(
+            "INSERT INTO checkpoints VALUES (?, '', ?, NULL, NULL, NULL, NULL)",
+            (thread_id, f"ckpt-{thread_id}"),
+        )
+        conn.execute(
+            "INSERT INTO checkpoints VALUES (?, 'tools:task-1', ?, NULL, NULL, NULL, NULL)",
+            (thread_id, f"ckpt-{thread_id}"),
+        )
+        conn.execute(
+            "INSERT INTO writes VALUES (?, '', ?, 'task-1', 0, 'channel', NULL, NULL)",
+            (thread_id, f"ckpt-{thread_id}"),
+        )
+    with sqlite3.connect(stores.transcript) as conn:
+        conn.execute(
+            "INSERT INTO transcript_events VALUES (?, 1, 1, 'user', '{}')", (thread_id,)
+        )
+        conn.execute("INSERT INTO transcript_meta (thread_id) VALUES (?)", (thread_id,))
+    with sqlite3.connect(stores.index) as conn:
+        conn.execute(
+            "INSERT INTO indexed VALUES (?, ?, 'now')", (thread_id, f"ckpt-{thread_id}")
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (?, 0, 'human', 'hello from the transcript')",
+            (thread_id,),
+        )
+    directory = stores.workspace / ".synapse" / "turn-snapshots" / thread_id
+    directory.mkdir(parents=True)
+    (directory / "0000000000001-turn-1.json").write_text("{}", encoding="utf-8")
+
+
+def _store_rows(path: Path, table: str, thread_id: str) -> int:
+    """How many rows one store still holds for a thread."""
+    with sqlite3.connect(path) as conn:
+        return int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE thread_id = ?", (thread_id,)
+            ).fetchone()[0]
+        )
 
 
 class _ControlledTurnRuntime:
@@ -236,15 +369,15 @@ def test_touch_names_a_session_from_its_first_user_message(tmp_path: Path) -> No
     asyncio.run(run())
 
 
-def test_delete_rejects_busy_runtime_and_retains_history(tmp_path: Path) -> None:
+def test_delete_rejects_busy_runtime_and_purges_the_conversation(tmp_path: Path) -> None:
     db = tmp_path / "sessions.sqlite"
-    checkpoint = tmp_path / "checkpoints.sqlite"
-    transcript = tmp_path / "transcript.sqlite"
-    checkpoint.write_bytes(b"checkpoint")
-    transcript.write_bytes(b"transcript")
+    stores = _make_history_stores(tmp_path)
+    _seed_history(stores, "t1")
+    _seed_history(stores, "t2")
 
     store = SessionStore(db)
     store.ensure("t1", title="Busy session")
+    store.ensure("t2", title="Untouched session")
     store.close()
     with sqlite3.connect(db) as conn:
         conn.execute(
@@ -264,13 +397,20 @@ def test_delete_rejects_busy_runtime_and_retains_history(tmp_path: Path) -> None
         session_factory=factory,
         project_id="proj",
     )
-    service = _service(db, manager=manager)
+    service = _service(
+        db,
+        manager=manager,
+        checkpoint_path=stores.checkpoint,
+        workspace=stores.workspace,
+    )
     ref = SessionRef("proj", "t1")
 
     async def run() -> None:
         handle = await manager.submit_ref(ref, UserTurn("hi"))
         with pytest.raises(ConflictError):
             await service.delete(DeleteSessionCommand(ref))
+        # A refused delete purges nothing: the conversation is still readable.
+        assert _store_rows(stores.checkpoint, "checkpoints", "t1") == 2
 
         factory.turns["t1"].future.set_result(_result("t1"))
         await asyncio.wrap_future(handle.future)
@@ -280,7 +420,9 @@ def test_delete_rejects_busy_runtime_and_retains_history(tmp_path: Path) -> None
 
         result = await service.delete(DeleteSessionCommand(ref))
         assert result.deleted is True
-        assert result.retained_history is True
+        # The row is not the session: the conversation is gone with it.
+        assert result.retained_history is False
+        assert result.purge_failures == ()
         assert manager.get_session("t1") is None
         await manager.shutdown()
 
@@ -293,9 +435,69 @@ def test_delete_rejects_busy_runtime_and_retains_history(tmp_path: Path) -> None
         assert conn.execute(
             "SELECT COUNT(*) FROM thread_goals WHERE thread_id = 't1'"
         ).fetchone()[0] == 0
-    # Deletion never removes checkpoints or the transcript projection.
-    assert checkpoint.read_bytes() == b"checkpoint"
-    assert transcript.read_bytes() == b"transcript"
+    # Every store that held t1 is empty -- including the subagent namespace and
+    # the full-text index, which are what made a deleted session searchable.
+    assert _store_rows(stores.checkpoint, "checkpoints", "t1") == 0
+    assert _store_rows(stores.checkpoint, "writes", "t1") == 0
+    assert _store_rows(stores.transcript, "transcript_events", "t1") == 0
+    assert _store_rows(stores.transcript, "transcript_meta", "t1") == 0
+    assert _store_rows(stores.index, "indexed", "t1") == 0
+    assert _store_rows(stores.index, "messages", "t1") == 0
+    assert not (stores.workspace / ".synapse" / "turn-snapshots" / "t1").exists()
+    # ... and every store that held the *other* session is untouched.
+    assert _store_rows(stores.checkpoint, "checkpoints", "t2") == 2
+    assert _store_rows(stores.checkpoint, "writes", "t2") == 1
+    assert _store_rows(stores.transcript, "transcript_events", "t2") == 1
+    assert _store_rows(stores.index, "messages", "t2") == 1
+    assert (stores.workspace / ".synapse" / "turn-snapshots" / "t2").is_dir()
+
+
+def test_purge_callback_reports_a_project_it_cannot_locate() -> None:
+    """The defensive branch: no resolvable path is a *reported* failure.
+
+    ``_store`` refuses the delete first in practice, so this only pins that the
+    fallback is both reachable and honest -- a purge that reported success without
+    ever locating a store would be the silent half-delete this change removes.
+    """
+    from synapse.runtime.service.session_metadata import _thread_purge
+
+    purge = _thread_purge(SimpleNamespace(resolved_sessions_path=lambda: None), "t1")
+
+    report = purge()
+
+    assert report.complete is False
+    assert report.failures == ("sessions",)
+
+
+def test_delete_names_a_store_it_could_not_purge(tmp_path: Path) -> None:
+    """A store that cannot be purged is reported, never silently skipped.
+
+    The row still goes -- a caller that asked for the session to be gone must not
+    keep it in the list because one store was unreadable -- so the report is the
+    only thing that keeps the partial state honest.
+    """
+    db = tmp_path / "sessions.sqlite"
+    stores = _make_history_stores(tmp_path)
+    _seed_history(stores, "t1")
+    # A transcript file that is not a database: opening it raises, which the purge
+    # must survive and name.
+    stores.transcript.write_bytes(b"not a database")
+    store = SessionStore(db)
+    store.ensure("t1", title="Broken store")
+    store.close()
+
+    service = _service(db, checkpoint_path=stores.checkpoint, workspace=stores.workspace)
+    result = asyncio.run(
+        service.delete(DeleteSessionCommand(SessionRef("proj", "t1")))
+    )
+
+    assert result.deleted is True
+    assert result.retained_history is True
+    assert result.purge_failures == ("transcript",)
+    # The stores it could reach are still purged: one broken store does not stop
+    # the others.
+    assert _store_rows(stores.checkpoint, "checkpoints", "t1") == 0
+    assert _store_rows(stores.index, "messages", "t1") == 0
 
 
 def _wired_service(
@@ -304,11 +506,27 @@ def _wired_service(
     project_id: str = "proj",
     session_factory: Any = None,
     agent_factory: Any = None,
+    checkpoint_path: Path | None = None,
+    workspace: Path | None = None,
 ) -> tuple[LocalAgentRuntimeService, RuntimeManager]:
-    """Build the real service over a real manager whose settings carry the db path."""
+    """Build the real service over a real manager whose settings carry the db path.
+
+    The checkpoint store and the workspace default to the metadata database's own
+    directory, which is where a real project keeps them, so a delete here purges
+    the same three siblings a real one does.  A test that seeds those stores with
+    ``_make_history_stores`` gets them for free.
+    """
+    if checkpoint_path is None:
+        checkpoint_path = db.parent / "checkpoints.sqlite"
+    if workspace is None:
+        workspace = db.parent / "workspace"
     manager = RuntimeManager(
         settings=SimpleNamespace(
-            max_concurrency=2, model="test", sessions_path=str(db)
+            max_concurrency=2,
+            model="test",
+            sessions_path=str(db),
+            checkpoint_path=checkpoint_path,
+            workspace=workspace,
         ),
         agent_factory=agent_factory
         or (lambda thread_id, shared: SimpleNamespace(thread_id=thread_id)),
@@ -341,10 +559,7 @@ def _row_count(db: Path, table: str, thread_id: str) -> int:
 def test_wire_dispatch_persists_metadata_without_opening_a_runtime(tmp_path: Path) -> None:
     """The four frames the console sends hit real persistence, not a runtime."""
     db = tmp_path / "sessions.sqlite"
-    checkpoint = tmp_path / "checkpoints.sqlite"
-    transcript = tmp_path / "transcript.sqlite"
-    checkpoint.write_bytes(b"checkpoint")
-    transcript.write_bytes(b"transcript")
+    stores = _make_history_stores(tmp_path)
     builds = {"agent": 0, "session": 0}
 
     def agent_factory(thread_id: str, shared: Any) -> Any:
@@ -356,7 +571,11 @@ def test_wire_dispatch_persists_metadata_without_opening_a_runtime(tmp_path: Pat
         raise AssertionError("session management must never open a runtime")
 
     service, manager = _wired_service(
-        db, agent_factory=agent_factory, session_factory=session_factory
+        db,
+        agent_factory=agent_factory,
+        session_factory=session_factory,
+        checkpoint_path=stores.checkpoint,
+        workspace=stores.workspace,
     )
 
     # ``runtime.session.create`` with no thread_id: the server allocates the real
@@ -420,16 +639,25 @@ def test_wire_dispatch_persists_metadata_without_opening_a_runtime(tmp_path: Pat
         {"project_id": "proj", "text": "Renamed"},
     ).total == 1
 
+    # The conversation this thread holds in every store (the id was allocated, so
+    # the stores are seeded only now).
+    _seed_history(stores, thread_id)
+
     deleted = _dispatch(
         service, "runtime.session.delete", {"session": _ref("proj", thread_id)}
     )
     assert deleted.deleted is True
-    # The wire frame the UI renders states the retained history explicitly.
+    # The wire frame the UI renders reports the erasure explicitly, so the console
+    # never has to guess what a delete removed.
     wire = protocol.project_result(deleted)
-    assert wire["retained_history"] is True and wire["deleted"] is True
+    assert wire["deleted"] is True
+    assert wire["retained_history"] is False and wire["purge_failures"] == []
     assert _row_count(db, "sessions", thread_id) == 0
-    assert checkpoint.read_bytes() == b"checkpoint"
-    assert transcript.read_bytes() == b"transcript"
+    assert _store_rows(stores.checkpoint, "checkpoints", thread_id) == 0
+    assert _store_rows(stores.checkpoint, "writes", thread_id) == 0
+    assert _store_rows(stores.transcript, "transcript_events", thread_id) == 0
+    assert _store_rows(stores.index, "messages", thread_id) == 0
+    assert not (stores.workspace / ".synapse" / "turn-snapshots" / thread_id).exists()
 
 
 def test_read_only_search_never_creates_a_database(tmp_path: Path) -> None:
@@ -540,7 +768,11 @@ def test_acl_scopes_the_four_session_management_capabilities(tmp_path: Path) -> 
                 await call
 
         deleted = await project_wide.delete_session(DeleteSessionCommand(ref))
-        assert deleted.deleted is True and deleted.retained_history is True
+        assert deleted.deleted is True
+        # No store in this fixture holds the thread, so there is nothing left to
+        # report as retained: a clean purge is not the same as an unlocated store.
+        assert deleted.retained_history is False
+        assert deleted.purge_failures == ()
 
     asyncio.run(run())
 
@@ -580,7 +812,8 @@ def test_dispatch_delete_refuses_a_running_turn_without_cancelling_it(
         result = await protocol.dispatch(
             service, "runtime.session.delete", {"session": _ref("proj", "t1")}
         )
-        assert result.deleted is True and result.retained_history is True
+        assert result.deleted is True
+        assert result.retained_history is False and result.purge_failures == ()
         assert _row_count(db, "sessions", "t1") == 0
         await manager.shutdown()
 
@@ -674,12 +907,25 @@ def test_python_client_frames_and_strict_result_decoding() -> None:
                     "title": params["title"],
                     "renamed": True,
                 }
-            # A peer that claims the conversation was erased violates the contract.
+            if params["session"]["thread_id"] == "lying":
+                # The two fields must agree: a peer that admits a failure while
+                # claiming nothing was retained is a protocol violation, not a
+                # "better" delete.
+                return {
+                    "command_id": params["command_id"],
+                    "session": params["session"],
+                    "deleted": True,
+                    "retained_history": False,
+                    "purge_failures": ["transcript"],
+                }
+            # A clean erasure is the normal outcome now, and the frame says which
+            # stores were purged.
             return {
                 "command_id": params["command_id"],
                 "session": params["session"],
                 "deleted": True,
                 "retained_history": False,
+                "purge_failures": [],
             }
 
         client = _client(fake := _FakeTransport(respond))
@@ -695,14 +941,22 @@ def test_python_client_frames_and_strict_result_decoding() -> None:
         renamed = await client.rename_session(RenameSessionCommand(ref, "Renamed"))
         assert renamed.title == "Renamed"
 
+        deleted = await client.delete_session(DeleteSessionCommand(ref))
+        assert deleted.deleted is True
+        assert deleted.retained_history is False and deleted.purge_failures == ()
+
+        # A peer whose two fields disagree is rejected rather than decoded.
         with pytest.raises(ProtocolTransportError):
-            await client.delete_session(DeleteSessionCommand(ref))
+            await client.delete_session(
+                DeleteSessionCommand(SessionRef("proj", "lying"))
+            )
 
         frames = fake.business_frames()
         assert [frame["method"] for frame in frames] == [
             "runtime.session.create",
             "runtime.session.search",
             "runtime.session.rename",
+            "runtime.session.delete",
             "runtime.session.delete",
         ]
         # The create frame carries no thread id: the server allocates it.

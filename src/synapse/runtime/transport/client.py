@@ -1076,8 +1076,11 @@ _ACCEPTED_RECEIPT_FIELDS = frozenset({"command_id", "session", "turn_id", "accep
 _CREATE_SESSION_RESULT_FIELDS = frozenset({"command_id", "session", "created", "title"})
 _RENAME_SESSION_RESULT_FIELDS = frozenset({"command_id", "session", "title", "renamed"})
 _DELETE_SESSION_RESULT_FIELDS = frozenset(
-    {"command_id", "session", "deleted", "retained_history"}
+    {"command_id", "session", "deleted", "retained_history", "purge_failures"}
 )
+#: The daemon names at most one failed store per purge (checkpoints, transcript,
+#: search index, snapshots), so anything longer is a peer defect.
+_MAX_PURGE_FAILURES = 8
 _SESSION_SEARCH_PAGE_FIELDS = frozenset({"items", "next_offset", "total"})
 _PROJECT_LIST_ITEM_FIELDS = frozenset(
     {"project_id", "workspace_name", "git_branch", "workspace_path"}
@@ -1931,11 +1934,14 @@ class RuntimeWebSocketClient(GoalClientMixin):
 
     @_fence_on_protocol_failure
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
-        """Delete one session's metadata row and thread goal.
+        """Delete one session and its conversation.
 
-        ``retained_history`` is required to be ``True``: this operation never
-        erases the conversation, and a peer that claimed otherwise would be a
-        protocol violation rather than a "better" delete.
+        Both outcomes are legitimate and the peer's own report is what decides
+        which one this is: ``retained_history`` false means every local store was
+        purged, true means something survived and ``purge_failures`` names it.  The
+        two fields must agree -- a peer that claims a clean erasure while naming a
+        failure, or one that admits a failure while claiming nothing was retained,
+        is a protocol violation rather than a "better" delete.
         """
         if type(command) is not DeleteSessionCommand:
             raise ValueError("command must be a DeleteSessionCommand")
@@ -1946,15 +1952,26 @@ class RuntimeWebSocketClient(GoalClientMixin):
         )
         result = _required_fields(result, _DELETE_SESSION_RESULT_FIELDS)
         try:
+            raw_failures = result["purge_failures"]
+            # Bounded and named: the daemon names at most one entry per store it
+            # could not purge, and never a path or a raw OS message.
+            if type(raw_failures) is not list or len(raw_failures) > _MAX_PURGE_FAILURES:
+                raise ProtocolTransportError()
+            failures = tuple(_text(item, "purge_failures", 64) for item in raw_failures)
             if (
                 result["command_id"] != command.command_id
                 or type(result["deleted"]) is not bool
-                or result["retained_history"] is not True
+                or type(result["retained_history"]) is not bool
+                or result["retained_history"] != bool(failures)
                 or _ref(result["session"]) != command.session
             ):
                 raise ProtocolTransportError()
             return DeleteSessionResult(
-                result["command_id"], command.session, result["deleted"], True
+                result["command_id"],
+                command.session,
+                result["deleted"],
+                result["retained_history"],
+                failures,
             )
         except (KeyError, TypeError, ValueError, ProtocolTransportError):
             raise ProtocolTransportError() from None

@@ -45,6 +45,7 @@ from acp.schema import (
 from acp.schema import SessionInfo as ACPSessionInfo
 
 from synapse.runtime.service import ApprovalDecision
+from synapse.sessions.thread_purge import purge_thread
 
 from .client_services import ACPClientScope, ClientServiceGateway
 from .content import (
@@ -540,8 +541,22 @@ class SynapseACPAgent:
         if not self.catalog.delete(session_id):
             raise acp.RequestError.resource_not_found(session_id)
         try:
+            settings = self._session_settings(stored.cwd)
             with self._tui_store(stored.cwd) as store:
                 store.delete(stored.thread_id)
+            # The row is not the conversation.  The transcript projection and the
+            # full-text search index outlive it and stay readable by thread id, so
+            # a session deleted here would still be found by keyword.  The
+            # checkpoint thread is already gone (``delete_state``) and the purge is
+            # idempotent, so passing its path only covers a session that was never
+            # open in this process.
+            await asyncio.to_thread(
+                purge_thread,
+                stored.thread_id,
+                checkpoint_path=settings.checkpoint_path,
+                sessions_path=settings.resolved_sessions_path(),
+                workspace=stored.cwd,
+            )
         except Exception:
             logger.debug("failed to delete ACP session from TUI store", exc_info=True)
         from acp.schema import DeleteSessionResponse

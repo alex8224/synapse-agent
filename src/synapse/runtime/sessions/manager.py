@@ -593,7 +593,8 @@ class RuntimeManager:
         ref: SessionRef,
         *,
         delete_metadata: Callable[[], bool],
-    ) -> bool:
+        purge_history: Callable[[], Any] | None = None,
+    ) -> tuple[bool, Any | None]:
         """Atomically delete one session's runtime and its metadata row.
 
         The check/detach/delete critical section runs under the per-thread
@@ -603,12 +604,23 @@ class RuntimeManager:
         turn/reservation/settlement is rejected atomically with
         :class:`SessionBusyError` (never a check-then-delete TOCTOU); otherwise
         the runtime is closed and detached and, still holding the coordinator,
-        ``delete_metadata`` runs so a submit that already passed its generation
-        check cannot recreate the row afterwards.
+        the history is purged and then ``delete_metadata`` runs so a submit that
+        already passed its generation check cannot recreate the row afterwards.
+
+        ``purge_history`` erases the thread from the stores the metadata row does
+        not cover (checkpoints, transcript projection, search index, turn
+        snapshots) and returns a report.  It runs on a worker thread -- it does
+        blocking SQLite and filesystem work -- and its result is returned
+        unchanged so a caller can tell a complete purge from a partial one.  It
+        is optional: a caller with no store paths passes ``None`` and gets
+        ``(deleted, None)``.
+
+        The row is deleted whether or not the purge was complete.  A caller that
+        asked for the session to be gone must not keep it in the list because one
+        store was locked; the report is what keeps that partial state honest.
 
         ``delete_metadata`` performs the actual row deletion (metadata + goal)
-        and returns whether a row existed; it never touches checkpoints or the
-        transcript projection.  That value is returned unchanged.
+        and returns whether a row existed.
         """
         thread_id = self._check_ref(ref)
         with self._lock:
@@ -646,7 +658,10 @@ class RuntimeManager:
                                 if self._sessions.get(thread_id) is session:
                                     self._sessions.pop(thread_id, None)
                                     self._submit_locks.pop(thread_id, None)
-                        return bool(delete_metadata())
+                        report = None
+                        if purge_history is not None:
+                            report = await asyncio.to_thread(purge_history)
+                        return bool(delete_metadata()), report
                 finally:
                     with self._lock:
                         self._deleting.discard(thread_id)

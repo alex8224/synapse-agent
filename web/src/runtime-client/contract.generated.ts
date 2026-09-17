@@ -556,16 +556,20 @@ export interface DeleteSessionCommand {
 }
 
 /**
- * ``retained_history`` is always true: checkpoints and the transcript projection are kept, so a UI must not claim the conversation was erased.
+ * ``retained_history`` is false once the thread was purged from every local store (checkpoints, transcript projection, search index, turn snapshots); it stays true when a store refused, and ``purge_failures`` then names which one, so a UI never claims an erasure it did not get.
  */
 export interface DeleteSessionResult {
   command_id: string;
   session: SessionRef;
   deleted: boolean;
   /**
-   * python_default_kind=value python_default=true
+   * python_default_kind=value python_default=false
    */
   retained_history: boolean;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  purge_failures: string[];
 }
 
 export interface DiffPayload {

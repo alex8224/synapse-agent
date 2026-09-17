@@ -11,6 +11,7 @@ import typer
 
 from synapse.projects.catalog import ProjectCatalog, ProjectInfo
 from synapse.sessions.store import SessionStore, format_session_table
+from synapse.sessions.thread_purge import orphan_thread_ids, purge_thread
 from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
@@ -1065,15 +1066,79 @@ def sessions_prune() -> None:
 def sessions_delete(
     thread_id: str = typer.Argument(..., help="Session thread id"),
 ) -> None:
-    """Delete session metadata (checkpoint rows are left to LangGraph GC)."""
+    """Delete one session and its conversation.
+
+    The metadata row alone is not the session: the checkpoint store, the
+    transcript projection and the full-text search index all outlive it and stay
+    readable by thread id, so a session deleted from the list could still be found
+    by keyword.  The purge runs first, then the row.
+    """
     settings = load_settings()
     store = _session_store(settings)
-    ok = store.delete(thread_id)
-    if ok:
-        print_info(f"deleted session metadata: {thread_id}")
-    else:
+    if store.get(thread_id) is None:
         print_error(f"session not found: {thread_id}")
         raise typer.Exit(code=1)
+    report = purge_thread(
+        thread_id,
+        checkpoint_path=settings.checkpoint_path,
+        sessions_path=settings.resolved_sessions_path(),
+        workspace=settings.workspace,
+    )
+    store.delete(thread_id)
+    print_info(
+        f"deleted session {thread_id}: {report.rows} history row(s), "
+        f"{report.snapshot_files} snapshot file(s)"
+    )
+    if not report.complete:
+        # The row is gone but the conversation is not: say so rather than
+        # reporting a clean delete the user would discover was not one.
+        print_error(f"history not fully purged: {', '.join(report.failures)}")
+        raise typer.Exit(code=1)
+
+
+@sessions_app.command("purge")
+def sessions_purge(
+    apply: bool = typer.Option(
+        False, "--apply", help="Erase the orphans; without it they are only listed"
+    ),
+) -> None:
+    """Find sessions whose history outlived their metadata row, and erase them.
+
+    These are the leftovers of a delete that removed only the row: the session is
+    absent from every session list, yet its conversation is still in the
+    checkpoint store, the transcript projection and the search index, so it keeps
+    showing up in keyword searches.  A dry run is the default because the purge is
+    irreversible.
+    """
+    settings = load_settings()
+    orphans = orphan_thread_ids(
+        checkpoint_path=settings.checkpoint_path,
+        sessions_path=settings.resolved_sessions_path(),
+    )
+    if not orphans:
+        print_info("no orphaned session history found")
+        return
+    print_info(f"{len(orphans)} orphaned session(s) still have history on disk")
+    for tid in orphans[:20]:
+        print_info(f"  - {tid}")
+    if len(orphans) > 20:
+        print_info(f"  … and {len(orphans) - 20} more")
+    if not apply:
+        print_info("dry run: rerun with --apply to erase them")
+        return
+    incomplete: list[str] = []
+    for tid in orphans:
+        report = purge_thread(
+            tid,
+            checkpoint_path=settings.checkpoint_path,
+            sessions_path=settings.resolved_sessions_path(),
+            workspace=settings.workspace,
+        )
+        if not report.complete:
+            incomplete.append(f"{tid} ({', '.join(report.failures)})")
+    print_info(f"purged {len(orphans) - len(incomplete)} session(s)")
+    for entry in incomplete[:20]:
+        print_error(f"incomplete: {entry}")
 
 
 @sessions_app.command("rename")

@@ -951,8 +951,10 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         DeleteSessionResult,
         role="result",
         notes=(
-            "``retained_history`` is always true: checkpoints and the transcript "
-            "projection are kept, so a UI must not claim the conversation was erased.",
+            "``retained_history`` is false once the thread was purged from every "
+            "local store (checkpoints, transcript projection, search index, turn "
+            "snapshots); it stays true when a store refused, and ``purge_failures`` "
+            "then names which one, so a UI never claims an erasure it did not get.",
         ),
     ),
     _dto(SessionSearchPage, role="result"),
@@ -1916,13 +1918,15 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         params_alias="DeleteSessionParams",
         in_process=(
             "Optional delegate method.  A running turn is refused atomically with "
-            "``conflict`` and is never cancelled; only the metadata row and the thread "
-            "goal are removed."
+            "``conflict`` and is never cancelled.  The metadata row and thread goal "
+            "are removed and the thread is purged from the checkpoint store, the "
+            "transcript projection, the full-text search index and its turn "
+            "snapshots."
         ),
         notes=(
-            "The result always reports ``retained_history``: checkpoints and the "
-            "transcript projection are kept, so a UI must not claim the conversation "
-            "was erased.",
+            "``retained_history`` reports whether anything survived the purge: false "
+            "means the conversation is gone from every local store, true means a "
+            "store refused and is named in ``purge_failures``.",
             "``command_id`` is generated (uuid4 hex) when omitted.",
         ),
     ),

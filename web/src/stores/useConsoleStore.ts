@@ -2789,12 +2789,18 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const session: SessionRef = { project_id: projectId, thread_id: threadId };
     try {
       const result = await client.deleteSession({ session });
-      // ``retained_history`` is always true today: only the metadata row and the
-      // thread goal are gone.  The notice says exactly that instead of claiming
-      // the conversation was erased.
+      // The server purges the thread from every local store; ``retained_history``
+      // is true only when a store refused, and names which one.  The notice
+      // repeats that instead of claiming an erasure that did not happen.  The
+      // list is decoded defensively: an older or malformed peer must degrade to
+      // "some store", never throw a delete that already happened.
+      const purgeFailures = Array.isArray(result.purge_failures)
+        ? result.purge_failures.filter((name): name is string => typeof name === 'string')
+        : [];
       const notice = result.retained_history
-        ? '已删除该会话的记录（元数据与目标）。对话历史（检查点与转录）仍保留在磁盘上，未被删除。'
-        : '已删除该会话。';
+        ? `已删除该会话的记录，但部分历史未能清除（${purgeFailures.join('、') || '未知存储'}）；`
+          + '它仍可能被关键字搜到，可重试删除或用 CLI 的 sessions purge 清理。'
+        : '已删除该会话及其全部对话历史（检查点、转录、检索索引与回滚快照），不可恢复。';
       const without = (items: SessionItem[]): SessionItem[] =>
         items.filter((item) => item.thread_id !== threadId);
       set((s) => ({

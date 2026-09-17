@@ -183,7 +183,7 @@ function stubClient(): Stub {
     },
     deleteSession: async ({ session }: { session: SessionRef }) => {
       calls.push(`delete:${session.thread_id}`);
-      return { deleted: true, retained_history: true };
+      return { deleted: true, retained_history: false, purge_failures: [] };
     },
   };
   stub = { calls, live, cursors, watchAfters, reconcile: recoverability, client };

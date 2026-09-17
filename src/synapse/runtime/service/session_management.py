@@ -160,18 +160,22 @@ class DeleteSessionCommand:
 
 @dataclass(frozen=True, slots=True)
 class DeleteSessionResult:
-    """Result of a metadata delete.
+    """Result of deleting one session, its conversation included.
 
-    ``retained_history`` is always ``True``: this operation removes only the
-    human-facing metadata row and the thread goal stored in the same database.
-    LangGraph checkpoints and the transcript projection are never touched, so a
-    caller must not report the conversation as fully erased.
+    ``retained_history`` is ``False`` when every local store that held the thread
+    was purged: the metadata row and thread goal, the LangGraph checkpoints
+    (subagent ``tools:*`` namespaces included), the transcript projection, the
+    full-text search index and the thread's turn snapshots.  It is ``True`` when
+    something survived, and ``purge_failures`` then names the stores that could
+    not be purged (never a path), so a caller can report which part is still on
+    disk instead of claiming the conversation was erased.
     """
 
     command_id: str
     session: SessionRef
     deleted: bool
-    retained_history: bool = True
+    retained_history: bool = False
+    purge_failures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

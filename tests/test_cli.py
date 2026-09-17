@@ -78,6 +78,104 @@ def test_cli_sessions_help():
     assert "codex-import" in result.stdout
 
 
+def _cli_settings(tmp_path, monkeypatch):
+    """Point the CLI at a temporary project with a real state directory."""
+    from types import SimpleNamespace
+
+    state = tmp_path / ".synapse"
+    state.mkdir(parents=True, exist_ok=True)
+    settings = SimpleNamespace(
+        workspace=tmp_path,
+        checkpoint_path=state / "checkpoints.sqlite",
+        resolved_sessions_path=lambda: state / "sessions.sqlite",
+    )
+    monkeypatch.setattr("synapse.cli.load_settings", lambda **_: settings)
+    return settings
+
+
+def _seed_cli_history(settings, thread_id: str) -> None:
+    """Give one thread a conversation in the stores a delete must clear."""
+    import sqlite3
+
+    with sqlite3.connect(settings.checkpoint_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoints (thread_id TEXT NOT NULL, "
+            "checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints VALUES (?, '', 'ckpt')", (thread_id,)
+        )
+    with sqlite3.connect(settings.resolved_sessions_path().parent / "search-index.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS messages (thread_id TEXT NOT NULL, "
+            "seq INTEGER NOT NULL, PRIMARY KEY (thread_id, seq))"
+        )
+        conn.execute("INSERT INTO messages VALUES (?, 0)", (thread_id,))
+
+
+def _count(path, table: str, thread_id: str) -> int:
+    import sqlite3
+
+    with sqlite3.connect(path) as conn:
+        return int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE thread_id = ?", (thread_id,)
+            ).fetchone()[0]
+        )
+
+
+def test_cli_sessions_delete_erases_the_conversation(tmp_path, monkeypatch):
+    """The CLI delete is the same delete: the conversation goes with the row."""
+    from synapse.sessions.store import SessionStore
+
+    settings = _cli_settings(tmp_path, monkeypatch)
+    store = SessionStore(settings.resolved_sessions_path())
+    store.ensure("t1", title="Session one")
+    store.close()
+    _seed_cli_history(settings, "t1")
+
+    result = runner.invoke(app, ["sessions", "delete", "t1"])
+
+    assert result.exit_code == 0
+    assert _count(settings.checkpoint_path, "checkpoints", "t1") == 0
+    assert (
+        _count(settings.resolved_sessions_path().parent / "search-index.sqlite", "messages", "t1")
+        == 0
+    )
+    store = SessionStore(settings.resolved_sessions_path())
+    assert store.get("t1") is None
+    store.close()
+
+
+def test_cli_sessions_purge_lists_orphans_and_only_erases_with_apply(tmp_path, monkeypatch):
+    """The sweep is a dry run by default, because it is irreversible."""
+    from synapse.sessions.store import SessionStore
+
+    settings = _cli_settings(tmp_path, monkeypatch)
+    store = SessionStore(settings.resolved_sessions_path())
+    store.ensure("live", title="Live session")
+    store.close()
+    _seed_cli_history(settings, "live")
+    # The leftover of a delete that removed only the row: history, no metadata.
+    _seed_cli_history(settings, "orphan")
+
+    dry = runner.invoke(app, ["sessions", "purge"])
+
+    assert dry.exit_code == 0
+    assert "orphan" in dry.stdout
+    assert "live" not in dry.stdout
+    # Nothing was erased, and the live session was never a candidate.
+    assert _count(settings.checkpoint_path, "checkpoints", "orphan") == 1
+    assert _count(settings.checkpoint_path, "checkpoints", "live") == 1
+
+    applied = runner.invoke(app, ["sessions", "purge", "--apply"])
+
+    assert applied.exit_code == 0
+    assert _count(settings.checkpoint_path, "checkpoints", "orphan") == 0
+    assert _count(settings.checkpoint_path, "checkpoints", "live") == 1
+
+
 def test_codex_preview_helpers_bound_text_and_explain_known_errors():
     text, truncated = _bounded_preview_text("x" * 12_001)
 

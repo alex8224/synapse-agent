@@ -1129,13 +1129,15 @@ class LocalAgentRuntimeService:
         return await self._session_metadata.rename(command)
 
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
-        """Delete one session's metadata row and thread goal (busy rejected).
+        """Delete one session and its conversation (busy rejected).
 
         A running turn is refused atomically by the manager's lifecycle gate and
-        is never cancelled here.  The result reports ``retained_history``: only
-        the metadata row and the thread goal are removed, while checkpoints and
-        the transcript projection are kept, so no caller may claim the
-        conversation was erased.
+        is never cancelled here.  The metadata row and thread goal are removed and
+        the thread is purged from the checkpoint store, the transcript projection,
+        the full-text search index and its turn snapshots, so a deleted session
+        cannot still be found by keyword or read back by thread id.  The result
+        reports what survived: ``retained_history`` is true only when a store
+        refused, and ``purge_failures`` then names it.
         """
         return await self._session_metadata.delete(command)
 

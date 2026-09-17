@@ -699,10 +699,10 @@
     {
       "capability": "session.delete",
       "class": "service",
-      "in_process": "Optional delegate method.  A running turn is refused atomically with ``conflict`` and is never cancelled; only the metadata row and the thread goal are removed.",
+      "in_process": "Optional delegate method.  A running turn is refused atomically with ``conflict`` and is never cancelled.  The metadata row and thread goal are removed and the thread is purged from the checkpoint store, the transcript projection, the full-text search index and its turn snapshots.",
       "method": "runtime.session.delete",
       "notes": [
-        "The result always reports ``retained_history``: checkpoints and the transcript projection are kept, so a UI must not claim the conversation was erased.",
+        "``retained_history`` reports whether anything survived the purge: false means the conversation is gone from every local store, true means a store refused and is named in ``purge_failures``.",
         "``command_id`` is generated (uuid4 hex) when omitted."
       ],
       "params_alias": "DeleteSessionParams",
@@ -2615,7 +2615,7 @@
           "wire": "json"
         },
         {
-          "default": true,
+          "default": false,
           "default_kind": "value",
           "name": "retained_history",
           "nullable": false,
@@ -2624,10 +2624,21 @@
           "required": true,
           "ts_type": "boolean",
           "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "purge_failures",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
         }
       ],
       "notes": [
-        "``retained_history`` is always true: checkpoints and the transcript projection are kept, so a UI must not claim the conversation was erased."
+        "``retained_history`` is false once the thread was purged from every local store (checkpoints, transcript projection, search index, turn snapshots); it stays true when a store refused, and ``purge_failures`` then names which one, so a UI never claims an erasure it did not get."
       ],
       "origin": "python",
       "role": "result"

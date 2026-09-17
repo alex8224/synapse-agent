@@ -19,9 +19,12 @@ last-writer-wins without a shared in-process connection.
 
 Deletion goes through :meth:`RuntimeManager.delete_session_ref` when a live
 manager exists, so a running turn is rejected atomically and a concurrent
-open/submit cannot resurrect the row.  It removes only the metadata row and the
-thread goal in the same database; checkpoints and the transcript projection are
-retained and reported through ``DeleteSessionResult.retained_history``.
+open/submit cannot resurrect the row.  It removes the metadata row and the thread
+goal *and* purges the thread from the stores the row does not cover --
+checkpoints, the transcript projection, the full-text search index and the
+thread's turn snapshots -- because a session whose row is gone is still readable
+and searchable otherwise.  A store that refused is named in
+``DeleteSessionResult.purge_failures`` and ``retained_history`` stays ``True``.
 """
 
 from __future__ import annotations
@@ -31,7 +34,10 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from synapse.sessions.thread_purge import ThreadPurgeReport
 
 from synapse.runtime.service.errors import (
     ClosedError,
@@ -258,6 +264,48 @@ def _default_store_factory(path: Path) -> Any:
     return SessionStore(path)
 
 
+def _thread_purge(
+    settings: object, thread_id: str
+) -> Callable[[], ThreadPurgeReport]:
+    """Build the history-purge callback for one thread of one project.
+
+    One resolved path locates every store: the transcript projection and the
+    search index are siblings of the metadata database, and the checkpoint store
+    and the workspace are read from the same settings object.
+
+    The callback is total.  A project whose metadata path cannot be resolved is
+    *not* claimed clean: it reports the metadata store itself as the failure, so
+    ``retained_history`` stays true and agrees with ``purge_failures``.  That path
+    is defensive -- ``_store`` resolves the same path first and refuses the delete
+    when it is unavailable -- but a purge that silently reported success for a
+    store it never located is exactly the half-delete this change removes.
+    """
+    # Imported in the function body, like ``_default_store_factory``: the service
+    # module keeps no ``synapse.sessions`` import at module load, and the report
+    # type is needed by a *callable* here, not only by an annotation.
+    from synapse.sessions.thread_purge import ThreadPurgeReport
+
+    sessions_path = resolve_sessions_path(settings)
+    if sessions_path is None:
+        return lambda: ThreadPurgeReport(thread_id=thread_id, failures=("sessions",))
+    checkpoint_path = getattr(settings, "checkpoint_path", None)
+    workspace = getattr(settings, "workspace", None)
+
+    def purge() -> ThreadPurgeReport:
+        # Imported here so the service module keeps its "no synapse.sessions at
+        # import time" shape, matching the store factory above.
+        from synapse.sessions.thread_purge import purge_thread
+
+        return purge_thread(
+            thread_id,
+            checkpoint_path=checkpoint_path,
+            sessions_path=sessions_path,
+            workspace=workspace,
+        )
+
+    return purge
+
+
 def open_session_metadata_store(settings: object) -> SessionMetadataStore | None:
     """Build a write-capable metadata store from a project's settings.
 
@@ -399,12 +447,20 @@ class SessionMetadataService:
         return item
 
     async def delete(self, command: DeleteSessionCommand) -> DeleteSessionResult:
-        """Delete one session's metadata row and thread goal (busy rejected).
+        """Delete one session and its conversation (busy rejected).
 
         With a live manager the delete is atomic against a running turn and a
         concurrent open/submit; without one the metadata row is the only
-        in-process state, so it is removed directly.  Checkpoints and the
-        transcript projection are retained.
+        in-process state, so it is removed directly.
+
+        The row is not the session: the conversation lives in the checkpoint
+        store, the transcript projection and the full-text search index, all
+        three of which outlive a row deletion and stay readable by thread id
+        (``search_session``'s full-text branch reads the index without ever
+        consulting the metadata row, so a deleted session would still be
+        findable).  ``purge_thread`` therefore runs before the row is removed and
+        its report is returned: a store that refused is named in
+        ``purge_failures`` and ``retained_history`` stays ``True``.
         """
         if type(command) is not DeleteSessionCommand:
             raise InvalidRequestError(
@@ -415,14 +471,15 @@ class SessionMetadataService:
         async with self._mutation_lock:
             context = await self._context(command.session.project_id)
             store = self._store(context)
+            thread_id = command.session.thread_id
+            purge = _thread_purge(context.settings, thread_id)
             gate = getattr(context.manager, "delete_session_ref", None)
             if callable(gate):
                 try:
-                    deleted = await gate(
+                    deleted, report = await gate(
                         command.session,
-                        delete_metadata=lambda: store.delete(
-                            command.session.thread_id
-                        ),
+                        delete_metadata=lambda: store.delete(thread_id),
+                        purge_history=purge,
                     )
                 except SessionBusyError as exc:
                     raise ConflictError(str(exc)) from exc
@@ -431,14 +488,19 @@ class SessionMetadataService:
                 except ValueError as exc:
                     raise InvalidRequestError(str(exc)) from exc
             else:
-                deleted = await asyncio.to_thread(
-                    store.delete, command.session.thread_id
-                )
+                # No live manager: nothing in this process holds the thread, so
+                # the purge runs first here too -- the row must not disappear
+                # while the conversation is still findable.
+                report = await asyncio.to_thread(purge)
+                deleted = await asyncio.to_thread(store.delete, thread_id)
         return DeleteSessionResult(
             command_id=command.command_id,
             session=command.session,
             deleted=bool(deleted),
-            retained_history=True,
+            # A missing report is not evidence that the history is gone, so it is
+            # reported as retained rather than assumed erased.
+            retained_history=report is None or not report.complete,
+            purge_failures=report.failures if report is not None else (),
         )
 
     async def search(self, query: SearchSessionsQuery) -> SessionSearchPage:

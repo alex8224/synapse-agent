@@ -21,12 +21,14 @@ import { useDialogKeyboardNav } from './keyboardNav.ts';
  * two-word decision.  The close control takes the initial focus, so Enter on a
  * freshly opened confirmation dismisses it instead of deleting anything.
  *
- * Only the record goes away (metadata row + thread goal); the conversation
- * (checkpoints, transcript) stays on disk, and the body says exactly that instead
- * of claiming the conversation was erased.  A running session is refused by the
- * server (`conflict`) -- the console never cancels the turn for you -- so a refusal
- * keeps the dialog open with the reason inline, and the session it names is still
- * there to retry or to dismiss.
+ * The record and the conversation both go: the server removes the metadata row
+ * and the thread goal and purges the thread from the checkpoint store, the
+ * transcript projection, the full-text search index and its turn snapshots.  The
+ * body says so, and says it is irreversible -- a session left half-deleted (the
+ * row gone, the conversation still searchable) is exactly what this box must not
+ * promise.  A running session is refused by the server (`conflict`) -- the console
+ * never cancels the turn for you -- so a refusal keeps the dialog open with the
+ * reason inline, and the session it names is still there to retry or to dismiss.
  */
 export interface SessionDeleteDialogProps {
   /** Title of the session being deleted: the dialog is what names the target. */
@@ -99,13 +101,15 @@ export const SessionDeleteDialog: React.FC<SessionDeleteDialogProps> = ({
               is the only thing that disambiguates two sessions sharing a title. */}
           <div id="session-delete-body" className="mt-3 text-xs leading-5 text-gray-700">
             <p>
-              将删除「<span className="font-medium text-gray-900">{title}</span>」的记录（元数据与目标）。
+              将删除「<span className="font-medium text-gray-900">{title}</span>」及其全部对话历史。
             </p>
             <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400" title={threadId}>
               {threadId}
             </p>
             <p className="mt-2 text-gray-500">
-              对话历史（检查点与转录）仍保留在磁盘上，不会被删除；运行中的会话需先停止当前回合。
+              检查点、转录投影、全文检索索引与本会话的回滚快照都会被删除，<span
+                className="text-red-700"
+              >不可恢复</span>，此后按关键字也搜不到它；运行中的会话需先停止当前回合。
             </p>
           </div>
 

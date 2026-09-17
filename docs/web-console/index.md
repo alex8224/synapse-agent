@@ -208,7 +208,7 @@ Chrome 实测，工作区 `synapse`）。「缺陷」表示影响可用性。
 | 添加项目（登记并切换） | `runtime.project.register` | 「选择此目录并新建会话」登记的是**当前浏览目录**：daemon 解析该宿主路径并要求它是已存在目录，按 workspace 路径幂等（重复登记复用同一 `project_id`）；成功后刷新项目列表、切到该项目并新建会话，失败原因留在对话框内 |
 | 新建会话 | `runtime.session.create` | 只写元数据行，`thread_id` 由服务端分配并返回；随后仍走 `runtime.session.open` + watch |
 | 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白/超长在本地与服务端都被拒 |
-| 删除 | `runtime.session.delete` | 只删元数据与 goal；确认框与提示明确写出 checkpoint/transcript 仍保留，不宣称「对话已删除」；运行中会话由服务端原子拒绝（`conflict`），前端不自动 cancel |
+| 删除 | `runtime.session.delete` | 删元数据与 goal，并把该 thread 从 checkpoint、transcript projection、全文检索索引与回滚快照里一并清除；确认框写明「不可恢复」，提示按 `retained_history` / `purge_failures` 如实报告（有存储拒绝时点出名字与补救方式，不宣称已清干净）；运行中会话由服务端原子拒绝（`conflict`），前端不自动 cancel |
 | 搜索 | `runtime.session.search` | 服务端**元数据**搜索（title/summary/thread_id/model），不是全文检索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
 | 粘贴/拖放图片 | — | **粘贴**到输入卡片或**拖放**文件到卡片；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒文件名与原因显示在输入区。点击选图的入口已移除（`+` 现在是「添加项目」） |
 | 上传 | `runtime.attachments.begin` / `.append` / `.finish` | 每个附件独立串流并显示进度；分块 ≤ 256 KiB（base64），`finish` 由服务端校验大小与 MIME |
@@ -290,7 +290,7 @@ Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/
 | `runtime.session.list` | Request -> Response | 项目内会话元数据分页（无查询参数，见 §3.2） |
 | `runtime.session.create` | Request -> Response | 新建会话元数据行（`thread_id` 由服务端分配并返回） |
 | `runtime.session.rename` | Request -> Response | 重命名会话标题（1–120 字符） |
-| `runtime.session.delete` | Request -> Response | 删除会话元数据与 goal（保留 checkpoint/transcript） |
+| `runtime.session.delete` | Request -> Response | 删除会话元数据与 goal，并清除该 thread 的 checkpoint / transcript / 检索索引 / 回滚快照 |
 | `runtime.session.search` | Request -> Response | 会话**元数据**搜索（非全文检索） |
 | `runtime.session.history` | Request -> Response | 读取会话转录历史分页 |
 | `runtime.session.reconcile` | Request -> Response | 会话可恢复性快照（断线后核对） |

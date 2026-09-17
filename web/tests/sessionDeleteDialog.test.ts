@@ -86,9 +86,22 @@ test('the dialog follows the console dialog contract', () => {
   );
 });
 
-test('the dialog states the retention instead of claiming an erase', () => {
-  assert.ok(dialog.includes('仍保留在磁盘上'), 'the body must say the history stays');
-  assert.ok(dialog.includes('不会被删除'), 'and that it is not deleted');
+test('the dialog says the conversation goes with the record, irreversibly', () => {
+  // The delete purges the thread from the checkpoint store, the transcript
+  // projection, the search index and its snapshots, so the body must say so --
+  // the old copy promised the history stayed, which is now the one outcome the
+  // server no longer produces.
+  assert.ok(dialog.includes('全部对话历史'), 'the body must say the history goes too');
+  assert.ok(dialog.includes('不可恢复'), 'and that it cannot be undone');
+  assert.ok(
+    dialog.includes('全文检索索引'),
+    'and name the index, which is what made a deleted session searchable',
+  );
+  assert.equal(
+    /仍保留在磁盘上/.test(dialog),
+    false,
+    'the confirmation must not promise a retention that no longer happens',
+  );
   assert.equal(
     /已删除/.test(dialog),
     false,

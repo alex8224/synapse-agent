@@ -374,11 +374,14 @@ class AgentRuntimeService(Protocol):
         ...
 
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
-        """Delete one session's metadata row and thread goal (busy rejected).
+        """Delete one session and its conversation (busy rejected).
 
-        A running turn is rejected atomically, and checkpoints / the transcript
-        projection are retained: the result states that through
-        ``retained_history``, so a UI must not claim the conversation was erased.
+        A running turn is rejected atomically.  The metadata row and thread goal
+        are removed and the thread is purged from the checkpoint store, the
+        transcript projection, the full-text search index and its turn snapshots;
+        a store that refused leaves ``retained_history`` true and is named in
+        ``purge_failures``, so a UI reports what survived instead of claiming a
+        clean erasure.
 
         Optional delegate method: see ``create_session``.
         """

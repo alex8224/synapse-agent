@@ -212,7 +212,8 @@ let deleteImpl: (params: any) => Promise<unknown> = async () => ({
   command_id: 'cmd',
   session: SESSION,
   deleted: true,
-  retained_history: true,
+  retained_history: false,
+  purge_failures: [],
 });
 /** Decoded byte length of one base64 chunk (the stub's own offset math). */
 function base64Bytes(text: string): number {
@@ -375,7 +376,8 @@ function resetStore() {
     command_id: 'cmd',
     session: SESSION,
     deleted: true,
-    retained_history: true,
+    retained_history: false,
+    purge_failures: [],
   });
   appendImpl = stubAppend;
   finishImpl = async (params) => ({
@@ -473,14 +475,52 @@ test('a successful rename updates every list the sidebar renders', async () => {
   assert.equal(state.sessionTitle, 'Manual title');
 });
 
-test('delete states the retained history instead of claiming an erase', async () => {
+test('delete reports the erasure the server actually performed', async () => {
   const deleted = await useConsoleStore.getState().deleteSession('other');
   assert.equal(deleted, true);
   const state = useConsoleStore.getState();
   assert.deepEqual(state.sessions.map((entry) => entry.thread_id), ['thr']);
-  assert.match(state.sessionNotice ?? '', /对话历史（检查点与转录）仍保留/);
-  assert.match(state.sessionNotice ?? '', /未被删除/);
+  assert.match(state.sessionNotice ?? '', /全部对话历史/);
+  assert.match(state.sessionNotice ?? '', /不可恢复/);
+  // The old copy promised the history stayed; nothing may claim that now.
+  assert.doesNotMatch(state.sessionNotice ?? '', /仍保留在磁盘上/);
   assert.equal(state.sessionActionError, null);
+});
+
+test('a partial purge is reported with the stores that survived', async () => {
+  deleteImpl = async () => ({
+    command_id: 'cmd',
+    session: SESSION,
+    deleted: true,
+    retained_history: true,
+    purge_failures: ['transcript'],
+  });
+
+  await useConsoleStore.getState().deleteSession('other');
+
+  const notice = useConsoleStore.getState().sessionNotice ?? '';
+  // A half-delete must never be presented as a clean one: the row is gone, the
+  // conversation is not, and the notice says which store held on to it.
+  assert.match(notice, /部分历史未能清除/);
+  assert.match(notice, /transcript/);
+  assert.match(notice, /sessions purge/);
+  assert.doesNotMatch(notice, /不可恢复/);
+});
+
+test('a peer that omits the failure list still yields a usable notice', async () => {
+  // An older daemon answers the old shape; the delete it already performed must
+  // not be turned into a client-side crash.
+  deleteImpl = async () => ({
+    command_id: 'cmd',
+    session: SESSION,
+    deleted: true,
+    retained_history: true,
+  });
+
+  const deleted = await useConsoleStore.getState().deleteSession('other');
+
+  assert.equal(deleted, true);
+  assert.match(useConsoleStore.getState().sessionNotice ?? '', /未知存储/);
 });
 
 test('a busy session is refused by the server and nothing is cancelled', async () => {

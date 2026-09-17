@@ -603,12 +603,15 @@ export class SynapseRuntimeClient {
   }
 
   /**
-   * Delete one session's metadata row and thread goal (`runtime.session.delete`).
+   * Delete one session and its conversation (`runtime.session.delete`).
    *
-   * The result always reports `retained_history`: checkpoints and the transcript
-   * projection are kept, so the caller must warn the user instead of claiming
-   * the conversation was erased.  A session with an active turn is refused by
-   * the server with `conflict`; this never cancels the turn.
+   * The server removes the metadata row and the thread goal and purges the thread
+   * from the checkpoint store, the transcript projection, the full-text search
+   * index and its turn snapshots.  `retained_history` reports whether anything
+   * survived -- true only when a store refused, with the store named in
+   * `purge_failures` -- so a caller must report *that* rather than assuming either
+   * outcome.  A session with an active turn is refused by the server with
+   * `conflict`; this never cancels the turn.
    */
   public async deleteSession(params: DeleteSessionParams): Promise<DeleteSessionResult> {
     const payload: Record<string, unknown> = { session: params.session };
