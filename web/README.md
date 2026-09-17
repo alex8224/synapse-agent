@@ -31,7 +31,8 @@
   标题带 `wco-caption-controls`，否则标题栏会吞掉这次点击）；
   右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
   分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
-  `RuntimeDiagnosticsBanner`（仅降级时出现）、`Transcript`、浮动的 `CommandInput`，
+  `RuntimeDiagnosticsBanner`（仅降级时出现）、`RecoveryNotice`（仅恢复/截断时出现，
+  见「恢复与降级提示」）、`Transcript`、浮动的 `CommandInput`，
   以及 `BottomBar`（运行态、MCP、goal 与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
   转录区据此预留底部空间，避免最新内容被输入卡遮挡。
 
@@ -206,6 +207,36 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 渲染器）。卡片默认折叠，展开后才显示步骤；折叠状态是**行内视图状态**（不写回 store，所以不会重建 `messages` 数组、
 也不会把转录拽到底部）。分组规则由 `tests/transcriptLabels.test.ts` 守护，卡面、标记与状态动画由
 `tests/transcriptLayoutGuard.test.ts` 守护。
+
+## 恢复与降级提示（RecoveryNotice）
+
+控制台把「连接恢复 / 实时回放被截断」这件事**显式画出来**，而不是静默：store 早就算好了
+`recoveryState` / `recoveryDetail` / `liveBufferDroppedCount`，但此前没有任何组件读它们，
+于是一次被截断的实时回放（运行中轮次的早期事件被丢弃或淘汰）对读者完全不可见。
+`RecoveryNotice` 是工作区列里 `RuntimeDiagnosticsBanner` 之下、转录区之上的一条**非阻塞**横条
+——不是模态框，也**没有关闭按钮**：这个状态不由读者确认，它一直显示到底层状态改变为止。
+判据全部在纯模块 `src/stores/recoveryNoticeView.ts`（无 React、无 DOM、无 zustand），
+组件只负责画，并分别订阅三个字段，所以流式更新不会重绘它。
+
+| `recoveryState` | 横条 | 含义 |
+|---|---|---|
+| `idle` / `resumed` | 不显示 | 没有被中断过，或恢复已经成功 |
+| `failed` | `blocked`（`role="alert"`，红） | 重连预算耗尽，需要读者处理 |
+| `incomplete` / `resync` | `degraded`（`role="status"`，琥珀） | 从历史快照回放是部分的／被重新锚定 |
+| `reconnecting` / `resuming` | `transient`（`role="status"`，蓝） | 正在自愈，仅告知 |
+| 其它值（含 `unknown`，或更新版 daemon 新增的状态） | 不显示 | 向前兼容：旧控制台不画自己解释不了的东西 |
+
+store 自己**只**发布 `incomplete`（回放被截断／出现 gap）而不再发布 `resync`：一次重锚定成功之后
+若什么也没丢（例如从未收到过事件），状态直接回到 `idle`，不会永远挂着一条降级横条；而 gap 意味着
+事件确实被淘汰，就以 `incomplete` + gap 详情说明损失。`resync` 仍留在状态联合与
+`recoveryNoticeView` 里，仅为向前兼容（更新版的 store 可能仍会发布它）。
+
+`liveBufferDroppedCount > 0` 时**一定**显示（kind 为 `degraded`），哪怕状态是 `idle` / `resumed` /
+未知——这些实时事件从未进入转录区，回放就是被截断的；已经有状态横条时把条数**合并**进同一条
+（`droppedEvents`，显示为标题后的「已丢弃 N 条实时事件」），不会同时出现两条。横条第一行是标题，
+第二行（可选）是 store 的原话 `recoveryDetail`；两者逐字相同或该字段为空时第二行直接省略，
+同一句话不打印两遍。横条与转录区、输入卡共用同一套留白几何（`.console-gutter` + `.console-column`），
+所以它从聊天列的左边缘开始。判据与文案由 `tests/recoveryNotice.test.ts` 守护。
 
 ## 主题
 
@@ -494,6 +525,8 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 | `runtimeStatus` 由 running 变 idle，且没有待审批 | 同上 | 「任务已完成」通知，正文带会话标题 |
 | 快照没变 / 窗口在前台 / 权限未授权 | — | 不发通知：正在看控制台的人不需要被打断，流式增量与重命名也不会触发 |
 
+这里的快照不是「当前会话」一个，而是**当前会话与全部后台会话的汇总**（`backgroundAlertSummary`，见「多会话并行与后台会话」）：只要有任一后台会话出现待审批，仍算一次审批边沿；`running` 要到**所有**会话都停下才转 idle，所以后台会话收尾同样会触发「任务已完成」。`decideAlert` 的判据本身不变，喂给它的是汇总后的布尔值。
+
 角标走 Badging API：待审批记 1，加上「已完成但没看过」的轮数；窗口回到前台即清零
 （`visibilitychange` 与 `focus` 都算确认，并顺带重读权限，因为用户可能在浏览器自己的界面里
 回答了弹窗）。角标是装饰，失败被吞掉、不阻塞控制台。通知点击把已有窗口拉到前台
@@ -533,6 +566,27 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 | 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白或超长在本地与服务端都会被拒绝 |
 | 删除 | `runtime.session.delete` | 只删除会话记录（元数据与 goal）。checkpoint 与 transcript 仍保留在磁盘上，确认框与提示都会明确写出这一点，不会宣称「对话已删除」；确认是一个居中模态框（`SessionDeleteDialog`：Portal + 遮罩 + 焦点陷阱，Esc 或点遮罩关闭），在正文里写出目标会话的标题与 `thread_id`，只有「删除」一个决策按钮——默认焦点落在标题栏的关闭控件上，所以刚打开时按 Enter 只会关掉它；运行中的会话由服务端原子拒绝（`conflict`），前端不会自动 cancel，被拒时模态框保持打开并就地显示原因 |
 | 搜索 | `runtime.session.search` | 服务端元数据搜索（title/summary/thread_id/model），不是对话全文搜索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
+
+### 多会话并行与后台会话
+
+daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `RuntimeManager` + 信号量，一条 WS 连接可承载 32 个订阅），控制台因此同时保持多个 watch，而不是切走即丢弃：
+
+- 切换会话**不再**掉线旧会话的 watch。离开的会话被移入一个**后台视图**（`src/stores/sessionViews.ts`，按 `project_id:thread_id` 键控），它的转录、运行状态、待审批与用量继续在后台更新；切回去时直接复用这个仍然在线的视图——不重放、不重新加载历史，只做一次轻量刷新（goal / 运行配置 / MCP / git）。只有它自己的 watch 已经结束（`subscriptionId === null`）时才回退到完整 attach（重新打开会话 + 从权威历史快照重载）。
+- 后台视图最多保留 8 个（`MAX_BACKGROUND_VIEWS`）；超出时按「最近触碰」淘汰最旧的，正在查看的会话永不淘汰，并释放被淘汰视图的订阅。退出登录 / 显式关闭会清空全部后台视图；切换项目**不会**（跨项目保留正是它存在的意义）。
+- 后台视图只有在 watch 仍然在线时才可复用。历史仍在加载（`historyLoading` 或 `liveEventBuffer` 非空）时被切走的会话、watch 已被 fence 的会话、以及收到 `complete` / `error` 通知的会话，都被存为**已过期**（`subscriptionId === null`）并**立即释放其订阅**——客户端为 fenced / 已结束的 watch 保留注册槽位，不释放会耗尽一条连接 32 个订阅的上限。切回去时按完整 attach 重来。删除会话同样会移除并释放它的后台视图。
+- 连接意外断开时，后台视图的订阅在服务端已死，它们被标记为「已过期」：转录仍保留，但切回去会重新 attach，绝不会把中断的转录当成完整。
+- 事件与订阅通知都按 `meta.subscription_id` / `notice.subscription_id` 路由：后台订阅的事件只折进它自己的视图，当前会话永远收不到别的会话的事件。服务端未附带订阅 id 的帧由客户端解析到唯一在线 watch，并把**解析后的 id** 随事件与通知转发，所以它落进那个会话的视图，而不是「碰巧在屏幕上」的会话。
+
+侧栏每一行都会显示该会话的实时状态标记（这是**真正的状态读数**，不像重命名 / 删除那样只在悬停或聚焦时出现）：
+
+| 标记 | 条件 | 说明 |
+|---|---|---|
+| 蓝色脉冲圆点 | `subscriptionId !== null` 且 `runtimeStatus === 'running'` | 该会话有回合在跑（当前会话自己的状态也算） |
+| 琥珀色圆点 | `subscriptionId !== null` 且 `pendingApproval !== null` | 该会话在等待人工审批；两者同时成立时审批优先 |
+
+已过期（`subscriptionId === null`）的视图状态视为「未知」，不显示任何标记：watch 已停止，它的最后状态不再是事实，不能让它永远亮着一个运行中指示或审批标记。
+
+后台通知与角标也按「当前会话 + 全部**在线**后台会话」汇总（同样忽略已过期视图），见「后台通知与角标」。
 
 ## 图片附件（输入区）
 

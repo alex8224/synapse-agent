@@ -4,6 +4,7 @@ import { TopBar } from './components/TopBar';
 import { SideBar } from './components/SideBar';
 import { Transcript } from './components/Transcript';
 import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner';
+import { RecoveryNotice } from './components/RecoveryNotice.tsx';
 import { CommandInput } from './components/CommandInput';
 import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
@@ -194,6 +195,11 @@ export function App() {
           {/* Only rendered when the relay is down and the read-only diagnostics
               read succeeded; see the component for the degradation rules. */}
           <RuntimeDiagnosticsBanner />
+          {/* Recovery / truncation state of the running turn's live replay.  An
+              in-flow strip like the banner above it, not a floating layer: the
+              transcript scroller reaches up behind the header, and a positioned
+              overlay would cover the newest lines it is describing. */}
+          <RecoveryNotice />
           <Transcript />
           <CommandInput />
         </main>

@@ -135,6 +135,64 @@ export function badgeTotal(pendingApproval: boolean, unreadFinished: number): nu
   return (pendingApproval ? 1 : 0) + Math.max(0, unreadFinished);
 }
 
+/**
+ * One session's status, as the alert surfaces need it.
+ *
+ * Deliberately just two booleans rather than the console's own view type: the
+ * policy stays decoupled from the store and testable without one.
+ */
+export interface AlertSessionStatus {
+  pendingApproval: boolean;
+  running: boolean;
+}
+
+/**
+ * One *background* view's status plus whether its watch is still live.
+ *
+ * A stale view (`subscriptionId === null`) means "unknown", not "still running":
+ * counting it would keep a running indicator or an approval badge alive forever
+ * after the watch that produced it stopped.
+ */
+export interface BackgroundViewStatus extends AlertSessionStatus {
+  live: boolean;
+}
+
+/** Aggregate status across the active session and every background session. */
+export interface BackgroundAlertSummary {
+  /** How many sessions are waiting on a human decision. */
+  approvals: number;
+  /** How many sessions have a turn in flight. */
+  running: number;
+}
+
+/**
+ * Fold the active session and every background view into one summary.
+ *
+ * The alert surfaces used to look only at the session on screen, so a turn that
+ * finished — or an approval that appeared — in a session the reader had switched
+ * away from was invisible.  Feeding this aggregate to the unchanged
+ * `decideAlert` keeps its edge rules intact: a background approval is still an
+ * approval edge, and "running" stays true until *every* session has stopped, so
+ * a background turn ending is what raises the "finished" alert.
+ *
+ * Only *live* background views are counted: a view whose watch ended reports
+ * "unknown", and letting it keep the aggregate running would leave the console
+ * alerting forever.
+ */
+export function backgroundAlertSummary(
+  views: readonly BackgroundViewStatus[],
+  activeView: AlertSessionStatus,
+): BackgroundAlertSummary {
+  let approvals = activeView.pendingApproval ? 1 : 0;
+  let running = activeView.running ? 1 : 0;
+  for (const view of views) {
+    if (!view.live) continue;
+    if (view.pendingApproval) approvals += 1;
+    if (view.running) running += 1;
+  }
+  return { approvals, running };
+}
+
 /** Counts a delivered alert as unread when it was a finished turn. */
 export function applyAlertToUnread(unreadFinished: number, decision: AlertDecision | null): number {
   const current = Math.max(0, unreadFinished);

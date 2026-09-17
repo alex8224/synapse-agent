@@ -14,11 +14,43 @@ import {
   matchesProject,
   projectLabel,
 } from '../stores/sessionList.ts';
+import {
+  sessionKey,
+  sessionStatusMarkers,
+  type SessionStatusKind,
+} from '../stores/sessionViews.ts';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { SessionDeleteDialog } from './SessionDeleteDialog.tsx';
 
 /** Sessions shown per expanded project before the "show all" row (TUI parity). */
 const VISIBLE_SESSIONS = 5;
+
+/**
+ * The live status of every session the console holds a view for, keyed by
+ * `sessionKey`.
+ *
+ * The active session's own state counts too, so its row carries the marker while
+ * its transcript is on screen.  Returned as a small string map so `useShallow`
+ * can compare it entry by entry: a background delta rewrites its view on every
+ * frame, and the sidebar must not re-render for a status that did not change.
+ * A stale view (`subscriptionId === null`) contributes nothing -- its status is
+ * unknown, so it must not leave a pulsing dot or an approval marker alive.
+ */
+function sessionStatusesOf(state: {
+  backgroundViews: Record<
+    string,
+    { subscriptionId: string | null; runtimeStatus: 'idle' | 'running'; pendingApproval: unknown }
+  >;
+  currentSession: { project_id: string; thread_id: string };
+  runtimeStatus: 'idle' | 'running';
+  pendingApproval: unknown;
+}): Record<string, SessionStatusKind> {
+  return sessionStatusMarkers(state.backgroundViews, {
+    key: state.currentSession.thread_id !== '' ? sessionKey(state.currentSession) : null,
+    runtimeStatus: state.runtimeStatus,
+    pendingApproval: state.pendingApproval,
+  });
+}
 
 /**
  * Sidebar: a two-level project -> session tree, mirroring the TUI drawer.
@@ -94,6 +126,13 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
       createSessionInProject: state.createSessionInProject,
       currentSession: state.currentSession,
     })),
+  );
+
+  // Live per-session status, kept in its own shallow selector so a background
+  // delta (which rewrites its view every frame) only re-renders the rows whose
+  // marker actually changed.
+  const sessionStatuses = useConsoleStore(
+    useShallow((state) => sessionStatusesOf(state)),
   );
 
   const isSidebarCollapsed = collapsed ?? storedCollapsed;
@@ -417,6 +456,9 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                               </li>
                             );
                           }
+                          const status = sessionStatuses[
+                            sessionKey({ project_id: project.project_id, thread_id: sess.thread_id })
+                          ];
                           return (
                             <li
                               key={sess.thread_id}
@@ -432,9 +474,23 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                                 }}
                                 title={`${sess.title}\n${sess.thread_id}`}
                                 aria-current={selected ? 'page' : undefined}
-                                className="min-h-8 min-w-0 flex-1 cursor-pointer truncate pl-3 pr-1 py-1.5 text-left"
+                                className="flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-1.5 pl-3 pr-1 py-1.5 text-left"
                               >
-                                {sess.title}
+                                {/* A real status readout, unlike the hover-only write
+                                    actions below: it must stay visible without focus.
+                                    Running is the pulsing dot the transcript uses;
+                                    an approval is amber and wins when both apply. */}
+                                {status !== undefined && (
+                                  <span
+                                    role="img"
+                                    aria-label={status === 'approval' ? '等待审批' : '运行中'}
+                                    title={status === 'approval' ? '等待审批' : '运行中'}
+                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                      status === 'approval' ? 'bg-amber-500' : 'bg-blue-600 animate-pulse'
+                                    }`}
+                                  />
+                                )}
+                                <span className="min-w-0 flex-1 truncate">{sess.title}</span>
                               </button>
                               {/* Write actions stay in the layout but only surface on
                                   hover/focus: they are not status readouts. */}

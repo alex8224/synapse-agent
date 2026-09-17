@@ -17,7 +17,7 @@ import {
   ConnectionLostError,
   RpcCallError,
 } from '../client/SynapseRuntimeClient.ts';
-import type { ConnectionState } from '../client/SynapseRuntimeClient.ts';
+import type { ConnectionState, SubscriptionNotice } from '../client/SynapseRuntimeClient.ts';
 import type {
   RuntimeEvent,
   SessionRef,
@@ -59,6 +59,7 @@ import {
 } from './mcpRuntimeView.ts';
 import type { McpRuntimeServerState } from './mcpRuntimeView.ts';
 import { decideResumeAfterDrop } from './recoveryDecider.ts';
+import { chooseAttachCursor } from './attachCursor.ts';
 import type { ActivityView } from './liveEventReducer.ts';
 import { isTurnTerminalKind } from './liveEventReducer.ts';
 import type { PendingApproval } from './liveEventReducer.ts';
@@ -71,6 +72,17 @@ import {
 } from './liveDeltaBatch.ts';
 import type { UsageView } from './usageView.ts';
 import { parseSessionUsage, type SessionUsage } from './usageView.ts';
+import {
+  addTurnUsage,
+  foldBackgroundEvents,
+  MAX_BACKGROUND_VIEWS,
+  pruneBackgroundViews,
+  restoreLiveView,
+  sessionKey,
+  snapshotLiveView,
+  type BackgroundSessionView,
+  type RecoveryState,
+} from './sessionViews.ts';
 import {
   AttachmentUploadCancelledError,
   attachmentErrorMessage,
@@ -241,6 +253,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
   // A new authenticated runtime starts from a clean diagnostics slate: the
   // previous pairing's read (and its once-per-pairing latch) must not leak in.
   resetRuntimeDiagnostics();
+  // A brand-new authenticated client holds no watches: the previous pairing's
+  // background views and its dead-subscription memory must not leak in.
+  deadSubscriptions.clear();
   const targetUrl = deriveRuntimeSocketUrl(window.location);
   const client = new SynapseRuntimeClient({
     url: targetUrl,
@@ -274,7 +289,15 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         // Anything still queued for the display window belongs to the dead
         // subscription and is applied now, while it is still attributable.
         flushPendingDeltas();
-        store.setState({ activeSubscriptionId: null, recoveryState: 'reconnecting' });
+        // Every background watch is dead too: the socket that carried them is
+        // gone and recovery only resumes the *attached* session's watch. Their
+        // transcripts are kept, but they are marked stale so returning to one
+        // re-attaches from history instead of trusting a stream that stopped.
+        store.setState((s) => ({
+          activeSubscriptionId: null,
+          recoveryState: 'reconnecting',
+          backgroundViews: markBackgroundViewsStale(s.backgroundViews),
+        }));
       }
     },
     onRecovery: (info) => {
@@ -310,46 +333,24 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
         });
       }
     },
-    onSubscriptionNotice: (notice) => {
-      if (notice.type === 'error') {
-        const code = notice.service_code;
-        if (code === 'replay_gap' || code === 'invalid_cursor' || code === 'event_overflow') {
-          // Watch ended server-side with an explicit gap/overflow: full
-          // resync from the history snapshot (formal), not silent recovery.
-          const { client: c, currentSession, sessionTitle } = store.getState();
-          if (!c || c.getState() !== 'connected') return;
-          store.setState({
-            recoveryState: 'resync',
-            recoveryDetail: `watch terminated (${code}); resyncing from history snapshot`,
-          });
-          void attachToSession(currentSession, sessionTitle).then(() => {
-            store.setState((s) =>
-              s.currentSession.project_id === currentSession.project_id &&
-              s.currentSession.thread_id === currentSession.thread_id
-                ? { recoveryState: 'resync', recoveryDetail: `resynced after ${code}` }
-                : {},
-            );
-          });
-        } else {
-          store.setState({
-            recoveryState: 'failed',
-            recoveryDetail: `watch error: ${code ?? 'unknown'}`,
-          });
-        }
-      } else if (notice.type === 'complete') {
-        // Server closed the subscription (e.g. session closed). Detach the
-        // watch bookkeeping without cancelling the session (watch.detach is
-        // deliberately not a cancel) and keep the transcript as-is.
-        flushPendingDeltas();
-        store.setState({ activeSubscriptionId: null, recoveryState: 'idle' });
-      }
-    },
+    onSubscriptionNotice: handleSubscriptionNotice,
     onEvent: (event, meta) => {
-      const activeId = store.getState().activeSubscriptionId;
+      const state = store.getState();
+      const activeId = state.activeSubscriptionId;
       const subId = meta?.subscription_id;
-      if (activeId !== null && subId !== undefined && subId !== activeId) {
-        // Stale event from a subscription that was replaced while switching sessions.
-        return;
+      if (subId !== undefined && subId !== activeId) {
+        // Not the active subscription: the id is the only thing that says which
+        // view a frame belongs to.  A background view keeps streaming into its
+        // own transcript; a stale frame from a replaced subscription is dropped
+        // exactly as before.
+        const key = backgroundViewKeyForSubscription(state.backgroundViews, subId);
+        if (key !== undefined) {
+          applyBackgroundEvents(key, [{ event, subscription_id: subId }]);
+          return;
+        }
+        // While no active subscription is attributed yet (the attach window)
+        // the frame can only be the incoming watch, so it is buffered below.
+        if (activeId !== null) return;
       }
       const buffering = store.getState().historyLoading || activeId === null;
       if (buffering) {
@@ -430,6 +431,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     usage: null,
     sessionUsage: null,
     metricsLabel: '',
+    backgroundViews: {},
     goal: null,
     goalBusy: false,
     goalActionError: null,
@@ -647,15 +649,9 @@ interface ConsoleStore {
   rpcBlockedReason: string | null;
 
   // Recovery (phase-4): observable connection recovery state, never silent.
-  recoveryState:
-    | 'idle'
-    | 'reconnecting'
-    | 'resuming'
-    | 'resumed'
-    | 'resync'
-    | 'incomplete'
-    | 'unknown'
-    | 'failed';
+  // The union lives in `sessionViews` so a background view can carry it without
+  // that module importing this one.
+  recoveryState: RecoveryState;
   recoveryDetail: string | null;
 
   // Read-only runtime diagnostics (phase-5 C3): the facts served by the host's
@@ -871,6 +867,13 @@ interface ConsoleStore {
   // The subscription live events are currently attributed to (for stale-session
   // filtering while switching sessions).
   activeSubscriptionId: string | null;
+  /**
+   * Live views of every session the console is watching but not showing (stage
+   * 3b), keyed by `sessionKey`.  A view survives a session switch and a project
+   * switch -- that is the whole point -- and is cleared only by a full reset
+   * (logout / close / re-pair), never by `activateProject`.
+   */
+  backgroundViews: Record<string, BackgroundSessionView>;
 
   // MCP
   mcpServers: Array<{
@@ -1022,8 +1025,31 @@ let sessionEpoch = 0;
 let lastAttachedSession: { project_id: string; thread_id: string } | null = null;
 let lastAttachedEpoch = 0;
 
-/** Maximum number of live events held while a history page is loading. */
-const MAX_LIVE_BUFFER = 2000;
+/**
+ * Maximum number of live events held while a history page is loading.
+ *
+ * 8192 matches the daemon broker's *default* retention
+ * (`hard_cap = max(max_events * 4, 1024)` with the default `max_events = 2048`;
+ * `src/synapse/runtime/sessions/events.py`), so under that default the buffer
+ * can hold a whole replay *plus* the live events that arrive while the history
+ * page loads.  It is a default, not a protocol guarantee -- a deployment can
+ * raise `max_events`, and an event count is not a byte budget -- so the browser
+ * is not guaranteed to be the non-binding constraint.  The bound still matters:
+ * a smaller one silently drops the *oldest* buffered events -- the head of a
+ * running turn's replay -- while the history page is still loading, which is
+ * exactly the prefix this console is trying to preserve.  The drop path below
+ * stays as a safety valve should the buffer ever exceed it.
+ */
+const MAX_LIVE_BUFFER = 8192;
+
+/**
+ * Subscriptions the client fenced or that ended with an error the console could
+ * not recover in place (a cursor mismatch, a delivery failure).  Such a watch
+ * still occupies a slot in the client registry, so `getWatchSession` alone would
+ * call it live; this set is what stops a switch away from backgrounding a
+ * transcript that can never grow again.  Cleared with every full reset.
+ */
+const deadSubscriptions = new Set<string>();
 
 /**
  * Streamed text deltas waiting for the display window to close.
@@ -1296,25 +1322,11 @@ function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
  * is re-synced rather than drifting.
  */
 function foldTurnUsage(payload: unknown): void {
-  if (payload === null || typeof payload !== 'object') return;
-  const record = payload as Record<string, unknown>;
-  const count = (key: string): number => {
-    const value = record[key];
-    return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0;
-  };
-  const input = count('input_tokens');
-  const output = count('output_tokens');
-  const cache = count('cache_tokens');
-  if (input === 0 && output === 0 && cache === 0) return;
   useConsoleStore.setState((s) => {
-    const base = s.sessionUsage ?? { input: 0, output: 0, cache: 0 };
-    return {
-      sessionUsage: {
-        input: base.input + input,
-        output: base.output + output,
-        cache: base.cache + cache,
-      },
-    };
+    // Shared with `foldBackgroundEvents`, so the active bar and a background
+    // session's bar can never accumulate a finished turn differently.
+    const next = addTurnUsage(s.sessionUsage, payload);
+    return next === s.sessionUsage ? {} : { sessionUsage: next };
   });
 }
 
@@ -1560,10 +1572,257 @@ function refreshSessionTitleAfterTurn(session: SessionRef, shown: string): void 
     });
 }
 
+/**
+ * The key of the background view streaming `subscriptionId`, or undefined.
+ *
+ * A background event is attributed by its subscription id, never by the session
+ * the console happens to be showing: with several watches live, the id is the
+ * only thing that says which view a frame belongs to.
+ */
+function backgroundViewKeyForSubscription(
+  views: Record<string, BackgroundSessionView>,
+  subscriptionId: string | undefined,
+): string | undefined {
+  if (subscriptionId === undefined) return undefined;
+  for (const [key, view] of Object.entries(views)) {
+    if (view.subscriptionId === subscriptionId) return key;
+  }
+  return undefined;
+}
+
+/**
+ * Mark every background view's watch as ended, keeping its transcript.
+ *
+ * Used when the transport drops: the subscriptions the client still lists are
+ * dead server-side, and only the attached session's watch is resumed, so the
+ * background views must not be trusted as live.  `touchedAt` is left alone so
+ * the LRU order still reflects when each session last really streamed.
+ */
+function markBackgroundViewsStale(
+  views: Record<string, BackgroundSessionView>,
+): Record<string, BackgroundSessionView> {
+  const next: Record<string, BackgroundSessionView> = {};
+  for (const [key, view] of Object.entries(views)) {
+    next[key] = view.subscriptionId === null ? view : { ...view, subscriptionId: null };
+  }
+  return next;
+}
+
+/**
+ * Route one watch-lifecycle notice to the session that owns its subscription.
+ *
+ * Extracted from the client callback so the routing is directly testable.  The
+ * active session's own handling must never run for another session's watch -- a
+ * background `complete` is not a resync of the session on screen -- and a
+ * background watch that ended must release its lease, because the client keeps a
+ * completed/fenced watch's registry slot.
+ */
+export function handleSubscriptionNotice(notice: SubscriptionNotice): void {
+  const store = useConsoleStore;
+  const subId = notice.subscription_id;
+  const activeId = store.getState().activeSubscriptionId;
+  if (subId !== undefined && subId !== activeId) {
+    // A notice names one subscription: route it to the view that holds it.
+    const key = backgroundViewKeyForSubscription(store.getState().backgroundViews, subId);
+    if (key !== undefined) {
+      const view = store.getState().backgroundViews[key];
+      if (view !== undefined && view.subscriptionId !== null) {
+        // The background watch ended (server complete, or fenced with an error).
+        // Keep the transcript -- the reader may return to it -- but mark the view
+        // stale so returning re-attaches from the history snapshot, and release
+        // the lease so the client's registry slot (and the daemon lease, when it
+        // outlives a client-side fence) does not leak against the 32-watch cap.
+        store.setState((s) => ({
+          backgroundViews: {
+            ...s.backgroundViews,
+            [key]: { ...s.backgroundViews[key], subscriptionId: null, touchedAt: Date.now() },
+          },
+        }));
+        void store.getState().client?.unwatchEvents(subId);
+      }
+      return;
+    }
+    // Not the active subscription and not a background view: a stale frame.
+    if (activeId !== null) return;
+  }
+  if (notice.type === 'error') {
+    const code = notice.service_code;
+    if (code === 'replay_gap' || code === 'invalid_cursor' || code === 'event_overflow') {
+      // Watch ended server-side with an explicit gap/overflow: full resync from
+      // the history snapshot (formal), not silent recovery.  A gap always means
+      // events were evicted, so the durable state is `incomplete` with the gap
+      // detail -- never a `resync` left set forever.
+      const { client: c, currentSession, sessionTitle } = store.getState();
+      if (!c || c.getState() !== 'connected') return;
+      store.setState({
+        recoveryState: 'incomplete',
+        recoveryDetail: `watch terminated (${code}); resynced from history snapshot`,
+      });
+      void attachToSession(currentSession, sessionTitle).then(() => {
+        store.setState((s) =>
+          s.currentSession.project_id === currentSession.project_id &&
+          s.currentSession.thread_id === currentSession.thread_id
+            ? { recoveryState: 'incomplete', recoveryDetail: `resynced after ${code}` }
+            : {},
+        );
+      });
+    } else {
+      // The watch was fenced (a cursor mismatch / delivery failure): it can never
+      // deliver again, so remember it.  Backgrounding this session later stores
+      // the view as stale instead of pretending it is live.
+      if (subId !== undefined) deadSubscriptions.add(subId);
+      store.setState({
+        recoveryState: 'failed',
+        recoveryDetail: `watch error: ${code ?? 'unknown'}`,
+      });
+    }
+  } else if (notice.type === 'complete') {
+    // Server closed the subscription (e.g. session closed). Detach the watch
+    // bookkeeping without cancelling the session (watch.detach is deliberately
+    // not a cancel) and keep the transcript as-is.
+    flushPendingDeltas();
+    store.setState({ activeSubscriptionId: null, recoveryState: 'idle' });
+  }
+}
+
+/**
+ * Fold a batch of background events into their view and mark it freshly
+ * touched, so the LRU reflects real activity and not just a switch.
+ */
+function applyBackgroundEvents(key: string, entries: readonly LiveEventEntry[]): void {
+  useConsoleStore.setState((s) => {
+    const view = s.backgroundViews[key];
+    if (view === undefined) return {};
+    return { backgroundViews: { ...s.backgroundViews, [key]: foldBackgroundEvents(view, entries) } };
+  });
+}
+
+/** The subscription a background view may be reused from, or null. */
+function liveBackgroundSubscription(
+  client: SynapseRuntimeClient | null,
+  view: BackgroundSessionView,
+): string | null {
+  const id = view.subscriptionId;
+  if (client === null || id === null || deadSubscriptions.has(id)) return null;
+  // The client keeps a fenced watch's slot, so a non-null session is the best
+  // "still registered" signal it offers; a fence is caught by `deadSubscriptions`.
+  return client.getWatchSession?.(id) == null ? null : id;
+}
+
+/**
+ * Move the session being left into `backgroundViews`, keeping its watch live.
+ *
+ * The snapshot is taken after the pending deltas were flushed, so the view holds
+ * the same transcript the active session was showing.  The watch is deliberately
+ * *not* detached: that is what lets the session keep streaming while the user is
+ * elsewhere.  Pruning is LRU and detaches only the leases of the views it drops.
+ */
+function backgroundActiveSession(
+  state: ConsoleStore,
+  key: string,
+  subscriptionId: string,
+  liveEpoch: string | null,
+): void {
+  const store = useConsoleStore;
+  // A view whose history/buffer merge is still in flight cannot be reused: the
+  // snapshot does not carry `liveEventBuffer`, and the abandoned history response
+  // is discarded by the epoch guard, so the transcript is incomplete.  A
+  // fenced/dead watch is stale for the same reason (it can never grow again).
+  // Both are stored with `subscriptionId: null` so returning re-attaches from
+  // the authoritative history snapshot.
+  const stale =
+    state.historyLoading === true ||
+    state.liveEventBuffer.length > 0 ||
+    deadSubscriptions.has(subscriptionId);
+  const view = snapshotLiveView(
+    state,
+    stale ? null : subscriptionId,
+    Date.now(),
+    // The caller passes the baseline captured *before* any attach reset, so the
+    // view describes the session being left and not a wiped one.
+    liveEpoch,
+  );
+  const merged = { ...store.getState().backgroundViews, [key]: view };
+  const { kept, evicted } = pruneBackgroundViews(merged, MAX_BACKGROUND_VIEWS, key);
+  store.setState({ backgroundViews: kept });
+  const client = store.getState().client;
+  if (client === null) return;
+  // A stale view's lease is released now (it can never be reused), and the
+  // leases of the views LRU dropped are released with them.  Without this the
+  // client's registry slot -- and the daemon lease behind a client-side fence --
+  // would leak against the per-connection cap.
+  if (stale) void client.unwatchEvents(subscriptionId);
+  for (const dropped of evicted) {
+    const droppedSubscription = merged[dropped]?.subscriptionId;
+    if (droppedSubscription !== null && droppedSubscription !== undefined) {
+      void client.unwatchEvents(droppedSubscription);
+    }
+  }
+}
+
+/**
+ * Put a live background view back in front of the reader without re-attaching.
+ *
+ * Only the light refresh runs: the transcript and the running turn's state came
+ * from the watch that never stopped, so there is nothing to replay and no
+ * history page to load.  State that is not part of the view (the goal, MCP
+ * attach) starts from unknown until the refresh answers, so the previous
+ * session's values can never be shown under this one.
+ */
+function restoreBackgroundSession(
+  session: SessionRef,
+  title: string | undefined,
+  key: string,
+  view: BackgroundSessionView,
+  epoch: number,
+): void {
+  const store = useConsoleStore;
+  store.setState((s) => {
+    const { [key]: _restored, ...rest } = s.backgroundViews;
+    return {
+      // The view carries the model label, the history page (so "load earlier"
+      // survives) and the recovery state of *this* session; restoring them is
+      // the whole point -- manufacturing values here would lose the page, claim
+      // an unavailable history exists, or keep the previous session's model.
+      ...restoreLiveView(view),
+      // Re-expand the rows the reader had folded for *this* session.
+      messages: restoreTranscriptViews(view.messages, readTranscriptViews(session)),
+      backgroundViews: rest,
+      currentSession: session,
+      sessionTitle: resolveSessionTitle(session, title),
+      activeSubscriptionId: view.subscriptionId,
+      liveEventBuffer: [],
+      historyLoading: false,
+      goal: null,
+      goalBusy: false,
+      goalActionError: null,
+      goalNotice: null,
+      thinkingLevelError: null,
+      mcpRuntime: {},
+      mcpWarnings: [],
+      mcpConnecting: false,
+      mcpRuntimeKnown: false,
+    };
+  });
+  // The epoch baseline must describe the session now on screen.  The previous
+  // attach's coverage snapshot belongs to the *other* session, so it is dropped:
+  // a later resume must reconcile, not trust a foreign snapshot.
+  lastLiveEpoch = view.liveEpoch;
+  attachCoverage = null;
+  markAttached(session, epoch);
+  void store.getState().loadGitStatus();
+  void refreshSessionGoal(epoch);
+  void refreshRuntimeConfig(epoch);
+  void refreshMcpRuntime(epoch);
+}
+
 async function attachToSession(session: SessionRef, title?: string): Promise<void> {
   const store = useConsoleStore;
   const client = store.getState().client;
   const epoch = ++sessionEpoch;
+  // Capture the leaving session's broker-epoch baseline *before* `clearAttached`
+  // wipes it: the background view must describe the session being left.
+  const leavingLiveEpoch = lastLiveEpoch;
   // The composer is bound to the session being left: cancel any in-flight
   // upload (aborting its partial bytes best-effort) before the new attach.
   store.getState().cancelAttachments();
@@ -1571,6 +1830,40 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
   // Queued deltas belong to the session being left: apply them before its
   // transcript (and its subscription) is replaced.
   flushPendingDeltas();
+
+  const leaving = store.getState();
+  const targetKey = sessionKey(session);
+  const leavingKey = sessionKey(leaving.currentSession);
+  // The watch of a session the user is leaving must stay live: that is what
+  // keeps it streaming (and able to collect an approval) while another session
+  // is shown.  Its view is stored *before* the active fields below are cleared,
+  // so the transcript is never lost, only moved out of view.
+  if (
+    leaving.currentSession.thread_id !== '' &&
+    leavingKey !== targetKey &&
+    leaving.activeSubscriptionId !== null
+  ) {
+    backgroundActiveSession(leaving, leavingKey, leaving.activeSubscriptionId, leavingLiveEpoch);
+  }
+
+  // Returning to a session whose watch is still registered: reuse the live view
+  // instead of re-attaching (no `openSession`, no replay, no history page).  The
+  // view's transcript is the one that kept streaming in the background.
+  const background = store.getState().backgroundViews[targetKey];
+  if (background !== undefined) {
+    if (liveBackgroundSubscription(client, background) !== null) {
+      restoreBackgroundSession(session, title, targetKey, background, epoch);
+      return;
+    }
+    // The watch ended while the view was backgrounded: the transcript may be
+    // incomplete, so the stale view is dropped and this session takes the full
+    // attach (which reloads from the authoritative history snapshot).
+    store.setState((s) => {
+      const { [targetKey]: _stale, ...rest } = s.backgroundViews;
+      return { backgroundViews: rest };
+    });
+  }
+
   store.setState({
     currentSession: session,
     sessionTitle: resolveSessionTitle(session, title),
@@ -1617,8 +1910,14 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
   void store.getState().loadGitStatus();
   if (!client) return;
   try {
-    await client.unwatchEvents();
-    if (epoch !== sessionEpoch) return;
+    // Re-attaching the *same* session (a reload or a resync) detaches its own
+    // stale lease first, so the fresh watch below cannot race a live stream.
+    // Only that one subscription is dropped: the background watches of every
+    // other session must survive the switch.
+    if (leavingKey === targetKey && leaving.activeSubscriptionId !== null) {
+      await client.unwatchEvents(leaving.activeSubscriptionId);
+      if (epoch !== sessionEpoch) return;
+    }
     const opened = await client.openSession(session);
     if (epoch !== sessionEpoch) return;
     if (opened.view) {
@@ -1631,16 +1930,25 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
         sessionUsage: parseSessionUsage(opened.view.usage),
       });
     }
-    // Only an intact active turn may replay from its first event. Settled turns
-    // come from history; never silently replay the entire session from zero.
+    // Replay the boundary the broker still retains: an intact active turn from
+    // its first event, otherwise everything left of the evicted prefix. Settled
+    // turns come from history; never silently replay the session from zero.
     await captureLiveEpoch(epoch);
     if (epoch !== sessionEpoch) return;
     const coverage = attachCoverage as SessionRecoverabilityResult | null;
-    const active = opened.view?.status === 'running' ? opened.view.active_turn_id : null;
-    const replayActive = active && coverage?.latest_turn_id === active &&
-      coverage.latest_turn_intact && coverage.latest_turn_first_sequence !== null;
-    const after = replayActive ? coverage.latest_turn_first_sequence! - 1 : opened.view?.latest_sequence ?? 0;
+    const active = opened.view?.status === 'running' ? opened.view.active_turn_id ?? null : null;
+    const latestSequence = opened.view?.latest_sequence ?? 0;
+    const cursor = chooseAttachCursor({ activeTurnId: active, latestSequence }, coverage);
+    const after = cursor.after;
+    // A replay is attempted only when the cursor sits before the open snapshot's
+    // newest sequence; only then can the requested cursor be stale and surface as
+    // `replay_gap` / `invalid_cursor` this attach recovers from. A plain tail
+    // watch has no replay to lose, so its cursor errors propagate.
+    const replayActive = after !== latestSequence;
     let watch;
+    // The gap fallback below resyncs from the fresh open snapshot (the tail), so
+    // its own detail must not be overwritten by the retained-remainder wording.
+    let resyncedFromGap = false;
     if (epoch !== sessionEpoch) return;
     try {
       watch = await client.watchEvents(session, after);
@@ -1651,13 +1959,28 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
       const fresh = await client.openSession(session);
       if (epoch !== sessionEpoch) return;
       watch = await client.watchEvents(session, fresh.view?.latest_sequence ?? 0);
+      resyncedFromGap = true;
       store.setState({ recoveryState: 'incomplete', recoveryDetail: '运行轮次的早期事件已过期，部分步骤暂不可恢复。' });
     }
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch) {
+      // A newer attach superseded this one: the watch just created is orphaned.
+      // Release its lease before abandoning it, or the client keeps the registry
+      // slot forever (leaking against the per-connection cap).
+      void client.unwatchEvents(watch.subscription_id);
+      return;
+    }
     store.setState({ activeSubscriptionId: watch.subscription_id });
     markAttached(session, epoch);
-    if (active && !replayActive) {
-      store.setState({ recoveryState: 'incomplete', recoveryDetail: '运行轮次的早期步骤不可完整恢复；已保存历史不受影响。' });
+    if (active && !cursor.complete && !resyncedFromGap) {
+      store.setState({
+        recoveryState: 'incomplete',
+        // A retained-remainder replay did recover the broker's still-held events;
+        // the tail fallback recovered nothing before the open snapshot, so the
+        // two losses must read differently.
+        recoveryDetail: replayActive
+          ? '运行轮次最早的步骤已被清理，已重放仍然保留的部分。'
+          : '运行轮次的早期步骤不可完整恢复；已保存历史不受影响。',
+      });
     }
     void refreshSessionGoal(epoch);
     await loadInitialHistory(epoch);
@@ -1730,7 +2053,7 @@ async function captureLiveEpoch(epoch: number): Promise<void> {
  * - a user switch during the outage is guarded by `lastAttachedSession` and
  *   the epoch; it never resumes the old session over the new one.
  */
-async function resumeAttachedWatch(): Promise<void> {
+export async function resumeAttachedWatch(): Promise<void> {
   const store = useConsoleStore;
   const client = store.getState().client;
   const session = lastAttachedSession;
@@ -1741,7 +2064,14 @@ async function resumeAttachedWatch(): Promise<void> {
   if (current.project_id !== session.project_id || current.thread_id !== session.thread_id) {
     return; // the switch flow owns the new session's attach
   }
-  const cursor = client.getWatchCursor();
+  // The cursor must belong to the session on screen.  `getWatchCursor()` with no
+  // argument answers the *most recently registered* watch, which after an
+  // A -> B -> A restore is B's -- resuming A from B's sequence.  Attribute by the
+  // active subscription; with none attributed the position is unknown, never
+  // guessed from another watch.
+  const activeSubscriptionId = store.getState().activeSubscriptionId;
+  const cursor =
+    activeSubscriptionId === null ? null : client.getWatchCursor(activeSubscriptionId);
   store.setState({ recoveryState: 'resuming', recoveryDetail: null });
   try {
     const opened = await client.openSession(session);
@@ -1795,12 +2125,19 @@ async function resumeAttachedWatch(): Promise<void> {
       latest.currentSession.project_id === session.project_id &&
       latest.currentSession.thread_id === session.thread_id
     ) {
-      // attachToSession resets recoveryState to idle internally; publish the
-      // explicit decision AFTER the snapshot lands so it stays observable.
-      store.setState({
-        recoveryState: decision.action === 'incomplete' ? 'incomplete' : 'resync',
-        recoveryDetail: detail,
-      });
+      // A resync that follows an evicted prefix (`cursor_gap`) or an unrecoverable
+      // active turn must keep warning: the events are gone, so the durable fact is
+      // `incomplete`.  A resync that lost nothing (e.g. nothing was ever
+      // delivered) is a successful re-anchor, so it clears rather than leaving a
+      // degraded strip up forever.  `resync` itself is never published.
+      const gap =
+        decision.action === 'incomplete' ||
+        (decision.action === 'resync' && decision.reason === 'cursor_gap');
+      store.setState(
+        gap
+          ? { recoveryState: 'incomplete', recoveryDetail: detail }
+          : { recoveryState: 'idle', recoveryDetail: null },
+      );
     }
   } catch (err) {
     if (epoch !== sessionEpoch) return;
@@ -1815,7 +2152,9 @@ async function resumeAttachedWatch(): Promise<void> {
         latest.currentSession.project_id === session.project_id &&
         latest.currentSession.thread_id === session.thread_id
       ) {
-        store.setState({ recoveryState: 'resync', recoveryDetail: detail });
+        // The handshake itself surfaced the gap: events were evicted, so report
+        // `incomplete` (never a permanent `resync`).
+        store.setState({ recoveryState: 'incomplete', recoveryDetail: detail });
       }
     } else {
       store.setState({
@@ -1957,6 +2296,20 @@ async function activateProject(projectId: string): Promise<boolean> {
   // The switch replaces the session as well: queued deltas are applied while
   // they are still attributable to the session being left.
   flushPendingDeltas();
+  // A cross-project switch leaves the current session behind exactly like a
+  // same-project one: move it into a background view *before* the active fields
+  // are cleared, so its watch keeps streaming under the new project's header.
+  // `backgroundViews` is deliberately not cleared here -- keeping the views
+  // across the switch is the point.
+  const leaving = store.getState();
+  if (leaving.currentSession.thread_id !== '' && leaving.activeSubscriptionId !== null) {
+    backgroundActiveSession(
+      leaving,
+      sessionKey(leaving.currentSession),
+      leaving.activeSubscriptionId,
+      lastLiveEpoch,
+    );
+  }
   store.setState({
     activeProjectId: projectId,
     projectSessions: cachedSessions,
@@ -2008,6 +2361,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   pairingError: null,
   rpcBlockedReason: null,
   activeSubscriptionId: null,
+  // No session is watched before the host reports one, so no view exists yet.
+  backgroundViews: {},
   liveEventBuffer: [],
   liveBufferDroppedCount: 0,
   attachments: [],
@@ -2158,6 +2513,22 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // The session is being replaced: apply whatever the display window still
     // holds before its transcript is cleared.
     flushPendingDeltas();
+    // Creating a session leaves the current one the same way a switch does: its
+    // view is stored first so its watch keeps streaming while the new session is
+    // opened (its own `watchEvents` replaces only *its* session's lease).
+    const leaving = get();
+    if (
+      leaving.currentSession.thread_id !== '' &&
+      sessionKey(leaving.currentSession) !== sessionKey(nextSession) &&
+      leaving.activeSubscriptionId !== null
+    ) {
+      backgroundActiveSession(
+        leaving,
+        sessionKey(leaving.currentSession),
+        leaving.activeSubscriptionId,
+        lastLiveEpoch,
+      );
+    }
     set((s) => ({
       sessions: [
         newItem,
@@ -2199,8 +2570,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     }));
     if (client) {
       try {
-        await client.unwatchEvents();
-        if (epoch !== sessionEpoch) return;
+        // No global detach: the just-created session has no lease of its own and
+        // the session being left was moved into a background view above.
         const opened = await client.openSession(nextSession);
         if (epoch !== sessionEpoch) return;
         if (opened.view) {
@@ -2440,6 +2811,22 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         sessionActionError: null,
         sessionNotice: notice,
       }));
+      // A deleted session's background view is dead weight: it would keep its
+      // live marker and its alert contribution alive forever, and its lease
+      // would occupy a client registry slot.  Drop it and release the lease --
+      // once now, and again after the re-attach below, which backgrounds the
+      // session being left (the deleted one, when it was the current session).
+      const viewKey = sessionKey({ project_id: projectId, thread_id: threadId });
+      const releaseView = (): void => {
+        const view = get().backgroundViews[viewKey];
+        if (view === undefined) return;
+        set((s) => {
+          const { [viewKey]: _deleted, ...rest } = s.backgroundViews;
+          return { backgroundViews: rest };
+        });
+        if (view.subscriptionId !== null) void client.unwatchEvents(view.subscriptionId);
+      };
+      releaseView();
       if (get().currentSession.thread_id === threadId) {
         // Never leave the console attached to a session that no longer exists:
         // switch to the next listed session, or create one (the existing path).
@@ -2449,6 +2836,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         } else {
           await get().createNewSession();
         }
+        releaseView();
       }
       return true;
     } catch (e) {
@@ -3089,6 +3477,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // The whole console state is being wiped: queued deltas have no session to
     // land in any more.
     discardPendingDeltas();
+    // Every watch dies with the socket, so the background views and the
+    // dead-subscription memory are wiped with the rest of the pairing.
+    deadSubscriptions.clear();
     set({
       client: null,
       pairingState: 'unpaired',
@@ -3099,6 +3490,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       recoveryDetail: null,
       runtimeDiagnostics: RUNTIME_DIAGNOSTICS_IDLE,
       activeSubscriptionId: null,
+      backgroundViews: {},
       liveEventBuffer: [],
       liveBufferDroppedCount: 0,
       workspacePath: '',
@@ -3169,11 +3561,15 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     clearAttached();
     // Deliberate detach: the queue belongs to the subscription being dropped.
     flushPendingDeltas();
+    // A user close detaches every watch, so no background view can be trusted
+    // any more; the dead-subscription memory goes with them.
+    deadSubscriptions.clear();
     set({
       connectionState: 'disconnected',
       recoveryState: 'idle',
       recoveryDetail: null,
       activeSubscriptionId: null,
+      backgroundViews: {},
     });
   },
   loadRuntimeDiagnostics: async (options) => {

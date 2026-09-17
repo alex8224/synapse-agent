@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   applyAlertToUnread,
   badgeTotal,
+  backgroundAlertSummary,
   decideAlert,
   notificationCtor,
   notificationPermission,
@@ -73,8 +75,26 @@ function currentVisibility(): 'visible' | 'hidden' {
 }
 
 export function BackgroundAlerts() {
-  const pendingApproval = useConsoleStore((s) => s.pendingApproval !== null);
-  const running = useConsoleStore((s) => s.runtimeStatus === 'running');
+  // The active session *and* every background view, folded into counts.  The
+  // shallow selector keeps the numbers referentially stable, so a background
+  // delta (which rewrites its view on every frame) does not re-render this
+  // component while the counts stay the same.
+  const summary = useConsoleStore(
+    useShallow((s) =>
+      backgroundAlertSummary(
+        Object.values(s.backgroundViews).map((view) => ({
+          pendingApproval: view.pendingApproval !== null,
+          running: view.runtimeStatus === 'running',
+          // A view whose watch ended is "unknown": counting it would keep the
+          // aggregate running (and the badge up) forever.
+          live: view.subscriptionId !== null,
+        })),
+        { pendingApproval: s.pendingApproval !== null, running: s.runtimeStatus === 'running' },
+      ),
+    ),
+  );
+  const pendingApproval = summary.approvals > 0;
+  const running = summary.running > 0;
   const sessionTitle = useConsoleStore((s) => s.sessionTitle);
   const [permission, setPermission] = useState<NotificationPermissionState>(() =>
     notificationPermission(),

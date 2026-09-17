@@ -362,15 +362,24 @@ export interface ClientOptions {
   onEvent?: (event: RuntimeEvent, meta?: EventNotificationMeta) => void;
   /** Recovery notifications (bounded reconnect lifecycle + watch termination). */
   onRecovery?: (info: RecoveryInfo) => void;
-  onSubscriptionNotice?: (notice: {
-    type: 'complete' | 'error';
-    subscription_id?: string;
-    service_code?: string;
-    cursor?: number;
-  }) => void;
+  onSubscriptionNotice?: (notice: SubscriptionNotice) => void;
   /** Test seam: inject a fake socket factory. Defaults to the global WebSocket. */
   socketFactory?: (url: string) => SocketLike;
   reconnect?: Partial<ReconnectPolicy>;
+}
+
+/**
+ * One watch lifecycle notice delivered through `ClientOptions.onSubscriptionNotice`.
+ *
+ * `subscription_id` is always the *resolved* watch the notice belongs to, even
+ * when the server sent it unattributed (a legacy frame with exactly one live
+ * watch): the console routes by this id.
+ */
+export interface SubscriptionNotice {
+  type: 'complete' | 'error';
+  subscription_id?: string;
+  service_code?: string;
+  cursor?: number;
 }
 
 const OPEN = 1;
@@ -402,6 +411,14 @@ function defaultSocketFactory(url: string): SocketLike {
 const CLOSE_REASON_LIMIT = 120;
 
 /**
+ * Upper bound on concurrent live watches, matching the daemon's own
+ * per-connection subscription cap (`MAX_SUBSCRIPTIONS` in
+ * `src/synapse/runtime/transport/websocket.py`).  A watch past this bound is
+ * refused client-side instead of being rejected by the daemon mid-handshake.
+ */
+const MAX_WATCHES = 32;
+
+/**
  * Bounded, user-facing description of one socket close.  Only the numeric close
  * code and the server-supplied reason string are used; a missing code/reason
  * degrades to the generic wording so nothing is invented.
@@ -418,6 +435,20 @@ export function describeSocketClose(ev?: { code?: number; reason?: string }): st
 }
 
 /**
+ * One registered `runtime.events.watch`: the session it streams and its resume
+ * cursor (the last scanned session sequence this client delivered for it).
+ */
+interface WatchEntry {
+  session: SessionRef;
+  cursor: number | null;
+}
+
+/** Whether two session refs name the same thread in the same project. */
+function sameSession(a: SessionRef, b: SessionRef): boolean {
+  return a.project_id === b.project_id && a.thread_id === b.thread_id;
+}
+
+/**
  * One persistent JSON-RPC WebSocket connection with:
  *
  * - per-socket connection generations so late responses / events / close
@@ -427,7 +458,8 @@ export function describeSocketClose(ev?: { code?: number; reason?: string }): st
  *   explicit gap from a transient transport failure;
  * - an optional bounded reconnect budget (never infinite) that is armed only
  *   after a healthy `connect()` and cancelled by `disconnect()` / user close;
- * - cursor tracking for the active watch so a re-attach can resume from the
+ * - a registry of concurrent watches, each with its own resume cursor, so
+ *   several sessions can stream at once and a re-attach can resume from the
  *   exact last delivered scanned position (monotonically, no duplicate, no
  *   silent `after=0`).
  *
@@ -442,7 +474,6 @@ export class SynapseRuntimeClient {
     string | number,
     { resolve: (val: any) => void; reject: (err: any) => void; gen: number; sent: boolean }
   >();
-  private activeSubscriptionId: string | null = null;
   private state: ConnectionState = 'disconnected';
   private generation = 0;
   private armed = false;
@@ -452,17 +483,24 @@ export class SynapseRuntimeClient {
   private reconnectPolicy: ReconnectPolicy = { ...DEFAULT_RECONNECT_POLICY };
   private opening: Promise<void> | null = null;
   private openReject: ((err: ConnectionLostError) => void) | null = null;
-  private watchCursor: number | null = null;
-  private watchSession: SessionRef | null = null;
   private watchQueueSize = 128;
   /**
-   * A watch whose stream reported a frame this client cannot consume is
-   * *fenced*: the sequence it reported was never replayed, so nothing from that
-   * subscription may be delivered or counted again.  The fence keeps the dead
-   * subscription id and the connection generation it was raised in; only an
-   * explicit `watchEvents()` clears it (and `unwatchEvents()` detaches it).
+   * Every registered watch, keyed by subscription id and held in registration
+   * order.  The Map order answers the legacy single-watch getters (the last
+   * entry is the most recently registered watch).  A fenced watch keeps its
+   * slot and its frozen cursor until it is re-watched or detached, so a resume
+   * can still read the last good position exactly as the old field did.
    */
-  private failedSubscription: { subscriptionId: string | null; generation: number } | null = null;
+  private watches = new Map<string, WatchEntry>();
+  /**
+   * Fenced subscriptions: a watch whose stream reported a frame this client
+   * cannot consume, mapped to the connection generation the fence was raised
+   * in.  The sequence it reported was never replayed, so nothing from that
+   * subscription may be delivered or advance its cursor again.  Only a
+   * successful `watchEvents()` for its session lifts the fence (by replacing
+   * the dead watch); an unattributable frame is fenced while any fence is open.
+   */
+  private fences = new Map<string, number>();
 
   constructor(options: ClientOptions) {
     this.options = options;
@@ -479,13 +517,33 @@ export class SynapseRuntimeClient {
     return this.state;
   }
 
-  /** Last delivered watch cursor (session sequence) or null before any watch. */
-  public getWatchCursor(): number | null {
-    return this.watchCursor;
+  /**
+   * Cursor of the most recently registered watch (its last delivered session
+   * sequence), or `null` before any watch.
+   *
+   * With an explicit `subscriptionId` it is that watch's own cursor (`null`
+   * when the id is not registered).  The no-argument form is the legacy
+   * single-watch view and is unchanged: a fenced watch keeps its last good
+   * cursor, so a resume can read it after the fence was raised.
+   */
+  public getWatchCursor(subscriptionId?: string): number | null {
+    return this.registeredWatch(subscriptionId)?.cursor ?? null;
   }
 
-  public getWatchSession(): SessionRef | null {
-    return this.watchSession;
+  /**
+   * Session of the most recently registered watch, or of `subscriptionId` when
+   * given.  The no-argument form is the legacy single-watch view.
+   */
+  public getWatchSession(subscriptionId?: string): SessionRef | null {
+    return this.registeredWatch(subscriptionId)?.session ?? null;
+  }
+
+  /** The named watch, or the most recently registered one when no id is given. */
+  private registeredWatch(subscriptionId?: string): WatchEntry | null {
+    if (subscriptionId !== undefined) return this.watches.get(subscriptionId) ?? null;
+    let last: WatchEntry | null = null;
+    for (const entry of this.watches.values()) last = entry;
+    return last;
   }
 
   /** Number of the current socket generation (observable for tests). */
@@ -1147,6 +1205,10 @@ export class SynapseRuntimeClient {
   /**
    * User-initiated close: cancels any pending reconnect budget and marks the
    * client as intentionally disconnected (no automatic recovery follows).
+   *
+   * Unlike an unexpected drop (which keeps every watch and its cursor so the
+   * bounded recovery can resume), a manual close has no reconnect, so the watch
+   * leases are dropped here and no cursor survives it.
    */
   public disconnect() {
     this.closingUser = true;
@@ -1166,6 +1228,8 @@ export class SynapseRuntimeClient {
       this.openReject(new ConnectionLostError('disconnected by user', false));
     }
     this.setState('disconnected', 'closed by user');
+    this.watches.clear();
+    this.fences.clear();
   }
 
   /** Explicitly cancel a pending reconnect (idempotent; keeps state unchanged). */
@@ -1306,8 +1370,11 @@ export class SynapseRuntimeClient {
     if (noti.method === 'runtime.event' || noti.method === 'runtime.events.notification') {
       if (socket !== this.ws || gen !== this.generation) return;
       const subId = params?.subscription_id;
-      if (subId !== undefined && subId !== this.activeSubscriptionId) return;
+      // A fenced subscription, and any unattributable frame while a fence is
+      // open, may not be delivered; an unknown subscription id is dropped.
       if (this.isFencedFrame(subId, gen)) return;
+      const target = this.resolveWatchTarget(subId);
+      if (target === null) return;
       const rejection = classifyRuntimeEvent(params?.event);
       if (rejection !== null) {
         // A frame that cannot be consumed is never counted as delivered: the
@@ -1315,7 +1382,7 @@ export class SynapseRuntimeClient {
         // subscription is fenced so no later frame may jump the gap, and the
         // failure is surfaced through the existing subscription-notice channel
         // (the console's error/resync path) instead of a silent drop.
-        this.fenceSubscription(gen, subId, rejection);
+        this.fenceSubscription(gen, target.id, rejection);
         return;
       }
       const event = params?.event as RuntimeEvent;
@@ -1328,19 +1395,22 @@ export class SynapseRuntimeClient {
       // cannot be resumed from and is refused rather than written into the watch
       // cursor.
       if (!isCursor(cursor)) {
-        this.fenceSubscription(gen, subId, 'invalid_event_cursor');
+        this.fenceSubscription(gen, target.id, 'invalid_event_cursor');
         return;
       }
       if (cursor < event.sequence) {
-        this.fenceSubscription(gen, subId, 'event_cursor_mismatch');
+        this.fenceSubscription(gen, target.id, 'event_cursor_mismatch');
         return;
       }
       // The resume point must strictly advance: a frame that repeats or rewinds
-      // the last delivered cursor is a non-monotonic replay, so it is fenced
-      // instead of being delivered a second time (or moving the resume point
-      // back over an already consumed sequence).
-      if (this.watchCursor !== null && cursor <= this.watchCursor) {
-        this.fenceSubscription(gen, subId, 'event_cursor_mismatch');
+      // the watch's own last delivered cursor is a non-monotonic replay, so it
+      // is fenced instead of being delivered a second time (or moving the resume
+      // point back over an already consumed sequence).  Two sessions have
+      // independent sequences, so this reads the entry the frame names, never a
+      // shared cursor.
+      const previous = target.entry.cursor;
+      if (previous !== null && cursor <= previous) {
+        this.fenceSubscription(gen, target.id, 'event_cursor_mismatch');
         return;
       }
       // The consumer runs before the cursor moves: a view that throws did not
@@ -1348,16 +1418,20 @@ export class SynapseRuntimeClient {
       // the subscription is fenced) instead of skipping it.
       try {
         this.options.onEvent?.(event, {
-          subscription_id: params?.subscription_id,
+          // Forward the *resolved* id, not the raw one: an unattributed frame
+          // belongs to the sole live watch, and the store routes by this id --
+          // the original `undefined` would land it on whichever session happens
+          // to be active (during a switch, the one being left).
+          subscription_id: target.id,
           cursor,
         });
       } catch {
-        this.fenceSubscription(gen, subId, 'event_delivery_failed');
+        this.fenceSubscription(gen, target.id, 'event_delivery_failed');
         return;
       }
       // The checks above already proved this is a forward move (or the first
       // delivered position), so the scanned cursor is committed as it stands.
-      this.watchCursor = cursor;
+      target.entry.cursor = cursor;
       return;
     }
     if (noti.method === 'runtime.subscription.complete') {
@@ -1367,12 +1441,13 @@ export class SynapseRuntimeClient {
       // must not advance the watch state (nor re-arm the console) while the
       // unreplayed gap is still open.
       if (this.isFencedFrame(subId, gen)) return;
-      if (subId !== undefined && subId !== this.activeSubscriptionId) {
-        return;
-      }
+      const target = this.resolveWatchTarget(subId);
+      if (target === null) return;
       this.options.onSubscriptionNotice?.({
         type: 'complete',
-        subscription_id: params?.subscription_id,
+        // The resolved id, so an unattributed completion is attributed to the
+        // sole live watch instead of being treated as the active session's.
+        subscription_id: target.id,
         cursor: params?.cursor,
       });
       return;
@@ -1384,13 +1459,14 @@ export class SynapseRuntimeClient {
       // failure exactly once, so a later server-side error notice for it is not
       // a second, fresh failure.
       if (this.isFencedFrame(subId, gen)) return;
-      if (subId !== undefined && subId !== this.activeSubscriptionId) {
-        return;
-      }
+      const target = this.resolveWatchTarget(subId);
+      if (target === null) return;
       const service_code = params?.error?.data?.service_code;
       this.options.onSubscriptionNotice?.({
         type: 'error',
-        subscription_id: params?.subscription_id,
+        // Same resolution as `complete`: an unattributed error belongs to the
+        // sole live watch, never to the active session by default.
+        subscription_id: target.id,
         service_code,
       });
       return;
@@ -1403,45 +1479,89 @@ export class SynapseRuntimeClient {
    *
    * The fence is keyed by the failed subscription id *and* the connection
    * generation it failed in.  A frame that names no subscription at all cannot
-   * be proven to belong to a healthy watch, and any other frame from the fenced
-   * generation (or an older one) can only be a leftover of the dead lease, so
-   * neither may be consumed.  Only a new `watchEvents()` clears the fence: it
-   * resumes from the last good cursor, which is exactly the replay the fence
-   * preserves.
+   * be proven to belong to a healthy watch, so while any fence is open it is
+   * fenced too.  A frame naming a subscription this client is not watching, from
+   * the generation (or an older one) of an open fence, can only be a leftover of
+   * the dead lease; a *live* watch is never fenced by another subscription's
+   * fence.  Only a new `watchEvents()` for the fenced watch's session clears the
+   * fence: it resumes from the last good cursor, which is exactly the replay the
+   * fence preserves.
    */
   private isFencedFrame(subId: unknown, gen: number): boolean {
-    const fence = this.failedSubscription;
-    if (fence === null) return false;
+    if (this.fences.size === 0) return false;
     if (typeof subId !== 'string') return true;
-    if (subId === fence.subscriptionId) return true;
-    return gen <= fence.generation;
+    if (this.fences.has(subId)) return true;
+    if (this.watches.has(subId)) return false;
+    for (const fencedGeneration of this.fences.values()) {
+      if (gen <= fencedGeneration) return true;
+    }
+    return false;
   }
 
   /**
    * Fence the subscription that produced an unconsumable frame and report it
    * exactly once per subscription.
    *
-   * The last good cursor is deliberately kept (a re-attach must re-read the
-   * unreplayed sequence instead of skipping it), the live subscription is
-   * dropped so no later frame can be mistaken for it, and nothing else happens:
-   * no reconnect, no automatic retry and no connection teardown.  Only the
-   * client-local reason code travels in the notice, never the raw frame or its
-   * payload.
+   * The watch's last good cursor is deliberately kept (a re-attach must re-read
+   * the unreplayed sequence instead of skipping it), the subscription is marked
+   * fenced so no later frame may be delivered or move its cursor, and nothing
+   * else happens: no reconnect, no automatic retry and no connection teardown.
+   * Only the client-local reason code travels in the notice, never the raw frame
+   * or its payload.
    */
-  private fenceSubscription(gen: number, subId: unknown, serviceCode: WatchFenceReason) {
-    const previous = this.failedSubscription;
-    const subscriptionId =
-      typeof subId === 'string'
-        ? subId
-        : (this.activeSubscriptionId ?? previous?.subscriptionId ?? null);
-    this.activeSubscriptionId = null;
-    this.failedSubscription = { subscriptionId, generation: gen };
-    if (previous !== null && previous.subscriptionId === subscriptionId) return;
+  private fenceSubscription(gen: number, subscriptionId: string, serviceCode: WatchFenceReason) {
+    const alreadyFenced = this.fences.get(subscriptionId);
+    this.fences.set(subscriptionId, gen);
+    if (alreadyFenced !== undefined) return;
     this.options.onSubscriptionNotice?.({
       type: 'error',
-      subscription_id: subscriptionId ?? undefined,
+      subscription_id: subscriptionId,
       service_code: serviceCode,
     });
+  }
+
+  /**
+   * Resolve one `runtime.event` frame to the live watch it belongs to.
+   *
+   * A frame that names a subscription is routed to that watch; a frame naming
+   * an unknown subscription is dropped.  A frame with *no* subscription id can
+   * only be attributed when exactly one watch is live (and no fence is open), so
+   * a legacy unattributed frame still reaches its sole consumer while an
+   * ambiguous one is ignored rather than guessed.
+   */
+  private resolveWatchTarget(subId: unknown): { id: string; entry: WatchEntry } | null {
+    if (typeof subId === 'string') {
+      const entry = this.watches.get(subId);
+      return entry === undefined ? null : { id: subId, entry };
+    }
+    if (this.fences.size > 0 || this.watches.size !== 1) return null;
+    for (const [id, entry] of this.watches) return { id, entry };
+    return null;
+  }
+
+  /** Whether any watch (live or fenced) already streams `session`. */
+  private hasWatchForSession(session: SessionRef): boolean {
+    for (const entry of this.watches.values()) {
+      if (sameSession(entry.session, session)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Detach every watch of one session (live or fenced) and lift its fences.
+   *
+   * Re-watching a session replaces its previous lease: the daemon-side
+   * subscription behind it is dead (it reported an unconsumable frame, or the
+   * socket that owned it dropped), so keeping it would both leak a slot against
+   * the per-connection cap and let a stale frame be mistaken for the fresh one.
+   */
+  private detachWatchesForSession(session: SessionRef) {
+    for (const [id, entry] of this.watches) {
+      if (sameSession(entry.session, session)) {
+        this.watches.delete(id);
+        this.fences.delete(id);
+      }
+    }
   }
 
   private call<T>(method: WireMethod, params: any): Promise<T> {
@@ -1525,42 +1645,102 @@ export class SynapseRuntimeClient {
     return this.call<CloseSessionResult>('runtime.session.close', payload);
   }
 
+  /**
+   * Register one `runtime.events.watch` lease.
+   *
+   * Each call registers an additional watch, so several sessions can stream
+   * concurrently.  Watching a session that is already watched *replaces* its
+   * previous lease (and lifts that session's fence): the old daemon-side
+   * subscription is dead, so keeping it would leak a slot and let a stale frame
+   * be mistaken for the fresh one.  At most `MAX_WATCHES` watches are held,
+   * matching the daemon's per-connection cap; past it the call rejects with the
+   * client-local twin of the daemon's own `transport_busy` error.
+   */
   public async watchEvents(
     session: SessionRef,
     after?: number,
     queueSize?: number,
   ): Promise<WatchStartResult> {
+    if (this.watches.size >= MAX_WATCHES && !this.hasWatchForSession(session)) {
+      throw new RpcCallError(
+        `watch limit reached (${MAX_WATCHES} concurrent subscriptions)`,
+        -32001,
+        'transport_busy',
+      );
+    }
+    // A same-session watch this call is about to replace.  A *fenced* one whose
+    // fence was raised on the current socket still holds a daemon lease (a
+    // client-side fence does not kill it), so that lease is released best-effort
+    // once the fresh watch is registered.  A fence from an older generation is
+    // deliberately NOT unwatched: the daemon already closed that connection's
+    // subscriptions with the socket, so there is no lease left to release -- and
+    // this path stays exactly as it was before.
+    const generation = this.generation;
+    const orphaned: string[] = [];
+    for (const [id, entry] of this.watches) {
+      if (sameSession(entry.session, session) && this.fences.get(id) === generation) {
+        orphaned.push(id);
+      }
+    }
     const res = await this.call<WatchStartResult>('runtime.events.watch', {
       session,
       after: after ?? 0,
       queue_size: queueSize ?? this.watchQueueSize,
     });
     // A successful watch is the explicit recovery from a fenced subscription:
-    // the new lease resumes from the cursor the server returns, so the fence is
-    // lifted here and only here (never implicitly, and never for a rejected
-    // watch request, which leaves the old fence in place).
-    this.failedSubscription = null;
-    this.activeSubscriptionId = res.subscription_id;
-    this.watchCursor = isCursor(res.cursor) ? res.cursor : after ?? 0;
-    this.watchSession = session;
+    // it replaces this session's previous watch, so the new lease resumes from
+    // the cursor the server returns and the fence is lifted here and only here
+    // (never implicitly, and never for a rejected watch request, which leaves
+    // the old fence in place).  Fences for other sessions stay open.
+    this.detachWatchesForSession(session);
+    this.watches.set(res.subscription_id, {
+      session,
+      cursor: isCursor(res.cursor) ? res.cursor : after ?? 0,
+    });
     this.watchQueueSize = queueSize ?? this.watchQueueSize;
+    // The replaced leases are released only while the socket that raised their
+    // fences is still the live one; a drop during the handshake means the daemon
+    // has already closed them.  Best-effort: a refused unwatch must not fail the
+    // watch that just succeeded.
+    if (this.generation === generation) {
+      for (const id of orphaned) {
+        // Never unwatch the subscription just registered: a live daemon assigns a
+        // fresh id, but a peer (or a test transport) could reuse one, and
+        // unwatching it would kill the fresh watch.
+        if (id === res.subscription_id) continue;
+        void this.call<UnwatchResult>('runtime.events.unwatch', { subscription_id: id }).catch(
+          () => undefined,
+        );
+      }
+    }
     return res;
   }
 
   /**
-   * Detach the current watch.  A fenced subscription is still released
-   * best-effort (the server lease outlives a client-side fence), but no other
-   * state is touched: an unfenced, idle client sends nothing and returns
-   * `undefined` exactly as before.
+   * Detach one watch, or every watch when no id is given.
+   *
+   * The no-argument form is the legacy single-watch detach: it releases every
+   * live watch and every fenced subscription (a fenced lease outlives a
+   * client-side fence, so it is still released best-effort).  An explicit
+   * `subscriptionId` detaches just that one.  No other state is touched: an idle
+   * client sends nothing and returns `undefined` exactly as before.
    */
-  public async unwatchEvents(): Promise<UnwatchResult | undefined> {
-    const subId = this.activeSubscriptionId ?? this.failedSubscription?.subscriptionId ?? null;
-    this.activeSubscriptionId = null;
-    this.failedSubscription = null;
-    this.watchCursor = null;
-    this.watchSession = null;
-    if (subId === null) return;
-    return this.call<UnwatchResult>('runtime.events.unwatch', { subscription_id: subId });
+  public async unwatchEvents(subscriptionId?: string): Promise<UnwatchResult | undefined> {
+    const ids =
+      subscriptionId !== undefined
+        ? this.watches.has(subscriptionId)
+          ? [subscriptionId]
+          : []
+        : [...this.watches.keys()];
+    for (const id of ids) {
+      this.watches.delete(id);
+      this.fences.delete(id);
+    }
+    if (ids.length === 0) return;
+    const results = await Promise.all(
+      ids.map((id) => this.call<UnwatchResult>('runtime.events.unwatch', { subscription_id: id })),
+    );
+    return results[results.length - 1];
   }
 
   public async getPendingApproval(session: SessionRef, expected_turn_id: string): Promise<PendingApprovalView> {
