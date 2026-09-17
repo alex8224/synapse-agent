@@ -6,11 +6,21 @@
 .DESCRIPTION
     依次执行（可用开关裁剪）：
       1. 删除全部子 agent 检查点（checkpoint_ns 非空）及其 writes。主历史（checkpoint_ns 为空）不受影响。
-      2. 裁剪模型请求压缩诊断事件：保留最近 N 天，且每个会话保底保留 M 条。
-      3. 对每个库执行 VACUUM，随后 WAL checkpoint，把内容合并回主文件并截断 WAL。
+      2. 回收冗余的 DeltaChannel 快照：每个线程每个通道只保留最新的 N 个。
+      3. 裁剪模型请求压缩诊断事件：保留最近 N 天，且每个会话保底保留 M 条。
+      4. 对每个库执行 VACUUM，随后 WAL checkpoint，把内容合并回主文件并截断 WAL。
 
     VACUUM 需要独占访问，因此必须在 Synapse 完全退出后运行。
     脚本可重复执行：已符合保留条件的数据不会被再次删除。
+
+    步骤 2 说明：LangGraph 的 DeltaChannel 平时只在 checkpoint 里存增量，但会周期性
+    把完整状态物化为 _DeltaSnapshot（deepagents 设为每 50 次更新一次）。实测 0.7%
+    的快照行占了 checkpoints.sqlite 约 70% 的字节。重建时只会用到"最近的祖先快照"，
+    因此更旧的快照属于冗余。
+    硬约束：每个线程必须保留最新快照 —— 含上下文压缩（Overwrite）的线程，其 writes
+    不是完整变更日志，从空或过旧的快照回放会产生不同的消息内容（静默、不报错）。
+    该步骤在改写前后比对每个线程的内容指纹，不一致会报错并要求回滚。
+    注意：删除旧快照会失去"读取历史检查点"（时间旅行/回滚）的能力。
 
 .PARAMETER SynapseDir
     .synapse 目录，默认 <当前目录>\.synapse
@@ -24,6 +34,17 @@
 .PARAMETER KeepEventsPerThread
     每个会话保底保留的事件条数，默认 20。
 
+.PARAMETER SnapshotKeep
+    步骤 2 中每个线程每个通道保留的最新快照数量，默认 1。
+    设为 0 会被拒绝：最新快照必须保留。
+
+.PARAMETER SkipSnapshotReclaim
+    跳过步骤 2（回收冗余快照）。
+
+.PARAMETER SnapshotBackup
+    步骤 2 运行前把 checkpoints.sqlite 备份为 checkpoints.sqlite.bak。
+    该步骤不可逆；未加此开关时会以 --no-backup 明确跳过备份检查。
+
 .PARAMETER DryRun
     只打印将要执行的操作与当前体积，不修改任何数据。
 
@@ -35,6 +56,9 @@
 
 .EXAMPLE
     pwsh -File scripts/compact_synapse_db.ps1
+
+.EXAMPLE
+    pwsh -File scripts/compact_synapse_db.ps1 -SnapshotBackup -SnapshotKeep 3
 #>
 [CmdletBinding()]
 param(
@@ -42,6 +66,9 @@ param(
     [switch]$NoPurge,
     [int]$EventRetentionDays = 7,
     [int]$KeepEventsPerThread = 20,
+    [int]$SnapshotKeep = 1,
+    [switch]$SkipSnapshotReclaim,
+    [switch]$SnapshotBackup,
     [switch]$DryRun,
     [switch]$Force
 )
@@ -121,9 +148,9 @@ Write-Note ('{0,-22} {1,10}' -f '合计', (Format-Size $totalBefore))
 
 # ---------------- 步骤 1：子 agent 检查点 ----------------
 if ($NoPurge) {
-    Write-Head '步骤 1/3  清理子 agent 检查点：跳过（-NoPurge）'
+    Write-Head '步骤 1/4  清理子 agent 检查点：跳过（-NoPurge）'
 } else {
-    Write-Head '步骤 1/3  清理子 agent 检查点'
+    Write-Head '步骤 1/4  清理子 agent 检查点'
     $cp = $paths['checkpoints.sqlite']
     $info = Invoke-Scalar $cp "SELECT count(*) || ' 个检查点 / ' || printf('%.2f GB', coalesce(sum(length(checkpoint)),0)/1073741824.0) || '，另有 ' || (SELECT count(*) FROM writes WHERE length(checkpoint_ns) > 0) || ' 条 writes' FROM checkpoints WHERE length(checkpoint_ns) > 0;"
     Write-Note "待删除: $info"
@@ -135,14 +162,54 @@ if ($NoPurge) {
     }
 }
 
-# ---------------- 步骤 2：压缩诊断事件 ----------------
+# ---------------- 步骤 2：回收冗余 DeltaChannel 快照 ----------------
+if ($NoPurge) {
+    Write-Head '步骤 2/4  回收冗余快照：跳过（-NoPurge）'
+} elseif ($SkipSnapshotReclaim) {
+    Write-Head '步骤 2/4  回收冗余快照：跳过（-SkipSnapshotReclaim）'
+} else {
+    Write-Head '步骤 2/4  回收冗余 DeltaChannel 快照'
+    Write-Note '每个线程每个通道只保留最新的快照；最新快照必须保留'
+    $reclaim = Join-Path $PSScriptRoot 'reclaim_checkpoint_snapshots.py'
+    if (-not (Test-Path -LiteralPath $reclaim)) {
+        Write-Caution "找不到 $reclaim，跳过"
+    } elseif (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Caution 'PATH 中找不到 uv，跳过'
+    } else {
+        $pyArgs = @('run', '--no-sync', 'python', $reclaim,
+            '--synapse-dir', $SynapseDir,
+            '--keep', "$SnapshotKeep",
+            '--force')
+        if ($DryRun) {
+            $pyArgs += '--dry-run'
+        } elseif ($SnapshotBackup) {
+            $bak = Join-Path $SynapseDir 'checkpoints.sqlite.bak'
+            if (Test-Path -LiteralPath $bak) {
+                Write-Note "备份已存在：$bak"
+            } else {
+                Write-Note "创建备份 $bak ..."
+                Copy-Item -LiteralPath (Join-Path $SynapseDir 'checkpoints.sqlite') -Destination $bak
+            }
+        } else {
+            $pyArgs += '--no-backup'
+            Write-Caution '未做备份（加 -SnapshotBackup 可在运行前自动备份）'
+        }
+        $out = & uv @pyArgs 2>&1
+        $code = $LASTEXITCODE
+        foreach ($line in $out) { Write-Note "$line" }
+        if ($code -ne 0) { Stop-Script "快照回收失败（退出码 $code）" }
+        Write-Good '快照回收完成'
+    }
+}
+
+# ---------------- 步骤 3：压缩诊断事件 ----------------
 $to = $paths['tool-outputs.sqlite']
 if ($NoPurge) {
-    Write-Head '步骤 2/3  裁剪压缩诊断事件：跳过（-NoPurge）'
+    Write-Head '步骤 3/4  裁剪压缩诊断事件：跳过（-NoPurge）'
 } elseif (-not $to) {
-    Write-Head '步骤 2/3  裁剪压缩诊断事件：未找到 tool-outputs.sqlite，跳过'
+    Write-Head '步骤 3/4  裁剪压缩诊断事件：未找到 tool-outputs.sqlite，跳过'
 } else {
-    Write-Head '步骤 2/3  裁剪模型请求压缩诊断事件'
+    Write-Head '步骤 3/4  裁剪模型请求压缩诊断事件'
     $has = Invoke-Scalar $to "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='model_request_compression_events';"
     if ([int]$has -eq 0) {
         Write-Caution '该表不存在，跳过'
@@ -167,8 +234,8 @@ if ($NoPurge) {
     }
 }
 
-# ---------------- 步骤 3：VACUUM ----------------
-Write-Head '步骤 3/3  VACUUM 回收空间'
+# ---------------- 步骤 4：VACUUM ----------------
+Write-Head '步骤 4/4  VACUUM 回收空间'
 if ($DryRun) {
     Write-Caution 'DryRun：跳过 VACUUM'
 } else {
