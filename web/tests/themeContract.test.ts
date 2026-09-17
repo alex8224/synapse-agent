@@ -262,7 +262,7 @@ test('the window chrome and the flyouts carry their material', () => {
   );
   // The flyouts: the surfaces where acrylic is actually visible (content passes
   // behind them), so they must not fall back to an opaque fill.
-  for (const name of ['SettingsDialog.tsx', 'GoalDialog.tsx', 'TodoPanel.tsx']) {
+  for (const name of ['SettingsDialog.tsx', 'GoalDialog.tsx']) {
     assert.ok(read(name).includes('material-flyout'), `${name} must use the flyout material`);
   }
 });

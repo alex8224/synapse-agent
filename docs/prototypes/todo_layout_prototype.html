@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Todo 响应式原型对比 - Synapse Web Console</title>
+  <style>
+    :root {
+      --bg: #141414;
+      --canvas: #1f1f1f;
+      --card: #292929;
+      --card-hover: #333333;
+      --panel: #242424;
+      --line: #3d3d3d;
+      --line-subtle: #2d2d2d;
+      --text: #f3f3f3;
+      --text-muted: #a0a0a0;
+      --text-subtle: #6b6b6b;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --green-bg: rgba(34, 197, 94, 0.15);
+      --green-border: rgba(34, 197, 94, 0.3);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --mono: "JetBrains Mono", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* 顶部控制台控制栏（用于原型演示切换） */
+    .prototype-bar {
+      background: #0f0f0f;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 13px;
+      z-index: 100;
+    }
+    .proto-group { display: flex; align-items: center; gap: 8px; }
+    .proto-title { font-weight: 600; color: #fff; margin-right: 12px; }
+    .proto-label { color: var(--text-muted); font-size: 12px; }
+    .proto-btn {
+      background: #222;
+      border: 1px solid var(--line);
+      color: var(--text-muted);
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.15s ease;
+    }
+    .proto-btn:hover { background: #2f2f2f; color: var(--text); }
+    .proto-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 500;
+    }
+
+    /* 原型模拟器舞台 */
+    .stage {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      background: #0a0a0a;
+      overflow: hidden;
+    }
+    .device-frame {
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1), height 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .device-frame.desktop { width: 1080px; height: 680px; }
+    .device-frame.tablet  { width: 768px;  height: 640px; }
+    .device-frame.mobile  { width: 390px;  height: 660px; }
+
+    /* Web Console 内部基础布局 */
+    .console-shell {
+      display: flex;
+      flex: 1;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* 侧边栏 */
+    .sidebar {
+      width: 200px;
+      background: var(--panel);
+      border-right: 1px solid var(--line-subtle);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+    }
+    .sidebar-header { padding: 14px; font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--line-subtle); color: var(--text-muted); }
+    .sidebar-menu { padding: 10px; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-item { padding: 8px 10px; border-radius: 6px; font-size: 13px; color: var(--text-muted); }
+    .sidebar-item.active { background: #2f2f2f; color: #fff; font-weight: 500; }
+    .device-frame.mobile .sidebar { display: none; }
+    .device-frame.tablet .sidebar { width: 50px; }
+    .device-frame.tablet .sidebar-item-text { display: none; }
+
+    /* 主工作区 */
+    .workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      background: var(--canvas);
+    }
+
+    /* 顶部 TopBar */
+    .topbar {
+      height: 42px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-size: 13px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
+    .topbar-center { font-weight: 500; color: #fff; display: flex; align-items: center; gap: 8px; }
+    .topbar-right { display: flex; align-items: center; gap: 8px; }
+
+    /* 消息与聊天区 */
+    .chat-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      position: relative;
+    }
+    .msg {
+      max-width: 85%;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #2a3a4c;
+      border: 1px solid #3b5066;
+      color: #e0edff;
+    }
+    .msg.ai {
+      align-self: flex-start;
+      background: var(--card);
+      border: 1px solid var(--line-subtle);
+      color: var(--text);
+    }
+    .msg-title { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 500; }
+
+    /* 底部输入框与底栏 */
+    .composer-wrap {
+      padding: 10px 16px;
+      background: var(--canvas);
+      border-top: 1px solid var(--line-subtle);
+      display: flex;
+      gap: 10px;
+    }
+    .composer-input {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .bottombar {
+      height: 28px;
+      background: #181818;
+      border-top: 1px solid var(--line-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+      position: relative;
+      z-index: 30;
+    }
+    .bottombar-left, .bottombar-right { display: flex; align-items: center; gap: 12px; }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+    .status-chip:hover { background: #2f2f2f; color: #fff; }
+    .status-chip.highlight {
+      background: var(--green-bg);
+      color: #4ade80;
+      border: 1px solid var(--green-border);
+      font-weight: 500;
+    }
+
+    /* ===== 原型中 Todo 列表组件样式 (基于截图样式) ===== */
+    .todo-content-box {
+      background: rgba(36, 36, 36, 0.95);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-size: 12px;
+    }
+    .todo-header {
+      padding: 10px 14px;
+      background: rgba(45, 45, 45, 0.6);
+      border-bottom: 1px solid var(--line-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .todo-header-title { display: flex; align-items: center; gap: 8px; }
+    .todo-badge-icon {
+      width: 16px; height: 16px;
+      background: #2563eb;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      color: #fff;
+    }
+    .todo-list {
+      padding: 8px 10px;
+      max-height: 240px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .todo-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      line-height: 1.4;
+      color: #cfcfcf;
+    }
+    .todo-item.done {
+      color: #7a7a7a;
+      text-decoration: line-through;
+    }
+    .todo-check {
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #22c55e;
+      color: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: bold;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* ---------------- 各方案专属定位与动画 ---------------- */
+
+    /* [现状]：右上角绝对定位悬浮 */
+    .scheme-current-floating {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 310px;
+      max-width: calc(100% - 24px);
+      z-index: 25;
+    }
+
+    /* [方案 A]：底栏状态栏弹出 Popover */
+    .scheme-a-popover {
+      position: absolute;
+      bottom: 34px;
+      left: 12px;
+      width: 340px;
+      max-width: calc(100% - 24px);
+      z-index: 50;
+      animation: popUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes popUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* [方案 B]：顶栏下拉面板 */
+    .top-chip-trigger {
+      background: #2a2a2a;
+      border: 1px solid var(--line);
+      padding: 3px 10px;
+      border-radius: 14px;
+      font-size: 11px;
+      color: #4ade80;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+    }
+    .top-chip-trigger:hover { background: #333; }
+    .scheme-b-dropdown {
+      position: absolute;
+      top: 48px;
+      right: 16px;
+      width: 320px;
+      max-width: calc(100% - 32px);
+      z-index: 50;
+      animation: dropDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes dropDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* [方案 C]：右侧固定抽屉分栏 */
+    .scheme-c-layout-wrap {
+      display: flex;
+      flex: 1;
+      height: 100%;
+      overflow: hidden;
+    }
+    .scheme-c-sidebar {
+      width: 280px;
+      background: var(--panel);
+      border-left: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .scheme-c-sidebar .todo-content-box {
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+      background: transparent;
+      height: 100%;
+    }
+    .scheme-c-sidebar .todo-list { max-height: none; flex: 1; }
+
+    /* 说明浮层 */
+    .scheme-desc-banner {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 11px;
+      color: #93c5fd;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 原型演示控制栏 -->
+  <div class="prototype-bar">
+    <div class="proto-group">
+      <span class="proto-title">Todo 响应式原型对比</span>
+      <span class="proto-label">尺寸模式：</span>
+      <button class="proto-btn active" onclick="setDevice('desktop')">💻 桌面 (1080px)</button>
+      <button class="proto-btn" onclick="setDevice('tablet')">📱 平板 (768px)</button>
+      <button class="proto-btn" onclick="setDevice('mobile')">📲 手机 (390px)</button>
+    </div>
+
+    <div class="proto-group">
+      <span class="proto-label">布局方案：</span>
+      <button class="proto-btn" id="btn-curr" onclick="setScheme('current')">现状: 右上角常驻悬浮 (遮挡对比)</button>
+      <button class="proto-btn active" id="btn-a" onclick="setScheme('a')">方案 A: 底栏状态胶囊+弹出面板 (推荐)</button>
+      <button class="proto-btn" id="btn-b" onclick="setScheme('b')">方案 B: 顶栏进度胶囊+下拉</button>
+      <button class="proto-btn" id="btn-c" onclick="setScheme('c')">方案 C: 右侧抽屉栏</button>
+    </div>
+  </div>
+
+  <!-- 原型呈现舞台 -->
+  <div class="stage">
+    <div class="device-frame desktop" id="deviceFrame">
+      <div class="console-shell">
+        
+        <!-- 左侧导航侧边栏 -->
+        <div class="sidebar">
+          <div class="sidebar-header">Synapse Console</div>
+          <div class="sidebar-menu">
+            <div class="sidebar-item active">💬 <span class="sidebar-item-text">Current Session</span></div>
+            <div class="sidebar-item">📁 <span class="sidebar-item-text">Project Files</span></div>
+            <div class="sidebar-item">⚙️ <span class="sidebar-item-text">Settings</span></div>
+          </div>
+        </div>
+
+        <!-- 主内容工作区 -->
+        <div class="workspace">
+          
+          <!-- TopBar 顶部栏 -->
+          <div class="topbar">
+            <div class="topbar-left">
+              <span>synapse / main</span>
+            </div>
+            <div class="topbar-center">
+              <span>Fix dark mode & responsive shortcuts</span>
+            </div>
+            <div class="topbar-right" id="topbarRightContainer">
+              <!-- 方案 B 会在此处注入顶部 Chip -->
+            </div>
+          </div>
+
+          <!-- 方案 C 会包含右侧分栏，方案 A/B/Current 使用单主栏 -->
+          <div class="scheme-c-layout-wrap" id="workspaceInner">
+            
+            <!-- 聊天正文区 -->
+            <div class="chat-scroll" id="chatScrollArea">
+              
+              <div class="scheme-desc-banner" id="schemeNotice">
+                💡 <b>方案 A（推荐）：</b> Todo 收入底栏状态区。默认不遮挡任何聊天内容；点击底栏「Todos 7/7」胶囊即可向上展开查看，小屏手机会自动变为底部全宽抽屉。
+              </div>
+
+              <div class="msg user">
+                <div class="msg-title">User</div>
+                请帮我把深色模式开关加上，并支持快捷键 Ctrl+Shift+L。
+              </div>
+
+              <div class="msg ai">
+                <div class="msg-title">Synapse AI</div>
+                收到，我已将任务分解为 7 个具体步骤开始执行：<br>
+                1. 导出 appearance 相关方法与切换逻辑<br>
+                2. 绑定快捷键并在帮助中展示<br>
+                3. 在右上角/控制台操作栏渲染切换按钮<br>
+                4. 补充对应测试与文档
+              </div>
+
+              <div class="msg ai">
+                <div class="msg-title">Synapse AI</div>
+                正在运行测试并验证各文件契约... 所有 7 项任务均已顺利完成！
+              </div>
+
+              <!-- 现状浮动框挂载容器 -->
+              <div id="currentFloatingContainer"></div>
+
+            </div>
+
+            <!-- 方案 C 右侧抽屉栏容器 -->
+            <div class="scheme-c-sidebar" id="schemeCSidebar" style="display: none;">
+              <!-- 动态装载 Todo List -->
+            </div>
+
+          </div>
+
+          <!-- 底部输入框 -->
+          <div class="composer-wrap">
+            <input class="composer-input" placeholder="Type a message or /command..." readonly />
+          </div>
+
+          <!-- 底部状态栏 BottomBar -->
+          <div class="bottombar">
+            <div class="bottombar-left" id="bottombarLeft">
+              <span class="status-chip">⚡ ready</span>
+              <span class="status-chip">🎯 goal (idle)</span>
+              <!-- 方案 A 会在此处放入 Todos 状态指示项 -->
+            </div>
+            <div class="bottombar-right">
+              <span class="status-chip">Tokens: 14.2k</span>
+              <span class="status-chip">utf-8</span>
+            </div>
+          </div>
+
+          <!-- 方案 A 弹出浮层挂载点 -->
+          <div id="schemeAPopoverContainer"></div>
+
+          <!-- 方案 B 下拉浮层挂载点 -->
+          <div id="schemeBPopoverContainer"></div>
+
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentDevice = 'desktop';
+    let currentScheme = 'a';
+    let popoverOpen = true; // 默认展开便于观察
+
+    const todoItemsHtml = `
+      <div class="todo-content-box">
+        <div class="todo-header" onclick="togglePopover()">
+          <div class="todo-header-title">
+            <span class="todo-badge-icon">✓</span>
+            <span>Todos 7/7 · all done</span>
+          </div>
+          <span style="font-size: 11px; color: #888;">${currentScheme === 'c' ? '固定' : '✕'}</span>
+        </div>
+        <div class="todo-list">
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>appearance.ts: export prefersDark, add oppositeAppearance + store toggleAppearance</div>
+          </div>
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>consoleShortcuts.ts: add THEME_SHORTCUT_CHORD and its help row</div>
+          </div>
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>ConsoleActions.tsx: render the toggle button (sun/moon) next to the settings entry</div>
+          </div>
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>App.tsx: answer Ctrl+Shift+L globally</div>
+          </div>
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>Tests: appearance helpers + toggle, bottomBarContract copy-only list, source guards</div>
+          </div>
+          <div class="todo-item done">
+            <div class="todo-check">✓</div>
+            <div>Docs: web/README.md sidebar + theme sections</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    function setDevice(device) {
+      currentDevice = device;
+      document.querySelectorAll('.proto-group:first-child .proto-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      const frame = document.getElementById('deviceFrame');
+      frame.className = 'device-frame ' + device;
+      render();
+    }
+
+    function setScheme(scheme) {
+      currentScheme = scheme;
+      document.querySelectorAll('.proto-group:last-child .proto-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('btn-' + scheme).classList.add('active');
+      popoverOpen = true;
+      render();
+    }
+
+    function togglePopover() {
+      popoverOpen = !popoverOpen;
+      render();
+    }
+
+    function render() {
+      const currentCont = document.getElementById('currentFloatingContainer');
+      const popoverACont = document.getElementById('schemeAPopoverContainer');
+      const popoverBCont = document.getElementById('schemeBPopoverContainer');
+      const topbarRight = document.getElementById('topbarRightContainer');
+      const bottombarLeft = document.getElementById('bottombarLeft');
+      const schemeCSidebar = document.getElementById('schemeCSidebar');
+      const notice = document.getElementById('schemeNotice');
+
+      // 清理
+      currentCont.innerHTML = '';
+      popoverACont.innerHTML = '';
+      popoverBCont.innerHTML = '';
+      topbarRight.innerHTML = '';
+      schemeCSidebar.style.display = 'none';
+      schemeCSidebar.innerHTML = '';
+
+      // 移除可能存在的底栏方案 A 按钮
+      const oldChip = document.getElementById('todoBottomChip');
+      if (oldChip) oldChip.remove();
+
+      if (currentScheme === 'current') {
+        notice.innerHTML = '⚠️ <b>现状（右上角浮动）：</b> 在手机或窄屏下，320px 的浮动窗直接遮盖了 AI 对话的正文内容，用户无法正常向上回看。';
+        currentCont.innerHTML = `
+          <div class="scheme-current-floating">
+            ${todoItemsHtml}
+          </div>
+        `;
+      } else if (currentScheme === 'a') {
+        notice.innerHTML = '💡 <b>方案 A（底栏状态胶囊 + 弹出层）：</b> 平常在底栏仅占用一个精致的绿色胶囊标签；点击展开清单。在手机窄屏上自动以底部抽屉呈现，绝对不遮挡正文浏览。';
+        
+        // 底栏添加 chip
+        const chip = document.createElement('span');
+        chip.id = 'todoBottomChip';
+        chip.className = 'status-chip highlight';
+        chip.innerHTML = '📋 Todos 7/7 · all done';
+        chip.onclick = togglePopover;
+        bottombarLeft.appendChild(chip);
+
+        if (popoverOpen) {
+          popoverACont.innerHTML = `
+            <div class="scheme-a-popover">
+              ${todoItemsHtml}
+            </div>
+          `;
+        }
+      } else if (currentScheme === 'b') {
+        notice.innerHTML = '💡 <b>方案 B（顶栏 Chip 胶囊 + 下拉）：</b> 类似 GitHub/Linear，进度直接集成在顶部标题栏右侧，点击下拉弹出面板。';
+        
+        topbarRight.innerHTML = `
+          <div class="top-chip-trigger" onclick="togglePopover()">
+            <span>📋</span>
+            <span>Todos 7/7</span>
+            <span>▾</span>
+          </div>
+        `;
+
+        if (popoverOpen) {
+          popoverBCont.innerHTML = `
+            <div class="scheme-b-dropdown">
+              ${todoItemsHtml}
+            </div>
+          `;
+        }
+      } else if (currentScheme === 'c') {
+        notice.innerHTML = '💡 <b>方案 C（右侧独立抽屉/侧栏）：</b> 大屏下像 VS Code 任务栏一样独立成列，完全不与聊天气泡抢占纵深空间；小屏下自动折叠为侧滑抽屉。';
+        if (currentDevice !== 'mobile') {
+          schemeCSidebar.style.display = 'flex';
+          schemeCSidebar.innerHTML = todoItemsHtml;
+        } else {
+          // 移动端折叠为底栏或右上角按钮展开
+          notice.innerHTML += '<br><span style="color:#f87171;">(手机尺寸下自动折叠为抽屉面板)</span>';
+          popoverACont.innerHTML = `
+            <div class="scheme-a-popover" style="left: 12px; right: 12px; width: auto;">
+              ${todoItemsHtml}
+            </div>
+          `;
+        }
+      }
+    }
+
+    // 初始化渲染
+    render();
+  </script>
+</body>
+</html>

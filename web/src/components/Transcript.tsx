@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { TurnRail } from './TurnRail.tsx';
-import { TodoPanel } from './TodoPanel.tsx';
 import { FoldStatusPill } from './transcriptRows/FoldStatusPill.tsx';
 import { ROW_RENDERERS } from './transcriptRows/registry.tsx';
 import type { RowActions, RowProcessMeta, RowRenderProps } from './transcriptRows/context.ts';
@@ -709,9 +708,6 @@ export const Transcript: React.FC = () => {
     <>
       {/* Minimap of the transcript, centred on the left edge (see TurnRail). */}
       <TurnRail viewport={viewport} />
-      {/* Floating progress panel for the session's todo list (hidden until one
-          exists). */}
-      <TodoPanel />
     {/* `.no-scrollbar` keeps the reading column centred in the *pane* rather than
         in the pane minus a one-sided scrollbar, which is what makes it line up
         with the composer's `console-column` below. */}

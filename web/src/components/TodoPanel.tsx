@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   TasksApp20Regular,
-  ChevronDown16Regular,
-  ChevronUp16Regular,
+  Dismiss16Regular,
   CheckmarkCircle16Filled,
   Circle16Regular,
   ArrowCircleRight16Filled,
@@ -18,32 +17,36 @@ import { latestTodos, todoPanelLabel } from '../stores/todoView.ts';
  * and renders it — no extra wire surface.  It is collapsed/expanded by hand and
  * disappears entirely when the session never wrote a todo list.
  */
-export const TodoPanel: React.FC = () => {
+export const TodoPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
   const messages = useConsoleStore((state) => state.messages);
-  const [collapsed, setCollapsed] = useState(false);
   const view = latestTodos(messages);
   if (view === null) return null;
 
   return (
-    <div className="absolute right-3 top-3 z-20 w-80 max-w-[calc(100%-1.5rem)] select-none">
-      <div className="material-flyout flyout-in overflow-hidden rounded-card border border-line/80 shadow-flyout">
-        <button
-          type="button"
-          onClick={() => setCollapsed((v) => !v)}
-          title={collapsed ? '展开 todo' : '收起 todo'}
-          className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-sunken/60"
-        >
+    <div className="select-none space-y-2">
+      <div className="flex items-center justify-between border-b border-line/60 pb-2">
+        <div className="flex min-w-0 items-center gap-2">
           <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent" style={{ fontSize: '16px' }} />
-          <span className="min-w-0 flex-1 truncate font-sans text-xs font-semibold text-gray-800">
+          <span className="min-w-0 truncate font-sans text-xs font-semibold text-gray-800">
             {todoPanelLabel(view)}
           </span>
           {view.omitted > 0 && (
             <span className="shrink-0 font-mono text-[10px] text-gray-400">+{view.omitted}</span>
           )}
-          {collapsed ? <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" /> : <ChevronUp16Regular aria-hidden="true" className="shrink-0 text-gray-400" />}
-        </button>
-        {!collapsed && (
-          <ul className="fluent-scrollbar max-h-64 space-y-1.5 overflow-y-auto border-t border-line/60 p-2.5">
+        </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title="关闭 (Esc)"
+            className="ui-icon-button ui-compact shrink-0 text-gray-400 hover:text-gray-700"
+          >
+            <Dismiss16Regular aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      <ul className="fluent-scrollbar max-h-72 space-y-1.5 overflow-y-auto pr-1">
             {view.items.map((item, index) => (
               <li
                 key={`${index}-${item.content}`}
@@ -75,8 +78,6 @@ export const TodoPanel: React.FC = () => {
               </li>
             )}
           </ul>
-        )}
-      </div>
     </div>
   );
 };
