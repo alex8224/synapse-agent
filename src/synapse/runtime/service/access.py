@@ -171,6 +171,7 @@ __all__ = [
     "PROJECT_LIST",
     "PROJECT_REGISTER",
     "FS_LIST",
+    "SKILLS_LIST",
     "SESSION_CREATE",
     "SESSION_DELETE",
     "SESSION_LIST",
@@ -212,6 +213,9 @@ PROJECT_REGISTER = "project.register"
 #: Catalog-scoped and strictly read-only: it returns directory names only and
 #: never reads file contents.
 FS_LIST = "fs.list"
+#: List discoverable Agent Skills.  Catalog-scoped and strictly read-only:
+#: it returns skill metadata only and never executes code or tools.
+SKILLS_LIST = "skills.list"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
 #: Persist a new session's metadata row.  Project-level (there is no thread yet
@@ -280,6 +284,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         PROJECT_LIST,
         PROJECT_REGISTER,
         FS_LIST,
+        SKILLS_LIST,
         SESSION_CREATE,
         SESSION_DELETE,
         SESSION_LIST,
@@ -1324,6 +1329,22 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "list_directories", None)
         if not callable(delegate):
             raise InvalidRequestError("directory browsing is unavailable")
+        return await delegate(query)
+
+    async def list_skills(self, query: object) -> object:
+        from synapse.runtime.service.skills import ListSkillsQuery
+
+        if type(query) is not ListSkillsQuery:
+            raise InvalidRequestError(
+                "list skills query must be a ListSkillsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        visible = self._authorizer.visible_project_ids(self._principal, SKILLS_LIST)
+        if visible is not None and not visible:
+            raise PermissionDeniedError()
+        delegate = getattr(self._delegate, "list_skills", None)
+        if not callable(delegate):
+            raise InvalidRequestError("skills listing is unavailable")
         return await delegate(query)
 
     async def read_session_history(

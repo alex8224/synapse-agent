@@ -34,6 +34,7 @@
     "session.rename",
     "session.search",
     "session.thinking",
+    "skills.list",
     "turn.approval.read",
     "turn.approval.resume",
     "turn.cancel",
@@ -988,6 +989,27 @@
       "scope_location": "params.session",
       "service_method": "set_thinking_level",
       "wire_defaults": {}
+    },
+    {
+      "capability": "skills.list",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  Read-only and strictly metadata: it reports discoverable skills without loading or executing tools.",
+      "method": "runtime.skills.list",
+      "notes": [
+        "A catalog-scoped method with an optional ``project_id`` parameter.",
+        "``project_id`` is bounded to 128 bytes by the wire decoder."
+      ],
+      "params_alias": "ListSkillsParams",
+      "request": "ListSkillsQuery",
+      "result": "SkillListPage",
+      "result_alias": "ListSkillsResult",
+      "result_nullable": false,
+      "scope": "catalog",
+      "scope_location": null,
+      "service_method": "list_skills",
+      "wire_defaults": {
+        "project_id": null
+      }
     },
     {
       "capability": "turn.approval.read",
@@ -4071,6 +4093,26 @@
       "origin": "python",
       "role": "request"
     },
+    "ListSkillsQuery": {
+      "fields": [
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "project_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``project_id`` is optional: when present, skills from that project's configured ``skills_paths`` are discovered; when null, the default repository or host skills paths are searched."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "McpServerStateView": {
       "fields": [
         {
@@ -6507,6 +6549,69 @@
           "ts_type": "RuntimeConfigView",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "SkillEntry": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "description",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "path",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "source",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One discoverable Agent Skill: its name, description, file path, and source identifier."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "SkillListPage": {
+      "fields": [
+        {
+          "name": "skills",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[SkillEntry, ...]",
+          "required": true,
+          "ts_type": "SkillEntry[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Bounded collection of discoverable Agent Skills."
       ],
       "origin": "python",
       "role": "result"

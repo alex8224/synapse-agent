@@ -196,6 +196,11 @@ from synapse.runtime.service.session_management import (
     SessionSearchPage,
 )
 from synapse.runtime.service.session_metadata import SessionMetadataService
+from synapse.runtime.service.skills import (
+    ListSkillsQuery,
+    SkillEntry,
+    SkillListPage,
+)
 from synapse.runtime.sessions import (
     NoActiveTurnError as SessionNoActiveTurnError,
 )
@@ -1196,6 +1201,61 @@ class LocalAgentRuntimeService:
                 f"got type {type(query).__name__!r}"
             )
         return await asyncio.to_thread(list_directories_filesystem, query)
+
+    async def list_skills(self, query: ListSkillsQuery) -> SkillListPage:
+        """List discoverable Agent Skills (bounded, read-only).
+
+        The filesystem discovery runs on a worker thread so the event loop
+        is never held by disk I/O.
+        """
+        if type(query) is not ListSkillsQuery:
+            raise InvalidRequestError(
+                "list skills query must be a ListSkillsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+
+        def _discover() -> SkillListPage:
+            from pathlib import Path
+
+            from synapse.content.skills_catalog import discover_skills, skills_paths_from_settings
+
+            root: Path | None = None
+            if query.project_id:
+                try:
+                    manager = self._resolve_manager_project(query.project_id)
+                    settings = manager.settings
+                    root = Path(getattr(settings, "workspace", None) or query.project_id).resolve()
+                    paths = (
+                        settings.resolved_skills_paths(root)
+                        if hasattr(settings, "resolved_skills_paths")
+                        else skills_paths_from_settings(settings, root)
+                    )
+                except Exception:
+                    root = Path.cwd()
+                    paths = []
+            else:
+                root = Path.cwd()
+                paths = []
+
+            if not paths and root is not None:
+                default_dir = (root / "skills").resolve()
+                if default_dir.is_dir():
+                    paths = [str(default_dir)]
+
+            found = discover_skills(paths)
+            return SkillListPage(
+                skills=tuple(
+                    SkillEntry(
+                        name=s.name,
+                        description=s.description,
+                        path=s.path,
+                        source=s.source,
+                    )
+                    for s in found
+                )
+            )
+
+        return await asyncio.to_thread(_discover)
 
     async def read_session_history(
         self, query: ReadSessionHistoryQuery

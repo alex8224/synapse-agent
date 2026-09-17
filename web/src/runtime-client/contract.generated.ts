@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 50 wire methods: 48 service methods
+ * The 51 wire methods: 49 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -74,6 +74,7 @@ export const WIRE_METHODS = [
   "runtime.session.rename",
   "runtime.session.search",
   "runtime.session.thinking.set",
+  "runtime.skills.list",
   "runtime.turn.approval.get",
   "runtime.turn.approval.resume",
   "runtime.turn.cancel",
@@ -96,7 +97,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (35). */
+/** Authorization capabilities enforced by the ACL layer (36). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -126,6 +127,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "session.rename",
   "session.search",
   "session.thinking",
+  "skills.list",
   "turn.approval.read",
   "turn.approval.resume",
   "turn.cancel",
@@ -204,6 +206,7 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.session.rename": "session.rename",
   "runtime.session.search": "session.search",
   "runtime.session.thinking.set": "session.thinking",
+  "runtime.skills.list": "skills.list",
   "runtime.turn.approval.get": "turn.approval.read",
   "runtime.turn.approval.resume": "turn.approval.resume",
   "runtime.turn.cancel": "turn.cancel",
@@ -951,6 +954,16 @@ export interface ListSessionsQuery {
   offset?: number;
 }
 
+/**
+ * ``project_id`` is optional: when present, skills from that project's configured ``skills_paths`` are discovered; when null, the default repository or host skills paths are searched.
+ */
+export interface ListSkillsQuery {
+  /**
+   * python_default_kind=value python_default=null
+   */
+  project_id?: string | null;
+}
+
 export interface McpServerStateView {
   name: string;
   enabled: boolean;
@@ -1584,6 +1597,23 @@ export interface SetThinkingLevelResult {
   view: RuntimeConfigView;
 }
 
+/**
+ * One discoverable Agent Skill: its name, description, file path, and source identifier.
+ */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  path: string;
+  source: string;
+}
+
+/**
+ * Bounded collection of discoverable Agent Skills.
+ */
+export interface SkillListPage {
+  skills: SkillEntry[];
+}
+
 export interface StatArtifactQuery {
   ref: ArtifactRef;
 }
@@ -2065,6 +2095,8 @@ export type ListDirectoriesParams = ListDirectoriesQuery;
 export type ListDirectoriesResult = DirectoryListing;
 export type ListProjectsParams = ListProjectsQuery;
 export type ListSessionsParams = ListSessionsQuery;
+export type ListSkillsParams = ListSkillsQuery;
+export type ListSkillsResult = SkillListPage;
 export type McpServerState = McpServerStateView;
 export type NegotiateParams = Negotiation;
 export type PauseSessionGoalParams = PauseSessionGoalCommand;

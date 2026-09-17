@@ -34,6 +34,7 @@ from synapse.runtime.service.errors import (
 from synapse.runtime.service.events import ReadEventsQuery
 from synapse.runtime.service.local import LocalAgentRuntimeService, LocalEventStream
 from synapse.runtime.service.queries import GetSessionQuery
+from synapse.runtime.service.skills import ListSkillsQuery, SkillListPage
 from synapse.runtime.sessions import (
     RuntimeManager,
     SessionEventBroker,
@@ -261,6 +262,22 @@ def test_submit_routes_via_submit_ref_and_returns_receipt_without_handle() -> No
 
         factory.turns["a"].future.set_result(_result("a", receipt.turn_id))
         await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_list_skills_enumerates_discoverable_skills() -> None:
+    async def run() -> None:
+        service = LocalAgentRuntimeService(lambda project_id: None)
+        result = await service.list_skills(ListSkillsQuery())
+        assert isinstance(result, SkillListPage)
+        names = {s.name for s in result.skills}
+        assert "cua-driver" in names
+        assert "file-cleanup" in names
+        for s in result.skills:
+            assert s.name
+            assert s.description
+            assert s.path
 
     asyncio.run(run())
 

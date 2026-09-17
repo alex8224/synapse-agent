@@ -62,6 +62,7 @@ from synapse.runtime.service.access import (
     SESSION_RENAME,
     SESSION_SEARCH,
     SESSION_THINKING,
+    SKILLS_LIST,
     TURN_APPROVAL_READ,
     TURN_APPROVAL_RESUME,
     TURN_CANCEL,
@@ -283,6 +284,11 @@ from synapse.runtime.service.session_management import (
     RenameSessionResult,
     SearchSessionsQuery,
     SessionSearchPage,
+)
+from synapse.runtime.service.skills import (
+    ListSkillsQuery,
+    SkillEntry,
+    SkillListPage,
 )
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -990,6 +996,28 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
             "``roots`` are the platform's top-level entry points (drives on Windows,",
             "mounts on POSIX) so a picker can jump between them.",
         ),
+    ),
+    _dto(
+        ListSkillsQuery,
+        role="request",
+        notes=(
+            "``project_id`` is optional: when present, skills from that project's "
+            "configured ``skills_paths`` are discovered; when null, the default "
+            "repository or host skills paths are searched.",
+        ),
+    ),
+    _dto(
+        SkillEntry,
+        role="value",
+        notes=(
+            "One discoverable Agent Skill: its name, description, file path, and "
+            "source identifier.",
+        ),
+    ),
+    _dto(
+        SkillListPage,
+        role="result",
+        notes=("Bounded collection of discoverable Agent Skills.",),
     ),
     _dto(SessionMetadataItem, role="result"),
     _dto(SessionHistoryPage, role="result"),
@@ -1995,6 +2023,28 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "A catalog-scoped method: it has no per-request project position.  "
             "``path`` is null for the daemon's home directory or an absolute host "
             "path; ``limit`` is bounded to 1..1000 by the wire decoder.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.skills.list",
+        method_class="service",
+        request="ListSkillsQuery",
+        result="SkillListPage",
+        capability=SKILLS_LIST,
+        scope="catalog",
+        scope_location=None,
+        service_method="list_skills",
+        params_alias="ListSkillsParams",
+        result_alias="ListSkillsResult",
+        wire_defaults=(("project_id", None),),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable.  Read-only and strictly metadata: it reports discoverable "
+            "skills without loading or executing tools."
+        ),
+        notes=(
+            "A catalog-scoped method with an optional ``project_id`` parameter.",
+            "``project_id`` is bounded to 128 bytes by the wire decoder.",
         ),
     ),
     WireMethod(

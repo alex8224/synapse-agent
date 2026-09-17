@@ -125,6 +125,11 @@ from synapse.runtime.service.session_management import (
     SearchSessionsQuery,
     SessionSearchPage,
 )
+from synapse.runtime.service.skills import (
+    ListSkillsQuery,
+    SkillEntry,
+    SkillListPage,
+)
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.transport.protocol import (
     JSONRPC_VERSION,
@@ -903,6 +908,28 @@ def _project_list_page(value: object) -> ProjectListPage:
         total=total,
     )
 
+def _skill_list_page(value: object) -> SkillListPage:
+    """Decode one bounded skill list page."""
+    page = _required_fields(value, _SKILL_LIST_PAGE_FIELDS)
+    raw_skills = page["skills"]
+    if not isinstance(raw_skills, list):
+        raise ProtocolTransportError()
+    try:
+        entries: list[SkillEntry] = []
+        for item in raw_skills:
+            fields = _required_fields(item, _SKILL_ENTRY_FIELDS)
+            entries.append(
+                SkillEntry(
+                    name=_text(fields["name"], "name", 128),
+                    description=_text(fields["description"], "description", 4096),
+                    path=_text(fields["path"], "path", 4096),
+                    source=_text(fields["source"], "source", 4096),
+                )
+            )
+        return SkillListPage(skills=tuple(entries))
+    except (KeyError, TypeError, ValueError, ProtocolTransportError):
+        raise ProtocolTransportError() from None
+
 
 def _session_history_page(value: object) -> SessionHistoryPage:
     page = _required_fields(value, _SESSION_HISTORY_PAGE_FIELDS)
@@ -1056,6 +1083,8 @@ _PROJECT_LIST_ITEM_FIELDS = frozenset(
     {"project_id", "workspace_name", "git_branch", "workspace_path"}
 )
 _PROJECT_LIST_PAGE_FIELDS = frozenset({"projects", "next_offset", "total"})
+_SKILL_ENTRY_FIELDS = frozenset({"name", "description", "path", "source"})
+_SKILL_LIST_PAGE_FIELDS = frozenset({"skills"})
 
 # The additive session-goal surface lives in its own mixin module.  Importing it
 # here -- after every helper it needs is defined and just before the class -- is
@@ -1820,6 +1849,17 @@ class RuntimeWebSocketClient(GoalClientMixin):
             {"limit": query.limit, "offset": query.offset},
         )
         return _project_list_page(result)
+
+    @_fence_on_protocol_failure
+    async def list_skills(self, query: ListSkillsQuery) -> SkillListPage:
+        """Enumerate discoverable Agent Skills."""
+        if type(query) is not ListSkillsQuery:
+            raise ValueError("query must be a ListSkillsQuery")
+        payload: dict[str, object] = {}
+        if query.project_id is not None:
+            payload["project_id"] = query.project_id
+        result = await self._request_with_retry("runtime.skills.list", payload)
+        return _skill_list_page(result)
 
     @_fence_on_protocol_failure
     async def create_session(self, command: CreateSessionCommand) -> CreateSessionResult:

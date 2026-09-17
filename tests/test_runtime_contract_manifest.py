@@ -169,6 +169,7 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.codex.reset_credits.consume": "consume_codex_reset",
     "runtime.apps.list": "list_external_apps",
     "runtime.workspace.open_external": "open_external",
+    "runtime.skills.list": "list_skills",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -192,6 +193,7 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "codex.reset.consume",
         "apps.list",
         "workspace.open_external",
+        "skills.list",
     }
 )
 
@@ -241,6 +243,11 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         # Reverting one file of one turn (the change cards' undo).
         "RevertTurnChangeCommand",
         "RevertTurnChangeResult",
+        # Discoverable Agent Skills enumeration.
+        "ListSkillsParams",
+        "ListSkillsResult",
+        "SkillEntry",
+        "SkillListPage",
     }
 )
 

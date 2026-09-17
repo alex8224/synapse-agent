@@ -135,6 +135,10 @@ from synapse.runtime.service.session_management import (
     SearchSessionsQuery,
     SessionSearchPage,
 )
+from synapse.runtime.service.skills import (
+    ListSkillsQuery,
+    SkillListPage,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = ["AgentRuntimeService", "EventStream", "EventWatch"]
@@ -421,6 +425,15 @@ class AgentRuntimeService(Protocol):
         constructible and reports the feature as unavailable (see the ACL
         layer).  It backs the console's "add project" picker: only directory
         names are returned, never file contents, and never a recursive walk.
+        """
+        ...
+
+    async def list_skills(self, query: ListSkillsQuery) -> SkillListPage:
+        """List discoverable Agent Skills (bounded, read-only).
+
+        Optional delegate method: a delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL
+        layer).
         """
         ...
 

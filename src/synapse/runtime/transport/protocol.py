@@ -146,6 +146,10 @@ from synapse.runtime.service.session_management import (
     SESSION_SEARCH_TEXT_MAX,
     SESSION_TITLE_MAX,
 )
+from synapse.runtime.service.skills import (
+    MAX_PROJECT_ID_BYTES,
+    ListSkillsQuery,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 JSONRPC_VERSION: Final = "2.0"
@@ -1117,6 +1121,16 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 maximum=DIRECTORY_LIST_LIMIT_MAX,
             ),
         )
+    if method == "runtime.skills.list":
+        _optional_fields(params, set(), {"project_id"})
+        raw_project = params.get("project_id")
+        return ListSkillsQuery(
+            project_id=(
+                None
+                if raw_project is None
+                else _bounded_text(raw_project, MAX_PROJECT_ID_BYTES)
+            ),
+        )
     if method == "runtime.session.history":
         _optional_fields(params, {"session"}, {"before_turn", "limit"})
         before_turn = params.get("before_turn")
@@ -1252,6 +1266,8 @@ async def dispatch(
         return await service.register_project(dto)  # type: ignore[arg-type]
     if method == "runtime.fs.list":
         return await service.list_directories(dto)  # type: ignore[arg-type]
+    if method == "runtime.skills.list":
+        return await service.list_skills(dto)  # type: ignore[arg-type]
     if method == "runtime.session.history":
         return await service.read_session_history(dto)  # type: ignore[arg-type]
     if method == "runtime.session.reconcile":
