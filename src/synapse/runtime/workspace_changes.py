@@ -7,6 +7,14 @@ at the turn's start is recorded -- the changed files themselves, bounded, read w
 plain reads so the repository is never written to -- and the delta is the difference
 between that state and the state at the end.
 
+`git diff --numstat HEAD` is still read, but only to describe files that were *already*
+dirty when the snapshot was taken (``WorkspaceSnapshot.standing``).  No turn's own count
+ever comes from it.
+
+Every git command runs with ``GIT_OPTIONAL_LOCKS=0``: without it `git status` (and a
+worktree `git diff`) refreshes the index's cached stat information and writes the index
+back, so describing the workspace would modify the repository it only meant to describe.
+
 A file the turn created is all insertions, one it deleted is all deletions, and one it
 edited is counted from the two versions line by line (the same shape `git diff
 --numstat` reports, without asking git to reconstruct a state we already hold).
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -106,9 +115,26 @@ class WorkspaceSnapshot:
     #: this snapshot was clean at `HEAD`, so it refuses instead of guessing.
     content_skipped: bool = False
 
+    @property
+    def paths_complete(self) -> bool:
+        """True when every changed path of the workspace is described here.
+
+        A path *missing* from a complete snapshot is evidence: the untracked sweep lists
+        every untracked file, so a path that is not here was not on disk either.  A
+        truncated snapshot never looked at the paths it dropped, and then absence proves
+        nothing at all -- which is exactly the case a revert must not guess about.
+        """
+        return not self.truncated
+
 
 def _git(root: Path, args: list[str]) -> str | None:
-    """Run one read-only git command, or `None` when git cannot answer."""
+    """Run one read-only git command, or `None` when git cannot answer.
+
+    ``GIT_OPTIONAL_LOCKS=0`` is what makes "read-only" true rather than aspirational: it
+    is the switch that stops `git status` from refreshing and rewriting the index.  The
+    environment is built per call and never patched into ``os.environ``, so nothing else
+    in the process inherits it.
+    """
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ["git", *args],
@@ -116,6 +142,7 @@ def _git(root: Path, args: list[str]) -> str | None:
             capture_output=True,
             timeout=GIT_TIMEOUT_S,
             check=False,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -329,7 +356,10 @@ def changes_between(
             # newly added path is the turn's own creation, and anything else existed at
             # `HEAD` already -- so the turn's delta is that file's standing delta, which
             # is what the snapshot recorded from `git diff --numstat`.
-            created = now.status in {_UNTRACKED, _ADDED}
+            # A truncated snapshot never listed the paths it dropped, so a file absent
+            # from it may have been there all along: only a complete snapshot can call
+            # this path the turn's own creation.
+            created = now.status in {_UNTRACKED, _ADDED} and before.paths_complete
             standing = after.standing.get(path)
             if not now.present:
                 # The turn deleted a file that was clean at its start: the standing delta

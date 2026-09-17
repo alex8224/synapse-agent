@@ -108,6 +108,21 @@ def _refused(exc: TurnRevertRefused) -> WorkspaceRevertError:
     return WorkspaceRevertError(exc.message, code=f"revert_{exc.reason}")
 
 
+def _require_idle(session: object) -> None:
+    """Refuse while a turn is running on this session.
+
+    Called twice on the write path -- once before the record is read and once immediately
+    before the file is touched -- because those are separate steps and a turn can be
+    started between them.  The second call narrows that window; it cannot close it, since a
+    turn beginning between the check and the write is still possible.
+    """
+    if _active_turn_id(session) is not None:
+        raise WorkspaceRevertError(
+            "a turn is running, so the workspace is left alone until it settles",
+            code="revert_turn_running",
+        )
+
+
 def _validate(command: object) -> RevertTurnChangeCommand:
     if not isinstance(command, RevertTurnChangeCommand):
         raise InvalidRequestError(
@@ -138,12 +153,7 @@ def revert_turn_change_workspace(
     thread_id = getattr(session, "thread_id", None)
     if not isinstance(thread_id, str) or not thread_id:
         thread_id = command.session.thread_id
-    active = _active_turn_id(session)
-    if active is not None:
-        raise WorkspaceRevertError(
-            "a turn is running, so the workspace is left alone until it settles",
-            code="revert_turn_running",
-        )
+    _require_idle(session)
     try:
         record = load_record(workspace, thread_id, command.turn_id)
     except TurnRevertRefused as exc:
@@ -153,6 +163,9 @@ def revert_turn_change_workspace(
             "the turn's record of its changes is no longer kept, so it cannot be undone",
             code="revert_record_expired",
         )
+    # Re-checked at the last moment: reading the record and writing the file are two steps,
+    # and a turn started in between must not have its file written out from under it.
+    _require_idle(session)
     try:
         action, written = revert_file(record, command.path, workspace=workspace)
     except TurnRevertRefused as exc:

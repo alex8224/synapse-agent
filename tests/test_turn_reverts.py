@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -24,10 +25,12 @@ from synapse.runtime.turn_reverts import (
     REASON_PATH_NOT_IN_TURN,
     REASON_SYMLINK_REFUSED,
     TurnRevertRefused,
+    apply_plan,
     build_record,
     load_record,
     load_reverted_paths,
     mark_reverted,
+    plan_revert,
     revert_file,
     save_record,
 )
@@ -161,6 +164,52 @@ def test_a_truncated_snapshot_makes_a_missing_file_unknown(tmp_path: Path) -> No
     assert entry.before.kind == BEFORE_UNKNOWN
 
 
+def test_a_truncated_snapshot_never_authorizes_a_delete(tmp_path: Path) -> None:
+    """A path the truncated before-snapshot never listed may have been there all along.
+
+    The before-snapshot stops at ``MAX_SNAPSHOT_FILES``, so a file it dropped looks exactly
+    like a file the turn created.  Reading that as "absent before" would let a revert delete
+    a file the turn never made, so the record must refuse instead.
+    """
+    (tmp_path / "late.py").write_bytes(b"mine\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={}, truncated=True),
+        after=WorkspaceSnapshot(files={"late.py": _file("late.py", "mine\n", status="??")}),
+    )
+    entry = record.file("late.py")
+    assert entry is not None
+    assert entry.before.kind == BEFORE_UNKNOWN, (
+        'absence from a truncated snapshot is not proof the turn created the file'
+    )
+    with pytest.raises(TurnRevertRefused) as caught:
+        revert_file(record, "late.py", workspace=tmp_path)
+    assert caught.value.reason == REASON_BEFORE_UNKNOWN
+    assert (tmp_path / "late.py").read_bytes() == b"mine\n", (
+        'a file the turn never made must survive the revert'
+    )
+
+
+def test_a_created_file_is_still_revertable_when_another_file_was_not_kept(
+    tmp_path: Path,
+) -> None:
+    """`content_skipped` is about some other file's content, not this path's existence."""
+    (tmp_path / "new.py").write_bytes(b"hi\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={}, content_skipped=True),
+        after=WorkspaceSnapshot(files={"new.py": _file("new.py", "hi\n", status="??")}),
+    )
+    entry = record.file("new.py")
+    assert entry is not None
+    assert entry.before.kind == BEFORE_ABSENT, (
+        "a file elsewhere whose content was not kept must not make this turn's own file "
+        "undeletable"
+    )
+    assert revert_file(record, "new.py", workspace=tmp_path) == (ACTION_DELETE, 0)
+    assert not (tmp_path / "new.py").exists()
+
+
 def test_reverting_a_modified_file_writes_the_pre_turn_content(tmp_path: Path) -> None:
     # Bytes, not text: the snapshot's digest is over the file's own bytes, and a text-mode
     # write would translate the newlines on this platform.
@@ -226,6 +275,63 @@ def test_a_file_the_turn_left_deleted_is_left_alone_when_it_came_back(tmp_path: 
         revert_file(record, "gone.py", workspace=tmp_path)
     assert caught.value.reason == REASON_CONTENT_DRIFT
     assert (tmp_path / "gone.py").read_bytes() == b"recreated\n"
+
+
+def test_a_plan_is_refused_when_the_file_moved_on_after_it_was_decided(tmp_path: Path) -> None:
+    """Planning and writing are two calls, so the plan's expectation is checked at the write."""
+    (tmp_path / "a.py").write_bytes(b"one\ntwo\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={"a.py": _file("a.py", "one\n")}),
+        after=WorkspaceSnapshot(files={"a.py": _file("a.py", "one\ntwo\n")}),
+    )
+    plan = plan_revert(record, "a.py", workspace=tmp_path)
+    assert plan.action == ACTION_RESTORE
+
+    (tmp_path / "a.py").write_bytes(b"one\ntwo\nthree\n")
+
+    with pytest.raises(TurnRevertRefused) as caught:
+        apply_plan(tmp_path, plan)
+    assert caught.value.reason == REASON_CONTENT_DRIFT
+    assert (tmp_path / "a.py").read_bytes() == b"one\ntwo\nthree\n", (
+        'a plan that no longer describes the file must not be written'
+    )
+
+
+def test_a_plan_to_delete_is_refused_when_the_content_changed(tmp_path: Path) -> None:
+    (tmp_path / "new.py").write_bytes(b"hi\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={}),
+        after=WorkspaceSnapshot(files={"new.py": _file("new.py", "hi\n", status="??")}),
+    )
+    plan = plan_revert(record, "new.py", workspace=tmp_path)
+    assert plan.action == ACTION_DELETE
+
+    (tmp_path / "new.py").write_bytes(b"hi\nthere\n")
+
+    with pytest.raises(TurnRevertRefused) as caught:
+        apply_plan(tmp_path, plan)
+    assert caught.value.reason == REASON_CONTENT_DRIFT
+    assert (tmp_path / "new.py").read_bytes() == b"hi\nthere\n"
+
+
+def test_a_plan_to_put_a_deleted_file_back_refuses_when_it_reappeared(tmp_path: Path) -> None:
+    """The plan's expectation can also be "nothing is here", and that is checked too."""
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={"gone.py": _file("gone.py", "kept\n")}),
+        after=WorkspaceSnapshot(files={}),
+    )
+    plan = plan_revert(record, "gone.py", workspace=tmp_path)
+    assert (plan.action, plan.expected_digest) == (ACTION_RESTORE, None)
+
+    (tmp_path / "gone.py").write_bytes(b"someone else\n")
+
+    with pytest.raises(TurnRevertRefused) as caught:
+        apply_plan(tmp_path, plan)
+    assert caught.value.reason == REASON_CONTENT_DRIFT
+    assert (tmp_path / "gone.py").read_bytes() == b"someone else\n"
 
 
 def test_reverting_twice_changes_nothing(tmp_path: Path) -> None:
@@ -375,6 +481,119 @@ def test_records_round_trip_through_the_state_directory(tmp_path: Path) -> None:
     assert loaded.head == "cafe"
     assert loaded.files == record.files
     assert (tmp_path / ".synapse" / "turn-snapshots" / "t1").is_dir()
+
+
+def _stored_record_as_version_1(tmp_path: Path) -> None:
+    """Rewrite the one stored record into the shape the pre-fix code wrote."""
+    directory = tmp_path / ".synapse" / "turn-snapshots" / "t1"
+    stored = next(entry for entry in directory.iterdir())
+    payload = json.loads(stored.read_text(encoding="utf-8"))
+    payload["version"] = 1
+    stored.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_record_from_before_the_completeness_check_refuses_a_delete(tmp_path: Path) -> None:
+    """A version 1 record's "the file was not there" rests on an absence nothing proved."""
+    (tmp_path / "new.py").write_bytes(b"hi\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={}),
+        after=WorkspaceSnapshot(files={"new.py": _file("new.py", "hi\n", status="??")}),
+    )
+    assert save_record(tmp_path, record) is True
+    _stored_record_as_version_1(tmp_path)
+
+    loaded = load_record(tmp_path, "t1", "turn-1")
+
+    assert loaded is not None, 'a version 1 record is still readable'
+    entry = loaded.file("new.py")
+    assert entry is not None
+    assert entry.before.kind == BEFORE_UNKNOWN
+    with pytest.raises(TurnRevertRefused) as caught:
+        revert_file(loaded, "new.py", workspace=tmp_path)
+    assert caught.value.reason == REASON_BEFORE_UNKNOWN
+    assert (tmp_path / "new.py").read_bytes() == b"hi\n"
+
+
+def test_a_record_from_before_the_check_still_restores_kept_content(tmp_path: Path) -> None:
+    """The narrow rule: only the absence-based conclusions are dropped, never kept content."""
+    (tmp_path / "a.py").write_bytes(b"one\ntwo\n")
+    record = _record(
+        tmp_path,
+        before=WorkspaceSnapshot(files={"a.py": _file("a.py", "one\n")}),
+        after=WorkspaceSnapshot(files={"a.py": _file("a.py", "one\ntwo\n")}),
+    )
+    assert save_record(tmp_path, record) is True
+    _stored_record_as_version_1(tmp_path)
+
+    loaded = load_record(tmp_path, "t1", "turn-1")
+
+    assert loaded is not None
+    assert revert_file(loaded, "a.py", workspace=tmp_path) == (ACTION_RESTORE, 4)
+    assert (tmp_path / "a.py").read_bytes() == b"one\n"
+
+
+def _deleted_file_record(tmp_path: Path, *, dirty_before: bool):
+    """A real repository, and the record of a turn that deleted one tracked file.
+
+    The deleted file is still *described* by the second snapshot -- as a `D` entry with
+    `present=False` -- which is what tells a deletion apart from a file that merely stopped
+    being dirty.
+    """
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "test")
+    # Bytes, not text: a text-mode write translates the newlines on this platform, and the
+    # snapshot keeps the file's own bytes.
+    (tmp_path / "a.py").write_bytes(b"committed\n")
+    git("add", "a.py")
+    git("commit", "-q", "-m", "init")
+    if dirty_before:
+        # The reader had an uncommitted edit when the turn started, so it was kept.
+        (tmp_path / "a.py").write_bytes(b"committed\nedited\n")
+    before = snapshot_workspace(tmp_path)
+    assert before is not None
+    (tmp_path / "a.py").unlink()
+    after = snapshot_workspace(tmp_path, carry=before.files)
+    assert after is not None
+    changes, _ = changes_between(before, after)
+    assert [(change.path, change.status) for change in changes] == [("a.py", "deleted")]
+    return build_record(
+        thread_id="t1", turn_id="turn-1", before=before, after=after, changes=changes
+    )
+
+
+def test_a_file_the_turn_deleted_is_put_back_from_the_kept_content(tmp_path: Path) -> None:
+    """Undoing a deletion restores what the file held: that is what the card promises."""
+    record = _deleted_file_record(tmp_path, dirty_before=True)
+    entry = record.file("a.py")
+    assert entry is not None
+    assert entry.before.kind == BEFORE_CONTENT, 'the uncommitted edit was kept'
+    assert entry.after.present is False, 'the turn left the file gone'
+
+    action, written = revert_file(record, "a.py", workspace=tmp_path)
+
+    assert action == ACTION_RESTORE
+    assert written == len(b"committed\nedited\n")
+    assert (tmp_path / "a.py").read_bytes() == b"committed\nedited\n"
+
+
+def test_a_clean_file_the_turn_deleted_comes_back_from_the_commit(tmp_path: Path) -> None:
+    record = _deleted_file_record(tmp_path, dirty_before=False)
+    entry = record.file("a.py")
+    assert entry is not None
+    assert entry.before.kind == BEFORE_HEAD, 'a clean file is restored from `HEAD`'
+    assert entry.after.present is False
+
+    action, written = revert_file(record, "a.py", workspace=tmp_path)
+
+    assert action == ACTION_RESTORE
+    assert written == len(b"committed\n")
+    assert (tmp_path / "a.py").read_bytes() == b"committed\n"
 
 
 def test_a_missing_record_is_simply_absent(tmp_path: Path) -> None:

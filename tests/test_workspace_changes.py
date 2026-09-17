@@ -182,6 +182,44 @@ def test_the_snapshot_bounds_how_many_files_it_describes(tmp_path: Path) -> None
     assert snapshot.truncated is True
 
 
+def test_the_snapshot_leaves_the_git_index_untouched(tmp_path: Path) -> None:
+    """Describing the workspace must not write to the repository it only describes.
+
+    `git status` normally refreshes the index's cached stat information and writes the index
+    back.  The snapshot's git calls run with ``GIT_OPTIONAL_LOCKS=0`` precisely so that the
+    bookkeeping of a turn cannot modify the repository.
+    """
+    workspace = _repository(tmp_path)
+    # A tracked file whose content no longer matches the index's cached stat information:
+    # this is what makes `git status` want to write the index, which is the write ruled out.
+    (workspace / "tracked.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    index = workspace / ".git" / "index"
+    before = index.stat()
+
+    snapshot = snapshot_workspace(workspace)
+
+    assert snapshot is not None
+    after = index.stat()
+    assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size), (
+        'the snapshot refreshed and rewrote .git/index'
+    )
+
+
+def test_a_truncated_snapshot_does_not_call_a_file_the_turns_own(tmp_path: Path) -> None:
+    """A path a truncated before-snapshot dropped is not evidence of a new file."""
+    before = WorkspaceSnapshot(files={}, truncated=True)
+    after = WorkspaceSnapshot(files={"late.py": _file("late.py", "x\n", status="??")})
+
+    changes, total = changes_between(before, after)
+
+    assert (total, len(changes)) == (1, 1)
+    assert changes[0].path == "late.py"
+    assert changes[0].status == "modified", (
+        'a truncated snapshot cannot say the turn created the file'
+    )
+    assert changes[0].insertions == 1, 'the counts are unchanged by the label'
+
+
 def test_a_commit_inside_a_turn_is_not_a_deletion(tmp_path: Path) -> None:
     """A turn that commits what it found leaves every file exactly as it was."""
     workspace = _repository(tmp_path)

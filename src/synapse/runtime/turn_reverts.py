@@ -40,8 +40,14 @@ from synapse.runtime.workspace_changes import GIT_TIMEOUT_S, MAX_FILE_BYTES, Wor
 STATE_DIRNAME = ".synapse"
 #: Where one workspace's per-turn pre-change copies live, under that state directory.
 RECORDS_DIRNAME = "turn-snapshots"
-#: The on-disk shape of one record.
-RECORD_VERSION = 1
+#: The on-disk shape of one record.  Version 2 records that the record's "the file was not
+#: there" and "the file was clean" conclusions came from a snapshot known to be complete.
+RECORD_VERSION = 2
+#: Versions this module still reads.  A version 1 record was written before that
+#: completeness was checked, so those two conclusions are read back as "unknown" (see
+#: `_parse_file`): a revert then refuses instead of deleting or overwriting a file that the
+#: snapshot it was built from never described.
+_READABLE_VERSIONS = (1, RECORD_VERSION)
 
 #: How many turns one thread keeps revertable, newest first.  A revert is an undo of
 #: recent work, not an archive: beyond this the record is gone and a revert is refused.
@@ -250,6 +256,16 @@ def build_record(
     its pre-turn content is the one `HEAD` named then, recorded as such and resolved when
     a revert actually runs.  Anything else -- binary, over budget, an unreadable
     snapshot -- is recorded as not revertable rather than guessed at.
+
+    A snapshot that was truncated cannot say which files were there at all, so none of the
+    above is inferred from a path merely being *missing* from it: such a file is recorded
+    as not revertable.  Reading that absence as "the turn created it" would let a revert
+    delete a file the turn never made, and as "clean at `HEAD`" it would overwrite one.
+
+    What the turn left behind is read from the second snapshot's own `present`, not from
+    whether the path appears in it: a file the turn *deleted* is still described there, and
+    calling it present would make a revert refuse -- "the file is gone" -- instead of
+    putting it back.
     """
     files: list[RevertRecordFile] = []
     for change in changes:
@@ -263,16 +279,20 @@ def build_record(
             head_state = BeforeState(
                 kind=BEFORE_CONTENT, content=was.content, digest=_digest(was.content)
             )
-        elif status == "added":
+        elif was is None and before.paths_complete and status == "added":
+            # Absent from a *complete* snapshot is the only proof that the file was not
+            # there: the turn created it.  The completeness test comes first, so a truncated
+            # snapshot -- which dropped paths it never looked at -- can never reach this
+            # conclusion, and a revert can never delete a file the turn did not make.
             head_state = BeforeState(kind=BEFORE_ABSENT)
-        elif was is None and not before.truncated and not before.content_skipped:
+        elif was is None and before.paths_complete and not before.content_skipped:
             # Absent from a complete snapshot means clean at the turn's start, so this
             # commit's version of the file is what the turn found.
             head_state = BeforeState(kind=BEFORE_HEAD)
         else:
             head_state = BeforeState(kind=BEFORE_UNKNOWN)
         after_state = AfterState(
-            present=now is not None,
+            present=now is not None and now.present,
             digest=_digest(now.content) if now is not None and now.content is not None else None,
             lines=None if now is None else now.lines,
         )
@@ -422,7 +442,7 @@ def _record_json(record: TurnRevertRecord) -> dict[str, Any]:
     }
 
 
-def _parse_file(raw: object) -> RevertRecordFile | None:
+def _parse_file(raw: object, *, absence_proven: bool) -> RevertRecordFile | None:
     if not isinstance(raw, dict):
         return None
     path = raw.get("path")
@@ -463,6 +483,14 @@ def _parse_file(raw: object) -> RevertRecordFile | None:
             action = raw_action
         if isinstance(raw_at, (int, float)):
             at = float(raw_at)
+    if not absence_proven and kind in {BEFORE_ABSENT, BEFORE_HEAD}:
+        # The record predates the completeness check: "not in the snapshot" was read both as
+        # "not on disk" and as "clean at `HEAD`", and one truncated snapshot makes both
+        # wrong.  Kept content is still trusted; these conclusions are not, so the file
+        # becomes not revertable rather than deletable or overwritable.
+        kind = BEFORE_UNKNOWN
+        content = None
+        digest = None
     return RevertRecordFile(
         path=path,
         status=status if isinstance(status, str) else "",
@@ -494,8 +522,14 @@ def load_record(workspace: Path | str, thread_id: str, turn_id: str) -> TurnReve
         raw = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError, TurnRevertRefused):
         return None
-    if not isinstance(raw, dict) or raw.get("version") != RECORD_VERSION:
+    if not isinstance(raw, dict):
         return None
+    version = raw.get("version")
+    if version not in _READABLE_VERSIONS:
+        return None
+    # Only a record written since the completeness check can be trusted to have *proved*
+    # that a file it does not describe was not there.
+    absence_proven = version == RECORD_VERSION
     if raw.get("thread_id") != thread_id or raw.get("turn_id") != turn_id:
         return None
     raw_files = raw.get("files")
@@ -503,7 +537,7 @@ def load_record(workspace: Path | str, thread_id: str, turn_id: str) -> TurnReve
         return None
     files: list[RevertRecordFile] = []
     for entry in raw_files:
-        parsed = _parse_file(entry)
+        parsed = _parse_file(entry, absence_proven=absence_proven)
         if parsed is not None:
             files.append(parsed)
     created_at = raw.get("created_at")
@@ -770,14 +804,25 @@ def plan_revert(
 def apply_plan(workspace: Path | str, plan: RevertPlan) -> int:
     """Carry out a plan on exactly one file; returns the bytes written.
 
+    ``expected_digest`` is checked again here, immediately before anything is written, and
+    not only where the plan was decided: the two are separate calls, and the file can move
+    on in between -- the reader's own editor, a later turn, another tool.  A plan that no
+    longer describes the file is refused instead of overwriting whatever arrived since.
+
     A restore is an atomic replace beside the target, so a reader never sees a half
     written file and a failure leaves the original in place.  Nothing else in the
     workspace, the index or `HEAD` is touched.
+
+    What this cannot promise is a writer that races the check itself: the window between
+    ``_verify_expected`` and the mutation is microseconds but not zero, so an edit landing
+    exactly inside it is still lost.  Closing that would take a lock over the file that the
+    workspace does not have; the workspace is treated as the reader's own.
     """
     if plan.action == ACTION_ALREADY:
         return 0
     root = _workspace_root(workspace)
     target = _resolve_target(root, plan.path)
+    _verify_expected(target, plan.expected_digest)
     if plan.action == ACTION_DELETE:
         try:
             target.unlink(missing_ok=True)
@@ -807,6 +852,33 @@ def apply_plan(workspace: Path | str, plan: RevertPlan) -> int:
             REASON_WRITE_FAILED, f"the file could not be written: {exc.strerror or exc}"
         ) from exc
     return len(content.encode("utf-8"))
+
+
+def _verify_expected(target: Path, expected: str | None) -> None:
+    """Refuse unless the file still holds exactly what the plan was decided against.
+
+    ``expected`` is the digest the plan says the file holds right now, or `None` when the
+    plan means "nothing is here" (a file this turn deleted, being put back).  Anything
+    else -- gone, replaced, unreadable, no longer a plain file -- is drift, and drift is
+    always answered with a refusal: this is the reader's own file.
+    """
+    current = _inspect_current(target)
+    if current.symlink:
+        raise TurnRevertRefused(
+            REASON_SYMLINK_REFUSED, "the path is a symbolic link, so it is never written through"
+        )
+    if current.exists and not current.regular:
+        raise TurnRevertRefused(REASON_NOT_A_FILE, "the path is not a regular file")
+    if expected is None:
+        if current.exists:
+            raise TurnRevertRefused(
+                REASON_CONTENT_DRIFT, "the file came back after this turn, so it was left alone"
+            )
+        return
+    if not current.exists or current.too_large or current.digest != expected:
+        raise TurnRevertRefused(
+            REASON_CONTENT_DRIFT, "the file changed after this turn, so it was left alone"
+        )
 
 
 def revert_file(

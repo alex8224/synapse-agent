@@ -129,6 +129,29 @@ def test_a_running_turn_is_refused_before_anything_is_read(tmp_path: Path) -> No
     assert (workspace / "tracked.txt").read_bytes() == b"one\ntwo\n"
 
 
+def test_a_turn_started_between_the_checks_leaves_the_file_alone(tmp_path: Path) -> None:
+    """The running turn is re-checked at the last moment, not only before the record is read.
+
+    Reading the record and writing the file are two steps, so a turn that starts in between
+    must still stop the write.  The first answer is "settled", the second "running".
+    """
+    workspace = _repo(tmp_path)
+    _record_turn(workspace)
+    answers = iter([None, "turn-live"])
+    session = SimpleNamespace(
+        workspace=str(workspace),
+        thread_id=REF.thread_id,
+        snapshot=lambda: SimpleNamespace(active_turn_id=next(answers)),
+    )
+
+    error = _refusal(lambda: revert_turn_change_workspace(_command(), session))
+
+    assert error.code == "revert_turn_running"
+    assert (workspace / "tracked.txt").read_bytes() == b"one\ntwo\n", (
+        'the file is untouched when a turn started after the first check'
+    )
+
+
 def test_a_session_whose_state_cannot_be_read_is_refused(tmp_path: Path) -> None:
     # Without a readable session state a running turn cannot be ruled out, so the write
     # must not happen: refusing is the only safe answer.
