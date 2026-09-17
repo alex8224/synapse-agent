@@ -522,7 +522,7 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 | 项目列表 | `runtime.project.list` | 可见项目枚举（服务端计算可见集合、先过滤再分页，`limit` 1..100）；`GET /api/projects` 仍是 deprecated 兼容路由，不是业务入口 |
 | 新建 | `runtime.session.create` | 只写入会话元数据，`thread_id` 由服务端 `allocate_thread_id` 分配并返回，前端不再自行生成 id；随后仍走原有 `runtime.session.open` + watch 路径 |
 | 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白或超长在本地与服务端都会被拒绝 |
-| 删除 | `runtime.session.delete` | 只删除会话记录（元数据与 goal）。checkpoint 与 transcript 仍保留在磁盘上，确认框与提示都会明确写出这一点，不会宣称「对话已删除」；运行中的会话由服务端原子拒绝（`conflict`），前端不会自动 cancel |
+| 删除 | `runtime.session.delete` | 只删除会话记录（元数据与 goal）。checkpoint 与 transcript 仍保留在磁盘上，确认框与提示都会明确写出这一点，不会宣称「对话已删除」；确认是一个居中模态框（`SessionDeleteDialog`：Portal + 遮罩 + 焦点陷阱，Esc 或点遮罩关闭），在正文里写出目标会话的标题与 `thread_id`，只有「删除」一个决策按钮——默认焦点落在标题栏的关闭控件上，所以刚打开时按 Enter 只会关掉它；运行中的会话由服务端原子拒绝（`conflict`），前端不会自动 cancel，被拒时模态框保持打开并就地显示原因 |
 | 搜索 | `runtime.session.search` | 服务端元数据搜索（title/summary/thread_id/model），不是对话全文搜索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
 
 ## 图片附件（输入区）

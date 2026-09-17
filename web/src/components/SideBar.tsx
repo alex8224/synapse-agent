@@ -15,6 +15,7 @@ import {
   projectLabel,
 } from '../stores/sessionList.ts';
 import { SettingsDialog } from './SettingsDialog.tsx';
+import { SessionDeleteDialog } from './SessionDeleteDialog.tsx';
 
 /** Sessions shown per expanded project before the "show all" row (TUI parity). */
 const VISIBLE_SESSIONS = 5;
@@ -101,8 +102,11 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
   const [showAllProjects, setShowAllProjects] = useState<string[]>([]);
   // The session currently being renamed inline, and the draft title.
   const [renaming, setRenaming] = useState<{ threadId: string; draft: string } | null>(null);
-  // The session awaiting an explicit delete confirmation.
-  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
+  // The session awaiting an explicit delete confirmation, and whether that delete
+  // is already on the wire.  The whole target is kept, not just its id: the dialog
+  // is what names the session it deletes.
+  const [deleting, setDeleting] = useState<{ threadId: string; title: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // Ctrl+K bumps a token instead of reaching into the DOM from the App shell,
   // so a collapsed sidebar is expanded by the same store update.
@@ -121,9 +125,21 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
     if (accepted) setRenaming(null);
   };
 
-  const confirmDelete = async (threadId: string) => {
-    setDeletingThreadId(null);
-    await deleteSession(threadId);
+  const confirmDelete = async (target: { threadId: string; title: string }) => {
+    setDeleteBusy(true);
+    const accepted = await deleteSession(target.threadId);
+    setDeleteBusy(false);
+    // A refusal (the session is running) keeps the confirmation open with the
+    // reason inline, so the user can retry or cancel; only an accepted delete
+    // closes it.
+    if (accepted) setDeleting(null);
+  };
+
+  // The previous action's notice or error must not sit behind this confirmation:
+  // while the dialog is open it carries the alert of its own action.
+  const openDelete = (target: { threadId: string; title: string }) => {
+    dismissSessionAlert();
+    setDeleting(target);
   };
 
   // Identity of the workspace this console is attached to.  The header used to
@@ -435,9 +451,12 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setDeletingThreadId(sess.thread_id)}
+                                onClick={() =>
+                                  openDelete({ threadId: sess.thread_id, title: sess.title })
+                                }
                                 title="删除会话记录"
-                                aria-label="删除会话记录"
+                                aria-label={`删除会话记录：${sess.title}`}
+                                aria-haspopup="dialog"
                                 className="ui-icon-button ui-compact opacity-0 hover:text-red-600 group-hover:opacity-100 group-focus-within:opacity-100"
                               >
                                 <Delete20Regular aria-hidden="true" />
@@ -507,8 +526,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
         </div>
       </div>
 
-      {(sessionActionError !== null || sessionNotice !== null) && (
-        <div className="mx-3 mt-2 rounded-control border border-amber-200/80 bg-amber-50/80 backdrop-blur-sm px-2 py-1.5 text-[10px] text-amber-900 shadow-xs">
+      {/* Session-management feedback (create / rename / delete).  A failure is a
+          danger banner and a notice is a plain result line: one amber box for both
+          made a *finished* delete read like a pending question.  While the delete
+          dialog is open it shows its own failure inline instead. */}
+      {deleting === null && (sessionActionError !== null || sessionNotice !== null) && (
+        <div
+          role={sessionActionError !== null ? 'alert' : 'status'}
+          className={`mx-3 mt-2 rounded-control border backdrop-blur-sm px-2 py-1.5 text-[10px] shadow-xs ${
+            sessionActionError !== null
+              ? 'border-red-200/80 bg-red-50/80 text-red-900'
+              : 'border-line bg-surface/80 text-gray-700'
+          }`}
+        >
           <div className="flex items-start gap-1">
             <span className="flex-1">{sessionActionError ?? sessionNotice}</span>
             <button
@@ -519,36 +549,6 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
               className="ui-icon-button ui-compact"
             >
               <Dismiss20Regular aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {deletingThreadId !== null && (
-        // Deleting removes the session *record* only: the confirmation says so
-        // explicitly, because the conversation itself is retained on disk.
-        <div className="mx-3 mt-2 rounded-control border border-red-200/80 bg-red-50/80 backdrop-blur-sm px-2.5 py-2 text-[10px] text-red-900 shadow-xs">
-          <div className="mb-1">删除该会话的记录？</div>
-          <div className="mb-1 text-red-800">
-            仅删除会话记录（元数据与目标）；对话历史（检查点与转录）仍保留在磁盘上，不会被删除。
-            运行中的会话需先停止当前回合。
-          </div>
-          <div className="flex gap-1">
-            <button
-              type="button"
-              onClick={() => {
-                void confirmDelete(deletingThreadId);
-              }}
-              className="ui-button ui-danger"
-            >
-              删除记录
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeletingThreadId(null)}
-              className="ui-button border border-line"
-            >
-              取消
             </button>
           </div>
         </div>
@@ -581,6 +581,20 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
 
       </div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {/* Outside both sidebar states: a dialog opened from the tree must survive
+          the rail collapsing under it (that view is `inert`). */}
+      {deleting !== null && (
+        <SessionDeleteDialog
+          title={deleting.title}
+          threadId={deleting.threadId}
+          busy={deleteBusy}
+          error={sessionActionError}
+          onConfirm={() => {
+            void confirmDelete(deleting);
+          }}
+          onClose={() => setDeleting(null)}
+        />
+      )}
     </nav>
   );
 };

@@ -32,6 +32,7 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {App} from '/src/App.tsx';
 import {useConsoleStore as store} from '/src/stores/useConsoleStore.ts';
+import {RpcCallError} from '/src/client/SynapseRuntimeClient.ts';
 import '/src/index.css';
 
 const listing = (p, entries) => ({path: p, parent: null, entries, truncated: false, roots: ['/']});
@@ -41,8 +42,13 @@ store.setState({
   workspacePath: '/sample/synapse', activeProjectId: 'sample',
   projects: [{project_id:'sample',workspace_name:'synapse',workspace_path:'/sample/synapse',git_branch:'main'}],
   expandedProjectIds: ['sample'], currentSession: {project_id:'sample',thread_id:'s0'},
-  sessionTitle: '键盘导航验收', sessionsTotal: 1,
-  sessions: [{thread_id:'s0',title:'键盘导航验收',updated_at:new Date().toISOString(),time_label:'今天'}],
+  sessionTitle: '键盘导航验收', sessionsTotal: 2,
+  sessions: [
+    {thread_id:'s0',title:'键盘导航验收',updated_at:new Date().toISOString(),time_label:'今天'},
+    // The row the delete section below removes: it is deliberately *not* the open
+    // session, so accepting the delete does not also have to switch sessions.
+    {thread_id:'s1',title:'待删除的会话',updated_at:new Date().toISOString(),time_label:'今天'}
+  ],
   modelName: 'model-b', availableModels: ['model-a','model-b','model-c'],
   thinkingLevel: 'medium', thinkingLevels: ['low','medium','high'], canSetThinking: true,
   setModel: async (name) => { store.setState({modelName: name}); return true; },
@@ -62,6 +68,12 @@ store.setState({
     gitDiff: async (_session, p) => ({
       path: p, text: 'DIFF-FOR ' + p + '\\n', binary: false, truncated: false, empty: false
     }),
+    // Synthetic session delete: the confirmation's refusal path is a running
+    // session, which the daemon reports as a conflict.
+    deleteSession: async () => {
+      if (window.__deleteRefuse) throw new RpcCallError('conflict', -32000, 'conflict');
+      return {deleted: true, retained_history: true};
+    },
     // Synthetic workspace tree: one directory and one file at the root, and a
     // single child directory inside any other path.  No host is contacted.
     listArtifacts: async (_session, path) => ({
@@ -211,7 +223,10 @@ try {
   await check('Escape closes the panel', `!document.querySelector('[aria-label="MCP 工具与服务器"]')`);
 
   // --- the add-project dialog (the composer's `+`) ---------------------------
-  await click('[aria-label="添加项目"]');
+  // The trigger is the labelled text button next to the composer's `+`; it carries
+  // its name in `title`, not in an `aria-label`, so the old selector matched nothing
+  // and the click threw on `null`.
+  await click('[title^="添加项目"]');
   await wait(`!!document.querySelector('#add-project-list button')`);
   await check('the add-project dialog opens on its first directory row', `document.activeElement === document.querySelector('#add-project-list button')`);
   await shot('add-project-dialog');
@@ -258,11 +273,77 @@ try {
   await wait(`!!document.querySelector('[role="dialog"][aria-label="目标 (Goal)"]')`);
   await check('the goal dialog takes the focus and lands on its objective field',
     `document.activeElement === document.querySelector('#goal-objective')`);
+  await press('Escape', 'Escape', 27);
+  await check('Escape closes the goal dialog', `!document.querySelector('[role="dialog"][aria-label="目标 (Goal)"]')`);
+
+  // --- the sidebar delete confirmation ---------------------------------------
+  // It used to be an inline strip at the foot of the sidebar: the question sat a
+  // screenful below the row whose trash icon armed it, named nothing about it, and
+  // shared its corner (and its amber styling) with the result notice of the
+  // previous delete.  It is a portalled modal dialog now, and these checks drive
+  // the real thing: which session it names, where the focus lands, what Enter
+  // does, and what a refusal leaves on screen.
+  const deleteDialog = `document.querySelector('[role="dialog"][aria-labelledby="session-delete-title"]')`;
+  const confirmButton =
+    `[...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === '删除')`;
+  const trash =
+    `[...document.querySelectorAll('[aria-label^="删除会话记录"]')].find((el) => !el.closest('[inert]') && el.getAttribute('aria-label').includes('待删除的会话'))`;
+  await run(`${trash}.focus()`); await settle();
+  await run(`${trash}.click()`); await settle();
+  await wait(`!!${deleteDialog}`);
+  await check('the trash icon opens a confirmation of its own', `!!${deleteDialog}`);
+  await check('and it is portalled out of the rail, not laid out inside the sidebar',
+    `${deleteDialog}.closest('nav') === null`);
+  await check('the confirmation names the session it deletes',
+    `${deleteDialog}.textContent.includes('待删除的会话') && ${deleteDialog}.textContent.includes('s1')`);
+  await check('the initial focus is the dialog close control, never the destructive button',
+    `document.activeElement.getAttribute('aria-label') === '关闭删除确认'`);
+  await check('the box offers one decision, not three controls saying no',
+    `[...document.querySelectorAll('[role="dialog"] button')].length === 2 && !${deleteDialog}.textContent.includes('取消')`);
+  // The whole point of the dialog: it appears over the row that opened it instead
+  // of ~500px below it at the foot of the sidebar (where it could sit below the
+  // fold).  It is centred in the window and fully on screen.
+  await check('it is centred in the window and fully on screen',
+    `(() => {
+       const r = ${deleteDialog}.getBoundingClientRect();
+       return Math.abs(r.left + r.width / 2 - window.innerWidth / 2) < 2
+         && Math.abs(r.top + r.height / 2 - window.innerHeight / 2) < 2
+         && r.top >= 0 && r.bottom <= window.innerHeight;
+     })()`);
+  await shot('session-delete-dialog');
+  await press('Enter', 'Enter', 13, '\r');
+  await check('Enter on a freshly opened confirmation dismisses it instead of deleting',
+    `!${deleteDialog} && window.fixtureStore.getState().sessions.length === 2`);
+  await check('the focus goes back to the trash icon that opened it', `document.activeElement === ${trash}`);
+
+  // The refusal path: the server rejects a running session (`conflict`) and the
+  // console never cancels the turn for it.  The dialog stays open with the reason
+  // inline, and the row it names is still there.
+  await run(`window.__deleteRefuse = true`);
+  await run(`${trash}.click()`); await settle();
+  await wait(`!!${deleteDialog}`);
+  await run(`${confirmButton}.click()`); await settle();
+  await check('a refused delete keeps the confirmation open',
+    `!!${deleteDialog} && window.fixtureStore.getState().sessions.length === 2`);
+  await check('and shows the reason inside it, not in the sidebar behind the scrim',
+    `${deleteDialog}.textContent.includes('正在运行中')`);
+  await check('the refusal is not also painted into the footer banner',
+    `!document.querySelector('nav [role="alert"]')`);
+
+  // The accepted path: the record goes, the confirmation closes, and the result is
+  // a plain notice in the sidebar -- never a second question.
+  await run(`window.__deleteRefuse = false`);
+  await run(`${confirmButton}.click()`); await settle();
+  await wait(`!${deleteDialog}`);
+  await check('an accepted delete closes the confirmation', `!${deleteDialog}`);
+  await check('the deleted row is gone from the tree',
+    `window.fixtureStore.getState().sessions.length === 1 && !document.body.textContent.includes('待删除的会话')`);
+  await check('the outcome is reported as a notice, not as a prompt',
+    `[...document.querySelectorAll('nav [role="status"]')].some((el) => el.textContent.includes('已删除该会话的记录'))`);
 
   // --- phone band: the file panels become list -> detail ---------------------
   // A 320px rail plus a fixed 320px file list leaves no readable diff, so the
   // phone band stacks the two panes and swaps between them instead.
-  await press('Escape', 'Escape', 27);
   await client.send('Emulation.setDeviceMetricsOverride',
     { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, page.sessionId);
   await client.send('Emulation.setTouchEmulationEnabled', { enabled: true }, page.sessionId);

@@ -69,6 +69,7 @@ They launch headless Chrome/Edge through `tests/helpers/cdp.ts` (`SYNAPSE_CDP_BR
 | composer (input, mentions, images) | `tests/composerSerialization.test.ts`, `composerMentions.test.ts`, `composerKeyboardGuard.test.ts`, `composerAttachmentGuard.test.ts`, `attachmentViewGuard.test.ts`, `attachmentErrors.test.ts`, `composerEditing.verify.ts` |
 | bottom bar / shortcuts | `tests/bottomBarContract.test.ts`, `bottomBarLayout.test.ts`, `bottomBarDismiss.test.ts`, `bottomBarInteraction.verify.ts`, `bottomBarMore.verify.ts` |
 | shell / top bar / transcript layout | `tests/shellLayout.test.ts`, `topBarLayout.test.ts`, `transcriptLayoutGuard.test.ts`, `transcriptScrollGuard.test.ts`, plus the matching `.verify.ts` |
+| sidebar session actions (rename / delete confirmation) | `tests/sessionManagement.test.ts`, `tests/sessionDeleteDialog.test.ts`, `tests/dialogKeyboardNav.verify.ts` |
 | transcript view model | `tests/historyMapper.test.ts`, `liveEventReducer.test.ts`, `liveDeltaBatch.test.ts`, `transcriptLabels.test.ts`, `transcriptVirtualization.test.ts` |
 | markdown / math / mermaid / images | `tests/markdownParser.test.ts`, `markdownRenderGuard.test.ts`, `markdownTableGuard.test.ts`, `mathBlocks.test.ts`, `mathRender.test.ts`, `mermaidPolicy.test.ts`, `imageRefs.test.ts` |
 | runtime client / wire contract | `tests/runtimeContractFixture.test.ts`, `runtimeClientBoundary.test.ts`, `runtimeClientReconcile.test.ts`, `runtimeClientRecovery.test.ts`, `sourceGuard.test.ts` |
