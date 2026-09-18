@@ -1,5 +1,5 @@
 {
-  "version": "0.1.45",
+  "version": "0.1.46",
   "description": "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)",
   "homepage": "https://github.com/alex8224/synapse-agent",
   "license": "Apache-2.0",
@@ -11,8 +11,8 @@
   },
   "architecture": {
     "64bit": {
-      "url": "https://github.com/alex8224/synapse-agent/releases/download/v0.1.45/synapse-windows-x64.exe",
-      "hash": "e9c1e5dd063506b377bf1f359e981af51535297fc3f79076d5c4feaa3f610e25"
+      "url": "https://github.com/alex8224/synapse-agent/releases/download/v0.1.46/synapse-windows-x64.exe",
+      "hash": "da3037119928cdf454a7566a65cb96aa168e53c91f952d75e5c955de8e7b92ae"
     }
   },
   "autoupdate": {
