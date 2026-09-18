@@ -1,0 +1,192 @@
+/**
+ * Pure helpers for the sidebar session list: relative-time bucketing and search.
+ *
+ * Kept free of React / zustand so they are exercised directly with the Node
+ * built-in test runner, the same way `historyMapper` / `recoveryDecider` are.
+ */
+import type { SessionItem } from './historyMapper.ts';
+
+export type SessionGroupKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'older';
+
+/**
+ * Server-side session-title bound (`runtime.session.rename` / create).
+ *
+ * Mirrored here so the sidebar can cap the input and reject a blank title before
+ * an RPC is issued; the server remains the authority and rejects the same values.
+ */
+export const SESSION_TITLE_MAX = 120;
+
+/**
+ * Trim a user-entered session title.
+ *
+ * Returns `null` when the server would reject it (blank or longer than
+ * `SESSION_TITLE_MAX` characters), so a caller never sends a doomed rename.
+ */
+export function normalizeSessionTitle(title: string): string | null {
+  const text = title.trim();
+  if (text === '' || text.length > SESSION_TITLE_MAX) return null;
+  return text;
+}
+
+/** Characters of a thread id shown when a session has no name yet. */
+const SHORT_ID_CHARS = 6;
+
+/**
+ * Whether a stored title is still a placeholder rather than a name.
+ *
+ * Mirrors the store's own rule (`is_default_session_title` in
+ * `synapse/sessions/store.py`) plus the label this console shows for such a row,
+ * so "does this session still need a name?" has one answer on both sides: the
+ * daemon binds the first user message while the title is a placeholder, and the
+ * console only asks for the title back while that is still the case.
+ */
+export function isPlaceholderSessionTitle(
+  title: string | null | undefined,
+  threadId: string,
+): boolean {
+  const text = (title ?? '').trim();
+  if (text === '' || text === threadId) return true;
+  if (text.startsWith('session ') || text.startsWith('新会话 ')) return true;
+  const folded = text.toLowerCase();
+  return folded === 'session' || folded === 'new session' || folded === 'untitled';
+}
+
+/**
+ * Title to show for one session row.
+ *
+ * A row that has not been named yet is shown as `新会话 <id>`: the server keeps
+ * its own placeholder until the first user message arrives, and `session
+ * <thread_id>` is not something to put in front of a reader.  Anything else is
+ * the real title, unchanged.
+ */
+export function displaySessionTitle(
+  title: string | null | undefined,
+  threadId: string,
+): string {
+  const text = (title ?? '').trim();
+  if (!isPlaceholderSessionTitle(text, threadId)) return text;
+  return `新会话 ${threadId.slice(0, SHORT_ID_CHARS)}`;
+}
+
+export interface SessionGroup {
+  key: SessionGroupKey;
+  label: string;
+  items: SessionItem[];
+}
+
+/** Display order of the buckets (newest first). */
+export const SESSION_GROUP_ORDER: readonly SessionGroupKey[] = [
+  'today',
+  'yesterday',
+  'last7',
+  'last30',
+  'older',
+];
+
+export const SESSION_GROUP_LABELS: Record<SessionGroupKey, string> = {
+  today: '今天',
+  yesterday: '昨天',
+  last7: '过去 7 天',
+  last30: '过去 30 天',
+  older: '更早',
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfLocalDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * Bucket key for one timestamp, relative to `now` in local time.
+ *
+ * An unparseable timestamp is reported as `older` rather than dropped, so a
+ * malformed row stays visible instead of silently disappearing.
+ */
+export function sessionGroupKey(updatedAt: string, now: Date = new Date()): SessionGroupKey {
+  const at = new Date(updatedAt).getTime();
+  if (!Number.isFinite(at)) return 'older';
+  const today = startOfLocalDay(now);
+  if (at >= today) return 'today';
+  if (at >= today - DAY_MS) return 'yesterday';
+  if (at >= today - 7 * DAY_MS) return 'last7';
+  if (at >= today - 30 * DAY_MS) return 'last30';
+  return 'older';
+}
+
+/**
+ * Group sessions by relative update time, newest bucket first.
+ *
+ * Empty buckets are omitted so the sidebar never renders a bare heading, and
+ * the input order is preserved inside each bucket.
+ */
+export function groupSessionsByTime(items: SessionItem[], now: Date = new Date()): SessionGroup[] {
+  const buckets = new Map<SessionGroupKey, SessionItem[]>();
+  for (const item of items) {
+    const key = sessionGroupKey(item.updated_at, now);
+    const bucket = buckets.get(key);
+    if (bucket === undefined) buckets.set(key, [item]);
+    else bucket.push(item);
+  }
+  return SESSION_GROUP_ORDER.filter((key) => buckets.has(key)).map((key) => ({
+    key,
+    label: SESSION_GROUP_LABELS[key],
+    items: buckets.get(key) ?? [],
+  }));
+}
+
+/**
+ * Case-insensitive substring search over the sessions loaded so far.
+ *
+ * An empty query returns the input untouched.  Matching covers the visible
+ * title and the thread id, so a pasted session id still finds its row.
+ */
+export function filterSessions(items: SessionItem[], query: string): SessionItem[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return items;
+  return items.filter(
+    (item) =>
+      item.title.toLowerCase().includes(needle) || item.thread_id.toLowerCase().includes(needle),
+  );
+}
+
+/**
+ * Title of an already-loaded session row, or `null` when it is not loaded.
+ *
+ * Used as the attach-time fallback: the header must show a real title instead of
+ * the raw thread id, so a caller that has no title of its own asks the lists the
+ * sidebar already holds before falling back further.
+ */
+export function sessionTitleFrom(items: SessionItem[], threadId: string): string | null {
+  if (threadId === '') return null;
+  const found = items.find((item) => item.thread_id === threadId);
+  return found === undefined || found.title === '' ? null : found.title;
+}
+
+/** Minimal project shape the sidebar tree needs (kept structural for tests). */
+export interface ProjectLabelSource {
+  workspace_path: string;
+  workspace_name: string | null;
+}
+
+/**
+ * Level-1 label of the tree: the last path segment of the workspace, mirroring
+ * the TUI drawer's `_dir_label`.  Falls back to the registered name, then to the
+ * raw path, so a row is never blank.
+ */
+export function projectLabel(entry: ProjectLabelSource): string {
+  const trimmed = entry.workspace_path.replace(/[\\/]+$/, '');
+  const last = trimmed.split(/[\\/]/).pop() ?? '';
+  return last || entry.workspace_name || entry.workspace_path;
+}
+
+/** True when the project itself matches the search text (name or path). */
+export function matchesProject(entry: ProjectLabelSource, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return true;
+  return (
+    entry.workspace_path.toLowerCase().includes(needle) ||
+    (entry.workspace_name ?? '').toLowerCase().includes(needle) ||
+    projectLabel(entry).toLowerCase().includes(needle)
+  );
+}

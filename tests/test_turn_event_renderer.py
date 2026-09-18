@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import threading
+from types import SimpleNamespace
 from typing import Any
 
-from synapse.runtime.sessions import SessionEventBroker
+import pytest
+
+from synapse.runtime.service.events import RuntimeEvent
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     SubagentStatusPayload,
@@ -15,10 +21,91 @@ from synapse.runtime.streaming import (
     TurnEvent,
     TurnEventKind,
     TurnTerminalPayload,
+    UsagePayload,
 )
 from synapse.ui.turn.controller import TurnController
 from synapse.ui.turn.event_bridge import TextualTurnEventBridge
 from synapse.ui.turn.event_renderer import TextualTurnEventRenderer
+
+
+class _ServiceWatchFacade:
+    """Thread-safe service-session watch fake with a session cursor."""
+
+    def __init__(self, *, history: tuple[RuntimeEvent, ...] = ()) -> None:
+        self.binding = type("Binding", (), {"session": type("Session", (), {
+            "project_id": "project", "thread_id": "thread"
+        })()})()
+        self.state = type("State", (), {
+            "view": type("View", (), {
+                "active_turn_id": "turn", "latest_sequence": history[-1].sequence if history else 0,
+                "status": "running",
+            })(),
+            "last_sequence": history[-1].sequence if history else 0,
+        })()
+        self.entered = threading.Event()
+        self.rendered = threading.Event()
+        self.exited = threading.Event()
+        self.watches: list[int] = []
+        self._history = list(history)
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queue: asyncio.Queue[RuntimeEvent | object] | None = None
+
+    def watch(self, *, after: int | None = None) -> Any:
+        cursor = self.state.last_sequence if after is None else after
+        self.watches.append(cursor)
+        facade = self
+
+        class Lease:
+            async def __aenter__(self) -> Any:
+                queue: asyncio.Queue[RuntimeEvent | object] = asyncio.Queue()
+                with facade._lock:
+                    facade._loop = asyncio.get_running_loop()
+                    facade._queue = queue
+                    history = tuple(facade._history)
+                for event in history:
+                    if event.sequence > cursor:
+                        queue.put_nowait(event)
+                facade.entered.set()
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                with facade._lock:
+                    facade._queue = None
+                    facade._loop = None
+                facade.exited.set()
+
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> RuntimeEvent:
+                with facade._lock:
+                    queue = facade._queue
+                assert queue is not None
+                event = await queue.get()
+                if event is StopAsyncIteration:
+                    raise StopAsyncIteration
+                return event  # type: ignore[return-value]
+
+        return Lease()
+
+    def emit(self, event: RuntimeEvent) -> None:
+        with self._lock:
+            self._history.append(event)
+            self.state.last_sequence = max(self.state.last_sequence, event.sequence)
+            loop, queue = self._loop, self._queue
+        if loop is not None and queue is not None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def close(self) -> None:
+        with self._lock:
+            loop, queue = self._loop, self._queue
+        if loop is not None and queue is not None:
+            loop.call_soon_threadsafe(queue.put_nowait, StopAsyncIteration)
+
+    async def get(self, *, refresh: bool = True) -> Any:
+        del refresh
+        return self.state.view
 
 
 class _Host:
@@ -29,6 +116,9 @@ class _Host:
         self.wakes = 0
 
     def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
+        return callback(*args, **kwargs)
+
+    def call_after_refresh(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
         return callback(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -68,6 +158,66 @@ def test_event_renderer_maps_answer_and_terminal() -> None:
     assert answers[-1][1] == ("hello",)
     assert renderer.closed is True
     assert renderer.last_sequence == 4
+
+
+def test_event_renderer_forwards_step_count_from_usage_payload() -> None:
+    """The turn's completed model-call count reaches the chrome as ``model_calls``."""
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.emit(
+        _event(
+            1,
+            TurnEventKind.USAGE_UPDATED,
+            UsagePayload(
+                turn_input=10,
+                turn_output=20,
+                last_input=8,
+                last_output=12,
+                output_tokens_per_second=42.0,
+                ttft_s=1.5,
+                model_calls=3,
+            ),
+        )
+    )
+
+    usage = [call for call in host.calls if call[0] == "apply_turn_usage"]
+    assert len(usage) == 1
+    assert usage[0][2]["model_calls"] == 3
+    assert usage[0][2]["output_tokens_per_second"] == 42.0
+    assert usage[0][2]["ttft_s"] == 1.5
+
+
+def test_event_renderer_forwards_step_count_from_projected_usage_event() -> None:
+    """The service's JSON projection keeps ``model_calls`` (bottombar step count)."""
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+
+    renderer.render_runtime_event(
+        RuntimeEvent(
+            sequence=1,
+            turn_sequence=1,
+            turn_id="turn",
+            kind="usage_updated",
+            payload={
+                "turn_input": 10,
+                "turn_output": 20,
+                "last_input": 8,
+                "last_output": 12,
+                "output_tokens_per_second": 42.0,
+                "ttft_s": 1.5,
+                "rate_basis": "generation",
+                "rate_estimated": False,
+                "model_calls": 3,
+            },
+            version=EVENT_VERSION,
+        )
+    )
+
+    usage = [call for call in host.calls if call[0] == "apply_turn_usage"]
+    assert len(usage) == 1
+    assert usage[0][2]["model_calls"] == 3
+    assert usage[0][2]["output_tokens_per_second"] == 42.0
 
 
 def test_event_renderer_forwards_subagent_status_changes() -> None:
@@ -293,6 +443,168 @@ def test_bridge_coalesces_high_frequency_deltas_and_one_wakeup() -> None:
     assert renderer.last_sequence == 100
 
 
+def test_finish_bridge_keeps_waiting_for_slow_ui_until_drained() -> None:
+    controller = TurnController(SimpleNamespace())
+    calls = []
+    waits = iter([False, False, True])
+    bridge = SimpleNamespace(
+        wait_until_drained=lambda timeout: calls.append("wait") or next(waits),
+        close=lambda: calls.append("close"),
+    )
+    controller._finish_event_bridge(bridge)
+    assert calls == ["wait", "wait", "wait", "close"]
+
+
+def test_finish_bridge_releases_worker_on_shutdown() -> None:
+    controller = TurnController(SimpleNamespace())
+    controller._shutting_down = True
+    calls = []
+    bridge = SimpleNamespace(
+        wait_until_drained=lambda timeout: False,
+        close=lambda: calls.append("close"),
+    )
+    controller._finish_event_bridge(bridge)
+    assert calls == ["close"]
+
+
+def _runtime_delta(sequence: int, text: str = "x", turn_id: str = "turn") -> RuntimeEvent:
+    return RuntimeEvent(sequence, sequence, turn_id, "answer_delta", {
+        "text": text, "message_id": "message"
+    }, 1)
+
+
+def test_service_bridge_coalesces_without_mutating_payload_and_preserves_completion() -> None:
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    callbacks = []
+    bridge = TextualTurnEventBridge(renderer, callbacks.append)
+    first = _runtime_delta(1)
+    bridge.emit(first)
+    for sequence in range(2, 1001):
+        bridge.emit(_runtime_delta(sequence))
+    bridge.emit(RuntimeEvent(1001, 1001, "turn", "answer_completed", {
+        "text": "x" * 1000, "message_id": "message"
+    }, 1))
+    assert len(callbacks) == 1
+    assert bridge.pending_count == 2
+    assert first.payload["text"] == "x"
+    assert not bridge.wait_until_drained(0)
+    callbacks.pop()()
+    assert bridge.wait_until_drained(0)
+    assert renderer.last_sequence == 1001
+    assert sum(name == "commit_answer" for name, _, _ in host.calls) == 1
+
+
+def test_service_bridge_yields_between_batches_and_close_discards_replay() -> None:
+    host = _Host()
+    renderer = TextualTurnEventRenderer(host, thread_id="thread", turn_id="turn")
+    callbacks = []
+    bridge = TextualTurnEventBridge(renderer, callbacks.append, drain_batch=4)
+    for sequence in range(1, 11):
+        bridge.emit(RuntimeEvent(sequence, sequence, "turn", "thinking_finished", {}, 1))
+    assert len(callbacks) == 1
+    callbacks.pop(0)()
+    assert renderer.last_sequence == 4
+    assert bridge.pending_count == 6 and len(callbacks) == 1
+    assert not bridge.wait_until_drained(0)
+    while callbacks:
+        callbacks.pop(0)()
+    assert renderer.last_sequence == 10 and bridge.wait_until_drained(0)
+    bridge.replay_batch([_runtime_delta(11)])
+    bridge.close()
+    callbacks.pop(0)()
+    assert bridge.pending_count == 0 and bridge.wait_until_drained(0)
+    assert renderer.last_sequence == 10
+
+
+def test_service_bridge_never_merges_different_turns() -> None:
+    renderer = TextualTurnEventRenderer(_Host(), thread_id="thread", turn_id="turn")
+    bridge = TextualTurnEventBridge(renderer, lambda fn: True)
+    bridge.emit(_runtime_delta(1))
+    bridge.emit(_runtime_delta(2, turn_id="other"))
+    assert bridge.pending_count == 2
+    bridge.close()
+
+
+@pytest.mark.parametrize("entry", ["submit", "resume", "attach"])
+def test_service_consumer_entry_coalesces_before_ui_dispatch(monkeypatch, entry) -> None:
+    """Exercise the actual controller entries, not just an unused bridge component."""
+    callbacks = []
+    host = _Host()
+    errors = []
+    produced = threading.Event()
+    done = threading.Event()
+    app = SimpleNamespace(
+        thread_id="thread", agent=object(), settings=SimpleNamespace(),
+        _current_project_id=lambda: "project", _agent_ready=threading.Event(),
+        _agent_error=None, _transcript_generation=1, _transcript=host,
+        _begin_turn_usage=lambda: None, _turn_done=done.set, _refresh_topbar=lambda: None,
+        call_after_refresh=lambda fn, *a: callbacks.append(lambda: fn(*a)),
+        call_from_thread=lambda fn, *a: fn(*a),
+        _call_for_transcript=lambda gen, fn, *a: fn(*a),
+        append_event=lambda *args: errors.append(args),
+    )
+    app._agent_ready.set()
+    controller = TurnController(app)
+    result = SimpleNamespace(status="completed", final_text="x" * 1000, already_streamed=True)
+
+    async def emit(*args, on_event, **kwargs):
+        assert entry != "resume" or controller._attached_event_bridge is None
+        for sequence in range(1, 1001):
+            callback_result = on_event(_runtime_delta(sequence))
+            if inspect.isawaitable(callback_result):
+                await callback_result
+        produced.set()
+        return result
+
+    async def pending():
+        return SimpleNamespace(turn_id="turn", actions=(object(),))
+
+    facade = _ServiceWatchFacade(history=tuple(_runtime_delta(i) for i in range(1, 1001)))
+    facade.submit, facade.resume, facade.pending_approval = emit, emit, pending
+    controller._service_sessions["project:thread"] = facade
+    monkeypatch.setattr(controller, "_service_facade", lambda thread: facade)
+    if entry == "resume":
+        # Resume may start while the paused session's observer is attached.
+        controller.attach("thread")
+        assert facade.entered.wait(1)
+        old_bridge = controller._attached_event_bridge
+        assert old_bridge is not None
+        old_bridge.emit(_runtime_delta(1001, "stale"))
+        # Keep the queued callback: detachment must fence it, not paint twice.
+        stale_callback = callbacks.pop(0)
+    if entry == "attach":
+        controller.attach("thread", after_sequence=0)
+        assert facade.entered.wait(1)
+        from synapse.runtime.async_runtime import get_async_runtime
+        # A no-op scheduled after watch's non-yielding replay establishes that
+        # all events have reached the bridge before checking wake counts.
+        get_async_runtime().submit(asyncio.sleep(0)).result(timeout=1)
+        worker = None
+    else:
+        target = controller.run_turn if entry == "submit" else controller.run_resume
+        worker = threading.Thread(
+            target=target, args=("prompt" if entry == "submit" else "approve",)
+        )
+        worker.start()
+        assert produced.wait(1)
+    try:
+        if entry == "resume":
+            stale_callback()
+            assert old_bridge.pending_count == 0
+        assert len(callbacks) == 1
+        if worker is not None:
+            assert not done.is_set(), "turn chrome cleared ahead of buffered text"
+        callbacks.pop(0)()
+    finally:
+        if worker is not None:
+            worker.join(timeout=2)
+        controller.detach()
+    assert worker is None or not worker.is_alive()
+    assert errors == []
+    assert any(name == "set_stream" for name, _, _ in host.calls)
+
+
 def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:
     class _AsyncHost(_Host):
         def __init__(self) -> None:
@@ -302,6 +614,7 @@ def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:
 
         def call_after_refresh(self, callback: Any, *args: Any, **kwargs: Any) -> bool:
             self.callbacks.append(lambda: callback(*args, **kwargs))
+            scheduled.set()
             return True
 
         def call_from_thread(self, callback: Any, *args: Any, **kwargs: Any) -> Any:
@@ -312,36 +625,46 @@ def test_turn_controller_uses_non_blocking_ui_wakeup_when_available() -> None:
             raise RuntimeError("already on UI thread")
 
     host = _AsyncHost()
-    broker = SessionEventBroker("thread")
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "thread_id": "thread",
-            "broker": broker,
-            "active_context": lambda self: type(
-                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
-            )(),
-            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
-                callback, after_sequence=after_sequence
-            ),
-        },
-    )()
+    facade = _ServiceWatchFacade()
+    scheduled = threading.Event()
+    host.set_stream = lambda kind, text, **kwargs: (
+        host.calls.append(("set_stream", (kind, text), kwargs)), facade.rendered.set()
+    )
+    host.call_from_thread = lambda callback, *args, **kwargs: (
+        callback(*args, **kwargs), facade.rendered.set()
+    )
+    host.call_from_thread = lambda callback, *args, **kwargs: (
+        callback(*args, **kwargs), facade.rendered.set()
+    )
+    host.call_from_thread = lambda callback, *args, **kwargs: (
+        callback(*args, **kwargs), facade.rendered.set()
+    )
     app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    app.call_after_refresh = lambda callback, *args, **kwargs: host.call_after_refresh(
+        callback, *args, **kwargs
+    )
     controller = TurnController(app)
-    controller.attach(runtime, after_sequence=0)
+    controller._service_sessions = {"project:thread": facade}
 
-    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("hello", "m1")))
+    async def exercise() -> None:
+        try:
+            controller.attach("thread", after_sequence=0)
+            assert facade.entered.wait(2)
+            facade.emit(RuntimeEvent(1, 1, "turn", "answer_delta", {"text": "hello"}, 1))
+            assert await asyncio.to_thread(scheduled.wait, 2)
+            assert len(host.callbacks) == 1
+            assert host.blocking_calls == 0
+            host.callbacks.pop()()
+            assert facade.rendered.wait(2)
+            assert [call for call in host.calls if call[0] == "set_stream"] == [
+                ("set_stream", ("answer", "hello"), {"elapsed_s": 0.0})
+            ]
+        finally:
+            controller.detach("thread")
+            facade.close()
+            assert facade.exited.wait(2)
 
-    assert host.calls == []
-    assert len(host.callbacks) == 1
-    assert host.blocking_calls == 0
-    host.callbacks.pop()()
-    assert host.blocking_calls == 1
-    assert [call for call in host.calls if call[0] == "commit_answer"] == [
-        ("commit_answer", ("hello",), {})
-    ]
-    controller._detach_renderer()
+    asyncio.run(exercise())
 
 
 def test_event_renderer_forwards_approval_required_to_sink() -> None:
@@ -432,57 +755,63 @@ def test_bridge_keeps_terminal_and_stops_after_close() -> None:
 
 def test_turn_controller_unwraps_session_event_envelope_for_renderer() -> None:
     host = _Host()
-    broker = SessionEventBroker("thread")
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "thread_id": "thread",
-            "active_context": lambda self: type(
-                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
-            )(),
-            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
-                callback, after_sequence=after_sequence
-            ),
-        },
-    )()
+    facade = _ServiceWatchFacade()
+    host.set_stream = lambda kind, text, **kwargs: (
+        host.calls.append(("set_stream", (kind, text), kwargs)), facade.rendered.set()
+    )
     app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    app.call_after_refresh = lambda callback, *args, **kwargs: host.call_after_refresh(
+        callback, *args, **kwargs
+    )
     controller = TurnController(app)
+    controller._service_sessions = {"project:thread": facade}
 
-    controller.attach(runtime)
-    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("hello", "m1")))
+    async def exercise() -> None:
+        try:
+            controller.attach("thread", after_sequence=0)
+            assert facade.entered.wait(2)
+            facade.emit(RuntimeEvent(1, 1, "turn", "answer_delta", {"text": "hello"}, 1))
+            assert facade.rendered.wait(2)
+            assert [call for call in host.calls if call[0] == "set_stream"] == [
+                ("set_stream", ("answer", "hello"), {"elapsed_s": 0.0})
+            ]
+        finally:
+            controller.detach("thread")
+            facade.close()
+            assert facade.exited.wait(2)
 
-    answers = [call for call in host.calls if call[0] == "commit_answer"]
-    assert answers == [("commit_answer", ("hello",), {})]
-    controller._detach_renderer()
+    asyncio.run(exercise())
 
 
 def test_turn_controller_replays_events_emitted_before_renderer_attach() -> None:
     host = _Host()
-    broker = SessionEventBroker("thread")
-    broker.emit(_event(1, TurnEventKind.ANSWER_COMPLETED, TextPayload("early", "m1")))
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "thread_id": "thread",
-            "active_context": lambda self: type(
-                "Context", (), {"thread_id": "thread", "turn_id": "turn"}
-            )(),
-            "snapshot": lambda self: type("Snapshot", (), {"latest_sequence": 1})(),
-            "subscribe": lambda self, callback, *, after_sequence=0: broker.subscribe(
-                callback, after_sequence=after_sequence
-            ),
-        },
-    )()
+    early = RuntimeEvent(1, 1, "turn", "answer_delta", {"text": "early"}, 1)
+    facade = _ServiceWatchFacade(history=(early,))
+    host.set_stream = lambda kind, text, **kwargs: (
+        host.calls.append(("set_stream", (kind, text), kwargs)), facade.rendered.set()
+    )
     app = type("App", (), {"_transcript": host, "thread_id": "thread"})()
+    app.call_after_refresh = lambda callback, *args, **kwargs: host.call_after_refresh(
+        callback, *args, **kwargs
+    )
     controller = TurnController(app)
+    controller._service_sessions = {"project:thread": facade}
 
-    controller._attach_renderer(runtime, runtime.active_context())
+    async def exercise() -> None:
+        try:
+            controller.attach("thread", after_sequence=0)
+            assert facade.entered.wait(2)
+            assert facade.rendered.wait(2)
+            assert [call for call in host.calls if call[0] == "set_stream"] == [
+                ("set_stream", ("answer", "early"), {"elapsed_s": 0.0})
+            ]
+            assert facade.watches == [0]
+        finally:
+            controller.detach("thread")
+            facade.close()
+            assert facade.exited.wait(2)
 
-    answers = [call for call in host.calls if call[0] == "commit_answer"]
-    assert answers == [("commit_answer", ("early",), {})]
-    controller._detach_renderer()
+    asyncio.run(exercise())
 
 
 def test_bridge_replay_batch_accumulates_tool_writes_per_batch() -> None:

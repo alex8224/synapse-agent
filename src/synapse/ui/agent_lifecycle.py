@@ -88,7 +88,7 @@ class AgentLifecycleController:
             app.agent = agent
             turn = getattr(app, "_turn", None)
             if turn is not None:
-                turn.bind_agent(app.thread_id, agent)
+                turn.bind_agent(app.thread_id, agent, project_id=app._current_project_id())
             self.state.agent_ready.set()
             duration("agent.ready", startup_started, phase="startup")
             global_mark("agent:phase1-ready")
@@ -136,14 +136,18 @@ class AgentLifecycleController:
                     app.agent = current_with_mcp
                     turn = getattr(app, "_turn", None)
                     if turn is not None:
-                        turn.bind_agent(app.thread_id, current_with_mcp)
+                        turn.bind_agent(
+                            app.thread_id,
+                            current_with_mcp,
+                            project_id=app._current_project_id(),
+                        )
                     app.call_from_thread(app._bind_steer_queue)
                     app.call_from_thread(app._on_mcp_attached)
                 return
             app.agent = agent2
             turn = getattr(app, "_turn", None)
             if turn is not None:
-                turn.bind_agent(app.thread_id, agent2)
+                turn.bind_agent(app.thread_id, agent2, project_id=app._current_project_id())
             app.call_from_thread(app._bind_steer_queue)
             if not app._busy:
                 app.call_from_thread(app._on_mcp_attached)

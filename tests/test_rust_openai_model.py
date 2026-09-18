@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -19,6 +20,7 @@ from langchain_core.messages import (
 
 from synapse.models.rust_openai import (
     RustOpenAIChatModel,
+    RustOpenAIContextOverflowError,
     aimessage_chunk_from_openai_chunk,
     aimessage_chunk_from_responses_event,
     aimessage_from_openai,
@@ -757,6 +759,141 @@ def test_proxy_defaults_to_none(monkeypatch: Any) -> None:
     model.invoke([HumanMessage(content="hi")])
     assert len(instances) == 1
     assert instances[0]["proxy"] is None
+
+
+_OVERFLOW_MESSAGE = (
+    "request failed: failed to deserialize api response: error:invalid type: integer 400, "
+    'expected a string at line 3 column 15 content:{"error": {"code": 400, "message": '
+    '"The input token count exceeds the maximum number of tokens allowed 1048576.", '
+    '"status": "INVALID_ARGUMENT" }}'
+)
+
+
+def test_provider_metadata_stamped_on_non_streaming_message() -> None:
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    fake = MagicMock()
+    fake.complete.return_value = json.dumps(
+        {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8},
+        }
+    )
+    model._client = fake
+
+    ai = model.invoke([HumanMessage(content="hi")])
+
+    assert ai.response_metadata["model_provider"] == "openai"
+    assert ai.usage_metadata is not None
+
+
+def test_provider_metadata_stamped_on_stream_chunks(monkeypatch: Any) -> None:
+    _install_fake_rust_client(monkeypatch)
+    model = RustOpenAIChatModel(model="deepseek-v4-flash", base_url="https://x/v1")
+
+    parts = [
+        getattr(chunk, "message", chunk)
+        for chunk in model.stream([HumanMessage(content="hi")])
+    ]
+    merged = parts[0]
+    for part in parts[1:]:
+        merged = merged + part
+
+    # ``merge_dicts`` keeps ``model_provider`` idempotent while concatenating
+    # every other string-valued key, so exactly one value must survive merging.
+    assert merged.response_metadata["model_provider"] == "openai"
+
+
+def test_reported_token_compaction_trigger_uses_provider_metadata() -> None:
+    """The pre-emptive trigger must read the provider-reported token count.
+
+    ``SummarizationMiddleware`` ignores ``usage_metadata.total_tokens`` unless the
+    message also reports a matching ``response_metadata["model_provider"]``; without
+    it the trigger falls back to ``count_tokens_approximately``, which never reaches
+    the threshold for screenshot- or CJK-heavy conversations.
+    """
+    from langchain.agents.middleware import SummarizationMiddleware
+
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    model.profile = {"max_input_tokens": 1_000_000}
+    fake = MagicMock()
+    fake.complete.return_value = json.dumps(
+        {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 100,
+                "total_tokens": 1_000_100,
+            },
+        }
+    )
+    model._client = fake
+    ai = model.invoke([HumanMessage(content="hi")])
+
+    middleware = SummarizationMiddleware(
+        model=model,
+        trigger=("fraction", 0.85),
+        keep=("fraction", 0.10),
+    )
+
+    # total_tokens stays far below the 850k threshold, so only the reported-token
+    # path can make this True.
+    assert middleware._should_summarize([HumanMessage(content="hi"), ai], total_tokens=1_000)
+
+
+def test_chat_context_overflow_maps_to_context_overflow_error() -> None:
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    fake = MagicMock()
+    fake.complete.side_effect = RuntimeError(_OVERFLOW_MESSAGE)
+    model._client = fake
+
+    with pytest.raises(RustOpenAIContextOverflowError, match="exceeds the maximum number"):
+        model.invoke([HumanMessage(content="hi")])
+
+
+def test_context_overflow_error_stays_runtime_error_compatible() -> None:
+    """Callers that already catch ``RuntimeError`` must keep working."""
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    fake = MagicMock()
+    fake.complete.side_effect = RuntimeError(_OVERFLOW_MESSAGE)
+    model._client = fake
+
+    with pytest.raises(RuntimeError):
+        model.invoke([HumanMessage(content="hi")])
+
+
+def test_chat_non_overflow_error_stays_runtime_error() -> None:
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    fake = MagicMock()
+    fake.complete.side_effect = RuntimeError("request failed: connection reset by peer")
+    model._client = fake
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        model.invoke([HumanMessage(content="hi")])
+
+
+def test_chat_stream_context_overflow_maps_to_context_overflow_error() -> None:
+    model = RustOpenAIChatModel(model="gemini-3.8-flash-high")
+    fake = MagicMock()
+
+    def _failing_stream(request_json: str):
+        raise RuntimeError(_OVERFLOW_MESSAGE)
+        yield ""  # pragma: no cover - unreachable; keeps this a generator
+
+    fake.stream.side_effect = _failing_stream
+    model._client = fake
+
+    with pytest.raises(ContextOverflowError):
+        list(model.stream([HumanMessage(content="hi")]))
+
+
+def test_responses_context_overflow_maps_to_context_overflow_error() -> None:
+    payload = {
+        "error": {
+            "message": "The input token count exceeds the maximum number of tokens allowed 1048576."
+        }
+    }
+    with pytest.raises(ContextOverflowError):
+        aimessage_from_responses(payload)
 
 
 def test_websocket_request_failure_resets_cached_socket() -> None:

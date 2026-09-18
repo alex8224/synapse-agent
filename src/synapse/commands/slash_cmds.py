@@ -308,6 +308,7 @@ def handle_slash(
     agent: Any,
     thread_id: str,
     project_root: Path | None = None,
+    defer_persist: bool = False,
 ) -> SlashResult:
     """Parse and handle a slash command. Non-commands return handled=False."""
     raw = (text or "").strip()
@@ -402,6 +403,7 @@ def handle_slash(
             rebuild_agent=_rebuild_agent,
             persist_model_binding=_persist_model_binding,
             mcp_attach_pending=_mcp_attach_pending,
+            defer_persist=defer_persist,
         )
 
     if cmd == "/fast":

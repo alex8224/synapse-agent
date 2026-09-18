@@ -227,6 +227,26 @@ class TranscriptProjection:
                 current_id = current["source_checkpoint_id"] if current else None
                 if current_id != expected_source_checkpoint_id:
                     return
+            # Checkpoint messages predate runtime timing metadata. Preserve it
+            # only for the same positional user anchor, never for edited turns.
+            for index, row in enumerate(rows):
+                if row[3] != "user":
+                    continue
+                payload = json.loads(row[4])
+                previous = self._conn.execute(
+                    "SELECT payload_json FROM transcript_events "
+                    "WHERE thread_id = ? AND turn_seq = ? AND kind = 'user' LIMIT 1",
+                    (thread_id, row[2]),
+                ).fetchone()
+                old = json.loads(previous["payload_json"]) if previous else {}
+                if old.get("text") == payload.get("text") and (
+                    old.get("attachments", []) == payload.get("attachments", [])
+                ):
+                    for key in ("turn_id", "elapsed_s"):
+                        if payload.get(key) is None and old.get(key) is not None:
+                            payload[key] = old[key]
+                    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    rows[index] = (*row[:4], encoded)
             self._conn.execute(
                 "DELETE FROM transcript_events WHERE thread_id = ?", (thread_id,)
             )
@@ -289,7 +309,8 @@ class TranscriptProjection:
                 if source_checkpoint_id and self._checkpoint_turn_matches_locked(
                     thread_id, source_checkpoint_id, compact
                 ):
-                    self._conn.rollback()
+                    self._annotate_latest_work_locked(thread_id, compact)
+                    self._conn.commit()
                     return
                 if not compact and source_checkpoint_id and self._checkpoint_usage_included_locked(
                     thread_id, source_checkpoint_id
@@ -349,9 +370,42 @@ class TranscriptProjection:
             "WHERE thread_id = ? AND turn_seq = ? ORDER BY event_seq",
             (thread_id, int(meta["total_turns"] or 0)),
         ).fetchall()
-        persisted = [(str(row["kind"]), str(row["payload_json"])) for row in rows]
-        proposed = [(event.kind, _event_payload_json(event)) for event in compact]
+        def content(raw: str) -> dict[str, Any]:
+            payload = json.loads(raw)
+            # Runtime-only metadata cannot change checkpoint content identity.
+            payload.pop("turn_id", None)
+            payload.pop("elapsed_s", None)
+            return payload
+
+        persisted = [(str(row["kind"]), content(str(row["payload_json"]))) for row in rows]
+        proposed = [(event.kind, content(_event_payload_json(event))) for event in compact]
         return persisted == proposed
+
+    def _annotate_latest_work_locked(
+        self, thread_id: str, compact: list[UiTranscriptEvent]
+    ) -> None:
+        """Fill runtime timing on a turn already projected by checkpoint rebuild."""
+        user = next((event for event in compact if event.kind == "user"), None)
+        if user is None or user.turn_id is None:
+            return
+        row = self._conn.execute(
+            "SELECT event_seq,payload_json FROM transcript_events "
+            "WHERE thread_id = ? AND kind = 'user' ORDER BY event_seq DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            return
+        payload = json.loads(row["payload_json"])
+        payload.update(turn_id=user.turn_id, elapsed_s=user.elapsed_s)
+        self._conn.execute(
+            "UPDATE transcript_events SET payload_json = ? WHERE thread_id = ? AND event_seq = ?",
+            (
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                thread_id,
+                row["event_seq"],
+            ),
+        )
+        self._claim_turn_locked(thread_id, user.turn_id)
 
     def _append_claimed_turn_locked(
         self,
@@ -602,12 +656,28 @@ def compact_transcript_events(events: list[UiTranscriptEvent]) -> list[UiTranscr
     """Remove large provider payloads while preserving the visible transcript."""
     compact: list[UiTranscriptEvent] = []
     for event in events:
-        if event.kind != "tools":
+        if event.kind not in {"tools", "changes"}:
             compact.append(
                 UiTranscriptEvent(
                     kind=event.kind,
                     text=event.text,
                     images=list(event.images),
+                    attachments=[dict(item) for item in event.attachments],
+                    turn_id=event.turn_id,
+                    elapsed_s=event.elapsed_s,
+                )
+            )
+            continue
+        if event.kind == "changes":
+            # Bounded already (the runtime caps the list), and it is what the console
+            # paints as the turn's change cards: keep it whole, including the turn it
+            # belongs to (a revert is matched to that turn).
+            compact.append(
+                UiTranscriptEvent(
+                    kind="changes",
+                    changes=[dict(item) for item in event.changes],
+                    changes_total=event.changes_total,
+                    turn_id=event.turn_id,
                 )
             )
             continue
@@ -651,10 +721,23 @@ def _event_payload_json(event: UiTranscriptEvent) -> str:
 
 def _event_from_row(row: sqlite3.Row) -> UiTranscriptEvent:
     payload = json.loads(str(row["payload_json"]))
+    attachments = payload.get("attachments")
+    changes = payload.get("changes")
     return UiTranscriptEvent(
         kind=str(row["kind"]),
         text=str(payload.get("text") or ""),
         tool_calls=list(payload.get("tool_calls") or []),
         tool_results=list(payload.get("tool_results") or []),
         images=[],
+        # Legacy rows have no ``attachments`` key: default to empty so an old
+        # projection stays readable.
+        attachments=[dict(item) for item in attachments] if isinstance(attachments, list) else [],
+        # Legacy rows have no ``changes`` key either: a turn that predates them simply
+        # shows no change cards.
+        changes=[dict(item) for item in changes] if isinstance(changes, list) else [],
+        changes_total=payload.get("changes_total")
+        if isinstance(payload.get("changes_total"), int)
+        else 0,
+        turn_id=payload.get("turn_id"),
+        elapsed_s=payload.get("elapsed_s"),
     )

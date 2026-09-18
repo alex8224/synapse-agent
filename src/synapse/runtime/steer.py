@@ -86,13 +86,15 @@ class SteerQueue:
         return list(self._items)
 
     def _enqueue_notification_unlocked(self) -> bool:
-        self._pending_notifications.append(
-            (self._snapshot(), list(self._listeners))
-        )
+        self._queue_notification_unlocked()
         if self._notifying:
             return False
         self._notifying = True
         return True
+
+    def _queue_notification_unlocked(self) -> None:
+        """Queue a snapshot without claiming the lock-free notification drain."""
+        self._pending_notifications.append((self._snapshot(), list(self._listeners)))
 
     def _dispatch_notifications(self) -> None:
         # Preserve mutation order without invoking application code under _lock.
@@ -110,16 +112,39 @@ class SteerQueue:
 
     def push(self, text: str) -> int:
         """Enqueue guidance. Returns pending count after push (0 if empty text)."""
+        pending = self.push_silent(text)
+        self.dispatch_pending()
+        return pending
+
+    def push_silent(self, text: str) -> int:
+        """Enqueue guidance without invoking listener callbacks.
+
+        The change notification is queued and delivered by a later
+        :meth:`dispatch_pending` (or any other push/drain/clear), so callers
+        that must not run external code under their own lock can append the
+        item and dispatch after releasing it.  Returns the pending count after
+        push (0 for empty text).
+        """
         body = (text or "").strip()
         if not body:
             return 0
         with self._lock:
             self._items.append(body)
             n = len(self._items)
-            should_dispatch = self._enqueue_notification_unlocked()
-        if should_dispatch:
-            self._dispatch_notifications()
+            self._queue_notification_unlocked()
         return n
+
+    def dispatch_pending(self) -> None:
+        """Deliver queued listener notifications without holding caller locks.
+
+        No-op when another drainer is already dispatching or nothing is
+        pending; listeners always run outside this queue's ``_lock``.
+        """
+        with self._lock:
+            if not self._pending_notifications or self._notifying:
+                return
+            self._notifying = True
+        self._dispatch_notifications()
 
     def drain(self) -> list[str]:
         """Pop all pending guidance (order preserved)."""
@@ -164,6 +189,21 @@ class SteerQueue:
             should_dispatch = self._enqueue_notification_unlocked()
         if should_dispatch:
             self._dispatch_notifications()
+        return items
+
+    def clear_silent(self) -> list[str]:
+        """Drop all pending items without invoking listener callbacks.
+
+        The change notification is queued and delivered by a later
+        :meth:`dispatch_pending`, so callers can clear the queue while holding
+        a lock that must never run external code inside it.
+        """
+        with self._lock:
+            if not self._items:
+                return []
+            items = list(self._items)
+            self._items.clear()
+            self._queue_notification_unlocked()
         return items
 
 

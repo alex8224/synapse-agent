@@ -18,19 +18,19 @@ class SteerController:
     def turn_queue(self) -> SteerQueue | None:
         """Return the queue consumed by the active graph run when available."""
         app = self._app
-        controller = getattr(app, "_turn", None)
-        runtime = getattr(controller, "session_runtime", None)
-        if runtime is not None:
-            queue = runtime.steer_queue()
-            if queue is not None:
-                return queue
-        busy = bool(getattr(controller, "busy", getattr(app, "_busy", False)))
         active_queue = getattr(app, "_active_steer_queue", None)
-        if busy and active_queue is not None:
-            # Compatibility for a turn started before SessionRuntime was
-            # attached (and for lightweight hosts used outside the full TUI).
+        if active_queue is not None:
             return active_queue
-        return get_agent_steer_queue(app.agent)
+        turn = getattr(app, "_turn", None)
+        if turn is not None:
+            thread_id = getattr(app, "thread_id", None)
+            if thread_id:
+                agent = turn.agent_for_session(thread_id)
+                if agent is not None:
+                    queue = get_agent_steer_queue(agent)
+                    if queue is not None:
+                        return queue
+        return get_agent_steer_queue(getattr(app, "agent", None))
 
     def bind_queue(self) -> None:
         """Bind the status widget to the current agent queue, removing stale listeners."""
@@ -55,9 +55,16 @@ class SteerController:
                 if self._bound_queue is source:
                     app._on_steer_items_changed(snapshot)
 
-            try:
-                app.call_from_thread(apply, list(items))
-            except Exception:  # noqa: BLE001 - lightweight hosts have no Textual thread
+            wake_ui = getattr(app, "call_after_refresh", None)
+            if callable(wake_ui):
+                # The runtime may be answering a synchronous UI command. Never
+                # wait for that same UI thread to acknowledge a queue mutation.
+                try:
+                    wake_ui(apply, list(items))
+                except RuntimeError:
+                    return  # The UI is shutting down; execution still owns the queue.
+            else:
+                # Lightweight non-Textual hosts have no UI loop to dispatch to.
                 apply(list(items))
 
         self._listener = on_change

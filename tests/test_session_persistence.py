@@ -141,3 +141,249 @@ def test_persist_refreshes_source_checkpoint_id_when_available(
     persistence.persist(context, _result(TurnStatus.COMPLETED))
 
     assert projection.calls[0][4] == "ckpt-9"
+
+
+def _gc_context(tmp_path, monkeypatch) -> tuple[list[tuple[str, str]], TurnContext]:
+    import synapse.sessions.checkpoint_gc as gc_mod
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gc_mod,
+        "schedule_subagent_checkpoint_gc",
+        lambda path, thread_id: calls.append((str(path), thread_id)),
+    )
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    checkpoint_path.write_bytes(b"")
+    settings = SimpleNamespace(checkpoint_path=str(checkpoint_path))
+    context = TurnContext(
+        thread_id="t1",
+        agent=SimpleNamespace(),
+        settings=settings,
+        request=SimpleNamespace(resume=False, input="hello", thread_id="t1"),
+    )
+    return calls, context
+
+
+def test_persist_completed_turn_schedules_subagent_gc(tmp_path, monkeypatch) -> None:
+    calls, context = _gc_context(tmp_path, monkeypatch)
+
+    _persistence(_RecordingProjection()).persist(
+        context, _result(TurnStatus.COMPLETED)
+    )
+
+    assert calls == [(str(tmp_path / "checkpoints.sqlite"), "t1")]
+
+
+def test_persist_unfinished_turn_keeps_subagent_state(tmp_path, monkeypatch) -> None:
+    for status in (TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.WAITING_APPROVAL):
+        calls, context = _gc_context(tmp_path, monkeypatch)
+        _persistence(_RecordingProjection()).persist(context, _result(status))
+        assert calls == [], status
+
+
+def _context_with_agent(agent: object) -> TurnContext:
+    return TurnContext(
+        thread_id="t1",
+        agent=agent,
+        settings=SimpleNamespace(checkpoint_path=None),
+        request=SimpleNamespace(resume=False, input="use a tool", thread_id="t1"),
+    )
+
+
+def test_tool_rows_are_read_from_the_checkpoint_not_the_stream_delta() -> None:
+    """The stream's last update overwrites ``messages``; the checkpoint keeps all.
+
+    ``result.state`` is folded from per-node updates, so it holds only the final
+    AI message by the time the turn settles.  A projection built from it loses the
+    tool call, which is what the console showed before a reload and not after.
+    """
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("older prompt"),
+        AIMessage("", tool_calls=[{"id": "c0", "name": "read_file", "args": {}}]),
+        ToolMessage("older output", tool_call_id="c0", name="read_file"),
+        AIMessage("older answer"),
+        HumanMessage("use a tool"),
+        AIMessage(
+            "",
+            tool_calls=[{"id": "c1", "name": "execute", "args": {"intent": "run checks"}}],
+        ),
+        ToolMessage("output", tool_call_id="c1", name="execute"),
+        AIMessage("done"),
+    ]
+    agent = SimpleNamespace(
+        get_state=lambda config: SimpleNamespace(values={"messages": messages})
+    )
+    projection = _RecordingProjection()
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        # Exactly what the stream leaves behind: the last node's delta only.
+        state={"messages": [AIMessage("done")]},
+        final_text="done",
+        elapsed_s=12.5,
+    )
+
+    _persistence(projection).persist(_context_with_agent(agent), result)
+
+    events = projection.calls[0][1]
+    assert [event.kind for event in events] == ["user", "tools", "answer"]
+    tools = next(event for event in events if event.kind == "tools")
+    # The turn's own slice only: the older turn's call must not be re-projected.
+    assert [call["name"] for call in tools.tool_calls] == ["execute"]
+    assert [item["content"] for item in tools.tool_results] == ["output"]
+    # Timing stays on the user anchor, which the console's "已工作" header reads.
+    assert events[0].turn_id == "turn-1"
+    assert events[0].elapsed_s == 12.5
+
+
+def test_a_multi_step_turn_is_projected_in_the_order_it_ran() -> None:
+    """The checkpoint's step order is what a reload has to show.
+
+    Keeping only the batches and prefixing the turn's aggregated reasoning instead
+    put every call of the turn after every thought of the turn, so a reload showed
+    one thought and then one merged batch -- the turn's own order, re-arranged.
+    """
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("run both"),
+        AIMessage(
+            "",
+            additional_kwargs={"reasoning_content": "read first"},
+            tool_calls=[{"id": "c1", "name": "read_file", "args": {}}],
+        ),
+        ToolMessage("body", tool_call_id="c1", name="read_file"),
+        AIMessage(
+            "",
+            additional_kwargs={"reasoning_content": "now run"},
+            tool_calls=[{"id": "c2", "name": "execute", "args": {}}],
+        ),
+        ToolMessage("2 passed", tool_call_id="c2", name="execute"),
+        AIMessage("both done", additional_kwargs={"reasoning_content": "wrap up"}),
+    ]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        # The live accumulator holds the whole turn's reasoning concatenated.
+        reasoning_text="read firstnow runwrap up",
+        final_text="both done",
+        elapsed_s=8.0,
+    )
+
+    events = SessionPersistence._events(
+        "run both", result, state_messages=messages, turn_events=None
+    )
+
+    assert [event.kind for event in events] == [
+        "user",
+        "thought",
+        "tools",
+        "thought",
+        "tools",
+        "thought",
+        "answer",
+    ]
+    assert [event.text for event in events if event.kind == "thought"] == [
+        "read first",
+        "now run",
+        "wrap up",
+    ]
+    assert [
+        call["name"] for event in events if event.kind == "tools" for call in event.tool_calls
+    ] == ["read_file", "execute"]
+
+
+def test_a_checkpoint_without_reasoning_falls_back_to_the_turn_reasoning() -> None:
+    """A checkpoint that kept no reasoning leaves the live accumulator as the record."""
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage("use a tool"),
+        AIMessage("", tool_calls=[{"id": "c1", "name": "execute", "args": {}}]),
+        ToolMessage("output", tool_call_id="c1", name="execute"),
+        AIMessage("done"),
+    ]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        reasoning_text="thought from the stream",
+        final_text="done",
+    )
+
+    events = SessionPersistence._events(
+        "use a tool", result, state_messages=messages, turn_events=None
+    )
+
+    assert [event.kind for event in events] == ["user", "thought", "tools", "answer"]
+    assert events[1].text == "thought from the stream"
+
+
+def test_a_turn_that_changed_files_projects_its_change_list() -> None:
+    """A reload paints the turn's change cards from this event."""
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from synapse.runtime.service.event_types import TurnChange
+
+    messages = [HumanMessage("edit a file"), AIMessage("done")]
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        final_text="done",
+        changes=(
+            TurnChange(path="a.py", status="modified", insertions=2, deletions=1),
+            TurnChange(path="b.py", status="added", insertions=4),
+        ),
+        changes_total=2,
+    )
+
+    events = SessionPersistence._events(
+        "edit a file", result, state_messages=messages, turn_events=None
+    )
+
+    # Last of all: the change list is the turn's outcome, after what it said.
+    assert [event.kind for event in events] == ["user", "answer", "changes"]
+    assert events[-1].changes == [
+        {"path": "a.py", "status": "modified", "insertions": 2, "deletions": 1, "binary": False},
+        {"path": "b.py", "status": "added", "insertions": 4, "deletions": 0, "binary": False},
+    ]
+
+
+def test_an_unreadable_checkpoint_degrades_to_the_stream_state() -> None:
+    """A settlement must survive a checkpoint that cannot be read."""
+
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    def boom(config: object) -> object:
+        raise RuntimeError("checkpoint unavailable")
+
+    projection = _RecordingProjection()
+    result = TurnResult(
+        turn_id="turn-1",
+        thread_id="t1",
+        status=TurnStatus.COMPLETED,
+        state={
+            "messages": [
+                AIMessage("", tool_calls=[{"id": "c1", "name": "execute", "args": {}}]),
+                ToolMessage("output", tool_call_id="c1", name="execute"),
+            ]
+        },
+        final_text="done",
+    )
+
+    _persistence(projection).persist(
+        _context_with_agent(SimpleNamespace(get_state=boom)), result
+    )
+
+    events = projection.calls[0][1]
+    assert [event.kind for event in events] == ["user", "tools", "answer"]
+    assert [call["name"] for call in events[1].tool_calls] == ["execute"]

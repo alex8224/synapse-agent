@@ -34,3 +34,4 @@ class SlashResult:
     # Goal pause is a runtime action too: stop the current graph turn after
     # the durable goal state has been changed to paused.
     cancel_active_turn: bool = False
+    candidate_settings: Any | None = None

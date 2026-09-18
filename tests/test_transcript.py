@@ -63,12 +63,49 @@ def test_fold_messages_user_tools_answer():
     ]
     events = fold_messages_for_ui(msgs)
     kinds = [e.kind for e in events]
-    assert kinds == ["user", "thought", "tools", "answer"]
+    # The batch belongs to the step that asked for it, so it comes before the
+    # reasoning of the step that followed it -- the order the reader watched.
+    assert kinds == ["user", "tools", "thought", "answer"]
     assert events[0].text == "list files"
-    assert events[1].text.startswith("I should list")
-    assert len(events[2].tool_calls) == 2
-    assert len(events[2].tool_results) == 2
+    assert len(events[1].tool_calls) == 2
+    assert len(events[1].tool_results) == 2
+    assert events[2].text.startswith("I should list")
     assert events[3].text == "Found two files."
+
+
+def test_fold_keeps_each_step_batch_before_the_next_step_thought():
+    """A multi-step turn replays in the order it was watched.
+
+    Each step's calls used to stay pending until the turn's answer, so a reload
+    showed one batch holding every call of the turn, placed after every thought.
+    """
+    msgs = [
+        _Human("run both"),
+        _AI("", reasoning="read first", tool_calls=[{"id": "c1", "name": "read_file", "args": {}}]),
+        _Tool("read_file", "body", "c1"),
+        _AI("", reasoning="now run", tool_calls=[{"id": "c2", "name": "execute", "args": {}}]),
+        _Tool("execute", "2 passed", "c2"),
+        _AI("both done", reasoning="wrap up"),
+    ]
+    events = fold_messages_for_ui(msgs)
+    assert [e.kind for e in events] == [
+        "user",
+        "thought",
+        "tools",
+        "thought",
+        "tools",
+        "thought",
+        "answer",
+    ]
+    assert [e.text for e in events if e.kind == "thought"] == [
+        "read first",
+        "now run",
+        "wrap up",
+    ]
+    assert [e.tool_calls[0]["name"] for e in events if e.kind == "tools"] == [
+        "read_file",
+        "execute",
+    ]
 
 
 def test_fold_skips_system():

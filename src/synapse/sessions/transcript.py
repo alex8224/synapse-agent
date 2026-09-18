@@ -502,12 +502,26 @@ def load_thread_messages(
 class UiTranscriptEvent:
     """One renderable unit for TUI/history replay."""
 
-    kind: str  # user | answer | thought | tools | meta
+    kind: str  # user | answer | thought | tools | changes | meta
     text: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     # Optional inline images for user turns: (raw_bytes, mime)
     images: list[tuple[bytes, str]] = field(default_factory=list)
+    # Durable attachment references for a user turn (JSON-safe metadata only;
+    # never base64 bytes).  Empty for every non-user event and for legacy rows.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    # The files the turn created, modified or deleted, each with the turn's own line
+    # counts (see `runtime/workspace_changes`).  Plain dicts, like the tool rows: the
+    # projection stores JSON, and the console renders it as the turn's change cards.
+    # Empty for every other kind and for turns that changed nothing.
+    changes: list[dict[str, Any]] = field(default_factory=list)
+    #: How many files the turn changed in total; `changes` is the bounded list, so a
+    #: turn that rewrote a whole tree says so without storing it.
+    changes_total: int = 0
+    # Optional runtime identity/timing; checkpoint-only legacy rows lack these.
+    turn_id: str | None = None
+    elapsed_s: float | None = None
 
 
 
@@ -523,6 +537,28 @@ def _message_images(msg: Any) -> list[tuple[bytes, str]]:
     try:
         return extract_image_payloads(content)
     except Exception:  # noqa: BLE001
+        return []
+
+
+def _message_attachment_refs(msg: Any) -> list[dict[str, Any]]:
+    """Durable attachment refs carried on a human message's metadata.
+
+    The value is validated and bounded by
+    :func:`synapse.content.multimodal.extract_attachment_refs`: a foreign or
+    malformed checkpoint value can only contribute well-formed, capped refs
+    (opaque ids stay opaque - no bytes, no paths), and anything else is ignored
+    so replay never fails on message metadata.
+    """
+    metadata = getattr(msg, "additional_kwargs", None)
+    if metadata is None and isinstance(msg, dict):
+        metadata = msg.get("additional_kwargs")
+    try:
+        from synapse.content.multimodal import extract_attachment_refs
+    except Exception:  # noqa: BLE001 - optional metadata path
+        return []
+    try:
+        return extract_attachment_refs(metadata)
+    except Exception:  # noqa: BLE001 - replay must never fail on metadata
         return []
 
 
@@ -584,12 +620,14 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             except Exception:  # noqa: BLE001
                 pass
             images = _message_images(msg)
-            if text or images:
+            attachments = _message_attachment_refs(msg)
+            if text or images or attachments:
                 events.append(
                     UiTranscriptEvent(
                         kind="user",
-                        text=text or ("(image)" if images else ""),
+                        text=text or ("(image)" if (images or attachments) else ""),
                         images=images,
+                        attachments=attachments,
                     )
                 )
             continue
@@ -629,6 +667,13 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             reasoning = _message_reasoning(msg).strip()
             text = _message_content(msg).strip()
             calls = _tool_calls(msg)
+            # A new model step closes the step before it: that step's results are
+            # already in `pending_results`, so the batch boundary is here -- ahead of
+            # this step's own reasoning.  Holding them open instead merged every batch
+            # of the turn into one, and the one batch then landed after every thought
+            # of the turn.
+            if pending_calls:
+                flush_tools()
             if reasoning:
                 # Thought before tools/answer for this model turn.
                 events.append(UiTranscriptEvent(kind="thought", text=reasoning))

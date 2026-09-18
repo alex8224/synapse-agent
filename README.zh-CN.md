@@ -313,6 +313,7 @@ OpenAI Responses API 同时支持 HTTP/SSE 与普通 LLM WebSocket。profile 中
 | `Ctrl+T` | 折叠/展开最近工具组 |
 | `Ctrl+E` | 展开/收起最近 Thought 摘要 |
 | `Ctrl+L` | 清空 transcript |
+| `Ctrl+End` | 跳转到 transcript 最新输出（恢复自动跟随） |
 | `Alt+C` | 复制当前划选（无选区时复制最近答案） |
 | `Ctrl+Shift+Y` | 复制最近一条助手答案 |
 | `Ctrl+C` / `Ctrl+Q` | 退出 |

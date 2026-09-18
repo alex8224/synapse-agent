@@ -135,3 +135,38 @@ def test_search_tools_report_truncated_results() -> None:
     assert search_files.invoke({"pattern": "match", "max_results": 1}) == (
         "/a.py\n[Results truncated]"
     )
+
+
+def test_intent_wrapped_tools_reject_extra_arguments_with_actionable_error() -> None:
+    from pydantic import ValidationError
+
+    from synapse.runtime.middleware import add_intent_to_tool, format_tool_validation_error
+
+    _find_files, search_files = build_filesystem_search_tools(_SearchBackend())
+    wrapped_search = add_intent_to_tool(search_files)
+
+    # 1. 正常调用：允许合法字段 + intent
+    res = wrapped_search.invoke({
+        "pattern": r"def\s+name",
+        "intent": "查找函数定义",
+        "path": "/src",
+        "glob": "**/*.py",
+    })
+    assert "/src/app.py" in res
+
+    # 2. 多余字段（如模型臆造的 description）必须被 ValidationError 拒绝
+    try:
+        wrapped_search.invoke({
+            "intent": "查找函数定义",
+            "description": "pattern: def name",
+            "path": "/src",
+        })
+    except ValidationError as exc:
+        formatted = format_tool_validation_error(exc, "search_files")
+        assert "Validation Error: Invalid arguments for tool 'search_files'." in formatted
+        assert "Unexpected argument(s): ['description']" in formatted
+        assert "Missing required argument(s): ['pattern']" in formatted
+        assert "do not encapsulate arguments in 'description'" in formatted
+    else:
+        raise AssertionError("Expected ValidationError for extra argument 'description'")
+

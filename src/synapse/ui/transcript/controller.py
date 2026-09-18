@@ -151,13 +151,20 @@ class TranscriptController:
         st = self.state
         block = st.live_stream_block
         if block is not None and getattr(block, "live", False):
-            try:
-                if block.is_attached:
-                    block.remove()
-            except Exception:  # noqa: BLE001
-                pass
-            if isinstance(block, ThoughtBlock) and block in st.thought_blocks:
-                st.thought_blocks.remove(block)
+            if isinstance(block, ThoughtBlock) and (block.body or "").strip():
+                try:
+                    block.seal(block.elapsed_s, block.body)
+                    self._follow_timeline_if_needed()
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                try:
+                    if block.is_attached:
+                        block.remove()
+                except Exception:  # noqa: BLE001
+                    pass
+                if isinstance(block, ThoughtBlock) and block in st.thought_blocks:
+                    st.thought_blocks.remove(block)
         st.live_stream_block = None
         st.live_stream_kind = None
 
@@ -351,6 +358,21 @@ class TranscriptController:
                 timeline.scroll_to_center(target, animate=True)
             except Exception:  # noqa: BLE001
                 pass
+
+    def scroll_to_bottom(self) -> None:
+        """Jump the transcript to the newest output (Ctrl+End).
+
+        ``animate=False`` is deliberate: the jump must land on the true bottom
+        in a single frame, otherwise a long transcript keeps animating towards
+        a stale target while new blocks arrive. Landing on the bottom also
+        re-arms the follow heuristic in ``_follow_timeline_if_needed``, so
+        streamed output scrolls again.
+        """
+        try:
+            timeline = self._app.query_one("#log", VerticalScroll)
+        except Exception:  # noqa: BLE001 - transcript unmounted / app shutting down
+            return
+        timeline.scroll_end(animate=False)
 
     # -- copy selection / last answer -------------------------------------
 

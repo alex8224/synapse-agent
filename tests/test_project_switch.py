@@ -64,19 +64,8 @@ def test_switch_project_swaps_context_in_process(monkeypatch, tmp_path: Path) ->
 
     app = _make_app(monkeypatch, tmp_path, catalog_path)
 
-    # Seed a live runtime for the current project before the switch.
-    from synapse.runtime.sessions import SessionRuntime
-
-    live_agent = SimpleNamespace(
-        _coding_goal_service=None, _coding_steer_queue=SteerQueue()
-    )
-    runtime_a = SessionRuntime(
-        thread_id="t-a",
-        project_id=pa.project_id,
-        agent=live_agent,
-        settings=app.settings,
-    )
-    app._turn._sessions["t-a"] = runtime_a
+    live_agent = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=SteerQueue())
+    app._turn.bind_agent("t-a", live_agent, project_id=pa.project_id)
     # Replace the @work-decorated app worker so no Textual loop is required.
     app._build_project_agent_bg = MagicMock()
 
@@ -90,7 +79,7 @@ def test_switch_project_swaps_context_in_process(monkeypatch, tmp_path: Path) ->
     app._schedule_transcript_reset.assert_called_once()
 
     # The original project's runtime is untouched and keeps running.
-    assert app._turn._sessions["t-a"] is runtime_a
+    assert app._turn.agent_for_session("t-a", pa.project_id) is live_agent
 
     # The background agent build targets the new project's context.
     app._build_project_agent_bg.assert_called_once()
@@ -98,6 +87,206 @@ def test_switch_project_swaps_context_in_process(monkeypatch, tmp_path: Path) ->
     assert args[0] == pb.project_id
     assert args[1].workspace == ws_b.resolve()
     assert args[2] == "t-b"
+
+
+def test_switch_project_reuses_exact_target_thread_agent(monkeypatch, tmp_path: Path) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    pb = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    exact = SimpleNamespace(_coding_goal_service=None, _coding_steer_queue=None)
+    app._turn.bind_agent("target", exact, project_id=pb.project_id)
+    app._switch_project(pb.project_id, "target")
+    assert app.agent is exact
+
+
+def test_switch_project_builds_when_target_thread_agent_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    pb = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    app._build_project_agent_bg = MagicMock()
+    app._switch_project(pb.project_id, "missing")
+    app._build_project_agent_bg.assert_called_once()
+
+
+def test_switch_project_same_thread_cross_project_is_exact(monkeypatch, tmp_path: Path) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    pb = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    exact = object()
+    app._turn.bind_agent("t-a", exact, project_id=pb.project_id)
+    app._build_project_agent_bg = MagicMock()
+    app._switch_project(pb.project_id, "t-a")
+    assert app.agent is exact
+    app._build_project_agent_bg.assert_not_called()
+
+
+def test_project_agent_ready_binds_exact_project_and_thread(monkeypatch, tmp_path: Path) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    pb = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    captured = {}
+    app._turn.bind_agent = lambda thread, agent, **kw: captured.update(
+        thread=thread, agent=agent, **kw
+    )
+    app.call_from_thread = lambda fn: fn()
+    app._bind_steer_queue = MagicMock()
+    app._bind_goal_listener = MagicMock()
+    app._turn.sync_foreground_status = MagicMock()
+    build_calls = []
+    monkeypatch.setattr(
+        "synapse.app.agent.build_coding_agent",
+        lambda *args, **kwargs: build_calls.append((args, kwargs)) or "built",
+    )
+    app.thread_id = "target"
+    app.project_root = tmp_path / "mutated-after-switch"
+    from synapse.ui.tui import CodingAgentApp
+
+    CodingAgentApp._build_project_agent_bg.__wrapped__(
+        app, pb.project_id, app.settings, "target", workspace=ws_b
+    )
+    assert captured == {"thread": "target", "agent": "built", "project_id": pb.project_id}
+    assert build_calls[0][1]["project_root"] == ws_b.resolve()
+
+
+def _build_test_context(monkeypatch, tmp_path: Path):
+    from synapse.projects.catalog import ProjectCatalog
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    project = catalog.register_project(workspace, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    app._turn.bind_agent = MagicMock()
+    app._turn.attach = MagicMock()
+    app._turn.sync_foreground_status = MagicMock()
+    app._bind_steer_queue = MagicMock()
+    app._bind_goal_listener = MagicMock()
+    app._reload_session_title = MagicMock()
+    app._refresh_topbar = MagicMock()
+    app.call_from_thread = lambda fn, *args: fn(*args)
+    monkeypatch.setattr("synapse.app.agent.build_coding_agent", lambda *a, **k: object())
+    return app, project.project_id
+
+
+def test_stale_project_build_same_thread_different_project_is_ignored(
+    monkeypatch, tmp_path
+) -> None:
+    app, project_id = _build_test_context(monkeypatch, tmp_path)
+    app.thread_id = "target"
+    app._project_switch_generation = 2
+    app._current_project_id = lambda: "current"
+    from synapse.ui.tui import CodingAgentApp
+
+    CodingAgentApp._build_project_agent_bg.__wrapped__(app, project_id, app.settings, "target", 2)
+    assert not app._turn.bind_agent.called
+
+
+def test_stale_same_project_same_thread_older_generation_is_ignored(monkeypatch, tmp_path) -> None:
+    app, project_id = _build_test_context(monkeypatch, tmp_path)
+    app.thread_id = "target"
+    app._project_switch_generation = 3
+    app._current_project_id = lambda: project_id
+    from synapse.ui.tui import CodingAgentApp
+
+    CodingAgentApp._build_project_agent_bg.__wrapped__(app, project_id, app.settings, "target", 2)
+    assert not app._turn.bind_agent.called
+
+
+def test_project_build_mismatch_does_not_bind_or_attach(monkeypatch, tmp_path) -> None:
+    app, project_id = _build_test_context(monkeypatch, tmp_path)
+    app.thread_id = "other"
+    app._project_switch_generation = 1
+    app._current_project_id = lambda: project_id
+    from synapse.ui.tui import CodingAgentApp
+
+    CodingAgentApp._build_project_agent_bg.__wrapped__(app, project_id, app.settings, "target", 1)
+    assert not app._turn.bind_agent.called
+    assert not app._turn.attach.called
+
+
+def test_current_project_build_generation_installs_once(monkeypatch, tmp_path) -> None:
+    app, project_id = _build_test_context(monkeypatch, tmp_path)
+    app.thread_id = "target"
+    app._project_switch_generation = 4
+    app._current_project_id = lambda: project_id
+    from synapse.ui.tui import CodingAgentApp
+
+    CodingAgentApp._build_project_agent_bg.__wrapped__(app, project_id, app.settings, "target", 4)
+    app._turn.bind_agent.assert_called_once()
+    app._turn.attach.assert_called_once_with("target")
+
+
+def test_stale_transcript_reset_same_thread_different_project_is_ignored(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    project = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    app._build_project_agent_bg = MagicMock()
+    app._switch_project(project.project_id, "target")
+    app._turn.attach = MagicMock()
+    on_ready = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
+    app._current_project_id = lambda: "different-project"
+
+    on_ready()
+
+    app._turn.attach.assert_not_called()
+
+
+def test_current_transcript_reset_generation_attaches_once(monkeypatch, tmp_path: Path) -> None:
+    from synapse.projects.catalog import ProjectCatalog
+
+    ws_b = tmp_path / "proj-b"
+    ws_b.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(str(catalog_path))
+    project = catalog.register_project(ws_b, detect_git=False)
+    catalog.close()
+    app = _make_app(monkeypatch, tmp_path, catalog_path)
+    app._build_project_agent_bg = MagicMock()
+    app._switch_project(project.project_id, "target")
+    app._current_project_id = lambda: project.project_id
+    app._turn.attach = MagicMock()
+    app._turn.sync_foreground_status = MagicMock()
+    on_ready = app._schedule_transcript_reset.call_args.kwargs["on_complete"]
+
+    on_ready()
+
+    app._turn.attach.assert_called_once_with("target")
 
 
 def test_switch_project_missing_project_reports_error(monkeypatch, tmp_path: Path) -> None:

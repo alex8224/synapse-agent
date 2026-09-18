@@ -6,9 +6,9 @@ import asyncio
 import concurrent.futures
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
+from synapse.observability.error_log import exception_message, record_error
 from synapse.runtime.agent_loop.model import (
     CancelToken,
     TurnContext,
@@ -18,6 +18,38 @@ from synapse.runtime.agent_loop.model import (
 )
 from synapse.runtime.async_runtime import AsyncRuntime, get_async_runtime
 from synapse.runtime.streaming import AgentEventSink
+from synapse.runtime.turn_reverts import build_record, save_record
+from synapse.runtime.workspace_changes import changes_between, snapshot_workspace
+
+
+def _record_turn_reverts(
+    workspace: Any,
+    *,
+    thread_id: str,
+    turn_id: str,
+    before: Any,
+    after: Any,
+    changes: tuple[Any, ...],
+) -> None:
+    """Keep this turn's pre-change copies, so one file of it can be undone later.
+
+    Bookkeeping, like the change report itself: it runs at settlement, on the turn's own
+    thread, and an unwritable state directory costs the reader the undo -- never the turn.
+    Only the files the turn reports are kept, which are exactly the ones a card shows.
+    """
+    if not changes:
+        return
+    try:
+        record = build_record(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            before=before,
+            after=after,
+            changes=changes,
+        )
+        save_record(workspace, record)
+    except (OSError, ValueError, TypeError):
+        return
 
 
 class _SafeEventSink:
@@ -33,60 +65,23 @@ class _SafeEventSink:
             pass
 
 
-class _HeadlessRenderer:
-    """No-op renderer that still enables the parser's enhanced tool-item path."""
-
-    streamed_answer = False
-    streamed_reasoning = False
-
-    def __init__(self) -> None:
-        self.answer_buf: list[str] = []
-        self.reasoning_buf: list[str] = []
-
-    def __getattr__(self, name: str) -> Callable[..., None]:
-        if name in {
-            "activity_start",
-            "activity_update",
-            "activity_stop",
-            "write_reasoning",
-            "close_reasoning",
-            "write_answer_token",
-            "write_answer_complete",
-            "finalize_line",
-            "tool_calls_started",
-            "tool_result",
-            "tool_item_started",
-            "tool_item_updated",
-            "tool_item_finished",
-            "tool_group_closed",
-            "turn_finished",
-            "info",
-            "note_usage",
-        }:
-            return lambda *args, **kwargs: None
-        raise AttributeError(name)
-
-
-@dataclass(frozen=True, slots=True)
-class StreamRunnerOptions:
-    """Optional compatibility renderer settings supplied by app assembly."""
-
-    renderer: Any | None = None
-
-
 class AgentTurnRuntime:
-    """Execute exactly one frozen TurnContext without any UI dependency."""
+    """Execute exactly one frozen TurnContext without any UI dependency.
+
+    The runtime only consumes the execution request, the cancellation signal
+    and an event sink.  It never touches a renderer: display sinks belong to
+    the UI wrapper (``synapse.ui.stream.stream_agent``), which callers may
+    inject explicitly as the stream runner with their own renderer closure.
+    """
 
     def __init__(
         self,
         async_runtime: AsyncRuntime | None = None,
         *,
         stream_runner: Callable[..., Any] | None = None,
-        runner_options: StreamRunnerOptions | None = None,
     ) -> None:
         self._async_runtime = async_runtime or get_async_runtime()
         self._stream_runner = stream_runner
-        self._runner_options = runner_options or StreamRunnerOptions()
         self._run_lock = threading.Lock()
         self._running_turns: set[str] = set()
 
@@ -128,7 +123,6 @@ class AgentTurnRuntime:
                 sink,
                 token,
                 stream_runner,
-                self._runner_options,
             )
         finally:
             self._release(context.turn_id)
@@ -187,10 +181,37 @@ class AgentTurnRuntime:
         sink: AgentEventSink | None,
         token: CancelToken,
         stream_runner: Callable[..., Any],
-        runner_options: StreamRunnerOptions,
     ) -> TurnResult:
         settings = context.settings
         safe_sink = _SafeEventSink(sink) if sink is not None else None
+        workspace = getattr(settings, "workspace", None)
+        # The workspace as the turn finds it.  What the turn changes cannot be read off
+        # the workspace afterwards: the standing delta against `HEAD` already holds
+        # every earlier turn's edits, so the turn's own contribution needs the state it
+        # started from.  Taken here, on the turn's own thread, and never able to fail
+        # the turn (an unreadable workspace simply reports nothing).
+        before = snapshot_workspace(workspace) if workspace is not None else None
+
+        def turn_changes() -> tuple[tuple[Any, ...], int]:
+            if before is None:
+                return (), 0
+            # The files the turn started with are carried into the second snapshot: a turn
+            # that commits (or stashes) its own work ends with a clean tree, and without
+            # them every file it had changed would be reported as deleted.
+            after = snapshot_workspace(workspace, carry=before.files)
+            if after is None:
+                return (), 0
+            changes, total = changes_between(before, after)
+            _record_turn_reverts(
+                workspace,
+                thread_id=context.thread_id,
+                turn_id=context.turn_id,
+                before=before,
+                after=after,
+                changes=changes,
+            )
+            return changes, total
+
         try:
             from synapse.integrations.describe_image import (
                 normalize_payload_for_text_model_sync,
@@ -208,7 +229,6 @@ class AgentTurnRuntime:
                 token_stream=bool(getattr(settings, "token_stream", True)),
                 prefer_async=True,
                 max_concurrency=int(getattr(settings, "max_concurrency", 4)),
-                sink=runner_options.renderer or _HeadlessRenderer(),
                 event_sink=safe_sink,
                 turn_id=context.turn_id,
                 cancel_event=token.event,
@@ -217,13 +237,25 @@ class AgentTurnRuntime:
                 ),
             )
         except BaseException as exc:
+            # Record stack locations before converting the exception to a DTO.
+            # No request payload, exception body, locals or source lines are persisted.
+            record_error(
+                getattr(settings, "workspace", None),
+                operation="runtime.turn",
+                thread_id=context.thread_id,
+                turn_id=context.turn_id,
+                error=exc,
+            )
+            changes, changes_total = turn_changes()
             return TurnResult(
                 turn_id=context.turn_id,
                 thread_id=context.thread_id,
                 status=TurnStatus.FAILED,
+                changes=changes,
+                changes_total=changes_total,
                 cancel_reason=token.reason if token.cancelled else None,
                 error_type=type(exc).__name__,
-                error_message=str(exc)[:2000],
+                error_message=exception_message(exc),
             )
 
         if result.cancelled or token.cancelled:
@@ -232,6 +264,7 @@ class AgentTurnRuntime:
             status = TurnStatus.WAITING_APPROVAL
         else:
             status = TurnStatus.COMPLETED
+        changes, changes_total = turn_changes()
         return TurnResult(
             turn_id=context.turn_id,
             thread_id=context.thread_id,
@@ -254,6 +287,8 @@ class AgentTurnRuntime:
             last_rate_basis=result.last_rate_basis,
             model_calls=result.model_calls,
             compact_events=result.compact_events,
+            changes=changes,
+            changes_total=changes_total,
             cancel_reason=(
                 token.reason or result.cancel_reason
                 if status is TurnStatus.CANCELLED

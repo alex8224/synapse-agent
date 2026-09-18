@@ -5,6 +5,12 @@
   "stream_chunk_timeout": null,
   "tool_details_expanded": true,
   "enable_mcp": true,
+  "minimal_filesystem_tools": false,
+  "minimal_filesystem_excluded_tools": [
+    "search_files",
+    "edit_file",
+    "write_file"
+  ],
   "require_approval": false,
   "auto_approve": true
 }

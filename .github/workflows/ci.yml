@@ -36,3 +36,88 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
+
+  web-console:
+    name: Build Web Console
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build the web console
+        working-directory: web
+        run: npm run build
+
+      - name: Upload Web Console distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-console-dist
+          path: web/dist/
+          if-no-files-found: error
+
+  # The runtime contract gate runs once on ubuntu instead of in the
+  # Windows/Linux x 3.12/3.13 matrix: it is platform-neutral (a byte-for-byte
+  # artifact check plus static gates) and the Node half would otherwise repeat
+  # four times.  Only the targeted contract/architecture/compatibility tests run
+  # here; the full pytest suite stays out of CI on purpose.
+  contract:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify generated contract artifacts
+        run: uv run --no-sync python scripts/export_contract_manifest.py --check
+
+      - name: Contract, architecture, and compatibility tests
+        run: >-
+          uv run --no-sync pytest
+          tests/test_runtime_contract_manifest.py
+          tests/test_runtime_architecture_boundaries.py
+          tests/test_runtime_service_import_purity.py
+          tests/test_runtime_transport_client_compatibility.py
+          -q
+
+      # Node >= 22.18 (or 24) strips TypeScript natively, so the node:test
+      # suites run the .ts sources directly with no transpiler step.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check the web console
+        working-directory: web
+        run: npx tsc -b
+
+      - name: Contract, boundary, and source guard tests
+        working-directory: web
+        run: >-
+          node --test
+          tests/runtimeContractFixture.test.ts
+          tests/runtimeClientBoundary.test.ts
+          tests/sourceGuard.test.ts

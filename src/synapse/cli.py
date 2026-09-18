@@ -11,15 +11,14 @@ import typer
 
 from synapse.projects.catalog import ProjectCatalog, ProjectInfo
 from synapse.sessions.store import SessionStore, format_session_table
+from synapse.sessions.thread_purge import orphan_thread_ids, purge_thread
 from synapse.settings import bootstrap_project_env, load_settings
 from synapse.ui.stream import (
     console,
-    extract_last_ai_text,
     print_banner,
     print_error,
     print_final,
     print_info,
-    stream_agent,
 )
 
 app = typer.Typer(
@@ -107,6 +106,17 @@ def _print_settings_error(exc: Exception) -> None:
         "Check models.json, settings.json, and inline JSON environment variables "
         "(MODELS_JSON / MCP_SERVERS_JSON)."
     )
+
+
+@app.command(
+    "web-console",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def web_console(ctx: typer.Context) -> None:
+    """Serve the React Web Console using the same executable as ``synapse``."""
+    from synapse.web_console.entry import main as web_console_main
+
+    raise typer.Exit(web_console_main(list(ctx.args)))
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +289,6 @@ def _resolve_launch_target(
     overrides: dict = {"debug": debug}
     overrides["model"] = model
     overrides["workspace"] = workspace
-    if model is not None:
-        overrides["active_model"] = model
     if require_approval is not None:
         overrides["require_approval"] = require_approval
     if readonly is not None:
@@ -503,94 +511,6 @@ def tui(
     )
 
 
-# ---------------------------------------------------------------------------
-# Default callback: launch TUI when no subcommand is given
-# ---------------------------------------------------------------------------
-
-
-@app.callback(invoke_without_command=True)
-def _default_tui(
-    ctx: typer.Context,
-    workspace: Path | None = typer.Option(
-        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
-    ),
-    model: str | None = typer.Option(
-        None, "--model", "-m", help="Model profile alias or provider:model"
-    ),
-    require_approval: bool = typer.Option(
-        False,
-        "--require-approval/--no-require-approval",
-        help="Enable HITL approval (default: disabled, auto-pass)",
-    ),
-    readonly: bool = typer.Option(
-        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
-    ),
-    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
-    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
-    session: str | None = typer.Option(
-        None,
-        "--session",
-        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
-    ),
-    project: str | None = typer.Option(
-        None, "--project", help="Open a registered project by id prefix, name, or path"
-    ),
-) -> None:
-    """Full-screen Textual TUI - the default interface."""
-    if ctx.invoked_subcommand is not None:
-        return
-    _launch_tui(
-        workspace=workspace,
-        model=model,
-        require_approval=require_approval,
-        readonly=readonly,
-        thread_id=thread_id,
-        debug=debug,
-        session=session,
-        project=project,
-    )
-
-
-@app.command("tui")
-def tui_cmd(
-    workspace: Path | None = typer.Option(
-        None, "--workspace", "-w", help="Workspace directory", exists=False, file_okay=False
-    ),
-    model: str | None = typer.Option(
-        None, "--model", "-m", help="Model profile alias or provider:model"
-    ),
-    require_approval: bool = typer.Option(
-        False,
-        "--require-approval/--no-require-approval",
-        help="Enable HITL approval (default: disabled, auto-pass)",
-    ),
-    readonly: bool = typer.Option(
-        False, "--readonly/--no-readonly", help="Exclude write/execute tools via harness"
-    ),
-    thread_id: str | None = typer.Option(None, "--thread-id", help="Resume a session id"),
-    debug: bool = typer.Option(False, "--debug", help="Enable deepagents debug mode"),
-    session: str | None = typer.Option(
-        None,
-        "--session",
-        help="Open a global session '<project_id>:<thread_id>' (any registered project)",
-    ),
-    project: str | None = typer.Option(
-        None, "--project", help="Open a registered project by id prefix, name, or path"
-    ),
-) -> None:
-    """Full-screen Textual TUI - the default interface."""
-    _launch_tui(
-        workspace=workspace,
-        model=model,
-        require_approval=require_approval,
-        readonly=readonly,
-        thread_id=thread_id,
-        debug=debug,
-        session=session,
-        project=project,
-    )
-
-
 @app.command("transcript-migration-worker", hidden=True)
 def transcript_migration_worker(
     checkpoint_path: Path = typer.Option(
@@ -643,50 +563,23 @@ def _print_tokens_from_state(state: dict) -> None:
         print_info(f"tokens: {total} (in={total_in} out={total_out})")
 
 
-def _run_once(
-    agent,
-    payload: dict | Any,
-    config: dict,
+async def _run_consumer_turn_and_close(
+    consumer: Any,
+    session: Any,
+    task: str,
     *,
-    use_stream: bool = True,
-    token_stream: bool = True,
-    max_concurrency: int = 8,
-    sink=None,
-) -> tuple[str, bool, Any]:
-    """Execute one turn.
+    before_execute: Any = None,
+    on_event: Any = None,
+) -> Any:
+    """Run and close a consumer on one event loop, including setup failures."""
+    try:
+        if before_execute is not None:
+            before_execute()
+        from synapse.runtime.consumer import execute_consumer_turn
 
-    Returns:
-        (answer_text, already_displayed, stream_result_or_none)
-    """
-    if use_stream:
-        streamed = stream_agent(
-            agent,
-            payload,
-            config,
-            token_stream=token_stream,
-            prefer_async=True,
-            max_concurrency=max_concurrency,
-            sink=sink,
-        )
-        if streamed.final_text:
-            return streamed.final_text, streamed.streamed_answer, streamed
-        if streamed.state.get("messages"):
-            return extract_last_ai_text(streamed.state), False, streamed
-        if streamed.interrupted:
-            return "", True, streamed
-        print_info("stream empty, falling back to invoke...")
-    else:
-        print_info("running...")
-
-    # Model clients are async-only (see b788b62); use ainvoke instead of invoke.
-    invoked = asyncio.run(agent.ainvoke(payload, config=config))
-    state = invoked if isinstance(invoked, dict) else {"messages": invoked}
-    _print_tokens_from_state(state)
-    return (
-        extract_last_ai_text(state),
-        False,
-        None,
-    )
+        return await execute_consumer_turn(consumer.service, session, task, on_event=on_event)
+    finally:
+        await consumer.close()
 
 
 @app.command("run")
@@ -729,50 +622,58 @@ def run_cmd(
         f"base_url={settings.openai_base_url!r} model={settings.model!r}"
     )
 
-    try:
-        from synapse.app.agent import build_coding_agent, default_thread_id
-
-        agent = build_coding_agent(
-            settings,
-            project_root=settings.workspace,
-            load_mcp=bool(settings.enable_mcp),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print_error(f"failed to build agent: {exc}")
-        raise typer.Exit(code=1) from exc
-
-    tid = thread_id or default_thread_id()
-    store = _session_store(settings)
-    store.touch(tid, title_hint=task, model=settings.model)
-    config = {
-        "configurable": {"thread_id": tid},
-        "max_concurrency": settings.max_concurrency,
-    }
-    payload = {"messages": [{"role": "user", "content": task}]}
-    print_info(f"thread_id={tid}")
-    print_info(
-        f"stream: token={settings.token_stream} "
-        f"parallel_tools={settings.parallel_tool_calls} "
-        f"max_concurrency={settings.max_concurrency}"
+    from synapse.app.agent import build_coding_agent, default_thread_id
+    from synapse.runtime.consumer import (
+        LocalProjectRuntimeConsumer,
+        project_identity_for_workspace,
     )
-
+    from synapse.runtime.sessions.ref import SessionRef
+    tid = thread_id or default_thread_id()
+    project_id, catalog = project_identity_for_workspace(settings, Path(settings.workspace))
+    consumer = LocalProjectRuntimeConsumer(
+        settings=settings,
+        project_id=project_id,
+        catalog=catalog,
+        agent_factory=lambda current_thread, _resources: build_coding_agent(
+            settings, project_root=settings.workspace, load_mcp=bool(settings.enable_mcp),
+            prompt_cache_key=lambda: current_thread,
+            mcp_pool_key=f"{project_id}:{current_thread}",
+        ),
+    )
     try:
-        answer, already, streamed = _run_once(
-            agent,
-            payload,
-            config,
-            use_stream=stream,
-            token_stream=settings.token_stream,
-            max_concurrency=settings.max_concurrency,
+        def prepare_run() -> None:
+            _session_store(settings).touch(tid, title_hint=task, model=settings.model)
+            print_info(f"thread_id={tid}")
+            print_info(
+                f"stream: token={settings.token_stream} "
+                f"parallel_tools={settings.parallel_tool_calls} "
+                f"max_concurrency={settings.max_concurrency}"
+            )
+
+        def show_event(event):
+            if stream and event.kind == "answer_delta" and isinstance(event.payload, dict):
+                console.print(event.payload.get("text", ""), end="")
+
+        result = asyncio.run(
+            _run_consumer_turn_and_close(
+                consumer,
+                SessionRef(project_id, tid),
+                task,
+                before_execute=prepare_run,
+                on_event=show_event if stream else None,
+            )
         )
-        if streamed is not None and getattr(streamed, "interrupted", False):
+        if result.status == "waiting_approval":
             print_error(
                 "task paused for approval; run without --require-approval "
                 f"or resume later with thread_id={tid}"
             )
             raise typer.Exit(code=2)
-        if not already:
-            print_final(answer)
+        elif result.status in {"failed", "cancelled"}:
+            print_error(f"task {result.status}")
+            raise typer.Exit(code=1)
+        elif not result.already_streamed:
+            print_final(result.final_text)
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1176,15 +1077,79 @@ def sessions_prune() -> None:
 def sessions_delete(
     thread_id: str = typer.Argument(..., help="Session thread id"),
 ) -> None:
-    """Delete session metadata (checkpoint rows are left to LangGraph GC)."""
+    """Delete one session and its conversation.
+
+    The metadata row alone is not the session: the checkpoint store, the
+    transcript projection and the full-text search index all outlive it and stay
+    readable by thread id, so a session deleted from the list could still be found
+    by keyword.  The purge runs first, then the row.
+    """
     settings = load_settings()
     store = _session_store(settings)
-    ok = store.delete(thread_id)
-    if ok:
-        print_info(f"deleted session metadata: {thread_id}")
-    else:
+    if store.get(thread_id) is None:
         print_error(f"session not found: {thread_id}")
         raise typer.Exit(code=1)
+    report = purge_thread(
+        thread_id,
+        checkpoint_path=settings.checkpoint_path,
+        sessions_path=settings.resolved_sessions_path(),
+        workspace=settings.workspace,
+    )
+    store.delete(thread_id)
+    print_info(
+        f"deleted session {thread_id}: {report.rows} history row(s), "
+        f"{report.snapshot_files} snapshot file(s)"
+    )
+    if not report.complete:
+        # The row is gone but the conversation is not: say so rather than
+        # reporting a clean delete the user would discover was not one.
+        print_error(f"history not fully purged: {', '.join(report.failures)}")
+        raise typer.Exit(code=1)
+
+
+@sessions_app.command("purge")
+def sessions_purge(
+    apply: bool = typer.Option(
+        False, "--apply", help="Erase the orphans; without it they are only listed"
+    ),
+) -> None:
+    """Find sessions whose history outlived their metadata row, and erase them.
+
+    These are the leftovers of a delete that removed only the row: the session is
+    absent from every session list, yet its conversation is still in the
+    checkpoint store, the transcript projection and the search index, so it keeps
+    showing up in keyword searches.  A dry run is the default because the purge is
+    irreversible.
+    """
+    settings = load_settings()
+    orphans = orphan_thread_ids(
+        checkpoint_path=settings.checkpoint_path,
+        sessions_path=settings.resolved_sessions_path(),
+    )
+    if not orphans:
+        print_info("no orphaned session history found")
+        return
+    print_info(f"{len(orphans)} orphaned session(s) still have history on disk")
+    for tid in orphans[:20]:
+        print_info(f"  - {tid}")
+    if len(orphans) > 20:
+        print_info(f"  … and {len(orphans) - 20} more")
+    if not apply:
+        print_info("dry run: rerun with --apply to erase them")
+        return
+    incomplete: list[str] = []
+    for tid in orphans:
+        report = purge_thread(
+            tid,
+            checkpoint_path=settings.checkpoint_path,
+            sessions_path=settings.resolved_sessions_path(),
+            workspace=settings.workspace,
+        )
+        if not report.complete:
+            incomplete.append(f"{tid} ({', '.join(report.failures)})")
+    print_info(f"purged {len(orphans) - len(incomplete)} session(s)")
+    for entry in incomplete[:20]:
+        print_error(f"incomplete: {entry}")
 
 
 @sessions_app.command("rename")

@@ -392,6 +392,51 @@ def test_slow_cleanup_does_not_fail_normal_completion() -> None:
         runtime_loop.close()
 
 
+def test_instrumented_stream_sink_auto_closes_reasoning_on_answer_token() -> None:
+    events = CollectingEventSink()
+    sink = InstrumentedStreamSink(_NoopRenderer(), thread_id="t1", event_sink=events)
+    sink.write_reasoning("pondering...")
+    assert [e.kind for e in events.events] == [TurnEventKind.REASONING_DELTA]
+
+    sink.write_answer_token("hello")
+    assert [e.kind for e in events.events] == [
+        TurnEventKind.REASONING_DELTA,
+        TurnEventKind.REASONING_COMPLETED,
+        TurnEventKind.ANSWER_DELTA,
+    ]
+    assert events.events[1].payload.text == "pondering..."
+
+
+def test_instrumented_stream_sink_auto_closes_reasoning_on_tool_calls() -> None:
+    events = CollectingEventSink()
+    sink = InstrumentedStreamSink(_NoopRenderer(), thread_id="t1", event_sink=events)
+    sink.write_reasoning("need tools")
+    sink.tool_calls_started([{"name": "read_file", "id": "c1", "args": {}}], parallel=False)
+    assert [e.kind for e in events.events] == [
+        TurnEventKind.REASONING_DELTA,
+        TurnEventKind.REASONING_COMPLETED,
+        TurnEventKind.TOOL_BATCH_STARTED,
+    ]
+
+
+def test_instrumented_stream_sink_auto_closes_reasoning_on_finalize_line() -> None:
+    events = CollectingEventSink()
+    sink = InstrumentedStreamSink(_NoopRenderer(), thread_id="t1", event_sink=events)
+    sink.write_reasoning("only thinking")
+    sink.finalize_line()
+    assert [e.kind for e in events.events] == [
+        TurnEventKind.REASONING_DELTA,
+        TurnEventKind.REASONING_COMPLETED,
+    ]
+
+
+def test_instrumented_stream_sink_close_reasoning_is_idempotent() -> None:
+    events = CollectingEventSink()
+    sink = InstrumentedStreamSink(_NoopRenderer(), thread_id="t1", event_sink=events)
+    sink.close_reasoning()
+    assert len(events.events) == 0
+
+
 def test_async_graph_error_still_propagates() -> None:
     """F1: a real graph error on the bound loop keeps propagating to callers."""
     import pytest

@@ -9,10 +9,45 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  web-console:
+    name: Build Web Console
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build the web console
+        working-directory: web
+        run: npm run build
+
+      - name: Upload Web Console distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-console-dist
+          path: web/dist/
+          if-no-files-found: error
+
+  build:
+    needs: web-console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Web Console distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: web-console-dist
+          path: web/dist
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -77,6 +112,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download Web Console distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: web-console-dist
+          path: web/dist
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -94,8 +135,10 @@ jobs:
       - name: Package executable with PyInstaller
         shell: pwsh
         run: |
+          $dataSep = if ($env:RUNNER_OS -eq 'Windows') { ';' } else { ':' }
           uv run pyinstaller --noconfirm --clean --onefile --name synapse `
             --paths src `
+            --add-data "web/dist${dataSep}synapse/web_console/static" `
             --collect-all textual `
             --collect-all textual_serve `
             --collect-all textual_image `

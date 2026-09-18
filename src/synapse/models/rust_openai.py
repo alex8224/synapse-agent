@@ -20,12 +20,13 @@ import os
 import threading
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -45,6 +46,103 @@ _OPENAI_ROLE_MAP = {
     "ai": "assistant",
     "tool": "tool",
 }
+
+_LS_PROVIDER = "openai"
+"""``ls_provider`` reported for every native-model profile (see ``_get_ls_params``)."""
+
+_CONTEXT_OVERFLOW_MARKERS: tuple[str, ...] = (
+    "context_length_exceeded",
+    "exceeds the maximum number of tokens allowed",
+    "exceeds the context window",
+    "input tokens exceed the configured limit",
+    "prompt is too long",
+    "token limit",
+)
+"""Provider error text meaning the request exceeded the model context window.
+
+Mirrors ``langchain_openai``'s ``_handle_openai_bad_request`` and
+``langchain_google_genai``'s ``_handle_client_error``, which raise
+``ContextOverflowError`` for the same phrases.
+"""
+
+
+def is_context_overflow_error(error: BaseException | str) -> bool:
+    """Return whether *error* reports that the input exceeded the context window."""
+    text = str(error).casefold()
+    return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+class RustOpenAIContextOverflowError(ContextOverflowError, RuntimeError):
+    """Context-overflow rejection raised by the native OpenAI transport.
+
+    Inherits ``RuntimeError`` as well so callers that already catch the native
+    transport's historical error type keep working, mirroring
+    ``langchain_openai``'s ``OpenAIContextOverflowError`` (which mixes its
+    provider error with ``ContextOverflowError``).
+    """
+
+
+def raise_provider_error(message: str) -> NoReturn:
+    """Raise a provider error, mapping context overflow to ``ContextOverflowError``.
+
+    ``SummarizationMiddleware`` only compacts and retries when the model raises
+    ``ContextOverflowError``; any other exception type bubbles straight to the UI.
+    """
+    if is_context_overflow_error(message):
+        raise RustOpenAIContextOverflowError(message)
+    raise RuntimeError(message)
+
+
+def reraise_context_overflow(error: BaseException) -> None:
+    """Re-raise *error* as ``ContextOverflowError`` when it reports an overflow.
+
+    The native transport surfaces provider failures as plain ``RuntimeError``
+    carrying only a message — no status code or body — so classification is
+    text-based, the same approach ``langchain_openai`` and
+    ``langchain_google_genai`` use for their own transports. Anything else is
+    left untouched for the caller to re-raise.
+    """
+    if isinstance(error, ContextOverflowError) or not is_context_overflow_error(error):
+        return
+    raise RustOpenAIContextOverflowError(str(error)) from error
+
+
+def iter_stream_payloads(stream: Iterator[str]) -> Iterator[str]:
+    """Yield raw payloads from a native stream, mapping overflow errors on read.
+
+    The native transport pushes provider failures through the stream channel, so
+    they surface while iterating rather than when the stream is opened.
+    """
+    iterator = iter(stream)
+    while True:
+        try:
+            payload = next(iterator)
+        except StopIteration:
+            return
+        except Exception as exc:  # noqa: BLE001 - re-classified, never swallowed
+            reraise_context_overflow(exc)
+            raise
+        yield payload
+
+
+def stamp_provider_metadata(message: BaseMessage) -> BaseMessage:
+    """Record the provider identity langchain middleware keys off.
+
+    ``SummarizationMiddleware`` only trusts ``usage_metadata.total_tokens`` as a
+    compaction trigger when the same message also reports a matching
+    ``response_metadata["model_provider"]``. Without it the pre-emptive trigger
+    falls back to ``count_tokens_approximately``, which undercounts CJK text and
+    charges a flat 85 tokens per image, so compaction never fires for
+    screenshot-heavy conversations.
+
+    Only ``model_provider`` is written: ``merge_dicts`` concatenates every other
+    string-valued key when streaming chunks are aggregated, and special-cases
+    this one key as idempotent.
+    """
+    metadata = dict(message.response_metadata or {})
+    metadata["model_provider"] = _LS_PROVIDER
+    message.response_metadata = metadata
+    return message
 
 
 @dataclass
@@ -387,7 +485,7 @@ def aimessage_from_responses(payload: dict[str, Any]) -> AIMessage:
     error = payload.get("error")
     if isinstance(error, dict):
         message = error.get("message") or "Responses API returned an error"
-        raise RuntimeError(str(message))
+        raise_provider_error(str(message))
     status = payload.get("status")
     if status in {"failed", "cancelled"}:
         raise RuntimeError(f"Responses API returned status={status}")
@@ -422,7 +520,7 @@ def aimessage_chunk_from_responses_event(
         response = event.get("response") or {}
         error = event.get("error") or response.get("error") or {}
         message = error.get("message") if isinstance(error, dict) else None
-        raise RuntimeError(message or f"Responses API event failed: {event_type}")
+        raise_provider_error(str(message or f"Responses API event failed: {event_type}"))
 
     if event_type == "response.incomplete":
         response = event.get("response") or {}
@@ -742,7 +840,7 @@ class RustOpenAIChatModel(BaseChatModel):
         registered under ``openai`` (excluded_tools, readonly, etc.).
         """
         params = super()._get_ls_params(stop=stop, **kwargs)
-        params["ls_provider"] = "openai"
+        params["ls_provider"] = _LS_PROVIDER
         params["ls_model_name"] = self.model
         return params
 
@@ -1011,11 +1109,15 @@ class RustOpenAIChatModel(BaseChatModel):
         tools = self._effective_tools(kwargs.pop("tools", None))
         req = self._build_request(messages, tools=tools, stop=stop, streaming=False, **kwargs)
         client = self._ensure_client()
-        raw = (
-            client.complete_responses(json.dumps(req, default=str))
-            if self.use_responses_api
-            else client.complete(json.dumps(req, default=str))
-        )
+        try:
+            raw = (
+                client.complete_responses(json.dumps(req, default=str))
+                if self.use_responses_api
+                else client.complete(json.dumps(req, default=str))
+            )
+        except Exception as exc:  # noqa: BLE001 - re-classified, never swallowed
+            reraise_context_overflow(exc)
+            raise
         payload = json.loads(raw)
         if self.use_responses_api:
             ai = aimessage_from_responses(payload)
@@ -1023,13 +1125,14 @@ class RustOpenAIChatModel(BaseChatModel):
         else:
             error = payload.get("error")
             if isinstance(error, dict):
-                raise RuntimeError(str(error.get("message") or "OpenAI API returned an error"))
+                raise_provider_error(str(error.get("message") or "OpenAI API returned an error"))
             if not payload.get("choices"):
                 raise RuntimeError("OpenAI API response did not contain choices")
             choice = (payload.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             ai = aimessage_from_openai(msg)
             ai.usage_metadata = usage_metadata_from_openai(payload.get("usage"))
+        stamp_provider_metadata(ai)
         return ChatResult(generations=[ChatGeneration(message=ai)])
 
     async def _agenerate(
@@ -1074,6 +1177,7 @@ class RustOpenAIChatModel(BaseChatModel):
                         chunk_msg = aimessage_chunk_from_responses_event(payload, response_state)
                         if chunk_msg is None:
                             continue
+                        stamp_provider_metadata(chunk_msg)
                         gen = ChatGenerationChunk(message=chunk_msg)
                         yielded_chunk = True
                         if run_manager:
@@ -1092,6 +1196,7 @@ class RustOpenAIChatModel(BaseChatModel):
                         or attempt >= websocket_replay_attempts
                         or not should_retry_transient_model_error(exc)
                     ):
+                        reraise_context_overflow(exc)
                         raise
                     # Connection failed before any output; reconnect and retry.
                     continue
@@ -1108,7 +1213,7 @@ class RustOpenAIChatModel(BaseChatModel):
             stream = client.stream_responses(json.dumps(req, default=str))
         else:
             stream = client.stream(json.dumps(req, default=str))
-        for raw in stream:
+        for raw in iter_stream_payloads(stream):
             payload = json.loads(raw)
             chunk_msg = (
                 aimessage_chunk_from_responses_event(payload, response_state)
@@ -1117,6 +1222,7 @@ class RustOpenAIChatModel(BaseChatModel):
             )
             if chunk_msg is None:
                 continue
+            stamp_provider_metadata(chunk_msg)
             gen = ChatGenerationChunk(message=chunk_msg)
             if run_manager:
                 text = chunk_msg.content if isinstance(chunk_msg.content, str) else ""

@@ -16,22 +16,7 @@ from synapse.acp.agent import SynapseACPAgent
 from synapse.acp.lifecycle import ACPSessionCatalog
 from synapse.acp.server import build_agent_connection
 from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
-
-
-class _Runtime:
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
-
-
-class _Manager:
-    def __init__(self, runtime: _Runtime) -> None:
-        self.runtime = runtime
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        del thread_id, cancel_active
-
-    async def shutdown(self) -> None:
-        return None
+from tests.acp_service_fakes import FakeAgentRuntimeService, simple_managed
 
 
 class _Client:
@@ -47,8 +32,7 @@ async def _run_lifecycle(root: Path) -> None:
     catalog = ACPSessionCatalog(root / "catalog.sqlite")
 
     async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-        runtime = _Runtime()
-        return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+        return simple_managed(descriptor, FakeAgentRuntimeService())
 
     agent = SynapseACPAgent(
         registry=ACPSessionRegistry(factory),
@@ -125,8 +109,7 @@ def test_initialize_declares_only_implemented_capabilities(tmp_path: Path) -> No
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(registry=ACPSessionRegistry(factory), catalog=catalog)
         response = await agent.initialize(1)

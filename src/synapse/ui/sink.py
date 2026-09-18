@@ -74,6 +74,7 @@ class StreamSink(Protocol):
         ttft_s: float | None = None,
         rate_basis: str = "end_to_end",
         rate_estimated: bool = False,
+        model_calls: int = 0,
     ) -> None:
         """Receive cumulative usage and the latest model-call rate."""
 

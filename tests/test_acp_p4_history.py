@@ -20,22 +20,7 @@ from synapse.acp.sessions import (
     ACPSessionRegistry,
     _apply_session_config,
 )
-
-
-class _Runtime:
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
-
-
-class _Manager:
-    def __init__(self, runtime: _Runtime) -> None:
-        self.runtime = runtime
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        del thread_id, cancel_active
-
-    async def shutdown(self) -> None:
-        return None
+from tests.acp_service_fakes import FakeAgentRuntimeService, simple_managed
 
 
 class _Client:
@@ -55,8 +40,7 @@ def test_load_replays_stored_updates_in_order(tmp_path: Path) -> None:
         client = _Client()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory), catalog=catalog
@@ -135,8 +119,7 @@ def test_authentication_is_not_advertised_or_accepted_without_provider(tmp_path:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(registry=ACPSessionRegistry(factory), catalog=catalog)
         initialized = await agent.initialize(1)
@@ -153,8 +136,7 @@ def test_mode_and_config_are_session_local_and_persisted(tmp_path: Path) -> None
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory), catalog=catalog
@@ -176,8 +158,7 @@ def test_extension_meta_kwargs_are_accepted_but_not_persisted(tmp_path: Path) ->
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory), catalog=catalog
@@ -223,8 +204,7 @@ def test_providers_list_and_set_select_session_model(tmp_path: Path) -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),
@@ -258,8 +238,7 @@ def test_failed_config_rebuild_rolls_back_and_restores_session(tmp_path: Path) -
             calls += 1
             if calls == 2:
                 raise RuntimeError("simulated rebuild failure")
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory), catalog=catalog
@@ -287,7 +266,6 @@ def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
         from acp.helpers import text_block
 
         from synapse.projects.catalog import ProjectCatalog
-        from synapse.runtime.agent_loop import TurnResult, TurnStatus
         from synapse.sessions.store import SessionStore
 
         tui_db = tmp_path / "tui-sessions.sqlite"
@@ -316,45 +294,8 @@ def test_tui_session_bridge_new_list_load_delete(tmp_path: Path) -> None:
 
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
 
-        class Runtime(_Runtime):
-            def __init__(self) -> None:
-                self.callbacks: list[Any] = []
-
-            def subscribe(self, callback: Any, *, after_sequence: int = 0) -> Any:
-                del after_sequence
-                self.callbacks.append(callback)
-
-                class Subscription:
-                    def close(self) -> None:
-                        return None
-
-                return Subscription()
-
-        class Manager(_Manager):
-            async def submit(self, thread_id: str, message: Any) -> Any:
-                del message
-                future = asyncio.get_running_loop().create_future()
-                future.set_result(
-                    TurnResult(
-                        turn_id="turn-1",
-                        thread_id=thread_id,
-                        status=TurnStatus.COMPLETED,
-                    )
-                )
-
-                class Handle:
-                    def __init__(self, value: Any) -> None:
-                        self.future = value
-
-                return Handle(future)
-
-            def cancel(self, thread_id: str, reason: str) -> bool:
-                del thread_id, reason
-                return True
-
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = Runtime()
-            return ACPManagedSession(descriptor, Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(
             registry=ACPSessionRegistry(factory),

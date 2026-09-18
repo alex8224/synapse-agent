@@ -687,6 +687,44 @@ def test_fs_permissions_and_harness(tmp_path: Path):
     assert profile.excluded_tools == frozenset()
 
 
+def test_minimal_filesystem_tools_exclusions_and_prompt():
+    from synapse.app.agent_assembly import AgentResources
+    from synapse.content.prompts import filesystem_tool_prompt
+    from synapse.settings import Settings
+
+    settings = Settings(
+        minimal_filesystem_tools=True,
+        minimal_filesystem_excluded_tools=["search_files", "edit_file", "write_file"],
+        _env_file=None,
+    )
+    resources = AgentResources(
+        root=Path.cwd(),
+        backend=None,
+        model=None,
+        model_registry=None,
+        model_spec="openai:demo",
+        selected_profile=None,
+        checkpointer=None,
+        permissions=None,
+    )
+    excluded = resources.apply_model_exclusions(settings)
+
+    assert "search_files" in excluded
+    assert "edit_file" in excluded
+    assert "write_file" in excluded
+    assert "ls" in excluded
+
+    prompt = filesystem_tool_prompt(excluded)
+    assert "search_files" not in prompt
+    assert "edit_file" not in prompt
+    assert "write_file" not in prompt
+    assert "read_file" in prompt
+    assert "patch" in prompt
+    assert "find_files" in prompt
+    assert "Do not use `execute` as a substitute" in prompt
+
+
+
 def test_default_subagents_optional_models(tmp_path: Path):
     del tmp_path
     subs = build_default_subagents(enabled=True, tester_model="openai:t")

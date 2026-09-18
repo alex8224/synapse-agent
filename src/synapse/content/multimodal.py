@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -56,13 +57,20 @@ class AttachmentError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Attachment:
-    """One image ready to embed in a user message."""
+    """One image ready to embed in a user message.
+
+    ``durable_id`` is the optional server-generated opaque attachment id when the
+    image was resolved from a session attachment reference; it is ``None`` for a
+    composer-local (clipboard / file / path-text) image and is never used to build
+    a path or a wire payload.
+    """
 
     id: int
     name: str
     mime: str
     data: bytes
     source: str = "clipboard"  # clipboard | file | path-text
+    durable_id: str | None = None
 
     @property
     def size(self) -> int:
@@ -231,6 +239,131 @@ def extract_image_payloads(
         except Exception:  # noqa: BLE001
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# Durable attachment references
+# ---------------------------------------------------------------------------
+
+#: ``additional_kwargs`` key carrying a user message's durable attachment
+#: references.  The value is JSON-safe metadata (opaque ids plus display fields,
+#: never bytes), so it survives the LangGraph checkpoint and a transcript
+#: rebuild.  It is metadata, not a provider field: LangChain's provider
+#: serializers forward only known ``additional_kwargs`` keys, so this never
+#: reaches an LLM provider.
+ATTACHMENT_REFS_KEY = "synapse_attachment_refs"
+
+#: Upper bound on durable refs kept for one message (mirrors the composer cap).
+MAX_DURABLE_REFS = 8
+
+#: Upper bound on any single opaque id / display string read from message
+#: metadata, so a hostile checkpoint cannot inflate the transcript.
+MAX_REF_TEXT_CHARS = 256
+
+
+def attachment_ref_from_image(image: Attachment) -> dict[str, Any] | None:
+    """Return a JSON-safe durable ref for ``image``, or ``None`` without an id."""
+    durable_id = str(image.durable_id or "").strip()
+    if not durable_id:
+        return None
+    return {
+        "image_id": int(image.id),
+        "attachment_id": durable_id[:MAX_REF_TEXT_CHARS],
+        "name": str(image.name or "")[:MAX_REF_TEXT_CHARS],
+        "mime": str(image.mime or "")[:MAX_REF_TEXT_CHARS],
+        "size": int(image.size),
+    }
+
+
+def attachment_refs_from_images(images: Sequence[Any] | None) -> list[dict[str, Any]]:
+    """Collect bounded durable refs from attachments that carry a durable id.
+
+    Composer-local images (``durable_id is None``) contribute nothing, so the
+    inline-image path stays byte-for-byte unchanged.
+    """
+    refs: list[dict[str, Any]] = []
+    for image in images or ():
+        if len(refs) >= MAX_DURABLE_REFS:
+            break
+        try:
+            ref = attachment_ref_from_image(image)
+        except Exception:  # noqa: BLE001 - a malformed attachment is simply not a ref
+            ref = None
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
+def sanitize_attachment_ref(value: Any) -> dict[str, Any] | None:
+    """Validate one durable ref read from (untrusted) message metadata.
+
+    Returns a bounded, JSON-safe dict or ``None`` when the entry is malformed.
+    The opaque ``attachment_id`` is the only required field; the display fields
+    default to safe values.  Validation is deliberately narrow - the id is never
+    turned into a path here, and callers must still authorize it through their
+    own read scope before resolving bytes.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    raw_id = value.get("attachment_id")
+    if not isinstance(raw_id, str):
+        return None
+    attachment_id = raw_id.strip()
+    if not attachment_id or len(attachment_id) > MAX_REF_TEXT_CHARS:
+        return None
+
+    image_id = value.get("image_id")
+    if isinstance(image_id, bool) or not isinstance(image_id, int) or image_id < 0:
+        image_id = 0
+    size = value.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        size = 0
+    name = value.get("name")
+    mime = value.get("mime")
+    return {
+        "image_id": image_id,
+        "attachment_id": attachment_id,
+        "name": name[:MAX_REF_TEXT_CHARS] if isinstance(name, str) else "",
+        "mime": mime[:MAX_REF_TEXT_CHARS] if isinstance(mime, str) else "",
+        "size": size,
+    }
+
+
+def extract_attachment_refs(
+    metadata: Any,
+    *,
+    max_refs: int = MAX_DURABLE_REFS,
+) -> list[dict[str, Any]]:
+    """Bounded, validating extraction of durable refs from message metadata.
+
+    ``metadata`` is a message's ``additional_kwargs`` (or any mapping).  Foreign
+    or malformed values are ignored, never trusted: only well-formed entries with
+    an opaque ``attachment_id`` survive, capped at ``max_refs``.
+    """
+    if not isinstance(metadata, Mapping):
+        return []
+    raw = metadata.get(ATTACHMENT_REFS_KEY)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    limit = max(0, int(max_refs))
+    refs: list[dict[str, Any]] = []
+    for item in raw:
+        if len(refs) >= limit:
+            break
+        ref = sanitize_attachment_ref(item)
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
+def attachment_refs_metadata(refs: Any) -> dict[str, Any]:
+    """Wrap validated refs into the message ``additional_kwargs`` mapping.
+
+    Returns an empty mapping when nothing valid remains, so callers can avoid
+    attaching an empty metadata field to a message.
+    """
+    clean = extract_attachment_refs({ATTACHMENT_REFS_KEY: list(refs or ())})
+    return {ATTACHMENT_REFS_KEY: clean} if clean else {}
 
 
 def _decode_data_url(url: str) -> tuple[bytes, str] | None:

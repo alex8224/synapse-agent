@@ -14,25 +14,7 @@ from synapse.acp.lifecycle import ACPSessionCatalog
 from synapse.acp.mcp import ACPMCPError, mcp_server_configs_from_acp, merge_mcp_server_configs
 from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
 from synapse.integrations.mcp_client import McpServerConfig
-
-
-class _Runtime:
-    def __init__(self) -> None:
-        self.agent = None
-
-    async def wait_for_settlement(self, handle: Any) -> None:
-        del handle
-
-
-class _Manager:
-    def __init__(self, runtime: _Runtime) -> None:
-        self.runtime = runtime
-
-    async def close_session(self, thread_id: str, *, cancel_active: bool) -> None:
-        del thread_id, cancel_active
-
-    async def shutdown(self) -> None:
-        return None
+from tests.acp_service_fakes import FakeAgentRuntimeService, simple_managed
 
 
 def test_stdio_mcp_conversion_keeps_values_out_of_metadata_shape() -> None:
@@ -122,8 +104,7 @@ def test_mcp_pool_release_is_session_scoped(tmp_path: Path, monkeypatch: Any) ->
         )
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
-            runtime = _Runtime()
-            return ACPManagedSession(descriptor, _Manager(runtime), runtime)  # type: ignore[arg-type]
+            return simple_managed(descriptor, FakeAgentRuntimeService())
 
         agent = SynapseACPAgent(registry=ACPSessionRegistry(factory), catalog=catalog)
         await agent.initialize(1)
@@ -175,6 +156,20 @@ def test_mcp_startup_failure_releases_pool_and_raises(
         monkeypatch.setattr(
             "synapse.integrations.mcp_client.get_mcp_pool_registry",
             lambda: FakeRegistry(),
+        )
+
+        class Consumer:
+            def __init__(self, **kwargs: Any) -> None:
+                self.service = FakeAgentRuntimeService()
+                kwargs["agent_factory"]("sess-1", None)
+
+            async def close(self) -> None:
+                return None
+
+        monkeypatch.setattr("synapse.acp.sessions.LocalProjectRuntimeConsumer", Consumer)
+        monkeypatch.setattr(
+            "synapse.acp.sessions.project_identity_for_workspace",
+            lambda settings, cwd: ("project", None),
         )
         factory = make_runtime_session_factory(
             settings_factory=lambda cwd: object(),

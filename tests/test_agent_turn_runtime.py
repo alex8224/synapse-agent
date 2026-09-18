@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -159,7 +160,11 @@ def test_cancel_reason_survives_event_compatibility_boundary() -> None:
         runtime_loop.close()
 
 
-def test_headless_renderer_enables_structured_tool_item_events() -> None:
+def test_headless_pure_sink_emits_structured_tool_item_events() -> None:
+    """Headless (default runtime parser) emits tool lifecycle events without a
+    renderer: the structured tool-item path is runtime state, not renderer
+    capability."""
+
     class _ToolAgent:
         def stream(self, payload: Any, config: Any = None, **kwargs: Any):
             del payload, config, kwargs
@@ -242,6 +247,27 @@ def test_headless_renderer_enables_structured_tool_item_events() -> None:
         assert result.tool_calls == 2
     finally:
         runtime_loop.close()
+
+
+def test_headless_runtime_never_contacts_a_renderer() -> None:
+    """Headless execution forwards only the event sink, never a renderer."""
+    captured: dict[str, Any] = {}
+
+    def spy_runner(*args: Any, **kwargs: Any) -> StreamResult:
+        del args
+        captured["kwargs"] = kwargs
+        return _completed_result()
+
+    runtime_loop = AsyncRuntime(name="test-turn-no-renderer")
+    try:
+        runtime = AgentTurnRuntime(runtime_loop, stream_runner=spy_runner)
+        result = runtime.run(_context(turn_id="no-renderer-turn"), timeout=3)
+        assert result.status is TurnStatus.COMPLETED
+    finally:
+        runtime_loop.close()
+    assert "sink" not in captured["kwargs"], "headless must not pass any renderer sink"
+    assert "renderer" not in captured["kwargs"], "headless must not reference a renderer"
+    assert "event_sink" in captured["kwargs"], "events flow through the event sink only"
 
 
 def test_runtime_passes_frozen_turn_id_to_stream_runner() -> None:
@@ -393,6 +419,47 @@ def test_provider_failure_becomes_failed_result() -> None:
         assert result.error_message == "provider failed"
     finally:
         runtime_loop.close()
+
+
+def test_empty_provider_error_keeps_type_and_persists_stack(tmp_path: Path) -> None:
+    from synapse.runtime.agent_loop import CancelToken
+
+    context = _context(turn_id="logged-failure")
+    context.settings.workspace = tmp_path
+
+    def failing(*args: Any, **kwargs: Any) -> StreamResult:
+        # This source line and the request must not be copied into the log.
+        private_body = "PRIVATE-PROVIDER-BODY"
+        assert private_body
+        raise TimeoutError()
+
+    result = AgentTurnRuntime._run_sync_once(context, None, CancelToken(), failing)
+    assert result.status is TurnStatus.FAILED
+    assert result.error_message == "TimeoutError"
+    files = list((tmp_path / ".synapse" / "logs").glob("errors-*.log"))
+    assert len(files) == 1
+    text = files[0].read_text(encoding="utf-8")
+    record = json.loads(text)
+    assert record["operation"] == "runtime.turn"
+    assert record["turn_id"] == "logged-failure"
+    assert "failing" in record["stack"]
+    assert "PRIVATE-PROVIDER-BODY" not in text
+    assert "hello" not in text
+
+
+def test_runtime_error_survives_unwritable_log(tmp_path: Path) -> None:
+    from synapse.runtime.agent_loop import CancelToken
+
+    context = _context()
+    context.settings.workspace = tmp_path
+    (tmp_path / ".synapse").write_text("blocked", encoding="utf-8")
+
+    def failing(*args: Any, **kwargs: Any) -> StreamResult:
+        raise RuntimeError("provider failed")
+
+    result = AgentTurnRuntime._run_sync_once(context, None, CancelToken(), failing)
+    assert result.status is TurnStatus.FAILED
+    assert result.error_message == "provider failed"
 
 
 def test_sink_failure_does_not_change_result() -> None:

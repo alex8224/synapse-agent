@@ -132,6 +132,7 @@ class TextualStreamSink:
         ttft_s: float | None = None,
         rate_basis: str = "end_to_end",
         rate_estimated: bool = False,
+        model_calls: int = 0,
     ) -> None:
         """Push per-model-call usage to the app topbar (live)."""
         self._call(
@@ -146,6 +147,7 @@ class TextualStreamSink:
             ttft_s=ttft_s,
             rate_basis=str(rate_basis or "end_to_end"),
             rate_estimated=bool(rate_estimated),
+            model_calls=max(0, int(model_calls or 0)),
         )
 
 
@@ -286,6 +288,7 @@ class TextualStreamSink:
     def activity_stop(self) -> None:
         self._pending_activity = None
         self._last_sub_detail = ""
+        self.close_reasoning()
         self._call("clear_stream")
         self._call("set_activity", "idle", "ready", True)
         self._last_activity_push = time.monotonic()

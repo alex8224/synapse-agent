@@ -81,3 +81,26 @@ def ensure_project_identity(
     project_id = catalog_project_id or str(uuid.uuid4())
     write_project_identity(workspace, project_id, name=name)
     return project_id
+
+
+def reconcile_project_identity(
+    workspace: Path | str,
+    project_id: str,
+    *,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Force ``project.json`` to agree with an authoritative project id.
+
+    :func:`ensure_project_identity` deliberately lets an existing
+    ``project.json`` win over ``catalog_project_id``, so a *moved* directory can
+    keep its id even though the catalog row for the old path cannot be joined to
+    the new one. This is the opposite case: the caller already resolved
+    ``project_id`` for *this* workspace path (e.g. a catalog lookup keyed by that
+    path), so a disagreement means ``project.json`` is stale and must be
+    rewritten. An id that already matches is left untouched, other keys are
+    preserved.
+    """
+    existing = read_project_identity(workspace)
+    if existing is not None and str(existing.get("project_id") or "") == str(project_id):
+        return existing
+    return write_project_identity(workspace, project_id, name=name)

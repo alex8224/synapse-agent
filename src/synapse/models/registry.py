@@ -554,6 +554,17 @@ class ModelRegistry:
             from synapse.integrations.http_clients import enable_anthropic_long_keepalive_defaults
 
             enable_anthropic_long_keepalive_defaults()
+        elif model_name.startswith("google_genai:"):
+            if progress is not None:
+                progress("loading Google GenAI SDK")
+            if api_key:
+                kwargs["google_api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = str(base_url).rstrip("/")
+            if profile.model_kwargs:
+                mk = dict(kwargs.get("model_kwargs") or {})
+                mk.update(profile.model_kwargs)
+                kwargs["model_kwargs"] = mk
 
         if progress is not None and not model_name.startswith("openai:"):
             progress("creating async model client")
@@ -1078,12 +1089,28 @@ def apply_models_config_to_settings(settings: Any) -> Any:
     return settings.model_copy(update=updates)
 
 
-def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
+def model_cache_key(
+    settings: Any,
+    *,
+    model_name: str | None = None,
+    enable_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+) -> str:
     """Stable key for reusing one configured ChatModel within an agent session."""
     reg = registry_from_settings(settings)
     selected = model_name or getattr(settings, "active_model", None) or reg.default
     profile = reg.get(selected)
     api_key = profile.resolved_api_key() or settings_fallback_api_key(settings, profile.model)
+    resolved_enable = (
+        bool(getattr(settings, "enable_thinking", True))
+        if enable_thinking is None
+        else bool(enable_thinking)
+    )
+    resolved_effort = (
+        getattr(settings, "reasoning_effort", None)
+        if reasoning_effort is None
+        else reasoning_effort
+    )
     payload = {
         "selected": selected,
         "model": profile.model,
@@ -1095,8 +1122,8 @@ def model_cache_key(settings: Any, *, model_name: str | None = None) -> str:
         "turbo_base_url": profile.turbo_base_url
         or getattr(settings, "turbo_proxy_url", None),
         "api_key_sha256": hashlib.sha256((api_key or "").encode()).hexdigest(),
-        "enable_thinking": bool(getattr(settings, "enable_thinking", True)),
-        "reasoning_effort": getattr(settings, "reasoning_effort", None),
+        "enable_thinking": resolved_enable,
+        "reasoning_effort": resolved_effort,
         "parallel_tool_calls": getattr(settings, "parallel_tool_calls", True),
         "websocket": (
             profile.websocket

@@ -150,11 +150,13 @@ def _tools(*names: str) -> list[SimpleNamespace]:
 
 
 def test_compile_allowlist_and_denylist(tmp_path: Path, monkeypatch) -> None:
-    import synapse.runtime.subagent_specs as specs_mod
+    # Patch where the name is defined: ``subagent_specs`` imports it lazily,
+    # inside ``compile_task_specs``, so its own import stays light.
+    import synapse.runtime.middleware as middleware_mod
 
     blocked_calls: list[set[str]] = []
     monkeypatch.setattr(
-        specs_mod,
+        middleware_mod,
         "build_tool_exclusion_middleware",
         lambda blocked: blocked_calls.append(set(blocked)) or "mw",
     )
@@ -260,11 +262,13 @@ def test_compile_skips_disabled_and_handoff(tmp_path: Path) -> None:
 
 
 def test_compile_empty_tools_means_builtins_only(tmp_path: Path, monkeypatch) -> None:
-    import synapse.runtime.subagent_specs as specs_mod
+    # Patch where the name is defined: ``subagent_specs`` imports it lazily,
+    # inside ``compile_task_specs``, so its own import stays light.
+    import synapse.runtime.middleware as middleware_mod
 
     blocked_calls: list[set[str]] = []
     monkeypatch.setattr(
-        specs_mod,
+        middleware_mod,
         "build_tool_exclusion_middleware",
         lambda blocked: blocked_calls.append(set(blocked)) or "mw",
     )

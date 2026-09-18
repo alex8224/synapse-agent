@@ -324,6 +324,45 @@ System Prompt 应明确：
 5. 安全：不泄露密钥；不随意删数据；危险命令先说明
 6. 输出：变更摘要 + 验证命令 + 结果
 
+#### 7.2.1 Prompt Section 注册表
+
+系统提示词按 section 组装。模型定义在 `src/synapse/content/prompt_sections.py`，内容组装在
+`src/synapse/content/prompts.py` 的 `build_system_prompt_sections()`。
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `name` / `source` | 字符串 | 人读名称 / 稳定标识，用于日志与诊断 |
+| `cache_hint` | `stable` \| `dynamic` | `stable` 在一次 agent 构建内逐字节不变，可承载 prompt-cache 断点 |
+| `injection_target` | `system` \| `meta_user` | 进入 system message，或作为用户侧上下文附件 |
+
+当前构建期 section 全部为 `stable` / `system`，顺序为：Coding Body、Mandatory Rules、
+Workspace、Filesystem Tools、Shell。请求期内容（AGENTS.md、memory、技能索引）由 middleware
+在之后追加，不在注册表内。
+
+可选的动态 section 由 `src/synapse/content/environment.py` 的 `build_context_sections()` 生成
+（Environment / Git Context / Current Date），统一标记为 `dynamic`，因此天然排在 stable 段之后。
+它们每次构建都会变化，所以只在**同时**开启分界断点时才追加 —— 否则这段易变文本会落在被缓存的
+system 前缀里，每次构建都让前缀失效：
+
+- `AGENT_ENABLE_PROMPT_CACHE_BOUNDARY`（默认 `false`）一个开关同时管住两半：追加上述动态
+  section，并由 `runtime/prompt_cache_boundary_middleware.py` 在 `stable_prefix()` 处把 system
+  message 切成两块、给前一块打 `cache_control`，使 memory、todo 提醒等后置内容不再让整个前缀
+  失效。该切分**不改变文本**：两块拼接等于原文。
+- 开关关闭时（默认）不追加动态 section，渲染结果与引入注册表之前的单串拼接**逐字节一致**，
+  因此默认配置的缓存行为不变。`resolve_system_prompt()` 在没有真实分界点（全部 section 都是
+  stable）时返回空前缀，调用方据此不注册断点中间件。
+- Git 采集只读、限长、失败即降级：非 git 目录、缺少 `git`、超时都不会阻止 agent 构建。
+
+渲染契约：
+
+- `render_system_prompt()` 用空行连接各 section，并以单个换行结尾 —— 与引入注册表之前的单串
+  拼接**逐字节一致**，由 `tests/test_prompt_sections.py` 锁定。
+- `stable_prefix()` 返回可缓存的前导 stable 段（含其后的分隔符），保证是
+  `render_system_prompt()` 结果的字面前缀，供请求期切分 prompt-cache 断点使用。
+
+工具元数据集中在 `src/synapse/runtime/tool_contract.py`：只读排除集合与审批集合都由该表派生，
+新增工具若漏标 `side_effect_scope` 或 `needs_approval`，会直接体现在契约测试里。
+
 ### 7.3 安全策略（Phase 1 必须有）
 
 | 层级 | 措施 |

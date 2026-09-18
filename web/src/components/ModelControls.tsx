@@ -1,0 +1,240 @@
+import { Bot20Regular, BrainCircuit20Regular, ChevronDown20Regular, LockClosed20Regular, Checkmark16Regular, Search16Regular } from '@fluentui/react-icons';
+import React, { useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { useConsoleStore } from '../stores/useConsoleStore';
+import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
+import { useDialogKeyboardNav } from './keyboardNav.ts';
+
+/**
+ * The model and reasoning-level pickers, rendered inside the composer's control
+ * row rather than in the status bar: they configure the *next* turn, so they
+ * belong next to the input that starts it.
+ *
+ * Both popovers keep the bar's dismissal contract — each trigger+panel sits in
+ * its own ref'd wrapper, and they close on a click outside, on Escape, or when
+ * the other one opens (two overlapping popovers must never be open at once).
+ * `F2` still toggles the model picker, so the advertised shortcut keeps working
+ * from wherever the composer is.
+ *
+ * Neither wrapper is positioned: the panels anchor to the composer's control row
+ * (`.ui-composer-toolbar`, the nearest positioned ancestor).  Anchored to the
+ * trigger instead, a 320px model menu opened from a trigger that sits ~130px left
+ * of the card's edge ran past the left edge of a 400px-wide workspace pane at a
+ * 640px window.
+ */
+export const ModelControls: React.FC = () => {
+  const {
+    modelName,
+    availableModels,
+    setModel,
+    thinkingLevel,
+    thinkingLevels,
+    canSetThinking,
+    setThinkingLevel,
+    thinkingLevelError,
+  } = useConsoleStore(
+    // Only the fields these controls paint: a reasoning delta must not re-render
+    // them.
+    useShallow((state) => ({
+      modelName: state.modelName,
+      availableModels: state.availableModels,
+      setModel: state.setModel,
+      thinkingLevel: state.thinkingLevel,
+      thinkingLevels: state.thinkingLevels,
+      canSetThinking: state.canSetThinking,
+      setThinkingLevel: state.setThinkingLevel,
+      thinkingLevelError: state.thinkingLevelError,
+    })),
+  );
+
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showThinkingPicker, setShowThinkingPicker] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
+  const modelRef = useRef<HTMLDivElement | null>(null);
+  const thinkingRef = useRef<HTMLDivElement | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
+  const thinkingPickerRef = useRef<HTMLDivElement | null>(null);
+  const popoverOpen = showModelPicker || showThinkingPicker;
+
+  // Both panels are opened by their trigger, which keeps the focus: the hook
+  // moves it inside, walks the rows with the arrows, and hands it back on close.
+  // The model list opens on its filter field (type to narrow, ArrowDown into the
+  // rows); the thinking list opens on the level that is in force.
+  const onModelPickerKeyDown = useDialogKeyboardNav(
+    modelPickerRef,
+    showModelPicker,
+    '#model-filter',
+  );
+  const onThinkingPickerKeyDown = useDialogKeyboardNav(
+    thinkingPickerRef,
+    showThinkingPicker,
+    '[aria-pressed="true"]',
+  );
+
+  const closeOthers = () => {
+    setShowModelPicker(false);
+    setShowThinkingPicker(false);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'F2') {
+        event.preventDefault();
+        closeOthers();
+        setShowModelPicker((v) => !v);
+      } else if (event.key === 'Escape') {
+        closeOthers();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target === null) return;
+      const inside = [modelRef, thinkingRef].some((ref) => ref.current?.contains(target));
+      if (!inside) closeOthers();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [popoverOpen]);
+
+  return (
+    <>
+      <div className="min-w-0 max-w-full" ref={modelRef}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !showModelPicker;
+            closeOthers();
+            setShowModelPicker(next);
+          }}
+          title="切换模型 (F2)"
+          aria-expanded={showModelPicker}
+          aria-controls="model-picker"
+          className="ui-button ui-model-trigger"
+        >
+          <Bot20Regular aria-hidden="true" />
+          <span className="max-w-[14rem] truncate">{modelName || '-'}</span>
+          <ChevronDown20Regular aria-hidden="true" />
+        </button>
+        {showModelPicker && (
+          <div id="model-picker" ref={modelPickerRef} role="group" aria-label="选择模型" tabIndex={-1} onKeyDown={onModelPickerKeyDown} className="absolute bottom-full right-0 mb-2 z-50 flex max-h-80 w-80 max-w-[calc(100vw-4rem)] flex-col rounded-card border border-line/80 material-flyout flyout-in p-2.5 shadow-flyout">
+            <div className="flex items-center justify-between border-b border-line/60 px-1 pb-2 text-xs font-semibold text-gray-700">
+              <span>选择模型 ({availableModels.length} 个可用)</span>
+              <span className="ui-kbd">F2</span>
+            </div>
+            <div className="relative my-2 w-full">
+              <Search16Regular aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                id="model-filter"
+                name="model-filter"
+                type="text"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                placeholder="过滤模型名称..."
+                aria-label="过滤模型名称"
+                className="ui-field w-full pl-8 pr-2 text-xs"
+              />
+            </div>
+            <div className="fluent-scrollbar max-h-60 flex-1 space-y-0.5 overflow-y-auto pr-1">
+              {availableModels
+                .filter((m) => m.toLowerCase().includes(modelSearch.toLowerCase()))
+                .map((m) => {
+                  const selected = m === modelName;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => {
+                        setModel(m);
+                        setShowModelPicker(false);
+                        setModelSearch('');
+                      }}
+                      className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
+                        selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                      }`}
+                    >
+                      <span className="truncate">{m}</span>
+                      {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="relative" ref={thinkingRef}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !showThinkingPicker;
+            closeOthers();
+            setShowThinkingPicker(next);
+          }}
+          title={canSetThinking ? '推理等级' : RUNTIME_CONFIG_READ_ONLY_NOTICE}
+          aria-expanded={showThinkingPicker}
+          aria-controls="thinking-picker"
+          className="ui-button ui-model-trigger"
+        >
+          <BrainCircuit20Regular aria-hidden="true" />
+          <span>{thinkingLevel === null ? '-' : thinkingLevel}</span>
+          {canSetThinking ? (
+            <ChevronDown20Regular aria-hidden="true" />
+          ) : (
+            <LockClosed20Regular aria-hidden="true" />
+          )}
+        </button>
+        {showThinkingPicker && (
+          <div id="thinking-picker" ref={thinkingPickerRef} role="group" aria-label="推理等级" tabIndex={-1} onKeyDown={onThinkingPickerKeyDown} className="absolute bottom-full right-0 mb-2 z-50 w-52 space-y-1.5 rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout">
+            <div className="border-b border-line/60 px-2 pb-1.5 text-xs font-semibold text-gray-700">
+              推理等级
+            </div>
+            {!canSetThinking && (
+              <div className="px-2 py-1 text-[11px] leading-relaxed text-gray-500">
+                当前只读：该会话未开放推理等级写端口，等级由服务端设置决定。
+              </div>
+            )}
+            <div className="space-y-0.5 pt-0.5">
+              {thinkingLevels.map((lvl) => {
+                const selected = lvl === thinkingLevel;
+                return (
+                  <button
+                    key={lvl}
+                    type="button"
+                    disabled={!canSetThinking}
+                    aria-pressed={selected}
+                    onClick={() => {
+                      if (!canSetThinking) return;
+                      // Keep the popover open on failure so the reason below the list
+                      // stays readable instead of flashing away.
+                      void setThinkingLevel(lvl).then((ok) => {
+                        if (ok) setShowThinkingPicker(false);
+                      });
+                    }}
+                    className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
+                      selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                    }`}
+                  >
+                    <span>{lvl}</span>
+                    {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                  </button>
+                );
+              })}
+            </div>
+            {thinkingLevelError !== null && (
+              <div className="border-t border-line/60 px-2 py-1 text-[10px] leading-relaxed text-red-600">
+                切换失败：{thinkingLevelError}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+};

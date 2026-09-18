@@ -6,9 +6,9 @@
 
 ## 当前工作
 
-- 当前阶段：已完成（P0-P8）及 P7 UI 收尾（项目侧栏 / 全局启动参数）。
-- 当前任务：无。
-- 下一门禁：无；后续改动按增量变更维护。
+- 当前阶段：S10 CLI/TUI/ACP consumer 迁移，`completed`。
+- 当前任务：S10 implementation 与 final gates 已完成；总体 S0-S10 `completed`。
+- 下一门禁：无。
 - 当前阻塞：无。
 
 ## 阶段总览
@@ -24,6 +24,7 @@
 | P6 ProjectRuntime | completed | 11/11 | 通过 | [phase-6-project-runtime.md](phase-6-project-runtime.md) |
 | P7 全局控制面 | completed | 10/10 | 通过 | [phase-7-global-control-plane.md](phase-7-global-control-plane.md) |
 | P8 稳定性与性能收口 | completed | 9/9 | 通过 | [phase-8-hardening.md](phase-8-hardening.md) |
+| S10 CLI/TUI/ACP consumer 迁移 | completed | implementation、final gates 与 review 完成 | 443 passed；安全全仓 2348 passed、2 skipped（明确排除项见下文） | consumer helper |
 
 ## P0 任务
 
@@ -139,6 +140,17 @@
 | ID | 阶段/任务 | 证据 | 影响 | 解除条件 | 状态 |
 |---|---|---|---|---|---|
 | - | - | - | - | - | - |
+
+## S10 最终收口
+
+- TUI C1/C2 最终明确清单：443 passed。
+- 安全全仓：2348 passed、2 skipped。明确排除以下 13 个文件，不声称其通过：`test_acp_p0_baseline.py`、`test_acp_p1_transport.py`、`test_agent_turn_runtime.py`、`test_backends.py`、`test_git_chrome.py`、`test_herdr_integration.py`、`test_runtime_service_routing_s5.py`、`test_runtime_transport_s7.py`、`test_startup_trace.py`、`test_transcript_migration.py`、`test_runtime_daemon_s8.py`、`test_runtime_transport_client_methods_s9.py`、`test_runtime_transport_websocket_s7.py`。排除原因分为 process API 安全约束及 socket 环境不稳定。
+- lifecycle/consumer 核心 194 passed；permit2 5、crossloop 5、generation 4；真实 approval 9；CLI registry 3；project exact/generation tests 通过。
+- Ruff、`git diff --check`、`uv run --no-sync mkdocs build --strict`、`uv build` 通过；包版本 `0.1.43`。
+- 三轮 review 最终无阻塞发现；workspace freeze Medium 已修复。
+- 执行链：`AgentRuntimeService -> RuntimeManager.submit_ref/resume_ref -> SessionRuntime -> AgentTurnRuntime`。consumer 不变量：application DTO ports 不暴露 runtime 执行对象；watch detach/connection close 不 cancel turn；close 由同 loop owner 负责并使用 cancel fence；TUI UI-only queue 不拥有 execution runtime；默认 CLI/TUI/ACP 路径不调用 `stream_agent` 或 `agent.ainvoke`。
+- legacy stream utility 保留兼容，默认 CLI/TUI/ACP 不使用。
+- residual/local artifacts note：未跟踪 `.sessions.sqlite` 与 `transcript.sqlite` 未删除，不可提交。
 
 ## 验证记录
 

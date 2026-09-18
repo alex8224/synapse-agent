@@ -13,6 +13,7 @@ from synapse.runtime.projects.identity import (
     ensure_project_identity,
     project_file_for,
     read_project_identity,
+    reconcile_project_identity,
 )
 from synapse.runtime.projects.runtime import (
     ProjectRegistry,
@@ -137,6 +138,34 @@ def test_ensure_project_identity_uses_catalog_id(tmp_path: Path) -> None:
     assert read_project_identity(tmp_path)["project_id"] == "catalog-id"
 
 
+def test_reconcile_project_identity_rewrites_stale_file(tmp_path: Path) -> None:
+    """A catalog id resolved for this path wins over a stale project.json."""
+    file = project_file_for(tmp_path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps({"schema_version": 1, "project_id": "stale-id", "name": "kept"}))
+
+    data = reconcile_project_identity(tmp_path, "catalog-id")
+
+    assert data["project_id"] == "catalog-id"
+    assert data["name"] == "kept"  # unrelated keys survive the rewrite
+    assert read_project_identity(tmp_path)["project_id"] == "catalog-id"
+
+
+def test_reconcile_project_identity_leaves_matching_file_untouched(tmp_path: Path) -> None:
+    file = project_file_for(tmp_path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps({"schema_version": 1, "project_id": "same-id"}))
+    before = file.stat().st_mtime_ns
+
+    assert reconcile_project_identity(tmp_path, "same-id")["project_id"] == "same-id"
+    assert file.stat().st_mtime_ns == before  # no rewrite
+
+
+def test_reconcile_project_identity_creates_missing_file(tmp_path: Path) -> None:
+    assert reconcile_project_identity(tmp_path, "fresh-id")["project_id"] == "fresh-id"
+    assert read_project_identity(tmp_path)["project_id"] == "fresh-id"
+
+
 # ---------------------------------------------------------------------------
 # ProjectRuntime lazy lifecycle
 # ---------------------------------------------------------------------------
@@ -257,6 +286,28 @@ def test_mcp_pool_key_and_digest() -> None:
     assert key == "proj-1:digest-abc"
     assert config_digest({"a": 1}) == config_digest({"a": 1})
     assert config_digest({"a": 1}) != config_digest({"a": 2})
+
+
+def test_mcp_pool_registry_get_is_a_read_only_probe(monkeypatch: Any) -> None:
+    from synapse.integrations.mcp_client import McpPoolRegistry
+
+    class FakePool:
+        def __init__(self) -> None:
+            self._closed = False
+
+        def close(self) -> None:
+            self._closed = True
+
+    registry = McpPoolRegistry()
+    assert registry.get("missing") is None
+
+    pool = FakePool()
+    registry._pools["proj:thread"] = pool  # noqa: SLF001 - seed the private map
+    assert registry.get("proj:thread") is pool
+
+    registry.release("proj:thread")
+    assert registry.get("proj:thread") is None
+    assert pool._closed is True  # noqa: SLF001 - release closes the pool
 
 
 # ---------------------------------------------------------------------------

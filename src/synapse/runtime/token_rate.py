@@ -167,9 +167,20 @@ class TokenRateTracker:
         tracker falls back to the end-to-end call duration. Without a streamed
         first output it also falls back to end-to-end. ``elapsed_s`` always
         reports the end-to-end duration for reference.
+
+        A report that carries no output tokens (``output_tokens == 0``) cannot
+        measure anything, so it deliberately leaves the timing window untouched:
+        providers emit such a report for a reasoning-only or intermediate
+        message, and consuming the window there would make every later rate of
+        the turn ``None``. The next ``model_started``/``ensure_started`` resets
+        the window anyway.
         """
         with self._lock:
             finished_at = self._now(now)
+            tokens = max(0, int(output_tokens or 0))
+            if tokens == 0:
+                return TokenRateSnapshot(output_tokens=0)
+
             started_at = self._started_at
             first_output_at = self._first_output_at
             observed_reasoning = self._observed_reasoning
@@ -181,7 +192,6 @@ class TokenRateTracker:
             self._observed_reasoning = False
             self._observed_tool_call = False
 
-            tokens = max(0, int(output_tokens or 0))
             if started_at is None:
                 return TokenRateSnapshot(output_tokens=tokens)
 

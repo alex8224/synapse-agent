@@ -126,6 +126,7 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         env_ignore_empty=True,
+        populate_by_name=True,
     )
 
     # Model
@@ -196,6 +197,17 @@ class Settings(BaseSettings):
     # Python transformers remain the automatic fallback on unsupported platforms.
     enable_native_tool_output_compression: bool = Field(
         default=True, validation_alias="AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION"
+    )
+    # Prompt cache: append the per-build environment / git / date sections to the
+    # system prompt and split the system message at the stable/dynamic boundary,
+    # tagging the stable half with a cache breakpoint. One switch owns both: the
+    # volatile sections are only worth including when the split keeps them out of
+    # the cached prefix, so leaving this off reproduces the pre-registry prompt
+    # byte for byte. Off by default because DeepAgents already places two
+    # breakpoints of its own, so the net effect has to be measured on the wire
+    # before enabling it broadly.
+    enable_prompt_cache_boundary: bool = Field(
+        default=False, validation_alias="AGENT_ENABLE_PROMPT_CACHE_BOUNDARY"
     )
 
     # Session / checkpoint
@@ -294,6 +306,13 @@ class Settings(BaseSettings):
     )
     readonly: bool = Field(default=False, validation_alias="AGENT_READONLY")
     excluded_tools: list[str] = Field(default_factory=list, validation_alias="AGENT_EXCLUDED_TOOLS")
+    minimal_filesystem_tools: bool = Field(
+        default=False, validation_alias="AGENT_MINIMAL_FILESYSTEM_TOOLS"
+    )
+    minimal_filesystem_excluded_tools: list[str] = Field(
+        default_factory=lambda: ["search_files", "edit_file", "write_file"],
+        validation_alias="AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS",
+    )
     enable_fs_permissions: bool = Field(
         default=False, validation_alias="AGENT_ENABLE_FS_PERMISSIONS"
     )
@@ -448,6 +467,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "excluded_tools",
+        "minimal_filesystem_excluded_tools",
         "deny_fs_paths",
         "tool_output_disabled_types",
         "tool_output_transform_plugins",
@@ -568,15 +588,24 @@ def load_project_settings(workspace: Path | str | None = None, **overrides: Any)
     return _load_settings_impl(overrides=overrides, apply_env=False)
 
 
-def load_global_settings(**overrides: Any) -> Settings:
+def load_global_settings(*, apply_models: bool = True, **overrides: Any) -> Settings:
     """Load user-layer-only settings for the global control plane (P7-01).
 
     Resolves catalog/UI/model config without touching the process ``cwd``:
     does not create ``<cwd>/.synapse``, does not load a project ``.env``, and
     does not register the cwd as a project.  The workspace stays unresolved
     until the user picks a concrete project.
+
+    ``apply_models=False`` stops before the layered ``models.json`` profile
+    resolution.  That step is the only one that imports the model registry --
+    and with it LangChain/LangGraph, ~40 MB RSS -- so a caller that reads
+    nothing but user-layer *paths* (the loopback web console resolving the
+    project catalog) can skip it.  The returned snapshot is otherwise
+    identical; only the model profile fields are left at their defaults.
     """
-    return _load_settings_impl(overrides=overrides, apply_env=False, global_only=True)
+    return _load_settings_impl(
+        overrides=overrides, apply_env=False, global_only=True, apply_models=apply_models
+    )
 
 
 def _load_settings_impl(
@@ -584,6 +613,7 @@ def _load_settings_impl(
     overrides: dict[str, Any],
     apply_env: bool,
     global_only: bool = False,
+    apply_models: bool = True,
 ) -> Settings:
     project_root = overrides.get("workspace")
     root_path = Path(project_root).expanduser().resolve() if project_root is not None else None
@@ -694,6 +724,9 @@ def _load_settings_impl(
 
     if not global_only:
         settings.ensure_dirs()
+
+    if not apply_models:
+        return settings
 
     # Layered models.json → selected profile (api_key / base_url / thinking).
     # Model profile resolution is runtime configuration, while UI activation is

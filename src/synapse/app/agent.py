@@ -13,8 +13,8 @@ from typing import Any
 from synapse.app.agent_assembly import (
     MiddlewareContext,
     build_agent_middleware,
+    resolve_system_prompt,
 )
-from synapse.content.prompts import build_system_prompt
 
 # 长程目标（goal）子系统：工具 + 记账 middleware + 进程级服务
 from synapse.goals.runtime import get_goal_service, init_goal_service
@@ -45,6 +45,7 @@ from synapse.runtime.subagents import (
     build_default_subagents_with_display,
     ensure_user_subagents,
 )
+from synapse.runtime.summarization_tuning import apply_compaction_tuning
 from synapse.settings import Settings
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tools import (
@@ -106,13 +107,20 @@ def _resolve_display_effort_from_profiles(
     return out
 
 
-def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelFactory:
+def _subagent_model_factory(
+    registry: Any,
+    settings: Settings,
+    *,
+    model_cache: dict[str, Any] | None = None,
+) -> SubagentModelFactory:
     """Materialize a pinned subagent model with an optional effort override.
 
     ``model_name=None`` builds the main agent's *active* profile (falling back
     to the registry default) so a reasoning-only override runs the same model
     the main agent uses — matching what the UI reports as inherited; unknown
     ad-hoc names fall back to the raw string for native deepagents resolution.
+    If ``model_cache`` is provided, instances configured with identical parameters
+    are reused across subagents and across agent rebuilds.
     """
 
     def factory(model_name: str | None, reasoning_effort: str | None) -> Any:
@@ -126,8 +134,23 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
         # against the active profile (not the registry default) so the built
         # instance matches the main agent and the UI's inherit display.
         resolved_name = model_name or settings.active_model or None
+
+        cache_key = None
+        if model_cache is not None:
+            try:
+                cache_key = model_cache_key(
+                    settings,
+                    model_name=resolved_name,
+                    enable_thinking=enabled,
+                    reasoning_effort=effort,
+                )
+                if cache_key in model_cache:
+                    return model_cache[cache_key]
+            except Exception:  # noqa: BLE001 - cache key generation is best-effort
+                cache_key = None
+
         try:
-            return registry.build_chat_model(
+            built_model = registry.build_chat_model(
                 resolved_name,
                 fallback_api_key=settings_fallback_api_key(settings, resolved_name),
                 fallback_base_url=settings.openai_base_url,
@@ -141,6 +164,9 @@ def _subagent_model_factory(registry: Any, settings: Settings) -> SubagentModelF
                 enable_thinking=enabled,
                 reasoning_effort=effort,
             )
+            if model_cache is not None and cache_key is not None:
+                model_cache[cache_key] = built_model
+            return built_model
         except KeyError:
             # Unknown ad-hoc model name: keep the raw string so deepagents
             # resolves it natively instead of failing the whole agent build.
@@ -278,6 +304,7 @@ def build_coding_agent(
     """
     from deepagents import create_deep_agent
 
+    from synapse.app.state_schema import SynapseAgentState
     from synapse.observability.startup_trace import dump as dump_startup_trace
     from synapse.observability.startup_trace import duration, ensure_started, mark, span
 
@@ -369,15 +396,20 @@ def build_coding_agent(
         model._fast_mode = lambda: bool(getattr(settings, "openai_fast_mode", False))
         model._prompt_cache_key = prompt_cache_key
 
+    effective_excluded = list(getattr(settings, "excluded_tools", []) or [])
+    if getattr(settings, "minimal_filesystem_tools", False):
+        minimal_excluded = getattr(settings, "minimal_filesystem_excluded_tools", []) or []
+        effective_excluded.extend(minimal_excluded)
+
     apply_harness_exclusions(
         model_spec,
         readonly=settings.readonly,
-        excluded_tools=settings.excluded_tools,
+        excluded_tools=effective_excluded,
     )
     # Keep deepagents' built-in ``ls``, ``glob``, and ``grep`` out of model
     # requests. Synapse registers the non-conflicting ``find_files`` and
     # ``search_files`` tools explicitly below.
-    model_request_excluded_tools = set(settings.excluded_tools) | {"ls", "glob", "grep"}
+    model_request_excluded_tools = set(effective_excluded) | {"ls", "glob", "grep"}
     if settings.readonly:
         model_request_excluded_tools.update({"execute", "write_file", "edit_file", "patch"})
 
@@ -581,13 +613,14 @@ def build_coding_agent(
             inherit_tools=tools,
             custom_subagents=custom_subagents,
             disable_builtin_subagents=settings.disable_builtin_subagents,
-            model_factory=_subagent_model_factory(registry, settings),
+            model_factory=_subagent_model_factory(registry, settings, model_cache=model_cache),
             model_overrides=settings.subagent_model_overrides,
             reasoning_effort_overrides=settings.subagent_reasoning_effort_overrides,
             default_model=settings.subagent_default_model,
             default_reasoning_effort=settings.subagent_default_reasoning_effort,
             main_model=model_spec,
             main_reasoning_effort=main_reasoning_effort,
+            extra_excluded_tools=effective_excluded,
         )
         subagents = subagent_build.specs
         display_configs = _resolve_display_effort_from_profiles(
@@ -598,7 +631,9 @@ def build_coding_agent(
     if goals_enabled:
         try:
             if goal_service is None:
-                init_goal_service(settings.resolved_sessions_path())
+                # Bind to *this* project's store: a multi-project process (the
+                # runtime daemon) must not report another project's goals.
+                goal_service = init_goal_service(settings.resolved_sessions_path())
             else:
                 goals_enabled = True
         except Exception:  # noqa: BLE001 - goal 服务失败时降级为禁用
@@ -606,6 +641,19 @@ def build_coding_agent(
     if steer_queue is None:
         steer_queue = SteerQueue()
     output_repository = ToolOutputRepository(settings.resolved_tool_output_db_path())
+    prompt, prompt_stable_prefix = resolve_system_prompt(
+        system_prompt=system_prompt,
+        root=root,
+        shell_executable=backend.shell_executable,
+        excluded_tools=model_request_excluded_tools,
+        model_spec=model_spec,
+        # One switch owns both halves: the per-build context sections are only
+        # appended when the request-time breakpoint that keeps them out of the
+        # cached prefix is also enabled.
+        include_dynamic_context=bool(
+            getattr(settings, "enable_prompt_cache_boundary", False)
+        ),
+    )
     middleware = build_agent_middleware(
         MiddlewareContext(
             settings=settings,
@@ -619,6 +667,7 @@ def build_coding_agent(
             goal_service=goal_service,
             steer_queue=steer_queue,
             prompt_cache_key=prompt_cache_key,
+            prompt_stable_prefix=prompt_stable_prefix,
             turbo=bool(
                 getattr(settings, "turbo", False)
                 or getattr(selected_profile, "turbo", False)
@@ -629,12 +678,15 @@ def build_coding_agent(
     if progress is not None:
         progress("compiling agent graph")
     with span("create_deep_agent"):
-        prompt = system_prompt if system_prompt is not None else build_system_prompt(
-            root,
-            shell_executable=backend.shell_executable,
-        )
         agent = create_deep_agent(
             model=model,
+            # Subagents must inherit the delta-stored ``messages`` channel. deepagents
+            # only defaults ``state_schema`` for the top-level graph, so without this
+            # every subagent step rewrote the full message list into its own
+            # checkpoint (measured: 83% of a 14 GB store came from those namespaces).
+            # ``SynapseAgentState`` keeps that channel but raises its snapshot cadence
+            # from deepagents' 50 to ``SNAPSHOT_FREQUENCY`` (see synapse.app.state_schema).
+            state_schema=SynapseAgentState,
             system_prompt=prompt,
             backend=backend,
             tools=tools,
@@ -648,6 +700,11 @@ def build_coding_agent(
             debug=settings.debug,
             name="coding-agent",
         )
+    # deepagents wires the summarization middleware with fraction-based
+    # thresholds evaluated by a token estimator that mis-prices inline media;
+    # see synapse.runtime.summarization_tuning for the measurements.
+    for note in apply_compaction_tuning(agent):
+        logger.info("%s", note)
     agent._coding_model_spec = model_spec  # type: ignore[attr-defined]
     agent._coding_model_profile = selected_profile.name  # type: ignore[attr-defined]
     agent._coding_checkpointer = saver  # type: ignore[attr-defined]
@@ -670,6 +727,9 @@ def build_coding_agent(
     agent._coding_mcp_attached = not mcp_deferred  # type: ignore[attr-defined]
     agent._coding_mcp_servers = list(_mcp_servers)  # type: ignore[attr-defined]
     agent._coding_mcp_tool_names = list(_mcp_tool_names)  # type: ignore[attr-defined]
+    agent._coding_mcp_warnings = list(  # type: ignore[attr-defined]
+        getattr(build_coding_agent, "last_mcp_warnings", []) or []
+    )
     agent._coding_mcp_scope_key = mcp_pool_key  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
     # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so
@@ -704,9 +764,9 @@ def build_coding_agent(
         # Reasoning-only overrides (planner_model_name is None) still pin an
         # independent instance of the main model with the effort applied.
         if planner_model_name is not None or planner_reasoning is not None:
-            agent._coding_planner_model = _subagent_model_factory(registry, settings)(
-                planner_model_name, planner_reasoning
-            )
+            agent._coding_planner_model = _subagent_model_factory(
+                registry, settings, model_cache=model_cache
+            )(planner_model_name, planner_reasoning)
         else:
             agent._coding_planner_model = model  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001 - planner degrades to the main model

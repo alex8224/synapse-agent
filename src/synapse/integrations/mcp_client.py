@@ -271,17 +271,91 @@ def json_schema_to_pydantic_model(
     )
 
 
-def _content_to_text(result: Any) -> str:
-    parts: list[str] = []
+_STRUCTURED_VALUE_MAX_CHARS = 2048
+"""Largest ``structuredContent`` field kept verbatim; bigger ones collapse."""
+
+_STRUCTURED_TOTAL_MAX_CHARS = 8192
+"""Ceiling on the whole appended projection, so one call cannot dominate a window."""
+
+
+def _structured_summary(structured: Any) -> str | None:
+    """Render ``structuredContent`` compactly, keeping the control fields.
+
+    A server may report a result's *handles* only in ``structuredContent`` while
+    the readable body arrives as text blocks -- cua-driver keeps ``snapshot_id``
+    and ``screenshot_file_path`` there, and ``snapshot_id`` is what its
+    element-indexed ``click`` demands. Those handles are consumed by the action
+    tools, so they have to reach the model.
+
+    A field is omitted when it is too large to be worth carrying: cua-driver's
+    ``elements`` and ``tree_markdown`` repeat the accessibility tree that the
+    text block already contains, and inlining them would multiply the request.
+    Oversized fields become a placeholder that still names them, so the model
+    can tell "absent" from "too large to include".
+    """
+    if not isinstance(structured, dict) or not structured:
+        return None
+    projected: dict[str, Any] = {}
+    for key, value in structured.items():
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+        if len(rendered) <= _STRUCTURED_VALUE_MAX_CHARS:
+            projected[key] = value
+        else:
+            count = f", {len(value)} items" if isinstance(value, (list, dict)) else ""
+            projected[key] = f"<omitted {len(rendered)} chars{count}>"
+    text = json.dumps(projected, ensure_ascii=False, default=str)
+    if len(text) > _STRUCTURED_TOTAL_MAX_CHARS:
+        text = text[:_STRUCTURED_TOTAL_MAX_CHARS] + "...<truncated>"
+    return text
+
+
+def _image_block(block: Any) -> dict[str, Any] | None:
+    """Return an LLM-readable image block, or ``None`` when *block* is not one."""
+    data = getattr(block, "data", None)
+    mime = str(getattr(block, "mimeType", "") or "")
+    kind = str(getattr(block, "type", "") or "")
+    if not data or not (kind == "image" or mime.startswith("image/")):
+        return None
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime or 'image/png'};base64,{data}"},
+    }
+
+
+def _content_to_message_content(result: Any) -> str | list[dict[str, Any]]:
+    """Render an MCP result as LangChain message content.
+
+    Text blocks stay text. An image block becomes an ``image_url`` data URL so
+    the model receives the picture itself: rendering it with ``str(block)``
+    would inline the base64 as text, which both hides the image and re-sends
+    the payload on every later turn. How many images survive is bounded by
+    ``runtime.image_window_middleware``, not here.
+
+    A result with no image collapses to a plain string, which keeps text-only
+    servers on the previous code path.
+    """
+    blocks: list[dict[str, Any]] = []
     for block in getattr(result, "content", None) or []:
         text = getattr(block, "text", None)
         if text:
-            parts.append(text)
-        else:
-            parts.append(str(block))
+            blocks.append({"type": "text", "text": text})
+            continue
+        image = _image_block(block)
+        if image is not None:
+            blocks.append(image)
+            continue
+        blocks.append({"type": "text", "text": str(block)})
+
+    summary = _structured_summary(getattr(result, "structuredContent", None))
+    if summary is not None:
+        blocks.append({"type": "text", "text": f"structuredContent: {summary}"})
+
     if getattr(result, "isError", False):
-        return "MCP error: " + ("\n".join(parts) or "unknown")
-    return "\n".join(parts) if parts else "(empty MCP result)"
+        body = "\n".join(item["text"] for item in blocks if item["type"] == "text")
+        return "MCP error: " + (body or "unknown")
+    if all(item["type"] == "text" for item in blocks):
+        return "\n".join(item["text"] for item in blocks) or "(empty MCP result)"
+    return blocks
 
 
 def _make_tool(
@@ -299,7 +373,7 @@ def _make_tool(
     safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in full_name)
     args_model = json_schema_to_pydantic_model(safe_name, input_schema)
 
-    def _invoke(**kwargs: Any) -> str:
+    def _invoke(**kwargs: Any) -> str | list[dict[str, Any]]:
         # Drop explicit Nones so optional MCP fields stay omitted.
         arguments = {k: v for k, v in kwargs.items() if v is not None}
         return call_fn(tool_name, arguments)
@@ -548,13 +622,15 @@ class McpSessionPool:
             logger.warning("MCP server %s open failed: %s", server.name, exc)
             return None, f"mcp server {server.name}: {exc}"
 
-    async def _call(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def _call(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> str | list[dict[str, Any]]:
         live = self._servers.get(server_name)
         if live is None:
             return f"MCP error: server {server_name} is not connected"
         try:
             result = await live.session.call_tool(tool_name, arguments=arguments)
-            return _content_to_text(result)
+            return _content_to_message_content(result)
         except Exception as exc:
             # Connection broken (e.g. stdio process exited, HTTP stream closed,
             # anyio.ClosedResourceError).  Drop the dead session so follow-up
@@ -569,7 +645,9 @@ class McpSessionPool:
             self._servers.pop(server_name, None)
             return f"MCP error: {server_name}/{tool_name}: {exc}"
 
-    def call_tool(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> str:
+    def call_tool(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> str | list[dict[str, Any]]:
         try:
             return self._loop.run(self._call(server_name, tool_name, arguments))
         except Exception as exc:
@@ -730,6 +808,18 @@ class McpPoolRegistry:
             pool = self._pools.pop(key, None)
         if pool is not None:
             pool.close()
+
+    def get(self, key: str) -> McpSessionPool | None:
+        """Return the live pool for ``key`` without opening a new connection.
+
+        Read-only probe for surfaces that report *actual* MCP state (the web
+        console panel) instead of only the configured ``enabled`` flag.
+        """
+        with self._lock:
+            pool = self._pools.get(key)
+        if pool is None or pool._closed:  # noqa: SLF001 - same probe as acquire
+            return None
+        return pool
 
     def close_all(self) -> None:
         with self._lock:

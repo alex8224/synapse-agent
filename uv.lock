@@ -2342,6 +2342,7 @@ version = "0.1.44"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
+    { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "deepagents" },
     { name = "httpx", extra = ["socks"] },
@@ -2387,6 +2388,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = "==0.12.0" },
+    { name = "aiohttp", specifier = "==3.14.3" },
     { name = "aiosqlite", specifier = "==0.22.1" },
     { name = "deepagents", specifier = "==0.6.12" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },

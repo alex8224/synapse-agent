@@ -1,4 +1,4 @@
-﻿"""Read-only Codex OAuth usage snapshots for the TUI bottombar."""
+﻿"""Codex OAuth usage snapshots and explicit reset-credit redemption."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -92,6 +93,9 @@ class CodexUsageClient:
         self._cached_at = 0.0
         self._cached_details: ResetCredits | None = None
         self._cached_details_at = 0.0
+        #: Account the cached snapshots belong to.  Only compared internally to
+        #: rebuild the cache after an account switch; never part of a snapshot.
+        self._cached_account_id: str | None = None
 
     def _auth_headers(self) -> dict[str, str]:
         tokens = self._store.load()
@@ -115,19 +119,77 @@ class CodexUsageClient:
                 return None
             return self._cached
 
+    def invalidate(self) -> None:
+        """Drop both cached snapshots (usage summary and reset-credit rows).
+
+        Called after a consume: a redemption changes the usage windows and the
+        credit list at once, so neither cached copy may be served afterwards.
+        """
+        with self._lock:
+            self._drop_caches_locked()
+
+    def _drop_caches_locked(self) -> None:
+        self._cached = None
+        self._cached_at = 0.0
+        self._cached_details = None
+        self._cached_details_at = 0.0
+
+    @staticmethod
+    def _account_key(account_id: str | None) -> str | None:
+        """Opaque, internal identity; never exposed in a usage view or error.
+
+        ``None`` when the grant carries no account id: the access token rotates on
+        refresh, so hashing it would report every rotation as an account switch and
+        drop a warm cache (and fail a read) for no reason.  An unknown identity is
+        therefore treated exactly like the pre-existing behaviour: TTL only.
+        """
+        if not account_id:
+            return None
+        return sha256(f"account:{account_id}".encode()).hexdigest()
+
+    def account_key(self) -> str | None:
+        """The internal identity used to isolate daemon replay records, or ``None``."""
+        tokens = self._store.load()
+        if tokens is None:
+            raise RuntimeError("OpenAI Codex OAuth is not logged in")
+        return self._account_key(tokens.account_id)
+
+    def _headers_key(self, headers: dict[str, str]) -> str | None:
+        return self._account_key(headers.get("ChatGPT-Account-Id"))
+
+    def _sync_account_locked(self) -> None:
+        """Rebuild both caches when the OAuth account behind them changed.
+
+        Both endpoints are account-scoped, so a snapshot fetched for one grant
+        must never be served for another.  Only the *fetch* paths call this: the
+        render-path ``get_cached*`` readers stay filesystem-free.  A broken
+        credential file propagates unchanged (no silent stale snapshot).
+        """
+        tokens = self._store.load()
+        account_id = self._account_key(tokens.account_id) if tokens is not None else None
+        if account_id is None or account_id == self._cached_account_id:
+            return
+        self._drop_caches_locked()
+        self._cached_account_id = account_id
+
     def fetch(self, *, force=False) -> CodexUsageSnapshot:
         with self._lock:
+            self._sync_account_locked()
             if not force:
                 cached = self.get_cached()
                 if cached is not None:
                     return cached
         headers = self._auth_headers()
+        account = self._headers_key(headers)
         response = httpx.get(OPENAI_USAGE_ENDPOINT, headers=headers, timeout=self._timeout)
         response.raise_for_status()
         payload = response.json()
         tokens = self._store.load()
         snapshot = parse_usage_payload(payload, expires_at=tokens.expires_at if tokens else None)
         with self._lock:
+            self._sync_account_locked()
+            if account is not None and account != self._cached_account_id:
+                raise RuntimeError("Codex account changed during usage read")
             self._cached = snapshot
             self._cached_at = time.monotonic()
         return snapshot
@@ -142,22 +204,35 @@ class CodexUsageClient:
 
     def fetch_reset_credits(self, *, force=False) -> ResetCredits:
         with self._lock:
+            self._sync_account_locked()
             if not force:
                 cached = self.get_cached_details()
                 if cached is not None:
                     return cached
         headers = self._auth_headers()
+        account = self._headers_key(headers)
         response = httpx.get(OPENAI_RESET_CREDITS_ENDPOINT, headers=headers, timeout=self._timeout)
         response.raise_for_status()
         details = parse_reset_credits_details(response.json())
         with self._lock:
+            self._sync_account_locked()
+            if account is not None and account != self._cached_account_id:
+                raise RuntimeError("Codex account changed during credits read")
             self._cached_details = details
             self._cached_details_at = time.monotonic()
         return details
 
-    def consume_reset_credit(self, *, credit_id=None, idempotency_key=None) -> ConsumeResetResult:
+    def consume_reset_credit(
+        self,
+        *,
+        credit_id: str | None = None,
+        idempotency_key: str | None = None,
+        expected_account_key: str | None = None,
+    ) -> ConsumeResetResult:
         key = idempotency_key or uuid.uuid4().hex
         headers = self._auth_headers()
+        if expected_account_key is not None and self._headers_key(headers) != expected_account_key:
+            raise RuntimeError("Codex account changed before reset")
         body: dict[str, str] = {"redeem_request_id": key}
         if credit_id:
             body["credit_id"] = credit_id

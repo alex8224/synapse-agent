@@ -1,0 +1,288 @@
+"""Whitelisted projection of effective runtime settings into config DTOs.
+
+This module owns the *read-only* settings surface for
+``LocalAgentRuntimeService.get_runtime_config``.  It reads a fixed set of
+attributes off a settings-like object and resolves the model registry and MCP
+server configs, then projects them into :class:`RuntimeConfigView` fields.
+Only whitelisted display data is returned:
+
+- model names (registry aliases) and the selected model alias/name,
+- thinking levels for the current model plus the effective reasoning level,
+- MCP server ``name`` / ``transport`` / ``enabled`` / ``tool_prefix``,
+- the global MCP enable flag and the capability flags (`can_set_thinking` is
+  True because the session-scoped reasoning-level write port exists;
+  `can_toggle_mcp_global` stays False — no global write path exists).
+
+Secrets (API keys, ``env``, ``headers``, ``url``, ``command``/``args``,
+provider base URLs, workspace-absolute paths from Settings, goals, attachment
+state) are never read here and can never reach the view.  Core read errors from
+the registry or the MCP config loader are *not* swallowed: they propagate to
+the caller unchanged.  Only the bounded view construction maps to an explicit
+``ConfigOverflowError`` so an oversized registry/config surfaces a typed error
+instead of silent truncation.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from synapse.integrations.mcp_client import load_mcp_server_configs
+from synapse.models.config import DEFAULT_THINKING_LEVELS
+from synapse.models.helpers import settings_thinking_label
+from synapse.models.registry import registry_from_settings
+from synapse.runtime.service.errors import ConfigOverflowError
+from synapse.runtime.service.runtime_config import (
+    MAX_RUNTIME_CONFIG_MCP_SERVERS,
+    MAX_RUNTIME_CONFIG_MODELS,
+    MAX_RUNTIME_CONFIG_TEXT_BYTES,
+    MAX_RUNTIME_CONFIG_THINKING_LEVELS,
+    McpServerView,
+    RuntimeConfigView,
+)
+from synapse.runtime.sessions.ref import SessionRef
+from synapse.settings.config_paths import read_project_thinking_default
+
+__all__ = ["build_config_view", "is_codex_oauth_profile", "resolve_thinking_levels"]
+
+
+def _attr(settings: Any, name: str, default: Any = None) -> Any:
+    """Read one whitelisted settings attribute; never iterates the object."""
+    return getattr(settings, name, default)
+
+
+def _context_window_of(registry: Any, model: str) -> int | None:
+    """The selected model's input context size, or ``None`` when it has none.
+
+    Read from the registry profile, which is the same source the TUI labels its
+    context occupancy with.  An unknown model, or a profile without the field,
+    is simply "no window": clients then render the bare token count instead of a
+    fraction, which is why this degrades rather than raising.
+    """
+    getter = getattr(registry, "get", None)
+    if not callable(getter):
+        # An injected double may expose only the enumeration surface; a registry
+        # that cannot resolve a profile simply has no window to report.
+        return None
+    try:
+        profile = getter(model)
+    except KeyError:
+        return None
+    raw = getattr(profile, "context_window", None)
+    if type(raw) is not int or raw <= 0:
+        return None
+    return raw
+
+
+def _model_text(value: Any) -> str | None:
+    """Coerce a whitelisted model alias/name to a bounded string or None."""
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise ConfigOverflowError("runtime model setting is invalid")
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        size = len(text.encode("utf-8", errors="strict"))
+    except UnicodeEncodeError:
+        raise ConfigOverflowError("runtime model setting is invalid") from None
+    if size > MAX_RUNTIME_CONFIG_TEXT_BYTES:
+        raise ConfigOverflowError("runtime model setting exceeds the length limit")
+    return text
+
+
+def _project_thinking_default(project_settings: Any) -> str:
+    """The level a newly opened session starts with for this project.
+
+    The project settings layer wins when it sets an explicit default; otherwise
+    the loaded project settings' own label (model-profile seeded) is reported as
+    the inherited default.  A workspace-less settings object reports its label,
+    because there is no project layer to read.
+    """
+    workspace = _attr(project_settings, "workspace")
+    if workspace is not None:
+        explicit = read_project_thinking_default(workspace)
+        if explicit is not None:
+            return explicit
+    return settings_thinking_label(project_settings)
+
+
+def resolve_thinking_levels(settings: Any, model: str | None = None) -> tuple[str, ...]:
+    """Thinking-level whitelist advertised for one model.
+
+    Shared by the read-only config projection and the reasoning-level write path
+    (``runtime.session.thinking.set``), so the levels a client is *offered* are
+    exactly the levels a write *accepts*.  Falls back to the registry-level list
+    and then to the shared default catalog when a registry reports no levels for
+    the model, mirroring the projection.
+    """
+    registry = registry_from_settings(settings)
+    if registry is None:
+        raise ConfigOverflowError("model registry is unavailable")
+    target = (
+        _model_text(model)
+        or _model_text(_attr(settings, "active_model"))
+        or _model_text(getattr(registry, "default", None))
+        or _model_text(_attr(settings, "model"))
+    )
+    if target is None:
+        raise ConfigOverflowError("no model is selected for this session")
+    try:
+        allowed = list(registry.allowed_thinking_levels(target))
+    except Exception:  # noqa: BLE001 - registry quirks degrade to the shared list
+        allowed = list(getattr(registry, "thinking_levels", None) or ())
+    if not allowed:
+        allowed = list(DEFAULT_THINKING_LEVELS)
+    if len(allowed) > MAX_RUNTIME_CONFIG_THINKING_LEVELS:
+        raise ConfigOverflowError("thinking levels exceed the level count limit")
+    levels = tuple(_model_text(level) for level in allowed)
+    if any(level is None for level in levels):
+        raise ConfigOverflowError("thinking levels contain an invalid level")
+    return levels
+
+
+def build_config_view(
+    settings: Any,
+    *,
+    session: SessionRef,
+    project_settings: Any | None = None,
+    can_set_project_thinking: bool = False,
+    codex_usage_enabled: bool = False,
+) -> RuntimeConfigView:
+    """Project one effective settings object into a read-only config view.
+
+    ``settings`` is the session-bound settings when the target session is
+    already open, or the project settings otherwise (the caller decides).
+    ``session`` is only used to name the config context; no secret is derived
+    from it.
+
+    ``project_settings`` is the project's own defaults (never the session's), so
+    ``project_thinking_level`` states what a *newly opened* session would start
+    with.  It is omitted by callers that have no project scope, in which case the
+    field stays ``None`` rather than echoing the session's level.
+
+    The project default is read from the project *settings layer*, not from the
+    loaded ``Settings`` object: ``apply_models_config_to_settings`` re-seeds
+    ``reasoning_effort`` from the selected model profile on every load, so the
+    loaded object cannot distinguish "the project asked for low" from "the
+    profile happens to be low".  When the project layer sets nothing, the
+    profile-derived label is reported as the inherited default.
+
+    ``codex_usage_enabled`` is the caller's verdict on the Codex usage gate: it
+    is only ever True when the composition root wired a usage provider *and* the
+    target session is already open *and* its selected profile uses Codex OAuth
+    (see :func:`is_codex_oauth_profile`).  It defaults to False so a caller that
+    knows nothing about the surface keeps the entry hidden instead of promising
+    an RPC it cannot serve.
+    """
+    del session  # display context only; values come from whitelisted settings
+    registry = registry_from_settings(settings)
+
+    current = (
+        _model_text(_attr(settings, "active_model"))
+        or _model_text(getattr(registry, "default", None) if registry is not None else None)
+        or _model_text(_attr(settings, "model"))
+    )
+    if current is None:
+        raise ConfigOverflowError("no model is selected for this session")
+
+    if registry is None:
+        raise ConfigOverflowError("model registry is unavailable")
+
+    names = registry.list_names()
+    if len(names) > MAX_RUNTIME_CONFIG_MODELS:
+        raise ConfigOverflowError("model registry exceeds the model count limit")
+
+    available = tuple(_model_text(name) for name in names)
+    if any(name is None for name in available):
+        raise ConfigOverflowError("model registry contains an invalid model name")
+
+    thinking_levels = resolve_thinking_levels(settings, current)
+
+    enable_thinking = bool(_attr(settings, "enable_thinking", True))
+    effort = _model_text(_attr(settings, "reasoning_effort"))
+    thinking_level = None
+    if enable_thinking and effort is not None and effort in thinking_levels:
+        thinking_level = effort
+
+    mcp_enabled = bool(_attr(settings, "enable_mcp", True))
+    server_views: list[McpServerView] = []
+    if mcp_enabled:
+        servers = load_mcp_server_configs(
+            path=_attr(settings, "mcp_config_path"),
+            json_blob=_attr(settings, "mcp_servers_json"),
+            workspace=_attr(settings, "workspace"),
+        )
+        if len(servers) > MAX_RUNTIME_CONFIG_MCP_SERVERS:
+            raise ConfigOverflowError("MCP server config exceeds the server count limit")
+        for server in servers:
+            name = _model_text(getattr(server, "name", None))
+            transport = _model_text(getattr(server, "transport", None))
+            if name is None or transport is None:
+                raise ConfigOverflowError("MCP server config is missing its name or transport")
+            tool_prefix = _model_text(getattr(server, "tool_prefix", None))
+            enabled = getattr(server, "enabled", True)
+            if type(enabled) is not bool:
+                raise ConfigOverflowError("MCP server enabled flag is invalid")
+            try:
+                server_views.append(
+                    McpServerView(
+                        name=name,
+                        transport=transport,
+                        enabled=enabled,
+                        tool_prefix=tool_prefix,
+                    )
+                )
+            except ValueError as exc:
+                raise ConfigOverflowError("MCP server config exceeds the safety bound") from exc
+
+    try:
+        return RuntimeConfigView(
+            current_model=current,
+            available_models=available,
+            thinking_level=thinking_level,
+            thinking_levels=thinking_levels,
+            mcp_servers=tuple(server_views),
+            mcp_enabled=mcp_enabled,
+            # A real session-scoped write port now exists
+            # (`runtime.session.thinking.set`), so clients may render an
+            # editable reasoning-level control.
+            can_set_thinking=True,
+            can_toggle_mcp_global=False,
+            # The project default is reported only when the caller supplied the
+            # project's own settings; it is never inferred from the session.
+            project_thinking_level=(
+                _project_thinking_default(project_settings)
+                if project_settings is not None
+                else None
+            ),
+            can_set_project_thinking=bool(can_set_project_thinking),
+            context_window=_context_window_of(registry, current),
+            codex_usage_enabled=bool(codex_usage_enabled),
+        )
+    except ValueError as exc:
+        raise ConfigOverflowError("runtime config exceeds the safety bound") from exc
+
+
+def is_codex_oauth_profile(settings: Any) -> bool:
+    """Whether the settings' *actual selected profile* uses Codex OAuth.
+
+    The verdict is the resolved model profile's own ``auth`` field, never the
+    model name: an alias that merely looks like a Codex model is not an OAuth
+    profile, and an ``auth=openai_oauth`` profile behind any alias is.  A
+    registry that cannot be resolved (or that has no matching profile) reports
+    "not OAuth" — this predicate gates a UI entry, so it degrades to disabled
+    and never raises.
+    """
+    try:
+        registry = registry_from_settings(settings)
+        if registry is None:
+            return False
+        selected = _attr(settings, "active_model") or getattr(registry, "default", None)
+        try:
+            profile = registry.get(selected)
+        except KeyError:
+            profile = registry.get(getattr(registry, "default", None))
+    except Exception:  # noqa: BLE001 - the gate degrades to "disabled", never raises
+        return False
+    return getattr(profile, "auth", None) == "openai_oauth"

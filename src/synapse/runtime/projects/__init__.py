@@ -4,6 +4,7 @@ from synapse.runtime.projects.identity import (
     ensure_project_identity,
     project_file_for,
     read_project_identity,
+    reconcile_project_identity,
     write_project_identity,
 )
 from synapse.runtime.projects.runtime import (
@@ -21,5 +22,6 @@ __all__ = [
     "mcp_pool_key",
     "project_file_for",
     "read_project_identity",
+    "reconcile_project_identity",
     "write_project_identity",
 ]

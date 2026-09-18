@@ -1,45 +1,21 @@
 ﻿# Synapse Collaboration Guide
 
-## Repository layout
+## Architecture
 
-| Path | Responsibility |
-| --- | --- |
-| `src/synapse/app/` | Agent assembly (composition root in `agent.py`, contracts in `agent_assembly.py`) and `AGENTS.md` injection |
-| `src/synapse/acp/` | Official Agent Client Protocol (ACP) adapter: run Synapse as an ACP agent over stdio; session registry, permission coordinator, event bridge |
-| `src/synapse/commands/` | Slash command parsing, completion, and results |
-| `src/synapse/content/` | Prompts, skills, input history, multimodal content |
-| `src/synapse/goals/` | Goal accounting, steering, and persistence |
-| `src/synapse/integrations/` | MCP, model transport, Codex import, vision |
-| `src/synapse/memory/` | Long-term memory (SQLite + embeddings) |
-| `src/synapse/models/` | Model profiles, registry, config helpers |
-| `src/synapse/observability/` | Startup and runtime observability |
-| `src/synapse/planner/` | LLM-driven task decomposition |
-| `src/synapse/projects/` | User-layer project catalog |
-| `src/synapse/rag/` | Project document index and retrieval |
-| `src/synapse/runtime/` | Backends, middleware, compression, steer, safety, async runtime |
-| `src/synapse/sessions/` | Sessions, transcripts, recap, persistence |
-| `src/synapse/settings/` | Layered config paths, Settings schema, loading |
-| `src/synapse/tool_output/` | Reversible tool output detection, transforms, storage, metrics |
-| `src/synapse/tools/` | Custom tools injected into the agent |
-| `src/synapse/ui/` | Textual TUI, stream, timeline, dialogs, topbar/bottombar |
-| `tests/` | Python tests, usually mirroring domain modules |
-| `rust/synapse-core-tool/` | Native filesystem tools (read/edit/patch/search) and math rendering; published to PyPI as `synapse-core-tool` |
-| `rust/synapse-tool-compress-core/` | Native tool-output compression core; required dependency, published to PyPI as `synapse-tool-compress-core` |
-| `docs/`, `mkdocs.yml` | User docs and MkDocs config |
-| `.github/workflows/` | CI, docs, Python release, native wheel builds |
-
-## Architecture & compatibility
-
+- Domain packages live under `src/synapse/` (each `synapse.<package>`); their tests are flat files named after the domain under `tests/` (`tests/test_<area>*.py`, plus `tests/fixtures/`) — do not add per-package subdirectories there. Rust/PyO3 crates live under `rust/`; the MkDocs site lives under `docs/` + `mkdocs.yml`.
+- Repository Agent Skills live in `skills/<name>/SKILL.md` (YAML front matter: `name`, `description`, `license`, `compatibility`, `allowed_tools`). The default `skills_paths` is `["skills"]` relative to the project root (`src/synapse/settings/schema.py`); `src/synapse/content/skills_catalog.py` discovers them and feeds `/skills`, and `docs/skills.md` documents the feature. `skills/` is excluded from the sdist (`[tool.hatch.build.targets.sdist]`), so the skills travel with the checkout, not with the wheel. Keep the front matter accurate — it is what the catalog surfaces.
 - `src/synapse/app/agent.py` is the assembly composition root; the reusable assembly contracts (middleware build, typed resource wiring) live in `src/synapse/app/agent_assembly.py`. Keep domain algorithms in their own packages.
 - New features belong in the matching domain package; cross-domain wiring goes in `app/` or an explicit runtime middleware.
-- `src/synapse/config.py` is a compatibility re-export layer. Import from `synapse.settings` in new code; keep legacy import paths working.
+- Console-script entry points live in `src/synapse/entry.py` (`synapse`), `src/synapse/web.py` (`synapse-web`, textual-serve TUI in the browser), `src/synapse/web_console/entry.py` (`synapse-web-console`, loopback React console host), `src/synapse/acp/server.py` (`synapse-acp`), and `src/synapse/runtime/daemon/entry.py` (`synapse-runtime`). Keep entry modules thin; delegate to a domain package. These scripts only exist after an install/sync step (`uv sync`); in a stale source checkout run the module form (`python -m synapse.web_console.entry`) instead, and start the console host/daemon detached with redirected stdout/stderr — see `README.md` section "Web 控制台".
+- `config.py`, `models_registry.py`, and `subagents.py` are compatibility re-export layers. Import from `synapse.settings`, `synapse.models.registry`, or `synapse.runtime.subagent_specs`/`synapse.runtime.subagents` in new code; keep legacy import paths working.
 - `__init__.py` exports are public API. Keep necessary re-exports when moving implementations.
 - Config merges user and project layers. When changing Settings, update `src/synapse/settings/schema.py`, `src/synapse/settings/config_paths.py`, `tests/test_config.py`, `tests/test_layered_config.py`, and the user docs (`README.md`, `docs/config.md`).
 - `AGENTS.md` is statically injected by the agent-md middleware (`src/synapse/app/agent_md.py`), independent of writable memory; never route it back into memory writes.
+- The browser console frontend lives in `web/` (React 19 + TypeScript + Vite, built to `web/dist/`); its conventions are in `web/AGENTS.md`. Read that file before changing anything under `web/` — this root file is the only one the agent-md middleware injects, so `web/AGENTS.md` is not loaded automatically.
 
 ## Coding standards
 
-- Ruff is the only automated Python baseline: line length 100, target Python 3.12, rules `E/F/I/B/UP`.
+- Ruff is the only automated Python baseline: line length 100, target Python 3.12, rules `E/F/I/B/UP` with `B008` ignored (see `[tool.ruff]` in `pyproject.toml`).
 - Annotate new or modified public functions, complex state transitions, and compatibility branches.
 - Catch broad exceptions only at explicit degradation boundaries, and explain the fallback; never swallow core business errors silently.
 - Avoid unbounded reads, searches, and terminal output; cap logs, tool results, and external data.
@@ -50,7 +26,7 @@
 
 Run `uv sync` after the first install or dependency changes.
 
-Verification order: narrowest test → domain tests → full checks.
+Verification order: narrowest test → domain tests
 
 ```powershell
 uv run --no-sync pytest tests/test_x.py -q
@@ -66,14 +42,9 @@ uv run --no-sync pytest tests/test_x.py::test_case_name -q
 | CLI/slash commands | `tests/test_cli.py`, `tests/test_slash_*` |
 | TUI/widgets/dialogs | `tests/test_tui_*`, `tests/test_stream_*`, `tests/test_dialogs.py`, component tests |
 
-Full checks:
-
-```powershell
-uv run --no-sync ruff check .
-uv run --no-sync pytest -q
-```
-
 CI runs lint on ubuntu-latest and tests on Windows/Linux with Python 3.12/3.13. Platform-specific changes must at least pass on the current machine and be reviewed for the other platform.
+
+A separate ubuntu `contract` job is the only gate on the generated contract: it runs `uv run --no-sync python scripts/export_contract_manifest.py --check`, the targeted `tests/test_runtime_contract_manifest.py`, `tests/test_runtime_architecture_boundaries.py`, `tests/test_runtime_service_import_purity.py`, `tests/test_runtime_transport_client_compatibility.py` subset, and then `npx tsc -b` plus the web console's `runtimeContractFixture` / `runtimeClientBoundary` / `sourceGuard` tests. A wire-contract change has to keep all of those green.
 
 Docs and packaging:
 
@@ -108,7 +79,7 @@ cargo fmt --manifest-path rust/<crate>/Cargo.toml --check
 
 If Python bindings/APIs change, rebuild via `uv sync --reinstall-package <crate>` and run the related Python tests.
 
-Keep the Apache-2.0 SPDX headers, attribution, `LICENSE`, and `NOTICE` under `rust/synapse-tool-compress-core/src/headroom_port/`; do not introduce excluded network calls or model downloads.
+Keep the Apache-2.0 SPDX headers in `rust/synapse-tool-compress-core/src/headroom_port/*.rs`, the crate's `LICENSE` and `NOTICE` at `rust/synapse-tool-compress-core/`, and the upstream attribution intact; do not introduce excluded network calls or model downloads.
 
 ## Release process
 
@@ -129,19 +100,3 @@ powershell -ExecutionPolicy Bypass -File scripts/release.ps1
 ```
 
 8. The script creates and pushes the `v{version}` tag; `release.yml` extracts the matching CHANGELOG section, runs `uv build`, and creates the GitHub Release.
-
-## cdp_take_screenshot usage
-
-### Known limits
-- `filePath` cannot write into the workspace (browser sandbox); any attempt returns `Access denied`.
-- Without `filePath`, the screenshot is stored as text (with base64) under `/large_tool_results/call_xx_xxx`.
-
-### Standard flow: screenshot → decode → describe
-1. Ensure `/decode_screenshot.py` exists (it picks the latest `large_tool_results/call_*`, extracts the base64, and writes `.tmp/screenshot_*.png`).
-2. Run `python decode_screenshot.py`.
-3. Call `describe_image(image_path="/.tmp/screenshot_<timestamp>.png", ...)` with the printed filename.
-
-### Notes
-- Every screenshot creates a new file; the script always picks the latest.
-- Output goes to `/.tmp/`, which is gitignored.
-- Use the script instead of decoding manually.

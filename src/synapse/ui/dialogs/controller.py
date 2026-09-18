@@ -9,7 +9,8 @@ controller routes to them and applies effects.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,8 @@ class SlashController:
 
     def __init__(self, app: Any) -> None:
         self._app = app
+        self._switch_generation = 0
+        self.switch_pending = False
 
     def handle_slash(self, text: str) -> bool:
         """Handle local slash commands. Return True if consumed."""
@@ -216,6 +219,23 @@ class SlashController:
             # session-owned turn as the runtime half of the same operation.
             app._turn.cancel("goal_pause")
         requested_agent = effects.agent
+        if thread_changed or requested_agent is not None:
+            self._switch_generation += 1
+            self.switch_pending = False
+        if (
+            thread_changed and turn_controller is not None and requested_agent is None
+            and app.agent is not None
+            and turn_controller.agent_for_session(effects.thread_id) is None
+        ):
+            self._start_session_switch(
+                effects,
+                notice_ttl=notice_ttl,
+                settings_snapshot=(
+                    settings_snapshot if settings_snapshot is not None
+                    else self._settings_snapshot(app.settings)
+                ),
+            )
+            return
         if thread_changed:
             # Transactional switch: settings mutations (model binding restore)
             # happen inside handle_slash/_sync_settings_to_agent before the
@@ -235,29 +255,16 @@ class SlashController:
                 # transcript (dirty paint) and build/destroy a bridge for no
                 # reason. Rendering attach happens once, after the transcript
                 # reset completes.
-                runtime = turn_controller.runtime_for(app.thread_id)
-                if runtime is not None:
-                    requested_agent = runtime.agent
+                session_agent = turn_controller.agent_for_session(app.thread_id)
+                if session_agent is not None:
+                    requested_agent = session_agent
+                if requested_agent is not None:
                     # The session's frozen agent is the authoritative model
                     # source. Sync settings back to its profile so bottombar
                     # chrome and later rebuilds never show another session's
                     # model (binding may be missing for model changes that
                     # predate this session switch).
                     self._sync_settings_to_agent(requested_agent)
-                elif requested_agent is None and app.agent is not None:
-                    try:
-                        requested_agent = self._build_session_agent(
-                            app.thread_id,
-                            app.agent,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - switch remains recoverable
-                        app.thread_id = previous_thread_id
-                        self._restore_settings_snapshot(app.settings, settings_snapshot)
-                        turn_controller.attach(previous_thread_id)
-                        app.append_event(f"switch failed: {exc}", "yellow")
-                        turn_controller.sync_foreground_status()
-                        return
-                    turn_controller.bind_agent(app.thread_id, requested_agent)
                 turn_controller.detach(app.thread_id)
             if requested_agent is not None:
                 app.agent = requested_agent
@@ -278,6 +285,12 @@ class SlashController:
             # old model / MCP set) and silently undo the switch.
             if turn_controller is not None:
                 turn_controller.bind_agent(app.thread_id, requested_agent)
+                try:
+                    turn_controller.rebind_agent_worker(
+                        app.thread_id, requested_agent, settings=app.settings
+                    )
+                except Exception:
+                    pass
             bind_steer_queue = (
                 getattr(app, "_bind_steer_queue", None)
                 if hasattr(app, "_steer")
@@ -426,8 +439,65 @@ class SlashController:
         except Exception:  # noqa: BLE001 - chrome alignment is best-effort
             pass
 
-    def _build_session_agent(self, thread_id: str, template_agent: Any) -> Any:
-        """Compile one session-owned graph while reusing project resources."""
+    def _start_session_switch(
+        self, effects: TuiCommandEffects, *, notice_ttl: float,
+        settings_snapshot: tuple[Any, ...],
+    ) -> None:
+        """Keep the old session intact until an independent graph is ready."""
+        app = self._app
+        generation = self._switch_generation
+        origin_thread, origin_agent, origin_settings = app.thread_id, app.agent, app.settings
+        project_id = app._current_project_id()
+        project_generation = getattr(app, "_project_switch_generation", 0)
+        assert effects.thread_id is not None
+        worker_settings = self._copy_settings(app.settings)
+        build = self._session_agent_builder(effects.thread_id, origin_agent, worker_settings)
+        # A /switch handler may have restored target model settings already.
+        # The still-visible origin must retain its own settings while we build.
+        self._restore_settings_snapshot(app.settings, settings_snapshot)
+        self.switch_pending = True
+        app.flash_status("preparing session…", "dim")
+
+        def finish(agent: Any | None, error: str | None) -> None:
+            if generation != self._switch_generation:
+                return
+            self.switch_pending = False
+            if (
+                app.thread_id != origin_thread or app.agent is not origin_agent
+                or app.settings is not origin_settings
+                or app._current_project_id() != project_id
+                or getattr(app, "_project_switch_generation", 0) != project_generation
+                or self._settings_snapshot(app.settings) != settings_snapshot
+            ):
+                return
+            if error is not None:
+                app.append_event(f"switch failed: {error}", "yellow")
+                return
+            app._turn.bind_agent(
+                effects.thread_id, agent, settings=worker_settings, project_id=project_id
+            )
+            self._commit_settings(app.settings, worker_settings)
+            self.apply_effects(
+                replace(effects, agent=agent), notice_ttl=notice_ttl,
+                settings_snapshot=settings_snapshot,
+            )
+
+        def work() -> None:
+            try:
+                agent, error = build(), None
+            except Exception as exc:  # noqa: BLE001 - failed build leaves the origin usable
+                agent, error = None, str(exc)
+            try:
+                app.call_from_thread(finish, agent, error)
+            except RuntimeError:
+                pass  # App shutdown discards an uncommitted graph.
+
+        app.run_worker(work, thread=True, exclusive=True, group="session-switch")
+
+    def _session_agent_builder(
+        self, thread_id: str, template_agent: Any, settings: Any
+    ) -> Callable[[], Any]:
+        """Capture project resources on the UI thread; compile only in the worker."""
         from synapse.runtime.sessions import (
             ProjectSharedResources,
             build_session_agent_factory,
@@ -442,8 +512,8 @@ class SlashController:
         except Exception:  # noqa: BLE001 - MCP is optional during session switching
             mcp_tools = ()
         factory = build_session_agent_factory(
-            settings=app.settings,
-            project_root=app.project_root,
+            settings=settings,
+            project_root=Path(app.project_root).resolve(),
             template_agent=template_agent,
             goal_service=getattr(template_agent, "_coding_goal_service", None),
             project_id=app._current_project_id() or None,
@@ -453,7 +523,7 @@ class SlashController:
             checkpointer=getattr(template_agent, "_coding_checkpointer", None),
             mcp_tools=mcp_tools,
         )
-        return factory(thread_id, resources)
+        return lambda: factory(thread_id, resources)
 
     def _resume_after_effects(self, action: str, message: str | None) -> None:
         """Start a HITL resume after its slash result has updated host state."""
@@ -492,12 +562,7 @@ class SlashController:
         if turn is None:
             return False
         try:
-            runtime = turn.runtime_for(app.thread_id)
-            if runtime is None:
-                return False
-            from synapse.runtime.sessions import SessionStatus
-
-            return runtime.snapshot().status is SessionStatus.WAITING_APPROVAL
+            return turn.is_waiting_approval(app.thread_id)
         except Exception:  # noqa: BLE001 - best-effort gate
             return False
 
@@ -943,6 +1008,9 @@ class SlashController:
                 thread_id=app.thread_id,
                 project_root=app.project_root,
             )
+            turn = getattr(app, "_turn", None)
+            if turn is not None:
+                turn.close_session_worker(thread_id)
         except Exception as exc:  # noqa: BLE001
             app.append_event(f"switch failed: {exc}", "yellow")
             return
@@ -1071,7 +1139,12 @@ class SlashController:
         app.set_activity("compacting", "compacting context", True)
         app.flash_status("compacting context…", "dim")
         app._sync_prompt_placeholder()
-        app._compact_context_bg(app.agent, app.thread_id)
+        controller = getattr(app, "_turn", None)
+        cached_agent = (
+            controller.agent_for_session(app.thread_id) if controller is not None else None
+        )
+        compact_agent = cached_agent or app.agent
+        app._compact_context_bg(compact_agent, app.thread_id)
 
     def finish_context_compact(self, result: Any) -> None:
         """Render the completed compact command result on the UI thread."""
@@ -1103,6 +1176,7 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         """Run /model rebuild off the UI thread so the TUI stays responsive.
 
@@ -1113,11 +1187,20 @@ class SlashController:
         """
         from synapse.commands.slash_cmds import handle_slash
         from synapse.observability.startup_trace import duration
+        from synapse.sessions import SessionStore, binding_from_settings
 
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         origin = origin_thread_id or app.thread_id
         origin_agent = origin_agent or app.agent
         worker_settings = origin_settings or self._copy_settings(app.settings)
+        store = None
+        old_binding = old_last = None
+        if hasattr(worker_settings, "resolved_sessions_path"):
+            store = SessionStore(worker_settings.resolved_sessions_path())
+            old_binding = store.get_model_binding(origin)
+            old_last = store.get_last_model_binding()
         switch_started = time.perf_counter()
         app.call_from_thread(app._clear_status_notice)
         app.call_from_thread(app.set_activity, "switching", activity, True)
@@ -1128,6 +1211,7 @@ class SlashController:
                 agent=origin_agent,
                 thread_id=origin,
                 project_root=app.project_root,
+                defer_persist=True,
             )
         except Exception as exc:  # noqa: BLE001
             duration("model.switch", switch_started, command=command, success=False)
@@ -1136,13 +1220,50 @@ class SlashController:
             )
             app.call_from_thread(app.set_activity, "idle", "", True)
             return
+        if not bool(getattr(ok, "error", False)) and getattr(ok, "agent", None) is not None:
+            try:
+                candidate = getattr(ok, "candidate_settings", None) or worker_settings
+                if candidate is None and store is not None:
+                    raise RuntimeError("model switch produced no candidate settings")
+                if store is not None:
+                    store.save_model_binding(
+                        origin, binding_from_settings(candidate), also_last=True
+                    )
+                turn = getattr(app, "_turn", None)
+                if turn is not None:
+                    turn.rebind_agent_worker(
+                        origin, ok.agent, settings=candidate, project_id=origin_project
+                    )
+            except Exception as exc:  # noqa: BLE001 - keep UI/DB uncommitted
+                try:
+                    if store is not None:
+                        if old_binding is not None:
+                            store.replace_model_binding(origin, old_binding, also_last=False)
+                        if old_last is not None and old_last.has_data():
+                            store.set_last_model_binding(old_last)
+                        else:
+                            store._conn.execute(
+                                "DELETE FROM prefs WHERE key = ?", ("last_model_binding",)
+                            )
+                            store._conn.commit()
+                except Exception as rollback_exc:  # noqa: BLE001
+                    exc = RuntimeError(f"{exc}; rollback failed: {rollback_exc}")
+                app.call_from_thread(
+                    app.append_event, f"{activity} failed: runtime rebind: {exc}", "yellow"
+                )
+                app.call_from_thread(app.set_activity, "idle", "", True)
+                app._model_switch_inflight = False
+                return
+        candidate_settings = getattr(ok, "candidate_settings", None) or worker_settings
+        if store is not None:
+            store.close()
         duration(
             "model.switch",
             switch_started,
             command=command,
             success=not bool(getattr(ok, "error", False)),
         )
-        app.call_from_thread(self._finish_model_switch, ok, origin, worker_settings)
+        app.call_from_thread(self._finish_model_switch, ok, origin, candidate_settings)
         app.call_from_thread(app.set_activity, "idle", "", True)
         if getattr(ok, "mcp_attach_pending", False):
             app.call_from_thread(
@@ -1157,6 +1278,7 @@ class SlashController:
         ok: Any,
         origin_thread_id: str,
         worker_settings: Any | None = None,
+        origin_project_id: str | None = None,
         notice_ttl: float = 1.5,
     ) -> None:
         """UI-thread completion for a background model switch.
@@ -1166,6 +1288,8 @@ class SlashController:
         chrome must stay untouched.
         """
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         if app.thread_id != origin_thread_id:
             new_agent = getattr(ok, "agent", None)
             if new_agent is not None:
@@ -1176,6 +1300,15 @@ class SlashController:
                         new_agent,
                         settings=worker_settings,
                     )
+                    try:
+                        turn.rebind_agent_worker(
+                            origin_thread_id,
+                            new_agent,
+                            settings=worker_settings,
+                            project_id=origin_project,
+                        )
+                    except Exception:
+                        pass
             app.append_event(
                 f"model switched for background session ({origin_thread_id[:10]}…)",
                 "dim",
@@ -1192,6 +1325,7 @@ class SlashController:
             # marker set: an exit-time fallback must not clobber it with the
             # stale settings we are refusing to commit.
             self.apply_ok_result(ok, notice_ttl)
+            app._model_switch_inflight = False
             return
         if worker_settings is not None:
             self._commit_settings(app.settings, worker_settings)
@@ -1203,6 +1337,7 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         """Reattach MCP after a model switch, guarded by the lifecycle flag."""
         app = self._app
@@ -1224,6 +1359,7 @@ class SlashController:
             origin_thread_id=origin_thread_id or app.thread_id,
             origin_agent=origin_agent,
             origin_settings=origin_settings,
+            origin_project_id=origin_project_id,
         )
 
     def attach_mcp_after_switch_bg(
@@ -1233,11 +1369,14 @@ class SlashController:
         origin_thread_id: str | None = None,
         origin_agent: Any | None = None,
         origin_settings: Any | None = None,
+        origin_project_id: str | None = None,
     ) -> None:
         from synapse.app.agent import attach_mcp_to_agent
         from synapse.observability.startup_trace import duration
 
         app = self._app
+        project_fn = getattr(app, "_current_project_id", lambda: "")
+        origin_project = origin_project_id or (project_fn() if callable(project_fn) else "") or ""
         origin = origin_thread_id or app.thread_id
         worker_settings = origin_settings or self._copy_settings(app.settings)
         mcp_started = time.perf_counter()
@@ -1264,19 +1403,38 @@ class SlashController:
                 app._mcp_attaching = False
         if (origin_agent or app.agent) is not base_agent:
             return
-        turn = getattr(app, "_turn", None)
         if app.thread_id != origin:
             # Foreground moved on while MCP reconnected: bind the finalized
             # graph to the origin session only; never touch the live session.
+            try:
+                turn = getattr(app, "_turn", None)
+                if turn is not None:
+                    turn.rebind_agent_worker(
+                        origin,
+                        agent,
+                        settings=worker_settings,
+                        project_id=origin_project,
+                    )
+            except Exception as exc:  # noqa: BLE001 - retain old binding
+                app.call_from_thread(
+                    app.append_event, f"MCP rebind failed: {exc}", "yellow"
+                )
+                return
+            return
+        try:
+            turn = getattr(app, "_turn", None)
             if turn is not None:
-                turn.bind_agent(origin, agent, settings=worker_settings)
+                turn.rebind_agent_worker(
+                    origin,
+                    agent,
+                    settings=worker_settings,
+                    project_id=origin_project,
+                )
+        except Exception as exc:  # noqa: BLE001 - retain old binding
+            app.call_from_thread(app.append_event, f"MCP rebind failed: {exc}", "yellow")
             return
         self._commit_settings(app.settings, worker_settings)
         app.agent = agent
-        if turn is not None:
-            # Keep the session-owned runtime on the MCP-finalized graph; the
-            # earlier bind in apply_effects happened before MCP reconnection.
-            turn.bind_agent(origin, agent, settings=worker_settings)
         app.call_from_thread(app._bind_steer_queue)
         app.call_from_thread(app.flash_status, "MCP reconnected", "dim", ttl=1.5)
 
@@ -1284,8 +1442,12 @@ class SlashController:
         """Seed one Codex text snapshot, then switch through the normal path."""
         app = self._app
         controller = getattr(app, "_turn", None)
-        runtime = getattr(controller, "session_runtime", None)
-        turn_agent = runtime.agent if runtime is not None and controller.busy else app.agent
+        turn_agent = (
+            controller.agent_for_session(app.thread_id)
+            if controller is not None
+            else app.agent
+        )
+        turn_agent = turn_agent or app.agent
         ready = getattr(app, "_lifecycle", None)
         if ready is not None:
             ready = ready.agent_ready.wait(timeout=180)
@@ -1363,6 +1525,12 @@ class SlashController:
                         new_agent,
                         settings=worker_settings,
                     )
+                    try:
+                        turn.rebind_agent_worker(
+                            origin_thread_id, new_agent, settings=worker_settings
+                        )
+                    except Exception:
+                        pass
             app.append_event(
                 f"MCP updated for background session ({origin_thread_id[:10]}…)",
                 "dim",

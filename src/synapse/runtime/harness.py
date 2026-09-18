@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from synapse.runtime.tool_contract import readonly_excluded_tools
+
 _DEFAULT_EXCLUDES = frozenset({"ls", "glob", "grep"})
-_DEFAULT_READONLY_EXCLUDES = frozenset(
-    {
-        "execute",
-        "write_file",
-        "edit_file",
-        "patch",
-    }
-)
+_DEFAULT_READONLY_EXCLUDES = readonly_excluded_tools()
 
 
 def apply_harness_exclusions(

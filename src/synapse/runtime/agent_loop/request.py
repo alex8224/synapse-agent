@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from synapse.content.multimodal import compose_user_content, provider_from_settings
+from synapse.content.multimodal import (
+    ATTACHMENT_REFS_KEY,
+    attachment_refs_from_images,
+    attachment_refs_metadata,
+    compose_user_content,
+    provider_from_settings,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,10 +26,17 @@ class TurnRequest:
     thread_id: str
     resume: bool = False
     input: str = ""
+    #: JSON-safe durable attachment metadata (opaque ids + display metadata) for
+    #: this turn.  The same validated refs also ride on the LangGraph user
+    #: message's ``additional_kwargs`` (a metadata field, never a provider
+    #: field), so a checkpoint-driven transcript rebuild keeps them; this slot
+    #: carries them to persistence without a second extraction pass.
+    attachment_refs: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", deepcopy(self.payload))
         object.__setattr__(self, "config", _freeze_config(self.config))
+        object.__setattr__(self, "attachment_refs", tuple(self.attachment_refs))
 
     def mutable_config(self) -> dict[str, Any]:
         """Return a private mutable copy for LangGraph invocation."""
@@ -50,8 +63,18 @@ def build_turn_request(
     thread_id: str,
     max_concurrency: int | None = None,
     config_overrides: Mapping[str, Any] | None = None,
+    attachment_refs: Sequence[Any] | None = None,
 ) -> TurnRequest:
-    """Build and freeze one ordinary user-turn request."""
+    """Build and freeze one ordinary user-turn request.
+
+    Durable attachment metadata (opaque ids plus display fields) is validated and
+    attached to the LangChain user message's ``additional_kwargs`` so the
+    checkpoint - and therefore a transcript rebuild - keeps it.  It is metadata,
+    not a provider field: LangChain provider serializers forward only known
+    ``additional_kwargs`` keys, so it never reaches an LLM provider.  When no
+    explicit ``attachment_refs`` are supplied the ids are derived from the
+    resolved images that carry a durable id.
+    """
     provider = provider_from_settings(settings)
     atts = list(attachments or [])
     content = compose_user_content(
@@ -59,7 +82,13 @@ def build_turn_request(
         attachments=atts if atts else None,
         provider=provider,
     )
-    payload = {"messages": [{"role": "user", "content": content}]}
+    metadata = attachment_refs_metadata(
+        attachment_refs if attachment_refs else attachment_refs_from_images(atts)
+    )
+    message: dict[str, Any] = {"role": "user", "content": content}
+    if metadata:
+        message["additional_kwargs"] = metadata
+    payload = {"messages": [message]}
     config: dict[str, Any] = {
         "configurable": {
             "thread_id": thread_id,
@@ -79,6 +108,7 @@ def build_turn_request(
         config=config,
         thread_id=thread_id,
         input=text,
+        attachment_refs=tuple(metadata.get(ATTACHMENT_REFS_KEY, ())),
     )
 
 

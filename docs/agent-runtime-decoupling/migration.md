@@ -1,16 +1,18 @@
 # 迁移说明与余留风险清单
 
-> 状态：Accepted  
+> 状态：Completed
 > 用途：P8-09 收口文档。记录从“单 TUI、单 Agent、单回合”到“headless runtime + 多项目/多会话”的迁移要点、兼容边界与已知风险。
 
 ## 1. 目标架构（最终形态）
 
 ```text
-CodingAgentApp (TUI)
-  -> TurnController
-      -> SessionRuntime (thread_id 域：task/cancel/steer/usage/goal/broker)
-          -> AgentTurnRuntime (headless，无 Textual 依赖)
-              -> runtime streaming core -> AgentEventSink
+CLI / TUI / ACP consumer
+  -> AgentRuntimeService application DTO ports
+      -> RuntimeManager.submit_ref/resume_ref
+          -> SessionRuntime (thread_id 域：task/cancel/steer/usage/goal/broker)
+              -> AgentTurnRuntime (headless，无 Textual 依赖)
+                  -> runtime streaming core -> AgentEventSink
+TUI facade -> RuntimeEvent renderer -> TranscriptController / DOM
 RuntimeManager (project_id 域，可 SessionRef 路由)
 ProjectRuntime (project 域：Settings/checkpointer/GoalService/MCP scope)
 ProjectRegistry / ProjectCatalog (全局发现与投影)
@@ -48,6 +50,8 @@ ProjectRegistry / ProjectCatalog (全局发现与投影)
 
 ## 3. 余留风险清单
 
+S10 CLI、TUI、ACP consumer implementation 与 final gates 均已完成；总体 S0-S10 状态为 `completed`。
+
 已核实且值得修复的运行时、线程归属和架构依赖问题，统一跟踪于
 [审查问题修复计划](post-review-fix-plan.md)。
 
@@ -55,7 +59,7 @@ ProjectRegistry / ProjectCatalog (全局发现与投影)
 |---|---|---|---|
 | R1 | 每会话独立 Agent graph 的内存增量 | 多会话并发时峰值内存上升 | P8 已实现 idle SessionRuntime/ProjectRuntime LRU 回收（`collect_idle`）；真实 provider 基线仍待集成性能阶段 |
 | R2 | MCP 项目级 registry 的 config digest 语义 | reload 竞争时旧连接可能短暂存活 | `McpPoolRegistry.release/close_all` 显式释放；atexit 关闭全部 pool |
-| R3 | `stream_agent()` 成熟语义解析主循环仍在 `synapse.ui.stream` | 与 runtime 存在双实现窗口 | 已通过 runtime adapter + 兼容路径；后续渐进迁移，避免一次性重写 |
+| R3 | legacy `ui.stream.stream_agent` 仍作为兼容 utility 存在 | 兼容实现与新 consumer 路径并存，可能造成误用 | CLI/TUI/ACP 默认路径均不调用；保留 re-export 以维持兼容 |
 | R4 | 进程退出时的超时关闭路径只记录、不等待 | 极端情况下个别 SessionRef 未在超时内关闭 | 已记录未关闭 SessionRef；不会无限挂起 |
 | R5 | `load_global_settings()` 不创建 cwd `.synapse` | 全局 landing 依赖 catalog 已存在 | catalog 路径在用户层，首次使用前需注册项目 |
 | R6 | Python allocator 高水位不下降 | LRU 回收后 RSS 可能不回落 | 已区分“仍被引用泄漏”与“allocator 高水位”；后续可加 `gc.collect` + 内存基线测试 |
@@ -65,7 +69,7 @@ ProjectRegistry / ProjectCatalog (全局发现与投影)
 
 - CI 覆盖 Windows/Linux、Python 3.12/3.13。
 - 原生压缩核心（`synapse-tool-compress-core`）是可选依赖，Python 主程序保留 `ImportError`/`OSError` fallback。
-- 未引入 daemon：跨进程退出持续运行不在本计划范围内（ADR-010）。
+- S8 已引入 foreground daemon；本计划记录的消费者迁移不改变 daemon 的进程边界、认证或生命周期语义。
 
 ## 5. 完成定义（对照）
 
@@ -74,3 +78,13 @@ ProjectRegistry / ProjectCatalog (全局发现与投影)
 - [x] 多项目资源（Settings/.env/Goal/MCP/数据库）隔离。
 - [x] 任意目录启动进入全局控制面，按 `SessionRef` 操作跨项目会话。
 - [x] idle runtime LRU 回收、有序关闭、故障恢复测试、全量 lint/test/build 通过。
+- [x] CLI/TUI/ACP consumer 通过 application DTO ports 接入，且 watch detach/connection close 不取消 turn。
+- [x] S10 最终全仓安全门禁、MkDocs strict、`uv build` 与 review 完成。
+
+## 6. 最终验证与本地残留说明
+
+- TUI C1/C2 最终明确清单：443 passed。
+- 安全全仓最终结果：2348 passed、2 skipped。明确排除 13 个文件：`test_acp_p0_baseline.py`、`test_acp_p1_transport.py`、`test_agent_turn_runtime.py`、`test_backends.py`、`test_git_chrome.py`、`test_herdr_integration.py`、`test_runtime_service_routing_s5.py`、`test_runtime_transport_s7.py`、`test_startup_trace.py`、`test_transcript_migration.py`、`test_runtime_daemon_s8.py`、`test_runtime_transport_client_methods_s9.py`、`test_runtime_transport_websocket_s7.py`。原因分为 process API 安全约束及 socket 环境不稳定；不声称排除项通过。
+- lifecycle/consumer 核心 194 passed；permit2 5、crossloop 5、generation 4；真实 approval 9；CLI registry 3；project exact/generation tests 通过。Ruff、`git diff --check`、MkDocs strict 与 `uv build` 通过，包版本为 `0.1.43`。
+- 三轮 review 最终无阻塞发现，workspace freeze Medium 已修复。唯一执行链为 `AgentRuntimeService -> RuntimeManager.submit_ref/resume_ref -> SessionRuntime -> AgentTurnRuntime`；consumer 不变量为 DTO ports 不暴露执行对象、detach/close 不 cancel turn、同 loop owner close + cancel fence，以及 UI-only queue 不拥有 execution runtime。默认 CLI/TUI/ACP 不使用 `stream_agent` 或 `agent.ainvoke`。
+- residual/local artifacts note：未跟踪 `.sessions.sqlite` 和 `transcript.sqlite` 未删除，属于本地残留，不可提交。

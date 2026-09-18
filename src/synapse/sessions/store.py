@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -174,6 +175,31 @@ class SessionStore:
             return
         self._closed = True
         self._conn.close()
+
+    @contextmanager
+    def immediate(self) -> Iterator[None]:
+        """Hold SQLite's write lock across a read-modify-write on this connection.
+
+        ``ensure``/``rename`` read before they write.  A single shared connection
+        makes that atomic on its own, but callers that open a short-lived store
+        per operation (the runtime session-metadata service) hold independent
+        handles to the same file, so the read-then-write has to stay one
+        serialized step at the database level.  ``BEGIN IMMEDIATE`` takes the
+        write lock up front; the connection's busy timeout makes a competing
+        writer wait for the commit instead of failing, so the second caller
+        observes the committed row rather than racing the read.
+
+        The body may commit (``ensure``/``rename`` do) — a commit with no open
+        transaction is a no-op, as is a rollback after a successful commit.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
 
     def __enter__(self) -> SessionStore:
         return self
@@ -384,6 +410,24 @@ class SessionStore:
         if info is None:
             return ModelBinding()
         return info.binding()
+
+    def replace_model_binding(
+        self, thread_id: str, binding: ModelBinding, *, also_last: bool = True
+    ) -> None:
+        """Replace binding columns exactly, including explicit NULL values."""
+        self.ensure(thread_id)
+        self._conn.execute(
+            """UPDATE sessions SET updated_at = ?, model = ?, active_model = ?, thinking = ?
+               WHERE thread_id = ?""",
+            (_utcnow(), binding.model, binding.active_model, binding.thinking, thread_id),
+        )
+        self._conn.commit()
+        if also_last:
+            if binding.has_data():
+                self.set_last_model_binding(binding)
+            else:
+                self._conn.execute("DELETE FROM prefs WHERE key = ?", ("last_model_binding",))
+                self._conn.commit()
 
     def set_last_model_binding(self, binding: ModelBinding) -> None:
         if not binding.has_data():
