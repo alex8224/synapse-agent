@@ -3,9 +3,27 @@
 from __future__ import annotations
 
 import io
+import sys
+
+import pytest
 
 import synapse.entry as entry
 from synapse.observability.startup_trace import StartupTrace
+
+
+def test_entry_dispatches_to_runtime_daemon(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "synapse.runtime.daemon.entry.main",
+        lambda argv: calls.append(argv) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["synapse.exe", "--synapse-runtime-daemon", "--port", "0"])
+
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+
+    assert error.value.code == 0
+    assert calls == [["--port", "0"]]
 
 
 def test_entry_main_delegates_to_cli(monkeypatch) -> None:

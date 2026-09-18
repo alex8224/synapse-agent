@@ -257,3 +257,34 @@ def test_the_spawned_child_is_a_bare_daemon_module_process(
     assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert "shell" not in captured["kwargs"]
+
+
+def test_the_frozen_spawned_child_dispatches_to_the_bundled_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PyInstaller executable uses the private daemon dispatch flag."""
+    captured: dict[str, Any] = {}
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> Any:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        raise RuntimeDaemonStartError("stop here")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("synapse.runtime.daemon.launcher.sys.frozen", True, raising=False)
+    monkeypatch.setattr("synapse.runtime.daemon.launcher.sys.executable", "synapse.exe")
+    state = tmp_path / "state"
+    state.mkdir()
+    with pytest.raises(RuntimeDaemonStartError):
+        ensure_daemon(state, timeout=0.05)
+
+    assert captured["argv"] == [
+        "synapse.exe",
+        "--synapse-runtime-daemon",
+        "--state-dir",
+        str(state),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+    ]

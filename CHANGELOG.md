@@ -6,6 +6,21 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.46
+
+### Bug Fixes
+
+- The Web Console host can now start a runtime daemon from the single-file `synapse` executable. It previously spawned `synapse.exe -m synapse.runtime.daemon ...`, which the packaged executable cannot interpret, so a clean state directory failed with `runtime daemon exited immediately (exit code 2)` and no daemon was ever started. The frozen build now dispatches through an internal `--synapse-runtime-daemon` flag handled by `synapse.entry`, while source and installed Python environments keep the module form.
+
+### Engineering
+
+- Release packaging collects the `synapse.runtime.daemon` submodules into the `synapse` executable so the on-demand daemon spawn ships with every platform build.
+- Ignored local PyInstaller verification output under `.verify-*/`.
+
+---
+
+## v0.1.45
+
 ### New Features
 
 - Centered the topbar title and elided topbar components by width.

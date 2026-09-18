@@ -130,22 +130,26 @@ def running_daemon(
 
 
 def _default_spawn(state_dir: Path) -> Any:
-    """Start ``python -m synapse.runtime.daemon`` for ``state_dir``.
+    """Start the runtime daemon for ``state_dir``.
 
-    The module form is used rather than the ``synapse-runtime`` console script so
-    this works in a source checkout that has not been re-installed.
+    Source and installed Python environments use the module form. A PyInstaller
+    executable cannot interpret ``-m`` itself, so it uses the private dispatch
+    flag handled by ``synapse.entry``.
     """
-    argv = [
-        sys.executable,
-        "-m",
-        "synapse.runtime.daemon",
-        "--state-dir",
-        str(state_dir),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "0",
-    ]
+    if getattr(sys, "frozen", False):
+        argv = [sys.executable, "--synapse-runtime-daemon"]
+    else:
+        argv = [sys.executable, "-m", "synapse.runtime.daemon"]
+    argv.extend(
+        [
+            "--state-dir",
+            str(state_dir),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+        ]
+    )
     return subprocess.Popen(  # noqa: S603 - fixed argv, no shell, no user input
         argv,
         stdin=subprocess.DEVNULL,

@@ -9,9 +9,15 @@ which is a no-op here (the trace already has stages).
 
 from __future__ import annotations
 
+import sys
+
 
 def main() -> None:
     """Console-script entry point: start the trace, then delegate to the CLI."""
+    if sys.argv[1:2] == ["--synapse-runtime-daemon"]:
+        from synapse.runtime.daemon.entry import main as daemon_main
+
+        raise SystemExit(daemon_main(sys.argv[2:]))
     from synapse.observability.startup_trace import ensure_started, mark
 
     ensure_started()

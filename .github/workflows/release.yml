@@ -146,6 +146,7 @@ jobs:
             --collect-all termaid `
             --collect-all texicode `
             --collect-all synapse_tool_compress_core `
+            --collect-submodules synapse.runtime.daemon `
             --collect-data synapse `
             src/synapse/entry.py
 
