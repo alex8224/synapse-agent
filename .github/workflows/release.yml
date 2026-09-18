@@ -181,10 +181,13 @@ jobs:
           # 2) The frozen daemon dispatch must boot the real daemon: it prints a
           #    single ready JSON line to stdout once its socket is bound.  A
           #    missing bundled submodule dies at import with a non-zero exit.
-          $stateDir = Join-Path ([System.IO.Path]::GetTempPath()) "synapse-smoke-$([System.Guid]::NewGuid().ToString('N'))"
-          New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
-          $out = Join-Path $stateDir "daemon.out"
-          $err = Join-Path $stateDir "daemon.err"
+          $smokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "synapse-smoke-$([System.Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Force -Path $smokeRoot | Out-Null
+          # The daemon must create its own private state directory on POSIX;
+          # a caller-created 0755 directory is intentionally rejected.
+          $stateDir = Join-Path $smokeRoot "state"
+          $out = Join-Path $smokeRoot "daemon.out"
+          $err = Join-Path $smokeRoot "daemon.err"
           $proc = Start-Process -FilePath $exe -ArgumentList @(
             "--synapse-runtime-daemon", "--state-dir", $stateDir, "--host", "127.0.0.1", "--port", "0"
           ) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err

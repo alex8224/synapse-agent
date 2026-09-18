@@ -6,6 +6,14 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.48
+
+### Bug Fixes
+
+- Fixed the cross-platform executable smoke test so Linux and macOS let the daemon create its own private state directory. The previous test pre-created a default-permission directory, which the daemon correctly rejected as insufficiently private.
+
+---
+
 ## v0.1.47
 
 ### Bug Fixes
