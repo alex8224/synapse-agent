@@ -27,7 +27,7 @@ All entries are written in English.
 
 ---
 
-## v0.1.44
+## v0.1.45
 
 ### New Features
 
