@@ -146,7 +146,7 @@ jobs:
             --collect-all termaid `
             --collect-all texicode `
             --collect-all synapse_tool_compress_core `
-            --collect-submodules synapse.runtime.daemon `
+            --collect-submodules synapse.runtime `
             --collect-data synapse `
             src/synapse/entry.py
 
@@ -162,6 +162,51 @@ jobs:
       - name: Fix executable permission (Unix)
         if: runner.os != 'Windows'
         run: chmod +x "dist/${{ matrix.binname }}"
+
+      # A green packaging job does not prove the executable runs: the bundled
+      # interpreter only surfaces missing lazy submodules at import time.  Smoke
+      # the two entry points the single-file build must serve -- the CLI and the
+      # runtime daemon dispatch -- so a packaging gap fails here instead of in a
+      # user's terminal.
+      - name: Smoke test the executable
+        shell: pwsh
+        run: |
+          $exe = "dist/${{ matrix.binname }}"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "executable missing: $exe" }
+
+          # 1) The CLI must start and report its commands.
+          $help = & $exe --help 2>&1 | Out-String
+          if ($help -notmatch 'web-console') { throw "CLI --help lost the web-console command: $help" }
+
+          # 2) The frozen daemon dispatch must boot the real daemon: it prints a
+          #    single ready JSON line to stdout once its socket is bound.  A
+          #    missing bundled submodule dies at import with a non-zero exit.
+          $stateDir = Join-Path ([System.IO.Path]::GetTempPath()) "synapse-smoke-$([System.Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+          $out = Join-Path $stateDir "daemon.out"
+          $err = Join-Path $stateDir "daemon.err"
+          $proc = Start-Process -FilePath $exe -ArgumentList @(
+            "--synapse-runtime-daemon", "--state-dir", $stateDir, "--host", "127.0.0.1", "--port", "0"
+          ) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $deadline = (Get-Date).AddSeconds(60)
+            $line = $null
+            while ((Get-Date) -lt $deadline) {
+              if ($proc.HasExited) { break }
+              $line = Get-Content -LiteralPath $out -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | Select-Object -First 1
+              if ($line) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $line) {
+              $stderr = Get-Content -LiteralPath $err -ErrorAction SilentlyContinue | Out-String
+              throw "daemon dispatch produced no ready line (exit=$($proc.HasExited); $($proc.ExitCode)) stderr: $stderr"
+            }
+            $meta = $line | ConvertFrom-Json
+            if (-not $meta.host -or -not $meta.port) { throw "daemon ready line is not endpoint metadata: $line" }
+            Write-Host "daemon smoke OK: $line"
+          } finally {
+            if (-not $proc.HasExited) { $proc.Kill() }
+          }
 
       - name: Generate SHA256 checksum
         shell: pwsh

@@ -6,6 +6,14 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.47
+
+### Bug Fixes
+
+- The bundled `synapse` executable can now actually start a runtime daemon. `v0.1.46` shipped the frozen dispatch flag but packaged only the `synapse.runtime.daemon` submodules, so the daemon child died at import (`ModuleNotFoundError: No module named 'synapse.runtime.service.routing'`) and the console host aborted with `unable to start: runtime daemon exited immediately (exit code 1)`. Release packaging now collects the whole `synapse.runtime` package.
+
+---
+
 ## v0.1.46
 
 ### Bug Fixes
