@@ -74,8 +74,8 @@ not migrate the CLI, TUI, or ACP consumers.
 
 ## Web 控制台（React，正式宿主）
 
-`web/` 是 React + TypeScript 单页控制台。生产路径使用独立正式宿主
-`synapse-web-console`（薄 aiohttp 进程：静态产物 + 配对 API + WebSocket 中继），
+`web/` 是 React + TypeScript 单页控制台。生产路径使用 `synapse web-console`
+子命令（薄 aiohttp 进程：静态产物 + 配对 API + WebSocket 中继），
 不依赖 Vite 开发中间件承担业务；Vite 只在开发时做静态热更新与受控代理。旧的
 `synapse-web`（textual-serve 把 TUI 放进浏览器）入口保持不变、仍可用，与正式宿主
 语义不同。
@@ -88,8 +88,8 @@ not migrate the CLI, TUI, or ACP consumers.
 ```bash
 uv sync                                   # 源码检出必做：console script 由安装步骤生成
 cd web && npm ci && npm run build && cd ..
-# 一条命令：宿主按需拉起/复用 daemon（产物目录需显式指定；wheel 不内置 web/dist）
-synapse-web-console --workspace . --static-dir web/dist \
+# 一条命令：宿主按需拉起/复用 daemon（wheel 已内置前端产物）
+synapse web-console --workspace . \
   --state-dir ~/.synapse/runtime --port 8080
 ```
 
@@ -100,12 +100,11 @@ synapse-web-console --workspace . --static-dir web/dist \
 synapse-runtime --state-dir ~/.synapse/runtime --host 127.0.0.1 --port 0
 ```
 
-`synapse-runtime` 与 `synapse-web-console` 两个 console script 由安装步骤（`uv sync`）
-生成：未同步的源码检出里不存在，上面的 console script 形式会直接失败。此时改用等价的模块形式，
-不依赖 console script（测试亦用该形式，见 `tests/test_web_console_security.py`）：
+`synapse web-console` 与 `synapse-runtime` 都由安装步骤（`uv sync`）生成。未同步的源码检出里，
+可以使用等价的模块形式：
 
 ```bash
-uv run --no-sync python -m synapse.web_console.entry --workspace . --static-dir web/dist \
+uv run --no-sync python -m synapse.web_console.entry --workspace . \
   --state-dir ~/.synapse/runtime --port 8080
 ```
 
@@ -133,7 +132,7 @@ Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
 宿主启动时 stdout 恰好一行 JSON 元数据，配对码只出现在 stderr：
 
 ```
-synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
+synapse web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
 ```
 
 打开 <http://127.0.0.1:8080/> 输入该 8 位配对码完成配对（单次使用，默认 300s
@@ -178,7 +177,7 @@ fail-open，且白名单与 `protocol.decode_params` 无源码级绑定，安全
 开发模式（仅热更新与受控代理，不经中间件读 token）：
 
 ```bash
-synapse-web-console --workspace . --static-dir web/dist --port 8080 &
+synapse web-console --workspace . --static-dir web/dist --port 8080 &
 cd web && npm run dev     # 打开 http://127.0.0.1:5173
 ```
 
@@ -200,7 +199,7 @@ MCP 服务器列表落在第一行），`↑`/`↓` 按阅读顺序在框内控�
 任务栏右键另有「新建会话」快捷方式。安装窗口的标题栏由控制台自己的顶栏接管
 （`display_override: window-controls-overlay`，浏览器只保留窗口按钮；不支持该模式的浏览器
 退回普通应用窗口）。安装只是外壳——**宿主仍然要在跑**
-（`synapse-web-console` 及其 daemon），页面关掉后不会有后台推送，宿主重启后也要重新配对。
+（`synapse web-console` 及其 daemon），页面关掉后不会有后台推送，宿主重启后也要重新配对。
 宿主若显式用 `--no-pairing`，则重启后由下一次会话探测自动重新签发会话（仍非持久化）。
 细节与边界见 `web/README.md`「可安装应用（PWA）」。
 

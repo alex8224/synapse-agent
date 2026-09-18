@@ -27,7 +27,7 @@ from synapse.web_console.host import WebConsoleHost, resolve_project
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="synapse-web-console",
+        prog="synapse web-console",
         description=(
             "Serve the built React Web console and relay JSON-RPC WebSockets to "
             "the runtime daemon. Loopback, single-user only."
@@ -39,7 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--static-dir",
         type=Path,
-        help="Directory with the built console assets (default: <workspace>/web/dist)",
+        help=(
+            "Directory with the built console assets (default: bundled wheel assets, "
+            "or <workspace>/web/dist from a source checkout)"
+        ),
     )
     parser.add_argument("--state-dir", type=Path, help="Daemon state dir (discovery + token)")
     parser.add_argument("--token-file", type=Path, help="Daemon token file (server-side only)")
@@ -159,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             if launched is not None:
                 # stderr on purpose: stdout is the single JSON metadata line.
                 print(
-                    "synapse-web-console: started runtime daemon on "
+                    "synapse web-console: started runtime daemon on "
                     f"{launched.endpoint.host}:{launched.endpoint.port} "
                     f"(state dir {config.state_dir})",
                     file=sys.stderr,
@@ -170,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # noqa: BLE001 - entry point reports and exits
-        print(f"synapse-web-console: unable to start: {exc}", file=sys.stderr)
+        print(f"synapse web-console: unable to start: {exc}", file=sys.stderr)
         return 2
     finally:
         # Only ever stops a daemon this call started; a reused one keeps running.

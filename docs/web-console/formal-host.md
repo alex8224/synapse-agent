@@ -2,7 +2,7 @@
 
 > 文档状态：Active
 > 验收状态：**有条件可验收**（不是「安全验收通过」；未闭合项与明确不承诺项见 §4、§9）
-> 目标：React 生产构建在正式宿主 `synapse-web-console` 下运行；浏览器认证走
+> 目标：React 生产构建在正式宿主 `synapse web-console` 下运行；浏览器认证走
 > 一次性配对码 + 同源会话 cookie；移除前端硬编码 token/project/workspace
 > fallback 与 Vite 开发中间件读取 `test_token.txt` 的运行依赖。
 
@@ -12,7 +12,7 @@
 [浏览器 / React 单页 (web/dist)]
         │  same-origin HTTP/WS (loopback)
         ▼
-[synapse-web-console  薄 aiohttp 宿主]
+[synapse web-console  薄 aiohttp 宿主]
    - 静态产物（web/dist，--static-dir）
    - POST /api/pair（配对码换会话 cookie；--no-pairing 下拒绝） / GET /api/session
      （--no-pairing 下无有效会话即签发，见 §3.1） / POST /api/logout
@@ -45,7 +45,7 @@
 
 ## 2 启动命令与参数（逐项核对 `--help`）
 
-先构建前端产物（`web/dist` 是独立资产，不随 wheel 打包）：
+先构建前端产物（源码开发时使用 `web/dist`；发布构建会将其嵌入发行物）：
 
 ```bash
 cd web
@@ -54,7 +54,7 @@ npm run build
 cd ..
 ```
 
-两个 console script（`synapse-runtime`、`synapse-web-console`）由安装步骤生成：源码
+`synapse web-console` 与 `synapse-runtime` 由安装步骤生成：源码
 检出先 `uv sync`，否则脚本不存在、下面的 script 形式直接失败。未同步时用紧随其后的
 `python -m ...` 等价形式（测试同样使用该形式，见 `tests/test_web_console_security.py`）。
 
@@ -63,7 +63,7 @@ cd ..
 
 ```bash
 uv sync   # 源码检出必做
-synapse-web-console --workspace . --static-dir web/dist \
+synapse web-console --workspace . --static-dir web/dist \
   --state-dir ~/.synapse/runtime --port 8080
 # 或（不依赖 console script）：python -m synapse.web_console.entry --workspace . --static-dir web/dist
 ```
@@ -84,9 +84,9 @@ PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承
 
 然后打开 <http://127.0.0.1:8080/> 并输入宿主 stderr 打印的配对码。
 
-### 2.1 `synapse-web-console` 参数
+### 2.1 `synapse web-console` 参数
 
-下表与 `synapse-web-console --help`（= `python -m synapse.web_console.entry --help`）
+下表与 `synapse web-console --help`（= `python -m synapse.web_console.entry --help`）
 逐项一致，默认值取自 `src/synapse/web_console/config.py`：
 
 | 参数 | 默认 | 校验与语义 |
@@ -94,7 +94,7 @@ PowerShell 下 `Start-Process -RedirectStandardOutput ...` 会因子进程继承
 | `--host HOST` | `127.0.0.1` | 绑定地址；只允许 `127.0.0.1`/`localhost`/`::1`，其它值启动失败 |
 | `--port PORT` | `8080` | 绑定端口；`0` = 内核分配（实际端口见 stdout 元数据） |
 | `--workspace PATH` | 当前目录 | 项目工作区；必须是已存在目录 |
-| `--static-dir PATH` | `<workspace>/web/dist` | 已构建静态产物目录；必须存在且含 `index.html`，否则启动失败 |
+| `--static-dir PATH` | wheel 内置资源；源码检出回退 `<workspace>/web/dist` | 已构建静态产物目录；必须存在且含 `index.html`，否则启动失败 |
 | `--state-dir PATH` | `~/.synapse/runtime` | daemon 状态目录（`daemon.json` 发现 + token 读取） |
 | `--token-file PATH` | `<state-dir>/token` | daemon token 文件；**只读**，缺失即启动失败且绝不创建 |
 | `--catalog-path PATH` | 无（用用户层 catalog） | 覆盖项目 catalog 数据库路径 |
@@ -138,14 +138,14 @@ install/start/stop/status 控制。
 - stderr（默认）：固定格式的配对码行（脚本与测试按此前缀抓取）：
 
 ```
-synapse-web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
+synapse web-console: pairing code XXXXXXXX (expires in 300s; open http://127.0.0.1:8080/ and enter it)
 ```
 
 - stderr（`--no-pairing`）：**不打印**配对码行，改为**恰好一条** WARNING（同样只在 stderr、
-  不进 stdout；前缀 `synapse-web-console: WARNING`，端口取实际绑定端口）：
+  不进 stdout；前缀 `synapse web-console: WARNING`，端口取实际绑定端口）：
 
 ```
-synapse-web-console: WARNING pairing is disabled (--no-pairing): http://127.0.0.1:8080/ mints a session for any same-origin loopback browser without a code; local debugging only
+synapse web-console: WARNING pairing is disabled (--no-pairing): http://127.0.0.1:8080/ mints a session for any same-origin loopback browser without a code; local debugging only
 ```
 
 该模式下宿主不会公告任何配对码：正常路径（启动、码 TTL 到期、logout、失败限速）根本不生成码，
@@ -348,7 +348,7 @@ stderr（启动、码 TTL 到期、logout、暴力失败达阈值 5 次/60s 时�
 开发流程（宿主必须先运行）：
 
 ```bash
-synapse-web-console --workspace . --static-dir web/dist --port 8080 &
+synapse web-console --workspace . --static-dir web/dist --port 8080 &
 cd web
 SYNAPSE_WEB_CONSOLE_URL=http://127.0.0.1:8080 npm run dev   # http://127.0.0.1:5173
 ```
@@ -368,33 +368,37 @@ Vite 配置（`web/vite.config.ts`）的边界：
 因此开发代理**不构成认证旁路**：它只把浏览器的同源请求转发到同一个正式宿主，
 认证判定仍在宿主侧；宿主未启动时前端会明确报错（无静默 fallback）。
 
-## 6 打包与静态资产部署（wheel 不含 `web/dist`）
+## 6 打包与静态资产部署（wheel 内置 Web Console）
 
-事实（`uv build` 实测，见 §8）：wheel 只包含 `synapse/**` 的 Python 模块
-（含 `synapse/web_console/*.py`）与 `dist-info`，**不包含** `web/dist` 前端产物。
+发布构建会先执行 `npm ci && npm run build`，再执行 `uv build`。Hatch 将
+`web/dist` 映射到 wheel 内的 `synapse/web_console/static`，因此安装 wheel 后，
+`synapse web-console` 默认即可提供 React 前端，不需要额外的 `--static-dir`。
 
 按优先级选择部署方式：
 
-1. **源码检出**：`cd web && npm ci && npm run build`，使用默认
-   `<workspace>/web/dist`（不传 `--static-dir`）。
-2. **打包部署（推荐）**：把 `web/dist` 作为独立资产分发到任意路径，显式指定：
+1. **wheel 部署（推荐）**：直接安装 wheel 并启动，宿主使用 wheel 内置的
+   `synapse/web_console/static`。
+2. **源码检出**：`cd web && npm ci && npm run build`，使用默认
+   `<workspace>/web/dist`（源码环境没有内置副本时）。
+3. **外部静态资产**：把 `web/dist` 分发到任意路径，显式指定：
 
 ```bash
 npm --prefix web ci && npm --prefix web run build
 # 分发 web/dist 到部署机（例如 /srv/synapse/console）
-synapse-web-console --workspace /srv/project --static-dir /srv/synapse/console \
+synapse web-console --workspace /srv/project --static-dir /srv/synapse/console \
   --state-dir ~/.synapse/runtime --port 8080
 ```
 
-3. **缺资产**：启动直接失败并给出可操作错误（不会出现「启动成功但页面 404」）：
+4. **缺资产**：启动直接失败并给出可操作错误（不会出现「启动成功但页面 404」）：
 
 ```
-synapse-web-console: unable to start: static build directory not found: <path>; build web/ first or pass --static-dir
-synapse-web-console: unable to start: static build directory has no index.html: <path>; build web/ first or pass --static-dir
+synapse web-console: unable to start: static build directory not found: <path>; build web/ first or pass --static-dir
+synapse web-console: unable to start: static build directory has no index.html: <path>; build web/ first or pass --static-dir
 ```
 
 wheel 声明的 console script 与 `pyproject.toml`、各自 `--help` 一致：
-`synapse`、`synapse-web`、`synapse-web-console`、`synapse-acp`、`synapse-runtime`。
+`synapse`、`synapse-web`、`synapse-acp`、`synapse-runtime`；Web Console 使用
+`synapse web-console` 子命令。
 
 ### 6.1 可安装应用（PWA）的静态资产
 
@@ -410,7 +414,7 @@ wheel 声明的 console script 与 `pyproject.toml`、各自 `--help` 一致：
 
 能力边界（与 `web/README.md`「可安装应用（PWA）」一致）：
 
-- 安装只是外壳：`synapse-web-console` 及其 daemon 仍必须在跑，宿主不因安装改变任何启动、
+- 安装只是外壳：`synapse web-console` 及其 daemon 仍必须在跑，宿主不因安装改变任何启动、
   配对或鉴权要求。
 - 通知只能由运行中的控制台页面发出（本地宿主不使用 Web Push）；页面关闭后没有推送，
   角标也随之消失。
@@ -420,14 +424,15 @@ wheel 声明的 console script 与 `pyproject.toml`、各自 `--help` 一致：
 - 安装窗口的标题栏由控制台前端自己接管（`display_override:
   ["window-controls-overlay", "standalone"]`，见 `web/README.md`「标题栏（Window Controls
   Overlay）」）：纯前端声明，宿主不参与，不支持该显示模式的浏览器自动退回 `standalone`。
-- `web/dist` 仍不在 wheel 里，部署时仍需显式 `--static-dir`（见上文 §6）。
+- wheel 已内置 `web/dist` 的构建结果；需要替换静态资源时，仍可用
+  `--static-dir` 显式覆盖内置资源。
 
 ## 7 保留的兼容入口
 
 - `synapse-web`（textual-serve 把 TUI 渲染进浏览器，`--host` 默认 `localhost`、
   `--port` 默认 `8000`，另有 `--workspace`/`--public-url`）**保持不变、未被替换**，
   仍可用。
-- 两个入口语义不同、并存：`synapse-web` = 浏览器里的 TUI；`synapse-web-console`
+- 两个入口语义不同、并存：`synapse-web` = 浏览器里的 TUI；`synapse web-console`
   = React 控制台正式宿主（配对 + 静态 + 中继）。
 - `synapse`、`synapse-acp`、`synapse-runtime` 三个入口不受影响；Python/TS runtime
   客户端与既有 wire 协议未改动。

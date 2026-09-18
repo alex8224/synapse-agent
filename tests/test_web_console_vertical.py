@@ -360,6 +360,7 @@ class _Stack:
             static_dir=self.static_dir,
             state_dir=self.state,
             catalog_path=self.catalog_path,
+            project_scope="workspace",
             max_message_bytes=self._max_message_bytes,
             session_ttl_seconds=self._session_ttl_seconds,
             max_concurrent_sockets=self._max_concurrent_sockets,
@@ -598,6 +599,22 @@ def test_d2_missing_static_dir_fails_startup_with_actionable_error(tmp_path: Pat
         WebConsoleConfig(workspace=workspace, static_dir=empty).resolved_static_dir()
     with pytest.raises(ValueError, match="build web/ first or pass --static-dir"):
         WebConsoleConfig(workspace=workspace).resolved_static_dir()
+
+
+def test_d2_bundled_static_dir_is_used_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An installed wheel can serve its bundled console without a checkout asset."""
+    from synapse.web_console import config as config_module
+
+    bundled = tmp_path / "bundled-static"
+    bundled.mkdir()
+    (bundled / "index.html").write_text("<html>bundled</html>", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(config_module, "_bundled_static_dir", lambda: bundled)
+
+    assert WebConsoleConfig(workspace=workspace).resolved_static_dir() == bundled
 
 
 # --- D3: project isolation -------------------------------------------------
@@ -1080,7 +1097,7 @@ async def _read_metadata_line(stream: Any, *, timeout: float = 30.0) -> dict[str
 
 
 def test_d1_cli_process_announces_pairing_code_and_relays(tmp_path: Path) -> None:
-    """The real ``synapse-web-console`` process: stdout JSON + stderr code."""
+    """The real ``synapse web-console`` process: stdout JSON + stderr code."""
 
     async def run() -> None:
         import sys

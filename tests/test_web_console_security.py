@@ -50,7 +50,7 @@ from synapse.web_console.security import (
 
 TOKEN = "daemon-secret-token-0ab3f9"
 PROJECT_ID = "proj-sec"
-PAIR_LINE_PREFIX = "synapse-web-console: pairing code "
+PAIR_LINE_PREFIX = "synapse web-console: pairing code "
 
 
 class Reply(NamedTuple):
@@ -76,6 +76,7 @@ def make_config(
     *,
     runtime_port: int,
     static_dir: Path,
+    project_scope: str = "workspace",
     **overrides: Any,
 ) -> WebConsoleConfig:
     workspace = tmp_path / "workspace"
@@ -92,6 +93,7 @@ def make_config(
         state_dir=state,
         token_file=token_file,
         runtime_port=runtime_port,
+        project_scope=project_scope,
         daemon_timeout_seconds=2.0,
         **overrides,
     )

@@ -6,13 +6,11 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
----
-
-## v0.1.44
-
 ### New Features
 
 - Centered the topbar title and elided topbar components by width.
+- Added a `synapse web-console` subcommand so the Web Console runs from the same executable as Synapse.
+- Bundled the built React Web Console into Python wheels and PyInstaller executables.
 
 ### Bug Fixes
 
@@ -24,6 +22,8 @@ All entries are written in English.
 
 - Ignored local scratch output files.
 - Updated the Scoop manifest.
+- Added independent Web Console frontend build jobs to CI and release workflows; the generated assets are reused by wheel and executable packaging.
+- Added bundled-asset resolution and regression coverage for installed Web Console deployments.
 
 ---
 

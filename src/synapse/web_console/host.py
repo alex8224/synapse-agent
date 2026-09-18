@@ -583,7 +583,7 @@ class WebConsoleHost:
             return
         host, port = self.bound or (self.config.host, self.config.port)
         line = (
-            f"synapse-web-console: pairing code {code} (expires in {int(ttl)}s; "
+            f"synapse web-console: pairing code {code} (expires in {int(ttl)}s; "
             f"open http://{host}:{port}/ and enter it)"
         )
         self.pairing_notices.append(line)
@@ -597,7 +597,7 @@ class WebConsoleHost:
         host for a code that simply has not been printed yet.
         """
         line = (
-            "synapse-web-console: WARNING pairing is disabled (--no-pairing): "
+            "synapse web-console: WARNING pairing is disabled (--no-pairing): "
             f"http://{host}:{port}/ mints a session for any same-origin loopback "
             "browser without a code; local debugging only"
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from importlib.resources import files as package_files
 from pathlib import Path
 
 from synapse.runtime.daemon.config import DaemonConfig
@@ -129,11 +130,11 @@ class WebConsoleConfig:
         return Path(self.state_dir).expanduser() / "daemon.json"
 
     def resolved_static_dir(self) -> Path:
-        """Explicit static build directory (or the source-checkout ``web/dist``)."""
+        """Resolve explicit, bundled, or source-checkout static assets."""
         if self.static_dir is not None:
             root = Path(self.static_dir).expanduser().resolve()
         else:
-            root = self.workspace / "web" / "dist"
+            root = _bundled_static_dir() or (self.workspace / "web" / "dist")
         if not root.is_dir():
             raise ValueError(
                 f"static build directory not found: {root}; build web/ first or pass "
@@ -146,6 +147,27 @@ class WebConsoleConfig:
                 "or pass --static-dir"
             )
         return root
+
+
+def _bundled_static_dir() -> Path | None:
+    """Return the filesystem path of static assets bundled into the wheel.
+
+    Hatch places the built ``web/dist`` contents in this package directory. A
+    normal wheel installation exposes package resources as files, which is
+    required by aiohttp's ``FileResponse``. Non-filesystem importers are
+    deliberately ignored; callers can still provide ``--static-dir``.
+    """
+    try:
+        resource = package_files("synapse.web_console").joinpath("static")
+    except (ModuleNotFoundError, OSError):
+        return None
+    if not resource.is_dir():
+        return None
+    try:
+        root = Path(resource)
+    except TypeError:
+        return None
+    return root.resolve()
 
 
 class RuntimeDiscoveryError(RuntimeError):

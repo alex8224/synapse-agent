@@ -54,6 +54,18 @@ def test_cli_help():
     assert "coding agent" in result.stdout.lower() or "Coding" in result.stdout
 
 
+def test_cli_web_console_forwards_arguments(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "synapse.web_console.entry.main",
+        lambda argv: calls.append(argv) or 0,
+    )
+    result = runner.invoke(app, ["web-console", "--port", "8123", "--no-pairing"])
+
+    assert result.exit_code == 0
+    assert calls == [["--port", "8123", "--no-pairing"]]
+
+
 def test_cli_version():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0

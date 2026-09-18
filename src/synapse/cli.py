@@ -108,6 +108,17 @@ def _print_settings_error(exc: Exception) -> None:
     )
 
 
+@app.command(
+    "web-console",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def web_console(ctx: typer.Context) -> None:
+    """Serve the React Web Console using the same executable as ``synapse``."""
+    from synapse.web_console.entry import main as web_console_main
+
+    raise typer.Exit(web_console_main(list(ctx.args)))
+
+
 # ---------------------------------------------------------------------------
 # Authentication commands
 # ---------------------------------------------------------------------------
