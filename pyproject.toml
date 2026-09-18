@@ -78,7 +78,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.sdist.force-include]
-"web/dist" = "src/synapse/web_console/static"
+"web/dist" = "web/dist"
 
 [tool.uv.sources]
 synapse-core-tool = { path = "rust/synapse-core-tool" }

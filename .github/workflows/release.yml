@@ -90,6 +90,7 @@ jobs:
 
   build-executables:
     name: executable (${{ matrix.name }})
+    needs: web-console
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
