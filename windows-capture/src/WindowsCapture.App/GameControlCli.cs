@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using WindowsCapture.Core;
@@ -19,6 +20,7 @@ public static class GameControlCli
     private const string Move = "move";
     private const string Look = "look";
     private const string Trigger = "trigger";
+    private const string Focus = "focus";
     private const string Screenshot = "screenshot";
 
     public static int Run(string[] args)
@@ -35,6 +37,11 @@ public static class GameControlCli
             if (command == Screenshot)
             {
                 return RunTool(ParseScreenshotArgs(args.Skip(1).ToArray()));
+            }
+
+            if (command == Focus)
+            {
+                return FocusTarget(args.Skip(1).ToArray());
             }
 
             var parameters = Parse(command, args.Skip(1).ToArray());
@@ -214,6 +221,66 @@ public static class GameControlCli
 
     private static int RunTool(IEnumerable<string> arguments)
     {
+        var (exitCode, stdout, stderr) = RunToolCapture(arguments);
+        if (!string.IsNullOrWhiteSpace(stdout)) Console.Out.WriteLine(stdout.Trim());
+        if (!string.IsNullOrWhiteSpace(stderr)) Console.Error.WriteLine(stderr.Trim());
+        return exitCode;
+    }
+
+    /// <summary>
+    /// Brings the capture tool's selected target window to the foreground. Games only accept
+    /// gamepad input while their window is focused, so callers run this before sending input.
+    /// </summary>
+    private static int FocusTarget(string[] args)
+    {
+        if (args.Length != 0) throw new ArgumentException("'focus' does not accept options");
+
+        var request = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = "game-control-focus",
+            ["method"] = "get_state",
+            ["params"] = new JsonObject(),
+        }.ToJsonString(Json.Options);
+
+        var (exitCode, stdout, stderr) = RunToolCapture(new[] { "--rpc", request });
+        if (exitCode != GameControlExitCodes.Ok)
+        {
+            if (!string.IsNullOrWhiteSpace(stderr)) Console.Error.WriteLine(stderr.Trim());
+            return exitCode;
+        }
+
+        var hwnd = ReadSelectedTargetHwnd(stdout);
+        if (hwnd == 0)
+        {
+            Console.Error.WriteLine("no capture target is selected; pick a window in the capture tool first");
+            return GameControlExitCodes.Usage;
+        }
+
+        var focused = SetForegroundWindow(new IntPtr(hwnd));
+        Console.Out.WriteLine(new JsonObject { ["ok"] = focused, ["hwnd"] = hwnd }.ToJsonString(Json.Options));
+        return focused ? GameControlExitCodes.Ok : GameControlExitCodes.Usage;
+    }
+
+    private static long ReadSelectedTargetHwnd(string stdout)
+    {
+        try
+        {
+            var node = JsonNode.Parse(stdout);
+            return node?["result"]?["selected_target"]?["hwnd_value"]?.GetValue<long>() ?? 0;
+        }
+        catch (JsonException)
+        {
+            // Degradation boundary: an unparsable response means "no target", reported by the caller.
+            return 0;
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    private static (int ExitCode, string Stdout, string Stderr) RunToolCapture(IEnumerable<string> arguments)
+    {
         var startInfo = new System.Diagnostics.ProcessStartInfo(CaptureToolPath())
         {
             UseShellExecute = false,
@@ -231,12 +298,10 @@ public static class GameControlCli
         {
             try { process.Kill(entireProcessTree: true); } catch { }
             Console.Error.WriteLine("windows-capture did not respond within 20 seconds");
-            return GameControlExitCodes.NoHost;
+            return (GameControlExitCodes.NoHost, "", "");
         }
 
-        if (!string.IsNullOrWhiteSpace(stdout)) Console.Out.WriteLine(stdout.Trim());
-        if (!string.IsNullOrWhiteSpace(stderr)) Console.Error.WriteLine(stderr.Trim());
-        return process.ExitCode;
+        return (process.ExitCode, stdout, stderr);
     }
 
     private static string CaptureToolPath()
@@ -264,6 +329,7 @@ game-control - bounded virtual Xbox controller for the local windows-capture hos
 
 USAGE
   game-control status
+  game-control focus
   game-control connect | disconnect | release-all
   game-control press --button BUTTON --hold-ms N
   game-control move --direction forward|backward|left|right --hold-ms N
@@ -276,6 +342,10 @@ SAFETY
   the button or stick in a finally block, even if the command is cancelled. Run release-all before
   changing task or after an unexpected error. The tool never injects into a process or bypasses
   anti-cheat; it creates an ordinary system-wide virtual Xbox controller through ViGEmBus.
+
+FOCUS
+  Bring the capture tool's selected target window to the foreground. Games only accept gamepad
+  input while their window is focused, so run this before sending input.
 
 SCREENSHOTS
   screenshot waits for completion and prints the capture job. Pass --output-dir DIR when the caller

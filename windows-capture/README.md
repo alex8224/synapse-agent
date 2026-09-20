@@ -300,10 +300,15 @@ finite `--hold-ms` for every physical input.
 ```powershell
 $env:WINDOWS_CAPTURE_EXE = (Resolve-Path 'src\WindowsCapture.App\bin\Release\net8.0-windows10.0.19041.0\windows-capture.exe')
 .\src\GameControl.Cli\bin\Release\net8.0\game-control.exe status
+.\src\GameControl.Cli\bin\Release\net8.0\game-control.exe focus
 .\src\GameControl.Cli\bin\Release\net8.0\game-control.exe press --button view --hold-ms 80
 .\src\GameControl.Cli\bin\Release\net8.0\game-control.exe screenshot --count 1 --start-delay-ms 0
 .\src\GameControl.Cli\bin\Release\net8.0\game-control.exe release-all
 ```
+
+`focus` brings the selected capture target to the foreground. Games only accept gamepad input while
+their window is focused, so a caller that sends input without focusing first sees successful
+commands with no in-game effect.
 
 ### Limits (defaults, reported by `get_state`)
 

@@ -43,6 +43,7 @@ $gameDll = 'windows-capture/src/GameControl.Cli/bin/Release/net8.0/game-control.
 | 意图 | 命令 |
 |---|---|
 | 查看手柄服务 | `& $game status` |
+| 把游戏窗口置前 | `& $game focus` |
 | 创建虚拟手柄 | `& $game connect` |
 | 释放全部按键和摇杆 | `& $game release-all` |
 | 移除虚拟手柄 | `& $game disconnect` |
@@ -60,13 +61,14 @@ $gameDll = 'windows-capture/src/GameControl.Cli/bin/Release/net8.0/game-control.
 
 ```powershell
 & $game connect
+& $game focus
 & $game press --button view --hold-ms 80
 & $game screenshot --count 1 --start-delay-ms 0 --output-dir .\work\game-control\shots
 # 读取写入目录的 PNG，判断地图或位置是否出现。
 & $game release-all
 ```
 
-发送输入前先确认目标窗口（Cemu/游戏）位于前台：窗口失焦时手柄输入会被忽略，表现为「命令成功但游戏毫无反应」。
+发送输入前先执行 `& $game focus`：窗口失焦时手柄输入会被忽略，表现为「命令成功但游戏毫无反应」。
 
 有些操作必须**按住**而不是点按，例如游戏里的快捷菜单（按住的期间才显示，松开即消失）、举盾、瞄准。这类操作把 `--hold-ms` 放大到 600–1500，并在按住期间截图确认；`press` 会阻塞到松开，需要「按住的同时截图」时用后台任务发送输入、前台截图。
 
@@ -79,6 +81,6 @@ $gameDll = 'windows-capture/src/GameControl.Cli/bin/Release/net8.0/game-control.
 | `gamepad_unavailable` | 检查 ViGEmBus 是否已安装、服务是否可用；不要反复重试输入。 |
 | `gamepad_duration_exceeded` | 缩短到最多 5000 ms；更长移动必须拆成“移动 → 截图 → 判断”的独立轮次。 |
 | 游戏未响应 | 先 `release-all`；确认游戏是否接受 XInput、虚拟设备是否在系统中出现。 |
-| 命令成功但游戏无反应 | 目标窗口可能不在前台。先把游戏窗口切到前台再重发；Cemu 在窗口失焦时不接收手柄输入。 |
+| 命令成功但游戏无反应 | 目标窗口可能不在前台。先执行 `& $game focus` 再重发；Cemu 在窗口失焦时不接收手柄输入。 |
 | 截图失败 | 不再输入，检查目标窗口是否仍有效、未最小化且已由用户选中。 |
 | 任意命令异常 | 立即执行 `release-all`，报告错误和最后一个已确认的截图状态。 |
