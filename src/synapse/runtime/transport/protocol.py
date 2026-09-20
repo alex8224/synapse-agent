@@ -166,6 +166,20 @@ from synapse.runtime.service.skills import (
     MAX_PROJECT_ID_BYTES,
     ListSkillsQuery,
 )
+from synapse.runtime.service.stt import (
+    MAX_STT_API_KEY_CHARS,
+    MAX_STT_CHUNK_BASE64_CHARS,
+    MAX_STT_ENGINE_CHARS,
+    MAX_STT_MODEL_DIR_CHARS,
+    SttAppendCommand,
+    SttBeginCommand,
+    SttCancelCommand,
+    SttFinishCommand,
+    SttSetApiKeyCommand,
+    SttSetEngineCommand,
+    SttStatusQuery,
+    SttWarmUpCommand,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 JSONRPC_VERSION: Final = "2.0"
@@ -1249,6 +1263,48 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             session=_session(params["session"]),
             task_id=_screenshot_task_id(params["task_id"]),
         )
+    if method == "runtime.stt.status":
+        _fields(params, {"session"})
+        return SttStatusQuery(session=_session(params["session"]))
+    if method == "runtime.stt.warm_up":
+        _fields(params, {"session"})
+        return SttWarmUpCommand(session=_session(params["session"]))
+    if method == "runtime.stt.set_engine":
+        # ``model_dir`` is optional and may be null: an omitted or empty value means
+        # "use the engine's own default directory".
+        _optional_fields(params, {"session", "engine"}, {"model_dir"})
+        return SttSetEngineCommand(
+            session=_session(params["session"]),
+            engine=_bounded_text(params["engine"], MAX_STT_ENGINE_CHARS),
+            model_dir=(
+                _bounded_text(params["model_dir"], MAX_STT_MODEL_DIR_CHARS)
+                if params.get("model_dir") is not None
+                else None
+            ),
+        )
+    if method == "runtime.stt.begin":
+        _fields(params, {"session"})
+        return SttBeginCommand(session=_session(params["session"]))
+    if method == "runtime.stt.set_api_key":
+        # An empty key is accepted: it clears the stored credential.
+        _fields(params, {"session", "provider", "api_key"})
+        return SttSetApiKeyCommand(
+            session=_session(params["session"]),
+            provider=_bounded_text(params["provider"], MAX_STT_ENGINE_CHARS),
+            api_key=_bounded_text(params["api_key"], MAX_STT_API_KEY_CHARS, nonempty=False),
+        )
+    if method == "runtime.stt.append":
+        _fields(params, {"session", "data_base64"})
+        return SttAppendCommand(
+            session=_session(params["session"]),
+            data_base64=_bounded_text(params["data_base64"], MAX_STT_CHUNK_BASE64_CHARS),
+        )
+    if method == "runtime.stt.finish":
+        _fields(params, {"session"})
+        return SttFinishCommand(session=_session(params["session"]))
+    if method == "runtime.stt.cancel":
+        _fields(params, {"session"})
+        return SttCancelCommand(session=_session(params["session"]))
     raise ProtocolError(-32601, "method_not_found")
 
 
@@ -1365,6 +1421,22 @@ async def dispatch(
         return await service.start_screenshot_capture(dto)  # type: ignore[arg-type]
     if method == "runtime.screenshot.cancel":
         return await service.cancel_screenshot_capture(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.status":
+        return await service.get_stt_status(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.warm_up":
+        return await service.warm_up_stt_models(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.set_engine":
+        return await service.set_stt_engine(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.set_api_key":
+        return await service.set_stt_api_key(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.begin":
+        return await service.begin_stt_dictation(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.append":
+        return await service.append_stt_audio(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.finish":
+        return await service.finish_stt_dictation(dto)  # type: ignore[arg-type]
+    if method == "runtime.stt.cancel":
+        return await service.cancel_stt_dictation(dto)  # type: ignore[arg-type]
     raise ProtocolError(-32601, "method_not_found")
 
 

@@ -264,6 +264,16 @@ class Settings(BaseSettings):
     )
     skills_paths: list[str] = Field(default_factory=lambda: ["skills"])
 
+    # Speech input for the web console's composer.  ``browser`` is the default
+    # because it needs nothing installed: the console falls back to the browser's
+    # own recognizer.  ``local`` uses the offline ONNX engine (the ``stt-local``
+    # extra), whose model set lives under ``~/.synapse/stt/models`` unless
+    # ``stt_model_dir`` points somewhere else.  See ``synapse.stt``.
+    stt_engine: Literal["browser", "local"] = Field(
+        default="browser", validation_alias="STT_ENGINE"
+    )
+    stt_model_dir: Path | None = Field(default=None, validation_alias="STT_MODEL_DIR")
+
     # Framework wiring (deepagents native)
     enable_subagents: bool = Field(default=True, validation_alias="AGENT_ENABLE_SUBAGENTS")
     subagent_tester_model: str | None = Field(

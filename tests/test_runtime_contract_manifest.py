@@ -45,6 +45,7 @@ from synapse.runtime.service.history import (
 from synapse.runtime.service.ports import AgentRuntimeService
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.transport import protocol
+from synapse.runtime.transport import protocol as protocol_module
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE_DIR = ROOT / "src" / "synapse" / "runtime" / "service"
@@ -174,6 +175,14 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.screenshot.settings.open": "open_screenshot_settings",
     "runtime.screenshot.capture": "start_screenshot_capture",
     "runtime.screenshot.cancel": "cancel_screenshot_capture",
+    "runtime.stt.status": "get_stt_status",
+    "runtime.stt.warm_up": "warm_up_stt_models",
+    "runtime.stt.set_engine": "set_stt_engine",
+    "runtime.stt.set_api_key": "set_stt_api_key",
+    "runtime.stt.begin": "begin_stt_dictation",
+    "runtime.stt.append": "append_stt_audio",
+    "runtime.stt.finish": "finish_stt_dictation",
+    "runtime.stt.cancel": "cancel_stt_dictation",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -200,6 +209,7 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "skills.list",
         "screenshot.read",
         "screenshot.control",
+        "stt.control",
     }
 )
 
@@ -227,6 +237,14 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         # Attachment upload/read DTOs added by the image-attachment slice.
         "AbortAttachmentCommand",
         "AbortAttachmentResult",
+        # Speech-input DTOs added by the local speech-engine slice.  `partial` is
+        # provisional (the caption shows it); `finalized` is authoritative (the
+        # draft receives it), which is the whole point of the two-pass engine.
+        "SttStatusView",
+        "SttBeginResult",
+        "SttAppendResult",
+        "SttFinishResult",
+        "SttCancelResult",
         "AppendAttachmentChunkCommand",
         "AppendAttachmentChunkResult",
         "AttachmentChunk",
@@ -523,6 +541,25 @@ def test_wire_method_table_is_the_v1_baseline_plus_named_additions() -> None:
     # ``watch_events``, which the websocket layer drives through a lease.
     dispatched = _dispatch_service_methods()
     assert dispatched == set(_registry_service_methods()) - {"watch_events"}
+
+
+def test_every_service_wire_method_has_a_decode_branch() -> None:
+    """A registered method must also be *reachable*.
+
+    ``decode_params`` is a hand-written chain of ``method == "..."`` branches, so
+    registering a method in the registry, the port, the ACL and the dispatch is not
+    enough: without a branch here the live daemon answers ``method_not_found`` while
+    every other test stays green.  That is exactly how ``runtime.stt.warm_up`` and
+    ``runtime.stt.set_engine`` shipped unreachable.
+    """
+    source = Path(protocol_module.__file__).read_text(encoding="utf-8")
+    missing = [
+        method.method
+        for method in contract_registry.WIRE_METHODS
+        if method.method_class == "service"
+        and f'method == "{method.method}"' not in source
+    ]
+    assert missing == [], f"wire methods with no decode_params branch: {missing}"
 
 
 def test_capability_mapping_matches_the_acl_layer() -> None:

@@ -18,7 +18,8 @@ import threading
 import time
 import traceback
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
+from pathlib import Path
 from typing import Any, Final, Self
 
 import synapse.runtime.service.attachment_store as attachment_store
@@ -99,6 +100,7 @@ from synapse.runtime.service.errors import (
     RuntimeServiceError,
     ScreenshotUnavailableError,
     SteeringUnavailableError,
+    SttUnavailableError,
     TurnMismatchError,
 )
 from synapse.runtime.service.events import (
@@ -213,6 +215,24 @@ from synapse.runtime.service.skills import (
     SkillEntry,
     SkillListPage,
 )
+from synapse.runtime.service.stt import (
+    MAX_STT_MODEL_DIR_CHARS,
+    STT_ENGINES,
+    SttAppendCommand,
+    SttAppendResult,
+    SttBeginCommand,
+    SttBeginResult,
+    SttCancelCommand,
+    SttCancelResult,
+    SttFinishCommand,
+    SttFinishResult,
+    SttService,
+    SttSetApiKeyCommand,
+    SttSetEngineCommand,
+    SttStatusQuery,
+    SttStatusView,
+    SttWarmUpCommand,
+)
 from synapse.runtime.sessions import (
     NoActiveTurnError as SessionNoActiveTurnError,
 )
@@ -233,6 +253,9 @@ from synapse.runtime.sessions import (
 from synapse.runtime.sessions.errors import InvalidEventCursorError
 from synapse.runtime.sessions.events import SessionEventEnvelope, SessionSubscription
 from synapse.runtime.sessions.ref import SessionRef
+from synapse.runtime.stt_config_persist import save_stt_config
+from synapse.stt.credentials import save_api_key as save_stt_api_key
+from synapse.stt.providers import provider_info
 
 __all__ = ["LocalAgentRuntimeService", "LocalEventStream", "LocalEventWatch"]
 
@@ -382,6 +405,7 @@ class LocalAgentRuntimeService:
         project_registrar: Callable[[RegisterProjectCommand], ProjectListItem] | None = None,
         codex_usage_provider: CodexUsageProvider | None = None,
         screenshot_service: ScreenshotService | None = None,
+        stt_service: SttService | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -406,6 +430,11 @@ class LocalAgentRuntimeService:
         # survive a reconnect.  Without one the four screenshot methods report
         # themselves as unavailable instead of failing the service build.
         self._screenshots = screenshot_service
+        # The local speech-to-text surface is optional and daemon-resident: the
+        # daemon injects one shared service so a warm engine (and its dictations)
+        # survive a reconnect.  Without one the five stt methods report themselves
+        # as unavailable instead of failing the service build.
+        self._stt = stt_service
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -1563,6 +1592,190 @@ class LocalAgentRuntimeService:
         service = self._require_screenshots()
         self._screenshot_context(command.session)
         return await service.cancel_capture(command)
+
+    # -- local speech-to-text port ------------------------------------------
+
+    def _require_stt(self) -> SttService:
+        """The daemon-resident dictation service, or a typed unavailable error."""
+        if self._stt is None:
+            raise SttUnavailableError("本地语音输入不可用")
+        return self._stt
+
+    def _stt_settings(self, ref: SessionRef) -> tuple[str, str | None]:
+        """Resolve one session's configured speech engine and model directory.
+
+        The values come from the session's own project settings (never from a
+        transport payload).  An absent or unrecognized value falls back to the
+        browser engine and the engine's own default model directory, so a
+        checkout whose settings predate these fields keeps working.
+        """
+        self._validate_ref(ref)
+        manager = self._resolve_manager(ref)
+        self._check_project(manager, ref)
+        self._resolve_session(manager, ref)
+        settings = getattr(manager, "settings", None)
+        engine = self._stt_member(settings, "stt_engine", "browser")
+        if engine not in ("browser", "local"):
+            engine = "browser"
+        model_dir = self._stt_member(settings, "stt_model_dir", None)
+        # The field is `Path | None`, but a hand-edited settings.json (or a caller
+        # that stored text) can hand over a string, so both are accepted.  An empty
+        # value means "the engine's own default directory".
+        if isinstance(model_dir, Path):
+            model_dir = str(model_dir)
+        if not isinstance(model_dir, str) or not model_dir.strip():
+            model_dir = None
+        return engine, model_dir
+
+    @staticmethod
+    def _stt_member(settings: object, name: str, default: Any) -> Any:
+        """Read one speech setting, tolerating an attribute or a mapping settings object."""
+        if isinstance(settings, Mapping):
+            return settings.get(name, default)
+        return getattr(settings, name, default)
+
+    async def get_stt_status(self, query: SttStatusQuery) -> SttStatusView:
+        """Read local speech availability (never builds the models)."""
+        if not isinstance(query, SttStatusQuery):
+            raise InvalidRequestError(
+                "stt status query must be a SttStatusQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        service = self._require_stt()
+        engine, model_dir = self._stt_settings(query.session)
+        return await asyncio.to_thread(service.status, engine=engine, model_dir=model_dir)
+
+    async def set_stt_api_key(self, command: SttSetApiKeyCommand) -> SttStatusView:
+        """Store a provider key server-side and answer with the resulting status.
+
+        The key is written to the user-level speech config and never returned -- the
+        console learns only whether one is now configured.  The write is synchronous
+        and tiny; the status read that follows may probe the local engine, so that is
+        what leaves the event loop.
+        """
+        if not isinstance(command, SttSetApiKeyCommand):
+            raise InvalidRequestError(
+                "stt set api key command must be a SttSetApiKeyCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        info = provider_info(command.provider)
+        if info is None or not info.needs_key:
+            raise InvalidRequestError(f"该引擎不需要 API Key：{command.provider!r}")
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        self._resolve_session(manager, command.session)
+        try:
+            save_stt_api_key(command.provider, command.api_key)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        engine, model_dir = self._stt_settings(command.session)
+        service = self._require_stt()
+        return await asyncio.to_thread(service.status, engine=engine, model_dir=model_dir)
+
+    async def set_stt_engine(self, command: SttSetEngineCommand) -> SttStatusView:
+        """Persist the console's engine choice and apply it to the live settings.
+
+        The write itself is one small JSON file, so it runs inline; the status read
+        that follows can build the models, so *that* is what leaves the event loop.
+        The answer is read back through ``_stt_settings`` rather than echoed, so a
+        client always sees the values the next request will actually use.
+        """
+        if not isinstance(command, SttSetEngineCommand):
+            raise InvalidRequestError(
+                "stt set engine command must be a SttSetEngineCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        if command.engine not in STT_ENGINES:
+            raise InvalidRequestError(f"unknown speech engine: {command.engine!r}")
+        model_dir = command.model_dir
+        if model_dir is not None:
+            if not isinstance(model_dir, str) or len(model_dir) > MAX_STT_MODEL_DIR_CHARS:
+                raise InvalidRequestError("speech model directory is invalid")
+            model_dir = model_dir.strip() or None
+        self._validate_ref(command.session)
+        manager = self._resolve_manager(command.session)
+        self._check_project(manager, command.session)
+        self._resolve_session(manager, command.session)
+        try:
+            save_stt_config(manager.settings, engine=command.engine, model_dir=model_dir)
+        except ValueError as exc:
+            # The helper refuses to overwrite an unreadable settings file; that is
+            # the reader's file to fix, so the reason travels to the console.
+            raise InvalidRequestError(str(exc)) from exc
+        engine, effective_dir = self._stt_settings(command.session)
+        service = self._require_stt()
+        return await asyncio.to_thread(service.status, engine=engine, model_dir=effective_dir)
+
+    async def warm_up_stt_models(self, command: SttWarmUpCommand) -> SttStatusView:
+        """Build the local models now, off the event loop, and answer with the status.
+
+        The console asks for this as soon as it learns the local engine is selected:
+        building the recognizers costs about a minute on a CPU, and paying it inside
+        a live microphone makes the button look stuck.  Idempotent -- a warm engine
+        answers from memory.
+        """
+        if not isinstance(command, SttWarmUpCommand):
+            raise InvalidRequestError(
+                "stt warm up command must be a SttWarmUpCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_stt()
+        engine, model_dir = self._stt_settings(command.session)
+        return await asyncio.to_thread(service.warm_up, engine=engine, model_dir=model_dir)
+
+    async def begin_stt_dictation(self, command: SttBeginCommand) -> SttBeginResult:
+        """Start (or restart) one dictation for the session."""
+        if not isinstance(command, SttBeginCommand):
+            raise InvalidRequestError(
+                "stt begin command must be a SttBeginCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_stt()
+        engine, model_dir = self._stt_settings(command.session)
+        return await asyncio.to_thread(
+            service.begin, command.session, engine=engine, model_dir=model_dir
+        )
+
+    async def append_stt_audio(self, command: SttAppendCommand) -> SttAppendResult:
+        """Feed one bounded PCM chunk to the session's dictation, off the loop."""
+        if not isinstance(command, SttAppendCommand):
+            raise InvalidRequestError(
+                "stt append command must be a SttAppendCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_stt()
+        _, model_dir = self._stt_settings(command.session)
+        # Decoding a chunk costs roughly a fifth of its audio duration in CPU, so
+        # it never runs on the event loop.
+        return await asyncio.to_thread(
+            service.append,
+            command.session,
+            data_base64=command.data_base64,
+            model_dir=model_dir,
+        )
+
+    async def finish_stt_dictation(self, command: SttFinishCommand) -> SttFinishResult:
+        """Flush the session's dictation (a no-op when none was begun)."""
+        if not isinstance(command, SttFinishCommand):
+            raise InvalidRequestError(
+                "stt finish command must be a SttFinishCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_stt()
+        _, model_dir = self._stt_settings(command.session)
+        return await asyncio.to_thread(service.finish, command.session, model_dir=model_dir)
+
+    async def cancel_stt_dictation(self, command: SttCancelCommand) -> SttCancelResult:
+        """Drop the session's dictation and its buffered audio (idempotent)."""
+        if not isinstance(command, SttCancelCommand):
+            raise InvalidRequestError(
+                "stt cancel command must be a SttCancelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_stt()
+        self._stt_settings(command.session)
+        return await asyncio.to_thread(service.cancel, command.session)
 
     # -- attachment port ---------------------------------------------------
 

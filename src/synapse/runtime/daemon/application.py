@@ -35,6 +35,7 @@ from synapse.runtime.service import (
     ProjectScopeAuthorizer,
     RuntimeManagerRouter,
     ScreenshotService,
+    SttService,
     bind_access,
 )
 from synapse.runtime.sessions import RuntimeManager
@@ -49,6 +50,7 @@ from synapse.settings.config_paths import (
     set_mcp_server_enabled,
     set_mcp_server_include_tools,
 )
+from synapse.stt.credentials import api_key as stt_api_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -307,6 +309,11 @@ class RuntimeDaemon:
         #: connection: the tool's host and its running capture task must survive
         #: a reconnect, so building one per connection would strand a job.
         self._screenshot_service: ScreenshotService | None = None
+        #: One daemon-resident dictation scheduler shared by every connection:
+        #: the warm local engine (built on the first dictation) and its open
+        #: sessions must survive a reconnect, so one service is kept for the
+        #: daemon's lifetime and keyed by model directory.
+        self._stt_service: SttService | None = None
         self.settings: Any | None = None
         self.catalog: ProjectCatalog | Any | None = None
         self.lease: DaemonLease | Any | None = None
@@ -474,6 +481,7 @@ class RuntimeDaemon:
                 project_registrar=self._project_registrar(),
                 codex_usage_provider=self._codex_usage_provider(),
                 screenshot_service=self._screenshot_service_provider(),
+                stt_service=self._stt_service_provider(),
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -537,6 +545,24 @@ class RuntimeDaemon:
         if service is None:
             service = ScreenshotService()
             self._screenshot_service = service
+        return service
+
+    def _stt_service_provider(self) -> SttService:
+        """The one daemon-level dictation scheduler (shared by connections).
+
+        A single instance is deliberate: the warm local engine is expensive and a
+        dictation is session state, so a service per connection would rebuild the
+        models and lose an open dictation on a reconnect.  It is created lazily
+        and kept for the daemon's lifetime; constructing it builds nothing (the
+        engine is only touched by a status probe or an explicit dictation).
+        """
+        service = self._stt_service
+        if service is None:
+            # The credential lookup is injected rather than imported by the service:
+            # `service/stt.py` is contract-layer code and must not reach into the
+            # settings or the credential store.
+            service = SttService(key_lookup=stt_api_key)
+            self._stt_service = service
         return service
 
     async def start(self) -> dict[str, Any]:

@@ -149,6 +149,21 @@ from synapse.runtime.service.skills import (
     ListSkillsQuery,
     SkillListPage,
 )
+from synapse.runtime.service.stt import (
+    SttAppendCommand,
+    SttAppendResult,
+    SttBeginCommand,
+    SttBeginResult,
+    SttCancelCommand,
+    SttCancelResult,
+    SttFinishCommand,
+    SttFinishResult,
+    SttSetApiKeyCommand,
+    SttSetEngineCommand,
+    SttStatusQuery,
+    SttStatusView,
+    SttWarmUpCommand,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = ["AgentRuntimeService", "EventStream", "EventWatch"]
@@ -569,6 +584,92 @@ class AgentRuntimeService(Protocol):
         Session-scoped, authorized by ``screenshot.control``.
 
         Optional delegate method: see ``get_screenshot_status``.
+        """
+        ...
+
+    async def get_stt_status(self, query: SttStatusQuery) -> SttStatusView:
+        """Read whether local speech input can run for the calling session.
+
+        Session-scoped read authorized by the dedicated ``stt.control`` capability.
+        It never builds the recognizers: the engine's own status probe reports the
+        optional extra and the model directory, and a missing extra is an ordinary
+        ``available=False`` answer with a reason, never an error.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def begin_stt_dictation(self, command: SttBeginCommand) -> SttBeginResult:
+        """Start (or restart) the session's local dictation.
+
+        Session-scoped, authorized by ``stt.control``.  The result announces the
+        sample rate of the PCM chunks ``append`` expects.  A second begin while one
+        is open replaces the previous dictation.
+
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def warm_up_stt_models(self, command: SttWarmUpCommand) -> SttStatusView:
+        """Build the local models now and answer with the status view.
+
+        Session-scoped, authorized by ``stt.control``.  Building the recognizers is
+        the expensive part of local speech (about a minute on a CPU), so a console
+        asks for this as soon as it learns the local engine is selected instead of
+        paying it inside a live microphone.  Idempotent.
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def set_stt_engine(self, command: SttSetEngineCommand) -> SttStatusView:
+        """Choose the speech engine, persist it and apply it to the live settings.
+
+        Session-scoped, authorized by ``stt.control``.  The answer is the effective
+        status after the change, so a client needs one round trip and sees the
+        truth -- including a model set the newly chosen engine cannot use.
+
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def set_stt_api_key(self, command: SttSetApiKeyCommand) -> SttStatusView:
+        """Store one provider's credential, server-side, and report the new status.
+
+        Session-scoped, authorized by ``stt.control``.  The key travels to the daemon
+        and is never returned: the status view carries only ``key_configured``.
+
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def append_stt_audio(self, command: SttAppendCommand) -> SttAppendResult:
+        """Feed one bounded base64 chunk of int16 little-endian mono PCM.
+
+        Session-scoped, authorized by ``stt.control``.  The chunk is bounded to
+        ``MAX_STT_CHUNK_BYTES`` decoded; decoding runs off the event loop because a
+        chunk costs roughly a fifth of its audio duration in CPU.
+
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def finish_stt_dictation(self, command: SttFinishCommand) -> SttFinishResult:
+        """Flush the session's dictation and return its finished sentences.
+
+        Session-scoped, authorized by ``stt.control``.  A dictation that was never
+        begun is a no-op returning an empty list, never an error.
+
+        Optional delegate method: see ``get_stt_status``.
+        """
+        ...
+
+    async def cancel_stt_dictation(self, command: SttCancelCommand) -> SttCancelResult:
+        """Drop the session's dictation and its buffered audio (idempotent).
+
+        Session-scoped, authorized by ``stt.control``.
+
+        Optional delegate method: see ``get_stt_status``.
         """
         ...
 

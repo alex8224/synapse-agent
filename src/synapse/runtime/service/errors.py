@@ -42,6 +42,8 @@ __all__ = [
     "ScreenshotTaskNotFoundError",
     "ScreenshotToolError",
     "ScreenshotUnavailableError",
+    "SttChunkTooLargeError",
+    "SttUnavailableError",
     "SteeringUnavailableError",
     "TurnMismatchError",
     "WorkspaceRevertError",
@@ -309,3 +311,15 @@ class ScreenshotTargetRequiredError(ScreenshotToolError):
 
     def __init__(self, message: str = "a capture target must be selected first") -> None:
         super().__init__(message, tool_code="target_required", code="target_required")
+
+
+class SttUnavailableError(RuntimeServiceError):
+    """Local speech input cannot run here: the optional extra or the models are absent."""
+
+    code = "stt_unavailable"
+
+
+class SttChunkTooLargeError(RuntimeServiceError):
+    """One audio chunk exceeds the decoded byte budget for a dictation."""
+
+    code = "stt_chunk_too_large"

@@ -245,6 +245,7 @@ _ADDITIVE_CAPABILITIES = frozenset(
         "skills.list",
         "screenshot.read",
         "screenshot.control",
+        "stt.control",
     }
 )
 

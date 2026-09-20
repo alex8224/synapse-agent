@@ -8,6 +8,22 @@ from synapse.config import Settings, bootstrap_project_env, load_settings
 from synapse.runtime.safety import build_interrupt_on, check_command
 
 
+def test_stt_engine_defaults_to_the_browser_and_reads_env(monkeypatch):
+    # The default must stay "browser": it is the only engine that needs nothing
+    # installed, and the console falls back to it whenever local speech is missing.
+    monkeypatch.delenv("STT_ENGINE", raising=False)
+    monkeypatch.delenv("STT_MODEL_DIR", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.stt_engine == "browser"
+    assert settings.stt_model_dir is None
+
+    monkeypatch.setenv("STT_ENGINE", "local")
+    monkeypatch.setenv("STT_MODEL_DIR", "/models/stt")
+    settings = Settings(_env_file=None)
+    assert settings.stt_engine == "local"
+    assert settings.stt_model_dir == Path("/models/stt")
+
+
 def test_default_approval_is_off(monkeypatch):
     monkeypatch.delenv("AGENT_REQUIRE_APPROVAL", raising=False)
     monkeypatch.delenv("AGENT_AUTO_APPROVE", raising=False)

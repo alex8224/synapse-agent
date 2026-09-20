@@ -65,6 +65,7 @@ from synapse.runtime.service.access import (
     SESSION_SEARCH,
     SESSION_THINKING,
     SKILLS_LIST,
+    STT_CONTROL,
     TURN_APPROVAL_READ,
     TURN_APPROVAL_RESUME,
     TURN_CANCEL,
@@ -306,6 +307,25 @@ from synapse.runtime.service.skills import (
     ListSkillsQuery,
     SkillEntry,
     SkillListPage,
+)
+from synapse.runtime.service.stt import (
+    MAX_STT_CHUNK_BASE64_CHARS,
+    MAX_STT_CHUNK_BYTES,
+    STT_SAMPLE_RATE,
+    SttAppendCommand,
+    SttAppendResult,
+    SttBeginCommand,
+    SttBeginResult,
+    SttCancelCommand,
+    SttCancelResult,
+    SttFinishCommand,
+    SttFinishResult,
+    SttProviderView,
+    SttSetApiKeyCommand,
+    SttSetEngineCommand,
+    SttStatusQuery,
+    SttStatusView,
+    SttWarmUpCommand,
 )
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -1256,6 +1276,110 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         OpenScreenshotSettingsCommand,
         role="request",
         notes=("Open (or focus) the capture tool's own settings GUI.",),
+    ),
+    # --- local speech-to-text (dictation) -------------------------------------
+    _dto(
+        SttStatusQuery,
+        role="request",
+        notes=("Read whether local speech input can run for the calling session.",),
+    ),
+    _dto(
+        SttStatusView,
+        role="result",
+        notes=(
+            "Local speech engine availability, without building the models.  ``engine``",
+            "is the configured mode (``browser`` or ``local``); the other fields describe",
+            "the local engine, so a missing extra or model set is an ordinary",
+            "``available=False`` with a reason, never an error.",
+        ),
+    ),
+    _dto(
+        SttProviderView,
+        role="result",
+        notes=(
+            "One selectable speech engine, so the console renders the choices instead",
+            "of knowing them: ``available``/``reason`` describe *this* provider, and",
+            "``key_configured`` reports that a credential exists without ever carrying",
+            "it.",
+        ),
+    ),
+    _dto(
+        SttBeginCommand,
+        role="request",
+        notes=(
+            "Start (or restart) one dictation for the calling session; a second begin",
+            "while one is open replaces the previous dictation.",
+        ),
+    ),
+    _dto(
+        SttWarmUpCommand,
+        role="request",
+        notes=(
+            "Build the local models now so the first dictation does not pay for them.",
+            "Building the recognizers is the expensive part of local speech (about a",
+            "minute on a CPU), so a console asks for this as soon as it learns the",
+            "local engine is selected; the answer is the same view as ``status``.",
+        ),
+    ),
+    _dto(
+        SttSetEngineCommand,
+        role="request",
+        notes=(
+            "Choose the speech engine (``browser`` or ``local``) and, for the local",
+            "one, an optional model directory.  Persisted to the user settings layer",
+            "and applied to the live settings, so it takes effect without a restart.",
+        ),
+    ),
+    _dto(
+        SttSetApiKeyCommand,
+        role="request",
+        notes=(
+            "Store one cloud provider's credential (``provider`` plus ``api_key``); an",
+            "empty key clears it.  The value travels only towards the daemon -- the",
+            "answer is the status view, which reports ``key_configured`` instead.",
+        ),
+    ),
+    _dto(
+        SttBeginResult,
+        role="result",
+        notes=("The announced sample rate for the dictation's int16 mono PCM chunks.",),
+    ),
+    _dto(
+        SttAppendCommand,
+        role="request",
+        notes=(
+            "One base64 chunk of int16 little-endian mono PCM at the announced sample",
+            f"rate; bounded to {MAX_STT_CHUNK_BYTES} decoded bytes by the wire decoder and",
+            "the service.",
+        ),
+    ),
+    _dto(
+        SttAppendResult,
+        role="result",
+        notes=(
+            "What one chunk produced: ``partial`` is provisional text the console may",
+            "replace, ``finalized`` holds the sentences finished by this chunk, in order.",
+        ),
+    ),
+    _dto(
+        SttFinishCommand,
+        role="request",
+        notes=("Flush the calling session's dictation and collect its last sentence.",),
+    ),
+    _dto(
+        SttFinishResult,
+        role="result",
+        notes=("The sentences finished by the flush; empty when no dictation was open.",),
+    ),
+    _dto(
+        SttCancelCommand,
+        role="request",
+        notes=("Drop the calling session's dictation and its buffered audio.",),
+    ),
+    _dto(
+        SttCancelResult,
+        role="result",
+        notes=("Idempotent: ``cancelled`` is False when no dictation was open.",),
     ),
     # --- transport-only shapes (no service DTO) -------------------------------
     _transport(
@@ -2363,6 +2487,163 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "stop and the task settles in a named terminal state.",
         ),
     ),
+    WireMethod(
+        method="runtime.stt.status",
+        method_class="service",
+        request="SttStatusQuery",
+        result="SttStatusView",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="get_stt_status",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Read whether local speech input can run here.  It never builds the models:",
+            "the engine's own probe reports the optional extra and the model directory,",
+            "and a missing extra is an ordinary ``available=False`` with a reason.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.warm_up",
+        method_class="service",
+        request="SttWarmUpCommand",
+        result="SttStatusView",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="warm_up_stt_models",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Build the local models now, off the event loop, and answer with the same",
+            "view as ``runtime.stt.status``.  The first dictation would otherwise pay",
+            "the whole build inside a live microphone (about a minute on a CPU), so a",
+            "console asks for this as soon as it learns the local engine is selected.",
+            "Idempotent: a warm engine answers from memory.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.set_engine",
+        method_class="service",
+        request="SttSetEngineCommand",
+        result="SttStatusView",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="set_stt_engine",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Choose which engine the console's microphone runs, persisted to the user",
+            "settings layer and applied to the running daemon's settings in the same",
+            "call -- so the next status read already reflects it, with no restart and",
+            "no page reload.  The answer is the effective status *after* the change, so",
+            "a client learns in one round trip whether the chosen engine can run here.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.set_api_key",
+        method_class="service",
+        request="SttSetApiKeyCommand",
+        result="SttStatusView",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="set_stt_api_key",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Store one cloud provider's credential in the user-level speech config and",
+            "answer with the resulting status.  The key travels only towards the daemon:",
+            "the answer carries ``key_configured``, never the value.  An empty key clears",
+            "it.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.begin",
+        method_class="service",
+        request="SttBeginCommand",
+        result="SttBeginResult",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="begin_stt_dictation",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Start one dictation for the calling session and announce the sample rate of",
+            "the PCM chunks ``runtime.stt.append`` expects.  Idempotent per session: a",
+            "second begin while one is open replaces the previous dictation.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.append",
+        method_class="service",
+        request="SttAppendCommand",
+        result="SttAppendResult",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="append_stt_audio",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Feed one base64 chunk of int16 little-endian mono PCM at the announced",
+            "sample rate.  The chunk is bounded to "
+            + str(MAX_STT_CHUNK_BYTES)
+            + " decoded bytes and decoding runs off the event loop; a chunk with no open",
+            "dictation is a no-op returning empty text.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.finish",
+        method_class="service",
+        request="SttFinishCommand",
+        result="SttFinishResult",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="finish_stt_dictation",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Flush the session's dictation and return its finished sentences.  A",
+            "dictation that was never begun is a no-op returning an empty list.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.stt.cancel",
+        method_class="service",
+        request="SttCancelCommand",
+        result="SttCancelResult",
+        capability=STT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="cancel_stt_dictation",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Drop the session's dictation and its buffered audio (idempotent);",
+            "``cancelled`` is False when no dictation was open.",
+        ),
+    ),
 )
 
 
@@ -2491,6 +2772,8 @@ LIMITS: Final[dict[str, int]] = {
     "max_screenshot_frames_per_task": MAX_SCREENSHOT_FRAMES_PER_TASK,
     "max_screenshot_task_id_bytes": MAX_SCREENSHOT_TASK_ID_BYTES,
     "max_session_goal_objective_chars": MAX_SESSION_GOAL_OBJECTIVE_CHARS,
+    "max_stt_chunk_base64_chars": MAX_STT_CHUNK_BASE64_CHARS,
+    "max_stt_chunk_bytes": MAX_STT_CHUNK_BYTES,
     "min_chunk_bytes": MIN_CHUNK_BYTES,
     "min_event_bytes": MIN_EVENT_BYTES,
     "min_scan_limit": MIN_SCAN_LIMIT,
@@ -2503,4 +2786,5 @@ LIMITS: Final[dict[str, int]] = {
     "session_search_offset_max": SESSION_SEARCH_OFFSET_MAX,
     "session_search_text_max": SESSION_SEARCH_TEXT_MAX,
     "session_title_max": SESSION_TITLE_MAX,
+    "stt_sample_rate": STT_SAMPLE_RATE,
 }

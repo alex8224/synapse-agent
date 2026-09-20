@@ -145,6 +145,21 @@ from synapse.runtime.service.session_management import (
     SearchSessionsQuery,
     SessionSearchPage,
 )
+from synapse.runtime.service.stt import (
+    SttAppendCommand,
+    SttAppendResult,
+    SttBeginCommand,
+    SttBeginResult,
+    SttCancelCommand,
+    SttCancelResult,
+    SttFinishCommand,
+    SttFinishResult,
+    SttSetApiKeyCommand,
+    SttSetEngineCommand,
+    SttStatusQuery,
+    SttStatusView,
+    SttWarmUpCommand,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = [
@@ -169,6 +184,7 @@ __all__ = [
     "APPS_LIST",
     "SCREENSHOT_READ",
     "SCREENSHOT_CONTROL",
+    "STT_CONTROL",
     "WORKSPACE_REVERT",
     "WORKSPACE_OPEN_EXTERNAL",
     "CODEX_RESET_CONSUME",
@@ -287,6 +303,12 @@ SCREENSHOT_READ = "screenshot.read"
 #: and finalizes image attachments, so it is its own grant -- ``screenshot.read``,
 #: ``apps.list`` and ``attachments.write`` must never authorize it.
 SCREENSHOT_CONTROL = "screenshot.control"
+#: The whole local speech-to-text surface: read the engine's availability, begin
+#: / append to / finish / cancel one dictation for the calling session.  Local
+#: dictation runs a host recognizer over the reader's microphone audio, so it is
+#: its own grant -- ``session.read`` and ``attachments.write`` must never
+#: authorize it.
+STT_CONTROL = "stt.control"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -328,6 +350,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         WORKSPACE_OPEN_EXTERNAL,
         SCREENSHOT_READ,
         SCREENSHOT_CONTROL,
+        STT_CONTROL,
     }
 )
 
@@ -1159,6 +1182,98 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "cancel_screenshot_capture", None)
         if not callable(delegate):
             raise InvalidRequestError("window capture is unavailable")
+        return await delegate(command)
+
+    async def get_stt_status(self, query: SttStatusQuery) -> SttStatusView:
+        """Authorize ``stt.control`` per session, then read local availability.
+
+        Optional delegate method: the ACL check runs before the delegate is
+        consulted, so a caller without ``stt.control`` is denied even against an
+        old delegate.
+        """
+        session = self._session_from_dto(query, SttStatusQuery, "stt status query")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "get_stt_status", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(query)
+
+    async def set_stt_api_key(self, command: SttSetApiKeyCommand) -> SttStatusView:
+        """Authorize ``stt.control`` per session, then store the provider key.
+
+        Optional delegate method: the ACL check runs before the delegate is
+        consulted, so a caller without ``stt.control`` is denied even against an
+        old delegate.
+        """
+        session = self._session_from_dto(command, SttSetApiKeyCommand, "stt set api key command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "set_stt_api_key", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def set_stt_engine(self, command: SttSetEngineCommand) -> SttStatusView:
+        """Authorize ``stt.control`` per session, then persist the engine choice.
+
+        Optional delegate method: the ACL check runs before the delegate is
+        consulted, so a caller without ``stt.control`` is denied even against an
+        old delegate.
+        """
+        session = self._session_from_dto(command, SttSetEngineCommand, "stt set engine command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "set_stt_engine", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def warm_up_stt_models(self, command: SttWarmUpCommand) -> SttStatusView:
+        """Authorize ``stt.control`` per session, then build the local models.
+
+        Optional delegate method: the ACL check runs before the delegate is
+        consulted, so a caller without ``stt.control`` is denied even against an
+        old delegate.
+        """
+        session = self._session_from_dto(command, SttWarmUpCommand, "stt warm up command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "warm_up_stt_models", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def begin_stt_dictation(self, command: SttBeginCommand) -> SttBeginResult:
+        """Authorize ``stt.control`` per session, then start one dictation."""
+        session = self._session_from_dto(command, SttBeginCommand, "stt begin command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "begin_stt_dictation", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def append_stt_audio(self, command: SttAppendCommand) -> SttAppendResult:
+        """Authorize ``stt.control`` per session, then feed one PCM chunk."""
+        session = self._session_from_dto(command, SttAppendCommand, "stt append command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "append_stt_audio", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def finish_stt_dictation(self, command: SttFinishCommand) -> SttFinishResult:
+        """Authorize ``stt.control`` per session, then flush the dictation."""
+        session = self._session_from_dto(command, SttFinishCommand, "stt finish command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "finish_stt_dictation", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
+        return await delegate(command)
+
+    async def cancel_stt_dictation(self, command: SttCancelCommand) -> SttCancelResult:
+        """Authorize ``stt.control`` per session, then drop the dictation."""
+        session = self._session_from_dto(command, SttCancelCommand, "stt cancel command")
+        self._authorize(session, STT_CONTROL)
+        delegate = getattr(self._delegate, "cancel_stt_dictation", None)
+        if not callable(delegate):
+            raise InvalidRequestError("local speech input is unavailable")
         return await delegate(command)
 
     async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:
