@@ -34,6 +34,10 @@ SYNAPSE_DIRNAME = ".synapse"
 MODELS_FILENAME = "models.json"
 MCP_FILENAME = "mcp.json"
 SETTINGS_FILENAME = "settings.json"
+#: Speech-engine credentials.  Like ``models.json`` this file may carry a secret
+#: (a cloud provider's API key), which is why it is separate from the settings
+#: file documented as non-secret overrides.
+STT_FILENAME = "stt.json"
 THEMES_FILENAME = "themes.json"
 AGENTS_DIRNAME = "agents"
 
