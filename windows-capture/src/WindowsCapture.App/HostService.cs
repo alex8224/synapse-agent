@@ -25,6 +25,7 @@ public sealed class HostService : IRpcHost, IDisposable
     private readonly IHostUi _ui;
     private readonly ConfigStore _configStore;
     private readonly WgcCaptureEngine _engine;
+    private readonly IGamepadController _gamepad;
     private readonly JobService _jobs;
     private readonly RpcDispatcher _dispatcher;
     private readonly object _sync = new();
@@ -34,7 +35,7 @@ public sealed class HostService : IRpcHost, IDisposable
     private RpcServer? _server;
     private bool _disposed;
 
-    public HostService(IHostUi ui, string pipeName, string configPath)
+    public HostService(IHostUi ui, string pipeName, string configPath, IGamepadControllerFactory? gamepadFactory = null)
     {
         _ui = ui;
         PipeName = pipeName;
@@ -45,6 +46,7 @@ public sealed class HostService : IRpcHost, IDisposable
         _engine = new WgcCaptureEngine();
         Limits = new Limits();
         _jobs = new JobService(_engine, Limits, SystemClock.Instance, Win32ProcessInfo.Instance);
+        _gamepad = (gamepadFactory ?? new ViGEmGamepadControllerFactory()).Create();
         _dispatcher = new RpcDispatcher(this);
 
         Version = typeof(HostService).Assembly
@@ -60,6 +62,7 @@ public sealed class HostService : IRpcHost, IDisposable
     public string? ConfigError => _configStore.LastError;
     public Limits Limits { get; }
     public JobService Jobs => _jobs;
+    public IGamepadController Gamepad => _gamepad;
     public long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     public bool UiVisible => _ui.IsVisible;
     public void ShowUi() => _ui.ShowWindow();
@@ -117,6 +120,7 @@ public sealed class HostService : IRpcHost, IDisposable
         if (_disposed) return;
         _disposed = true;
         _server?.Dispose();
+        _gamepad.Dispose();
         _jobs.Dispose();
     }
 }

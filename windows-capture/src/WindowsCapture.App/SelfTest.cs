@@ -351,6 +351,7 @@ public static class SelfTest
         public string? ConfigError => null;
         public Limits Limits { get; }
         public JobService Jobs { get; }
+        public IGamepadController Gamepad { get; } = new UnavailableGamepadController();
         public AppConfig Config => AppConfig.Empty;
         public long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         public bool UiVisible => false;
@@ -363,7 +364,11 @@ public static class SelfTest
             => Task.FromResult(new CliInvocationResult { ExitCode = 0, Stdout = "{}" });
         public void RequestShutdown() { }
 
-        public void Dispose() => Jobs.Dispose();
+        public void Dispose()
+        {
+            Gamepad.Dispose();
+            Jobs.Dispose();
+        }
     }
 
     private sealed class NoopCaptureEngine : ICaptureEngine

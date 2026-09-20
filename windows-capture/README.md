@@ -22,6 +22,9 @@ bypassed.
   windows, start jobs, poll state, cancel and read results.
 * Persists configuration, re-validates the target on every use, and reuses the WGC session and GPU
   resources for a valid target.
+* Optionally creates one process-owned virtual Xbox 360 controller through ViGEmBus. Every button or
+  stick operation requires a finite 1–5000 ms duration and returns to neutral in a `finally` block.
+  This input capability is independent from capture and uses the same same-user pipe.
 
 ### What it explicitly does **not** do
 
@@ -264,6 +267,43 @@ params `{"job_id":"..."}` → `{ok, released:<bool>, job_id}`. Frees the frame p
 params `{"args":["--capture","--count","1"],"timeout_ms":300000}`
 → `{exit_code:<int>, stdout:"<one JSON document>", stderr:""}`.
 This is what the CLI uses to relay a command line to the running host.
+
+### Virtual gamepad RPC
+
+The host can create one ordinary system-wide virtual Xbox 360 controller when ViGEmBus is installed.
+It does not inject into games, target a specific process, read a physical controller, or bypass
+anti-cheat. A program that accepts XInput may observe the controller, so callers must release it at
+the end of every task.
+
+| Method | Parameters | Behaviour |
+| --- | --- | --- |
+| `gamepad.get_state` | none | `{available, connected, unavailable_reason, user_index, max_hold_ms}` |
+| `gamepad.connect` | none | Creates and neutralises the virtual controller. |
+| `gamepad.press` | `{button, hold_ms}` | White-listed Xbox button, required `hold_ms: 1..5000`; released automatically. |
+| `gamepad.move` | `{direction, hold_ms}` | Finite left-stick `forward`, `backward`, `left`, or `right`; neutralised automatically. |
+| `gamepad.look` | `{x, y, hold_ms}` | Finite right-stick axes in `[-1, 1]`; neutralised automatically. |
+| `gamepad.release_all` | none | Idempotently neutralises every control. |
+| `gamepad.disconnect` | none | Releases every control and removes the virtual controller. |
+
+Button names are `a`, `b`, `x`, `y`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`,
+`left_bumper`, `right_bumper`, `left_stick`, `right_stick`, `menu`, and `view`.
+
+Stable errors include `gamepad_unavailable`, `gamepad_not_connected`, `gamepad_duration_exceeded`,
+`gamepad_invalid_button`, and `gamepad_invalid_direction`.
+
+### Agent CLI
+
+`src/GameControl.Cli` builds the standalone `game-control` executable for the `game-control` Agent
+Skill. It is intentionally not a raw RPC relay: it only emits the RPC methods above and requires a
+finite `--hold-ms` for every physical input.
+
+```powershell
+$env:WINDOWS_CAPTURE_EXE = (Resolve-Path 'src\WindowsCapture.App\bin\Release\net8.0-windows10.0.19041.0\windows-capture.exe')
+.\src\GameControl.Cli\bin\Release\net8.0\game-control.exe status
+.\src\GameControl.Cli\bin\Release\net8.0\game-control.exe press --button view --hold-ms 80
+.\src\GameControl.Cli\bin\Release\net8.0\game-control.exe screenshot --count 1 --start-delay-ms 0
+.\src\GameControl.Cli\bin\Release\net8.0\game-control.exe release-all
+```
 
 ### Limits (defaults, reported by `get_state`)
 

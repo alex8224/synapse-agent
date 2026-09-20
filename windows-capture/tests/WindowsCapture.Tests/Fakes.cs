@@ -52,6 +52,62 @@ internal sealed class FakeProcessInfo : IProcessInfo
     public bool TryGetStartUtc(int pid, out DateTime startUtc) => Starts.TryGetValue(pid, out startUtc);
 }
 
+internal sealed class FakeGamepadController : IGamepadController
+{
+    public bool IsAvailable { get; set; } = true;
+    public bool IsConnected { get; private set; }
+    public string? UnavailableReason { get; set; }
+    public int? UserIndex => IsConnected ? 0 : null;
+    public List<string> Calls { get; } = new();
+
+    public void Connect()
+    {
+        if (!IsAvailable)
+            throw new CaptureException(GamepadErrorCodes.Unavailable, "fake gamepad is unavailable", UnavailableReason);
+        IsConnected = true;
+        Calls.Add("connect");
+    }
+
+    public void Press(GamepadButton button, int holdMs, CancellationToken cancellationToken)
+    {
+        GamepadSafety.ValidateHoldMs(holdMs);
+        Connect();
+        Calls.Add($"press:{button}:{holdMs}");
+    }
+
+    public void Move(GamepadDirection direction, int holdMs, CancellationToken cancellationToken)
+    {
+        GamepadSafety.ValidateHoldMs(holdMs);
+        Connect();
+        Calls.Add($"move:{direction}:{holdMs}");
+    }
+
+    public void Look(double x, double y, int holdMs, CancellationToken cancellationToken)
+    {
+        GamepadSafety.ValidateHoldMs(holdMs);
+        Connect();
+        Calls.Add($"look:{x}:{y}:{holdMs}");
+    }
+
+    public void Trigger(GamepadTrigger side, byte value, int holdMs, CancellationToken cancellationToken)
+    {
+        GamepadSafety.ValidateHoldMs(holdMs);
+        Connect();
+        Calls.Add($"trigger:{side}:{value}:{holdMs}");
+    }
+
+    public void ReleaseAll() => Calls.Add("release_all");
+
+    public void Disconnect()
+    {
+        ReleaseAll();
+        IsConnected = false;
+        Calls.Add("disconnect");
+    }
+
+    public void Dispose() => Disconnect();
+}
+
 internal sealed class FakeHost : IRpcHost
 {
     private readonly List<WindowInfo> _windows = new();
@@ -69,6 +125,7 @@ internal sealed class FakeHost : IRpcHost
     public string? ConfigError { get; set; }
     public Limits Limits { get; set; } = new();
     public JobService Jobs { get; }
+    public IGamepadController Gamepad { get; } = new FakeGamepadController();
     public AppConfig Config { get; set; }
     public long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     public bool UiVisible { get; private set; }

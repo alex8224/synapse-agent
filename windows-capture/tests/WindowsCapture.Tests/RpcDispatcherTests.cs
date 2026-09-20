@@ -14,6 +14,82 @@ public class RpcDispatcherTests
         return (new RpcDispatcher(host), host, engine);
     }
 
+    [Fact]
+    public async Task GamepadLookRejectsAnAxisOutsideTheSafeRange()
+    {
+        var (dispatcher, _, _) = Build();
+        var node = await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":1,"method":"gamepad.look","params":{"x":1.1,"y":0,"hold_ms":20}}""");
+
+        Assert.Equal(ErrorCodes.InvalidParams, node["error"]!["data"]!["error_code"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task GetStateDescribesTheVirtualGamepad()
+    {
+        var (dispatcher, _, _) = Build();
+        var node = await Send(dispatcher, """{"jsonrpc":"2.0","id":1,"method":"gamepad.get_state"}""");
+
+        Assert.True(node["result"]!["available"]!.GetValue<bool>());
+        Assert.False(node["result"]!["connected"]!.GetValue<bool>());
+        Assert.Equal(GamepadSafety.MaxHoldMs, node["result"]!["max_hold_ms"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task PressUsesTheBoundedGamepadSurface()
+    {
+        var (dispatcher, host, _) = Build();
+        var node = await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":1,"method":"gamepad.press","params":{"button":"view","hold_ms":80}}""");
+
+        var gamepad = Assert.IsType<FakeGamepadController>(host.Gamepad);
+        Assert.True(node["result"]!["connected"]!.GetValue<bool>());
+        Assert.Contains("press:View:80", gamepad.Calls);
+    }
+
+    [Fact]
+    public async Task MoveAndLookStayWithinTheTypedSurface()
+    {
+        var (dispatcher, host, _) = Build();
+
+        await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":1,"method":"gamepad.move","params":{"direction":"forward","hold_ms":600}}""");
+        await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":2,"method":"gamepad.look","params":{"x":0.5,"y":-0.25,"hold_ms":100}}""");
+
+        var gamepad = Assert.IsType<FakeGamepadController>(host.Gamepad);
+        Assert.Contains("move:Forward:600", gamepad.Calls);
+        Assert.Contains("look:0.5:-0.25:100", gamepad.Calls);
+    }
+
+    [Fact]
+    public async Task GamepadInputRejectsUnboundedDuration()
+    {
+        var (dispatcher, _, _) = Build();
+        var missing = await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":1,"method":"gamepad.press","params":{"button":"a"}}""");
+        var oversized = await Send(dispatcher,
+            """{"jsonrpc":"2.0","id":2,"method":"gamepad.move","params":{"direction":"forward","hold_ms":5001}}""");
+
+        Assert.Equal(GamepadErrorCodes.DurationExceeded, missing["error"]!["data"]!["error_code"]!.GetValue<string>());
+        Assert.Equal(GamepadErrorCodes.DurationExceeded, oversized["error"]!["data"]!["error_code"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ReleaseAllAndDisconnectAreSafeAndIdempotent()
+    {
+        var (dispatcher, host, _) = Build();
+        await Send(dispatcher, """{"jsonrpc":"2.0","id":1,"method":"gamepad.connect"}""");
+        var released = await Send(dispatcher, """{"jsonrpc":"2.0","id":2,"method":"gamepad.release_all"}""");
+        var disconnected = await Send(dispatcher, """{"jsonrpc":"2.0","id":3,"method":"gamepad.disconnect"}""");
+
+        var gamepad = Assert.IsType<FakeGamepadController>(host.Gamepad);
+        Assert.True(released["result"]!["connected"]!.GetValue<bool>());
+        Assert.False(disconnected["result"]!["connected"]!.GetValue<bool>());
+        Assert.Contains("release_all", gamepad.Calls);
+        Assert.Contains("disconnect", gamepad.Calls);
+    }
+
     private static async Task<JsonNode> Send(RpcDispatcher dispatcher, string line)
         => JsonNode.Parse(await dispatcher.DispatchLineAsync(line, CancellationToken.None))!;
 

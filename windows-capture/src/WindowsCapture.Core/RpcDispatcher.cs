@@ -11,6 +11,32 @@ public sealed record CliInvocationResult
     public string Stderr { get; init; } = "";
 }
 
+public sealed class GamepadPressParams
+{
+    public GamepadButton? Button { get; set; }
+    public int? HoldMs { get; set; }
+}
+
+public sealed class GamepadMoveParams
+{
+    public GamepadDirection? Direction { get; set; }
+    public int? HoldMs { get; set; }
+}
+
+public sealed class GamepadLookParams
+{
+    public double? X { get; set; }
+    public double? Y { get; set; }
+    public int? HoldMs { get; set; }
+}
+
+public sealed class GamepadTriggerParams
+{
+    public GamepadTrigger? Side { get; set; }
+    public int? Value { get; set; }
+    public int? HoldMs { get; set; }
+}
+
 /// <summary>
 /// Everything the protocol layer needs from the process that hosts it. Keeping this an interface is
 /// what lets the whole RPC surface be unit tested in <c>WindowsCapture.Core</c> with no Windows APIs.
@@ -38,6 +64,12 @@ public interface IRpcHost
 
     /// <summary>Persists the config (best effort; failures are reported via <see cref="ConfigError"/>).</summary>
     void SaveConfig(AppConfig config);
+
+    /// <summary>
+    /// Process-owned virtual Xbox controller. Its operations are bounded by <see cref="GamepadSafety"/>
+    /// and it releases every control during host shutdown.
+    /// </summary>
+    IGamepadController Gamepad { get; }
 
     /// <summary>Runs a CLI command in-process on behalf of a second process.</summary>
     Task<CliInvocationResult> InvokeCliAsync(IReadOnlyList<string> args, CancellationToken cancellationToken);
@@ -130,6 +162,9 @@ public sealed class RpcDispatcher
     {
         "ping", "get_state", "show_ui", "list_windows", "set_target",
         "start", "list_jobs", "get_job", "cancel", "read_result", "release_result", "invoke_cli",
+        "gamepad.get_state", "gamepad.connect", "gamepad.press", "gamepad.move", "gamepad.look",
+        "gamepad.trigger",
+        "gamepad.release_all", "gamepad.disconnect",
     };
 
     public async Task<string> DispatchLineAsync(string line, CancellationToken cancellationToken)
@@ -235,6 +270,7 @@ public sealed class RpcDispatcher
         ErrorCodes.CaptureFailed or ErrorCodes.NoFrame or ErrorCodes.TargetClosed or ErrorCodes.TargetMinimized
             or ErrorCodes.CaptureBusy or ErrorCodes.Timeout or ErrorCodes.JobNotFound or ErrorCodes.JobNotFinished
             or ErrorCodes.ResultReleased or ErrorCodes.ResultExpired
+            or GamepadErrorCodes.Unavailable or GamepadErrorCodes.NotConnected
             => (JsonRpcErrorCode.ServerError, ex.ErrorCode, ex.Message, ex.Detail),
         _ => (JsonRpcErrorCode.InvalidParams, ex.ErrorCode, ex.Message, ex.Detail),
     };
@@ -252,6 +288,59 @@ public sealed class RpcDispatcher
             case "show_ui":
                 _host.ShowUi();
                 return new JsonObject { ["ok"] = true, ["ui_visible"] = _host.UiVisible };
+
+            case "gamepad.get_state":
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+
+            case "gamepad.connect":
+                _host.Gamepad.Connect();
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+
+            case "gamepad.press":
+            {
+                var p = Params<GamepadPressParams>(request);
+                if (p.Button is null) throw CaptureException.InvalidParams("gamepad.press requires 'button'");
+                _host.Gamepad.Press(p.Button.Value, GamepadSafety.ValidateHoldMs(p.HoldMs), cancellationToken);
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+            }
+
+            case "gamepad.move":
+            {
+                var p = Params<GamepadMoveParams>(request);
+                if (p.Direction is null) throw CaptureException.InvalidParams("gamepad.move requires 'direction'");
+                _host.Gamepad.Move(p.Direction.Value, GamepadSafety.ValidateHoldMs(p.HoldMs), cancellationToken);
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+            }
+
+            case "gamepad.look":
+            {
+                var p = Params<GamepadLookParams>(request);
+                if (p.X is null || p.Y is null) throw CaptureException.InvalidParams("gamepad.look requires 'x' and 'y'");
+                GamepadSafety.NormalizeAxis(p.X.Value, "x");
+                GamepadSafety.NormalizeAxis(p.Y.Value, "y");
+                _host.Gamepad.Look(p.X.Value, p.Y.Value, GamepadSafety.ValidateHoldMs(p.HoldMs), cancellationToken);
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+            }
+
+            case "gamepad.trigger":
+            {
+                var p = Params<GamepadTriggerParams>(request);
+                if (p.Side is null) throw CaptureException.InvalidParams("gamepad.trigger requires 'side'");
+                _host.Gamepad.Trigger(
+                    p.Side.Value,
+                    GamepadSafety.ValidateTriggerValue(p.Value),
+                    GamepadSafety.ValidateHoldMs(p.HoldMs),
+                    cancellationToken);
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+            }
+
+            case "gamepad.release_all":
+                _host.Gamepad.ReleaseAll();
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
+
+            case "gamepad.disconnect":
+                _host.Gamepad.Disconnect();
+                return Json.ToNode(GamepadStateOf(_host.Gamepad));
 
             case "list_windows":
                 return new JsonObject
@@ -357,6 +446,14 @@ public sealed class RpcDispatcher
         return Json.ToNode(view)!;
     }
 
+    private static GamepadState GamepadStateOf(IGamepadController gamepad) => new()
+    {
+        Available = gamepad.IsAvailable,
+        Connected = gamepad.IsConnected,
+        UnavailableReason = gamepad.UnavailableReason,
+        UserIndex = gamepad.UserIndex,
+    };
+
     private JsonNode BuildState()
     {
         return new JsonObject
@@ -373,6 +470,7 @@ public sealed class RpcDispatcher
             ["limits"] = Json.ToNode(_host.Limits),
             ["active_job"] = _host.Jobs.ActiveJobId,
             ["jobs"] = JsonSerializer.SerializeToNode(_host.Jobs.ListJobs(), Json.Options),
+            ["gamepad"] = Json.ToNode(GamepadStateOf(_host.Gamepad)),
             ["now_ms"] = _host.NowMs,
         };
     }
