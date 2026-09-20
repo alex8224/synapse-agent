@@ -268,10 +268,13 @@ class Settings(BaseSettings):
     # because it needs nothing installed: the console falls back to the browser's
     # own recognizer.  ``local`` uses the offline ONNX engine (the ``stt-local``
     # extra), whose model set lives under ``~/.synapse/stt/models`` unless
-    # ``stt_model_dir`` points somewhere else.  See ``synapse.stt``.
-    stt_engine: Literal["browser", "local"] = Field(
-        default="browser", validation_alias="STT_ENGINE"
-    )
+    # ``stt_model_dir`` points somewhere else; ``doubao`` is the hosted streaming
+    # service.  Which ids exist is decided in one place -- ``synapse.stt.providers``
+    # -- so this field is a plain string: a ``Literal`` here has to be edited for
+    # every new engine and would *reject* one this build already ships the moment
+    # the settings file is read back.  An id nothing implements is reported by
+    # ``runtime.stt.status`` rather than raised at load time.
+    stt_engine: str = Field(default="browser", validation_alias="STT_ENGINE")
     stt_model_dir: Path | None = Field(default=None, validation_alias="STT_MODEL_DIR")
 
     # Framework wiring (deepagents native)

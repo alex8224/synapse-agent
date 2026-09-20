@@ -25,12 +25,16 @@ from pathlib import Path
 from typing import Any
 
 from synapse.settings.config_paths import SETTINGS_FILENAME, user_config_dir
+from synapse.stt.providers import provider_ids
 
 __all__ = ["ENGINES", "load_stt_config", "save_stt_config"]
 
-#: The engines a reader may choose between.  ``browser`` needs nothing installed;
-#: ``local`` needs the ``stt-local`` extra and a model set.
-ENGINES = ("browser", "local")
+#: The engines a reader may choose between, taken from the provider registry
+#: (``synapse.stt.providers``) rather than kept here.  A second, hand-kept copy is
+#: what rejected ``doubao`` with a bare ``ValueError`` -- which the wire can only
+#: render as "runtime service error" -- while the settings screen happily offered
+#: it, because that screen is built from the registry.
+ENGINES = provider_ids()
 
 _ENGINE_KEY = "stt_engine"
 _MODEL_DIR_KEY = "stt_model_dir"

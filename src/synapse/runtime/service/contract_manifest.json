@@ -7874,7 +7874,7 @@
         }
       ],
       "notes": [
-        "Choose the speech engine (``browser`` or ``local``) and, for the local",
+        "Choose the speech engine (any id from ``providers``) and, for the local",
         "one, an optional model directory.  Persisted to the user settings layer",
         "and applied to the live settings, so it takes effect without a restart."
       ],
@@ -7969,8 +7969,8 @@
       ],
       "notes": [
         "Local speech engine availability, without building the models.  ``engine``",
-        "is the configured mode (``browser`` or ``local``); the other fields describe",
-        "the local engine, so a missing extra or model set is an ordinary",
+        "is the configured mode, one of the ids in ``providers``; the other fields",
+        "describe the local engine, so a missing extra or model set is an ordinary",
         "``available=False`` with a reason, never an error."
       ],
       "origin": "python",
@@ -7991,8 +7991,9 @@
       "notes": [
         "Build the local models now so the first dictation does not pay for them.",
         "Building the recognizers is the expensive part of local speech (about a",
-        "minute on a CPU), so a console asks for this as soon as it learns the",
-        "local engine is selected; the answer is the same view as ``status``."
+        "minute on a CPU), so a console asks for it from the action that needs it",
+        "-- pressing the microphone -- rather than on mount; the answer is the",
+        "same view as ``status``."
       ],
       "origin": "python",
       "role": "request"

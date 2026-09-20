@@ -46,6 +46,7 @@ __all__ = [
     "SttUnavailableError",
     "SteeringUnavailableError",
     "TurnMismatchError",
+    "UnknownSttEngineError",
     "WorkspaceRevertError",
 ]
 
@@ -254,6 +255,18 @@ class InvalidRequestError(RuntimeServiceError):
     """A request field violates its documented bounds or shape."""
 
     code = "invalid_request"
+
+
+class UnknownSttEngineError(InvalidRequestError):
+    """The daemon does not implement the requested speech engine.
+
+    A named state rather than a generic ``invalid_request``: the console offers
+    exactly the engines the daemon lists, so this rejection means the two are from
+    different builds, and the reader can act on that ("restart the console") in a
+    way the wire's generic "runtime service error" never allowed.
+    """
+
+    code = "unknown_stt_engine"
 
 
 class InvalidEventPayloadError(RuntimeServiceError):

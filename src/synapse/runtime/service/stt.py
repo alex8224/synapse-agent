@@ -43,7 +43,7 @@ from synapse.runtime.sessions.ref import SessionRef
 from synapse.stt.doubao import DoubaoSession
 from synapse.stt.engine import LocalSttEngine, SttStatus
 from synapse.stt.models import SttUnavailable
-from synapse.stt.providers import PROVIDERS, SttProviderInfo, provider_info
+from synapse.stt.providers import PROVIDERS, SttProviderInfo, provider_ids, provider_info
 from synapse.stt.session import SttSession
 
 __all__ = [
@@ -98,10 +98,10 @@ MAX_STT_ENGINE_CHARS = 32
 #: layer rejects anything longer before the value can reach a file.
 MAX_STT_API_KEY_CHARS = 512
 
-#: The engines a client may select.  Mirrors ``stt_config_persist.ENGINES``; kept
-#: here as well so the wire layer can reject an unknown mode without importing the
-#: persistence module.
-STT_ENGINES = ("browser", "local")
+#: The engines a client may select, derived from the provider registry so it can
+#: never go stale: a hard-coded tuple here is what made "doubao" unusable while the
+#: settings screen offered it (the registry knew it, this list did not).
+STT_ENGINES = provider_ids()
 #: PCM samples are scaled to floats in ``[-1, 1]``; int16 full scale is 2**15.
 _PCM_INT16_SCALE = 32768.0
 
@@ -421,10 +421,12 @@ class SttService:
         """Build the local models now and report the resulting status.
 
         Without this the whole build lands inside a live microphone -- measured at
-        about a minute on a CPU -- and the button simply looks stuck.  A console
-        asks for it as soon as it learns the local engine is selected, and paints
-        the wait.  Idempotent: a warm engine answers from memory, and the same
-        degradation boundary as :meth:`status` applies.
+        over a minute on a CPU -- and the button simply looks stuck.  The console
+        asks for it from the action that needs it (pressing the microphone, or the
+        settings screen's explicit "load now" button) rather than on mount: building
+        models nobody asked for also blocked switching to another engine.  Idempotent:
+        a warm engine answers from memory, and the same degradation boundary as
+        :meth:`status` applies.
         """
         local = self._engine(model_dir)
         try:

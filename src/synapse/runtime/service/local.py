@@ -102,6 +102,7 @@ from synapse.runtime.service.errors import (
     SteeringUnavailableError,
     SttUnavailableError,
     TurnMismatchError,
+    UnknownSttEngineError,
 )
 from synapse.runtime.service.events import (
     DEFAULT_MAX_EVENT_BYTES,
@@ -1615,7 +1616,7 @@ class LocalAgentRuntimeService:
         self._resolve_session(manager, ref)
         settings = getattr(manager, "settings", None)
         engine = self._stt_member(settings, "stt_engine", "browser")
-        if engine not in ("browser", "local"):
+        if engine not in STT_ENGINES:
             engine = "browser"
         model_dir = self._stt_member(settings, "stt_model_dir", None)
         # The field is `Path | None`, but a hand-edited settings.json (or a caller
@@ -1687,7 +1688,7 @@ class LocalAgentRuntimeService:
                 f"got type {type(command).__name__!r}"
             )
         if command.engine not in STT_ENGINES:
-            raise InvalidRequestError(f"unknown speech engine: {command.engine!r}")
+            raise UnknownSttEngineError(f"unknown speech engine: {command.engine!r}")
         model_dir = command.model_dir
         if model_dir is not None:
             if not isinstance(model_dir, str) or len(model_dir) > MAX_STT_MODEL_DIR_CHARS:
@@ -1710,10 +1711,10 @@ class LocalAgentRuntimeService:
     async def warm_up_stt_models(self, command: SttWarmUpCommand) -> SttStatusView:
         """Build the local models now, off the event loop, and answer with the status.
 
-        The console asks for this as soon as it learns the local engine is selected:
-        building the recognizers costs about a minute on a CPU, and paying it inside
-        a live microphone makes the button look stuck.  Idempotent -- a warm engine
-        answers from memory.
+        The console asks for this from the action that needs the models (pressing the
+        microphone, or the settings screen's explicit load button) rather than when it
+        merely learns the local engine is selected: a build nobody asked for also held
+        up switching engines.  Idempotent -- a warm engine answers from memory.
         """
         if not isinstance(command, SttWarmUpCommand):
             raise InvalidRequestError(

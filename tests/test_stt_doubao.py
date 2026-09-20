@@ -132,6 +132,20 @@ def test_a_payload_without_utterances_still_yields_text() -> None:
 # --- provider routing --------------------------------------------------------
 
 
+def test_every_registered_provider_is_selectable() -> None:
+    """The list the wire validates against must *be* the registry.
+
+    A hard-coded copy is what made "doubao" unusable while the settings screen
+    offered it: the registry knew the provider, the validation list did not, and the
+    reader got a generic service error from a button that was drawn as available.
+    """
+    from synapse.runtime.service.stt import STT_ENGINES
+    from synapse.stt.providers import provider_ids
+
+    assert set(STT_ENGINES) == set(provider_ids())
+    assert "doubao" in STT_ENGINES
+
+
 class _FakeEngine:
     def __init__(self) -> None:
         self.loaded = False

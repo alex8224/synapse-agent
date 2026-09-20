@@ -24,6 +24,17 @@ def test_stt_engine_defaults_to_the_browser_and_reads_env(monkeypatch):
     assert settings.stt_model_dir == Path("/models/stt")
 
 
+def test_stt_engine_accepts_every_registered_engine(monkeypatch):
+    # Which ids exist is decided by the provider registry, not by a copy in the
+    # schema: a `Literal` there rejected the engines added after it was written the
+    # moment the settings file was read back.
+    from synapse.stt.providers import provider_ids
+
+    for engine in provider_ids():
+        monkeypatch.setenv("STT_ENGINE", engine)
+        assert Settings(_env_file=None).stt_engine == engine
+
+
 def test_default_approval_is_off(monkeypatch):
     monkeypatch.delenv("AGENT_REQUIRE_APPROVAL", raising=False)
     monkeypatch.delenv("AGENT_AUTO_APPROVE", raising=False)

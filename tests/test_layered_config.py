@@ -259,6 +259,35 @@ def test_settings_json_layer(tmp_path, monkeypatch):
     assert settings.history_tail_turns == 7
 
 
+def test_a_hosted_speech_engine_survives_a_reload(tmp_path, monkeypatch):
+    """The engine the console writes must load again on the next daemon start.
+
+    The console persists the choice to the user settings file, so a schema that only
+    knew ``browser``/``local`` would reject a hosted engine at start-up -- long after
+    the switch that wrote it looked like it had worked.
+    """
+    from synapse.stt.providers import provider_ids
+
+    home = tmp_path / "home" / ".synapse"
+    home.mkdir(parents=True)
+    (home / "settings.json").write_text('{"stt_engine": "doubao"}', encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir",
+        lambda: home.resolve(),
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.executable_config_dirs",
+        lambda: [],
+    )
+    monkeypatch.delenv("STT_ENGINE", raising=False)
+
+    settings = load_settings(workspace=proj.resolve())
+    assert settings.stt_engine == "doubao"
+    assert set(provider_ids()) >= {"doubao"}
+
+
 def test_subagent_settings_json_layer(tmp_path, monkeypatch):
     home = tmp_path / "home" / ".synapse"
     home.mkdir(parents=True)

@@ -16,6 +16,7 @@ import pytest
 
 from synapse.runtime import stt_config_persist
 from synapse.runtime.stt_config_persist import load_stt_config, save_stt_config
+from synapse.stt.providers import provider_ids
 
 
 @pytest.fixture()
@@ -84,6 +85,22 @@ def test_an_unknown_engine_is_refused_before_anything_is_written(user_dir: Path)
         save_stt_config(_settings(), engine="voice", model_dir=None)
     assert "unknown speech engine" in str(raised.value)
     assert not (user_dir / "settings.json").exists()
+
+
+def test_every_registered_engine_can_be_written_and_read_back(user_dir: Path) -> None:
+    """The registry is the only list of engines; this layer may not keep its own.
+
+    A hand-kept copy here is what made "doubao" unusable: the settings screen
+    offered it (that screen is built from the registry), the write refused it, and
+    the console could only render the refusal as "runtime service error".
+    """
+    assert set(stt_config_persist.ENGINES) == set(provider_ids())
+    for engine in provider_ids():
+        settings = _settings()
+        save_stt_config(settings, engine=engine, model_dir=None)
+        written = json.loads((user_dir / "settings.json").read_text(encoding="utf-8"))
+        assert written["stt_engine"] == engine
+        assert load_stt_config(settings)["engine"] == engine
 
 
 def test_load_normalizes_what_it_reports() -> None:

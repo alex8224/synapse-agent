@@ -56,6 +56,7 @@ from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.transport.protocol import ProtocolError, decode_params, dispatch
 from synapse.stt.engine import LocalSttEngine, SttStatus
 from synapse.stt.models import OFFLINE_DIR, STREAMING_DIR, SttUnavailable
+from synapse.stt.providers import provider_ids
 from synapse.stt.session import SttUpdate
 
 REF = SessionRef(project_id="p1", thread_id="t1")
@@ -676,10 +677,53 @@ def test_set_engine_persists_and_answers_with_the_effective_status(
 
 def test_set_engine_rejects_an_unknown_mode() -> None:
     service = _local_service(object(), engine="browser", model_dir=None)
-    with pytest.raises(InvalidRequestError):
+    with pytest.raises(InvalidRequestError) as raised:
         asyncio.run(
             service.set_stt_engine(SttSetEngineCommand(session=REF, engine="quantum"))
         )
+    # Its own code, not the generic `invalid_request`: the console offers exactly the
+    # engines the daemon lists, so this rejection means the two are from different
+    # builds and the reader can act on it.
+    assert raised.value.code == "unknown_stt_engine"
+
+
+def test_set_engine_accepts_a_hosted_engine_from_the_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One whole switch to a cloud engine, through the real service.
+
+    The console only offers engines the daemon lists, so validation, the write and
+    the read-back all have to agree with the registry -- a hand-kept list in any one
+    of them is what made "doubao" fail with an opaque "runtime service error".
+    """
+    monkeypatch.setattr(stt_config_persist, "user_config_dir", lambda: tmp_path)
+
+    class _Engine:
+        def status(self) -> SttStatus:
+            return SttStatus(
+                available=True, reason=None, model_dir="/models/stt", loaded=False
+            )
+
+        def warm_up(self) -> SttStatus:  # pragma: no cover - not the local engine
+            raise AssertionError("a cloud engine has no local build")
+
+        def new_session(self) -> Any:  # pragma: no cover - not the local engine
+            raise AssertionError("a cloud engine has no local session")
+
+    stt = SttService(
+        engine_factory=lambda model_dir: _Engine(),
+        key_lookup=lambda provider: "configured" if provider == "doubao" else None,
+    )
+    service = _local_service(stt, engine="browser", model_dir=None)
+    view = asyncio.run(
+        service.set_stt_engine(SttSetEngineCommand(session=REF, engine="doubao"))
+    )
+
+    assert view.engine == "doubao"
+    assert view.available is True
+    assert [provider.id for provider in view.providers] == list(provider_ids())
+    written = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert written["stt_engine"] == "doubao"
 
 
 def test_set_engine_rejects_an_unbounded_model_dir() -> None:
