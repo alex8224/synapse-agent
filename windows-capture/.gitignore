@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+*.user
+*.suo
+
+# Test / tooling output
+TestResults/
+*.trx
+.vs/
+.idea/
+
+# Local scratch
+.probe/
+*.log

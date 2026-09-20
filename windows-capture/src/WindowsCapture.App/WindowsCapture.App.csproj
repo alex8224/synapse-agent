@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <!-- Real Windows Graphics Capture needs 10.0.18362 (1903) or newer. -->
+    <SupportedOSPlatformVersion>10.0.18362.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>WindowsCapture.App</RootNamespace>
+    <AssemblyName>windows-capture</AssemblyName>
+    <!-- Custom entry point so the same binary can act as GUI host, CLI client or self test. -->
+    <StartupObject>WindowsCapture.App.Program</StartupObject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WindowsCapture.Core\WindowsCapture.Core.csproj" />
+  </ItemGroup>
+
+</Project>
