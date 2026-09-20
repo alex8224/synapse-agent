@@ -57,6 +57,18 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.22",
 ]
+# Local speech-to-text: the ONNX runtime only.  The app must run without it (the
+# console falls back to the browser's own recognizer), so it stays an extra and
+# every import of it is guarded -- see `synapse.stt.engine`.
+#
+# `sherpa-onnx-core` is named explicitly, not left to the dependency chain: it is
+# the package that ships the ONNX Runtime DLLs, the index metadata for
+# `sherpa-onnx` does not pull it in, and without it the Python binding loads a
+# mismatched ONNX Runtime and crashes with an access violation.
+stt-local = [
+    "sherpa-onnx>=1.13.8",
+    "sherpa-onnx-core>=1.13.8",
+]
 
 [build-system]
 requires = ["hatchling"]
