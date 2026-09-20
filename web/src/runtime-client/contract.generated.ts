@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 55 wire methods: 53 service methods
+ * The 63 wire methods: 61 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -79,6 +79,14 @@ export const WIRE_METHODS = [
   "runtime.session.search",
   "runtime.session.thinking.set",
   "runtime.skills.list",
+  "runtime.stt.append",
+  "runtime.stt.begin",
+  "runtime.stt.cancel",
+  "runtime.stt.finish",
+  "runtime.stt.set_api_key",
+  "runtime.stt.set_engine",
+  "runtime.stt.status",
+  "runtime.stt.warm_up",
   "runtime.turn.approval.get",
   "runtime.turn.approval.resume",
   "runtime.turn.cancel",
@@ -101,7 +109,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (38). */
+/** Authorization capabilities enforced by the ACL layer (39). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -134,6 +142,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "session.search",
   "session.thinking",
   "skills.list",
+  "stt.control",
   "turn.approval.read",
   "turn.approval.resume",
   "turn.cancel",
@@ -217,6 +226,14 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.session.search": "session.search",
   "runtime.session.thinking.set": "session.thinking",
   "runtime.skills.list": "skills.list",
+  "runtime.stt.append": "stt.control",
+  "runtime.stt.begin": "stt.control",
+  "runtime.stt.cancel": "stt.control",
+  "runtime.stt.finish": "stt.control",
+  "runtime.stt.set_api_key": "stt.control",
+  "runtime.stt.set_engine": "stt.control",
+  "runtime.stt.status": "stt.control",
+  "runtime.stt.warm_up": "stt.control",
   "runtime.turn.approval.get": "turn.approval.read",
   "runtime.turn.approval.resume": "turn.approval.resume",
   "runtime.turn.cancel": "turn.cancel",
@@ -1830,6 +1847,150 @@ export interface SteerTurnResult {
   turn_id: string;
   accepted: boolean;
   pending_count: number;
+}
+
+/**
+ * One base64 chunk of int16 little-endian mono PCM at the announced sample
+ * rate; bounded to 65536 decoded bytes by the wire decoder and
+ * the service.
+ */
+export interface SttAppendCommand {
+  session: SessionRef;
+  data_base64: string;
+}
+
+/**
+ * What one chunk produced: ``partial`` is provisional text the console may
+ * replace, ``finalized`` holds the sentences finished by this chunk, in order.
+ */
+export interface SttAppendResult {
+  partial: string;
+  finalized: string[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  error: string | null;
+}
+
+/**
+ * Start (or restart) one dictation for the calling session; a second begin
+ * while one is open replaces the previous dictation.
+ */
+export interface SttBeginCommand {
+  session: SessionRef;
+}
+
+/**
+ * The announced sample rate for the dictation's int16 mono PCM chunks.
+ */
+export interface SttBeginResult {
+  sample_rate: number;
+}
+
+/**
+ * Drop the calling session's dictation and its buffered audio.
+ */
+export interface SttCancelCommand {
+  session: SessionRef;
+}
+
+/**
+ * Idempotent: ``cancelled`` is False when no dictation was open.
+ */
+export interface SttCancelResult {
+  cancelled: boolean;
+}
+
+/**
+ * Flush the calling session's dictation and collect its last sentence.
+ */
+export interface SttFinishCommand {
+  session: SessionRef;
+}
+
+/**
+ * The sentences finished by the flush; empty when no dictation was open.
+ */
+export interface SttFinishResult {
+  finalized: string[];
+}
+
+/**
+ * One selectable speech engine, so the console renders the choices instead
+ * of knowing them: ``available``/``reason`` describe *this* provider, and
+ * ``key_configured`` reports that a credential exists without ever carrying
+ * it.
+ */
+export interface SttProviderView {
+  id: string;
+  label: string;
+  kind: string;
+  needs_key: boolean;
+  key_configured: boolean;
+  available: boolean;
+  reason: string | null;
+  detail: string;
+}
+
+/**
+ * Store one cloud provider's credential (``provider`` plus ``api_key``); an
+ * empty key clears it.  The value travels only towards the daemon -- the
+ * answer is the status view, which reports ``key_configured`` instead.
+ */
+export interface SttSetApiKeyCommand {
+  session: SessionRef;
+  provider: string;
+  api_key: string;
+}
+
+/**
+ * Choose the speech engine (``browser`` or ``local``) and, for the local
+ * one, an optional model directory.  Persisted to the user settings layer
+ * and applied to the live settings, so it takes effect without a restart.
+ */
+export interface SttSetEngineCommand {
+  session: SessionRef;
+  engine: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  model_dir?: string | null;
+}
+
+/**
+ * Read whether local speech input can run for the calling session.
+ */
+export interface SttStatusQuery {
+  session: SessionRef;
+}
+
+/**
+ * Local speech engine availability, without building the models.  ``engine``
+ * is the configured mode (``browser`` or ``local``); the other fields describe
+ * the local engine, so a missing extra or model set is an ordinary
+ * ``available=False`` with a reason, never an error.
+ */
+export interface SttStatusView {
+  available: boolean;
+  engine: string;
+  reason: string | null;
+  loaded: boolean;
+  model_dir: string;
+  sample_rate: number;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  providers: SttProviderView[];
+}
+
+/**
+ * Build the local models now so the first dictation does not pay for them.
+ * Building the recognizers is the expensive part of local speech (about a
+ * minute on a CPU), so a console asks for this as soon as it learns the
+ * local engine is selected; the answer is the same view as ``status``.
+ */
+export interface SttWarmUpCommand {
+  session: SessionRef;
 }
 
 /**

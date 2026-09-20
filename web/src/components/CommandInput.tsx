@@ -7,9 +7,12 @@ import { ScreenshotActionArea } from './composer/actions/ScreenshotActionArea.ts
 import { COMPOSER_ACTIONS, IMAGE_ACTIONS } from './composer/actions/manifest.ts';
 import { RichComposer, type RichComposerHandle } from './composer/RichComposer.tsx';
 import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
-import { useSpeechInput } from './composer/useSpeechInput.ts';
+import { useSpeechInput, type SpeechInputOptions } from './composer/useSpeechInput.ts';
+import { useLocalSpeechInput } from './composer/useLocalSpeechInput.ts';
 import { captionText } from './composer/speechInput.ts';
+import { needsWarmUp, usesLocalEngine } from './composer/sttEngine.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import type { SttStatusView } from '../runtime-client/types.ts';
 import { useScreenshotStore } from '../stores/screenshotTask.ts';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -99,6 +102,9 @@ export const CommandInput: React.FC = () => {
     attachmentError,
     addAttachments,
     removeAttachment,
+    client,
+    currentSession,
+    sttRevision,
   } = useConsoleStore(
     // Only the fields the composer paints: a reasoning delta must not re-render
     // it (and must not touch the text the user is typing).
@@ -110,6 +116,9 @@ export const CommandInput: React.FC = () => {
       attachmentError: state.attachmentError,
       addAttachments: state.addAttachments,
       removeAttachment: state.removeAttachment,
+      client: state.client,
+      currentSession: state.currentSession,
+      sttRevision: state.sttRevision,
     })),
   );
 
@@ -159,36 +168,115 @@ export const CommandInput: React.FC = () => {
   const startWindowScreenshot = useScreenshotStore((s) => s.start);
   const openScreenshotSettings = useScreenshotStore((s) => s.openSettings);
 
-  // Speech input: the hook owns the recognizer (the browser ends a session at
-  // every pause), and the card only says where a recognized phrase goes -- at the
-  // caret of the editor the reader is typing into, never into the prompt text
-  // directly.
-  const speech = useSpeechInput({
-    onTranscript: (phrase) => composerRef.current?.insertSpoken(phrase),
+  // Which speech engine the runtime is configured for.  `engine` is the mode the
+  // runtime reports and `available`/`reason` describe the *local* engine, so a
+  // missing model set is a plain `available: false` with a reason, never a
+  // failed turn.  Until the status arrives -- and whenever the read fails -- the
+  // browser engine stays the default, exactly as before.
+  // The answer is tagged with the client/session it was read for and only
+  // published while that pairing is still current, so a late read can never
+  // select the local engine for a different session.
+  const sttKey = client === null ? null : `${currentSession.project_id}/${currentSession.thread_id}`;
+  const [sttRead, setSttRead] = useState<{ key: string; view: SttStatusView | null } | null>(null);
+  const sttStatus = sttRead !== null && sttRead.key === sttKey ? sttRead.view : null;
+  // Building the local models costs about a minute on a CPU.  Left to the first
+  // dictation that whole wait lands inside a live microphone and the button simply
+  // looks stuck, so the console asks for the build as soon as it learns the local
+  // engine is selected and paints the wait instead.  The answer is tagged like the
+  // status read (a late one can never mark another session warm) and the call is
+  // idempotent on the host, so a remount or a reconnect cannot build twice.
+  const [warmUp, setWarmUp] = useState<{ key: string; state: 'idle' | 'warming' }>({
+    key: '',
+    state: 'idle',
   });
+  const warming = warmUp.key === sttKey && warmUp.state === 'warming';
+  useEffect(() => {
+    if (client === null || sttKey === null) return;
+    const key = sttKey;
+    let cancelled = false;
+    const session = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
+    void client.sttStatus(session).then(
+      (view) => {
+        if (cancelled) return;
+        setSttRead({ key, view });
+        if (!needsWarmUp(view)) return;
+        setWarmUp({ key, state: 'warming' });
+        void client.sttWarmUp(session).then(
+          (warm) => {
+            if (cancelled) return;
+            // The warm-up answers with the same view as the status read, so the
+            // card's notice and copy follow the models that are now in memory.
+            setSttRead({ key, view: warm });
+            setWarmUp({ key, state: 'idle' });
+          },
+          () => {
+            if (!cancelled) setWarmUp({ key, state: 'idle' });
+          },
+        );
+      },
+      () => {
+        if (!cancelled) setSttRead({ key, view: null });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [client, sttKey, sttRevision, currentSession.project_id, currentSession.thread_id]);
+
+  // Speech input: both engines expose the same controller and share one
+  // insertion sink, so the card only chooses *which* one runs -- it still says
+  // where a recognized phrase goes (the caret of the editor the reader is typing
+  // into), never into the prompt text directly.  Both hooks are called
+  // unconditionally (rules of hooks); the one that is not selected stays idle
+  // until it is toggled.
+  const speechOptions: SpeechInputOptions = {
+    onTranscript: (phrase) => composerRef.current?.insertSpoken(phrase),
+  };
+  const browserSpeech = useSpeechInput(speechOptions);
+  const localSpeech = useLocalSpeechInput(speechOptions);
+  const localEngine = sttStatus !== null && sttStatus.engine === 'local' ? sttStatus : null;
+  const speech = localEngine !== null && localEngine.available ? localSpeech : browserSpeech;
 
   /**
-   * One notice region for the two things that can refuse input: a refused
-   * attachment and a microphone that could not be used.  One region keeps the
-   * card's height change -- which the transcript's reserved space is measured
-   * from -- in a single place, and a refused upload outranks a failed microphone
-   * when both are set, because it is the one the reader can still fix here.
+   * One notice region for the things that can refuse input: a refused
+   * attachment, a microphone that could not be used, and a local engine the
+   * runtime reports as unavailable (no models, missing extra).  One region keeps
+   * the card's height change -- which the transcript's reserved space is
+   * measured from -- in a single place, and a refused upload outranks the rest
+   * when several are set, because it is the one the reader can still fix here.
    */
-  const composerNotice = attachmentError ?? speech.error;
+  const speechNotice =
+    localEngine !== null && !localEngine.available
+      ? localEngine.reason ?? '本地语音引擎不可用'
+      : null;
+  const composerNotice = attachmentError ?? speech.error ?? speechNotice;
 
   // The reason a disabled button cannot be used is in the label as well as the
   // tooltip: a disabled control is not focusable, so the tooltip alone would leave
   // a screen-reader user with a button that silently does nothing.
-  const speechLabel = !speech.supported
-    ? '语音输入（当前浏览器不支持）'
-    : speech.listening
-      ? '停止语音输入'
-      : '语音输入';
-  const speechTitle = !speech.supported
-    ? '当前浏览器不支持语音输入（Chrome / Edge 可用）'
-    : speech.listening
-      ? '停止语音输入'
-      : '语音输入：识别结果追加到光标处（需要联网）';
+  // The active engine changes what "unsupported" means and whether the network is
+  // needed at all, so the copy follows the engine the runtime reported.
+  const usingLocalEngine = usesLocalEngine(sttStatus);
+  const speechLabel = warming
+    ? '语音输入（正在加载本地模型）'
+    : !speech.supported
+      ? usingLocalEngine
+        ? '语音输入（本地引擎不可用）'
+        : '语音输入（当前浏览器不支持）'
+      : speech.listening
+        ? '停止语音输入'
+        : '语音输入';
+  const speechTitle = warming
+    ? '正在加载本地语音模型：首次约 1 分钟，之后常驻内存'
+    : !speech.supported
+      ? usingLocalEngine
+        ? '本地语音引擎不可用，请检查运行时设置'
+        : '当前浏览器不支持语音输入（Chrome / Edge 可用）'
+      : speech.listening
+        ? '停止语音输入'
+        : usingLocalEngine
+          ? '语音输入：本地识别，结果追加到光标处'
+          : '语音输入：识别结果追加到光标处（需要联网）';
   /** The phrase being revised right now, bounded and ready to paint. */
   const speechCaption = captionText(speech.interim);
 
@@ -310,7 +398,7 @@ export const CommandInput: React.FC = () => {
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={speech.toggle}
-              disabled={!speech.supported}
+              disabled={!speech.supported || warming}
               aria-pressed={speech.listening}
               aria-label={speechLabel}
               title={speechTitle}
@@ -318,6 +406,13 @@ export const CommandInput: React.FC = () => {
             >
               {speech.listening ? <RecordStop20Filled /> : <Mic20Regular />}
             </button>
+            {warming && (
+              // The build is a one-time cost, so the wait says so instead of
+              // looking like a dead button.
+              <span className="composer-speech-status" role="status">
+                正在加载语音模型（首次约 1 分钟）
+              </span>
+            )}
             {speech.listening && (
               <span className="composer-speech-status" role="status">
                 正在聆听

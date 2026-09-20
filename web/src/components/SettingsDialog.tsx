@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
 import { Portal } from './Portal.tsx';
+import { SpeechEngineSection } from './SpeechEngineSection.tsx';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -203,6 +204,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
             </button>
           </div>
         </Section>
+
+        {/* The speech engine is the one preference here that the *runtime* owns,
+            because it decides who transcribes the audio.  The section writes it
+            and signals the composer to re-read, so the switch is live. */}
+        <SpeechEngineSection />
 
         <Section title="外观">
           {/* The theme is CSS (`src/index.css`); this only chooses which one the

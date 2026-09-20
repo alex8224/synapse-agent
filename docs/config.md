@@ -152,6 +152,21 @@ You are a security reviewer. Inspect diffs for...
 | `AGENT_EXPAND_THINKING` | `false` | 推理块不自动展开：流式时仅显示状态行，结束后折叠为一行预览；设为 `true` 时流式与结束后均完整展开 |
 | `AGENT_DEBUG` | `false` | 调试模式 |
 
+### 语音输入（Web 控制台输入区麦克风）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `STT_ENGINE` | `browser` | 识别引擎。`browser` 用浏览器自带的 Web Speech API：免费、无需安装（Chrome / Edge），但音频要经浏览器厂商服务器识别，中文一般。`local` 用本地离线 ONNX 引擎（`synapse.stt`）：中文更好、**完全离线、零费用**，代价是首次听写要等模型加载（这台机器上约 1 分钟，之后常驻） |
+| `STT_MODEL_DIR` | — | 本地模型目录；留空用 `~/.synapse/stt/models` |
+
+选 `local` 需要先 `uv sync --extra stt-local` 并把模型放进模型目录（清单与文件名校验见
+`src/synapse/stt/models.py`，缺失时错误信息会一次列全）。若引擎不可用，控制台**自动回退**到
+浏览器引擎，并在输入卡片里显示原因，不会静默降级。
+
+这两个值也可以直接在控制台的「设置 → 语音输入」里改：那里写入的是**用户层**
+`~/.synapse/settings.json`（原子写、保留其他键），并在同一次调用里应用到运行中的 daemon 的设置
+对象上，所以**无需重启、无需刷新**即可生效；环境变量与配置文件仍然优先于它，脚本化场景照旧。
+
 ### 其他
 
 | 变量 | 默认值 | 说明 |

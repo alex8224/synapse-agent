@@ -85,6 +85,11 @@ import type {
   ResumeTurnResult,
   SessionView,
   SteerTurnResult,
+  SttAppendResult,
+  SttBeginResult,
+  SttCancelResult,
+  SttFinishResult,
+  SttStatusView,
   UnwatchResult,
   WatchStartResult,
   WireMethod,
@@ -1160,6 +1165,111 @@ export class SynapseRuntimeClient {
         limit,
       }),
     );
+  }
+
+  /**
+   * Read whether local speech input can run for the calling session
+   * (`runtime.stt.status`).
+   *
+   * `engine` is the configured mode (`browser` or `local`); `available` and
+   * `reason` describe the *local* engine only, so a missing extra or model set
+   * is an ordinary `available: false` with a reason, never an error.
+   */
+  public async sttStatus(session: SessionRef): Promise<SttStatusView> {
+    return this.call<SttStatusView>('runtime.stt.status', { session });
+  }
+
+  /**
+   * Build the local speech models now (`runtime.stt.warm_up`).
+   *
+   * The build is the expensive part of local speech -- about a minute on a CPU --
+   * so the console asks for it as soon as it learns the local engine is selected,
+   * rather than paying it inside a live microphone. Idempotent, and the answer is
+   * the same view as {@link sttStatus}.
+   */
+  public async sttWarmUp(session: SessionRef): Promise<SttStatusView> {
+    return this.call<SttStatusView>('runtime.stt.warm_up', { session });
+  }
+
+  /**
+   * Choose the speech engine (`runtime.stt.set_engine`).
+   *
+   * The host persists the choice and applies it to its own live settings in the
+   * same call, so the next status read already reflects it -- no restart, no page
+   * reload. `modelDir` is the local engine's model directory, or null to use the
+   * engine's default. The answer is the *effective* status after the change, so a
+   * caller learns in one round trip whether the chosen engine can run here.
+   */
+  public async sttSetEngine(
+    session: SessionRef,
+    engine: string,
+    modelDir: string | null,
+  ): Promise<SttStatusView> {
+    return this.call<SttStatusView>('runtime.stt.set_engine', {
+      session,
+      engine,
+      model_dir: modelDir,
+    });
+  }
+
+  /**
+   * Store a cloud provider's credential (`runtime.stt.set_api_key`).
+   *
+   * The key travels to the daemon and never comes back: the answer is the status
+   * view, whose provider entries report only `key_configured`. An empty key clears
+   * the stored credential.
+   */
+  public async sttSetApiKey(
+    session: SessionRef,
+    provider: string,
+    apiKey: string,
+  ): Promise<SttStatusView> {
+    return this.call<SttStatusView>('runtime.stt.set_api_key', {
+      session,
+      provider,
+      api_key: apiKey,
+    });
+  }
+
+  /**
+   * Start (or restart) one dictation for the session (`runtime.stt.begin`).
+   *
+   * The result announces the `sample_rate` every later chunk must be encoded at
+   * (int16 little-endian mono PCM).
+   */
+  public async sttBegin(session: SessionRef): Promise<SttBeginResult> {
+    return this.call<SttBeginResult>('runtime.stt.begin', { session });
+  }
+
+  /**
+   * Stream one bounded base64 chunk of int16 PCM (`runtime.stt.append`).
+   *
+   * `partial` is provisional text the console may replace; `finalized` holds the
+   * sentences this chunk completed, in order, and is authoritative.
+   */
+  public async sttAppend(session: SessionRef, dataBase64: string): Promise<SttAppendResult> {
+    return this.call<SttAppendResult>('runtime.stt.append', {
+      session,
+      data_base64: dataBase64,
+    });
+  }
+
+  /**
+   * Flush the dictation and collect its last sentence (`runtime.stt.finish`).
+   *
+   * `finalized` is empty when no dictation was open.
+   */
+  public async sttFinish(session: SessionRef): Promise<SttFinishResult> {
+    return this.call<SttFinishResult>('runtime.stt.finish', { session });
+  }
+
+  /**
+   * Drop the dictation and its buffered audio (`runtime.stt.cancel`).
+   *
+   * Idempotent: `cancelled` is `false` when no dictation was open.
+   */
+  public async sttCancel(session: SessionRef): Promise<SttCancelResult> {
+    return this.call<SttCancelResult>('runtime.stt.cancel', { session });
   }
 
   private setState(next: ConnectionState, reason?: string) {

@@ -347,7 +347,7 @@ store 自己**只**发布 `incomplete`（回放被截断／出现 gap）而不�
 | 图片 Holder | 接受后作为**行内 Pill** 插在光标处（约 24px 高：微缩略图 + 文件名 + 进度 + 移除按钮），鼠标悬停在缩略图上弹出放大预览（`ImagePreviewFlyout`，贴合缩略图上方 8px，视口不足时翻到下方） |
 | `@` 引用 | 键入 `@` 就地弹出候选（原生 Fluent 列表：分组标题、`aria-activedescendant` 指示、`.fluent-scrollbar`），`↑` `↓` 移动、`Enter` / `Tab` 插入、`Esc` 关闭 |
 | `@` 类别 | 工作区文件（`runtime.artifacts.list` 按查询目录按需读取，不扫描整个工作区）、Agent 技能、运行上下文 |
-| 语音输入 | 控制行麦克风按钮：用浏览器自带识别把 final 结果**追加到光标处**（Chrome / Edge，见下节）；不经过运行时，也不进 `useConsoleStore` |
+| 语音输入 | 控制行麦克风按钮：把修正后的句子**追加到光标处**（见下节）。默认用浏览器自带识别（Chrome / Edge，不经过运行时）；运行时把引擎切到 `local` 时改用本机引擎（经 `runtime.stt.*` 与 `useConsoleStore` 的 client），未就绪时回退浏览器引擎并在卡片提示区显示原因 |
 | 序列化 | 文本原样、换行 `\n`、文件 `@path`、技能 `@skill:name`、上下文 `@context:name`、图片只进 `attachment_refs` 不进文本 |
 
 Pill 是 `contenteditable="false"` 的原子节点，其含义存在按本地 id 索引的注册表里，**不从 DOM 读回**，
@@ -673,27 +673,53 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 ## 语音输入（输入区麦克风按钮）
 
 麦克风按钮在输入区控制行左侧、动作菜单旁（`src/components/CommandInput.tsx`）。它是**独立控件**而不是
-`+` 菜单里的一行：菜单行显示不了「正在聆听」这个状态。识别用**浏览器自带的** Web Speech API
-（`SpeechRecognition` / `webkitSpeechRecognition`），因此**免费、不需要任何 key**；代价是识别在浏览器
-厂商的服务器上完成（Chrome 走 Google，Edge 走微软）并且**需要联网**，Firefox 没有该 API，按钮为
-disabled 并说明原因。
+`+` 菜单里的一行：菜单行显示不了「正在聆听」这个状态。卡片按运行时报告的 `runtime.stt.status` 选择引擎，
+两种引擎对卡片是**同一个控制器**（`supported` / `listening` / `error` / `interim` / `toggle`）和同一个
+插入回调，所以按钮的行为一致：
+
+| 引擎 | 何时使用 | 说明 |
+|---|---|---|
+| `browser`（默认） | 运行时报告 `engine: "browser"`，或状态读取失败/尚未返回 | 浏览器自带的 Web Speech API（`SpeechRecognition` / `webkitSpeechRecognition`）：**免费、不需要任何 key**；代价是识别在浏览器厂商的服务器上完成（Chrome 走 Google，Edge 走微软）并且**需要联网**，Firefox 没有该 API，按钮 disabled 并说明原因 |
+| `local`（可用） | `engine: "local"` 且 `available: true` | 本机引擎（`composer/useLocalSpeechInput.ts`）：`getUserMedia` 采集麦克风，前端转成 16 kHz 单声道 int16 PCM、按 ~600 ms 分块，经 `runtime.stt.begin/append/finish/cancel` 流式识别；离线、音频不外发 |
+| `local`（不可用） | `engine: "local"` 且 `available: false` | **回退**到浏览器引擎，并把 `reason`（缺少模型/依赖）显示在卡片既有的提示区，让读者知道为什么识别质量没变 |
+
+引擎可以在**设置对话框**的「语音输入」一节里切换（`components/SpeechEngineSection.tsx`）：选择
+`browser` / `local`、查看本地引擎状态（可用/已加载/不可用原因）、改模型目录、必要时手动「加载模型」。
+那一节是**运行时写入**（`runtime.stt.set_engine`）：宿主在同一次调用里把选择持久化到用户层
+`~/.synapse/settings.json` 并应用到运行中的 settings 对象，所以不需要重启；控制台这边靠
+`useConsoleStore.sttRevision` 通知输入卡片**重新读取** `runtime.stt.status`（卡片的读取 effect 依赖
+这个计数器），因此切换也是即时生效、不用刷新页面。
+
+下表的行为对两种引擎一致；`browser` 引擎的会话细节（`stop()`/`abort()`、停顿后重开、语言）在行内注明。
 
 | 行为 | 说明 |
 |---|---|
 | 开始 / 停止 | 点击切换。停止用 `stop()`，最后一句仍会作为 final 结果送达；卡片卸载时用 `abort()` |
 | 聆听状态 | 按钮换成强调色的停止标记并带一圈**脉冲光环**（`@keyframes composer-speech-halo`），右侧「正在聆听」后跟三条**呼吸的均衡条**（`@keyframes composer-speech-bar`）。两者都只是装饰：光环是 `pointer-events: none` 的伪元素（不参与布局、不抢点击），状态本身由颜色与文字表达；`prefers-reduced-motion: reduce` 下两个动画都关掉 |
-| 识别结果 | **只插入 final 结果**，interim 文本一律不插入（它会不断改写读者正在编辑的内容）；结果**追加到光标处**，没有光标时追加到末尾 |
-| 实时字幕 | 说话过程中，还没定稿的短语**实时**显示在输入框下方一行字幕里（「识别中」+ 文本 + 闪烁光标），所以不等停顿也能看到自己说了什么；字幕有界（`SPEECH_CAPTION_MAX_CHARS`，超出只保留末尾并加省略号、不换行，避免卡片高度在说话时抖动），且只**显示**不插入——定稿后文字才落进输入框。字幕对无障碍树隐藏（`aria-hidden`）：它只是即将落进输入框的文字的视觉回声，逐次播报会盖住读者 |
+| 实时字幕 | 说话过程中，**临时**文本（浏览器引擎的 interim / 本地引擎的 `partial`）实时显示在输入框下方一行字幕里（「识别中」+ 文本 + 闪烁光标），所以不等停顿也能看到自己说了什么；字幕有界（`SPEECH_CAPTION_MAX_CHARS`，超出只保留末尾并加省略号、不换行，避免卡片高度在说话时抖动），且只**显示**不插入——**只有修正后的文本**（final / `finalized`）才落进输入框。字幕对无障碍树隐藏（`aria-hidden`）：它只是即将落进输入框的文字的视觉回声，逐次播报会盖住读者 |
+| 识别结果 | **只插入修正后的句子**，临时文本一律不插入（它会不断改写读者正在编辑的内容）；结果**追加到光标处**，没有光标时追加到末尾 |
 | 分隔符 | 由 `spokenTextToInsert` 一条规则决定：中文直接相接、两个 ASCII 词之间补一个空格、句末标点前不补空格（识别器自己会写出 `，`/`。`） |
 | 持续聆听 | 浏览器在每次停顿后结束会话，因此「聆听」由**读者意图**而非会话决定：干净结束或 `no-speech` 会在短暂延时后重开会话（`MAX_SPEECH_RESTARTS` 次上限，避免服务失败时热循环）；`not-allowed` / `audio-capture` / `network` 等致命错误直接关闭麦克风并显示原因 |
 | 语言 | `SPEECH_LANGUAGE = 'zh-CN'`；中英混说按中文转写 |
-| 权限 | 首次点击才创建识别实例并申请麦克风，仅打开控制台不会申请权限；被拒时在输入卡片内显示原因（与附件错误共用同一个提示区） |
+| 权限 | 首次点击才创建识别会话 / 打开麦克风并申请权限，仅打开控制台不会申请权限；被拒时在输入卡片内显示原因（与附件错误共用同一个提示区） |
 
-这一功能**不新增任何 wire 方法**：既不经过 `useConsoleStore`，也不调用运行时（`composer/useSpeechInput.ts`
-是入口内状态，与 `codexUsage`、截图任务同级），因此没有契约重生成、没有设置项。纯规则（构造器解析、
-结果筛选、分隔符、错误文案、重启判定）在 `composer/speechInput.ts`，由 `tests/speechInput.test.ts`
-覆盖；边界（厂商前缀只出现在一个模块、协议 core 不含麦克风 API、卡片不持有识别生命周期、分隔符只有
-一处定义）由 `tests/speechInputGuard.test.ts` 守护。真实麦克风效果只能在浏览器里手验。
+本地引擎需要运行时配置了 `local` 引擎、可用的模型目录与依赖（由 `runtime.stt.status` 的 `available` /
+`reason` 报告），并且浏览器支持 `getUserMedia` + Web Audio；缺任一项都会降级为可读的 `error`，绝不抛异常。
+
+模型构建是本地引擎唯一昂贵的一步（CPU 上约 1 分钟），所以**不能等到第一次听写才付**：卡片读到
+`runtime.stt.status` 说「本地引擎已选中且 `loaded: false`」时，立刻调 `runtime.stt.warm_up` 后台构建，
+同时在麦克风旁显示「正在加载语音模型（首次约 1 分钟）」并禁用按钮，构建完成后再放开（`warm_up` 回的是
+同一个 `SttStatusView`，所以提示与文案随后续状态一起更新）。要不要发起构建这条规则在
+`composer/sttEngine.ts`（`needsWarmUp` / `usesLocalEngine`），由 `tests/sttEngine.test.ts` 覆盖。
+
+本地引擎的音频纯函数（float→int16 小端、base64、重采样到 16 kHz、~600 ms 分块与 64 KiB 上限）在
+`composer/localSpeechAudio.ts`，由 `tests/localSpeechAudio.test.ts` 覆盖。
+
+浏览器引擎的纯规则（构造器解析、结果筛选、分隔符、错误文案、重启判定）在 `composer/speechInput.ts`，由
+`tests/speechInput.test.ts` 覆盖；边界（厂商前缀只出现在一个模块、协议 core 不含麦克风/音频采集 API、
+卡片不持有识别生命周期、分隔符只有一处定义、本地钩子不命名厂商全局且经 store 的 client、引擎切换由
+`runtime.stt.status` 决定）由 `tests/speechInputGuard.test.ts` 守护；五个 `runtime.stt.*` 方法的 wire 帧由
+`tests/sttClient.test.ts` 覆盖。真实麦克风效果只能在浏览器里手验。
 
 ## 窗口截图（输入区动作）
 

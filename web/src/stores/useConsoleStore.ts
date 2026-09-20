@@ -683,6 +683,18 @@ interface ConsoleStore {
   attachments: PendingAttachment[];
   /** Visible reason the last attachment pick/upload failed (null when fine). */
   attachmentError: string | null;
+  /**
+   * Bumped when the speech engine setting changes.
+   *
+   * The composer reads `runtime.stt.status` once per session, so without a signal
+   * a choice made in the settings dialog would only take effect after a reload.
+   * This counter is that signal: the dialog bumps it after a successful write and
+   * the card re-reads, re-picks the engine and warms the models if needed.  It is
+   * not persisted -- it exists to invalidate a read, nothing more.
+   */
+  sttRevision: number;
+  /** Signal that the speech engine setting changed. */
+  bumpSttRevision: () => void;
   /** Validate + upload picked/dropped files for the current session. */
   addAttachments: (sources: AttachmentUploadSource[]) => Promise<void>;
   /**
@@ -2396,6 +2408,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   liveBufferDroppedCount: 0,
   attachments: [],
   attachmentError: null,
+  sttRevision: 0,
+  bumpSttRevision: () => set((state) => ({ sttRevision: state.sttRevision + 1 })),
   historyLoading: false,
   historyHasMore: false,
   historyAvailable: null,

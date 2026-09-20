@@ -47,6 +47,8 @@ const read = (...parts: string[]): string =>
 
 const speechCore = read('components', 'composer', 'speechInput.ts');
 const speechHook = read('components', 'composer', 'useSpeechInput.ts');
+const localHook = read('components', 'composer', 'useLocalSpeechInput.ts');
+const localAudio = read('components', 'composer', 'localSpeechAudio.ts');
 const selection = read('components', 'composer', 'composerSelection.ts');
 const composer = read('components', 'composer', 'RichComposer.tsx');
 const card = read('components', 'CommandInput.tsx');
@@ -65,7 +67,9 @@ test('the protocol core knows nothing about the microphone', () => {
   for (const file of files) {
     const source = readFileSync(file, 'utf8');
     assert.equal(
-      /SpeechRecognition|MediaRecorder|getUserMedia|mediaDevices/.test(source),
+      /SpeechRecognition|MediaRecorder|getUserMedia|mediaDevices|AudioContext|AudioWorklet/.test(
+        source,
+      ),
       false,
       `${file.slice(srcDir.length)} must stay host-agnostic`,
     );
@@ -200,5 +204,102 @@ test('interim text is shown in the caption and never inserted into the draft', (
   assert.ok(
     speechCore.includes('export const SPEECH_CAPTION_MAX_CHARS'),
     'the caption bound is a named constant, not a literal at the call site',
+  );
+});
+
+test('the local engine hook never names the Web Speech global', () => {
+  // The local engine is a different API (mic capture + runtime RPC).  It shares
+  // the controller *types* with the browser hook, never the vendor recognizer:
+  // the one module that names the global stays `speechInput.ts`.
+  assert.equal(
+    /webkitSpeechRecognition|SpeechRecognition/.test(localHook),
+    false,
+    'the vendor prefix must not leak into the local engine',
+  );
+  assert.ok(
+    localHook.includes("from './useSpeechInput.ts'"),
+    'the shared controller types come from the browser hook, not a copy',
+  );
+  assert.equal(
+    /new Recognition|onresult|\.continuous/.test(localHook),
+    false,
+    'no recognition session may live in the local hook',
+  );
+});
+
+test('the local hook reaches the client through the store, not a socket of its own', () => {
+  assert.ok(
+    localHook.includes('useConsoleStore('),
+    'the hook reads the runtime client from the console store, like the panels do',
+  );
+  assert.equal(
+    /WebSocket|new SynapseRuntimeClient/.test(localHook),
+    false,
+    'the hook opens no transport of its own',
+  );
+  for (const method of ['.sttBegin(', '.sttAppend(', '.sttFinish(', '.sttCancel(']) {
+    assert.ok(localHook.includes(method), `the local engine streams via ${method}`);
+  }
+});
+
+test('the audio helpers stay DOM-free for the offline tests', () => {
+  // The module must run under `node --test`, so it carries its own base64 codec
+  // and touches no host capture API; the calls (not the prose) are what is pinned.
+  assert.equal(
+    /btoa\(|atob\(|AudioContext\(|MediaRecorder\(|getUserMedia\(/.test(localAudio),
+    false,
+    'the pure module must not reach for a host API',
+  );
+});
+
+test('the engine switch is driven by the runtime status, not a local guess', () => {
+  assert.ok(
+    card.includes('useLocalSpeechInput('),
+    'the card must be able to run the local engine',
+  );
+  assert.ok(
+    card.includes('.sttStatus('),
+    'the card asks the runtime which engine is configured',
+  );
+  assert.match(card, /engine === 'local'/, 'and reads the mode the runtime reported');
+  assert.ok(
+    card.includes('usesLocalEngine(sttStatus)'),
+    'an available local engine is what selects the local hook',
+  );
+  assert.ok(
+    card.includes('speechNotice'),
+    'an unavailable local engine surfaces its reason in the card notice region',
+  );
+});
+
+test('the local build is asked for up front and painted while it runs', () => {
+  // Building the models costs about a minute on a CPU; paid inside a live
+  // microphone the button just looks stuck, so the ask happens when the status
+  // arrives and the wait is on screen.
+  assert.ok(card.includes('client.sttWarmUp(session)'), 'the card must ask for the build');
+  assert.ok(card.includes('needsWarmUp(view)'), 'and only when the local engine is cold');
+  assert.ok(card.includes('正在加载语音模型'), 'the wait is painted, not silent');
+  assert.ok(
+    card.includes('disabled={!speech.supported || warming}'),
+    'a build in flight cannot start a dictation that would block behind it',
+  );
+});
+
+test('the engine can be changed from the settings dialog and takes effect live', () => {
+  // The setting belongs to the runtime (it decides who transcribes the audio), so
+  // the dialog writes it there -- and the composer is told to re-read rather than
+  // being left to notice on its own, which would mean a page reload.
+  const section = read('components', 'SpeechEngineSection.tsx');
+  const dialog = read('components', 'SettingsDialog.tsx');
+  const store = read('stores', 'useConsoleStore.ts');
+
+  assert.ok(dialog.includes('<SpeechEngineSection />'), 'the dialog must offer the choice');
+  assert.ok(section.includes('client.sttSetEngine('), 'the choice is a runtime write');
+  assert.ok(section.includes('bumpSttRevision()'), 'and it signals the composer');
+  assert.ok(store.includes('sttRevision'), 'the signal is a store counter');
+  assert.ok(card.includes('sttRevision'), 'the card re-reads the status on that signal');
+  assert.ok(
+    section.includes('status.reason'),
+    'an engine that cannot run says why instead of falling back silently',
   );
 });
