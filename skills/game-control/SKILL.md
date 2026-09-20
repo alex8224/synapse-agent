@@ -68,6 +68,8 @@ $gameDll = 'windows-capture/src/GameControl.Cli/bin/Release/net8.0/game-control.
 
 发送输入前先确认目标窗口（Cemu/游戏）位于前台：窗口失焦时手柄输入会被忽略，表现为「命令成功但游戏毫无反应」。
 
+有些操作必须**按住**而不是点按，例如游戏里的快捷菜单（按住的期间才显示，松开即消失）、举盾、瞄准。这类操作把 `--hold-ms` 放大到 600–1500，并在按住期间截图确认；`press` 会阻塞到松开，需要「按住的同时截图」时用后台任务发送输入、前台截图。
+
 不要在未观察截图的情况下连续移动。若当前 `windows-capture` 没有有效选中目标，`screenshot` 会报 `target_required`；先由用户通过截图工具 GUI 选择目标窗口。
 
 ## 故障处理
