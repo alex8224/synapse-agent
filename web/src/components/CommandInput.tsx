@@ -10,7 +10,7 @@ import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocum
 import { useSpeechInput, type SpeechInputOptions } from './composer/useSpeechInput.ts';
 import { useLocalSpeechInput } from './composer/useLocalSpeechInput.ts';
 import { captionText } from './composer/speechInput.ts';
-import { needsWarmUp, usesLocalEngine } from './composer/sttEngine.ts';
+import { needsWarmUp, usesLocalEngine, usesRuntimeEngine } from './composer/sttEngine.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import type { SttStatusView } from '../runtime-client/types.ts';
 import { useScreenshotStore } from '../stores/screenshotTask.ts';
@@ -179,16 +179,17 @@ export const CommandInput: React.FC = () => {
   const sttKey = client === null ? null : `${currentSession.project_id}/${currentSession.thread_id}`;
   const [sttRead, setSttRead] = useState<{ key: string; view: SttStatusView | null } | null>(null);
   const sttStatus = sttRead !== null && sttRead.key === sttKey ? sttRead.view : null;
-  // Building the local models costs about a minute on a CPU.  Left to the first
-  // dictation that whole wait lands inside a live microphone and the button simply
-  // looks stuck, so the console asks for the build as soon as it learns the local
-  // engine is selected and paints the wait instead.  The answer is tagged like the
-  // status read (a late one can never mark another session warm) and the call is
-  // idempotent on the host, so a remount or a reconnect cannot build twice.
+  // Building the local models costs over a minute on a CPU, and doing it on mount
+  // was worse than the problem it solved: merely opening the console started a
+  // build nobody asked for, and while it ran the reader could not switch to another
+  // engine and get on with their work.  The build is therefore triggered by the one
+  // action that needs it -- pressing the microphone -- and by the settings screen's
+  // explicit "load now" button.  `sttReadToken` forces a fresh status read after it.
   const [warmUp, setWarmUp] = useState<{ key: string; state: 'idle' | 'warming' }>({
     key: '',
     state: 'idle',
   });
+  const [sttReadToken, setSttReadToken] = useState(0);
   const warming = warmUp.key === sttKey && warmUp.state === 'warming';
   useEffect(() => {
     if (client === null || sttKey === null) return;
@@ -199,20 +200,6 @@ export const CommandInput: React.FC = () => {
       (view) => {
         if (cancelled) return;
         setSttRead({ key, view });
-        if (!needsWarmUp(view)) return;
-        setWarmUp({ key, state: 'warming' });
-        void client.sttWarmUp(session).then(
-          (warm) => {
-            if (cancelled) return;
-            // The warm-up answers with the same view as the status read, so the
-            // card's notice and copy follow the models that are now in memory.
-            setSttRead({ key, view: warm });
-            setWarmUp({ key, state: 'idle' });
-          },
-          () => {
-            if (!cancelled) setWarmUp({ key, state: 'idle' });
-          },
-        );
       },
       () => {
         if (!cancelled) setSttRead({ key, view: null });
@@ -221,7 +208,7 @@ export const CommandInput: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [client, sttKey, sttRevision, currentSession.project_id, currentSession.thread_id]);
+  }, [client, sttKey, sttRevision, sttReadToken, currentSession.project_id, currentSession.thread_id]);
 
   // Speech input: both engines expose the same controller and share one
   // insertion sink, so the card only chooses *which* one runs -- it still says
@@ -234,8 +221,46 @@ export const CommandInput: React.FC = () => {
   };
   const browserSpeech = useSpeechInput(speechOptions);
   const localSpeech = useLocalSpeechInput(speechOptions);
-  const localEngine = sttStatus !== null && sttStatus.engine === 'local' ? sttStatus : null;
-  const speech = localEngine !== null && localEngine.available ? localSpeech : browserSpeech;
+  const runtimeEngine = sttStatus !== null && sttStatus.engine !== 'browser' ? sttStatus : null;
+  const usingRuntimeEngine = usesRuntimeEngine(sttStatus);
+  const speech = usingRuntimeEngine ? localSpeech : browserSpeech;
+  const activeEngineLabel = usingRuntimeEngine
+    ? sttStatus?.providers?.find((item) => item.id === sttStatus.engine)?.label
+      ?? sttStatus?.engine ?? '运行时语音引擎'
+    : '浏览器内置';
+
+  /**
+   * The microphone's own trigger: build the models first when the selected engine
+   * needs them and has not built them yet, then start dictating.
+   *
+   * The status is re-read afterwards rather than taken from the warm-up's answer: by
+   * the time a minute-long build returns the reader may have chosen another engine,
+   * and an old answer must never overwrite a newer choice.
+   */
+  const activateMic = useCallback(() => {
+    if (client === null || sttKey === null || !needsWarmUp(sttStatus)) {
+      speech.toggle();
+      return;
+    }
+    const key = sttKey;
+    const session = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
+    setWarmUp({ key, state: 'warming' });
+    void client.sttWarmUp(session).then(
+      () => {
+        setWarmUp({ key, state: 'idle' });
+        setSttReadToken((token) => token + 1);
+        speech.toggle();
+      },
+      () => {
+        // A refused build is not a dead button: start the dictation anyway, so the
+        // engine answers through its own channel with a readable reason (the models
+        // are built on demand by `begin` too, so this may simply succeed).
+        setWarmUp({ key, state: 'idle' });
+        setSttReadToken((token) => token + 1);
+        speech.toggle();
+      },
+    );
+  }, [client, sttKey, sttStatus, speech, currentSession.project_id, currentSession.thread_id]);
 
   /**
    * One notice region for the things that can refuse input: a refused
@@ -246,8 +271,8 @@ export const CommandInput: React.FC = () => {
    * when several are set, because it is the one the reader can still fix here.
    */
   const speechNotice =
-    localEngine !== null && !localEngine.available
-      ? localEngine.reason ?? '本地语音引擎不可用'
+    runtimeEngine !== null && !runtimeEngine.available
+      ? `${runtimeEngine.reason ?? '语音引擎不可用'}；当前使用浏览器内置识别`
       : null;
   const composerNotice = attachmentError ?? speech.error ?? speechNotice;
 
@@ -260,8 +285,8 @@ export const CommandInput: React.FC = () => {
   const speechLabel = warming
     ? '语音输入（正在加载本地模型）'
     : !speech.supported
-      ? usingLocalEngine
-        ? '语音输入（本地引擎不可用）'
+      ? usingRuntimeEngine
+        ? '语音输入（运行时语音输入不可用）'
         : '语音输入（当前浏览器不支持）'
       : speech.listening
         ? '停止语音输入'
@@ -269,14 +294,14 @@ export const CommandInput: React.FC = () => {
   const speechTitle = warming
     ? '正在加载本地语音模型：首次约 1 分钟，之后常驻内存'
     : !speech.supported
-      ? usingLocalEngine
-        ? '本地语音引擎不可用，请检查运行时设置'
+      ? usingRuntimeEngine
+        ? `${activeEngineLabel}不可用，请检查麦克风权限与运行时设置`
         : '当前浏览器不支持语音输入（Chrome / Edge 可用）'
       : speech.listening
-        ? '停止语音输入'
+        ? `停止语音输入：${activeEngineLabel}`
         : usingLocalEngine
           ? '语音输入：本地识别，结果追加到光标处'
-          : '语音输入：识别结果追加到光标处（需要联网）';
+          : `语音输入：${activeEngineLabel}，识别结果追加到光标处（需要联网）`;
   /** The phrase being revised right now, bounded and ready to paint. */
   const speechCaption = captionText(speech.interim);
 
@@ -397,7 +422,7 @@ export const CommandInput: React.FC = () => {
             <button
               type="button"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={speech.toggle}
+              onClick={activateMic}
               disabled={!speech.supported || warming}
               aria-pressed={speech.listening}
               aria-label={speechLabel}

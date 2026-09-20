@@ -34,18 +34,31 @@ export function usesLocalEngine(status: SttStatusView | null): boolean {
   return status !== null && status.engine === 'local' && status.available;
 }
 
+/** Local and cloud providers both receive PCM through the runtime, not Web Speech. */
+export function usesRuntimeEngine(status: SttStatusView | null): boolean {
+  if (status === null || !status.available) return false;
+  if (status.engine === 'local') return true;
+  const provider = status.providers?.find((item) => item.id === status.engine);
+  return provider?.kind === 'cloud' || provider?.kind === 'local';
+}
+
 /**
  * What a reader should see when an engine write fails.
  *
  * A daemon that predates `runtime.stt.set_engine` answers `method not found`,
- * which is not a speech problem at all -- it is a console that needs restarting,
- * and saying so is the difference between "this feature is broken" and "restart
- * the console".  Every other failure keeps the server's own words.
+ * and a daemon that does not implement the chosen engine answers
+ * `unknown_stt_engine`.  Neither is a speech problem: both are a console and a
+ * daemon from different builds, and naming the fix is the difference between
+ * "this feature is broken" and "restart the console".  Every other failure keeps
+ * the server's own words.
  */
 export function speechEngineErrorMessage(failure: unknown): string {
   const error = failure as { service_code?: unknown; code?: unknown; message?: unknown } | null;
   if (error !== null && (error.service_code === 'method_not_found' || error.code === -32601)) {
     return '运行时版本过旧：请重启控制台后重试';
+  }
+  if (error !== null && error.service_code === 'unknown_stt_engine') {
+    return '运行时不认识这个语音引擎：请重启控制台后重试';
   }
   const message = typeof error?.message === 'string' ? error.message : '';
   return message === '' ? '设置语音引擎失败' : message;

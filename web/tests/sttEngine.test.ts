@@ -12,6 +12,7 @@ import {
   needsWarmUp,
   speechEngineErrorMessage,
   usesLocalEngine,
+  usesRuntimeEngine,
 } from '../src/components/composer/sttEngine.ts';
 import type { SttStatusView } from '../src/runtime-client/types.ts';
 
@@ -56,11 +57,29 @@ test('the local engine only runs when it is both selected and available', () => 
   assert.equal(usesLocalEngine(null), false);
 });
 
+test('cloud providers use the runtime audio path without loading local models', () => {
+  const cloud = status({ engine: 'doubao', providers: [{
+    id: 'doubao', label: '豆包流式识别（在线）', kind: 'cloud',
+    needs_key: true, key_configured: true, available: true, reason: null, detail: '',
+  }] });
+  assert.equal(usesRuntimeEngine(cloud), true);
+  assert.equal(needsWarmUp(cloud), false);
+  assert.equal(usesRuntimeEngine({ ...cloud, available: false }), false);
+  assert.equal(usesRuntimeEngine(status()), true);
+  assert.equal(usesRuntimeEngine(status({ engine: 'browser' })), false);
+  assert.equal(usesRuntimeEngine(status({ engine: 'unknown' })), false);
+  assert.equal(usesRuntimeEngine(null), false);
+});
+
 test('a daemon that predates the method is named as a restart, not as a broken feature', () => {
   // "method not found" is what a stale daemon answers; the reader can act on that
   // ("restart the console"), and cannot act on the raw JSON-RPC text.
   assert.match(speechEngineErrorMessage({ service_code: 'method_not_found' }), /重启/);
   assert.match(speechEngineErrorMessage({ code: -32601 }), /重启/);
+  // The daemon knows the engine list the console offers, so "unknown engine" is a
+  // build skew too -- and it used to reach the reader as the wire's opaque
+  // "runtime service error", which says nothing about what to do next.
+  assert.match(speechEngineErrorMessage({ service_code: 'unknown_stt_engine' }), /重启/);
   assert.equal(speechEngineErrorMessage(new Error('boom')), 'boom');
   assert.equal(speechEngineErrorMessage(null), '设置语音引擎失败');
 });

@@ -261,10 +261,11 @@ test('the engine switch is driven by the runtime status, not a local guess', () 
     card.includes('.sttStatus('),
     'the card asks the runtime which engine is configured',
   );
-  assert.match(card, /engine === 'local'/, 'and reads the mode the runtime reported');
+  assert.match(card, /const usingRuntimeEngine = usesRuntimeEngine\(sttStatus\)/);
+  assert.match(card, /const speech = usingRuntimeEngine \? localSpeech : browserSpeech/);
   assert.ok(
     card.includes('usesLocalEngine(sttStatus)'),
-    'an available local engine is what selects the local hook',
+    'local-only copy remains distinct from cloud provider routing',
   );
   assert.ok(
     card.includes('speechNotice'),
@@ -272,16 +273,37 @@ test('the engine switch is driven by the runtime status, not a local guess', () 
   );
 });
 
-test('the local build is asked for up front and painted while it runs', () => {
-  // Building the models costs about a minute on a CPU; paid inside a live
-  // microphone the button just looks stuck, so the ask happens when the status
-  // arrives and the wait is on screen.
-  assert.ok(card.includes('client.sttWarmUp(session)'), 'the card must ask for the build');
-  assert.ok(card.includes('needsWarmUp(view)'), 'and only when the local engine is cold');
+test('the microphone is what asks for the local build, and the wait is painted', () => {
+  // Building the models costs over a minute on a CPU.  Asking for it on mount made
+  // merely opening the console start a build nobody wanted, and while it ran the
+  // reader could not switch engines at all -- so the trigger is the microphone, and
+  // the wait is painted where it is paid.
+  const warmCalls = card.match(/sttWarmUp\(/g) ?? [];
+  assert.equal(warmCalls.length, 1, 'the build has exactly one trigger in the card');
+  assert.ok(
+    card.includes('!needsWarmUp(sttStatus)'),
+    'the trigger asks the question itself instead of a mount-time effect',
+  );
+  // Every outcome still starts the dictation: nothing to build, build finished, and
+  // build refused -- the last one so a refused build reports itself through the
+  // engine's own error channel instead of leaving a button that does nothing.
+  assert.equal(
+    (card.match(/speech\.toggle\(\)/g) ?? []).length,
+    3,
+    'each of the three outcomes reaches the dictation',
+  );
   assert.ok(card.includes('正在加载语音模型'), 'the wait is painted, not silent');
   assert.ok(
     card.includes('disabled={!speech.supported || warming}'),
     'a build in flight cannot start a dictation that would block behind it',
+  );
+  // A minute-long answer must not overwrite a newer choice: the warm-up re-reads the
+  // status instead of publishing its own view.
+  assert.ok(card.includes('setSttReadToken('), 'the status is re-read after the build');
+  assert.equal(
+    /view: warm/.test(card),
+    false,
+    'the warm-up answer must not be published as the current status',
   );
 });
 

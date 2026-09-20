@@ -706,11 +706,16 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 本地引擎需要运行时配置了 `local` 引擎、可用的模型目录与依赖（由 `runtime.stt.status` 的 `available` /
 `reason` 报告），并且浏览器支持 `getUserMedia` + Web Audio；缺任一项都会降级为可读的 `error`，绝不抛异常。
 
-模型构建是本地引擎唯一昂贵的一步（CPU 上约 1 分钟），所以**不能等到第一次听写才付**：卡片读到
-`runtime.stt.status` 说「本地引擎已选中且 `loaded: false`」时，立刻调 `runtime.stt.warm_up` 后台构建，
-同时在麦克风旁显示「正在加载语音模型（首次约 1 分钟）」并禁用按钮，构建完成后再放开（`warm_up` 回的是
-同一个 `SttStatusView`，所以提示与文案随后续状态一起更新）。要不要发起构建这条规则在
-`composer/sttEngine.ts`（`needsWarmUp` / `usesLocalEngine`），由 `tests/sttEngine.test.ts` 覆盖。
+模型构建是本地引擎唯一昂贵的一步（CPU 上约 1 分钟），它由**需要它的那一次操作**触发，而不是在卡片
+挂载时：读到「本地引擎已选中且 `loaded: false`」的卡片**不自己发起构建**——那样只是打开控制台就会
+跑起一分钟的本地模型，读者既没要求它，期间想换成别的引擎还被拖住。触发点只有两个：点麦克风
+（`activateMic`：先构建、再开始听写），以及设置对话框里的「加载模型」。两者都在麦克风旁显示
+「正在加载语音模型（首次约 1 分钟）」并禁用按钮，构建完成后才放开。
+
+构建完成后**重读** `runtime.stt.status`（`sttReadToken`）而**不**把 `warm_up` 的返回值当作当前状态发布：
+一分钟里读者可能已经换了引擎，一个迟到的旧答案不能覆盖更新的选择。要不要构建这条规则在
+`composer/sttEngine.ts`（`needsWarmUp` / `usesLocalEngine`），由 `tests/sttEngine.test.ts` 覆盖，
+触发点与「不发布迟到答案」由 `tests/speechInputGuard.test.ts` 守护。
 
 本地引擎的音频纯函数（float→int16 小端、base64、重采样到 16 kHz、~600 ms 分块与 64 KiB 上限）在
 `composer/localSpeechAudio.ts`，由 `tests/localSpeechAudio.test.ts` 覆盖。
@@ -720,6 +725,10 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 卡片不持有识别生命周期、分隔符只有一处定义、本地钩子不命名厂商全局且经 store 的 client、引擎切换由
 `runtime.stt.status` 决定）由 `tests/speechInputGuard.test.ts` 守护；五个 `runtime.stt.*` 方法的 wire 帧由
 `tests/sttClient.test.ts` 覆盖。真实麦克风效果只能在浏览器里手验。
+
+语音引擎路由：本地与云端 provider 共用 PCM 采集及 `runtime.stt.begin/append/finish`
+通道；只有浏览器引擎使用 Web Speech API。豆包不触发本地模型预热。麦克风的悬停提示显示实际
+使用的引擎；所选后端不可用而回退浏览器时，输入区明确提示回退原因。
 
 ## 窗口截图（输入区动作）
 
