@@ -141,6 +141,18 @@
   .ui-composer-toolbar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
     padding: 0 8px 8px;
+    container-type: inline-size;
+    container-name: composer-toolbar;
+  }
+  .composer-actions-narrow { display: none; }
+  .composer-screenshot-wide { display: flex; align-items: center; }
+  .composer-screenshot-actions { display: inline-flex; align-items: center; gap: 2px; }
+  .composer-screenshot-trigger { white-space: nowrap; }
+  .composer-screenshot-settings { border-radius: var(--radius-control); }
+  .composer-screenshot-overflow-trigger { min-width: var(--control-h); }
+  @container composer-toolbar (max-width: 680px) {
+    .composer-actions-wide, .composer-screenshot-wide { display: none; }
+    .composer-actions-narrow { display: inline-flex; }
   }
   /* The primary and stop actions are round, as in Fluent's own composer. */
   .ui-icon-button.ui-round { border-radius: 9999px; }
@@ -1187,7 +1199,7 @@ body {
   .ui-composer-toolbar #model-picker, .ui-composer-toolbar #thinking-picker {
     max-width: calc(100vw - 40px); max-height: min(320px, 50dvh); overflow-y: auto;
   }
-  .responsive-floating-panel { left: 12px !important; right: 12px; width: auto; max-width: none; transform: none !important; bottom: 60px !important; }
+  .responsive-floating-panel:not(.composer-action-menu-panel) { left: 12px !important; right: 12px; width: auto; max-width: none; transform: none !important; bottom: 60px !important; }
   .console-turn-rail { display: none; }
   .git-responsive-body { flex-direction: column; }
   .git-responsive-body #git-file-list { width: 100%; flex: 1; }

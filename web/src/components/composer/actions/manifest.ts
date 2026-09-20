@@ -18,3 +18,11 @@ import type { ComposerActionDefinition } from './contract.ts';
 
 export const COMPOSER_ACTIONS: readonly ComposerActionDefinition<ReactNode>[] =
   resolveComposerActions([addImageAction, windowScreenshotAction, screenshotSettingsAction]);
+
+/** The image-only rows kept behind the compact `+` overflow trigger. */
+export const IMAGE_ACTIONS: readonly ComposerActionDefinition<ReactNode>[] =
+  resolveComposerActions([addImageAction]);
+
+/** The two window-capture operations presented as one toolbar operation area. */
+export const SCREENSHOT_ACTIONS: readonly ComposerActionDefinition<ReactNode>[] =
+  resolveComposerActions([windowScreenshotAction, screenshotSettingsAction]);

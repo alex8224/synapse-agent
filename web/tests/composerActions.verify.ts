@@ -227,7 +227,7 @@ try {
     await settle();
   };
 
-  const TRIGGER = '[aria-label="添加内容"]';
+  const TRIGGER = '.composer-actions-narrow [aria-label="添加内容"]';
   const MENU = '[role="menu"][aria-label="添加内容"]';
   const ROW = (id: string) => `[data-action="${id}"]`;
   const focusedOn = (id: string) => `document.activeElement === document.querySelector('${ROW(id)}')`;
@@ -253,7 +253,7 @@ try {
   await wait(`!!document.querySelector('${TRIGGER}')`);
   await client.send(
     'Emulation.setDeviceMetricsOverride',
-    { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false },
+    { width: 500, height: 900, deviceScaleFactor: 1, mobile: false },
     page.sessionId,
   );
   await settle();
@@ -272,6 +272,7 @@ try {
   await run(`document.querySelector('${TRIGGER}').focus()`);
   await press('Enter', 'Enter', 13, '\r');
   await wait(`!!document.querySelector('${MENU}')`);
+  await wait(`document.querySelectorAll('${MENU} [role="menuitem"]').length === 3`);
   await check(
     'Enter on the trigger opens the menu and focuses the first row',
     `document.querySelector('${TRIGGER}').getAttribute('aria-expanded') === 'true'

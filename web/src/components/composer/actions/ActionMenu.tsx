@@ -33,6 +33,14 @@ import {
 } from './contract.ts';
 
 export interface ActionMenuProps {
+  /** Rows painted by this host; the default is the complete composer menu. */
+  actions?: readonly ComposerActionDefinition<React.ReactNode>[];
+  /** Accessible name shared by the trigger and its menu. */
+  menuLabel?: string;
+  /** Trigger contents; the default is the compact plus icon. */
+  triggerContent?: React.ReactNode;
+  /** Trigger class; the default is the square compact icon button. */
+  triggerClassName?: string;
   /**
    * Open the composer's own image picker; a picked file takes the same
    * `handleFiles` path a paste or a drop takes.
@@ -45,6 +53,10 @@ export interface ActionMenuProps {
 }
 
 export const ActionMenu: React.FC<ActionMenuProps> = ({
+  actions = COMPOSER_ACTIONS,
+  menuLabel = '添加内容',
+  triggerContent,
+  triggerClassName = 'ui-icon-button',
   onPickImages,
   onStartWindowScreenshot,
   onOpenScreenshotSettings,
@@ -199,13 +211,13 @@ export const ActionMenu: React.FC<ActionMenuProps> = ({
           if (open) close();
           else openMenu(event.currentTarget);
         }}
-        title="添加内容"
-        aria-label="添加内容"
+        title={menuLabel}
+        aria-label={menuLabel}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="ui-icon-button"
+        className={triggerClassName}
       >
-        <Add20Regular aria-hidden="true" />
+        {triggerContent ?? <Add20Regular aria-hidden="true" />}
       </button>
       {open && (
         <FloatingPanel
@@ -213,17 +225,17 @@ export const ActionMenu: React.FC<ActionMenuProps> = ({
           side="top"
           align="start"
           offset={8}
-          className="w-64 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-1.5 shadow-flyout"
+          className="composer-action-menu-panel w-64 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-1.5 shadow-flyout"
           panelRef={panelRef}
         >
           <div
             ref={focusMenu}
             role="menu"
-            aria-label="添加内容"
+            aria-label={menuLabel}
             tabIndex={-1}
             className="flex flex-col gap-0.5 outline-none"
           >
-            {COMPOSER_ACTIONS.map((action) => {
+            {actions.map((action) => {
               const runnable = isRunnable(action) && !busy;
               return (
                 <button

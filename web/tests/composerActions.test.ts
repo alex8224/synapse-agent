@@ -61,6 +61,21 @@ test('the registry ships the three actions in order', () => {
   );
 });
 
+test('the screenshot operation area reuses the two registered screenshot actions', () => {
+  const area = readFileSync(join(actionsDir, 'ScreenshotActionArea.tsx'), 'utf8');
+  assert.ok(area.includes('SCREENSHOT_ACTIONS'));
+  assert.ok(area.includes('aria-label="窗口截图"'));
+  assert.ok(area.includes('aria-label="截图设置"'));
+  assert.ok(area.includes('{capture.icon}'));
+  assert.ok(area.includes('{settings.icon}'));
+});
+
+test('the command input keeps the full menu narrow and the screenshot area wide', () => {
+  const input = card;
+  assert.match(input, /composer-actions-narrow[\s\S]*actions=\{COMPOSER_ACTIONS\}/);
+  assert.match(input, /composer-screenshot-wide[\s\S]*<ScreenshotActionArea/);
+});
+
 test('every shipped row is runnable and carries a run', () => {
   assert.deepEqual(
     COMPOSER_ACTIONS.filter(isRunnable).map((action) => action.id),

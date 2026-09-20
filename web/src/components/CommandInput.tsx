@@ -3,6 +3,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
 import { ActionMenu } from './composer/actions/ActionMenu.tsx';
+import { ScreenshotActionArea } from './composer/actions/ScreenshotActionArea.tsx';
+import { COMPOSER_ACTIONS, IMAGE_ACTIONS } from './composer/actions/manifest.ts';
 import { RichComposer, type RichComposerHandle } from './composer/RichComposer.tsx';
 import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -38,11 +40,10 @@ import { useShallow } from 'zustand/react/shallow';
  * turn is submitted.  A chunk still uploading disables sending, and an
  * attachment-only turn may be submitted with empty text.
  *
- * The bottom-left control is the action menu (`composer/actions/`): a general
- * menu whose first row opens the image picker and whose other rows are declared
- * by that registry.  This card only hosts it — it owns the hidden `<input>` and
- * hands the menu a `pickImages` capability, so a picked file still takes the one
- * `handleFiles` path.  "Add project" stays its own button beside the menu:
+ * The bottom-left controls are the image overflow menu, add-project, and the
+ * wide-screen screenshot operation area.  The screenshot area combines capture
+ * and settings beside the project button; on narrow screens it is hidden and
+ * the full action menu provides the same screenshot rows.
  * `AddProjectDialog` walks the host filesystem and registers a workspace
  * directory as a new project (then switches to it and opens a session).
  *
@@ -226,13 +227,22 @@ export const CommandInput: React.FC = () => {
               It is also the pickers' anchor (`relative`): anchored to their own
               trigger, a 320px model menu ran past the left edge of a narrow pane. */}
           <div className="ui-composer-toolbar relative">
-            {/* The bottom-left control is a general action menu; the image picker
-                is one of its rows (`composer/actions/`), not a branch here. */}
-            <ActionMenu
-              onPickImages={pickImages}
-              onStartWindowScreenshot={startWindowScreenshot}
-              onOpenScreenshotSettings={openScreenshotSettings}
-            />
+            <div className="composer-actions-wide">
+              <ActionMenu
+                actions={IMAGE_ACTIONS}
+                onPickImages={pickImages}
+                onStartWindowScreenshot={startWindowScreenshot}
+                onOpenScreenshotSettings={openScreenshotSettings}
+              />
+            </div>
+            <div className="composer-actions-narrow">
+              <ActionMenu
+                actions={COMPOSER_ACTIONS}
+                onPickImages={pickImages}
+                onStartWindowScreenshot={startWindowScreenshot}
+                onOpenScreenshotSettings={openScreenshotSettings}
+              />
+            </div>
             <input
               ref={fileInputRef}
               type="file"
@@ -253,6 +263,13 @@ export const CommandInput: React.FC = () => {
             >
               添加项目
             </button>
+            <div className="composer-screenshot-wide">
+              <ScreenshotActionArea
+                startWindowScreenshot={startWindowScreenshot}
+                openScreenshotSettings={openScreenshotSettings}
+                pickImages={pickImages}
+              />
+            </div>
             <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1">
               <ModelControls />
             </div>
