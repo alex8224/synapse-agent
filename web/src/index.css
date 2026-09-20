@@ -150,6 +150,82 @@
   .composer-screenshot-trigger { white-space: nowrap; }
   .composer-screenshot-settings { border-radius: var(--radius-control); }
   .composer-screenshot-overflow-trigger { min-width: var(--control-h); }
+  /*
+    The microphone is the one composer control that carries state: while a session
+    is open it swaps its mark for a stop and takes the accent colour, with a status
+    word beside it, so "listening" is visible without reading the tooltip.
+  */
+  .composer-speech { border-radius: var(--radius-control); }
+  .composer-speech-on { position: relative; background: rgb(var(--selection-fill)); color: rgb(var(--accent)); }
+  .composer-speech-status {
+    font-size: var(--type-caption); color: rgb(var(--gray-700)); white-space: nowrap;
+  }
+  /*
+    The listening animation: one expanding halo around the button, and three bars
+    that breathe beside the status word.  Both are decoration over the accent mark
+    and the status text, which carry the state on their own, so nothing is lost
+    when motion is not welcome (see the reduced-motion block below).
+
+    A repeating status pulse is a different beat from the UI's 200ms transitions,
+    so the period is its own constant rather than `--motion-normal`.  The halo is a
+    pseudo-element with `pointer-events: none`: it must never widen the button (the
+    control row's geometry is pinned by the appearance acceptance run) nor eat a
+    click meant for the button.
+  */
+  .composer-speech-on::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    border: 2px solid rgb(var(--accent)); border-radius: inherit;
+    animation: composer-speech-halo 1400ms var(--motion-ease-decelerate) infinite;
+  }
+  @keyframes composer-speech-halo {
+    from { opacity: 0.55; transform: scale(1); }
+    to { opacity: 0; transform: scale(1.35); }
+  }
+  .composer-speech-bars {
+    display: inline-flex; align-items: flex-end; gap: 2px;
+    height: 9px; margin-left: 4px; vertical-align: middle;
+  }
+  .composer-speech-bars > span {
+    width: 2px; height: 100%; border-radius: 1px;
+    background: currentColor; transform-origin: bottom;
+    animation: composer-speech-bar 900ms var(--motion-ease) infinite;
+  }
+  .composer-speech-bars > span:nth-child(2) { animation-delay: 150ms; }
+  .composer-speech-bars > span:nth-child(3) { animation-delay: 300ms; }
+  @keyframes composer-speech-bar {
+    0%, 100% { transform: scaleY(0.3); }
+    50% { transform: scaleY(1); }
+  }
+  /*
+    The live caption: the phrase the recognizer has heard but not yet finalized,
+    painted where the draft's own text would appear so "what I just said" is
+    readable while it is being said.  The words move into the draft when the
+    phrase is finalized, so this line only ever holds the tail of the sentence:
+    it truncates rather than wrapping, because a growing card would push the
+    transcript around mid-sentence.
+  */
+  .composer-speech-caption {
+    display: flex; align-items: center; gap: 6px;
+    margin: 0 14px 6px; padding: 4px 8px;
+    border-left: 2px solid rgb(var(--accent)); border-radius: 2px;
+    background: rgb(var(--selection-fill));
+    font-size: var(--type-ui); line-height: 18px; color: rgb(var(--gray-700));
+  }
+  .composer-speech-caption-label {
+    flex-shrink: 0; font-size: var(--type-caption); color: rgb(var(--accent));
+  }
+  .composer-speech-caption-text {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .composer-speech-caption-caret {
+    flex-shrink: 0; width: 2px; height: 14px; border-radius: 1px;
+    background: rgb(var(--accent));
+    animation: composer-speech-caret 1000ms steps(1, end) infinite;
+  }
+  @keyframes composer-speech-caret {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
   @container composer-toolbar (max-width: 680px) {
     .composer-actions-wide, .composer-screenshot-wide { display: none; }
     .composer-actions-narrow { display: inline-flex; }
@@ -192,6 +268,11 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .ui-button, .ui-icon-button, .ui-nav-row, .ui-menu-item { transition: none; }
+    /* A pulse that keeps repeating after the reader asked for no motion is exactly
+       what this preference exists to stop; the state stays readable without it. */
+    .composer-speech-on::after { animation: none; opacity: 0; }
+    .composer-speech-bars > span { animation: none; transform: scaleY(0.55); }
+    .composer-speech-caption-caret { animation: none; }
   }
   @media (forced-colors: active) {
     .ui-nav-row[data-selected='true'], .ui-menu-item[aria-pressed='true'] {

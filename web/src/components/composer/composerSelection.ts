@@ -9,6 +9,7 @@
  */
 
 import { CARET_ANCHOR, PILL_ATTRIBUTE } from './composerDocument.ts';
+import { spokenTextToInsert } from './speechInput.ts';
 
 /** Whether `node` is inside `root` (or is `root`). */
 export function containsNode(root: Node, node: Node | null): boolean {
@@ -106,8 +107,51 @@ export function isRangeLive(root: HTMLElement, range: Range): boolean {
  * `white-space: pre-wrap` renders as line breaks.
  */
 export function insertTextAtCaret(root: HTMLElement, text: string): void {
+  const range = insertionRange(root);
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  caretInTextAfter(node);
+}
+
+/** The range an insertion replaces: the caret, or the editor's end when it has none. */
+function insertionRange(root: HTMLElement): Range {
   const selection = editorSelection(root);
-  const range = selection !== null ? selection.getRangeAt(0) : endOfEditor(root);
+  return selection !== null ? selection.getRangeAt(0) : endOfEditor(root);
+}
+
+/**
+ * The text immediately before a range, bounded to what the separator rule reads.
+ *
+ * A caret sits either inside a text node or between the editor's child nodes
+ * (after a pill, or at the very start), and both shapes are read here.  A non-text
+ * sibling contributes its own text: a pill's label ends in a word character, so a
+ * phrase spoken right after `@src/a.ts` is separated from it instead of being
+ * glued on.
+ */
+function textBeforeRange(range: Range, limit = 64): string {
+  const container = range.startContainer;
+  const text =
+    container.nodeType === Node.TEXT_NODE
+      ? (container.nodeValue ?? '').slice(0, range.startOffset)
+      : (range.startOffset > 0 ? container.childNodes[range.startOffset - 1]?.textContent : '') ??
+        '';
+  return text.slice(-limit);
+}
+
+/**
+ * Insert one recognized phrase at the caret, with the separator the draft needs.
+ *
+ * Kept apart from `insertTextAtCaret` because speech *joins* the draft while a
+ * paste or a mention replaces exactly what it covers: this is the one path that
+ * asks `spokenTextToInsert` how the phrase meets the text already there.
+ */
+export function insertSpokenAtCaret(root: HTMLElement, transcript: string): void {
+  const range = insertionRange(root);
+  const text = spokenTextToInsert(textBeforeRange(range), transcript);
+  // An empty phrase (a pause the recognizer reports as a result) inserts
+  // nothing at all: a stray empty text node would still move the caret.
+  if (text === '') return;
   range.deleteContents();
   const node = document.createTextNode(text);
   range.insertNode(node);

@@ -1,4 +1,4 @@
-import { Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
+import { Stop20Filled, ArrowUp20Regular, Mic20Regular, RecordStop20Filled } from '@fluentui/react-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
@@ -7,6 +7,8 @@ import { ScreenshotActionArea } from './composer/actions/ScreenshotActionArea.ts
 import { COMPOSER_ACTIONS, IMAGE_ACTIONS } from './composer/actions/manifest.ts';
 import { RichComposer, type RichComposerHandle } from './composer/RichComposer.tsx';
 import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
+import { useSpeechInput } from './composer/useSpeechInput.ts';
+import { captionText } from './composer/speechInput.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { useScreenshotStore } from '../stores/screenshotTask.ts';
 import { useShallow } from 'zustand/react/shallow';
@@ -46,6 +48,13 @@ import { useShallow } from 'zustand/react/shallow';
  * the full action menu provides the same screenshot rows.
  * `AddProjectDialog` walks the host filesystem and registers a workspace
  * directory as a new project (then switches to it and opens a session).
+ *
+ * The microphone sits beside the action menu because it is an input affordance
+ * with state to show, not a menu row: it toggles speech recognition (the
+ * browser's own, so Chrome and Edge only) and hands each finalized phrase to the
+ * editor at the caret.  Its lifecycle lives in `composer/useSpeechInput.ts` and
+ * is entry-local -- no store, no runtime, no wire surface -- so this card only
+ * decides *where* a phrase lands.
  *
  * The card floats over the transcript (`.console-pane-inset` reserves its height
  * in the scroller), which is what makes its own acrylic visible: a blur needs
@@ -150,6 +159,39 @@ export const CommandInput: React.FC = () => {
   const startWindowScreenshot = useScreenshotStore((s) => s.start);
   const openScreenshotSettings = useScreenshotStore((s) => s.openSettings);
 
+  // Speech input: the hook owns the recognizer (the browser ends a session at
+  // every pause), and the card only says where a recognized phrase goes -- at the
+  // caret of the editor the reader is typing into, never into the prompt text
+  // directly.
+  const speech = useSpeechInput({
+    onTranscript: (phrase) => composerRef.current?.insertSpoken(phrase),
+  });
+
+  /**
+   * One notice region for the two things that can refuse input: a refused
+   * attachment and a microphone that could not be used.  One region keeps the
+   * card's height change -- which the transcript's reserved space is measured
+   * from -- in a single place, and a refused upload outranks a failed microphone
+   * when both are set, because it is the one the reader can still fix here.
+   */
+  const composerNotice = attachmentError ?? speech.error;
+
+  // The reason a disabled button cannot be used is in the label as well as the
+  // tooltip: a disabled control is not focusable, so the tooltip alone would leave
+  // a screen-reader user with a button that silently does nothing.
+  const speechLabel = !speech.supported
+    ? '语音输入（当前浏览器不支持）'
+    : speech.listening
+      ? '停止语音输入'
+      : '语音输入';
+  const speechTitle = !speech.supported
+    ? '当前浏览器不支持语音输入（Chrome / Edge 可用）'
+    : speech.listening
+      ? '停止语音输入'
+      : '语音输入：识别结果追加到光标处（需要联网）';
+  /** The phrase being revised right now, bounded and ready to paint. */
+  const speechCaption = captionText(speech.interim);
+
   return (
     // The card floats over the transcript's bottom edge, so the transcript scrolls
     // behind it and the card's acrylic has something to blur.  The scroller reserves
@@ -197,12 +239,12 @@ export const CommandInput: React.FC = () => {
           className="material-chrome pointer-events-none absolute inset-0 -z-10 rounded-card"
         />
 
-        {attachmentError !== null && (
+        {composerNotice !== null && (
           <div
             role="alert"
             className="mx-3.5 mt-2 rounded border border-red-200 bg-red-50/70 px-2 py-1 font-mono text-[11px] leading-relaxed text-red-700"
           >
-            {attachmentError}
+            {composerNotice}
           </div>
         )}
 
@@ -223,6 +265,21 @@ export const CommandInput: React.FC = () => {
             onRemoveAttachment={removeAttachment}
             onContentChange={setHasContent}
           />
+          {/* The live caption: what the recognizer has heard but not yet finalized.
+              It is shown, never inserted -- an interim result is rewritten as the
+              recognizer revises it, so unstable text in the draft would fight the
+              caret, the pills and undo, and would overwrite a reader who typed
+              while speaking.  The words move into the draft the moment the phrase
+              is finalized.  Hidden from the accessibility tree: it is a visual
+              echo of text that is about to land in the textbox, and announcing
+              every revision would talk over the reader. */}
+          {speechCaption !== '' && (
+            <div className="composer-speech-caption" aria-hidden="true">
+              <span className="composer-speech-caption-label">识别中</span>
+              <span className="composer-speech-caption-text">{speechCaption}</span>
+              <span className="composer-speech-caption-caret" />
+            </div>
+          )}
           {/* Control row: add on the left, what the next turn runs on the right.
               It is also the pickers' anchor (`relative`): anchored to their own
               trigger, a 320px model menu ran past the left edge of a narrow pane. */}
@@ -243,6 +300,36 @@ export const CommandInput: React.FC = () => {
                 onOpenScreenshotSettings={openScreenshotSettings}
               />
             </div>
+            {/* The microphone: an input affordance with state, so it is a control
+                of its own rather than a row of the `+` menu (a menu row cannot
+                paint "listening").  `mousedown` is cancelled so activating it
+                never moves the caret out of the editor -- a phrase would
+                otherwise land at the end of the draft instead of where the
+                reader was typing. */}
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={speech.toggle}
+              disabled={!speech.supported}
+              aria-pressed={speech.listening}
+              aria-label={speechLabel}
+              title={speechTitle}
+              className={`ui-icon-button composer-speech${speech.listening ? ' composer-speech-on' : ''}`}
+            >
+              {speech.listening ? <RecordStop20Filled /> : <Mic20Regular />}
+            </button>
+            {speech.listening && (
+              <span className="composer-speech-status" role="status">
+                正在聆听
+                {/* Decoration over the status word, which is what a reader is
+                    told: the bars are hidden from the accessibility tree. */}
+                <span className="composer-speech-bars" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </span>
+            )}
             <input
               ref={fileInputRef}
               type="file"

@@ -34,6 +34,7 @@ import {
   caretInTextAfter,
   editorSelection,
   insertLineBreakAtCaret,
+  insertSpokenAtCaret,
   insertTextAtCaret,
   isRangeLive,
   mentionQueryAt,
@@ -60,6 +61,11 @@ export interface RichComposerHandle {
   /** Put a draft back exactly as it was (when a submit is refused). */
   restore: (snapshot: ComposerSnapshot) => void;
   focus: () => void;
+  /**
+   * Append one recognized phrase at the caret -- the editor's end when it has no
+   * caret -- joined to the draft by the one separator rule (`spokenTextToInsert`).
+   */
+  insertSpoken: (phrase: string) => void;
 }
 
 export interface RichComposerProps {
@@ -213,12 +219,31 @@ export const RichComposer: React.FC<RichComposerProps> = ({
 
   const focus = useCallback(() => editorRef.current?.focus(), []);
 
+  /**
+   * The speech path: the same caret the reader is typing at, one phrase deeper.
+   *
+   * The editor takes focus *before* the phrase is placed.  A caret put into an
+   * unfocused editor is discarded when focus arrives, so a phrase recognized
+   * while the microphone button held focus would otherwise land at the end of the
+   * draft instead of where the reader was typing.
+   */
+  const insertSpoken = useCallback(
+    (phrase: string) => {
+      const editor = editorRef.current;
+      if (editor === null) return;
+      editor.focus();
+      insertSpokenAtCaret(editor, phrase);
+      syncEmpty();
+    },
+    [syncEmpty],
+  );
+
   useEffect(() => {
-    handleRef.current = { snapshot, reset, restore, focus };
+    handleRef.current = { snapshot, reset, restore, focus, insertSpoken };
     return () => {
       handleRef.current = null;
     };
-  }, [handleRef, snapshot, reset, restore, focus]);
+  }, [handleRef, snapshot, reset, restore, focus, insertSpoken]);
 
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(

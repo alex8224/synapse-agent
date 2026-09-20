@@ -331,7 +331,7 @@ store 自己**只**发布 `incomplete`（回放被截断／出现 gap）而不�
 | 控件 | 常规按钮/输入框 32px，行内操作 24px；hover、pressed、disabled 和键盘焦点保持一致 |
 | 排印 | UI 14px、分组/辅助标签 12px；`font-sans` / `font-mono` 均接入主题字体，代码和遥测保留专用字体 |
 | 会话列表 | 当前会话使用品牌浅底、左侧标记及 `aria-current`；项目与时间分组有独立层级 |
-| 输入区 | 单张紧凑卡片，宽度另受 `--composer-max` 封顶（比聊天列窄，同中轴）；文本区在上、控制行共用同一表面，聚焦时卡片描边转为强调色，字段本身不画焦点环；发送/停止为圆形图标按钮；模型/推理选项为可键盘操作的按钮，窄屏工具栏可换行；控制行左侧 `+` 为「插入图片」（见下节），其右为「添加项目」 |
+| 输入区 | 单张紧凑卡片，宽度另受 `--composer-max` 封顶（比聊天列窄，同中轴）；文本区在上、控制行共用同一表面，聚焦时卡片描边转为强调色，字段本身不画焦点环；发送/停止为圆形图标按钮；模型/推理选项为可键盘操作的按钮，窄屏工具栏可换行；控制行左侧 `+` 为「插入图片」（见下节），其右为**语音输入**麦克风按钮（见下节），再右为「添加项目」 |
 
 ### 输入区：多行编辑与内联引用
 
@@ -347,6 +347,7 @@ store 自己**只**发布 `incomplete`（回放被截断／出现 gap）而不�
 | 图片 Holder | 接受后作为**行内 Pill** 插在光标处（约 24px 高：微缩略图 + 文件名 + 进度 + 移除按钮），鼠标悬停在缩略图上弹出放大预览（`ImagePreviewFlyout`，贴合缩略图上方 8px，视口不足时翻到下方） |
 | `@` 引用 | 键入 `@` 就地弹出候选（原生 Fluent 列表：分组标题、`aria-activedescendant` 指示、`.fluent-scrollbar`），`↑` `↓` 移动、`Enter` / `Tab` 插入、`Esc` 关闭 |
 | `@` 类别 | 工作区文件（`runtime.artifacts.list` 按查询目录按需读取，不扫描整个工作区）、Agent 技能、运行上下文 |
+| 语音输入 | 控制行麦克风按钮：用浏览器自带识别把 final 结果**追加到光标处**（Chrome / Edge，见下节）；不经过运行时，也不进 `useConsoleStore` |
 | 序列化 | 文本原样、换行 `\n`、文件 `@path`、技能 `@skill:name`、上下文 `@context:name`、图片只进 `attachment_refs` 不进文本 |
 
 Pill 是 `contenteditable="false"` 的原子节点，其含义存在按本地 id 索引的注册表里，**不从 DOM 读回**，
@@ -668,6 +669,31 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 （`uploadAttachment`），从不对 finalized ref 调 abort；「不误删已完成附件」现在由
 服务端强制，客户端约定只是第一道防线。详见 `docs/agent-runtime-service/progress.md`
 的「已修复」小节。
+
+## 语音输入（输入区麦克风按钮）
+
+麦克风按钮在输入区控制行左侧、动作菜单旁（`src/components/CommandInput.tsx`）。它是**独立控件**而不是
+`+` 菜单里的一行：菜单行显示不了「正在聆听」这个状态。识别用**浏览器自带的** Web Speech API
+（`SpeechRecognition` / `webkitSpeechRecognition`），因此**免费、不需要任何 key**；代价是识别在浏览器
+厂商的服务器上完成（Chrome 走 Google，Edge 走微软）并且**需要联网**，Firefox 没有该 API，按钮为
+disabled 并说明原因。
+
+| 行为 | 说明 |
+|---|---|
+| 开始 / 停止 | 点击切换。停止用 `stop()`，最后一句仍会作为 final 结果送达；卡片卸载时用 `abort()` |
+| 聆听状态 | 按钮换成强调色的停止标记并带一圈**脉冲光环**（`@keyframes composer-speech-halo`），右侧「正在聆听」后跟三条**呼吸的均衡条**（`@keyframes composer-speech-bar`）。两者都只是装饰：光环是 `pointer-events: none` 的伪元素（不参与布局、不抢点击），状态本身由颜色与文字表达；`prefers-reduced-motion: reduce` 下两个动画都关掉 |
+| 识别结果 | **只插入 final 结果**，interim 文本一律不插入（它会不断改写读者正在编辑的内容）；结果**追加到光标处**，没有光标时追加到末尾 |
+| 实时字幕 | 说话过程中，还没定稿的短语**实时**显示在输入框下方一行字幕里（「识别中」+ 文本 + 闪烁光标），所以不等停顿也能看到自己说了什么；字幕有界（`SPEECH_CAPTION_MAX_CHARS`，超出只保留末尾并加省略号、不换行，避免卡片高度在说话时抖动），且只**显示**不插入——定稿后文字才落进输入框。字幕对无障碍树隐藏（`aria-hidden`）：它只是即将落进输入框的文字的视觉回声，逐次播报会盖住读者 |
+| 分隔符 | 由 `spokenTextToInsert` 一条规则决定：中文直接相接、两个 ASCII 词之间补一个空格、句末标点前不补空格（识别器自己会写出 `，`/`。`） |
+| 持续聆听 | 浏览器在每次停顿后结束会话，因此「聆听」由**读者意图**而非会话决定：干净结束或 `no-speech` 会在短暂延时后重开会话（`MAX_SPEECH_RESTARTS` 次上限，避免服务失败时热循环）；`not-allowed` / `audio-capture` / `network` 等致命错误直接关闭麦克风并显示原因 |
+| 语言 | `SPEECH_LANGUAGE = 'zh-CN'`；中英混说按中文转写 |
+| 权限 | 首次点击才创建识别实例并申请麦克风，仅打开控制台不会申请权限；被拒时在输入卡片内显示原因（与附件错误共用同一个提示区） |
+
+这一功能**不新增任何 wire 方法**：既不经过 `useConsoleStore`，也不调用运行时（`composer/useSpeechInput.ts`
+是入口内状态，与 `codexUsage`、截图任务同级），因此没有契约重生成、没有设置项。纯规则（构造器解析、
+结果筛选、分隔符、错误文案、重启判定）在 `composer/speechInput.ts`，由 `tests/speechInput.test.ts`
+覆盖；边界（厂商前缀只出现在一个模块、协议 core 不含麦克风 API、卡片不持有识别生命周期、分隔符只有
+一处定义）由 `tests/speechInputGuard.test.ts` 守护。真实麦克风效果只能在浏览器里手验。
 
 ## 窗口截图（输入区动作）
 
