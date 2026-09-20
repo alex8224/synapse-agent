@@ -22,7 +22,12 @@ import type { AttachmentUploadSource } from '../runtime-client/attachments.ts';
  * copy would be clipped by it.
  */
 export const AttachmentPreview: React.FC<{
-  source: AttachmentUploadSource;
+  /**
+   * The local pick, when there is one.  A screenshot row is already finalized
+   * and carries no local bytes, so the preview degrades to the image glyph and
+   * the pill's by-id preview (`AttachmentThumb`) shows the real picture.
+   */
+  source?: AttachmentUploadSource;
   label: string;
   /** Carried by the caller for the pill's own tooltip; unused by the thumbnail. */
   mime: string;

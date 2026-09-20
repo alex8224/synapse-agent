@@ -170,6 +170,10 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.apps.list": "list_external_apps",
     "runtime.workspace.open_external": "open_external",
     "runtime.skills.list": "list_skills",
+    "runtime.screenshot.status": "get_screenshot_status",
+    "runtime.screenshot.settings.open": "open_screenshot_settings",
+    "runtime.screenshot.capture": "start_screenshot_capture",
+    "runtime.screenshot.cancel": "cancel_screenshot_capture",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -194,6 +198,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "apps.list",
         "workspace.open_external",
         "skills.list",
+        "screenshot.read",
+        "screenshot.control",
     }
 )
 

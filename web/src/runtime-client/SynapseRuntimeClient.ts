@@ -103,6 +103,19 @@ import type { GitDiffView, GitStatusView } from './git.ts';
 import { parseExternalAppPage, parseOpenExternalResult } from './externalApps.ts';
 import type { ExternalAppsView, OpenExternalMode, OpenExternalResultView } from './externalApps.ts';
 import {
+  parseScreenshotCancel,
+  parseScreenshotStart,
+  parseScreenshotStatus,
+  parseScreenshotToolStatus,
+  toWireSettings,
+} from './screenshot.ts';
+import type {
+  ScreenshotSettingsView,
+  ScreenshotStartView,
+  ScreenshotStatusView,
+  ScreenshotToolView,
+} from './screenshot.ts';
+import {
   CODEX_RESET_CONSUME_METHOD,
   CODEX_RESET_CREDITS_METHOD,
   CODEX_USAGE_METHOD,
@@ -869,6 +882,74 @@ export class SynapseRuntimeClient {
     if (params.mode !== undefined) payload.mode = params.mode;
     return parseOpenExternalResult(
       await this.call('runtime.workspace.open_external', payload),
+    );
+  }
+
+  /**
+   * Read the host capture tool's status and the session's capture task
+   * (`runtime.screenshot.status`).
+   *
+   * Read-only: it never starts the tool or captures.  An empty `taskId` asks for
+   * the session's own current task, which is `state: 'idle'` when none exists.
+   */
+  public async getScreenshotStatus(session: SessionRef, taskId = ''): Promise<ScreenshotStatusView> {
+    return parseScreenshotStatus(
+      await this.call('runtime.screenshot.status', { session, task_id: taskId }),
+    );
+  }
+
+  /**
+   * Open (or focus) the capture tool's own settings window
+   * (`runtime.screenshot.settings.open`).
+   *
+   * Starts the host GUI but captures nothing and writes no attachment; the
+   * result is the tool's resident status.
+   */
+  public async openScreenshotSettings(session: SessionRef): Promise<ScreenshotToolView> {
+    return parseScreenshotToolStatus(
+      await this.call('runtime.screenshot.settings.open', { session }),
+    );
+  }
+
+  /**
+   * Queue one asynchronous window capture (`runtime.screenshot.capture`).
+   *
+   * Returns immediately with the task snapshot; progress arrives through
+   * `getScreenshotStatus` and the capture may be cancelled with
+   * `cancelScreenshotCapture`.  A second call while one is queued/running is
+   * idempotent on the server (the running task is returned).
+   */
+  public async startScreenshotCapture(params: {
+    session: SessionRef;
+    settings?: ScreenshotSettingsView;
+    saveConfig?: boolean;
+    /**
+     * Upper bound on the frames this capture may produce, independent of the
+     * tool's saved `count`: the runtime starts the job with
+     * `min(saved_count, maxFrames)`.  The console passes its composer's free
+     * image slots so a saved `count` of 600 can never over-capture.
+     */
+    maxFrames?: number;
+  }): Promise<ScreenshotStartView> {
+    const payload: Record<string, unknown> = { session: params.session };
+    if (params.settings !== undefined) payload.settings = toWireSettings(params.settings);
+    if (params.saveConfig !== undefined) payload.save_config = params.saveConfig;
+    if (params.maxFrames !== undefined) payload.max_frames = params.maxFrames;
+    return parseScreenshotStart(await this.call('runtime.screenshot.capture', payload));
+  }
+
+  /**
+   * Request cancellation of the session's capture task
+   * (`runtime.screenshot.cancel`).
+   *
+   * Idempotent: cancelling a terminal task reports its settled state.
+   */
+  public async cancelScreenshotCapture(
+    session: SessionRef,
+    taskId: string,
+  ): Promise<{ taskId: string; state: ScreenshotStatusView['state']; cancelled: boolean }> {
+    return parseScreenshotCancel(
+      await this.call('runtime.screenshot.cancel', { session, task_id: taskId }),
     );
   }
 

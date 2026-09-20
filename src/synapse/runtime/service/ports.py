@@ -125,6 +125,16 @@ from synapse.runtime.service.runtime_config import (
     GetRuntimeConfigQuery,
     RuntimeConfigView,
 )
+from synapse.runtime.service.screenshot import (
+    OpenScreenshotSettingsCommand,
+    ScreenshotCancelCommand,
+    ScreenshotCancelResult,
+    ScreenshotCaptureCommand,
+    ScreenshotCaptureResult,
+    ScreenshotStatus,
+    ScreenshotStatusQuery,
+    ScreenshotToolStatus,
+)
 from synapse.runtime.service.session_management import (
     CreateSessionCommand,
     CreateSessionResult,
@@ -508,6 +518,57 @@ class AgentRuntimeService(Protocol):
         must resolve inside the session's own workspace.
 
         Optional delegate method: see ``list_external_apps``.
+        """
+        ...
+
+    async def get_screenshot_status(self, query: ScreenshotStatusQuery) -> ScreenshotStatus:
+        """Read the host capture tool's status and the session's capture task.
+
+        Session-scoped read authorized by the dedicated ``screenshot.read``
+        capability -- never ``session.read``.  It reports availability, the resident
+        task state, progress counts and the finalized attachment ids; it never
+        starts the tool, captures, or carries a tool path or raw error.
+
+        Optional delegate method: an older delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def open_screenshot_settings(
+        self, command: OpenScreenshotSettingsCommand
+    ) -> ScreenshotToolStatus:
+        """Open (or focus) the capture tool's own settings window.
+
+        Session-scoped, authorized by ``screenshot.control``.  This starts the
+        host GUI but captures nothing and writes no attachment.
+
+        Optional delegate method: see ``get_screenshot_status``.
+        """
+        ...
+
+    async def start_screenshot_capture(
+        self, command: ScreenshotCaptureCommand
+    ) -> ScreenshotCaptureResult:
+        """Queue one asynchronous window capture for the session.
+
+        Session-scoped, authorized by ``screenshot.control``.  The request carries
+        only bounded settings; the runtime starts the tool, polls it in the
+        background, and finalizes each frame as an ordinary attachment.  A second
+        start while one is queued/running is idempotent and returns the running
+        task instead of spawning a duplicate.
+
+        Optional delegate method: see ``get_screenshot_status``.
+        """
+        ...
+
+    async def cancel_screenshot_capture(
+        self, command: ScreenshotCancelCommand
+    ) -> ScreenshotCancelResult:
+        """Request cancellation of the session's capture task (idempotent).
+
+        Session-scoped, authorized by ``screenshot.control``.
+
+        Optional delegate method: see ``get_screenshot_status``.
         """
         ...
 

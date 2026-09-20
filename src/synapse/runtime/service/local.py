@@ -97,6 +97,7 @@ from synapse.runtime.service.errors import (
     NotFoundError,
     ReplayGapError,
     RuntimeServiceError,
+    ScreenshotUnavailableError,
     SteeringUnavailableError,
     TurnMismatchError,
 )
@@ -184,6 +185,17 @@ from synapse.runtime.service.revert import (
 )
 from synapse.runtime.service.routing import RouterClosedError, RuntimeManagerRouter
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
+from synapse.runtime.service.screenshot import (
+    OpenScreenshotSettingsCommand,
+    ScreenshotCancelCommand,
+    ScreenshotCancelResult,
+    ScreenshotCaptureCommand,
+    ScreenshotCaptureResult,
+    ScreenshotStatus,
+    ScreenshotStatusQuery,
+    ScreenshotToolStatus,
+)
+from synapse.runtime.service.screenshot_service import ScreenshotService
 from synapse.runtime.service.session_management import (
     CreateSessionCommand,
     CreateSessionResult,
@@ -369,6 +381,7 @@ class LocalAgentRuntimeService:
         project_list_provider: ProjectListProvider | None = None,
         project_registrar: Callable[[RegisterProjectCommand], ProjectListItem] | None = None,
         codex_usage_provider: CodexUsageProvider | None = None,
+        screenshot_service: ScreenshotService | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -388,6 +401,11 @@ class LocalAgentRuntimeService:
         # ``runtime.config.get`` gate stays False, so a console never offers a
         # control the server cannot serve.
         self._codex_usage_provider = codex_usage_provider
+        # The window-capture surface is optional and daemon-resident: the daemon
+        # injects one shared scheduler so the tool's host and its running task
+        # survive a reconnect.  Without one the four screenshot methods report
+        # themselves as unavailable instead of failing the service build.
+        self._screenshots = screenshot_service
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -1468,6 +1486,83 @@ class LocalAgentRuntimeService:
         self._check_project(manager, command.session)
         session = self._resolve_session(manager, command.session)
         return await asyncio.to_thread(open_external_workspace, command, session)
+
+    # -- window-capture port ------------------------------------------------
+
+    def _require_screenshots(self) -> ScreenshotService:
+        """The resident capture scheduler, or a typed unavailable error."""
+        if self._screenshots is None:
+            raise ScreenshotUnavailableError("窗口截图工具不可用")
+        return self._screenshots
+
+    def _screenshot_context(self, ref: SessionRef) -> object:
+        """Resolve one session's trusted attachment workspace for a capture."""
+        self._validate_ref(ref)
+        manager = self._resolve_manager(ref)
+        self._check_project(manager, ref)
+        self._resolve_session(manager, ref)
+        return self._attachment_workspace(manager)
+
+    async def get_screenshot_status(self, query: ScreenshotStatusQuery) -> ScreenshotStatus:
+        """Read the resident capture tool status and the session's task snapshot.
+
+        Session-scoped read.  The capability probe spawns a bounded ``--version``
+        call (never the GUI), so it runs on a worker thread; the task snapshot is
+        an in-memory read.
+        """
+        if not isinstance(query, ScreenshotStatusQuery):
+            raise InvalidRequestError(
+                "screenshot status query must be a ScreenshotStatusQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        service = self._require_screenshots()
+        self._screenshot_context(query.session)
+        # The tool probe runs off the event loop (bounded, never the GUI); the
+        # task read stays on the loop so it cannot race a background update.
+        tool = await asyncio.to_thread(service.tool_status)
+        status = service.snapshot(query)
+        return dataclasses.replace(
+            status, available=tool.available, unavailable_reason=tool.reason
+        )
+
+    async def open_screenshot_settings(
+        self, command: OpenScreenshotSettingsCommand
+    ) -> ScreenshotToolStatus:
+        """Open the capture tool's GUI (session-scoped, ``screenshot.control``)."""
+        if not isinstance(command, OpenScreenshotSettingsCommand):
+            raise InvalidRequestError(
+                "open screenshot settings command must be an OpenScreenshotSettingsCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_screenshots()
+        self._screenshot_context(command.session)
+        return await service.open_settings(command)
+
+    async def start_screenshot_capture(
+        self, command: ScreenshotCaptureCommand
+    ) -> ScreenshotCaptureResult:
+        """Queue one asynchronous capture task for the session's workspace."""
+        if not isinstance(command, ScreenshotCaptureCommand):
+            raise InvalidRequestError(
+                "screenshot capture command must be a ScreenshotCaptureCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_screenshots()
+        workspace = self._screenshot_context(command.session)
+        return await service.start_capture(command.session, workspace, command)
+
+    async def cancel_screenshot_capture(
+        self, command: ScreenshotCancelCommand
+    ) -> ScreenshotCancelResult:
+        """Cancel the session's capture task (idempotent)."""
+        if not isinstance(command, ScreenshotCancelCommand):
+            raise InvalidRequestError(
+                "screenshot cancel command must be a ScreenshotCancelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._require_screenshots()
+        self._screenshot_context(command.session)
+        return await service.cancel_capture(command)
 
     # -- attachment port ---------------------------------------------------
 

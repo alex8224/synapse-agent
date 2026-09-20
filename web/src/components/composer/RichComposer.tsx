@@ -3,8 +3,10 @@ import { Dismiss20Regular } from '@fluentui/react-icons';
 import { flushSync } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { AttachmentPreview } from '../AttachmentPreview.tsx';
+import { AttachmentIdThumb } from './AttachmentIdThumb.tsx';
 import { ImagePreviewFlyout } from './ImagePreviewFlyout.tsx';
 import { useAttachmentObjectUrl } from './attachmentUrl.ts';
+import { NO_ATTACHMENT, useAttachmentResource } from '../useAttachmentResource.ts';
 import { MentionFlyout } from './MentionFlyout.tsx';
 import { mentionOptionId } from './mentionOption.ts';
 import {
@@ -39,6 +41,7 @@ import {
 } from './composerSelection.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore';
 import type { PendingAttachment } from '../../stores/useConsoleStore.ts';
+import type { TranscriptAttachment } from '../../stores/historyAttachments.ts';
 import { ARTIFACT_LIST_LIMIT } from '../../runtime-client/artifacts.ts';
 
 /** A pill the editor is currently rendering, in document order. */
@@ -710,13 +713,28 @@ const ImagePill: React.FC<{
       onMouseEnter={(event) => onHover(event.currentTarget, entry)}
       onMouseLeave={() => onHover(null, entry)}
     >
-      <AttachmentPreview
-        source={entry.source}
-        label={entry.name}
-        mime={entry.mime}
-        size={entry.size}
-        failed={entry.status === 'failed'}
-      />
+      {entry.source === undefined && entry.attachmentId !== null ? (
+        // A screenshot row arrives already finalized (no local pick): its
+        // thumbnail is loaded by id through the history loader.
+        <AttachmentIdThumb
+          attachment={{
+            attachmentId: entry.attachmentId,
+            imageId: null,
+            name: entry.name,
+            mime: entry.mime,
+            size: entry.size,
+            revision: null,
+          }}
+        />
+      ) : (
+        <AttachmentPreview
+          source={entry.source}
+          label={entry.name}
+          mime={entry.mime}
+          size={entry.size}
+          failed={entry.status === 'failed'}
+        />
+      )}
       <span className="min-w-0 truncate">{entry.name}</span>
       {uploading && <span className="shrink-0 tabular-nums text-gray-500">{percent}%</span>}
       <button
@@ -783,12 +801,36 @@ const MentionPillView: React.FC<{ pill: ComposerMentionPill; onRemove: () => voi
 const HoverPreview: React.FC<{
   preview: { element: HTMLElement; entry: PendingAttachment } | null;
 }> = ({ preview }) => {
-  const url = useAttachmentObjectUrl(preview?.entry.source ?? EMPTY_SOURCE);
-  if (preview === null) return null;
+  const entry = preview?.entry ?? null;
+  // A row with a local pick previews its own blob; a finalized screenshot row
+  // (no `source`, only an id) resolves its bytes through the same by-id loader
+  // the pills use, so hovering a chip always shows the real picture.  Both hooks
+  // run unconditionally, with a sentinel descriptor when there is no by-id read.
+  const localUrl = useAttachmentObjectUrl(entry?.source ?? EMPTY_SOURCE);
+  const byIdDescriptor: TranscriptAttachment =
+    entry !== null && entry.source === undefined && entry.attachmentId !== null
+      ? {
+          attachmentId: entry.attachmentId,
+          imageId: null,
+          name: entry.name,
+          mime: entry.mime,
+          size: entry.size,
+          revision: null,
+        }
+      : NO_ATTACHMENT;
+  const byId = useAttachmentResource(byIdDescriptor);
+  if (preview === null || entry === null) return null;
+  const byIdOnly = entry.source === undefined;
+  const url = byIdOnly ? (byId?.status === 'ready' ? byId.url : null) : localUrl;
+  const failed =
+    byIdOnly && byId !== null && (byId.status === 'error' || byId.status === 'unsupported');
+  const pending = url === null && !failed;
   return (
     <ImagePreviewFlyout
       anchor={preview.element}
       url={url}
+      pending={pending}
+      failed={failed}
       label={preview.entry.name}
       mime={preview.entry.mime}
       size={preview.entry.size}

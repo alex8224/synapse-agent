@@ -125,6 +125,16 @@ from synapse.runtime.service.revert import (
     RevertTurnChangeResult,
 )
 from synapse.runtime.service.runtime_config import GetRuntimeConfigQuery, RuntimeConfigView
+from synapse.runtime.service.screenshot import (
+    OpenScreenshotSettingsCommand,
+    ScreenshotCancelCommand,
+    ScreenshotCancelResult,
+    ScreenshotCaptureCommand,
+    ScreenshotCaptureResult,
+    ScreenshotStatus,
+    ScreenshotStatusQuery,
+    ScreenshotToolStatus,
+)
 from synapse.runtime.service.session_management import (
     CreateSessionCommand,
     CreateSessionResult,
@@ -157,6 +167,8 @@ __all__ = [
     "ATTACHMENTS_READ",
     "ATTACHMENTS_WRITE",
     "APPS_LIST",
+    "SCREENSHOT_READ",
+    "SCREENSHOT_CONTROL",
     "WORKSPACE_REVERT",
     "WORKSPACE_OPEN_EXTERNAL",
     "CODEX_RESET_CONSUME",
@@ -266,6 +278,15 @@ APPS_LIST = "apps.list"
 #: grant -- ``apps.list``, ``session.read`` and ``git.status`` must never authorize
 #: it, and a launch never modifies the workspace.
 WORKSPACE_OPEN_EXTERNAL = "workspace.open_external"
+#: Read the host window-capture tool's resident status and the calling session's
+#: capture task.  A read surface: it never starts the tool's GUI, never captures,
+#: and never writes an attachment.
+SCREENSHOT_READ = "screenshot.read"
+#: The one control surface for window capture: open the tool's settings GUI,
+#: start a capture task, and cancel one.  Starting a capture runs a host program
+#: and finalizes image attachments, so it is its own grant -- ``screenshot.read``,
+#: ``apps.list`` and ``attachments.write`` must never authorize it.
+SCREENSHOT_CONTROL = "screenshot.control"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -305,6 +326,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         CODEX_RESET_CONSUME,
         APPS_LIST,
         WORKSPACE_OPEN_EXTERNAL,
+        SCREENSHOT_READ,
+        SCREENSHOT_CONTROL,
     }
 )
 
@@ -1081,6 +1104,61 @@ class AccessControlledAgentRuntimeService:
             raise InvalidRequestError(
                 "opening a file with an external program is unavailable"
             )
+        return await delegate(command)
+
+    async def get_screenshot_status(self, query: ScreenshotStatusQuery) -> ScreenshotStatus:
+        """Authorize ``screenshot.read`` per session, then read the task snapshot.
+
+        A read surface: it never starts the tool and never captures, so
+        ``screenshot.control`` alone (or ``session.read``) must not authorize it.
+        Optional delegate method: the ACL check runs before the delegate is
+        consulted, so a caller without ``screenshot.read`` is denied even against
+        an old delegate.
+        """
+        session = self._session_from_dto(query, ScreenshotStatusQuery, "screenshot status query")
+        self._authorize(session, SCREENSHOT_READ)
+        delegate = getattr(self._delegate, "get_screenshot_status", None)
+        if not callable(delegate):
+            raise InvalidRequestError("window capture is unavailable")
+        return await delegate(query)
+
+    async def open_screenshot_settings(
+        self, command: OpenScreenshotSettingsCommand
+    ) -> ScreenshotToolStatus:
+        """Authorize ``screenshot.control`` per session, then open the tool GUI."""
+        session = self._session_from_dto(
+            command, OpenScreenshotSettingsCommand, "open screenshot settings command"
+        )
+        self._authorize(session, SCREENSHOT_CONTROL)
+        delegate = getattr(self._delegate, "open_screenshot_settings", None)
+        if not callable(delegate):
+            raise InvalidRequestError("window capture is unavailable")
+        return await delegate(command)
+
+    async def start_screenshot_capture(
+        self, command: ScreenshotCaptureCommand
+    ) -> ScreenshotCaptureResult:
+        """Authorize ``screenshot.control`` per session, then queue a capture task."""
+        session = self._session_from_dto(
+            command, ScreenshotCaptureCommand, "screenshot capture command"
+        )
+        self._authorize(session, SCREENSHOT_CONTROL)
+        delegate = getattr(self._delegate, "start_screenshot_capture", None)
+        if not callable(delegate):
+            raise InvalidRequestError("window capture is unavailable")
+        return await delegate(command)
+
+    async def cancel_screenshot_capture(
+        self, command: ScreenshotCancelCommand
+    ) -> ScreenshotCancelResult:
+        """Authorize ``screenshot.control`` per session, then cancel the task."""
+        session = self._session_from_dto(
+            command, ScreenshotCancelCommand, "screenshot cancel command"
+        )
+        self._authorize(session, SCREENSHOT_CONTROL)
+        delegate = getattr(self._delegate, "cancel_screenshot_capture", None)
+        if not callable(delegate):
+            raise InvalidRequestError("window capture is unavailable")
         return await delegate(command)
 
     async def begin_attachment(self, command: BeginAttachmentCommand) -> BeginAttachmentResult:

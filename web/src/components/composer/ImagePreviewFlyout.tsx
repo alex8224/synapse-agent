@@ -27,10 +27,14 @@ const MAX_UPSCALE = 2;
 export const ImagePreviewFlyout: React.FC<{
   anchor: HTMLElement | null;
   url: string | null;
+  /** No `url` yet because the by-id bytes are still being read. */
+  pending?: boolean;
+  /** No `url` because the read failed (or the type is not previewable). */
+  failed?: boolean;
   label: string;
   mime: string;
   size: number;
-}> = ({ anchor, url, label, mime, size }) => {
+}> = ({ anchor, url, pending = false, failed = false, label, mime, size }) => {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
@@ -48,7 +52,7 @@ export const ImagePreviewFlyout: React.FC<{
   }, []);
 
   useEffect(() => {
-    if (anchor === null || url === null) {
+    if (anchor === null) {
       setPosition(null);
       return;
     }
@@ -76,7 +80,8 @@ export const ImagePreviewFlyout: React.FC<{
       setPosition({ top: Math.round(top), left: Math.round(left) });
     };
     place();
-    fitImage();
+    // Only a real image can be sized; a loading/error placeholder is placed too.
+    if (url !== null) fitImage();
     // The image's own load changes the box height, so place again once it lands.
     const raf = window.requestAnimationFrame(place);
     window.addEventListener('scroll', place, true);
@@ -88,7 +93,9 @@ export const ImagePreviewFlyout: React.FC<{
     };
   }, [anchor, url, fitImage]);
 
-  if (url === null || position === null) return null;
+  // Nothing to show: no anchor yet, no URL, and neither a pending nor a failed
+  // read to explain the gap.
+  if (position === null || (url === null && !pending && !failed)) return null;
 
   return (
     <Portal>
@@ -98,13 +105,20 @@ export const ImagePreviewFlyout: React.FC<{
         style={{ top: position.top, left: position.left }}
         className="pointer-events-none fixed z-50 w-max max-w-[94vw] rounded-card border border-line/80 material-flyout flyout-in p-2 shadow-flyout"
       >
-        <img
-          ref={imgRef}
-          src={url}
-          alt={label}
-          onLoad={fitImage}
-          className="max-h-[70vh] max-w-[92vw] rounded-control bg-sunken object-contain"
-        />
+        {url !== null ? (
+          <img
+            ref={imgRef}
+            src={url}
+            alt={label}
+            onLoad={fitImage}
+            data-preview-image=""
+            className="max-h-[70vh] max-w-[92vw] rounded-control bg-sunken object-contain"
+          />
+        ) : (
+          <div className="flex min-h-16 min-w-32 items-center justify-center rounded-control bg-sunken px-4 py-3 text-[11px] text-gray-500">
+            {failed ? '无法预览该图片' : '正在加载预览…'}
+          </div>
+        )}
         <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px]">
           <span className="max-w-[14rem] truncate text-gray-800">{label}</span>
           <span className="shrink-0 text-gray-400">

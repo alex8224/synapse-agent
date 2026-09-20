@@ -237,8 +237,14 @@ _ADDITIVE_CAPABILITIES = frozenset(
         "attachments.write",
         "git.status",
         "git.diff",
+        "workspace.revert",
         "project.register",
         "fs.list",
+        "apps.list",
+        "workspace.open_external",
+        "skills.list",
+        "screenshot.read",
+        "screenshot.control",
     }
 )
 

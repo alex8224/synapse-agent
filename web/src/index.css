@@ -108,6 +108,17 @@
   .ui-menu-item { display: block; width: 100%; padding: 6px 8px; text-align: left; }
   .ui-menu-item[aria-pressed='true'] { background: rgb(var(--selection-fill)); font-weight: 600; }
   /*
+    A row that is present but not executable (the action menu's screenshot rows,
+    which are `aria-disabled` rather than `disabled` so they stay reachable and a
+    reader can hear *why*): it must not paint the hover/press feedback of a live
+    row, or it would read as clickable.
+  */
+  .ui-menu-item[aria-disabled='true'] { cursor: not-allowed; }
+  .ui-menu-item[aria-disabled='true']:hover,
+  .ui-menu-item[aria-disabled='true']:active {
+    background: none; color: rgb(var(--gray-400)); transform: none;
+  }
+  /*
     A toolbar toggle (preview / source, diff on / off): it is a `ui-button`, and
     its pressed state takes the same selection tint the navigation rows use, so
     "which one is on" is answered by the theme's selection role instead of by a

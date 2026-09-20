@@ -34,6 +34,7 @@ from synapse.runtime.service import (
     Principal,
     ProjectScopeAuthorizer,
     RuntimeManagerRouter,
+    ScreenshotService,
     bind_access,
 )
 from synapse.runtime.sessions import RuntimeManager
@@ -302,6 +303,10 @@ class RuntimeDaemon:
         self._signal_installer = signal_installer
         self._stdout = stdout
         self._codex_usage_adapter: CodexUsageAdapter | None = None
+        #: One daemon-resident window-capture scheduler shared by every
+        #: connection: the tool's host and its running capture task must survive
+        #: a reconnect, so building one per connection would strand a job.
+        self._screenshot_service: ScreenshotService | None = None
         self.settings: Any | None = None
         self.catalog: ProjectCatalog | Any | None = None
         self.lease: DaemonLease | Any | None = None
@@ -468,6 +473,7 @@ class RuntimeDaemon:
                 project_list_provider=self._project_list_provider(),
                 project_registrar=self._project_registrar(),
                 codex_usage_provider=self._codex_usage_provider(),
+                screenshot_service=self._screenshot_service_provider(),
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -517,6 +523,21 @@ class RuntimeDaemon:
             adapter = CodexUsageAdapter()
             self._codex_usage_adapter = adapter
         return adapter
+
+    def _screenshot_service_provider(self) -> ScreenshotService:
+        """The one daemon-level window-capture scheduler (shared by connections).
+
+        A single instance is deliberate: the tool host and its running capture
+        task are host state, so a scheduler per connection would let a reconnect
+        lose a job and start a duplicate.  It is created lazily and kept for the
+        daemon's lifetime; constructing it spawns nothing (the tool is only
+        touched by a status probe or an explicit capture).
+        """
+        service = self._screenshot_service
+        if service is None:
+            service = ScreenshotService()
+            self._screenshot_service = service
+        return service
 
     async def start(self) -> dict[str, Any]:
         async with self._lifecycle_lock:

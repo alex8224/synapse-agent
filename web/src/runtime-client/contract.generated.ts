@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 51 wire methods: 49 service methods
+ * The 55 wire methods: 53 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -55,6 +55,10 @@ export const WIRE_METHODS = [
   "runtime.project.register",
   "runtime.project.thinking.set",
   "runtime.protocol.negotiate",
+  "runtime.screenshot.cancel",
+  "runtime.screenshot.capture",
+  "runtime.screenshot.settings.open",
+  "runtime.screenshot.status",
   "runtime.session.close",
   "runtime.session.create",
   "runtime.session.delete",
@@ -97,7 +101,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (36). */
+/** Authorization capabilities enforced by the ACL layer (38). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -115,6 +119,8 @@ export const AUTHORIZATION_CAPABILITIES = [
   "project.list",
   "project.register",
   "project.thinking",
+  "screenshot.control",
+  "screenshot.read",
   "session.close",
   "session.create",
   "session.delete",
@@ -187,6 +193,10 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.project.list": "project.list",
   "runtime.project.register": "project.register",
   "runtime.project.thinking.set": "project.thinking",
+  "runtime.screenshot.cancel": "screenshot.control",
+  "runtime.screenshot.capture": "screenshot.control",
+  "runtime.screenshot.settings.open": "screenshot.control",
+  "runtime.screenshot.status": "screenshot.read",
   "runtime.session.close": "session.close",
   "runtime.session.create": "session.create",
   "runtime.session.delete": "session.delete",
@@ -1064,6 +1074,13 @@ export interface OpenExternalResult {
   mode: string;
 }
 
+/**
+ * Open (or focus) the capture tool's own settings GUI.
+ */
+export interface OpenScreenshotSettingsCommand {
+  session: SessionRef;
+}
+
 export interface OpenSessionCommand {
   session: SessionRef;
   /**
@@ -1423,6 +1440,177 @@ export interface RuntimeEvent {
   kind: string;
   payload: JsonValue;
   version: number;
+}
+
+/**
+ * Cancel one session's capture task; ``task_id`` is required.
+ */
+export interface ScreenshotCancelCommand {
+  session: SessionRef;
+  task_id: string;
+}
+
+/**
+ * Idempotent: cancelling a terminal task reports its settled state.
+ */
+export interface ScreenshotCancelResult {
+  session: SessionRef;
+  task_id: string;
+  state: string;
+  cancelled: boolean;
+}
+
+/**
+ * Start one asynchronous capture task.  ``settings`` is optional and bounded;
+ * ``save_config`` asks the tool to persist the supplied settings.  ``max_frames``
+ * is an optional budget: the runtime starts the job with
+ * ``min(tool saved count, max_frames)`` so a composer that can hold fewer images
+ * never asks the tool for more.
+ */
+export interface ScreenshotCaptureCommand {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  settings?: ScreenshotSettings | null;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  save_config?: boolean;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  max_frames?: number | null;
+}
+
+/**
+ * The immediate task snapshot; the capture continues in the background.
+ */
+export interface ScreenshotCaptureResult {
+  session: SessionRef;
+  task_id: string;
+  state: string;
+  requested: number;
+  settings: ScreenshotSettings;
+}
+
+/**
+ * One finalized screenshot frame as the composer references it: an opaque
+ * attachment id plus durable metadata; no bytes and no tool path.
+ */
+export interface ScreenshotFrameAttachment {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  revision: string | null;
+}
+
+/**
+ * Bounded capture parameters; every member is optional on the wire and an
+ * absent value lets the tool apply its saved config or its own default
+ * (override > saved > default).
+ */
+export interface ScreenshotSettings {
+  /**
+   * python_default_kind=value python_default=1
+   */
+  count?: number;
+  /**
+   * python_default_kind=value python_default=250
+   */
+  interval_ms?: number;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  start_delay_ms?: number;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  max_edge?: number;
+  /**
+   * python_default_kind=value python_default=300
+   */
+  ttl_seconds?: number;
+  /**
+   * python_default_kind=value python_default=5000
+   */
+  frame_timeout_ms?: number;
+  /**
+   * python_default_kind=value python_default=true
+   */
+  allow_reuse?: boolean;
+}
+
+/**
+ * The resident capture task snapshot: a closed state, progress counts, the
+ * finalized attachment ids, and a named error when it failed.  ``state`` is
+ * ``idle`` when the session has no task.
+ */
+export interface ScreenshotStatus {
+  session: SessionRef;
+  task_id: string;
+  state: string;
+  requested: number;
+  captured: number;
+  attachments: ScreenshotFrameAttachment[];
+  /**
+   * python_default_kind=value python_default=true
+   */
+  available: boolean;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  unavailable_reason: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  error_code: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  error_message: string | null;
+}
+
+/**
+ * Read one session's capture task; an empty ``task_id`` asks for the session's
+ * own current task.
+ */
+export interface ScreenshotStatusQuery {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  task_id?: string;
+}
+
+/**
+ * Resident tool status: availability, the platform reason when unavailable,
+ * the probed version, and whether a capture task is active.  It never carries
+ * a tool path or a raw tool error.
+ */
+export interface ScreenshotToolStatus {
+  available: boolean;
+  platform: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  reason: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  version: string | null;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  busy: boolean;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  active_task_id: string | null;
 }
 
 /**

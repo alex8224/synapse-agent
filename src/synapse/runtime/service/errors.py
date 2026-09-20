@@ -37,6 +37,11 @@ __all__ = [
     "PermissionDeniedError",
     "ReplayGapError",
     "RuntimeServiceError",
+    "ScreenshotBusyError",
+    "ScreenshotTargetRequiredError",
+    "ScreenshotTaskNotFoundError",
+    "ScreenshotToolError",
+    "ScreenshotUnavailableError",
     "SteeringUnavailableError",
     "TurnMismatchError",
     "WorkspaceRevertError",
@@ -258,3 +263,49 @@ class InvalidEventPayloadError(RuntimeServiceError):
     """
 
     code = "invalid_event_payload"
+
+
+class ScreenshotUnavailableError(RuntimeServiceError):
+    """The window-capture tool is not built or this host cannot run it."""
+
+    code = "screenshot_unavailable"
+
+
+class ScreenshotBusyError(RuntimeServiceError):
+    """A capture task is already active, so a second one is refused."""
+
+    code = "screenshot_busy"
+
+
+class ScreenshotTaskNotFoundError(RuntimeServiceError):
+    """No capture task exists for the referenced session and task id."""
+
+    code = "screenshot_task_not_found"
+
+
+class ScreenshotToolError(RuntimeServiceError):
+    """The host capture tool refused the request or failed mid-capture.
+
+    ``tool_code`` is the tool's own stable ``error.data.error_code`` when the
+    refusal came back over the RPC relay; the wire ``service_code`` stays the
+    service's own bounded code so a raw tool string never reaches the browser.
+    """
+
+    code = "screenshot_failed"
+
+    def __init__(self, message: str, *, tool_code: str = "", code: str | None = None) -> None:
+        super().__init__(message, code=code)
+        self.tool_code = tool_code
+
+
+class ScreenshotTargetRequiredError(ScreenshotToolError):
+    """No capturable target is selected; the tool opened its picker instead.
+
+    The caller is expected to choose a window in the tool and retry, so this is
+    a named state rather than an opaque failure.
+    """
+
+    code = "target_required"
+
+    def __init__(self, message: str = "a capture target must be selected first") -> None:
+        super().__init__(message, tool_code="target_required", code="target_required")

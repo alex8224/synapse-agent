@@ -50,6 +50,8 @@ from synapse.runtime.service.access import (
     PROJECT_LIST,
     PROJECT_REGISTER,
     PROJECT_THINKING,
+    SCREENSHOT_CONTROL,
+    SCREENSHOT_READ,
     SESSION_CLOSE,
     SESSION_CREATE,
     SESSION_DELETE,
@@ -268,6 +270,21 @@ from synapse.runtime.service.runtime_config import (
     GetRuntimeConfigQuery,
     McpServerView,
     RuntimeConfigView,
+)
+from synapse.runtime.service.screenshot import (
+    MAX_SCREENSHOT_COUNT,
+    MAX_SCREENSHOT_FRAMES_PER_TASK,
+    MAX_SCREENSHOT_TASK_ID_BYTES,
+    OpenScreenshotSettingsCommand,
+    ScreenshotCancelCommand,
+    ScreenshotCancelResult,
+    ScreenshotCaptureCommand,
+    ScreenshotCaptureResult,
+    ScreenshotFrameAttachment,
+    ScreenshotSettings,
+    ScreenshotStatus,
+    ScreenshotStatusQuery,
+    ScreenshotToolStatus,
 )
 from synapse.runtime.service.session_management import (
     SESSION_SEARCH_LIMIT_DEFAULT,
@@ -1164,6 +1181,81 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         TurnTerminalPayload,
         role="result",
         notes=("Bounded terminal summary emitted exactly once per turn.",),
+    ),
+    # --- window capture (screenshot) ------------------------------------------
+    _dto(
+        ScreenshotSettings,
+        role="request",
+        notes=(
+            "Bounded capture parameters; every member is optional on the wire and an",
+            "absent value lets the tool apply its saved config or its own default",
+            "(override > saved > default).",
+        ),
+    ),
+    _dto(
+        ScreenshotToolStatus,
+        role="result",
+        notes=(
+            "Resident tool status: availability, the platform reason when unavailable,",
+            "the probed version, and whether a capture task is active.  It never carries",
+            "a tool path or a raw tool error.",
+        ),
+    ),
+    _dto(
+        ScreenshotFrameAttachment,
+        role="value",
+        notes=(
+            "One finalized screenshot frame as the composer references it: an opaque",
+            "attachment id plus durable metadata; no bytes and no tool path.",
+        ),
+    ),
+    _dto(
+        ScreenshotCaptureCommand,
+        role="request",
+        notes=(
+            "Start one asynchronous capture task.  ``settings`` is optional and bounded;",
+            "``save_config`` asks the tool to persist the supplied settings.  ``max_frames``",
+            "is an optional budget: the runtime starts the job with",
+            "``min(tool saved count, max_frames)`` so a composer that can hold fewer images",
+            "never asks the tool for more.",
+        ),
+    ),
+    _dto(
+        ScreenshotCaptureResult,
+        role="result",
+        notes=("The immediate task snapshot; the capture continues in the background.",),
+    ),
+    _dto(
+        ScreenshotStatusQuery,
+        role="request",
+        notes=(
+            "Read one session's capture task; an empty ``task_id`` asks for the session's",
+            "own current task.",
+        ),
+    ),
+    _dto(
+        ScreenshotStatus,
+        role="result",
+        notes=(
+            "The resident capture task snapshot: a closed state, progress counts, the",
+            "finalized attachment ids, and a named error when it failed.  ``state`` is",
+            "``idle`` when the session has no task.",
+        ),
+    ),
+    _dto(
+        ScreenshotCancelCommand,
+        role="request",
+        notes=("Cancel one session's capture task; ``task_id`` is required.",),
+    ),
+    _dto(
+        ScreenshotCancelResult,
+        role="result",
+        notes=("Idempotent: cancelling a terminal task reports its settled state.",),
+    ),
+    _dto(
+        OpenScreenshotSettingsCommand,
+        role="request",
+        notes=("Open (or focus) the capture tool's own settings GUI.",),
     ),
     # --- transport-only shapes (no service DTO) -------------------------------
     _transport(
@@ -2191,6 +2283,86 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "``attachment_refs`` is required.",
         ),
     ),
+    WireMethod(
+        method="runtime.screenshot.status",
+        method_class="service",
+        request="ScreenshotStatusQuery",
+        result="ScreenshotStatus",
+        capability=SCREENSHOT_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="get_screenshot_status",
+        wire_defaults=(("task_id", ""),),
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Read-only resident status of the host window-capture tool and the calling",
+            "session's capture task.  It never starts the tool, captures, or writes an",
+            "attachment; the capability probe runs the tool's ``--version`` only.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.screenshot.settings.open",
+        method_class="service",
+        request="OpenScreenshotSettingsCommand",
+        result="ScreenshotToolStatus",
+        capability=SCREENSHOT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="open_screenshot_settings",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Opens (or focuses) the capture tool's own settings GUI and returns the tool",
+            "status.  It captures nothing and finalizes no attachment.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.screenshot.capture",
+        method_class="service",
+        request="ScreenshotCaptureCommand",
+        result="ScreenshotCaptureResult",
+        capability=SCREENSHOT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="start_screenshot_capture",
+        wire_defaults=(("save_config", False),),
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Starts one asynchronous window capture and returns immediately with the task",
+            "snapshot; the console polls ``runtime.screenshot.status`` for progress and",
+            "may call ``runtime.screenshot.cancel``.  Each completed frame is finalized",
+            "through the existing attachment store and returned as an attachment id.",
+            "A second start while one is queued/running is idempotent (the running task",
+            "is returned) and never spawns a duplicate.  ``settings.count`` is bounded to",
+            str(MAX_SCREENSHOT_FRAMES_PER_TASK) + " frames per console capture.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.screenshot.cancel",
+        method_class="service",
+        request="ScreenshotCancelCommand",
+        result="ScreenshotCancelResult",
+        capability=SCREENSHOT_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="cancel_screenshot_capture",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Requests cancellation of one capture task (idempotent); the tool is asked to",
+            "stop and the task settles in a named terminal state.",
+        ),
+    ),
 )
 
 
@@ -2315,6 +2487,9 @@ LIMITS: Final[dict[str, int]] = {
     "max_runtime_config_text_bytes": MAX_RUNTIME_CONFIG_TEXT_BYTES,
     "max_runtime_config_thinking_levels": MAX_RUNTIME_CONFIG_THINKING_LEVELS,
     "max_scan_limit": MAX_SCAN_LIMIT,
+    "max_screenshot_count": MAX_SCREENSHOT_COUNT,
+    "max_screenshot_frames_per_task": MAX_SCREENSHOT_FRAMES_PER_TASK,
+    "max_screenshot_task_id_bytes": MAX_SCREENSHOT_TASK_ID_BYTES,
     "max_session_goal_objective_chars": MAX_SESSION_GOAL_OBJECTIVE_CHARS,
     "min_chunk_bytes": MIN_CHUNK_BYTES,
     "min_event_bytes": MIN_EVENT_BYTES,

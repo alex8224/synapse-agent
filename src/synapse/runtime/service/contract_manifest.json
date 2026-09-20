@@ -22,6 +22,8 @@
     "project.list",
     "project.register",
     "project.thinking",
+    "screenshot.control",
+    "screenshot.read",
     "session.close",
     "session.create",
     "session.delete",
@@ -254,6 +256,9 @@
     "max_runtime_config_text_bytes": 256,
     "max_runtime_config_thinking_levels": 32,
     "max_scan_limit": 4096,
+    "max_screenshot_count": 600,
+    "max_screenshot_frames_per_task": 8,
+    "max_screenshot_task_id_bytes": 128,
     "max_session_goal_objective_chars": 10000,
     "min_chunk_bytes": 1024,
     "min_event_bytes": 1024,
@@ -663,6 +668,84 @@
       "scope_location": "params.project_id",
       "service_method": "set_project_thinking_level",
       "wire_defaults": {}
+    },
+    {
+      "capability": "screenshot.control",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.screenshot.cancel",
+      "notes": [
+        "Requests cancellation of one capture task (idempotent); the tool is asked to",
+        "stop and the task settles in a named terminal state."
+      ],
+      "request": "ScreenshotCancelCommand",
+      "result": "ScreenshotCancelResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "cancel_screenshot_capture",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "screenshot.control",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.screenshot.capture",
+      "notes": [
+        "Starts one asynchronous window capture and returns immediately with the task",
+        "snapshot; the console polls ``runtime.screenshot.status`` for progress and",
+        "may call ``runtime.screenshot.cancel``.  Each completed frame is finalized",
+        "through the existing attachment store and returned as an attachment id.",
+        "A second start while one is queued/running is idempotent (the running task",
+        "is returned) and never spawns a duplicate.  ``settings.count`` is bounded to",
+        "8 frames per console capture."
+      ],
+      "request": "ScreenshotCaptureCommand",
+      "result": "ScreenshotCaptureResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "start_screenshot_capture",
+      "wire_defaults": {
+        "save_config": false
+      }
+    },
+    {
+      "capability": "screenshot.control",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.screenshot.settings.open",
+      "notes": [
+        "Opens (or focuses) the capture tool's own settings GUI and returns the tool",
+        "status.  It captures nothing and finalizes no attachment."
+      ],
+      "request": "OpenScreenshotSettingsCommand",
+      "result": "ScreenshotToolStatus",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "open_screenshot_settings",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "screenshot.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.screenshot.status",
+      "notes": [
+        "Read-only resident status of the host window-capture tool and the calling",
+        "session's capture task.  It never starts the tool, captures, or writes an",
+        "attachment; the capability probe runs the tool's ``--version`` only."
+      ],
+      "request": "ScreenshotStatusQuery",
+      "result": "ScreenshotStatus",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_screenshot_status",
+      "wire_defaults": {
+        "task_id": ""
+      }
     },
     {
       "capability": "session.close",
@@ -4430,6 +4513,24 @@
       "origin": "python",
       "role": "result"
     },
+    "OpenScreenshotSettingsCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Open (or focus) the capture tool's own settings GUI."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "OpenSessionCommand": {
       "fields": [
         {
@@ -5726,6 +5827,544 @@
         "``sequence`` is the session cursor and ``turn_sequence`` the turn-local",
         "sequence (both frozen in v1).  ``payload`` is a strict JSON projection; there",
         "is no ``timestamp`` field."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ScreenshotCancelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Cancel one session's capture task; ``task_id`` is required."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ScreenshotCancelResult": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "cancelled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Idempotent: cancelling a terminal task reports its settled state."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ScreenshotCaptureCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "settings",
+          "nullable": true,
+          "optional": true,
+          "python_type": "ScreenshotSettings | None",
+          "required": false,
+          "ts_type": "ScreenshotSettings | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "save_config",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "max_frames",
+          "nullable": true,
+          "optional": true,
+          "python_type": "int | None",
+          "required": false,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Start one asynchronous capture task.  ``settings`` is optional and bounded;",
+        "``save_config`` asks the tool to persist the supplied settings.  ``max_frames``",
+        "is an optional budget: the runtime starts the job with",
+        "``min(tool saved count, max_frames)`` so a composer that can hold fewer images",
+        "never asks the tool for more."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ScreenshotCaptureResult": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "requested",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "settings",
+          "nullable": false,
+          "optional": false,
+          "python_type": "ScreenshotSettings",
+          "required": true,
+          "ts_type": "ScreenshotSettings",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The immediate task snapshot; the capture continues in the background."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ScreenshotFrameAttachment": {
+      "fields": [
+        {
+          "name": "attachment_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "mime",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "size",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "revision",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One finalized screenshot frame as the composer references it: an opaque",
+        "attachment id plus durable metadata; no bytes and no tool path."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "ScreenshotSettings": {
+      "fields": [
+        {
+          "default": 1,
+          "default_kind": "value",
+          "name": "count",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 250,
+          "default_kind": "value",
+          "name": "interval_ms",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "start_delay_ms",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "max_edge",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 300,
+          "default_kind": "value",
+          "name": "ttl_seconds",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 5000,
+          "default_kind": "value",
+          "name": "frame_timeout_ms",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "allow_reuse",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Bounded capture parameters; every member is optional on the wire and an",
+        "absent value lets the tool apply its saved config or its own default",
+        "(override > saved > default)."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ScreenshotStatus": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "requested",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "captured",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "attachments",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ScreenshotFrameAttachment, ...]",
+          "required": true,
+          "ts_type": "ScreenshotFrameAttachment[]",
+          "wire": "json"
+        },
+        {
+          "default": true,
+          "default_kind": "value",
+          "name": "available",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "unavailable_reason",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "error_code",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "error_message",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The resident capture task snapshot: a closed state, progress counts, the",
+        "finalized attachment ids, and a named error when it failed.  ``state`` is",
+        "``idle`` when the session has no task."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ScreenshotStatusQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "task_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Read one session's capture task; an empty ``task_id`` asks for the session's",
+        "own current task."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ScreenshotToolStatus": {
+      "fields": [
+        {
+          "name": "available",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "platform",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "reason",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "version",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "busy",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "active_task_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Resident tool status: availability, the platform reason when unavailable,",
+        "the probed version, and whether a capture task is active.  It never carries",
+        "a tool path or a raw tool error."
       ],
       "origin": "python",
       "role": "result"

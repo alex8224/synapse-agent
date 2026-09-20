@@ -6,6 +6,7 @@ import { Transcript } from './components/Transcript';
 import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner';
 import { RecoveryNotice } from './components/RecoveryNotice.tsx';
 import { CommandInput } from './components/CommandInput';
+import { ScreenshotTaskBanner } from './components/ScreenshotTaskBanner.tsx';
 import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
 import { BackgroundAlerts } from './components/BackgroundAlerts';
@@ -13,11 +14,14 @@ import { PairingGate } from './components/PairingGate';
 import { NEW_SESSION_ACTION, readShortcutAction } from './client/deepLink';
 import { useAppearanceStore } from './stores/appearance.ts';
 import { useConsoleStore } from './stores/useConsoleStore';
+import { useScreenshotStore } from './stores/screenshotTask.ts';
 
 export function App() {
   const initClient = useConsoleStore((s) => s.initClient);
   const pairingState = useConsoleStore((s) => s.pairingState);
   const connectionState = useConsoleStore((s) => s.connectionState);
+  const runtimeClient = useConsoleStore((s) => s.client);
+  const currentProjectId = useConsoleStore((s) => s.currentSession.project_id);
   const currentThreadId = useConsoleStore((s) => s.currentSession.thread_id);
   const toggleSidebar = useConsoleStore((s) => s.toggleSidebar);
   const cancelActiveTurn = useConsoleStore((s) => s.cancelActiveTurn);
@@ -25,6 +29,7 @@ export function App() {
   const runtimeStatus = useConsoleStore((s) => s.runtimeStatus);
   const requestSessionSearchFocus = useConsoleStore((s) => s.requestSessionSearchFocus);
   const toggleAppearance = useAppearanceStore((s) => s.toggleAppearance);
+  const refreshScreenshotTool = useScreenshotStore((s) => s.refreshTool);
 
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 767px)').matches);
   const [tablet, setTablet] = useState(() => window.matchMedia('(min-width: 768px) and (max-width: 1023px)').matches);
@@ -98,6 +103,13 @@ export function App() {
   useEffect(() => {
     initClient();
   }, [initClient]);
+
+  // Learn the capture tool's availability once per session so a menu activation
+  // either starts a capture or names the reason it cannot, without a surprise.
+  useEffect(() => {
+    if (pairingState !== 'paired' || connectionState !== 'connected') return;
+    void refreshScreenshotTool().catch(() => undefined);
+  }, [pairingState, connectionState, runtimeClient, currentProjectId, currentThreadId, refreshScreenshotTool]);
 
   // Installable-app shortcut (`/?action=new-session`, see `public/manifest.webmanifest`):
   // a taskbar right-click should land in a fresh session.  It is read once, only
@@ -202,6 +214,7 @@ export function App() {
           <RecoveryNotice />
           <Transcript />
           <CommandInput />
+          <ScreenshotTaskBanner />
         </main>
         <BottomBar />
       </div>

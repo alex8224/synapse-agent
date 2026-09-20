@@ -277,11 +277,39 @@ Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/
   `web/tests/openWithMenu.verify.ts`（真浏览器 32 项）、`tests/test_runtime_service_external_apps.py`
   （路径拒绝、应用发现、启动 argv、wire 解码、ACL 隔离）。
 
+### 2.3.2 窗口截图（输入区动作 → 运行时 → 本机工具）
+
+- **边界**：前端从不直连截图工具。运行时通过 CLI（`windows-capture.exe --rpc '<json>'`，固定 argv、
+  超时、输出有界）驱动本机的 `windows-capture` 工具，再把它派生成普通附件。工具路径、原始错误码、
+  截图字节都不会出现在 wire 上。
+- **发现与可用性**：默认发现本仓库的 Release 构建（可用 `SYNAPSE_WINDOWS_CAPTURE_EXE` 覆盖）；
+  非 Windows 或未构建时**明确不可用**并给出原因。能力探测只运行 `--version`，**不会启动 GUI**。
+- **异步任务**：`runtime.screenshot.capture` 立即返回任务快照，`runtime.screenshot.status` 轮询进度
+  （读时把工具可用性一并折进同一投影），`runtime.screenshot.cancel` 幂等取消。控制台默认**不覆盖**
+  参数，让工具用自己保存的配置（`override > saved > default`，参数在「截图设置」里选）；带 `settings`
+  时才发有界覆盖。已有任务排队/运行中时再次 `capture` 是**幂等**的（返回正在运行的任务），不会起
+  第二个任务（工具本身也一次只跑一个）。
+- **结果 → 附件**：每一帧按块（≤ 256 KiB）读回，经**既有附件 store** 的 `begin/append/finish`
+  校验并 finalize，返回 `attachment_id` + metadata。前端把结果当作 `ready` 行加入输入框，按 id 用
+  历史缩略图 loader 预览；**结果绝不自动发送**。数量/大小沿用附件规则（每次最多 8 张、每张 ≤ 4 MB）。
+- **提前 `completed` 的兼容**：运行时只在全部帧 finalize 后才发布 `completed`；对仍会提前发布（附件
+  尚未/部分回填）的旧 daemon，控制台保留「正在回填截图附件…」反馈，并在**有界短窗口**内自动重读状态，
+  帧到齐即自动加入；窗口用尽仍为空时给出明确的「刷新状态」提示（手动刷新会再等一轮）。缩略图与悬停
+  放大预览共用按 id 取字节的 hook（primitive 依赖 + 异步世代隔离），重渲染不重复读取。
+- **无目标 / 失败**：无目标时工具打开自己的选择界面并返回 `target_required`，控制台提示选择后重试；
+  取消、失败、工具退出都落到**命名终态**，绝不假装成功。
+- **绑定发起会话与草稿世代**：任务记录发起时的会话与草稿世代；切回原会话且未发送新草稿时结果自动
+  加入输入框，否则保留为**可见的待确认项**（「加入输入框」/「丢弃」），不塞进新草稿。
+- **授权位独立**：读状态要 `screenshot.read`；打开设置 GUI、开始/取消截图要 `screenshot.control`
+  ——`screenshot.read`、`apps.list`、`attachments.write` 都**不**授权启动。
+- 守护：`tests/test_runtime_service_screenshot.py`（adapter argv/超时/错误映射、任务生命周期、
+  wire 解码、ACL 隔离）、`web/tests/screenshot.test.ts`（严格解码、纯策略、任务 store 行为）。
+
 ---
 
 ## 3. 通信与协议层契约
 
-严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 50 个方法）。控制台涉及的子集：
+严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 55 个方法）。控制台涉及的子集：
 
 | 协议方法 | 方向 | 用途 |
 |---|---|---|
@@ -321,6 +349,10 @@ Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/
 | `runtime.attachments.stat` / `.read` | Request -> Response | 已落盘附件的元数据与分块字节 |
 | `runtime.apps.list` | Request -> Response | 宿主可启动的本机应用目录（图标字形 + 声称的扩展名，有界；catalog 作用域，`apps.list`） |
 | `runtime.workspace.open_external` | Request -> Response | 用指定应用打开一个工作区相对路径（`mode: open` 或 `reveal`；授权位 `workspace.open_external`） |
+| `runtime.screenshot.status` | Request -> Response | 截图工具可用性 + 当前会话截图任务快照（只读；授权位 `screenshot.read`） |
+| `runtime.screenshot.settings.open` | Request -> Response | 打开截图工具自身设置窗口（授权位 `screenshot.control`） |
+| `runtime.screenshot.capture` | Request -> Response | 用有界 `settings` 排队异步截图任务（幂等；授权位 `screenshot.control`） |
+| `runtime.screenshot.cancel` | Request -> Response | 取消当前会话截图任务（幂等；授权位 `screenshot.control`） |
 
 ### 3.1 控制台实际调用的方法
 

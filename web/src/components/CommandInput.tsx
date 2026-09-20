@@ -1,18 +1,20 @@
-import { Add20Regular, Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
+import { Stop20Filled, ArrowUp20Regular } from '@fluentui/react-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
+import { ActionMenu } from './composer/actions/ActionMenu.tsx';
 import { RichComposer, type RichComposerHandle } from './composer/RichComposer.tsx';
 import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { useScreenshotStore } from '../stores/screenshotTask.ts';
 import { useShallow } from 'zustand/react/shallow';
 
 /**
  * Floating command card: the prompt, then one control row inside the same
- * rounded box — add-project on the left, the model and reasoning level the next
- * turn will run on, and the primary action on the right.  Those two pickers used
- * to sit in the status bar; they configure the next turn, so they belong next to
- * the input that starts it.
+ * rounded box — the action menu and the add-project button on the left, the model
+ * and reasoning level the next turn will run on, and the primary action on the
+ * right.  Those two pickers used to sit in the status bar; they configure the next
+ * turn, so they belong next to the input that starts it.
  *
  * The input itself is `RichComposer`: multi-line text with inline atomic pills
  * (an `@`-reference, an image).  This card keeps everything that is *not* the
@@ -28,17 +30,21 @@ import { useShallow } from 'zustand/react/shallow';
  * Enter, not the button.
  *
  * Images enter through three routes and all three end in the same `handleFiles`:
- * a paste into the card, a drop onto it, or the `+` button's file picker.  Only
- * the image types the runtime accepts are taken, at most eight per submit and
- * 4 MB each; every refusal is shown next to the composer instead of being
- * silently dropped.  Each accepted pick becomes an inline pill at the caret
- * (`ImagePillView`) whose hover reveals the enlarged copy, so what will be sent
- * is verifiable before the turn is submitted.  A chunk still uploading disables
- * sending, and an attachment-only turn may be submitted with empty text.
+ * a paste into the card, a drop onto it, or the image picker.  Only the image
+ * types the runtime accepts are taken, at most eight per submit and 4 MB each;
+ * every refusal is shown next to the composer instead of being silently dropped.
+ * Each accepted pick becomes an inline pill at the caret (`ImagePillView`) whose
+ * hover reveals the enlarged copy, so what will be sent is verifiable before the
+ * turn is submitted.  A chunk still uploading disables sending, and an
+ * attachment-only turn may be submitted with empty text.
  *
- * The `+` on the left is also "add project": `AddProjectDialog` walks the host
- * filesystem and registers a workspace directory as a new project (then switches
- * to it and opens a session).
+ * The bottom-left control is the action menu (`composer/actions/`): a general
+ * menu whose first row opens the image picker and whose other rows are declared
+ * by that registry.  This card only hosts it — it owns the hidden `<input>` and
+ * hands the menu a `pickImages` capability, so a picked file still takes the one
+ * `handleFiles` path.  "Add project" stays its own button beside the menu:
+ * `AddProjectDialog` walks the host filesystem and registers a workspace
+ * directory as a new project (then switches to it and opens a session).
  *
  * The card floats over the transcript (`.console-pane-inset` reserves its height
  * in the scroller), which is what makes its own acrylic visible: a blur needs
@@ -133,6 +139,16 @@ export const CommandInput: React.FC = () => {
     [addAttachments],
   );
 
+  // The one capability the action menu needs from this card: open the hidden
+  // picker.  The chosen files then take `handleFiles`, like a paste or a drop.
+  const pickImages = useCallback(() => fileInputRef.current?.click(), []);
+
+  // The two window-capture capabilities are the capture store's own actions: the
+  // card only hands them to the menu, so no screenshot logic lives here (the
+  // progress and the result are painted by the capture banner).
+  const startWindowScreenshot = useScreenshotStore((s) => s.start);
+  const openScreenshotSettings = useScreenshotStore((s) => s.openSettings);
+
   return (
     // The card floats over the transcript's bottom edge, so the transcript scrolls
     // behind it and the card's acrylic has something to blur.  The scroller reserves
@@ -210,15 +226,13 @@ export const CommandInput: React.FC = () => {
               It is also the pickers' anchor (`relative`): anchored to their own
               trigger, a 320px model menu ran past the left edge of a narrow pane. */}
           <div className="ui-composer-toolbar relative">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              title="插入图片"
-              aria-label="插入图片"
-              className="ui-icon-button"
-            >
-              <Add20Regular aria-hidden="true" />
-            </button>
+            {/* The bottom-left control is a general action menu; the image picker
+                is one of its rows (`composer/actions/`), not a branch here. */}
+            <ActionMenu
+              onPickImages={pickImages}
+              onStartWindowScreenshot={startWindowScreenshot}
+              onOpenScreenshotSettings={openScreenshotSettings}
+            />
             <input
               ref={fileInputRef}
               type="file"

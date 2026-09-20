@@ -138,6 +138,22 @@ from synapse.runtime.service.recovery import (
     MAX_RECONCILE_TURN_ID_BYTES,
 )
 from synapse.runtime.service.revert import RevertTurnChangeCommand
+from synapse.runtime.service.screenshot import (
+    MAX_SCREENSHOT_COUNT,
+    MAX_SCREENSHOT_FRAME_TIMEOUT_MS,
+    MAX_SCREENSHOT_FRAMES_PER_TASK,
+    MAX_SCREENSHOT_INTERVAL_MS,
+    MAX_SCREENSHOT_MAX_EDGE,
+    MAX_SCREENSHOT_START_DELAY_MS,
+    MAX_SCREENSHOT_TASK_ID_BYTES,
+    MAX_SCREENSHOT_TTL_SECONDS,
+    MIN_SCREENSHOT_TTL_SECONDS,
+    OpenScreenshotSettingsCommand,
+    ScreenshotCancelCommand,
+    ScreenshotCaptureCommand,
+    ScreenshotSettings,
+    ScreenshotStatusQuery,
+)
 from synapse.runtime.service.session_management import (
     SESSION_SEARCH_LIMIT_DEFAULT,
     SESSION_SEARCH_LIMIT_MAX,
@@ -380,6 +396,39 @@ def _bounded_text(value: object, maximum: int, *, nonempty: bool = True) -> str:
     if len(text.encode("utf-8")) > maximum:
         raise ProtocolError(-32602, "invalid_params")
     return text
+
+
+#: Screenshot settings bounds: field -> (minimum, maximum).  ``allow_reuse`` is a
+#: boolean and validated separately.
+_SCREENSHOT_SETTINGS_BOUNDS: Final = {
+    "count": (1, MAX_SCREENSHOT_COUNT),
+    "interval_ms": (0, MAX_SCREENSHOT_INTERVAL_MS),
+    "start_delay_ms": (0, MAX_SCREENSHOT_START_DELAY_MS),
+    "max_edge": (0, MAX_SCREENSHOT_MAX_EDGE),
+    "ttl_seconds": (MIN_SCREENSHOT_TTL_SECONDS, MAX_SCREENSHOT_TTL_SECONDS),
+    "frame_timeout_ms": (0, MAX_SCREENSHOT_FRAME_TIMEOUT_MS),
+}
+
+
+def _screenshot_task_id(value: object) -> str:
+    """Decode one opaque capture task id (an empty status query is allowed)."""
+    return _bounded_text(value, MAX_SCREENSHOT_TASK_ID_BYTES, nonempty=False)
+
+
+def _screenshot_settings(value: object) -> ScreenshotSettings:
+    """Decode one bounded capture-settings object; every member is optional."""
+    if not isinstance(value, dict):
+        raise ProtocolError(-32602, "invalid_params")
+    allowed = set(_SCREENSHOT_SETTINGS_BOUNDS) | {"allow_reuse"}
+    if not set(value) <= allowed:
+        raise ProtocolError(-32602, "invalid_params")
+    kwargs: dict[str, object] = {}
+    for field, (minimum, maximum) in _SCREENSHOT_SETTINGS_BOUNDS.items():
+        if field in value:
+            kwargs[field] = _bounded_integer(value[field], minimum=minimum, maximum=maximum)
+    if "allow_reuse" in value:
+        kwargs["allow_reuse"] = _boolean(value["allow_reuse"])
+    return ScreenshotSettings(**kwargs)  # type: ignore[arg-type]
 
 
 _VERSION_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]*$")
@@ -1164,6 +1213,42 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             )
         except ValueError:
             raise ProtocolError(-32602, "invalid_params") from None
+    if method == "runtime.screenshot.status":
+        _optional_fields(params, {"session"}, {"task_id"})
+        return ScreenshotStatusQuery(
+            session=_session(params["session"]),
+            task_id=(
+                _screenshot_task_id(params["task_id"]) if "task_id" in params else ""
+            ),
+        )
+    if method == "runtime.screenshot.settings.open":
+        _fields(params, {"session"})
+        return OpenScreenshotSettingsCommand(session=_session(params["session"]))
+    if method == "runtime.screenshot.capture":
+        _optional_fields(params, {"session"}, {"settings", "save_config", "max_frames"})
+        raw_settings = params.get("settings")
+        return ScreenshotCaptureCommand(
+            session=_session(params["session"]),
+            settings=(
+                _screenshot_settings(raw_settings) if raw_settings is not None else None
+            ),
+            save_config=(
+                _boolean(params["save_config"]) if "save_config" in params else False
+            ),
+            max_frames=(
+                _bounded_integer(
+                    params["max_frames"], minimum=1, maximum=MAX_SCREENSHOT_FRAMES_PER_TASK
+                )
+                if "max_frames" in params
+                else None
+            ),
+        )
+    if method == "runtime.screenshot.cancel":
+        _fields(params, {"session", "task_id"})
+        return ScreenshotCancelCommand(
+            session=_session(params["session"]),
+            task_id=_screenshot_task_id(params["task_id"]),
+        )
     raise ProtocolError(-32601, "method_not_found")
 
 
@@ -1272,6 +1357,14 @@ async def dispatch(
         return await service.read_session_history(dto)  # type: ignore[arg-type]
     if method == "runtime.session.reconcile":
         return await service.reconcile_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.screenshot.status":
+        return await service.get_screenshot_status(dto)  # type: ignore[arg-type]
+    if method == "runtime.screenshot.settings.open":
+        return await service.open_screenshot_settings(dto)  # type: ignore[arg-type]
+    if method == "runtime.screenshot.capture":
+        return await service.start_screenshot_capture(dto)  # type: ignore[arg-type]
+    if method == "runtime.screenshot.cancel":
+        return await service.cancel_screenshot_capture(dto)  # type: ignore[arg-type]
     raise ProtocolError(-32601, "method_not_found")
 
 

@@ -685,6 +685,12 @@ interface ConsoleStore {
   attachmentError: string | null;
   /** Validate + upload picked/dropped files for the current session. */
   addAttachments: (sources: AttachmentUploadSource[]) => Promise<void>;
+  /**
+   * Append already-finalized attachment rows (e.g. screenshot frames) to the
+   * composer, honouring the per-submit image budget.  Returns how many were
+   * added and how many were dropped because the composer was already full.
+   */
+  addReadyAttachments: (frames: ReadyAttachmentInput[]) => { added: number; dropped: number };
   /** Drop one composer row; an in-flight upload is cancelled (partial aborted). */
   removeAttachment: (localId: string) => void;
   /** Cancel every in-flight upload and clear the composer (switch / logout). */
@@ -1019,6 +1025,17 @@ interface ConsoleStore {
 // from a previously switched-away session can never over-write the current one.
 let sessionEpoch = 0;
 
+// Monotonic draft generation: bumped every time the composer's draft is sent.
+// A screenshot task records the value it was started at, so a result that lands
+// after the reader has already sent a new draft is offered for confirmation
+// instead of silently filling a draft they never asked to fill.
+let composerGeneration = 0;
+
+/** The current draft generation (see ``composerGeneration``). */
+export function currentComposerGeneration(): number {
+  return composerGeneration;
+}
+
 // The session this store attached a live watch to (before any drop). Reconnect
 // recovery only resumes the *same* (project_id, thread_id); a user switch while
 // disconnected is already handled by its own attach flow.
@@ -1148,8 +1165,20 @@ export interface PendingAttachment {
    *
    * This module stays DOM-free on purpose: it only holds the reference, while
    * `AttachmentPreview` creates and revokes the object URL.
+   *
+   * Optional: a screenshot row arrives already finalized (an opaque id), with no
+   * local pick, and its preview is loaded by id through the history loader.
    */
-  source: AttachmentUploadSource;
+  source?: AttachmentUploadSource;
+}
+
+/** One already-finalized attachment (e.g. a screenshot frame) to add as a row. */
+export interface ReadyAttachmentInput {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  size: number;
+  revision: string | null;
 }
 
 /** Local id sequence for composer rows (never sent over the wire). */
@@ -3717,6 +3746,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     }
 
     set({ attachmentError: null });
+    // The draft is leaving the composer now; a screenshot result that lands
+    // afterwards belongs to a different draft generation.
+    composerGeneration += 1;
     get().addUserMessage(body, attachmentDisplaysOf(pending));
     set({ runtimeStatus: 'running', activeTurnId: null, activity: null });
     try {
@@ -3819,6 +3851,37 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     await Promise.all(
       rows.map((row, index) => uploadPendingAttachment(row, accepted[index].source)),
     );
+  },
+  addReadyAttachments: (frames) => {
+    // Reuse the same candidate rules the upload path applies (image type, 4 MB
+    // per image, at most eight per submit) so a screenshot result can never slip
+    // past the composer's budget.  A row that does not fit is dropped here and
+    // counted, and the caller surfaces it instead of silently losing an image.
+    const existing = get().attachments;
+    const candidates = frames.map((frame) => ({
+      name: frame.name || 'screenshot.png',
+      mime: frame.mime,
+      size: frame.size,
+      attachmentId: frame.attachmentId,
+      revision: frame.revision,
+    }));
+    const { accepted } = selectAttachmentCandidates(existing.length, candidates);
+    const rows: PendingAttachment[] = accepted.map((candidate) => ({
+      localId: `att-${++attachmentLocalSeq}`,
+      name: candidate.name,
+      mime: candidate.mime,
+      size: candidate.size,
+      status: 'ready',
+      uploadedBytes: candidate.size,
+      attachmentId: candidate.attachmentId,
+      error: null,
+      // No local pick: the row is already finalized server-side, so its preview
+      // is loaded by id (the history loader), not from a local blob.
+    }));
+    if (rows.length > 0) {
+      set((s) => ({ attachments: [...s.attachments, ...rows] }));
+    }
+    return { added: rows.length, dropped: candidates.length - rows.length };
   },
   removeAttachment: (localId) => {
     const entry = get().attachments.find((row) => row.localId === localId);
