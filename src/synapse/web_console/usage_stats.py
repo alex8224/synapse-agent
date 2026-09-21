@@ -477,25 +477,123 @@ def _accumulate_event(
 
 
 def _hour_slot(agg: dict[str, Any], day: str, hour: int) -> dict[str, Any]:
-    """The ``(day, hour)`` cell of the hourly matrix, creating it on first use.
+    """The ``(UTC day, hour)`` cell of the hourly matrix, created on first use.
+
+    Buckets stay in UTC here and are relabelled into the host's time zone when the
+    payload is built (:func:`_local_hour_matrix`): a time-zone conversion per
+    event costs ~18 us, i.e. ~0.4 s on a 20k-event window, while relabelling the
+    handful of surviving buckets costs microseconds and is exactly equivalent --
+    an offset moves a whole hour bucket, it never splits one.
 
     The matrix only ever shows the window's last :data:`MAX_HEATMAP_HOUR_DAYS`
-    days, so older days are dropped as they are pushed out -- the dict therefore
-    holds at most that many days no matter how wide the window is.  (Events
-    arrive newest-last in practice; an out-of-order day simply re-enters and is
-    dropped again, and the emitted rows are selected from the window's tail
-    anyway.)
+    local days, so older days are dropped as they are pushed out -- the dict
+    holds at most that many UTC days (plus a margin for the zone offset) no
+    matter how wide the window is.
     """
     days = agg["hour_days"]
     slots = days.get(day)
     if slots is None:
         slots = days[day] = [None] * 24
-        if len(days) > MAX_HEATMAP_HOUR_DAYS:
+        if len(days) > MAX_HEATMAP_HOUR_DAYS + 2:
             days.pop(min(days))
     slot = slots[hour]
     if slot is None:
         slot = slots[hour] = {"tokens": 0, "threads": set()}
     return slot
+
+
+def _local_offset_for_day(day: str) -> timedelta:
+    """The host's UTC offset at noon UTC of ``day``.
+
+    Evaluated per day rather than once per request so a daylight-saving change
+    inside the window is applied to the days on either side of it.  ``astimezone``
+    with no argument resolves the platform's zone *for that instant*, which is
+    what makes this correct on the two days a year that differ.
+    """
+    try:
+        moment = datetime.fromisoformat(f"{day}T12:00:00+00:00")
+        return moment.astimezone().utcoffset() or timedelta(0)
+    except ValueError:  # pragma: no cover - malformed day key
+        return timedelta(0)
+
+
+def _local_hour_matrix(
+    utc_slots: dict[str, list[dict[str, Any] | None]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Relabel the UTC hour buckets into the host's zone.
+
+    Returns ``(rows, truncated)``: one row per local day that has activity, most
+    recent last and at most :data:`MAX_HEATMAP_HOUR_DAYS` of them, each with 24
+    values indexed by local hour.  A day only appears when something happened in
+    it, which is why the rows carry their date instead of being padded into a
+    continuous strip -- there is no weekday row to keep aligned.
+    """
+    merged: dict[str, list[dict[str, Any] | None]] = {}
+    for day, slots in utc_slots.items():
+        shift = int(_local_offset_for_day(day).total_seconds() // 3600)
+        if shift == 0:
+            local_day, local_slots = day, slots
+            for hour, slot in enumerate(local_slots):
+                if slot is None:
+                    continue
+                cell = _matrix_cell(merged, local_day, hour)
+                cell["tokens"] += slot["tokens"]
+                cell["threads"].update(slot["threads"])
+            continue
+        base = date.fromisoformat(day)
+        for hour, slot in enumerate(slots):
+            if slot is None:
+                continue
+            local_hour = hour + shift
+            local_day = base
+            if local_hour >= 24:
+                local_hour -= 24
+                local_day = base + timedelta(days=1)
+            elif local_hour < 0:
+                local_hour += 24
+                local_day = base - timedelta(days=1)
+            cell = _matrix_cell(merged, local_day.isoformat(), local_hour)
+            cell["tokens"] += slot["tokens"]
+            cell["threads"].update(slot["threads"])
+
+    days = sorted(merged)
+    truncated = len(days) > MAX_HEATMAP_HOUR_DAYS
+    rows: list[dict[str, Any]] = []
+    for day in days[-MAX_HEATMAP_HOUR_DAYS:]:
+        slots = merged[day]
+        rows.append(
+            {
+                "date": day,
+                "tokens": [
+                    int(slot["tokens"]) if slot is not None else 0 for slot in slots
+                ],
+                "sessions": [
+                    len(slot["threads"]) if slot is not None else 0 for slot in slots
+                ],
+            }
+        )
+    return rows, truncated
+
+
+def _matrix_cell(
+    merged: dict[str, list[dict[str, Any] | None]], day: str, hour: int
+) -> dict[str, Any]:
+    slots = merged.setdefault(day, [None] * 24)
+    cell = slots[hour]
+    if cell is None:
+        cell = slots[hour] = {"tokens": 0, "threads": set()}
+    return cell
+
+
+def _local_offset_label() -> str:
+    """``UTC+08:00`` / ``UTC-05:00`` / ``UTC`` for the host's current zone."""
+    offset = datetime.now(UTC).astimezone().utcoffset() or timedelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    if total_minutes == 0:
+        return "UTC"
+    sign = "+" if total_minutes > 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
 
 def _consume_tool_refs(
@@ -956,30 +1054,11 @@ def get_usage_statistics(
                 }
             )
 
-        # The hourly matrix: the window's last ``MAX_HEATMAP_HOUR_DAYS`` days, one
-        # row each, always 24 columns (UTC hours, index == hour).  Rows are
-        # continuous like the daily strip, so a quiet day is a row of zeros rather
-        # than a missing row that would shift every later day's date.
-        hours_start = max(
-            heatmap_start, heatmap_end - timedelta(days=MAX_HEATMAP_HOUR_DAYS - 1)
-        )
-        heatmap_hours_truncated = hours_start > heatmap_start
-        for offset in range((heatmap_end - hours_start).days + 1):
-            day = (hours_start + timedelta(days=offset)).isoformat()
-            slots = agg["hour_days"].get(day)
-            heatmap_hours.append(
-                {
-                    "date": day,
-                    "tokens": [
-                        int(slot["tokens"]) if slot is not None else 0
-                        for slot in (slots or [None] * 24)
-                    ],
-                    "sessions": [
-                        len(slot["threads"]) if slot is not None else 0
-                        for slot in (slots or [None] * 24)
-                    ],
-                }
-            )
+    # The hourly matrix is built from the buckets the scan kept (the window's last
+    # ``MAX_HEATMAP_HOUR_DAYS`` local days), relabelled into the host's zone.  It is
+    # independent of the daily strip above: rows carry their own date, so a day
+    # without activity is simply absent instead of a padded row.
+    heatmap_hours, heatmap_hours_truncated = _local_hour_matrix(agg["hour_days"])
 
     # Trend: hourly buckets for "today", daily buckets otherwise.
     if range_key == "today":
@@ -1141,7 +1220,13 @@ def get_usage_statistics(
         "heatmap": {
             "days": heatmap_days,
             "truncated": heatmap_truncated,
-            "hourly": {"rows": heatmap_hours, "truncated": heatmap_hours_truncated},
+            "hourly": {
+                "rows": heatmap_hours,
+                "truncated": heatmap_hours_truncated,
+                # The host's current zone, so the panel can name what the 24
+                # columns mean instead of claiming UTC.
+                "timezone": _local_offset_label(),
+            },
         },
         "trend": {
             "range_key": range_key,
@@ -1176,8 +1261,9 @@ def get_usage_statistics(
             "与缓存读取、输出共同构成累计吞吐；输出已含 reasoning，不重复累加。",
             "所有时间均为 UTC，日期区间为闭区间；自定义区间最长 "
             f"{MAX_CUSTOM_SPAN_DAYS} 天，热力图最多显示最近 {MAX_HEATMAP_DAYS} 天（不影响累计）。",
-            f"小时热力矩阵最多显示窗口末 {MAX_HEATMAP_HOUR_DAYS} 天、每天 24 个 UTC 小时"
-            "（不影响累计）。",
+            f"小时热力矩阵按宿主本地时区（当前 {_local_offset_label()}）聚合，"
+            f"最多显示最近 {MAX_HEATMAP_HOUR_DAYS} 个有活动的本地日、每天 24 小时"
+            "（不影响累计；其余面板仍为 UTC 闭区间）。",
             "费用、代码行数、工具平均耗时当前无数据来源，显示为 —。",
             "工具维度仅覆盖被压缩并写入引用存储的工具输出，不代表全部工具调用。",
             "Agent/角色维度当前无数据来源，已停用。",

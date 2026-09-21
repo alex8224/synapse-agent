@@ -100,10 +100,15 @@ export interface HourlyHeatmapRow {
 export interface HourlyHeatmap {
   rows: HourlyHeatmapRow[];
   /**
-   * `true` when the window held more days than the hourly matrix shows; the rows
-   * are then the window's tail and the totals still cover everything.
+   * `true` when more local days had activity than the matrix shows; the rows are
+   * then the most recent ones and the totals still cover everything.
    */
   truncated: boolean;
+  /**
+   * The host's current UTC offset (`UTC+08:00`, or `UTC` at zero), naming what
+   * the 24 columns mean. Rows are bucketed in that zone, not in UTC.
+   */
+  timezone: string;
 }
 
 export interface TrendItem {
@@ -371,6 +376,7 @@ export function parseUsageStatsPayload(raw: unknown): UsageStatsPayload {
         const hourly = record(heatmap.hourly, 'heatmap.hourly');
         return {
           truncated: bool(hourly.truncated, 'heatmap.hourly.truncated'),
+          timezone: str(hourly.timezone, 'heatmap.hourly.timezone'),
           rows: list(hourly.rows, 'heatmap.hourly.rows', parseHourlyRow),
         };
       })(),

@@ -23,13 +23,18 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from synapse.tool_output.models import ModelRequestCompressionEvent
-from synapse.web_console.usage_stats import UsageStatsError, _git_state, get_usage_statistics
+from synapse.web_console.usage_stats import (
+    UsageStatsError,
+    _git_state,
+    _local_offset_label,
+    get_usage_statistics,
+)
 
 NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
@@ -618,7 +623,20 @@ def test_tool_records_are_labelled_partial_not_all_calls(tmp_path: Path) -> None
 # --- hourly matrix -----------------------------------------------------------
 
 
-def test_hourly_matrix_has_24_columns_per_day(tmp_path: Path) -> None:
+def _local_shift_hours() -> int:
+    """The host's current UTC offset in whole hours (the machine running the test)."""
+    offset = datetime.now(UTC).astimezone().utcoffset()
+    assert offset is not None
+    return int(offset.total_seconds() // 3600)
+
+
+def _local_bucket(created: str, shift: int) -> tuple[str, int]:
+    """Which local ``(date, hour)`` a UTC timestamp lands in."""
+    moment = datetime.fromisoformat(created) + timedelta(hours=shift)
+    return moment.date().isoformat(), moment.hour
+
+
+def test_hourly_matrix_has_24_local_columns_per_day(tmp_path: Path) -> None:
     events = [
         {
             "created_at": "2026-09-21T01:15:00Z",
@@ -645,50 +663,60 @@ def test_hourly_matrix_has_24_columns_per_day(tmp_path: Path) -> None:
     hourly = get_usage_statistics(ws, now=NOW, range_key="today")["heatmap"]["hourly"]
 
     assert hourly["truncated"] is False
-    assert len(hourly["rows"]) == 1  # a single-day window is exactly one row
-    row = hourly["rows"][0]
-    assert row["date"] == "2026-09-21"
-    assert len(row["tokens"]) == 24
-    assert len(row["sessions"]) == 24
-    assert row["tokens"][1] == 110 + 220  # both 01:xx events land in hour 1
-    assert row["sessions"][1] == 2  # two distinct threads in that hour
-    assert row["tokens"][14] == 330
-    assert row["sessions"][14] == 1
-    assert row["tokens"][0] == 0  # quiet hours are real zeros, not missing columns
-    assert sum(row["tokens"]) == 110 + 220 + 330  # the 09-20 event is out of window
+    assert hourly["timezone"] == _local_offset_label()
+    assert all(
+        len(row["tokens"]) == 24 and len(row["sessions"]) == 24 for row in hourly["rows"]
+    )
+    rows = {row["date"]: row for row in hourly["rows"]}
+    shift = _local_shift_hours()
+
+    # Both 01:xx events share one local hour; the 14:00 one is elsewhere.
+    day, hour = _local_bucket("2026-09-21T01:15:00Z", shift)
+    assert rows[day]["tokens"][hour] == 110 + 220
+    assert rows[day]["sessions"][hour] == 2
+    day2, hour2 = _local_bucket("2026-09-21T14:00:00Z", shift)
+    assert rows[day2]["tokens"][hour2] == 330
+    assert rows[day2]["sessions"][hour2] == 1
+    assert (day, hour) != (day2, hour2)
+    # A quiet hour is a real zero, not a missing column.
+    assert rows[day]["tokens"][(hour + 1) % 24] == 0
+    # The 09-20 event is outside a "today" window and is not counted anywhere.
+    assert sum(sum(row["tokens"]) for row in hourly["rows"]) == 110 + 220 + 330
 
 
-def test_hourly_matrix_is_capped_at_the_last_two_weeks(tmp_path: Path) -> None:
+def test_hourly_matrix_shows_the_last_active_days_only(tmp_path: Path) -> None:
+    """Rows are the local days that had activity, capped at two weeks."""
+    # Twenty active days inside the 30-day window, six of them inside the 7-day one.
+    active_days = list(range(1, 21))
     events = [
         {
-            "created_at": f"2026-09-{day:02d}T0{hour}:00:00Z",
+            "created_at": f"2026-09-{day:02d}T12:00:00Z",
             "thread_id": f"t{day}",
-            "event": _event(request_id=f"d{day}-{hour}", provider_input=100 * day, output=hour),
+            "event": _event(request_id=f"d{day}", provider_input=100 * day, output=1),
         }
-        for day in (1, 10, 21)
-        for hour in (1, 2)
+        for day in active_days
     ]
     ws = _build_workspace(tmp_path, events=events)
 
     week = get_usage_statistics(ws, now=NOW, range_key="7d")["heatmap"]["hourly"]
     assert week["truncated"] is False
+    shift = _local_shift_hours()
     assert [row["date"] for row in week["rows"]] == [
-        f"2026-09-{day:02d}" for day in range(15, 22)
+        _local_bucket(f"2026-09-{day:02d}T12:00:00Z", shift)[0]
+        for day in (15, 16, 17, 18, 19, 20)
     ]
 
     month = get_usage_statistics(ws, now=NOW, range_key="30d")["heatmap"]["hourly"]
-    assert month["truncated"] is True  # 30 days of window, 14 rows shown
-    assert [row["date"] for row in month["rows"]] == [
-        f"2026-09-{day:02d}" for day in range(8, 22)
-    ]
-    # The rows are continuous (a quiet day is a row of zeros) and every row has
-    # its own 24 columns.
-    assert all(len(row["tokens"]) == 24 for row in month["rows"])
-    # 09-21 carries provider_input 2100 + output <hour> in hours 1 and 2.
-    assert month["rows"][-1]["tokens"][1] == 2100 + 1
-    assert month["rows"][-1]["tokens"][2] == 2100 + 2
-    assert month["rows"][-1]["tokens"][3] == 0
-    assert month["rows"][0]["tokens"] == [0] * 24
+    assert month["truncated"] is True  # twenty active days, only the last two weeks shown
+    assert len(month["rows"]) == 14
+    assert [row["date"] for row in month["rows"]] == sorted(
+        {_local_bucket(f"2026-09-{day:02d}T12:00:00Z", shift)[0] for day in active_days}
+    )[-14:]
+    # The newest row carries the newest event's own local hour.
+    newest = month["rows"][-1]
+    day, hour = _local_bucket("2026-09-20T12:00:00Z", shift)
+    assert newest["date"] == day
+    assert newest["tokens"][hour] == 2000 + 1
 
 
 def test_hourly_matrix_keeps_projects_apart(tmp_path: Path) -> None:
@@ -729,9 +757,10 @@ def test_hourly_matrix_keeps_projects_apart(tmp_path: Path) -> None:
             {"workspace_name": "second", "workspace_path": str(second)},
         ],
     )
-    row = stats["heatmap"]["hourly"]["rows"][0]
-    assert row["tokens"][3] == 110 + 220
-    assert row["sessions"][3] == 2
+    day, hour = _local_bucket("2026-09-21T03:00:00Z", _local_shift_hours())
+    row = next(r for r in stats["heatmap"]["hourly"]["rows"] if r["date"] == day)
+    assert row["tokens"][hour] == 110 + 220
+    assert row["sessions"][hour] == 2
 
 
 # --- rollup projection (the dashboard's fast path) ---------------------------

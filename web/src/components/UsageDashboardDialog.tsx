@@ -837,9 +837,9 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     <p className="text-xs text-gray-500 dark:text-gray-400">
                       {heatDim === 'week'
                         ? '按日记录 Agent 执行强度与活跃周期（过去 52 周，UTC）'
-                        : '按小时记录 Agent 执行强度（窗口末最多 14 天，UTC 每日 24 小时）'}
+                        : `按小时记录 Agent 执行强度（最近最多 14 个活跃日，本地时区 ${stats.heatmap.hourly.timezone}，每日 24 小时）`}
                       {heatDim === 'day' && stats.heatmap.hourly.truncated
-                        ? '；窗口更早的日期未显示'
+                        ? '；更早的活跃日未显示'
                         : ''}
                     </p>
                   </div>
@@ -1069,7 +1069,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                         y: rect.top - 76,
                                         title: `${fmtCalendarDate(row.date)} ${String(hour).padStart(2, '0')}:00–${String(
                                           (hour + 1) % 24,
-                                        ).padStart(2, '0')}:00 UTC`,
+                                        ).padStart(2, '0')}:00（${stats.heatmap.hourly.timezone}）`,
                                         rows,
                                       });
                                     }}

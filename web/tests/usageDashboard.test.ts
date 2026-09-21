@@ -80,7 +80,11 @@ const EMPTY_PAYLOAD = {
       efficiency: null,
     },
   ],
-  heatmap: { days: [], truncated: false, hourly: { rows: [], truncated: false } },
+  heatmap: {
+    days: [],
+    truncated: false,
+    hourly: { rows: [], truncated: false, timezone: 'UTC+08:00' },
+  },
   trend: { range_key: '7d', granularity: 'day', title: 't', subtitle: 's', items: [] },
   breakdowns: { project: [], model: [], agent: null },
   top_tools: {
@@ -121,6 +125,7 @@ const POPULATED_PAYLOAD = {
     ],
     hourly: {
       truncated: false,
+      timezone: 'UTC+08:00',
       rows: [
         {
           date: '2026-09-15',
@@ -175,6 +180,7 @@ test('an empty payload is valid and reports real zeros, not demo data', () => {
   assert.equal(parsed.heatmap.truncated, false);
   assert.deepEqual(parsed.heatmap.hourly.rows, []);
   assert.equal(parsed.heatmap.hourly.truncated, false);
+  assert.equal(parsed.heatmap.hourly.timezone, 'UTC+08:00');
   assert.equal(parsed.breakdowns.agent, null);
 });
 
@@ -228,8 +234,17 @@ test('a truncated or drifting payload is rejected field by field', () => {
       heatmap: {
         days: [],
         truncated: false,
+        hourly: { truncated: false, rows: [], timezone: 8 },
+      },
+    },
+    {
+      ...EMPTY_PAYLOAD,
+      heatmap: {
+        days: [],
+        truncated: false,
         hourly: {
           truncated: false,
+          timezone: 'UTC+08:00',
           rows: [{ date: '2026-09-15', tokens: [1, 2, 3], sessions: [] }],
         },
       },
