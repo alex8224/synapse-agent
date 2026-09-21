@@ -1,3 +1,4 @@
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Dismiss20Regular } from '@fluentui/react-icons';
 import { TopBar } from './components/TopBar';
@@ -212,8 +213,12 @@ export function App() {
               transcript scroller reaches up behind the header, and a positioned
               overlay would cover the newest lines it is describing. */}
           <RecoveryNotice />
-          <Transcript />
-          <CommandInput />
+          <ErrorBoundary level="panel" sectionTitle="消息历史">
+            <Transcript />
+          </ErrorBoundary>
+          <ErrorBoundary level="panel" sectionTitle="输入框">
+            <CommandInput />
+          </ErrorBoundary>
           <ScreenshotTaskBanner />
         </main>
         <BottomBar />
