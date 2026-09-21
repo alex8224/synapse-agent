@@ -69,6 +69,11 @@ MAX_CUSTOM_SPAN_DAYS = 3660
 #: window (and the payload flags that); this never truncates the aggregate
 #: totals, which still cover the whole window.
 MAX_HEATMAP_DAYS = 366
+#: The hourly matrix is one row per day and 24 columns per row, so it is capped
+#: at the window's last two weeks (same rule as above: the cap moves the matrix,
+#: never the totals).  A single-day window therefore renders exactly 24 cells,
+#: which is what "show me today" means.
+MAX_HEATMAP_HOUR_DAYS = 14
 #: Fixed hex palette for the donut/breakdown charts (SVG presentation
 #: attributes cannot resolve CSS custom properties reliably, so hex it is).
 _CHART_PALETTE = (
@@ -213,6 +218,10 @@ def _empty_aggregate() -> dict[str, Any]:
         },
         "days": {},
         "hours": {},
+        # day -> 24 slots (None until an hour has activity); each slot counts the
+        # hour's tokens and the distinct sessions active in it.  Only the window's
+        # last ``MAX_HEATMAP_HOUR_DAYS`` days are kept (see ``_hour_slot``).
+        "hour_days": {},
         "models": {},
         "threads": {},
         "turn_ids": set(),
@@ -447,6 +456,10 @@ def _accumulate_event(
     hour_bucket["output"] += output
     hour_bucket["baseline"] += baseline
 
+    _hour_slot(agg, day, hour)["tokens"] += tokens
+    if thread_id:
+        _hour_slot(agg, day, hour)["threads"].add(thread_id)
+
     agg["models"][model] = agg["models"].get(model, 0) + tokens
 
     if thread_id:
@@ -461,6 +474,28 @@ def _accumulate_event(
 
     if turn_id:
         agg["turn_ids"].add(turn_id)
+
+
+def _hour_slot(agg: dict[str, Any], day: str, hour: int) -> dict[str, Any]:
+    """The ``(day, hour)`` cell of the hourly matrix, creating it on first use.
+
+    The matrix only ever shows the window's last :data:`MAX_HEATMAP_HOUR_DAYS`
+    days, so older days are dropped as they are pushed out -- the dict therefore
+    holds at most that many days no matter how wide the window is.  (Events
+    arrive newest-last in practice; an out-of-order day simply re-enters and is
+    dropped again, and the emitted rows are selected from the window's tail
+    anyway.)
+    """
+    days = agg["hour_days"]
+    slots = days.get(day)
+    if slots is None:
+        slots = days[day] = [None] * 24
+        if len(days) > MAX_HEATMAP_HOUR_DAYS:
+            days.pop(min(days))
+    slot = slots[hour]
+    if slot is None:
+        slot = slots[hour] = {"tokens": 0, "threads": set()}
+    return slot
 
 
 def _consume_tool_refs(
@@ -541,6 +576,16 @@ def _merge_aggregates(target: dict[str, Any], source: dict[str, Any]) -> None:
         )
         for key in ("net_input", "cache_read", "cache_write", "output", "baseline"):
             bucket[key] += source_bucket[key]
+    for day, source_slots in source["hour_days"].items():
+        slots = target["hour_days"].setdefault(day, [None] * 24)
+        for hour, source_slot in enumerate(source_slots):
+            if source_slot is None:
+                continue
+            slot = slots[hour]
+            if slot is None:
+                slot = slots[hour] = {"tokens": 0, "threads": set()}
+            slot["tokens"] += source_slot["tokens"]
+            slot["threads"].update(source_slot["threads"])
     for model, tokens in source["models"].items():
         target["models"][model] = target["models"].get(model, 0) + tokens
     for thread_id, source_bucket in source["threads"].items():
@@ -564,6 +609,12 @@ def _namespace_aggregate(agg: dict[str, Any], namespace: str) -> dict[str, Any]:
     """Copy session identifiers into a project namespace before multi-project merge."""
     for bucket in agg["days"].values():
         bucket["threads"] = {f"{namespace}:{thread_id}" for thread_id in bucket["threads"]}
+    for slots in agg["hour_days"].values():
+        for slot in slots:
+            if slot is not None:
+                slot["threads"] = {
+                    f"{namespace}:{thread_id}" for thread_id in slot["threads"]
+                }
     agg["threads"] = {
         f"{namespace}:{thread_id}": bucket for thread_id, bucket in agg["threads"].items()
     }
@@ -886,6 +937,8 @@ def get_usage_statistics(
 
     heatmap_days: list[dict[str, Any]] = []
     heatmap_truncated = False
+    heatmap_hours: list[dict[str, Any]] = []
+    heatmap_hours_truncated = False
     if heatmap_start is not None and heatmap_end is not None:
         heatmap_span = (heatmap_end - heatmap_start).days + 1
         if heatmap_span > MAX_HEATMAP_DAYS:
@@ -900,6 +953,31 @@ def get_usage_statistics(
                     "date": day,
                     "tokens": int(bucket["tokens"]) if bucket else 0,
                     "sessions": len(bucket["threads"]) if bucket else 0,
+                }
+            )
+
+        # The hourly matrix: the window's last ``MAX_HEATMAP_HOUR_DAYS`` days, one
+        # row each, always 24 columns (UTC hours, index == hour).  Rows are
+        # continuous like the daily strip, so a quiet day is a row of zeros rather
+        # than a missing row that would shift every later day's date.
+        hours_start = max(
+            heatmap_start, heatmap_end - timedelta(days=MAX_HEATMAP_HOUR_DAYS - 1)
+        )
+        heatmap_hours_truncated = hours_start > heatmap_start
+        for offset in range((heatmap_end - hours_start).days + 1):
+            day = (hours_start + timedelta(days=offset)).isoformat()
+            slots = agg["hour_days"].get(day)
+            heatmap_hours.append(
+                {
+                    "date": day,
+                    "tokens": [
+                        int(slot["tokens"]) if slot is not None else 0
+                        for slot in (slots or [None] * 24)
+                    ],
+                    "sessions": [
+                        len(slot["threads"]) if slot is not None else 0
+                        for slot in (slots or [None] * 24)
+                    ],
                 }
             )
 
@@ -1060,7 +1138,11 @@ def get_usage_statistics(
             "loc_removed": None,
         },
         "project_matrix": project_matrix,
-        "heatmap": {"days": heatmap_days, "truncated": heatmap_truncated},
+        "heatmap": {
+            "days": heatmap_days,
+            "truncated": heatmap_truncated,
+            "hourly": {"rows": heatmap_hours, "truncated": heatmap_hours_truncated},
+        },
         "trend": {
             "range_key": range_key,
             "granularity": granularity,
@@ -1094,6 +1176,8 @@ def get_usage_statistics(
             "与缓存读取、输出共同构成累计吞吐；输出已含 reasoning，不重复累加。",
             "所有时间均为 UTC，日期区间为闭区间；自定义区间最长 "
             f"{MAX_CUSTOM_SPAN_DAYS} 天，热力图最多显示最近 {MAX_HEATMAP_DAYS} 天（不影响累计）。",
+            f"小时热力矩阵最多显示窗口末 {MAX_HEATMAP_HOUR_DAYS} 天、每天 24 个 UTC 小时"
+            "（不影响累计）。",
             "费用、代码行数、工具平均耗时当前无数据来源，显示为 —。",
             "工具维度仅覆盖被压缩并写入引用存储的工具输出，不代表全部工具调用。",
             "Agent/角色维度当前无数据来源，已停用。",

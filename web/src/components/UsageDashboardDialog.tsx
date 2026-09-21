@@ -18,6 +18,7 @@ import {
 } from '../stores/usagePrefs.ts';
 import type {
   BreakdownDim,
+  HeatDim,
   HeatMetric,
   StoredUsagePreferences,
 } from '../stores/usagePrefs.ts';
@@ -89,6 +90,11 @@ const HEAT_GAP_PX = 3.5;
 const HEAT_TICKS_OFFSET_PX = 28;
 const HEAT_WEEKS = 52;
 const HEAT_GRID_WIDTH_PX = HEAT_WEEKS * HEAT_CELL_PX + (HEAT_WEEKS - 1) * HEAT_GAP_PX;
+/** The hourly matrix: 24 columns, one row per day, filling the card width. */
+const HEAT_HOURS = 24;
+const HEAT_HOUR_GAP_PX = 3;
+/** The date label column left of the hourly rows (MM-DD). */
+const HEAT_HOUR_LABEL_PX = 34;
 
 function build52WeekCalendar(
   heatDays: HeatmapDay[],
@@ -226,6 +232,9 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
       ? 'loc'
       : 'tokens';
   });
+  const [heatDim, setHeatDim] = useState<HeatDim>(() =>
+    initialPrefs.heatDim === 'day' ? 'day' : 'week',
+  );
 
   const [tooltip, setTooltip] = useState<{
     visible: boolean;
@@ -318,6 +327,12 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
     if (metric === heatMetric) return;
     setHeatMetric(metric);
     saveStoredUsagePrefs({ heatMetric: metric });
+  };
+
+  const handleHeatDimChange = (dim: HeatDim) => {
+    if (dim === heatDim) return;
+    setHeatDim(dim);
+    saveStoredUsagePrefs({ heatDim: dim });
   };
 
   const handleBreakdownDimChange = (dim: BreakdownDim) => {
@@ -456,6 +471,32 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
     if (value <= q1) return 1;
     if (value <= q2) return 2;
     // `max` must always reach the top step, even when the quartile lands on it.
+    if (value < max && value <= q3) return 3;
+    return 4;
+  };
+
+  // The hourly matrix re-uses the same ramp, but its own quartiles: an hour is
+  // never comparable to a whole day, and the panel would otherwise paint every
+  // hour of a busy day in the same two steps.
+  const hourlyRows = useMemo(
+    () => stats?.heatmap.hourly.rows ?? [],
+    [stats],
+  );
+  const hourlyThresholds = useMemo(() => {
+    const values = hourlyRows
+      .flatMap((row) => (heatMetric === 'tokens' ? row.tokens : row.sessions))
+      .filter((value) => value > 0)
+      .sort((a, b) => a - b);
+    if (values.length === 0) return null;
+    const at = (q: number) => values[Math.min(values.length - 1, Math.floor(q * values.length))];
+    return { q1: at(0.25), q2: at(0.5), q3: at(0.75), max: values[values.length - 1] };
+  }, [hourlyRows, heatMetric]);
+  const hourLevel = (value: number): number => {
+    if (heatMetric === 'loc' || hourlyThresholds === null || value <= 0) return 0;
+    const { q1, q2, q3, max } = hourlyThresholds;
+    if (q3 === q1) return 4;
+    if (value <= q1) return 1;
+    if (value <= q2) return 2;
     if (value < max && value <= q3) return 3;
     return 4;
   };
@@ -794,8 +835,38 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                   <div>
                     <h2 className="text-sm font-bold text-gray-900">Token 活动与工程投入矩阵</h2>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      按日记录 Agent 执行强度与活跃周期（过去 52 周）
+                      {heatDim === 'week'
+                        ? '按日记录 Agent 执行强度与活跃周期（过去 52 周，UTC）'
+                        : '按小时记录 Agent 执行强度（窗口末最多 14 天，UTC 每日 24 小时）'}
+                      {heatDim === 'day' && stats.heatmap.hourly.truncated
+                        ? '；窗口更早的日期未显示'
+                        : ''}
                     </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => handleHeatDimChange('week')}
+                      className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
+                        heatDim === 'week'
+                          ? 'bg-surface font-semibold text-gray-900 shadow-card'
+                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                      }`}
+                    >
+                      按周
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleHeatDimChange('day')}
+                      className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
+                        heatDim === 'day'
+                          ? 'bg-surface font-semibold text-gray-900 shadow-card'
+                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                      }`}
+                    >
+                      按天
+                    </button>
                   </div>
                   <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5 text-xs">
                     <button
@@ -832,110 +903,202 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       代码变更行数
                     </button>
                   </div>
+                  </div>
                 </div>
 
-                <div className="overflow-x-auto pb-1">
-                  <div
-                    className="min-w-max"
-                    style={{ width: `${HEAT_TICKS_OFFSET_PX + HEAT_GRID_WIDTH_PX}px` }}
-                  >
-                    {/* 月份刻度：与下方 52 列网格共用同一套列宽/间距，每个刻度锚定在它所标注的那一列 */}
+                {heatDim === 'week' ? (
+                  <div className="overflow-x-auto pb-1">
                     <div
-                      className="grid mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none"
-                      style={{
-                        gridTemplateColumns: `repeat(${HEAT_WEEKS}, ${HEAT_CELL_PX}px)`,
-                        columnGap: `${HEAT_GAP_PX}px`,
-                        width: `${HEAT_GRID_WIDTH_PX}px`,
-                        marginLeft: `${HEAT_TICKS_OFFSET_PX}px`,
-                      }}
+                      className="min-w-max"
+                      style={{ width: `${HEAT_TICKS_OFFSET_PX + HEAT_GRID_WIDTH_PX}px` }}
                     >
-                      {monthTicks.map((tick) => (
-                        <span
-                          key={tick.column}
-                          style={{ gridColumnStart: tick.column + 1 }}
-                          className="whitespace-nowrap"
-                        >
-                          {tick.label}
-                        </span>
-                      ))}
-                    </div>
-
-                    {/* 主体：星期指示 + 52 周 x 7 天网格 */}
-                    <div className="flex gap-1.5 items-start">
-                      <div className="flex flex-col justify-between text-[10px] text-gray-400 dark:text-gray-500 pt-[2px] w-[22px] h-[98px] select-none shrink-0">
-                        <span>周一</span>
-                        <span>周三</span>
-                        <span>周五</span>
-                        <span>周日</span>
-                      </div>
-
+                      {/* 月份刻度：与下方 52 列网格共用同一套列宽/间距，每个刻度锚定在它所标注的那一列 */}
                       <div
-                        className="grid grid-flow-col"
+                        className="grid mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none"
                         style={{
-                          gridTemplateRows: `repeat(7, ${HEAT_CELL_PX}px)`,
-                          gridAutoColumns: `${HEAT_CELL_PX}px`,
-                          gap: `${HEAT_GAP_PX}px`,
+                          gridTemplateColumns: `repeat(${HEAT_WEEKS}, ${HEAT_CELL_PX}px)`,
+                          columnGap: `${HEAT_GAP_PX}px`,
+                          width: `${HEAT_GRID_WIDTH_PX}px`,
+                          marginLeft: `${HEAT_TICKS_OFFSET_PX}px`,
                         }}
                       >
-                        {calendarCells.map((cell) => {
-                          if (cell.isFuture) {
+                        {monthTicks.map((tick) => (
+                          <span
+                            key={tick.column}
+                            style={{ gridColumnStart: tick.column + 1 }}
+                            className="whitespace-nowrap"
+                          >
+                            {tick.label}
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* 主体：星期指示 + 52 周 x 7 天网格 */}
+                      <div className="flex gap-1.5 items-start">
+                        <div className="flex flex-col justify-between text-[10px] text-gray-400 dark:text-gray-500 pt-[2px] w-[22px] h-[98px] select-none shrink-0">
+                          <span>周一</span>
+                          <span>周三</span>
+                          <span>周五</span>
+                          <span>周日</span>
+                        </div>
+
+                        <div
+                          className="grid grid-flow-col"
+                          style={{
+                            gridTemplateRows: `repeat(7, ${HEAT_CELL_PX}px)`,
+                            gridAutoColumns: `${HEAT_CELL_PX}px`,
+                            gap: `${HEAT_GAP_PX}px`,
+                          }}
+                        >
+                          {calendarCells.map((cell) => {
+                            if (cell.isFuture) {
+                              return (
+                                <div
+                                  key={cell.date}
+                                  className="rounded-[2px] opacity-0 pointer-events-none"
+                                />
+                              );
+                            }
+                            const day = cell.dayData;
+                            const level = heatLevel(day);
                             return (
                               <div
                                 key={cell.date}
-                                className="rounded-[2px] opacity-0 pointer-events-none"
+                                className={`rounded-[2px] border cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
+                                  heatColors[level]
+                                }`}
+                                onMouseEnter={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const rows = [
+                                    { label: 'Token 消耗', val: fmtTokens(day ? day.tokens : 0) },
+                                    { label: '会话数', val: `${day ? day.sessions : 0} 次` },
+                                  ];
+                                  if (heatMetric === 'loc') {
+                                    rows.push({ label: '代码变更行数', val: '— (无数据来源)' });
+                                  }
+                                  setTooltip({
+                                    visible: true,
+                                    x: rect.left,
+                                    y: rect.top - 70,
+                                    title: fmtCalendarDate(cell.date),
+                                    rows,
+                                  });
+                                }}
+                                onMouseLeave={() =>
+                                  setTooltip((t) => ({ ...t, visible: false }))
+                                }
                               />
                             );
-                          }
-                          const day = cell.dayData;
-                          const level = heatLevel(day);
-                          return (
-                            <div
-                              key={cell.date}
-                              className={`rounded-[2px] border cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
-                                heatColors[level]
-                              }`}
-                              onMouseEnter={(e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const rows = [
-                                  { label: 'Token 消耗', val: fmtTokens(day ? day.tokens : 0) },
-                                  { label: '会话数', val: `${day ? day.sessions : 0} 次` },
-                                ];
-                                if (heatMetric === 'loc') {
-                                  rows.push({ label: '代码变更行数', val: '— (无数据来源)' });
-                                }
-                                setTooltip({
-                                  visible: true,
-                                  x: rect.left,
-                                  y: rect.top - 70,
-                                  title: fmtCalendarDate(cell.date),
-                                  rows,
-                                });
-                              }}
-                              onMouseLeave={() =>
-                                setTooltip((t) => ({ ...t, visible: false }))
-                              }
-                            />
-                          );
-                        })}
+                          })}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* 较少 -> 重度使用 图例 */}
-                  <div className="flex items-center justify-end gap-1.5 pt-3 text-[11px] text-gray-500 dark:text-gray-400 select-none">
-                    <span>较少</span>
-                    <div className="flex items-center gap-[3px]">
-                      {heatColors.map((swatch) => (
-                        <div
-                          key={swatch}
-                          className={`rounded-[2px] border ${swatch}`}
-                          style={{ width: `${HEAT_CELL_PX}px`, height: `${HEAT_CELL_PX}px` }}
-                        />
-                      ))}
+                    {/* 较少 -> 重度使用 图例 */}
+                    <div className="flex items-center justify-end gap-1.5 pt-3 text-[11px] text-gray-500 dark:text-gray-400 select-none">
+                      <span>较少</span>
+                      <div className="flex items-center gap-[3px]">
+                        {heatColors.map((swatch) => (
+                          <div
+                            key={swatch}
+                            className={`rounded-[2px] border ${swatch}`}
+                            style={{ width: `${HEAT_CELL_PX}px`, height: `${HEAT_CELL_PX}px` }}
+                          />
+                        ))}
+                      </div>
+                      <span>重度使用</span>
                     </div>
-                    <span>重度使用</span>
                   </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {hourlyRows.length === 0 ? (
+                      <div className="flex h-24 items-center justify-center text-xs text-gray-400">
+                        当前区间无小时级活动数据
+                      </div>
+                    ) : (
+                      <>
+                        {/* 小时刻度：与下方 24 列共用同一套列宽，整点每 3 小时标一次 */}
+                        <div
+                          className="grid text-[10px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                          style={{
+                            gridTemplateColumns: `repeat(${HEAT_HOURS}, minmax(0, 1fr))`,
+                            columnGap: `${HEAT_HOUR_GAP_PX}px`,
+                            marginLeft: `${HEAT_HOUR_LABEL_PX + 6}px`,
+                          }}
+                        >
+                          {Array.from({ length: HEAT_HOURS }).map((_, hour) => (
+                            <span key={hour} className="text-center">
+                              {hour % 3 === 0 ? hour : ''}
+                            </span>
+                          ))}
+                        </div>
+                        {hourlyRows.map((row) => (
+                          <div key={row.date} className="flex items-center gap-1.5">
+                            <span
+                              className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                              style={{ width: `${HEAT_HOUR_LABEL_PX}px` }}
+                            >
+                              {row.date.slice(5)}
+                            </span>
+                            <div
+                              className="grid flex-1"
+                              style={{
+                                gridTemplateColumns: `repeat(${HEAT_HOURS}, minmax(0, 1fr))`,
+                                columnGap: `${HEAT_HOUR_GAP_PX}px`,
+                              }}
+                            >
+                              {row.tokens.map((tokens, hour) => {
+                                const sessions = row.sessions[hour];
+                                const level = hourLevel(heatMetric === 'tokens' ? tokens : sessions);
+                                return (
+                                  <div
+                                    key={hour}
+                                    className={`h-4 rounded-[3px] border cursor-pointer transition-transform hover:scale-110 hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${heatColors[level]}`}
+                                    onMouseEnter={(e) => {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const rows = [
+                                        { label: 'Token 消耗', val: fmtTokens(tokens) },
+                                        { label: '会话数', val: `${sessions} 次` },
+                                      ];
+                                      if (heatMetric === 'loc') {
+                                        rows.push({ label: '代码变更行数', val: '— (无数据来源)' });
+                                      }
+                                      setTooltip({
+                                        visible: true,
+                                        x: rect.left,
+                                        y: rect.top - 76,
+                                        title: `${fmtCalendarDate(row.date)} ${String(hour).padStart(2, '0')}:00–${String(
+                                          (hour + 1) % 24,
+                                        ).padStart(2, '0')}:00 UTC`,
+                                        rows,
+                                      });
+                                    }}
+                                    onMouseLeave={() =>
+                                      setTooltip((t) => ({ ...t, visible: false }))
+                                    }
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-end gap-1.5 pt-2 text-[11px] text-gray-500 dark:text-gray-400 select-none">
+                          <span>较少</span>
+                          <div className="flex items-center gap-[3px]">
+                            {heatColors.map((swatch) => (
+                              <div
+                                key={swatch}
+                                className={`rounded-[2px] border ${swatch}`}
+                                style={{ width: `${HEAT_CELL_PX}px`, height: `${HEAT_CELL_PX}px` }}
+                              />
+                            ))}
+                          </div>
+                          <span>重度使用</span>
+                        </div>
+                      </>
+                  )}
                 </div>
+                )}
               </div>
 
               {/* 第四层：核心双图表（分层堆叠趋势 + 环形剖析图，严格对齐原型） */}

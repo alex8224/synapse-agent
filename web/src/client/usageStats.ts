@@ -83,6 +83,27 @@ export interface UsageHeatmap {
    * wide range). The aggregate KPIs still cover the whole window.
    */
   truncated: boolean;
+  /** The same window at hour resolution, one row per day (see `HourlyHeatmap`). */
+  hourly: HourlyHeatmap;
+}
+
+/** One day of the hourly matrix: 24 UTC hours, index === hour. */
+export interface HourlyHeatmapRow {
+  date: string;
+  /** Exactly 24 values; `tokens[14]` is 14:00–15:00 UTC. */
+  tokens: number[];
+  /** Exactly 24 values: distinct sessions active in that hour. */
+  sessions: number[];
+}
+
+/** Activity at hour resolution: the window's last days, 24 columns each. */
+export interface HourlyHeatmap {
+  rows: HourlyHeatmapRow[];
+  /**
+   * `true` when the window held more days than the hourly matrix shows; the rows
+   * are then the window's tail and the totals still cover everything.
+   */
+  truncated: boolean;
 }
 
 export interface TrendItem {
@@ -239,6 +260,24 @@ function parseBreakdown(raw: unknown, path: string): BreakdownItem {
   };
 }
 
+/** Exactly 24 UTC hours, one number per hour. */
+function hourValues(value: unknown, path: string): number[] {
+  const hours = list(value, path, num);
+  if (hours.length !== 24) {
+    throw new UsageStatsPayloadError(`${path} must hold exactly 24 hours`);
+  }
+  return hours;
+}
+
+function parseHourlyRow(raw: unknown, path: string): HourlyHeatmapRow {
+  const row = record(raw, path);
+  return {
+    date: str(row.date, `${path}.date`),
+    tokens: hourValues(row.tokens, `${path}.tokens`),
+    sessions: hourValues(row.sessions, `${path}.sessions`),
+  };
+}
+
 /**
  * Validate a raw `GET /api/usage-stats` body field by field.
  *
@@ -328,6 +367,13 @@ export function parseUsageStatsPayload(raw: unknown): UsageStatsPayload {
           sessions: num(day.sessions, `${path}.sessions`),
         };
       }),
+      hourly: (() => {
+        const hourly = record(heatmap.hourly, 'heatmap.hourly');
+        return {
+          truncated: bool(hourly.truncated, 'heatmap.hourly.truncated'),
+          rows: list(hourly.rows, 'heatmap.hourly.rows', parseHourlyRow),
+        };
+      })(),
     },
     trend: {
       range_key: str(trend.range_key, 'trend.range_key'),

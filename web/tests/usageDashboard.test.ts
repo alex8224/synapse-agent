@@ -80,7 +80,7 @@ const EMPTY_PAYLOAD = {
       efficiency: null,
     },
   ],
-  heatmap: { days: [], truncated: false },
+  heatmap: { days: [], truncated: false, hourly: { rows: [], truncated: false } },
   trend: { range_key: '7d', granularity: 'day', title: 't', subtitle: 's', items: [] },
   breakdowns: { project: [], model: [], agent: null },
   top_tools: {
@@ -119,6 +119,16 @@ const POPULATED_PAYLOAD = {
       { date: '2026-09-15', tokens: 600, sessions: 1 },
       { date: '2026-09-16', tokens: 600, sessions: 2 },
     ],
+    hourly: {
+      truncated: false,
+      rows: [
+        {
+          date: '2026-09-15',
+          tokens: [...Array(24)].map((_, hour) => (hour === 1 ? 600 : 0)),
+          sessions: [...Array(24)].map((_, hour) => (hour === 1 ? 1 : 0)),
+        },
+      ],
+    },
   },
   trend: {
     range_key: 'custom',
@@ -163,6 +173,8 @@ test('an empty payload is valid and reports real zeros, not demo data', () => {
   assert.equal(parsed.kpi.estimated_cost, null);
   assert.deepEqual(parsed.heatmap.days, []);
   assert.equal(parsed.heatmap.truncated, false);
+  assert.deepEqual(parsed.heatmap.hourly.rows, []);
+  assert.equal(parsed.heatmap.hourly.truncated, false);
   assert.equal(parsed.breakdowns.agent, null);
 });
 
@@ -210,6 +222,18 @@ test('a truncated or drifting payload is rejected field by field', () => {
     { ...EMPTY_PAYLOAD, kpi: { ...EMPTY_PAYLOAD.kpi, provider_input_tokens: 'lots' } },
     { ...EMPTY_PAYLOAD, heatmap: { days: [] } },
     { ...EMPTY_PAYLOAD, heatmap: { days: [], truncated: 'yes' } },
+    { ...EMPTY_PAYLOAD, heatmap: { days: [], truncated: false } },
+    {
+      ...EMPTY_PAYLOAD,
+      heatmap: {
+        days: [],
+        truncated: false,
+        hourly: {
+          truncated: false,
+          rows: [{ date: '2026-09-15', tokens: [1, 2, 3], sessions: [] }],
+        },
+      },
+    },
   ];
   for (const payload of cases) {
     assert.throws(() => parseUsageStatsPayload(payload), UsageStatsPayloadError, JSON.stringify(payload));

@@ -26,6 +26,9 @@ export type HeatMetric = 'tokens' | 'sessions' | 'loc';
 /** Which dimension the breakdown donut splits by. */
 export type BreakdownDim = 'project' | 'model' | 'agent';
 
+/** Which matrix the activity card paints: the 52-week calendar or 24-hour days. */
+export type HeatDim = 'week' | 'day';
+
 /** Everything the dashboard remembers between openings; every field is optional. */
 export interface StoredUsagePreferences {
   project?: string;
@@ -34,6 +37,7 @@ export interface StoredUsagePreferences {
   customEnd?: string;
   model?: string;
   heatMetric?: HeatMetric;
+  heatDim?: HeatDim;
   breakdownDim?: BreakdownDim;
 }
 

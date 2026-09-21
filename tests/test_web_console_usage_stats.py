@@ -615,6 +615,125 @@ def test_tool_records_are_labelled_partial_not_all_calls(tmp_path: Path) -> None
     assert by_name["read_file"]["avg_ms"] is None
 
 
+# --- hourly matrix -----------------------------------------------------------
+
+
+def test_hourly_matrix_has_24_columns_per_day(tmp_path: Path) -> None:
+    events = [
+        {
+            "created_at": "2026-09-21T01:15:00Z",
+            "thread_id": "a",
+            "event": _event(request_id="h1", provider_input=100, output=10),
+        },
+        {
+            "created_at": "2026-09-21T01:45:00Z",
+            "thread_id": "b",
+            "event": _event(request_id="h2", provider_input=200, output=20),
+        },
+        {
+            "created_at": "2026-09-21T14:00:00Z",
+            "thread_id": "a",
+            "event": _event(request_id="h3", provider_input=300, output=30),
+        },
+        {
+            "created_at": "2026-09-20T23:30:00Z",
+            "thread_id": "c",
+            "event": _event(request_id="h4", provider_input=400, output=40),
+        },
+    ]
+    ws = _build_workspace(tmp_path, events=events)
+    hourly = get_usage_statistics(ws, now=NOW, range_key="today")["heatmap"]["hourly"]
+
+    assert hourly["truncated"] is False
+    assert len(hourly["rows"]) == 1  # a single-day window is exactly one row
+    row = hourly["rows"][0]
+    assert row["date"] == "2026-09-21"
+    assert len(row["tokens"]) == 24
+    assert len(row["sessions"]) == 24
+    assert row["tokens"][1] == 110 + 220  # both 01:xx events land in hour 1
+    assert row["sessions"][1] == 2  # two distinct threads in that hour
+    assert row["tokens"][14] == 330
+    assert row["sessions"][14] == 1
+    assert row["tokens"][0] == 0  # quiet hours are real zeros, not missing columns
+    assert sum(row["tokens"]) == 110 + 220 + 330  # the 09-20 event is out of window
+
+
+def test_hourly_matrix_is_capped_at_the_last_two_weeks(tmp_path: Path) -> None:
+    events = [
+        {
+            "created_at": f"2026-09-{day:02d}T0{hour}:00:00Z",
+            "thread_id": f"t{day}",
+            "event": _event(request_id=f"d{day}-{hour}", provider_input=100 * day, output=hour),
+        }
+        for day in (1, 10, 21)
+        for hour in (1, 2)
+    ]
+    ws = _build_workspace(tmp_path, events=events)
+
+    week = get_usage_statistics(ws, now=NOW, range_key="7d")["heatmap"]["hourly"]
+    assert week["truncated"] is False
+    assert [row["date"] for row in week["rows"]] == [
+        f"2026-09-{day:02d}" for day in range(15, 22)
+    ]
+
+    month = get_usage_statistics(ws, now=NOW, range_key="30d")["heatmap"]["hourly"]
+    assert month["truncated"] is True  # 30 days of window, 14 rows shown
+    assert [row["date"] for row in month["rows"]] == [
+        f"2026-09-{day:02d}" for day in range(8, 22)
+    ]
+    # The rows are continuous (a quiet day is a row of zeros) and every row has
+    # its own 24 columns.
+    assert all(len(row["tokens"]) == 24 for row in month["rows"])
+    # 09-21 carries provider_input 2100 + output <hour> in hours 1 and 2.
+    assert month["rows"][-1]["tokens"][1] == 2100 + 1
+    assert month["rows"][-1]["tokens"][2] == 2100 + 2
+    assert month["rows"][-1]["tokens"][3] == 0
+    assert month["rows"][0]["tokens"] == [0] * 24
+
+
+def test_hourly_matrix_keeps_projects_apart(tmp_path: Path) -> None:
+    """The same thread id in two workspaces is two sessions in that hour."""
+    first = _build_workspace(
+        tmp_path,
+        events=[
+            {
+                "created_at": "2026-09-21T03:00:00Z",
+                "thread_id": "shared",
+                "event": _event(request_id="first", provider_input=100, output=10),
+            }
+        ],
+    )
+    second = tmp_path / "second"
+    second_synapse = second / ".synapse"
+    second_synapse.mkdir(parents=True)
+    con = sqlite3.connect(second_synapse / "tool-outputs.sqlite")
+    try:
+        con.executescript(_TOOL_SCHEMA)
+        event = _event(request_id="second", provider_input=200, output=20)
+        con.execute(
+            "INSERT INTO model_request_compression_events"
+            "(request_id, thread_id, event_json, created_at) VALUES (?, ?, ?, ?)",
+            ("second", "shared", json.dumps(event), "2026-09-21T03:30:00Z"),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    stats = get_usage_statistics(
+        first,
+        now=NOW,
+        range_key="today",
+        project_name=first.name,
+        project_entries=[
+            {"workspace_name": first.name, "workspace_path": str(first)},
+            {"workspace_name": "second", "workspace_path": str(second)},
+        ],
+    )
+    row = stats["heatmap"]["hourly"]["rows"][0]
+    assert row["tokens"][3] == 110 + 220
+    assert row["sessions"][3] == 2
+
+
 # --- rollup projection (the dashboard's fast path) ---------------------------
 
 
