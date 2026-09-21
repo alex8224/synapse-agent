@@ -20,7 +20,11 @@ from synapse.acp.sessions import (
     ACPSessionRegistry,
     _apply_session_config,
 )
-from tests.acp_service_fakes import FakeAgentRuntimeService, simple_managed
+from tests.acp_service_fakes import (
+    FakeAgentRuntimeService,
+    IsolatedACPSettings,
+    simple_managed,
+)
 
 
 class _Client:
@@ -51,6 +55,46 @@ def test_load_replays_stored_updates_in_order(tmp_path: Path) -> None:
         assert response is not None
         assert len(client.updates) == 1
         assert client.updates[0].session_update == "agent_message_chunk"
+        await agent.shutdown()
+
+    asyncio.run(run())
+
+
+def test_list_sessions_does_not_resurrect_a_deleted_session(tmp_path: Path) -> None:
+    """A session deleted outside ACP must not return on the next ACP listing.
+
+    Regression: ``list_sessions`` re-ensured every ACP catalog entry into the
+    shared session store, so a session the user had deleted in the TUI / web
+    console came back -- with its placeholder ``session sess_...`` title -- as
+    soon as an ACP client listed sessions again.
+    """
+
+    async def run() -> None:
+        from synapse.sessions.store import SessionStore
+
+        store_db = tmp_path / "sessions.sqlite"
+        catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
+
+        async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
+            return simple_managed(descriptor, FakeAgentRuntimeService())
+
+        agent = SynapseACPAgent(
+            registry=ACPSessionRegistry(factory),
+            catalog=catalog,
+            settings_factory=IsolatedACPSettings,
+        )
+        await agent.initialize(1)
+
+        session = await agent.new_session(str(tmp_path))
+        with SessionStore(store_db) as store:
+            assert store.get(session.session_id) is not None
+            assert store.delete(session.session_id)
+            assert store.get(session.session_id) is None
+
+        listed = await agent.list_sessions(cwd=str(tmp_path))
+        assert session.session_id in [item.session_id for item in listed.sessions]
+        with SessionStore(store_db) as store:
+            assert store.get(session.session_id) is None
         await agent.shutdown()
 
     asyncio.run(run())

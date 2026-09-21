@@ -16,8 +16,10 @@ from acp.helpers import text_block
 from acp.schema import ClientCapabilities, Implementation
 
 from synapse.acp.agent import SynapseACPAgent
+from synapse.acp.lifecycle import ACPSessionCatalog
 from synapse.acp.sessions import ACPManagedSession, ACPSessionDescriptor, ACPSessionRegistry
 from synapse.runtime.sessions.ref import SessionRef
+from tests.acp_service_fakes import IsolatedACPSettings
 
 ROOT = Path(__file__).parents[1]
 
@@ -141,7 +143,7 @@ class _Client:
         raise AssertionError(f"elicitation must not be called in P1: {args!r} {kwargs!r}")
 
 
-def _make_agent() -> SynapseACPAgent:
+def _make_agent(root: Path) -> SynapseACPAgent:
     async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
         service = _FakeRuntimeService()
         return ACPManagedSession(
@@ -150,11 +152,15 @@ def _make_agent() -> SynapseACPAgent:
             SessionRef(project_id=_FakeRuntimeService._PROJECT, thread_id=descriptor.thread_id),
         )
 
-    return SynapseACPAgent(registry=ACPSessionRegistry(factory))
+    return SynapseACPAgent(
+        registry=ACPSessionRegistry(factory),
+        catalog=ACPSessionCatalog(root / "catalog.sqlite"),
+        settings_factory=IsolatedACPSettings,
+    )
 
 
-async def _run_sdk_connection() -> None:
-    agent = _make_agent()
+async def _run_sdk_connection(root: Path) -> None:
+    agent = _make_agent(root)
     client_transport, agent_transport = memory_transport_pair()
     server_task = asyncio.create_task(acp.run_agent(agent, agent_transport))
     client_connection = acp.connect_to_agent(_Client(), client_transport)
@@ -178,11 +184,11 @@ async def _run_sdk_connection() -> None:
         await asyncio.wait_for(server_task, timeout=10)
 
 
-def test_official_sdk_connection_completes_initialize_and_new_session() -> None:
-    asyncio.run(_run_sdk_connection())
+def test_official_sdk_connection_completes_initialize_and_new_session(tmp_path: Path) -> None:
+    asyncio.run(_run_sdk_connection(tmp_path))
 
 
-def test_prompt_over_service_contract_completes_offline() -> None:
+def test_prompt_over_service_contract_completes_offline(tmp_path: Path) -> None:
     """Prompt drives ACPManagedSession over the AgentRuntimeService port.
 
     Regression: ``ACPManagedSession.submit`` runs through
@@ -194,7 +200,7 @@ def test_prompt_over_service_contract_completes_offline() -> None:
     """
 
     async def run() -> None:
-        agent = _make_agent()
+        agent = _make_agent(tmp_path)
         await agent.initialize(1, client_capabilities=None, client_info=None)
         response = await agent.new_session(cwd=str(ROOT), mcp_servers=[])
         result = await agent.prompt(
@@ -205,17 +211,22 @@ def test_prompt_over_service_contract_completes_offline() -> None:
     asyncio.run(run())
 
 
-def test_official_sdk_subprocess_helper_runs_injected_agent_session() -> None:
+def test_official_sdk_subprocess_helper_runs_injected_agent_session(tmp_path: Path) -> None:
     async def run() -> None:
         env = {
             **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "tests"))),
+            "PYTHONPATH": os.pathsep.join(
+                (str(ROOT / "src"), str(ROOT / "tests"), str(ROOT))
+            ),
+            "SYNAPSE_TEST_ACP_ROOT": str(tmp_path),
         }
         child_code = (
-            "import asyncio; "
+            "import asyncio, os; "
+            "from pathlib import Path; "
             "from test_acp_p1_transport import _make_agent; "
             "from synapse.acp.server import run_server; "
-            "asyncio.run(run_server(_make_agent()))"
+            "asyncio.run("
+            "run_server(_make_agent(Path(os.environ['SYNAPSE_TEST_ACP_ROOT']))))"
         )
         async with acp.spawn_agent_process(
             _Client(),
@@ -248,17 +259,22 @@ def test_official_sdk_subprocess_helper_runs_injected_agent_session() -> None:
     asyncio.run(run())
 
 
-def test_official_sdk_subprocess_cancel_notification_is_processed() -> None:
+def test_official_sdk_subprocess_cancel_notification_is_processed(tmp_path: Path) -> None:
     async def run() -> None:
         env = {
             **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "tests"))),
+            "PYTHONPATH": os.pathsep.join(
+                (str(ROOT / "src"), str(ROOT / "tests"), str(ROOT))
+            ),
+            "SYNAPSE_TEST_ACP_ROOT": str(tmp_path),
         }
         child_code = (
-            "import asyncio; "
+            "import asyncio, os; "
+            "from pathlib import Path; "
             "from test_acp_p1_transport import _make_agent; "
             "from synapse.acp.server import run_server; "
-            "asyncio.run(run_server(_make_agent()))"
+            "asyncio.run("
+            "run_server(_make_agent(Path(os.environ['SYNAPSE_TEST_ACP_ROOT']))))"
         )
         async with acp.spawn_agent_process(
             _Client(),

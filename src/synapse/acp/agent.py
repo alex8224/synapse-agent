@@ -273,8 +273,16 @@ class SynapseACPAgent:
         settings = self._session_settings(cwd)
         return SessionStore(settings.resolved_sessions_path())
 
-    def _sync_tui_session(self, stored: ACPStoredSession) -> None:
-        """Best-effort write-through of one ACP session into the TUI store."""
+    def _sync_tui_session(self, stored: ACPStoredSession, *, create_missing: bool = True) -> None:
+        """Best-effort write-through of one ACP session into the TUI store.
+
+        ``create_missing`` decides what a session absent from the TUI store means.
+        A real ACP action (new session, first prompt) creates the row, because the
+        bridge exists so ACP sessions show up in the TUI / web console list.  The
+        repair pass over the ACP catalog during ``list_sessions`` must not: a row
+        deleted from the TUI / web console is gone on purpose, and re-ensuring it
+        from a stale catalog entry is what resurrected deleted sessions.
+        """
         try:
             from synapse.sessions.store import is_default_session_title
 
@@ -284,6 +292,8 @@ class SynapseACPAgent:
             with self._tui_store(stored.cwd) as store:
                 existing = store.get(stored.thread_id)
                 if existing is None:
+                    if not create_missing:
+                        return
                     store.ensure(
                         stored.thread_id,
                         title=stored.title,
@@ -440,10 +450,11 @@ class SynapseACPAgent:
         root = self._absolute_path(cwd) if cwd else None
         items, next_cursor = self.catalog.list_page(cwd=root, cursor=cursor)
         if cursor is None:
-            # Repair sessions created before the TUI bridge existed. This is
-            # idempotent and avoids changing timestamps when metadata matches.
+            # Repair the metadata of sessions the TUI store already knows about.
+            # Never create rows here: a session deleted from the TUI / web console
+            # must not come back just because a stale catalog entry still lists it.
             for item in items:
-                self._sync_tui_session(item)
+                self._sync_tui_session(item, create_missing=False)
         sessions = [self._to_acp_session_info(item) for item in items]
         if cursor is None:
             if root is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,31 @@ class FakeOutcome:
     status: str = "completed"
     final_text: str = "done"
     usage: Any = None
+
+
+class IsolatedACPSettings:
+    """Settings stand-in that keeps every ACP write inside one test directory.
+
+    ``SynapseACPAgent`` resolves the shared session store from the workspace
+    settings, so a test that injects no settings factory writes session rows into
+    whatever project the ACP cwd points at.  Pointing both the store and the
+    project catalog at ``root`` keeps ACP tests out of the developer's real data.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.workspace = root
+        self.models_config_path = root / "models.json"
+        self.models_json = json.dumps(
+            {"default": "a", "models": {"a": {"model": "openai:gpt-4o"}}}
+        )
+        self.active_model = None
+        self.model = None
+
+    def resolved_sessions_path(self) -> Path:
+        return self.workspace / "sessions.sqlite"
+
+    def resolved_catalog_path(self) -> Path:
+        return self.workspace / "project-catalog.sqlite"
 
 
 class _Watch:
@@ -268,4 +294,11 @@ def event(
     return RuntimeEvent(1, 1, turn_id, kind, payload or {}, 1)
 
 
-__all__ = ["FakeAgentRuntimeService", "FakeOutcome", "FakeOwner", "event", "managed"]
+__all__ = [
+    "FakeAgentRuntimeService",
+    "FakeOutcome",
+    "FakeOwner",
+    "IsolatedACPSettings",
+    "event",
+    "managed",
+]
