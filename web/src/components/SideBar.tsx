@@ -235,6 +235,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
         </button>
         <div className="mt-auto flex flex-col items-center gap-1">
           <ConsoleActions orientation="column" />
+          {/* The rail carries the same app-level entry points as the expanded
+              footer, in the same order, so collapsing the sidebar only hides
+              labels and the tree -- never a way in.  The dashboard dialog is
+              rendered outside both states, so it stays open across the switch. */}
+          <button
+            type="button"
+            onClick={() => setUsageOpen(true)}
+            title="使用统计与工程效能"
+            aria-label="使用统计与工程效能"
+            className="ui-icon-button"
+          >
+            <DataUsage20Regular aria-hidden="true" />
+          </button>
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
