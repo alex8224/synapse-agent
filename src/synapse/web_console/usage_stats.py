@@ -216,8 +216,52 @@ def _empty_aggregate() -> dict[str, Any]:
         "turn_ids": set(),
         "tools": {},
         "tool_records": 0,
-        "skipped": 0,
     }
+
+
+#: The scalars the aggregate needs from one compression event.  They exist both
+#: as columns in ``model_request_compression_rollup`` (the fast path) and as keys
+#: inside ``event_json`` (the fallback path for events that predate the rollup).
+_EVENT_FIELDS = (
+    "provider_input_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "uncached_input_tokens",
+    "output_tokens",
+    "total_saved_tokens",
+    "input_tokens_before",
+    "duration_ms",
+)
+
+#: How many unprojected events one fallback query returns.  The fallback pages
+#: through the whole remainder by ``id``: a batch bounds memory, never the count,
+#: so a store whose projection is still catching up reports the same numbers as a
+#: fully projected one -- it just takes longer to produce them.
+_UNPROJECTED_BATCH = 5000
+
+#: How many recent events the model-discovery fallback may parse when a store has
+#: no rollup rows yet.  Discovery only needs the models in current use.
+_MODEL_DISCOVERY_ROWS = 1000
+
+
+def _projection_complete(con: sqlite3.Connection) -> bool:
+    """Whether every compression event already has a rollup row.
+
+    Two whole-table ``COUNT(*)`` calls, both answered from an index (the event
+    table's ``request_id`` index, the rollup's primary key) -- a few milliseconds
+    on a 43k-event store, and no index on the multi-gigabyte event payloads is
+    needed to decide this.  The counts are compared globally rather than per
+    window on purpose: a windowed count would need an index over ``created_at``
+    on the events table, whose one-time build scans every ~30 KB payload while
+    holding the write lock.
+    """
+    events = int(
+        con.execute("SELECT COUNT(*) FROM model_request_compression_events").fetchone()[0]
+    )
+    projected = int(
+        con.execute("SELECT COUNT(*) FROM model_request_compression_rollup").fetchone()[0]
+    )
+    return events == projected
 
 
 def _consume_events(
@@ -227,122 +271,194 @@ def _consume_events(
     agg: dict[str, Any],
     model_filter: str | None = None,
 ) -> None:
-    """Stream matching compression events; never materialise the full set."""
-    where, params = _window_clause(start, end)
-    cur = con.cursor()
-    cur.execute(
-        f"SELECT thread_id, event_json, created_at FROM model_request_compression_events{where}",
-        params,
-    )
-    total = agg["total"]
-    for row in cur:  # streaming read -- deliberately not ``fetchall()``
-        try:
-            event = json.loads(row["event_json"])
-        except (TypeError, ValueError):
-            agg["skipped"] += 1
-            continue
-        if not isinstance(event, dict):
-            agg["skipped"] += 1
-            continue
-        created = str(row["created_at"] or "")
-        day = created[:10]
-        if len(day) != 10:
-            agg["skipped"] += 1
-            continue
-        try:
-            hour = int(created[11:13])
-        except ValueError:
-            hour = 0
+    """Aggregate the window's compression events, fast path first.
 
-        provider_input = _to_int(event.get("provider_input_tokens"))
-        cache_read = _to_int(event.get("cache_read_tokens"))
-        cache_write = _to_int(event.get("cache_write_tokens"))
-        output = _to_int(event.get("output_tokens"))
-        saved = _to_int(event.get("total_saved_tokens"))
-        baseline = _to_int(event.get("input_tokens_before"))
-        duration_ms = _to_float(event.get("duration_ms"))
-        model = str(event.get("model") or "unknown") or "unknown"
-        if model_filter and not _model_matches(model, model_filter):
-            continue
-        thread_id = str(row["thread_id"] or "")
-        turn_id = str(event.get("turn_id") or "")
+    The window is read from ``model_request_compression_rollup`` -- ten narrow
+    columns, ~120 B per event -- and only events that have no rollup row yet are
+    read out of ``event_json``.  A complete rollup therefore never touches the
+    ~30-90 KB-per-row payloads that made this endpoint take seconds.
 
-        # Net input口径: provider prompt tokens minus *both* cache buckets.
-        # ``uncached_input_tokens`` is only used as a fallback for events that
-        # predate the provider counters; when it fires the provider input is
-        # reconstructed from its parts so the throughput total stays coherent.
-        net_input = max(0, provider_input - cache_read - cache_write)
-        if provider_input == 0 and net_input == 0:
-            net_input = max(0, _to_int(event.get("uncached_input_tokens")))
-            provider_input = net_input + cache_read + cache_write
-        # 累计吞吐口径: every prompt token the provider processed (cached and
-        # fresh alike) plus its output.  ``net_input + output`` would silently
-        # drop both cache buckets from the headline number.
-        tokens = provider_input + output
-
-        total["tokens"] += tokens
-        total["net_input"] += net_input
-        total["cache_read"] += cache_read
-        total["cache_write"] += cache_write
-        total["output"] += output
-        total["saved"] += saved
-        total["calls"] += 1
-        total["duration_ms"] += duration_ms
-        total["baseline"] += baseline
-
-        day_bucket = agg["days"].setdefault(
-            day,
-            {
-                "tokens": 0,
-                "net_input": 0,
-                "cache_read": 0,
-                "cache_write": 0,
-                "output": 0,
-                "saved": 0,
-                "baseline": 0,
-                "threads": set(),
-            },
-        )
-        day_bucket["tokens"] += tokens
-        day_bucket["net_input"] += net_input
-        day_bucket["cache_read"] += cache_read
-        day_bucket["cache_write"] += cache_write
-        day_bucket["output"] += output
-        day_bucket["saved"] += saved
-        day_bucket["baseline"] += baseline
-        if thread_id:
-            day_bucket["threads"].add(thread_id)
-
-        hour_bucket = agg["hours"].setdefault(
-            hour,
-            {
-                "net_input": 0,
-                "cache_read": 0,
-                "cache_write": 0,
-                "output": 0,
-                "baseline": 0,
-            },
-        )
-        hour_bucket["net_input"] += net_input
-        hour_bucket["cache_read"] += cache_read
-        hour_bucket["cache_write"] += cache_write
-        hour_bucket["output"] += output
-        hour_bucket["baseline"] += baseline
-
-        agg["models"][model] = agg["models"].get(model, 0) + tokens
-
-        if thread_id:
-            thread_bucket = agg["threads"].setdefault(
-                thread_id, {"tokens": 0, "cache_read": 0, "provider_input": 0, "turns": set()}
+    A store that predates the rollup table simply has nothing projected, and the
+    whole window goes through the JSON fallback.
+    """
+    has_rollup = _table_exists(con, "model_request_compression_rollup")
+    if has_rollup:
+        where, params = _window_clause(start, end)
+        columns = ", ".join(("thread_id", "created_at", "turn_id", "model", *_EVENT_FIELDS))
+        cur = con.cursor()
+        cur.execute(f"SELECT {columns} FROM model_request_compression_rollup{where}", params)
+        for row in cur:  # streaming read -- deliberately not ``fetchall()``
+            event = {field: row[field] for field in _EVENT_FIELDS}
+            event["turn_id"] = row["turn_id"]
+            event["model"] = row["model"]
+            _accumulate_event(
+                agg,
+                str(row["thread_id"] or ""),
+                str(row["created_at"] or ""),
+                event,
+                model_filter,
             )
-            thread_bucket["tokens"] += tokens
-            thread_bucket["cache_read"] += cache_read
-            thread_bucket["provider_input"] += provider_input
-            if turn_id:
-                thread_bucket["turns"].add(turn_id)
+        if _projection_complete(con):
+            return
 
+    # Fallback: the events that the rollup does not cover yet.  ``NOT EXISTS``
+    # keeps this to the unprojected remainder, so a partially backfilled store
+    # never has the same event counted twice.  The projection happens inside
+    # SQLite: ``json_extract`` is ~2.6x faster here than building the whole
+    # ~90 KB document in Python just to read ten scalars (measured on a 19k-event
+    # store), and ``json_valid`` keeps a malformed row out of the aggregate
+    # instead of aborting the query.
+    where, params = _window_clause(start, end)
+    if has_rollup:
+        join = " AND" if where else " WHERE"
+        unprojected_only = (
+            f"{join} NOT EXISTS ("
+            "  SELECT 1 FROM model_request_compression_rollup r WHERE r.request_id = e.request_id"
+            ")"
+        )
+        validity = " AND json_valid(e.event_json)"
+    else:
+        unprojected_only = ""
+        validity = (" AND" if where else " WHERE") + " json_valid(e.event_json)"
+    extracted = ", ".join(
+        f"json_extract(e.event_json, '$.{field}') AS {field}" for field in _EVENT_FIELDS
+    )
+    cur = con.cursor()
+    last_id = 0
+    while True:
+        cur.execute(
+            "SELECT e.id, e.thread_id, e.created_at, "
+            "json_extract(e.event_json, '$.turn_id') AS turn_id, "
+            "json_extract(e.event_json, '$.model') AS model, "
+            f"{extracted} "
+            f"FROM model_request_compression_events e{where}{unprojected_only}{validity} "
+            "AND e.id > ? ORDER BY e.id LIMIT ?",
+            (*params, last_id, _UNPROJECTED_BATCH),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return
+        for row in rows:
+            event = {field: row[field] for field in _EVENT_FIELDS}
+            event["turn_id"] = row["turn_id"]
+            event["model"] = row["model"]
+            _accumulate_event(
+                agg,
+                str(row["thread_id"] or ""),
+                str(row["created_at"] or ""),
+                event,
+                model_filter,
+            )
+        if len(rows) < _UNPROJECTED_BATCH:
+            return
+        last_id = int(rows[-1]["id"])
+
+
+def _accumulate_event(
+    agg: dict[str, Any],
+    thread_id: str,
+    created: str,
+    event: dict[str, Any],
+    model_filter: str | None,
+) -> None:
+    """Fold one compression event (from either store) into the aggregate."""
+    total = agg["total"]
+    day = created[:10]
+    if len(day) != 10:
+        return
+    try:
+        hour = int(created[11:13])
+    except ValueError:
+        hour = 0
+
+    provider_input = _to_int(event.get("provider_input_tokens"))
+    cache_read = _to_int(event.get("cache_read_tokens"))
+    cache_write = _to_int(event.get("cache_write_tokens"))
+    output = _to_int(event.get("output_tokens"))
+    saved = _to_int(event.get("total_saved_tokens"))
+    baseline = _to_int(event.get("input_tokens_before"))
+    duration_ms = _to_float(event.get("duration_ms"))
+    model = str(event.get("model") or "unknown") or "unknown"
+    if model_filter and not _model_matches(model, model_filter):
+        return
+    turn_id = str(event.get("turn_id") or "")
+
+    # Net input口径: provider prompt tokens minus *both* cache buckets.
+    # ``uncached_input_tokens`` is only used as a fallback for events that
+    # predate the provider counters; when it fires the provider input is
+    # reconstructed from its parts so the throughput total stays coherent.
+    net_input = max(0, provider_input - cache_read - cache_write)
+    if provider_input == 0 and net_input == 0:
+        net_input = max(0, _to_int(event.get("uncached_input_tokens")))
+        provider_input = net_input + cache_read + cache_write
+    # 累计吞吐口径: every prompt token the provider processed (cached and
+    # fresh alike) plus its output.  ``net_input + output`` would silently
+    # drop both cache buckets from the headline number.
+    tokens = provider_input + output
+
+    total["tokens"] += tokens
+    total["net_input"] += net_input
+    total["cache_read"] += cache_read
+    total["cache_write"] += cache_write
+    total["output"] += output
+    total["saved"] += saved
+    total["calls"] += 1
+    total["duration_ms"] += duration_ms
+    total["baseline"] += baseline
+
+    day_bucket = agg["days"].setdefault(
+        day,
+        {
+            "tokens": 0,
+            "net_input": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 0,
+            "saved": 0,
+            "baseline": 0,
+            "threads": set(),
+        },
+    )
+    day_bucket["tokens"] += tokens
+    day_bucket["net_input"] += net_input
+    day_bucket["cache_read"] += cache_read
+    day_bucket["cache_write"] += cache_write
+    day_bucket["output"] += output
+    day_bucket["saved"] += saved
+    day_bucket["baseline"] += baseline
+    if thread_id:
+        day_bucket["threads"].add(thread_id)
+
+    hour_bucket = agg["hours"].setdefault(
+        hour,
+        {
+            "net_input": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 0,
+            "baseline": 0,
+        },
+    )
+    hour_bucket["net_input"] += net_input
+    hour_bucket["cache_read"] += cache_read
+    hour_bucket["cache_write"] += cache_write
+    hour_bucket["output"] += output
+    hour_bucket["baseline"] += baseline
+
+    agg["models"][model] = agg["models"].get(model, 0) + tokens
+
+    if thread_id:
+        thread_bucket = agg["threads"].setdefault(
+            thread_id, {"tokens": 0, "cache_read": 0, "provider_input": 0, "turns": set()}
+        )
+        thread_bucket["tokens"] += tokens
+        thread_bucket["cache_read"] += cache_read
+        thread_bucket["provider_input"] += provider_input
         if turn_id:
-            agg["turn_ids"].add(turn_id)
+            thread_bucket["turns"].add(turn_id)
+
+    if turn_id:
+        agg["turn_ids"].add(turn_id)
 
 
 def _consume_tool_refs(
@@ -355,7 +471,13 @@ def _consume_tool_refs(
     """Aggregate recorded tool-output refs (a partial, not exhaustive, view)."""
     where, params = _window_clause(start, end)
     cur = con.cursor()
-    cur.execute(f"SELECT tool_name, status, created_at FROM tool_output_refs{where}", params)
+    # ``thread_id`` is read unconditionally: the model filter narrows this table
+    # to the threads that produced events in the window, and the previous column
+    # list left that filter reading a column the query never selected.
+    cur.execute(
+        f"SELECT thread_id, tool_name, status, created_at FROM tool_output_refs{where}",
+        params,
+    )
     for row in cur:  # streaming read
         if allowed_threads is not None:
             thread_id = str(row["thread_id"] or "")
@@ -434,7 +556,6 @@ def _merge_aggregates(target: dict[str, Any], source: dict[str, Any]) -> None:
         bucket["success"] += source_bucket["success"]
         bucket["failure"] += source_bucket["failure"]
     target["tool_records"] += source["tool_records"]
-    target["skipped"] += source["skipped"]
 
 
 def _namespace_aggregate(agg: dict[str, Any], namespace: str) -> dict[str, Any]:
@@ -494,12 +615,30 @@ def _collect_workspace_models(workspace: Path) -> set[str]:
     tool_con = _open_readonly(synapse_dir / "tool-outputs.sqlite")
     if tool_con is not None:
         try:
-            if _table_exists(tool_con, "model_request_compression_events"):
+            # The rollup carries the model as a plain column, so the discovery
+            # list costs a scan of a ~2 MB table instead of a ``json_extract``
+            # over every ~90 KB event (~4 s on a large store).
+            if _table_exists(tool_con, "model_request_compression_rollup"):
+                for row in tool_con.execute(
+                    "SELECT DISTINCT model FROM model_request_compression_rollup"
+                ):
+                    if row[0]:
+                        clean = _clean_model_name(str(row[0]))
+                        if clean:
+                            models.add(clean)
+            # A store written before the rollup existed has nothing to read
+            # there yet; fall back to a bounded slice of the newest events.  The
+            # list is a discovery aid (the browser merges it across loads), so
+            # reading the recent tail is enough to keep it useful.
+            if not models and _table_exists(tool_con, "model_request_compression_events"):
                 cur = tool_con.cursor()
                 try:
                     cur.execute(
-                        "SELECT DISTINCT json_extract(event_json, '$.model') "
-                        "FROM model_request_compression_events"
+                        "SELECT DISTINCT json_extract(event_json, '$.model') FROM ("
+                        "  SELECT event_json FROM model_request_compression_events"
+                        "  ORDER BY id DESC LIMIT ?"
+                        ")",
+                        (_MODEL_DISCOVERY_ROWS,),
                     )
                     for row in cur:
                         if row[0]:
@@ -508,7 +647,9 @@ def _collect_workspace_models(workspace: Path) -> set[str]:
                                 models.add(clean)
                 except sqlite3.OperationalError:
                     cur.execute(
-                        "SELECT event_json FROM model_request_compression_events LIMIT 1000"
+                        "SELECT event_json FROM model_request_compression_events "
+                        "ORDER BY id DESC LIMIT ?",
+                        (_MODEL_DISCOVERY_ROWS,),
                     )
                     for row in cur:
                         try:

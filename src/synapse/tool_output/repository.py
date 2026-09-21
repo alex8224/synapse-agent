@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -24,6 +25,77 @@ from synapse.tool_output.models import (
 _REFERENCE_PREFIX = "tool-output://"
 _ERROR_LINE = re.compile(r"\b(error|fatal|failed|failure|exception|traceback|critical)\b", re.I)
 _TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
+
+logger = logging.getLogger(__name__)
+
+#: How many unprojected compression events one repository open may project into
+#: ``model_request_compression_rollup`` on the calling thread.  In steady state
+#: that is a handful of events and costs milliseconds.
+_ROLLUP_BACKFILL_BATCH = 500
+#: Batch the catch-up thread uses.  Reading a payload is what costs, so a large
+#: batch turns a 40-open catch-up into a handful of reads; the ceiling is
+#: deliberately a few hundred megabytes, not the whole store.
+_ROLLUP_BACKFILL_THREAD_BATCH = 4000
+#: Backlog at which the catch-up thread is started at all.  Below it the
+#: synchronous batch already keeps up, and small stores (tests) never spawn one.
+_ROLLUP_BACKFILL_THREAD_MIN_BACKLOG = 2000
+
+#: Databases with a catch-up thread running in this process, so a session that
+#: builds an agent per turn starts at most one.
+_ROLLUP_THREADS: set[str] = set()
+_ROLLUP_THREADS_LOCK = threading.Lock()
+
+#: Small key/value table holding the rollup backfill's bookkeeping.  A persisted
+#: cursor keeps the per-open cost O(1) once caught up -- the alternative (asking
+#: "which events have no rollup row?") costs an index scan over every event on
+#: every open, ~180 ms on a 19k-event store.
+_ROLLUP_STATE_TABLE = "tool_output_rollup_state"
+#: Highest event id the backfill has projected so far.
+_ROLLUP_CURSOR_KEY = "compression_rollup_backfill_cursor"
+
+#: The dashboard's projection of a compression event (see the table's comment).
+_ROLLUP_INSERT = (
+    "INSERT OR REPLACE INTO model_request_compression_rollup("
+    "request_id, thread_id, created_at, turn_id, model, provider_input_tokens, "
+    "cache_read_tokens, cache_write_tokens, uncached_input_tokens, output_tokens, "
+    "total_saved_tokens, input_tokens_before, duration_ms"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def _rollup_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rollup_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rollup_row(
+    *, request_id: str, thread_id: str, created_at: str, event: dict[str, Any]
+) -> tuple[Any, ...]:
+    """Build one ``model_request_compression_rollup`` row from a compression event."""
+    return (
+        request_id,
+        thread_id,
+        created_at,
+        str(event.get("turn_id") or ""),
+        str(event.get("model") or ""),
+        _rollup_int(event.get("provider_input_tokens")),
+        _rollup_int(event.get("cache_read_tokens")),
+        _rollup_int(event.get("cache_write_tokens")),
+        _rollup_int(event.get("uncached_input_tokens")),
+        _rollup_int(event.get("output_tokens")),
+        _rollup_int(event.get("total_saved_tokens")),
+        _rollup_int(event.get("input_tokens_before")),
+        _rollup_float(event.get("duration_ms")),
+    )
 
 def content_to_text(content: Any) -> str:
     """Produce stable UTF-8 text for a ToolMessage content payload."""
@@ -83,6 +155,8 @@ class ToolOutputRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_tool_output_refs_thread
                     ON tool_output_refs(thread_id);
+                CREATE INDEX IF NOT EXISTS idx_tool_output_refs_created
+                    ON tool_output_refs(created_at);
                 CREATE TABLE IF NOT EXISTS tool_output_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     thread_id TEXT NOT NULL,
@@ -120,6 +194,50 @@ class ToolOutputRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_model_request_compression_thread
                     ON model_request_compression_events(thread_id, id);
+                /*
+                  Narrow projection of the fields the usage dashboard aggregates.
+
+                  One compression event carries ~90 KB of diagnostics
+                  (``live_zone_plan``, ``wire_fingerprints``), so a windowed
+                  aggregate that reads ``event_json`` has to page in the whole
+                  blob per row: ~15 s for a 30-day window of 19k events, and a
+                  full-table ``json_extract`` just to list models cost another
+                  4 s.  The dashboard only ever needs ten scalars, so they are
+                  written here alongside the event (same transaction) and read
+                  instead -- ~2 MB instead of ~1.3 GB.
+
+                  This table is derived data: every row can be rebuilt from
+                  ``model_request_compression_events``, which stays the source
+                  of truth.  Rows written before this table existed are filled
+                  in by the bounded backfill in ``_setup``.
+
+                  Deliberately *not* paired with an index on the events table's
+                  own ``created_at``: building one scans every payload (minutes
+                  of write lock on a multi-gigabyte store) and the dashboard
+                  never needs it -- it reads this ~120 B-per-row projection and
+                  only touches the events when the projection is incomplete.
+                */
+                CREATE TABLE IF NOT EXISTS model_request_compression_rollup (
+                    request_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    provider_input_tokens INTEGER NOT NULL,
+                    cache_read_tokens INTEGER NOT NULL,
+                    cache_write_tokens INTEGER NOT NULL,
+                    uncached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    total_saved_tokens INTEGER NOT NULL,
+                    input_tokens_before INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_request_compression_rollup_created
+                    ON model_request_compression_rollup(created_at);
+                CREATE TABLE IF NOT EXISTS tool_output_rollup_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS interaction_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     thread_id TEXT NOT NULL,
@@ -130,6 +248,120 @@ class ToolOutputRepository:
                     ON interaction_events(thread_id, id);
                 """
             )
+            caught_up = self._backfill_compression_rollup(conn, _ROLLUP_BACKFILL_BATCH)
+        if not caught_up:
+            self._start_rollup_catch_up()
+
+    def _start_rollup_catch_up(self) -> None:
+        """Finish the rollup backfill off the calling thread.
+
+        The remaining work is proportional to how much history predates the
+        rollup, and reading it is what costs.  Doing it here instead of on the
+        caller's thread keeps a first open after an upgrade instant, and each
+        batch is its own short transaction -- unlike ``CREATE INDEX``, a
+        catch-up never holds the write lock long enough to stall the runtime's
+        own event writes.  One thread per database per process; every batch is
+        idempotent, so duplicates across processes are wasted work, not damage.
+        """
+        key = str(self.path)
+        with _ROLLUP_THREADS_LOCK:
+            if key in _ROLLUP_THREADS:
+                return
+            _ROLLUP_THREADS.add(key)
+
+        def run() -> None:
+            try:
+                while True:
+                    with self._connection() as conn:
+                        if self._backfill_compression_rollup(
+                            conn, _ROLLUP_BACKFILL_THREAD_BATCH
+                        ):
+                            return
+                    time.sleep(0.05)
+            except Exception as exc:  # noqa: BLE001 - background best effort
+                logger.debug("usage stats: rollup catch-up stopped: %s", exc)
+            finally:
+                with _ROLLUP_THREADS_LOCK:
+                    _ROLLUP_THREADS.discard(key)
+
+        threading.Thread(
+            target=run, name="tool-output-rollup-catch-up", daemon=True
+        ).start()
+
+    @staticmethod
+    def _backfill_compression_rollup(conn: sqlite3.Connection, batch: int) -> bool:
+        """Project events written before the rollup table existed, in bounded batches.
+
+        The backfill is deliberately incremental rather than a migration: one
+        call reads at most ``batch`` unprojected events, so neither an open nor a
+        catch-up iteration blocks on a multi-second rewrite of a multi-gigabyte
+        table.  A persisted cursor keeps every later open to two indexed reads,
+        and the high-water mark is re-read each time instead of being frozen at
+        the upgrade, so events written by an older build (a downgrade, a second
+        checkout) are still picked up rather than silently left unprojected.
+
+        The cursor is scheduling state only: the dashboard decides what to read
+        from the events and rollup row counts, so a lost or stale cursor can
+        never change a number, only the work needed to produce it.
+
+        Returns whether the store is caught up.
+        """
+        try:
+            high_water = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM model_request_compression_events"
+                ).fetchone()[0]
+            )
+            row = conn.execute(
+                f"SELECT value FROM {_ROLLUP_STATE_TABLE} WHERE key = ?",
+                (_ROLLUP_CURSOR_KEY,),
+            ).fetchone()
+            cursor = int(row[0]) if row else 0
+            if cursor >= high_water:
+                return True
+            rows = conn.execute(
+                "SELECT id, request_id, thread_id, event_json, created_at "
+                "FROM model_request_compression_events "
+                "WHERE id > ? AND id <= ? ORDER BY id LIMIT ?",
+                (cursor, high_water, batch),
+            ).fetchall()
+        except sqlite3.Error as exc:  # pragma: no cover - corrupt/legacy database
+            logger.debug("usage stats: rollup backfill skipped: %s", exc)
+            return True
+        if not rows:
+            return True
+        projected: list[tuple[Any, ...]] = []
+        for row in rows:
+            try:
+                event = json.loads(row["event_json"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            projected.append(
+                _rollup_row(
+                    request_id=str(row["request_id"] or ""),
+                    thread_id=str(row["thread_id"] or ""),
+                    created_at=str(row["created_at"] or ""),
+                    event=event,
+                )
+            )
+        try:
+            if projected:
+                conn.executemany(_ROLLUP_INSERT, projected)
+            # The cursor advances even past rows that could not be parsed: they
+            # have no projection to write, and retrying them on every open would
+            # keep re-reading the same payloads forever.
+            conn.execute(
+                f"INSERT OR REPLACE INTO {_ROLLUP_STATE_TABLE}(key, value) VALUES (?, ?)",
+                (_ROLLUP_CURSOR_KEY, str(int(rows[-1]["id"]))),
+            )
+        except sqlite3.Error as exc:  # pragma: no cover - corrupt/legacy database
+            logger.debug("usage stats: rollup backfill write skipped: %s", exc)
+            return True
+        # The cursor now sits on the newest event the store had, so there is
+        # nothing left below the high-water mark.
+        return int(rows[-1]["id"]) >= high_water
 
     @staticmethod
     def parse_ref(ref: str) -> str | None:
@@ -315,9 +547,14 @@ class ToolOutputRepository:
     def record_model_request(
         self, *, thread_id: str, event: ModelRequestCompressionEvent
     ) -> None:
-        """Persist one completed model-call compression accounting event."""
+        """Persist one completed model-call compression accounting event.
+
+        The event's dashboard projection is written in the same transaction, so
+        the narrow rollup table can never drift from the event it summarises.
+        """
         if not thread_id or not event.request_id:
             return
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with self._lock, self._connection() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO model_request_compression_events("
@@ -326,7 +563,16 @@ class ToolOutputRepository:
                     event.request_id,
                     thread_id,
                     json.dumps(event.as_dict(), ensure_ascii=False),
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    created,
+                ),
+            )
+            conn.execute(
+                _ROLLUP_INSERT,
+                _rollup_row(
+                    request_id=event.request_id,
+                    thread_id=thread_id,
+                    created_at=created,
+                    event=event.as_dict(),
                 ),
             )
         notify_metrics_changed(thread_id)

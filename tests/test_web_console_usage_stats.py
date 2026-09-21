@@ -615,6 +615,153 @@ def test_tool_records_are_labelled_partial_not_all_calls(tmp_path: Path) -> None
     assert by_name["read_file"]["avg_ms"] is None
 
 
+# --- rollup projection (the dashboard's fast path) ---------------------------
+
+
+def test_repository_projects_each_event_into_the_rollup(tmp_path: Path) -> None:
+    """The narrow projection is written with the event, in the same transaction."""
+    from synapse.tool_output.repository import ToolOutputRepository
+
+    ws = _build_workspace(tmp_path)
+    repo = ToolOutputRepository(ws / ".synapse" / "tool-outputs.sqlite")
+    event = _event(request_id="r1", provider_input=1200, cache_read=300, output=99, saved=600)
+    repo.record_model_request(
+        thread_id="t1",
+        event=ModelRequestCompressionEvent(**{k: v for k, v in event.items() if k in {
+            "request_id", "provider", "api_style", "auth_mode", "model",
+            "input_tokens_before", "input_tokens_after", "provider_input_tokens",
+            "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens",
+            "output_tokens", "total_saved_tokens", "turn_id", "duration_ms",
+        }}),
+    )
+
+    con = sqlite3.connect(ws / ".synapse" / "tool-outputs.sqlite")
+    try:
+        row = con.execute("SELECT * FROM model_request_compression_rollup").fetchone()
+        columns = [c[1] for c in con.execute("PRAGMA table_info(model_request_compression_rollup)")]
+    finally:
+        con.close()
+    projected = dict(zip(columns, row, strict=True))
+    assert projected["request_id"] == "r1"
+    assert projected["thread_id"] == "t1"
+    assert projected["model"] == "gpt-5"
+    assert projected["turn_id"] == "turn-1"
+    assert projected["provider_input_tokens"] == 1200
+    assert projected["cache_read_tokens"] == 300
+    assert projected["output_tokens"] == 99
+    assert projected["total_saved_tokens"] == 600
+    assert projected["input_tokens_before"] == event["input_tokens_before"]
+
+
+def test_opening_the_store_backfills_events_that_predate_the_rollup(tmp_path: Path) -> None:
+    """A legacy store is projected by the bounded backfill, not by a migration."""
+    from synapse.tool_output.repository import ToolOutputRepository
+
+    events = [
+        {
+            "created_at": "2026-09-21T01:00:00Z",
+            "thread_id": "t1",
+            "event": _event(request_id=f"legacy-{i}", provider_input=100, output=10),
+        }
+        for i in range(3)
+    ]
+    ws = _build_workspace(tmp_path, events=events)
+    db = ws / ".synapse" / "tool-outputs.sqlite"
+
+    con = sqlite3.connect(db)
+    try:
+        # The fixture is a store written before the rollup existed: no table at all.
+        assert (
+            con.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'model_request_compression_rollup'"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        con.close()
+
+    ToolOutputRepository(db)
+
+    con = sqlite3.connect(db)
+    try:
+        rows = con.execute(
+            "SELECT request_id, provider_input_tokens, output_tokens "
+            "FROM model_request_compression_rollup ORDER BY request_id"
+        ).fetchall()
+    finally:
+        con.close()
+    assert rows == [("legacy-0", 100, 10), ("legacy-1", 100, 10), ("legacy-2", 100, 10)]
+
+
+def test_rollup_and_json_paths_agree_on_the_same_events(tmp_path: Path) -> None:
+    """The projection must not change a single number the dashboard reports."""
+    from synapse.tool_output.repository import ToolOutputRepository
+
+    events = [
+        {
+            "created_at": f"2026-09-2{day}T0{hour}:00:00Z",
+            "thread_id": f"t{day}",
+            "event": _event(
+                request_id=f"agree-{day}-{hour}",
+                provider_input=100 * day,
+                cache_read=10 * day,
+                cache_write=5,
+                output=7,
+                saved=20,
+                duration_ms=1.5,
+            ),
+        }
+        for day in (0, 1)
+        for hour in (1, 2)
+    ]
+    ws = _build_workspace(tmp_path, events=events)
+
+    from_json = get_usage_statistics(ws, now=NOW, range_key="7d")
+    ToolOutputRepository(ws / ".synapse" / "tool-outputs.sqlite")
+    from_rollup = get_usage_statistics(ws, now=NOW, range_key="7d")
+
+    assert from_rollup["kpi"] == from_json["kpi"]
+    assert from_rollup["heatmap"] == from_json["heatmap"]
+    assert from_rollup["trend"] == from_json["trend"]
+    assert from_rollup["project_matrix"] == from_json["project_matrix"]
+
+
+def test_partial_projection_counts_every_event_once(tmp_path: Path) -> None:
+    """A half-backfilled store adds the rollup and the remaining JSON, never twice."""
+    from synapse.tool_output.repository import ToolOutputRepository
+
+    events = [
+        {
+            "created_at": "2026-09-21T01:00:00Z",
+            "thread_id": "t1",
+            "event": _event(request_id="kept", provider_input=1000, output=100),
+        },
+        {
+            "created_at": "2026-09-21T02:00:00Z",
+            "thread_id": "t1",
+            "event": _event(request_id="legacy", provider_input=500, output=50),
+        },
+    ]
+    ws = _build_workspace(tmp_path, events=events)
+    db = ws / ".synapse" / "tool-outputs.sqlite"
+    ToolOutputRepository(db)
+    # Delete one projection row: the store now looks half backfilled, which is the
+    # state every upgraded store passes through.
+    con = sqlite3.connect(db)
+    try:
+        con.execute(
+            "DELETE FROM model_request_compression_rollup WHERE request_id = ?", ("legacy",)
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    stats = get_usage_statistics(ws, now=NOW, range_key="today")
+    assert stats["kpi"]["call_count"] == 2
+    assert stats["kpi"]["total_tokens"] == (1000 + 100) + (500 + 50)
+
+
 # --- provenance notes --------------------------------------------------------
 
 
