@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -17,13 +18,24 @@ from synapse.tool_output import ToolOutputRepository
 
 
 class _Request:
-    def __init__(self, messages, *, model=None, system_message=None, model_settings=None):
+    def __init__(
+        self,
+        messages,
+        *,
+        model=None,
+        system_message=None,
+        model_settings=None,
+        state_messages=None,
+        summarization_event=None,
+    ):
         self.messages = messages
         self.system_message = system_message
         self.tools = []
         self.model = model or SimpleNamespace(model_name="gpt-5")
         self.model_settings = model_settings or {}
-        self.state = {"messages": messages}
+        self.state = {"messages": state_messages if state_messages is not None else messages}
+        if summarization_event is not None:
+            self.state["_summarization_event"] = summarization_event
         self.runtime = SimpleNamespace(
             config={"configurable": {"thread_id": "thread-a"}}
         )
@@ -39,6 +51,76 @@ class _Request:
         clone.state = self.state
         clone.runtime = self.runtime
         return clone
+
+
+def test_summarization_savings_are_recorded_only_when_the_summary_changes(tmp_path) -> None:
+    clear_interaction_positions()
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    middleware = build_model_request_compression_middleware(repo)
+    response = SimpleNamespace(result=[AIMessage(content="done")])
+    full_history = [HumanMessage(content=f"message {index}: " + "x" * 1000) for index in range(12)]
+    first_summary = HumanMessage(content="summary of messages 0 through 7")
+    first_event = {"summary_message": first_summary, "cutoff_index": 8}
+    first_active = [first_summary, *full_history[8:]]
+
+    # The first request is the compaction that creates ``first_event``. The
+    # event is persisted only after this model call, so it must count the full
+    # newly summarized level.
+    first = _Request(first_active, state_messages=full_history)
+    middleware.wrap_model_call(first, lambda _request: response)
+
+    # Later model calls see the persisted event and the same effective window;
+    # they must not count the existing summarized history again.
+    repeated = _Request(
+        first_active,
+        state_messages=full_history,
+        summarization_event=first_event,
+    )
+    middleware.wrap_model_call(repeated, lambda _request: response)
+
+    # Other request middleware may shrink the suffix further (for example,
+    # stale-image replacement) without changing the persisted summary event.
+    # That must not be charged as fresh summarization on every request.
+    reduced_suffix = _Request(
+        [first_summary, *full_history[9:]],
+        state_messages=full_history,
+        summarization_event=first_event,
+    )
+    middleware.wrap_model_call(reduced_suffix, lambda _request: response)
+
+    extended_history = [*full_history, *(HumanMessage(content="y" * 1000) for _ in range(4))]
+    second_summary = HumanMessage(content="summary of messages 0 through 13")
+    second_event = {"summary_message": second_summary, "cutoff_index": 14}
+    second_active = [second_summary, *extended_history[14:]]
+
+    # A later compaction records only the additional history summarized since
+    # ``first_event``, and the asynchronous path shares the same accounting.
+    second = _Request(
+        second_active,
+        state_messages=extended_history,
+        summarization_event=first_event,
+    )
+
+    async def handler(_request):  # noqa: ANN001
+        return response
+
+    asyncio.run(middleware.awrap_model_call(second, handler))
+    repeated_second = _Request(
+        second_active,
+        state_messages=extended_history,
+        summarization_event=second_event,
+    )
+    asyncio.run(middleware.awrap_model_call(repeated_second, handler))
+
+    events = list(reversed(repo.model_request_events(thread_id="thread-a")))
+    first_saved, repeated_saved, reduced_suffix_saved, second_saved, repeated_second_saved = [
+        event["summarization_saved_tokens"] for event in events
+    ]
+    assert first_saved > 0
+    assert repeated_saved == 0
+    assert reduced_suffix_saved == 0
+    assert 0 < second_saved < first_saved
+    assert repeated_second_saved == 0
 
 
 def test_request_ledger_records_before_after_usage_and_tool_savings(tmp_path) -> None:

@@ -48,6 +48,42 @@ def _state_messages(request: Any) -> list[Any]:
     return list(state.get("messages") or []) if isinstance(state, dict) else []
 
 
+def _summarization_saved_delta(
+    request: Any, state_messages: list[Any], active_messages: list[Any]
+) -> int:
+    """Return only the compression added since the persisted summary event.
+
+    ``state["messages"]`` retains the full conversation while DeepAgents replaces
+    model-visible messages with a summary plus the recent suffix.  The resulting
+    difference is a level, not a per-request saving: recording it unchanged on
+    every model call repeatedly charges the same summarized history.  Rebuild
+    the prior effective window from the persisted event and record only a newly
+    increased difference. Other request middleware can also shrink messages
+    without changing graph state, so an unchanged persisted summary always
+    records zero instead of attributing those stable reductions repeatedly.
+    """
+    state_tokens = _count(state_messages)
+    current_level = max(0, state_tokens - _count(active_messages))
+    state = getattr(request, "state", None) or {}
+    event = state.get("_summarization_event") if isinstance(state, dict) else None
+    if not isinstance(event, dict):
+        return current_level
+    try:
+        summary_message = event["summary_message"]
+        cutoff_index = event["cutoff_index"]
+        if not isinstance(cutoff_index, int) or cutoff_index < 0:
+            return current_level
+        prior_messages = [summary_message, *state_messages[cutoff_index:]]
+    except (KeyError, TypeError):
+        # Preserve the current level for malformed persisted metadata rather
+        # than silently under-reporting a potentially real new compaction.
+        return current_level
+    if active_messages and active_messages[0] == summary_message:
+        return 0
+    previous_level = max(0, state_tokens - _count(prior_messages))
+    return max(0, current_level - previous_level)
+
+
 def _count(messages: list[Any], tools: list[Any] | None = None) -> int:
     try:
         return max(0, int(count_tokens_approximately(messages, tools=tools or [])))
@@ -645,10 +681,11 @@ def build_model_request_compression_middleware(repository: ToolOutputRepository)
             tools = list(getattr(request, "tools", None) or [])
             input_after = _count(request_messages, tools)
             state_messages = _state_messages(request)
-            state_count = _count(state_messages)
             tool_saved, candidates, transformed = _tool_output_savings(request_messages)
             active_messages = list(getattr(request, "messages", None) or [])
-            summarization_saved = max(0, state_count - _count(active_messages))
+            summarization_saved = _summarization_saved_delta(
+                request, state_messages, active_messages
+            )
             provider, api_style, auth_mode, model = _model_identity(request)
             thread_id = _thread_id(request)
             turn_index_hint = sum(isinstance(message, HumanMessage) for message in active_messages)
