@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ from synapse.web_console.security import (
     origin_allowed,
     sec_fetch_site_ok,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Explicit upper bound of the relay's outbound buffer (one direction).
 #:
@@ -439,6 +442,8 @@ class WebConsoleHost:
         app.router.add_post("/api/runtime-status", _method_not_allowed("GET"))
         app.router.add_get("/api/projects", self._handle_projects)
         app.router.add_post("/api/projects", _method_not_allowed("GET"))
+        app.router.add_get("/api/usage-stats", self._handle_usage_stats)
+        app.router.add_post("/api/usage-stats", _method_not_allowed("GET"))
         app.router.add_post("/api/logout", self._handle_logout)
         app.router.add_get("/api/logout", _method_not_allowed("POST"))
         # Kept as an explicit 405 (not a 404) so "GET must not mint a session"
@@ -888,7 +893,10 @@ class WebConsoleHost:
         """``GET /api/runtime-status``: session-gated, read-only daemon status."""
         if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
             return _reject(403, "forbidden host", json_body=True)
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if (
+            self._pairing_enabled
+            and self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None
+        ):
             return _reject(401, "missing or invalid console session", json_body=True)
         response = web.json_response(self.runtime_status_payload())
         response.headers["Cache-Control"] = "no-store"
@@ -916,6 +924,47 @@ class WebConsoleHost:
         if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
             return _reject(401, "missing or invalid console session", json_body=True)
         response = web.json_response(self._projects_payload())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    async def _handle_usage_stats(self, request: web.Request) -> web.Response:
+        """``GET /api/usage-stats``: read-only usage telemetry for the workspace.
+
+        Reads only the console's own workspace (never other workspaces).  It
+        exposes workspace-derived telemetry, so it is gated by a real session on
+        *every* request -- unconditionally, like ``/api/projects`` -- and never
+        answers an unauthenticated caller (a ``--no-pairing`` host still mints a
+        session for the console's own probe, so the browser is always paired
+        before this route is reached).  A malformed request (unknown
+        ``range``/``project`` or a bad custom window) is an explicit 400; a
+        genuine read failure is an explicit 500.  Neither path fabricates a
+        fallback payload -- the old "re-read cwd on failure" behaviour is gone,
+        and the only token source is the real compression events (see
+        ``synapse.web_console.usage_stats``).
+        """
+        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+            return _reject(403, "forbidden host", json_body=True)
+        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+            return _reject(401, "missing or invalid console session", json_body=True)
+        from synapse.web_console.usage_stats import UsageStatsError, get_usage_statistics
+
+        try:
+            stats = get_usage_statistics(
+                self.config.workspace,
+                project=request.query.get("project", "all"),
+                range_key=request.query.get("range", "today"),
+                start_date=request.query.get("start", ""),
+                end_date=request.query.get("end", ""),
+                model=request.query.get("model", "all"),
+                project_name=self.project.name,
+                project_entries=list(self._switchable_projects),
+            )
+        except UsageStatsError as exc:
+            return _reject(400, str(exc), json_body=True)
+        except Exception:  # noqa: BLE001 - explicit 500, never a fabricated payload
+            logger.exception("usage statistics query failed")
+            return _reject(500, "usage statistics unavailable", json_body=True)
+        response = web.json_response(stats)
         response.headers["Cache-Control"] = "no-store"
         return response
 

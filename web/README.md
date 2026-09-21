@@ -233,6 +233,31 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 也不会把转录拽到底部）。分组规则由 `tests/transcriptLabels.test.ts` 守护，卡面、标记与状态动画由
 `tests/transcriptLayoutGuard.test.ts` 守护。
 
+## 使用统计与工程效能面板
+
+侧栏底部操作行新增 `DataUsage` 入口（与设置入口同排），打开 `UsageDashboardDialog`
+（`src/components/UsageDashboardDialog.tsx`）。它只读展示**当前工作区**的真实用量，数据来自
+宿主 `GET /api/usage-stats`（`src/client/usageStats.ts` 严格校验完整载荷，**没有**演示 fallback）。
+
+- **口径**：累计吞吐 `total_tokens = provider_input + output`（provider 处理过的全部 prompt
+  token，含缓存读写）；净输入 = `provider_input - cache_read - cache_write`，趋势「非缓存读取
+  输入」= `provider_input - cache_read`（含 `cache_write`）；输出单独统计、reasoning 不重复
+  累加；日期为 UTC 闭区间，`today`/`7d`/`30d`/`all`/`custom` 统一过滤所有面板（后端流式读取，
+  不按 5000 截断）；自定义区间最长 3660 天，热力图为连续日历日，超宽区间只显示末 366 天并在
+  UI 标明（累计不受影响）。
+- **真实数据**：热力图按真实日期记录并可切换 Token / 会话；趋势与「按 Token 排序」的会话排行
+  来自真实事件；项目下拉来自宿主 catalog 的可见项目，选择项目或「全部」都会读取对应工作区数据，
+  浏览器不能提交任意路径，未知 `project` 返回 400。
+- **无来源即留白**：费用 / 代码行数 / 工具平均耗时显示 `—`；Agent/角色维度停用；工具统计仅覆盖
+  被压缩并写入引用存储的工具输出，面板明确标注**非全部工具调用**。
+- **交互**：单一 effect 触发请求；自定义日期点「筛选」后才查询；`AbortController` + stale 保护；
+  loading / error / empty 明确，切换筛选不保留旧数据；自定义日期默认取当天；通过 `localStorage`
+  记忆用户每次选择的「项目工作区」「可用模型」「日期维度」「自定义日期范围」「热力图指标」与「分布维度」；
+  支持按「可用模型」下钻过滤各项用量指标。
+
+由 `tests/usageDashboard.test.ts` 守护请求 / 失败 / 载荷校验；后端聚合由
+`tests/test_web_console_usage_stats.py` 用真实 SQLite fixture 守护。
+
 ## 恢复与降级提示（RecoveryNotice）
 
 控制台把「连接恢复 / 实时回放被截断」这件事**显式画出来**，而不是静默：store 早就算好了

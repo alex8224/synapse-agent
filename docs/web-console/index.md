@@ -307,6 +307,30 @@ Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/
 
 ---
 
+### 2.6 使用统计与工程效能面板（本轮新增）
+
+侧栏底部操作行的 `DataUsage` 入口（与设置入口同排）打开 `UsageDashboardDialog`，只读展示
+**当前工作区**的真实用量。数据来自宿主 `GET /api/usage-stats`（见 `formal-host.md` §3.2），
+后端 `src/synapse/web_console/usage_stats.py` 直接聚合 `model_request_compression_events`
+与 `sessions.sqlite`。
+
+- **口径**：累计吞吐 `total_tokens = provider_input + output`（provider 处理过的全部 prompt
+  token，含缓存读写）；净输入 = `provider_input - cache_read - cache_write`，趋势「非缓存读取
+  输入」= `provider_input - cache_read`（含 `cache_write`）；输出单独统计，reasoning 已含在
+  provider 输出中、**不重复累加**；日期为 UTC 闭区间，`today`/`7d`/`30d`/`all`/`custom` 统一
+  过滤所有面板；聚合流式读取、不按 5000 截断；自定义区间最长 3660 天，热力图为连续日历日
+  （超宽区间只显示末 366 天并在 UI 标明，累计不受影响）。
+- **真实数据**：热力图按真实日期记录并切换 Token / 会话；趋势与「按 Token 排序」会话排行
+  来自真实事件；`project` 选项来自宿主 catalog 的可见项目，选择项目或「全部」都会读取对应工作区数据
+  （浏览器不能提交任意路径，未知 `project` 返回 400）。
+- **无来源即留白**：费用 / 代码变更行数 / 工具平均耗时显示 `—`（载荷里为 `null`）；
+  Agent/角色维度停用（`breakdowns.agent` 为 `null`）；工具统计仅覆盖被压缩并写入引用存储的
+  工具输出，载荷以 `partial` + `scope_note` 标明**不代表全部工具调用**。
+- **前端**：移除演示 fallback 与伪造常量；严格校验完整载荷；单一 effect 触发请求、草稿日期
+  点「筛选」后才查询、`AbortController` + stale 保护；loading / error / empty 明确且不保留
+  旧筛选数据误导；自定义日期默认取当天。由 `web/tests/usageDashboard.test.ts` 与
+  `tests/test_web_console_usage_stats.py` 守护。
+
 ## 3. 通信与协议层契约
 
 严格遵守 docs/agent-runtime-service/s7-wire-protocol.md 规范（该文件是逐方法参数/结果的权威表；契约冻结后 wire 表共 55 个方法）。控制台涉及的子集：

@@ -165,6 +165,7 @@ synapse web-console: WARNING pairing is disabled (--no-pairing): http://127.0.0.
 | `GET` | `/api/session` | 查询当前会话与项目上下文；`--no-pairing` 且无有效会话 cookie 时**直接签发**新会话（见 §3.1） | 200 `{"project":{…},"expires_in":<int 秒>}`；`--no-pairing` 的自动签发另带 `Set-Cookie` | 默认：401 无/无效会话；`--no-pairing`：403（`Host`/`Sec-Fetch-Site`/`Origin` 守卫失败） |
 | `GET` | `/api/runtime-status` | **只读** daemon 状态（daemon 不可用时给出可操作提示） | 200 `{"runtime":{"endpoint":{"host":…,"port":…}\|null,"state_dir":…,"hint":"start synapse-runtime --state-dir …"}}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
 | `GET` | `/api/projects` | **deprecated 兼容**（不再是业务入口）：可切换项目列表 | 200 `{"projects":[{"project_id","workspace_path","workspace_name","git_branch","session_count","last_active_at"}]}` + `Cache-Control: no-store` | 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`） |
+| `GET` | `/api/usage-stats` | **只读**可见项目用量统计（Token/缓存/会话/工具记录），见 §3.2 | 200 统计载荷 + `Cache-Control: no-store` | 400 非法 `range`/`project`/自定义日期区间（`{"error":…}`）/ 401 无/无效会话 / 403 Host 不在允许表 / **405**（`POST`）/ 500 读取失败 |
 | `POST` | `/api/logout` | 作废全部会话（体 `{}`） | 204（无体） | 401 / 403 / 405 |
 | `GET`/`POST` | `/api/bootstrap` | 已删除：恒 405 | — | 405 `{"error":"method not allowed"}`，且绝不 `Set-Cookie` |
 
@@ -176,6 +177,37 @@ loopback daemon 端点（`daemon.json` 缺失或端点不可解析时为 `null`�
 任何 token 字样。`POST /api/runtime-status` → 405。
 该端点补上「daemon 不可用」时的可操作信息：`/runtime-ws` 的关闭原因仍是冻结的通用
 文案 `runtime daemon unavailable`，不随宿主状态变化。
+
+### 3.2 `GET /api/usage-stats`（只读用量统计）
+
+**只读、会话门禁**端点（Host 允许表 → 会话 cookie；不改变任何状态，因此不需要
+`Origin`/`Sec-Fetch-Site`）。它读取可见项目的派生数据，因此**每个请求都要求真实会话**
+（与 `/api/projects` 一致，`--no-pairing` 下也不放宽——该模式下 `GET /api/session` 会先为
+控制台自身的探测签发会话，浏览器到达该路由前已配对）。查询参数：`project`（默认 `all`）、
+`model`（可用模型筛选，默认 `all`，返回 `available_models` 列表）、
+`range`（`today`/`7d`/`30d`/`all`/`custom`，默认 `today`）、`start`/`end`（`custom` 必填，
+`YYYY-MM-DD`）。统计读取宿主启动时 catalog 中的可见项目工作区；`all` 汇总这些项目，指定 `project`
+只读取对应项目的本地
+`.synapse/tool-outputs.sqlite` 与 `.synapse/sessions.sqlite`。浏览器不能提交任意路径，未知项目返回 400。
+
+口径与局限（实现见 `src/synapse/web_console/usage_stats.py`）：
+
+- Token/缓存来自 `model_request_compression_events`（生产者
+  `runtime/model_request_compression_middleware.py`）。**累计吞吐 `total_tokens` =
+  `provider_input_tokens + output_tokens`**（provider 处理过的全部 prompt token，含缓存读写）；
+  **净输入 = `provider_input_tokens - cache_read_tokens - cache_write_tokens`**，趋势中
+  「非缓存读取输入」= `provider_input - cache_read`（含 `cache_write`）。输出单独统计，
+  reasoning 已含在 provider 输出中，**不重复累加**。聚合**流式读取**（不 `fetchall`、不
+  按 5000 截断），`today`/`7d`/`30d`/`all`/`custom` 为 **UTC 闭区间**并统一作用于所有面板。
+- 热力图是**连续日历日**序列（无活动日为 0，保证星期对齐）：`all` 取首末活动日之间连续，
+  其余区间取整段窗口。自定义区间最长 **3660 天**（超出返回 400）；超宽区间下热力图只显示
+  **窗口末 366 天**，并以载荷 `heatmap.truncated` + UI 文案标明——这只截断热力图，**累计
+  KPI 仍覆盖整个窗口**。
+- 费用、代码变更行数、工具执行耗时在这些库里**没有来源**，一律返回 `null`（前端显示
+  `—`），**不编造**。`tool_output_refs` 只覆盖被压缩并写入引用存储的工具输出，载荷里以
+  `top_tools.partial` + `scope_note` 标明，**不代表全部工具调用**；Agent/角色维度无来源，
+  `breakdowns.agent` 为 `null`。
+- 失败**不**回退到伪造数据：参数非法 → 400，读取失败 → 500；不会重新读 cwd。
 
 状态变更端点（`pair`/`logout`）必须走完整 CSRF 链，判定顺序为：Host 允许表
 （loopback 且端口 == 实际绑定端口）→ `Sec-Fetch-Site` ∈ {`same-origin`,`none`}

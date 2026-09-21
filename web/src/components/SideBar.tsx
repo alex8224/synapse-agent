@@ -2,6 +2,7 @@ import {
   Add20Regular, Search20Regular, Settings20Regular, Dismiss20Regular,
   ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
   CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
+  DataUsage20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -21,6 +22,7 @@ import {
 } from '../stores/sessionViews.ts';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { SessionDeleteDialog } from './SessionDeleteDialog.tsx';
+import { UsageDashboardDialog } from './UsageDashboardDialog.tsx';
 
 /** Sessions shown per expanded project before the "show all" row (TUI parity). */
 const VISIBLE_SESSIONS = 5;
@@ -138,6 +140,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
   const isSidebarCollapsed = collapsed ?? storedCollapsed;
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [showAllProjects, setShowAllProjects] = useState<string[]>([]);
   // The session currently being renamed inline, and the draft title.
   const [renaming, setRenaming] = useState<{ threadId: string; draft: string } | null>(null);
@@ -639,6 +642,15 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
           <ConsoleActions />
           <button
             type="button"
+            onClick={() => setUsageOpen(true)}
+            title="使用统计与工程效能"
+            aria-label="使用统计与工程效能"
+            className="ui-icon-button"
+          >
+            <DataUsage20Regular aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen(true)}
             title="打开设置"
             aria-label="打开设置"
@@ -651,6 +663,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
 
       </div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {usageOpen && <UsageDashboardDialog onClose={() => setUsageOpen(false)} />}
       {/* Outside both sidebar states: a dialog opened from the tree must survive
           the rail collapsing under it (that view is `inert`). */}
       {deleting !== null && (

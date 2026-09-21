@@ -1637,6 +1637,35 @@ def test_no_pairing_mints_a_session_for_the_console_probe(tmp_path: Path) -> Non
     _run(run())
 
 
+def test_no_pairing_usage_stats_never_leaks_the_workspace_without_a_session(
+    tmp_path: Path,
+) -> None:
+    """A ``--no-pairing`` host still refuses an unauthenticated usage read.
+
+    Only ``GET /api/session`` is exempt: it mints a session, after which the
+    browser's own usage read succeeds.  The telemetry route itself is gated on a
+    real session on every request, so the workspace is never answered to a
+    caller that holds no session.
+    """
+
+    async def run() -> None:
+        async with Console(tmp_path, pairing_required=False) as console:
+            async with ClientSession() as session:
+                async with session.get(console.base + "/api/usage-stats") as response:
+                    assert response.status == 401
+                reply = await session_probe(session, console.port)
+                assert reply.status == 200
+                assert reply.cookie
+                async with session.get(
+                    console.base + "/api/usage-stats",
+                    headers=cookie_header(reply.cookie),
+                ) as response:
+                    assert response.status == 200
+                    assert response.headers["Cache-Control"] == "no-store"
+
+    _run(run())
+
+
 def test_no_pairing_still_rejects_cross_site_and_forged_host_probes(tmp_path: Path) -> None:
     async def run() -> None:
         async with Console(tmp_path, pairing_required=False) as console:

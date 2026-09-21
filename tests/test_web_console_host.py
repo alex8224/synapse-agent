@@ -825,6 +825,70 @@ def test_projects_endpoint_is_session_gated_and_read_only(tmp_path: Path) -> Non
     _run(run())
 
 
+def test_usage_stats_endpoint_is_session_gated_and_validates_parameters(
+    tmp_path: Path,
+) -> None:
+    """B4: the usage endpoint is read-only, session-gated, and rejects bad input.
+
+    The error path is explicit (400 for a malformed request) and never falls
+    back to a fabricated payload, so an unknown project cannot be answered with
+    another workspace's numbers.
+    """
+    static = static_root(tmp_path)
+    workspace = tmp_path / "workspace"
+    (workspace / ".synapse").mkdir(parents=True, exist_ok=True)
+    (workspace / ".synapse" / "tool-outputs.sqlite").write_bytes(b"")
+
+    async def run() -> None:
+        config = make_config(tmp_path, runtime_port=None, static_dir=static)
+        host = WebConsoleHost(config, project_view(config.workspace))
+        metadata = await host.start()
+        port = metadata["port"]
+        try:
+            async with ClientSession() as session:
+                url = f"http://127.0.0.1:{port}/api/usage-stats"
+                # Host allow-list first, then the session (read-only endpoint).
+                raw = await raw_request(
+                    port,
+                    "GET",
+                    "/api/usage-stats",
+                    extra_headers=(("Host", "127.0.0.1:9999"),),
+                )
+                assert "403" in raw.split("\r\n", 1)[0]
+                async with session.get(url) as response:
+                    assert response.status == 401
+                cookie = await pair_session(session, port, host)
+                async with session.get(
+                    f"{url}?range=7d", headers=_cookie_header(cookie)
+                ) as response:
+                    assert response.status == 200
+                    assert response.headers["Cache-Control"] == "no-store"
+                    body = await response.json()
+                    assert body["kpi"]["total_tokens"] == 0
+                    assert body["project"]["connected_count"] == 1
+                    assert body["project"]["current"]["name"] == "synapse-workspace"
+                async with session.get(
+                    f"{url}?range=yesterday", headers=_cookie_header(cookie)
+                ) as response:
+                    assert response.status == 400
+                async with session.get(
+                    f"{url}?project=some-other-workspace", headers=_cookie_header(cookie)
+                ) as response:
+                    assert response.status == 400
+                async with session.get(
+                    f"{url}?range=custom&start=2026-09-21&end=2026-09-01",
+                    headers=_cookie_header(cookie),
+                ) as response:
+                    assert response.status == 400
+                # Wrong method on a known /api path stays an explicit 405.
+                async with session.post(url, headers=_cookie_header(cookie)) as response:
+                    assert response.status == 405
+        finally:
+            await host.close()
+
+    _run(run())
+
+
 def test_relay_binds_the_trusted_scope_header_only_under_workspace_scope(
     tmp_path: Path,
 ) -> None:

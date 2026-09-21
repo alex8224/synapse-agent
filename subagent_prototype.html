@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Subagent 可观察性设计原型 - 3 种方案对比</title>
+  <style>
+    /* 严格遵循 Synapse Web 控制台 Fluent 2 视觉体系规范 */
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --radius-control: 4px;
+      --radius-card: 6px;
+      --motion-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    [data-theme="dark"] {
+      --canvas: #1f1f1f;
+      --surface-raised: #292929;
+      --surface-sunken: #181818;
+      --surface-hover: #333333;
+      --surface-pressed: #3d3d3d;
+      --border-line: #383838;
+      --border-line-subtle: #2e2e2e;
+      --terminal-bg: #141414;
+
+      --fg-primary: #ffffff;
+      --fg-secondary: #d4d4d8;
+      --fg-muted: #8e8e93;
+
+      --purple-bg: rgba(147, 51, 234, 0.2);
+      --purple-border: rgba(168, 85, 247, 0.35);
+      --purple-fg: #e9d5ff;
+
+      --green-bg: rgba(34, 197, 94, 0.16);
+      --green-border: rgba(34, 197, 94, 0.35);
+      --green-fg: #4ade80;
+
+      --red-bg: rgba(239, 68, 68, 0.18);
+      --red-border: rgba(239, 68, 68, 0.35);
+      --red-fg: #f87171;
+
+      --blue-bg: rgba(59, 130, 246, 0.18);
+      --blue-fg: #60a5fa;
+    }
+
+    [data-theme="light"] {
+      --canvas: #f8f9fa;
+      --surface-raised: #ffffff;
+      --surface-sunken: #f1f3f5;
+      --surface-hover: #f3f4f6;
+      --surface-pressed: #e5e7eb;
+      --border-line: #e5e7eb;
+      --border-line-subtle: #f0f1f3;
+      --terminal-bg: #1e1e24;
+
+      --fg-primary: #111827;
+      --fg-secondary: #4b5563;
+      --fg-muted: #9ca3af;
+
+      --purple-bg: #faf5ff;
+      --purple-border: #e9d5ff;
+      --purple-fg: #7e22ce;
+
+      --green-bg: #f0fdf4;
+      --green-border: #bbf7d0;
+      --green-fg: #15803d;
+
+      --red-bg: #fef2f2;
+      --red-border: #fecaca;
+      --red-fg: #b91c1c;
+
+      --blue-bg: #eff6ff;
+      --blue-fg: #1d4ed8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--canvas);
+      color: var(--fg-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    /* 原型顶部控制栏与版本选择器 */
+    .proto-controls {
+      width: 100%;
+      max-width: 980px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+    }
+    .proto-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .proto-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .version-tabs {
+      display: inline-flex;
+      background: var(--surface-sunken);
+      padding: 3px;
+      border-radius: var(--radius-control);
+      border: 1px solid var(--border-line-subtle);
+    }
+    .version-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--fg-secondary);
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: var(--radius-control);
+      cursor: pointer;
+      transition: var(--motion-fast);
+    }
+    .version-tab-btn.active {
+      background: var(--surface-raised);
+      color: var(--fg-primary);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    }
+    .proto-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .action-btn {
+      background: var(--surface-raised);
+      border: 1px solid var(--border-line);
+      color: var(--fg-secondary);
+      padding: 4px 10px;
+      border-radius: var(--radius-control);
+      font-size: 12px;
+      cursor: pointer;
+      transition: var(--motion-fast);
+    }
+    .action-btn:hover {
+      background: var(--surface-hover);
+      color: var(--fg-primary);
+    }
+
+    /* 说明横幅 */
+    .version-banner {
+      width: 100%;
+      max-width: 980px;
+      background: var(--surface-sunken);
+      border-left: 3px solid #a855f7;
+      padding: 10px 14px;
+      border-radius: var(--radius-control);
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: var(--fg-secondary);
+      line-height: 1.6;
+    }
+    .version-banner strong {
+      color: var(--fg-primary);
+    }
+
+    /* 主界面视窗（像素级仿真现有 Synapse Web 控制台样式） */
+    .viewport {
+      width: 100%;
+      max-width: 980px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      overflow: hidden;
+    }
+
+    /* 顶部工作折叠头 */
+    .transcript-fold-header {
+      padding: 12px 18px 8px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .fold-toggle-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--fg-secondary);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: var(--radius-control);
+    }
+    .fold-toggle-btn:hover {
+      color: var(--fg-primary);
+      background: var(--surface-hover);
+    }
+    .fold-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 9999px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      color: var(--green-fg);
+    }
+    .fold-divider {
+      height: 1px;
+      background: var(--border-line-subtle);
+      margin: 4px 18px 12px 18px;
+    }
+
+    /* 子代理卡片列表容器 */
+    .cards-container {
+      padding: 0 18px 24px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* 基础卡片外壳（完全复用 ToolGroupRow.tsx 的视觉设计） */
+    .subagent-card {
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-control);
+      background: var(--surface-raised);
+      overflow: hidden;
+      transition: border-color var(--motion-fast);
+    }
+    .card-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      transition: background-color var(--motion-fast);
+    }
+    .card-header:hover {
+      background: var(--surface-pressed);
+    }
+    .agent-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: var(--radius-control);
+      background: var(--purple-bg);
+      border: 1px solid var(--purple-border);
+      color: var(--purple-fg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .agent-tag {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: var(--purple-bg);
+      border: 1px solid var(--purple-border);
+      color: var(--purple-fg);
+      padding: 1px 5px;
+      border-radius: var(--radius-control);
+      flex-shrink: 0;
+    }
+    .agent-goal {
+      font-size: 12px;
+      color: var(--fg-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .steps-meta {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--fg-muted);
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 1px 6px;
+      border-radius: var(--radius-control);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      flex-shrink: 0;
+    }
+    .status-badge.completed {
+      background: var(--green-bg);
+      color: var(--green-fg);
+    }
+    .status-badge.failed {
+      background: var(--red-bg);
+      color: var(--red-fg);
+    }
+    .chevron-icon {
+      color: var(--fg-muted);
+      flex-shrink: 0;
+      transition: transform 0.2s ease;
+    }
+    .subagent-card.expanded .chevron-icon {
+      transform: rotate(90deg);
+    }
+
+    /* 折叠内容容器 */
+    .card-body {
+      display: none;
+      border-top: 1px solid var(--border-line-subtle);
+      background: var(--surface-sunken);
+      padding: 10px 12px 14px 12px;
+    }
+    .subagent-card.expanded .card-body {
+      display: block;
+    }
+
+    /* 现有导轨基础类 (border-l ml-3.5 pl-3 space-y-2) */
+    .timeline-rail {
+      border-left: 1px solid var(--border-line);
+      margin-left: 14px;
+      padding-left: 12px;
+      position: relative;
+    }
+    .rail-step {
+      position: relative;
+      margin-bottom: 6px;
+    }
+    .rail-step:last-child {
+      margin-bottom: 0;
+    }
+    .step-circle {
+      position: absolute;
+      left: -19px;
+      top: 5px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+    }
+    .step-circle.success {
+      background: var(--green-bg);
+      color: var(--green-fg);
+    }
+    .step-circle.failed {
+      background: var(--red-bg);
+      color: var(--red-fg);
+    }
+    .step-circle.prompt {
+      background: var(--purple-bg);
+      color: var(--purple-fg);
+    }
+    .step-circle.result {
+      background: var(--green-bg);
+      color: var(--green-fg);
+    }
+
+    /* 工具步骤行 (renderToolRow) */
+    .tool-row-btn {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 6px;
+      border-radius: var(--radius-control);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--fg-secondary);
+      transition: background var(--motion-fast);
+    }
+    .tool-row-btn:hover {
+      background: var(--surface-hover);
+      color: var(--fg-primary);
+    }
+    .tool-name {
+      font-weight: 600;
+      color: var(--fg-primary);
+    }
+    .tool-name.error {
+      color: var(--red-fg);
+    }
+    .tool-intent {
+      color: var(--fg-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .tool-detail-toggle {
+      color: var(--fg-muted);
+      font-size: 10px;
+      margin-left: auto;
+    }
+
+    /* 二级输出详情 */
+    .tool-output-panel {
+      display: none;
+      margin: 4px 0 6px 4px;
+      border-left: 1px solid var(--border-line);
+      padding: 6px 10px;
+      background: var(--terminal-bg);
+      border-radius: var(--radius-control);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #d1d5db;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .rail-step.tool-open .tool-output-panel {
+      display: block;
+    }
+
+    /* ======================================================== */
+    /* 方案 A 样式：统一流式时间轴 (Unified Timeline Stream)    */
+    /* ======================================================== */
+    .stream-prompt-card {
+      background: var(--surface-raised);
+      border: 1px solid var(--border-line-subtle);
+      border-radius: var(--radius-control);
+      padding: 8px 10px;
+      margin-bottom: 8px;
+    }
+    .stream-prompt-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10.5px;
+      font-family: var(--font-mono);
+      color: var(--fg-muted);
+      margin-bottom: 4px;
+    }
+    .stream-prompt-content {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--fg-secondary);
+      white-space: pre-wrap;
+    }
+    .stream-prompt-content.clamped {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .stream-result-card {
+      background: var(--surface-raised);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-control);
+      padding: 10px 12px;
+      margin-top: 6px;
+    }
+    .stream-result-head {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--green-fg);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-family: var(--font-mono);
+    }
+    .stream-result-head.error {
+      color: var(--red-fg);
+    }
+    .stream-result-body {
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--fg-primary);
+    }
+
+    /* ======================================================== */
+    /* 方案 B 样式：结构化三段卡片 (Structured Sections)       */
+    /* ======================================================== */
+    .section-v2 {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .v2-box {
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-control);
+      background: var(--surface-raised);
+      overflow: hidden;
+    }
+    .v2-title {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 10px;
+      background: var(--surface-hover);
+      border-bottom: 1px solid var(--border-line-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--fg-secondary);
+    }
+    .v2-content {
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .v2-steps-fold {
+      padding: 6px 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface-hover);
+      border-bottom: 1px solid var(--border-line-subtle);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-secondary);
+      user-select: none;
+    }
+
+    /* ======================================================== */
+    /* 方案 C 样式：交付物优先 / 双视图选项卡 (Tabs View)       */
+    /* ======================================================== */
+    .v3-header-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-line);
+      padding-bottom: 6px;
+      margin-bottom: 10px;
+    }
+    .v3-tabs {
+      display: flex;
+      gap: 4px;
+    }
+    .v3-tab-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius-control);
+      color: var(--fg-muted);
+      font-size: 11.5px;
+      font-family: var(--font-mono);
+      padding: 2px 8px;
+      cursor: pointer;
+      transition: var(--motion-fast);
+    }
+    .v3-tab-btn.active {
+      background: var(--surface-raised);
+      border-color: var(--border-line);
+      color: var(--fg-primary);
+      font-weight: 500;
+    }
+    .v3-prompt-summary {
+      font-size: 11px;
+      color: var(--fg-muted);
+      max-width: 48%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 辅助链接 */
+    code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: var(--surface-sunken);
+      padding: 1px 4px;
+      border-radius: 3px;
+      border: 1px solid var(--border-line-subtle);
+    }
+    .text-toggle-link {
+      font-size: 11px;
+      color: #9333ea;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      margin-top: 4px;
+      display: inline-block;
+    }
+    [data-theme="dark"] .text-toggle-link {
+      color: #c084fc;
+    }
+    .text-toggle-link:hover {
+      text-decoration: underline;
+    }
+
+    svg {
+      vertical-align: middle;
+      fill: currentColor;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 控制与方案切换栏 -->
+  <div class="proto-controls">
+    <div class="proto-left">
+      <span class="proto-title">Subagent 可观察性设计原型</span>
+      <div class="version-tabs">
+        <button class="version-tab-btn active" onclick="switchVersion('v1', this)">方案 A：统一流式时间轴 (Timeline)</button>
+        <button class="version-tab-btn" onclick="switchVersion('v2', this)">方案 B：结构化三段卡片 (Sections)</button>
+        <button class="version-tab-btn" onclick="switchVersion('v3', this)">方案 C：交付物优先双视图 (Result-First)</button>
+      </div>
+    </div>
+    <div class="proto-right">
+      <button class="action-btn" id="themeBtn" onclick="toggleTheme()">切换至浅色模式</button>
+      <button class="action-btn" onclick="expandAllCards()">全部展开</button>
+      <button class="action-btn" onclick="collapseAllCards()">全部收起</button>
+    </div>
+  </div>
+
+  <!-- 当前方案说明横幅 -->
+  <div class="version-banner" id="versionBanner">
+    <strong>方案 A（统一流式时间轴）：</strong>保持现有导轨（Guide Rail）纯粹性，将“任务下发提词”作为起点节点、“原子工具执行”作为过程节点、“交付结果”作为终点节点。视觉连续自然，完全遵循当前 WebUI 极简流式设计。
+  </div>
+
+  <!-- 模拟真实 Web 控制台视窗 -->
+  <div class="viewport">
+
+    <!-- 顶部工作耗时与状态药丸（与现有截图 100% 一致） -->
+    <div class="transcript-fold-header">
+      <button class="fold-toggle-btn">
+        <span>已工作 7 分 21 秒</span>
+        <svg width="12" height="12" viewBox="0 0 16 16"><path d="M3.15 5.65a.5.5 0 0 1 .7 0L8 9.79l4.15-4.14a.5.5 0 0 1 .7.7l-4.5 4.5a.5.5 0 0 1-.7 0l-4.5-4.5a.5.5 0 0 1 0-.7z"/></svg>
+      </button>
+      <div class="fold-pill">
+        <svg width="12" height="12" viewBox="0 0 16 16"><path d="M13.85 4.15a.5.5 0 0 1 0 .7l-7.5 7.5a.5.5 0 0 1-.7 0l-3.5-3.5a.5.5 0 1 1 .7-.7L6 11.79l7.15-7.14a.5.5 0 0 1 .7 0z"/></svg>
+        <span>write_todos · Todos 7/7 · all done</span>
+      </div>
+    </div>
+    <div class="fold-divider"></div>
+
+    <!-- 卡片列表容器 -->
+    <div class="cards-container">
+
+      <!-- 卡片 1：@reviewer 审查 subagent 编译与工具策略守卫 (默认展开) -->
+      <div class="subagent-card expanded" id="card-1">
+        <button class="card-header" onclick="toggleCard('card-1')">
+          <div class="agent-icon">
+            <svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v1.07A6.002 6.002 0 0 1 16 10v4a2 2 0 0 1-2 2h-1v1a1 1 0 1 1-2 0v-1H9v1a1 1 0 1 1-2 0v-1H6a2 2 0 0 1-2-2v-4a6.002 6.002 0 0 1 5-5.93V3a1 1 0 0 1 1-1zm-4 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm8 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg>
+          </div>
+          <span class="agent-tag">@reviewer</span>
+          <span class="agent-goal" title="审查 subagent 编译与工具策略守卫">审查 subagent 编译与工具策略守卫</span>
+          <span class="steps-meta">28 步骤</span>
+          <span class="status-badge completed">
+            <svg width="10" height="10" viewBox="0 0 16 16"><path d="M13.85 4.15a.5.5 0 0 1 0 .7l-7.5 7.5a.5.5 0 0 1-.7 0l-3.5-3.5a.5.5 0 1 1 .7-.7L6 11.79l7.15-7.14a.5.5 0 0 1 .7 0z"/></svg>
+            完成
+          </span>
+          <div class="chevron-icon">
+            <svg width="12" height="12" viewBox="0 0 16 16"><path d="M5.65 3.15a.5.5 0 0 1 .7 0l4.5 4.5a.5.5 0 0 1 0 .7l-4.5 4.5a.5.5 0 0 1-.7-.7L9.79 8 5.65 3.85a.5.5 0 0 1 0-.7z"/></svg>
+          </div>
+        </button>
+        <div class="card-body" id="cardBody-1"></div>
+      </div>
+
+      <!-- 卡片 2：@reviewer 审查 app 装配层策略传递 -->
+      <div class="subagent-card" id="card-2">
+        <button class="card-header" onclick="toggleCard('card-2')">
+          <div class="agent-icon">
+            <svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v1.07A6.002 6.002 0 0 1 16 10v4a2 2 0 0 1-2 2h-1v1a1 1 0 1 1-2 0v-1H9v1a1 1 0 1 1-2 0v-1H6a2 2 0 0 1-2-2v-4a6.002 6.002 0 0 1 5-5.93V3a1 1 0 0 1 1-1zm-4 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm8 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg>
+          </div>
+          <span class="agent-tag">@reviewer</span>
+          <span class="agent-goal" title="审查 app 装配层策略传递">审查 app 装配层策略传递</span>
+          <span class="steps-meta">71 步骤</span>
+          <span class="status-badge completed">
+            <svg width="10" height="10" viewBox="0 0 16 16"><path d="M13.85 4.15a.5.5 0 0 1 0 .7l-7.5 7.5a.5.5 0 0 1-.7 0l-3.5-3.5a.5.5 0 1 1 .7-.7L6 11.79l7.15-7.14a.5.5 0 0 1 .7 0z"/></svg>
+            完成
+          </span>
+          <div class="chevron-icon">
+            <svg width="12" height="12" viewBox="0 0 16 16"><path d="M5.65 3.15a.5.5 0 0 1 .7 0l4.5 4.5a.5.5 0 0 1 0 .7l-4.5 4.5a.5.5 0 0 1-.7-.7L9.79 8 5.65 3.85a.5.5 0 0 1 0-.7z"/></svg>
+          </div>
+        </button>
+        <div class="card-body" id="cardBody-2"></div>
+      </div>
+
+      <!-- 卡片 3：@reviewer 审查共享 prompt 段落与文档一致性 -->
+      <div class="subagent-card" id="card-3">
+        <button class="card-header" onclick="toggleCard('card-3')">
+          <div class="agent-icon"><svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v1.07A6.002 6.002 0 0 1 16 10v4a2 2 0 0 1-2 2h-1v1a1 1 0 1 1-2 0v-1H9v1a1 1 0 1 1-2 0v-1H6a2 2 0 0 1-2-2v-4a6.002 6.002 0 0 1 5-5.93V3a1 1 0 0 1 1-1zm-4 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm8 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg></div>
+          <span class="agent-tag">@reviewer</span>
+          <span class="agent-goal">审查共享 prompt 段落与文档一致性</span>
+          <span class="steps-meta">50 步骤</span>
+          <span class="status-badge completed">
+            <svg width="10" height="10" viewBox="0 0 16 16"><path d="M13.85 4.15a.5.5 0 0 1 0 .7l-7.5 7.5a.5.5 0 0 1-.7 0l-3.5-3.5a.5.5 0 1 1 .7-.7L6 11.79l7.15-7.14a.5.5 0 0 1 .7 0z"/></svg>
+            完成
+          </span>
+          <div class="chevron-icon"><svg width="12" height="12" viewBox="0 0 16 16"><path d="M5.65 3.15a.5.5 0 0 1 .7 0l4.5 4.5a.5.5 0 0 1 0 .7l-4.5 4.5a.5.5 0 0 1-.7-.7L9.79 8 5.65 3.85a.5.5 0 0 1 0-.7z"/></svg></div>
+        </button>
+        <div class="card-body" id="cardBody-3"></div>
+      </div>
+
+      <!-- 卡片 4：@reviewer 审查 web 控制台 DOM guard 改动 -->
+      <div class="subagent-card" id="card-4">
+        <button class="card-header" onclick="toggleCard('card-4')">
+          <div class="agent-icon"><svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v1.07A6.002 6.002 0 0 1 16 10v4a2 2 0 0 1-2 2h-1v1a1 1 0 1 1-2 0v-1H9v1a1 1 0 1 1-2 0v-1H6a2 2 0 0 1-2-2v-4a6.002 6.002 0 0 1 5-5.93V3a1 1 0 0 1 1-1zm-4 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm8 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg></div>
+          <span class="agent-tag">@reviewer</span>
+          <span class="agent-goal">审查 web 控制台 DOM guard 改动</span>
+          <span class="steps-meta">56 步骤</span>
+          <span class="status-badge completed">
+            <svg width="10" height="10" viewBox="0 0 16 16"><path d="M13.85 4.15a.5.5 0 0 1 0 .7l-7.5 7.5a.5.5 0 0 1-.7 0l-3.5-3.5a.5.5 0 1 1 .7-.7L6 11.79l7.15-7.14a.5.5 0 0 1 .7 0z"/></svg>
+            完成
+          </span>
+          <div class="chevron-icon"><svg width="12" height="12" viewBox="0 0 16 16"><path d="M5.65 3.15a.5.5 0 0 1 .7 0l4.5 4.5a.5.5 0 0 1 0 .7l-4.5 4.5a.5.5 0 0 1-.7-.7L9.79 8 5.65 3.85a.5.5 0 0 1 0-.7z"/></svg></div>
+        </button>
+        <div class="card-body" id="cardBody-4"></div>
+      </div>
+
+      <!-- 卡片 5：@tester 运行 subagent 相关聚焦测试 (失败状态演示) -->
+      <div class="subagent-card" id="card-5">
+        <button class="card-header" onclick="toggleCard('card-5')">
+          <div class="agent-icon"><svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2a1 1 0 0 1 1 1v1.07A6.002 6.002 0 0 1 16 10v4a2 2 0 0 1-2 2h-1v1a1 1 0 1 1-2 0v-1H9v1a1 1 0 1 1-2 0v-1H6a2 2 0 0 1-2-2v-4a6.002 6.002 0 0 1 5-5.93V3a1 1 0 0 1 1-1zm-4 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm8 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg></div>
+          <span class="agent-tag">@tester</span>
+          <span class="agent-goal">运行 subagent 相关聚焦测试</span>
+          <span class="steps-meta">40 步骤 (1 失败)</span>
+          <span class="status-badge failed">
+            <svg width="10" height="10" viewBox="0 0 16 16"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+            失败
+          </span>
+          <div class="chevron-icon"><svg width="12" height="12" viewBox="0 0 16 16"><path d="M5.65 3.15a.5.5 0 0 1 .7 0l4.5 4.5a.5.5 0 0 1 0 .7l-4.5 4.5a.5.5 0 0 1-.7-.7L9.79 8 5.65 3.85a.5.5 0 0 1 0-.7z"/></svg></div>
+        </button>
+        <div class="card-body" id="cardBody-5"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const BANNER_TEXTS = {
+      v1: '<strong>方案 A（统一流式时间轴）：</strong>保持现有导轨（Guide Rail）纯粹性，将“任务下发提词”作为起点节点、“原子工具执行”作为过程节点、“交付结果”作为终点节点。视觉连续自然，完全遵循当前 WebUI 极简流式设计。',
+      v2: '<strong>方案 B（结构化三段卡片）：</strong>卡片内部分设三大独立功能块：顶部任务提词条、中间执行步骤折叠层（可单独折拢）、底部最终交付报告。适合交付物报告篇幅较长或指令复杂的场景。',
+      v3: '<strong>方案 C（交付物优先双视图）：</strong>默认展示最终交付结果（Result）与提词摘要，右侧可切换至“执行步骤（Steps）”。解决深层复杂任务中几十个步骤把交付结果挤出屏幕的痛点。'
+    };
+
+    let currentVersion = 'v1';
+
+    // 方案 A：统一流式时间轴
+    function renderV1(isFailed = false) {
+      if (isFailed) {
+        return `
+          <div class="timeline-rail">
+            <div class="rail-step">
+              <span class="step-circle prompt">⇲</span>
+              <div class="stream-prompt-card">
+                <div class="stream-prompt-head">
+                  <span>下发提词 · description</span>
+                  <span>角色: tester</span>
+                </div>
+                <div class="stream-prompt-content">运行聚焦测试 tests/test_runtime_subagents.py 并验证白名单过滤逻辑。若有断言失败请提取 traceback。</div>
+              </div>
+            </div>
+
+            <div class="rail-step">
+              <span class="step-circle success">✓</span>
+              <button class="tool-row-btn" onclick="toggleToolDetail(this)">
+                <span class="tool-name">execute</span>
+                <span class="tool-intent">· git status -s</span>
+                <span class="tool-detail-toggle">▶</span>
+              </button>
+              <div class="tool-output-panel">$ git status -s\nM src/synapse/runtime/subagents.py</div>
+            </div>
+
+            <div class="rail-step tool-open">
+              <span class="step-circle failed">✕</span>
+              <button class="tool-row-btn" onclick="toggleToolDetail(this)">
+                <span class="tool-name error">execute</span>
+                <span class="tool-intent">· pytest tests/test_subagents_security.py</span>
+                <span class="tool-detail-toggle">▼</span>
+              </button>
+              <div class="tool-output-panel" style="display:block;">
+<span style="color:#f87171;">FAILED tests/test_subagents_security.py::test_guard_intercept</span>
+AssertionError: expected ToolExecutionBlocked, got ToolExecutionSuccess
+assert status == 'blocked'
+              </div>
+            </div>
+
+            <div class="rail-step">
+              <span class="step-circle failed">✕</span>
+              <div class="stream-result-card" style="border-color:var(--red-border); background:var(--red-bg);">
+                <div class="stream-result-head error">执行失败 · 子智能体异常终止</div>
+                <div class="stream-result-body" style="color:var(--red-fg);">
+                  测试用例未通过：<code>test_guard_intercept</code> 发生断言失败，只读型策略未能阻止 destructive 工具调用。
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="timeline-rail">
+          <!-- 提词起点节点 -->
+          <div class="rail-step">
+            <span class="step-circle prompt">⇲</span>
+            <div class="stream-prompt-card">
+              <div class="stream-prompt-head">
+                <span>下发提词 · description</span>
+                <span>目标: reviewer</span>
+              </div>
+              <div class="stream-prompt-content clamped" id="v1-prompt-c1">审查 src/synapse/runtime/subagents.py 与 src/synapse/app/agent_assembly.py 中的策略守卫：
+1. 检查 task 工具派发 subagent 时的白名单拦截逻辑；
+2. 确认 ToolPolicyGuard 是否阻止未授权写入；
+3. 检查递归深度兜底机制 (MaxDepth=3)；
+4. 验证聚焦测试覆盖率。</div>
+              <button class="text-toggle-link" onclick="toggleClamp('v1-prompt-c1', this)">展开全部指令 (4 行)</button>
+            </div>
+          </div>
+
+          <!-- 执行过程节点 -->
+          <div class="rail-step">
+            <span class="step-circle success">✓</span>
+            <button class="tool-row-btn" onclick="toggleToolDetail(this)">
+              <span class="tool-name">execute</span>
+              <span class="tool-intent">· git diff --stat origin/main</span>
+              <span class="tool-detail-toggle">▶</span>
+            </button>
+            <div class="tool-output-panel">$ git diff --stat origin/main\nsrc/synapse/runtime/subagents.py | 34 +++++++---\n1 file changed, 25 insertions(+), 9 deletions(-)</div>
+          </div>
+
+          <div class="rail-step">
+            <span class="step-circle success">✓</span>
+            <button class="tool-row-btn" onclick="toggleToolDetail(this)">
+              <span class="tool-name">read_file</span>
+              <span class="tool-intent">· /src/synapse/runtime/subagents.py:120-165</span>
+              <span class="tool-detail-toggle">▶</span>
+            </button>
+            <div class="tool-output-panel">def enforce_subagent_tool_policy(subagent_type: str, tools: list[str]) -> list[str]:\n    guard = SUBAGENT_POLICIES.get(subagent_type)\n    return [t for t in tools if guard.is_allowed(t)]</div>
+          </div>
+
+          <div class="rail-step">
+            <span class="step-circle success">✓</span>
+            <button class="tool-row-btn" onclick="toggleToolDetail(this)">
+              <span class="tool-name">execute</span>
+              <span class="tool-intent">· pytest tests/test_runtime_subagents.py -q</span>
+              <span class="tool-detail-toggle">▶</span>
+            </button>
+            <div class="tool-output-panel">14 passed in 0.82s</div>
+          </div>
+
+          <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--fg-muted); padding-left:6px; margin:4px 0 8px 0;">
+            ··· 其余 25 个步骤已省略
+          </div>
+
+          <!-- 终点产出节点 -->
+          <div class="rail-step">
+            <span class="step-circle result">✓</span>
+            <div class="stream-result-card">
+              <div class="stream-result-head">交付结果 · Subagent Result</div>
+              <div class="stream-result-body">
+                <strong>审查结论：PASS</strong><br/>
+                已完成对子代理策略守卫的审查与测试核验：
+                <ul style="padding-left:16px; margin-top:4px;">
+                  <li><code>reviewer</code> 白名单生效，非只读工具被成功阻断；</li>
+                  <li>装配层正确绑定策略中间件；</li>
+                  <li>相关单测 14 项全部通过，可合入分支。</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // 方案 B：结构化三段卡片
+    function renderV2(isFailed = false) {
+      if (isFailed) {
+        return `
+          <div class="section-v2">
+            <div class="v2-box">
+              <div class="v2-title"><span>1. 任务下发提词 (Prompt)</span><span style="font-size:10px;">@tester</span></div>
+              <div class="v2-content">运行聚焦测试 tests/test_runtime_subagents.py 并验证白名单过滤逻辑。</div>
+            </div>
+            <div class="v2-box">
+              <div class="v2-steps-fold" onclick="toggleV2Steps('v2-steps-failed')">
+                <span>2. 执行过程 (40 步骤 · 1 处报错)</span>
+                <span>▼</span>
+              </div>
+              <div class="v2-content" id="v2-steps-failed">
+                <div class="timeline-rail">
+                  <div class="rail-step">
+                    <span class="step-circle failed">✕</span>
+                    <div style="font-family:var(--font-mono); font-size:11px; color:var(--red-fg);">execute · pytest tests/test_subagents_security.py (FAILED)</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="v2-box" style="border-color:var(--red-border); background:var(--red-bg);">
+              <div class="v2-title" style="background:transparent; color:var(--red-fg);"><span>3. 最终产出 (Failure Summary)</span></div>
+              <div class="v2-content" style="color:var(--red-fg);">
+                <strong>测试套件运行失败：</strong>用例 test_guard_intercept 发生断言差异，期望状态 'blocked'，实际为 'allowed'。
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      return `
+        <div class="section-v2">
+          <!-- 提词区 -->
+          <div class="v2-box">
+            <div class="v2-title">
+              <span>1. 任务下发提词 (Prompt)</span>
+              <span style="font-size:10px; font-family:var(--font-mono);">description · @reviewer</span>
+            </div>
+            <div class="v2-content">
+              <div class="stream-prompt-content clamped" id="v2-prompt-c1">审查 src/synapse/runtime/subagents.py 与 src/synapse/app/agent_assembly.py 中的策略守卫：
+1. 检查 task 工具派发 subagent 时的白名单拦截逻辑；
+2. 确认 ToolPolicyGuard 是否阻止未授权写入；
+3. 检查递归深度兜底机制 (MaxDepth=3)；
+4. 验证聚焦测试覆盖率。</div>
+              <button class="text-toggle-link" onclick="toggleClamp('v2-prompt-c1', this)">展开全部提词</button>
+            </div>
+          </div>
+
+          <!-- 执行过程区 (支持独立折叠) -->
+          <div class="v2-box">
+            <div class="v2-steps-fold" onclick="toggleV2Steps('v2-steps-box')">
+              <span>2. 执行过程 (28 步骤已全部完成)</span>
+              <span id="v2-steps-arrow">▲ 收起步骤</span>
+            </div>
+            <div class="v2-content" id="v2-steps-box">
+              <div class="timeline-rail">
+                <div class="rail-step">
+                  <span class="step-circle success">✓</span>
+                  <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">execute · git diff --stat origin/main</div>
+                </div>
+                <div class="rail-step">
+                  <span class="step-circle success">✓</span>
+                  <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">read_file · /src/synapse/runtime/subagents.py</div>
+                </div>
+                <div class="rail-step">
+                  <span class="step-circle success">✓</span>
+                  <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">execute · pytest tests/test_runtime_subagents.py -q</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 最终交付区 -->
+          <div class="v2-box">
+            <div class="v2-title">
+              <span>3. 最终交付结果 (Result)</span>
+              <span style="font-size:10px; font-family:var(--font-mono); color:var(--green-fg);">✓ 完成</span>
+            </div>
+            <div class="v2-content">
+              <strong>审查结论：PASS</strong> —— 代码符合架构安全边界，无阻塞性隐患，可合入分支。
+              <ul style="padding-left:18px; margin-top:4px;">
+                <li>白名单策略已阻断所有非授权写操作；</li>
+                <li>递归保护已实测通过；</li>
+                <li>测试套件覆盖率满足要求。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // 方案 C：交付物优先双视图
+    function renderV3(isFailed = false) {
+      if (isFailed) {
+        return `
+          <div>
+            <div class="v3-header-nav">
+              <div class="v3-tabs">
+                <button class="v3-tab-btn active" onclick="switchV3Tab(this, 'v3-res-failed', 'v3-step-failed')">交付结果 (Result)</button>
+                <button class="v3-tab-btn" onclick="switchV3Tab(this, 'v3-step-failed', 'v3-res-failed')">执行步骤 (40 步骤)</button>
+              </div>
+              <span class="v3-prompt-summary" title="运行聚焦测试 tests/test_runtime_subagents.py">指令: 运行聚焦测试 tests/test_runtime_subagents.py...</span>
+            </div>
+            <div id="v3-res-failed" style="display:block;">
+              <div style="padding:8px 10px; background:var(--red-bg); border:1px solid var(--red-border); border-radius:var(--radius-control); color:var(--red-fg); font-size:12px;">
+                <strong>执行报错：</strong>用例 <code>test_guard_intercept</code> 失败，拦截守卫未生效。
+              </div>
+            </div>
+            <div id="v3-step-failed" style="display:none;">
+              <div class="timeline-rail">
+                <div class="rail-step"><span class="step-circle failed">✕</span><div style="font-family:var(--font-mono); font-size:11px; color:var(--red-fg);">execute · pytest (FAILED)</div></div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      return `
+        <div>
+          <!-- 视图切换头栏 -->
+          <div class="v3-header-nav">
+            <div class="v3-tabs">
+              <button class="v3-tab-btn active" onclick="switchV3Tab(this, 'v3-c1-result', 'v3-c1-steps')">交付结果 (Result)</button>
+              <button class="v3-tab-btn" onclick="switchV3Tab(this, 'v3-c1-steps', 'v3-c1-result')">执行步骤 (28 步骤)</button>
+            </div>
+            <span class="v3-prompt-summary" title="审查 src/synapse/runtime/subagents.py 策略守卫">提词: 审查 src/synapse/runtime/subagents.py 策略守卫...</span>
+          </div>
+
+          <!-- Tab 1: 结果优先视图 -->
+          <div id="v3-c1-result" style="display:block;">
+            <div style="background:var(--surface-raised); border:1px solid var(--border-line); border-radius:var(--radius-control); padding:10px 12px;">
+              <div style="font-size:11.5px; font-weight:600; color:var(--fg-primary); margin-bottom:4px;">审查报告 · Subagent 策略守卫</div>
+              <div style="font-size:12px; line-height:1.6; color:var(--fg-secondary);">
+                已完成对子代理策略守卫模块的全面审查与自动化用例验证，审查结论如下：
+                <ul style="padding-left:16px; margin:4px 0;">
+                  <li><strong>白名单隔离性：</strong><code>SUBAGENT_POLICIES</code> 严格阻断写入与修改操作；</li>
+                  <li><strong>递归深度：</strong>主调度器已设置 <code>depth &lt;= 2</code> 阈值校验；</li>
+                  <li><strong>单测通过率：</strong>14 项单测全部通过。</li>
+                </ul>
+                <div style="margin-top:6px; padding:4px 8px; background:var(--green-bg); color:var(--green-fg); border-radius:var(--radius-control); font-size:11px; font-weight:500;">
+                  ✓ 结论：PASS，可安全合入主分支。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 2: 步骤列表视图 -->
+          <div id="v3-c1-steps" style="display:none;">
+            <div class="timeline-rail">
+              <div class="rail-step">
+                <span class="step-circle success">✓</span>
+                <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">execute · git diff --stat origin/main</div>
+              </div>
+              <div class="rail-step">
+                <span class="step-circle success">✓</span>
+                <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">read_file · /src/synapse/runtime/subagents.py</div>
+              </div>
+              <div class="rail-step">
+                <span class="step-circle success">✓</span>
+                <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--fg-secondary);">execute · pytest tests/test_runtime_subagents.py -q</div>
+              </div>
+              <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--fg-muted); padding-left:6px;">+ 其余 25 个工具调用步骤</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function refreshAllCards() {
+      let renderFn = renderV1;
+      if (currentVersion === 'v2') renderFn = renderV2;
+      if (currentVersion === 'v3') renderFn = renderV3;
+
+      document.getElementById('cardBody-1').innerHTML = renderFn(false);
+      document.getElementById('cardBody-2').innerHTML = renderFn(false);
+      document.getElementById('cardBody-3').innerHTML = renderFn(false);
+      document.getElementById('cardBody-4').innerHTML = renderFn(false);
+      document.getElementById('cardBody-5').innerHTML = renderFn(true);
+    }
+
+    function switchVersion(ver, btn) {
+      currentVersion = ver;
+      document.querySelectorAll('.version-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('versionBanner').innerHTML = BANNER_TEXTS[ver];
+      refreshAllCards();
+    }
+
+    function toggleCard(cardId) {
+      document.getElementById(cardId).classList.toggle('expanded');
+    }
+
+    function toggleToolDetail(btn) {
+      const step = btn.closest('.rail-step');
+      step.classList.toggle('tool-open');
+      const arrow = btn.querySelector('.tool-detail-toggle');
+      if (arrow) arrow.innerText = step.classList.contains('tool-open') ? '▼' : '▶';
+    }
+
+    function toggleClamp(id, btn) {
+      const el = document.getElementById(id);
+      if (el.classList.contains('clamped')) {
+        el.classList.remove('clamped');
+        btn.innerText = '收起提词';
+      } else {
+        el.classList.add('clamped');
+        btn.innerText = '展开全部提词';
+      }
+    }
+
+    function toggleV2Steps(boxId) {
+      const box = document.getElementById(boxId);
+      const isHidden = box.style.display === 'none';
+      box.style.display = isHidden ? 'block' : 'none';
+      const arrow = document.getElementById('v2-steps-arrow');
+      if (arrow) arrow.innerText = isHidden ? '▲ 收起步骤' : '▼ 展开步骤';
+    }
+
+    function switchV3Tab(btn, showId, hideId) {
+      const parent = btn.parentElement;
+      parent.querySelectorAll('.v3-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(showId).style.display = 'block';
+      document.getElementById(hideId).style.display = 'none';
+    }
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const cur = html.getAttribute('data-theme');
+      const next = cur === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      document.getElementById('themeBtn').innerText = next === 'dark' ? '切换至浅色模式' : '切换至深色模式';
+    }
+
+    function expandAllCards() {
+      document.querySelectorAll('.subagent-card').forEach(c => c.classList.add('expanded'));
+    }
+
+    function collapseAllCards() {
+      document.querySelectorAll('.subagent-card').forEach(c => c.classList.remove('expanded'));
+    }
+
+    refreshAllCards();
+  </script>
+</body>
+</html>
