@@ -12,53 +12,24 @@ import type {
   UsageRangeKey,
   UsageStatsPayload,
 } from '../client/usageStats.ts';
+import {
+  loadStoredUsagePrefs,
+  saveStoredUsagePrefs,
+} from '../stores/usagePrefs.ts';
+import type {
+  BreakdownDim,
+  HeatMetric,
+  StoredUsagePreferences,
+} from '../stores/usagePrefs.ts';
 
 export interface UsageDashboardDialogProps {
   onClose: () => void;
 }
 
 const WAN = 10000;
-const USAGE_PREFS_STORAGE_KEY = 'synapse:usage-dashboard:prefs:v1';
-
-interface StoredUsagePreferences {
-  project?: string;
-  range?: UsageRangeKey;
-  customStart?: string;
-  customEnd?: string;
-  model?: string;
-  heatMetric?: 'tokens' | 'sessions' | 'loc';
-  breakdownDim?: 'project' | 'model' | 'agent';
-}
-
-function loadStoredUsagePrefs(): StoredUsagePreferences {
-  if (typeof window === 'undefined' || !window.localStorage) return {};
-  try {
-    const raw = localStorage.getItem(USAGE_PREFS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveStoredUsagePrefs(patch: Partial<StoredUsagePreferences>): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    const existing = loadStoredUsagePrefs();
-    const updated = { ...existing, ...patch };
-    localStorage.setItem(USAGE_PREFS_STORAGE_KEY, JSON.stringify(updated));
-  } catch {
-    // quota or security exception fallback
-  }
-}
 
 function fmtTokens(value: number): string {
   if (value >= WAN) return `${(value / WAN).toFixed(1)} 万`;
-  return value.toLocaleString('en-US');
-}
-
-function fmtInt(value: number): string {
   return value.toLocaleString('en-US');
 }
 
@@ -70,21 +41,9 @@ function utcDateString(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function daysAgoUtc(days: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - days);
-  return utcDateString(d);
-}
-
-/** Weekday index with Monday=0, matching the heatmap's row order. */
-function mondayIndex(iso: string): number {
-  const day = new Date(`${iso}T00:00:00Z`).getUTCDay();
-  return (day + 6) % 7;
-}
-
 function breakdownFor(
   payload: UsageStatsPayload,
-  dim: 'project' | 'model' | 'agent',
+  dim: BreakdownDim,
 ): BreakdownItem[] | null {
   return payload.breakdowns[dim];
 }
@@ -210,12 +169,12 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
   // Bumped by "筛选"/"刷新" so an identical window still re-requests.
   const [nonce, setNonce] = useState(0);
 
-  const [breakdownDim, setBreakdownDim] = useState<'project' | 'model' | 'agent'>(() => {
+  const [breakdownDim, setBreakdownDim] = useState<BreakdownDim>(() => {
     return initialPrefs.breakdownDim === 'project' || initialPrefs.breakdownDim === 'agent'
       ? initialPrefs.breakdownDim
       : 'model';
   });
-  const [heatMetric, setHeatMetric] = useState<'tokens' | 'sessions' | 'loc'>(() => {
+  const [heatMetric, setHeatMetric] = useState<HeatMetric>(() => {
     return initialPrefs.heatMetric === 'sessions'
       ? 'sessions'
       : initialPrefs.heatMetric === 'loc'
@@ -310,13 +269,13 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
     setNonce((n) => n + 1);
   };
 
-  const handleHeatMetricChange = (metric: 'tokens' | 'sessions' | 'loc') => {
+  const handleHeatMetricChange = (metric: HeatMetric) => {
     if (metric === heatMetric) return;
     setHeatMetric(metric);
     saveStoredUsagePrefs({ heatMetric: metric });
   };
 
-  const handleBreakdownDimChange = (dim: 'project' | 'model' | 'agent') => {
+  const handleBreakdownDimChange = (dim: BreakdownDim) => {
     if (dim === breakdownDim) return;
     setBreakdownDim(dim);
     saveStoredUsagePrefs({ breakdownDim: dim });
@@ -328,14 +287,13 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
 
   const currentName = knownProjectName;
   const connectedCount = stats?.project.connected_count ?? 1;
-  // A range with no model calls is only truly empty when it also has no tool
-  // records and no sessions; otherwise the panel must still render (the tools
-  // section is real data even when token accounting is zero).
+  // The panel only paints token/session telemetry, so a range with no calls and
+  // no sessions is empty even when the payload still carries tool-output refs
+  // (that section is no longer rendered).
   const isEmpty =
     stats !== null &&
     stats.kpi.call_count === 0 &&
     stats.kpi.total_tokens === 0 &&
-    stats.top_tools.recorded_total === 0 &&
     stats.top_sessions.length === 0;
 
   const breakdownList = stats ? breakdownFor(stats, breakdownDim) : null;
@@ -408,7 +366,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
       pRaw,
       pOut,
     };
-  }, [trendItems, trendMax]);
+  }, [trendItems, trendMax, plotW, plotH]);
 
   const heatDays: HeatmapDay[] = stats?.heatmap.days ?? [];
   const heatMax = Math.max(
@@ -419,12 +377,15 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
     () => build52WeekCalendar(heatDays, stats?.range.end),
     [heatDays, stats?.range.end],
   );
+  // Five steps of the brand ramp, taken from the theme's blue role palette: the
+  // empty cell is the sunken surface and the four activity steps are the same
+  // brand hue at rising weight, so a theme re-paints the whole scale.
   const heatColors = [
-    'bg-[#ebedf0] dark:bg-[#262626]',
-    'bg-[#0078d4]/[0.28]',
-    'bg-[#0078d4]/[0.52]',
-    'bg-[#0078d4]/[0.78]',
-    'bg-[#0078d4]',
+    'bg-sunken',
+    'bg-blue-500/25',
+    'bg-blue-500/50',
+    'bg-blue-600/75',
+    'bg-blue-600',
   ];
   const heatLevel = (day: HeatmapDay | null): number => {
     if (!day || heatMetric === 'loc') return 0;
@@ -499,7 +460,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
               </div>
 
               {/* 时间分段控制器 */}
-              <div className="inline-flex rounded-control border border-line/60 bg-surface-sunken p-0.5">
+              <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5">
                 {(
                   [
                     ['today', '今天'],
@@ -582,30 +543,30 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 {Array.from({ length: 3 }).map((_, i) => (
                   <div key={i} className="rounded-card border border-line bg-surface p-3.5 space-y-2 shadow-card">
                     <div className="flex items-center justify-between">
-                      <div className="h-3 w-20 rounded bg-surface-sunken animate-pulse" />
-                      <div className="h-3 w-10 rounded bg-surface-sunken animate-pulse" />
+                      <div className="h-3 w-20 rounded bg-sunken animate-pulse" />
+                      <div className="h-3 w-10 rounded bg-sunken animate-pulse" />
                     </div>
-                    <div className="h-7 w-28 rounded bg-surface-sunken animate-pulse" />
-                    <div className="h-4 w-32 rounded-pill bg-surface-sunken animate-pulse" />
+                    <div className="h-7 w-28 rounded bg-sunken animate-pulse" />
+                    <div className="h-4 w-32 rounded-pill bg-sunken animate-pulse" />
                   </div>
                 ))}
               </div>
               <div className="rounded-card border border-line bg-surface p-4 space-y-3 shadow-card">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <div className="h-4 w-44 rounded bg-surface-sunken animate-pulse" />
-                    <div className="h-3 w-64 rounded bg-surface-sunken animate-pulse" />
+                    <div className="h-4 w-44 rounded bg-sunken animate-pulse" />
+                    <div className="h-3 w-64 rounded bg-sunken animate-pulse" />
                   </div>
-                  <div className="h-3 w-28 rounded bg-surface-sunken animate-pulse" />
+                  <div className="h-3 w-28 rounded bg-sunken animate-pulse" />
                 </div>
                 <div className="space-y-2 pt-2">
                   {Array.from({ length: 2 }).map((_, i) => (
                     <div key={i} className="flex items-center justify-between gap-4 py-2 border-b border-line/40">
-                      <div className="h-4 w-36 rounded bg-surface-sunken animate-pulse" />
-                      <div className="h-4 w-28 rounded bg-surface-sunken animate-pulse" />
-                      <div className="h-4 w-24 rounded bg-surface-sunken animate-pulse" />
-                      <div className="h-4 w-16 rounded bg-surface-sunken animate-pulse" />
-                      <div className="h-4 w-20 rounded bg-surface-sunken animate-pulse" />
+                      <div className="h-4 w-36 rounded bg-sunken animate-pulse" />
+                      <div className="h-4 w-28 rounded bg-sunken animate-pulse" />
+                      <div className="h-4 w-24 rounded bg-sunken animate-pulse" />
+                      <div className="h-4 w-16 rounded bg-sunken animate-pulse" />
+                      <div className="h-4 w-20 rounded bg-sunken animate-pulse" />
                     </div>
                   ))}
                 </div>
@@ -714,7 +675,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     </thead>
                     <tbody className="divide-y divide-line/40 font-mono">
                       {stats.project_matrix.map((p) => (
-                        <tr key={p.name} className="hover:bg-surface-sunken/60 transition-colors">
+                        <tr key={p.name} className="hover:bg-sunken/60 transition-colors">
                           <td className="py-2.5 px-2">
                             <div className="flex items-center gap-1.5 font-sans font-semibold text-gray-900">
                               <span>{p.name}</span>
@@ -740,7 +701,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           </td>
                           <td className="py-2.5 px-2">
                             <div className="flex items-center gap-2">
-                              <div className="h-1.5 w-20 rounded-pill bg-surface-sunken overflow-hidden">
+                              <div className="h-1.5 w-20 rounded-pill bg-sunken overflow-hidden">
                                 <div
                                   className="h-full rounded-pill bg-blue-600 dark:bg-blue-500"
                                   style={{ width: `${Math.min(100, p.share_pct)}%` }}
@@ -770,13 +731,13 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       按日记录 Agent 执行强度与活跃周期（过去 52 周）
                     </p>
                   </div>
-                  <div className="inline-flex rounded-control border border-line/60 bg-surface-sunken p-0.5 text-xs">
+                  <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5 text-xs">
                     <button
                       type="button"
                       onClick={() => handleHeatMetricChange('tokens')}
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'tokens'
-                          ? 'bg-surface font-semibold text-gray-900 shadow-sm'
+                          ? 'bg-surface font-semibold text-gray-900 shadow-card'
                           : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
                       }`}
                     >
@@ -787,7 +748,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       onClick={() => handleHeatMetricChange('sessions')}
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'sessions'
-                          ? 'bg-surface font-semibold text-gray-900 shadow-sm'
+                          ? 'bg-surface font-semibold text-gray-900 shadow-card'
                           : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
                       }`}
                     >
@@ -798,7 +759,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       onClick={() => handleHeatMetricChange('loc')}
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'loc'
-                          ? 'bg-surface font-semibold text-gray-900 shadow-sm'
+                          ? 'bg-surface font-semibold text-gray-900 shadow-card'
                           : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
                       }`}
                     >
@@ -880,11 +841,9 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                   <div className="flex items-center justify-end gap-1.5 pt-3 text-[11px] text-gray-500 dark:text-gray-400 select-none">
                     <span>较少</span>
                     <div className="flex items-center gap-[3px]">
-                      <div className="h-[11px] w-[11px] rounded-[2px] bg-[#ebedf0] dark:bg-[#262626]" />
-                      <div className="h-[11px] w-[11px] rounded-[2px] bg-[#0078d4]/[0.28]" />
-                      <div className="h-[11px] w-[11px] rounded-[2px] bg-[#0078d4]/[0.52]" />
-                      <div className="h-[11px] w-[11px] rounded-[2px] bg-[#0078d4]/[0.78]" />
-                      <div className="h-[11px] w-[11px] rounded-[2px] bg-[#0078d4]" />
+                      {heatColors.map((swatch) => (
+                        <div key={swatch} className={`h-[11px] w-[11px] rounded-[2px] ${swatch}`} />
+                      ))}
                     </div>
                     <span>重度使用</span>
                   </div>
@@ -906,19 +865,19 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     </div>
                     <div className="flex items-center gap-3 text-[11px] font-mono text-gray-600 dark:text-gray-400 select-none flex-wrap justify-end">
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-[2px] bg-[#10b981]" />
+                        <span className="h-2 w-2 rounded-[2px] bg-emerald-500" />
                         缓存命中
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-[2px] bg-[#0078d4]" />
+                        <span className="h-2 w-2 rounded-[2px] bg-blue-600" />
                         未命中输入
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-[2px] bg-[#a855f7]" />
+                        <span className="h-2 w-2 rounded-[2px] bg-purple-500" />
                         思考推理
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-[2px] bg-[#f59e0b]" />
+                        <span className="h-2 w-2 rounded-[2px] bg-amber-500" />
                         正文输出
                       </span>
                       <span className="flex items-center gap-1">
@@ -957,24 +916,39 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                               textAnchor="end"
                               fontSize="10"
                               fill="currentColor"
-                              className="fill-gray-400 dark:fill-gray-500 font-mono"
+                              className="text-gray-400 dark:text-gray-500 font-mono"
                             >
                               {tick.val >= 10000 ? `${Math.round(tick.val / 10000)}w` : tick.val}
                             </text>
                           </g>
                         ))}
 
-                        {/* 从底至顶堆叠面积层 */}
-                        <path d={trendPaths.dCache} fill="#10b981" fillOpacity="0.75" />
-                        <path d={trendPaths.dInput} fill="#0078d4" fillOpacity="0.85" />
-                        <path d={trendPaths.dOut} fill="#f59e0b" fillOpacity="0.9" />
+                        {/* 从底至顶堆叠面积层（颜色取自主题角色，见上方图例） */}
+                        <path
+                          d={trendPaths.dCache}
+                          className="text-emerald-500"
+                          fill="currentColor"
+                          fillOpacity="0.75"
+                        />
+                        <path
+                          d={trendPaths.dInput}
+                          className="text-blue-600"
+                          fill="currentColor"
+                          fillOpacity="0.85"
+                        />
+                        <path
+                          d={trendPaths.dOut}
+                          className="text-amber-500"
+                          fill="currentColor"
+                          fillOpacity="0.9"
+                        />
 
                         {/* 顶层：未压缩应耗基线虚线折线 */}
                         <path
                           d={trendPaths.dRaw}
                           fill="none"
                           stroke="currentColor"
-                          className="text-gray-400 dark:text-gray-400"
+                          className="text-gray-400 dark:text-gray-500"
                           strokeWidth="1.8"
                           strokeDasharray="4 4"
                         />
@@ -992,20 +966,21 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                 textAnchor="middle"
                                 fontSize="10.5"
                                 fill="currentColor"
-                                className="fill-gray-400 dark:fill-gray-500 font-mono select-none"
+                                className="text-gray-400 dark:text-gray-500 font-mono select-none"
                               >
                                 {d.date}
                               </text>
-                              {/* 白色实心数据小圆点 */}
-                              <circle
-                                cx={x}
-                                cy={yPoint}
-                                r="3.5"
-                                fill="#ffffff"
-                                stroke="#f59e0b"
-                                strokeWidth="2"
-                                className="transition-transform group-hover:scale-150"
-                              />
+                              {/* 数据点：琥珀色圆环 + 卡片底色的实心内芯 */}
+                              <g className="text-amber-500 transition-transform group-hover:scale-150">
+                                <circle cx={x} cy={yPoint} r="3.5" fill="currentColor" />
+                                <circle
+                                  cx={x}
+                                  cy={yPoint}
+                                  r="1.6"
+                                  className="text-surface"
+                                  fill="currentColor"
+                                />
+                              </g>
                               {/* 透明感应交互纵条 */}
                               <rect
                                 x={x - 14}
@@ -1021,10 +996,26 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                     y: rect.top - 120,
                                     title: `${d.date} 用量构成`,
                                     rows: [
-                                      { label: "缓存命中", val: fmtTokens(d.cache), color: "#10b981" },
-                                      { label: "未命中输入", val: fmtTokens(d.input), color: "#0078d4" },
-                                      { label: "正文输出", val: fmtTokens(d.output), color: "#f59e0b" },
-                                      { label: "未压缩基线", val: fmtTokens(d.raw), color: "#9ca3af" },
+                                      {
+                                        label: "缓存命中",
+                                        val: fmtTokens(d.cache),
+                                        color: "rgb(var(--emerald-500))",
+                                      },
+                                      {
+                                        label: "未命中输入",
+                                        val: fmtTokens(d.input),
+                                        color: "rgb(var(--blue-600))",
+                                      },
+                                      {
+                                        label: "正文输出",
+                                        val: fmtTokens(d.output),
+                                        color: "rgb(var(--amber-500))",
+                                      },
+                                      {
+                                        label: "未压缩基线",
+                                        val: fmtTokens(d.raw),
+                                        color: "rgb(var(--gray-400))",
+                                      },
                                     ],
                                   });
                                 }}
@@ -1053,7 +1044,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       </h2>
                       <p className="text-xs text-gray-500 dark:text-gray-400">用量与计费占比分解</p>
                     </div>
-                    <div className="inline-flex rounded-control border border-line/60 bg-surface-sunken p-0.5 text-xs">
+                    <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5 text-xs">
                       {(
                         [
                           ["project", "按项目"],
@@ -1067,7 +1058,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           onClick={() => handleBreakdownDimChange(key)}
                           className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                             breakdownDim === key
-                              ? "bg-surface font-semibold text-gray-900 shadow-sm"
+                              ? "bg-surface font-semibold text-gray-900 shadow-card"
                               : "text-gray-500 dark:text-gray-400 hover:text-gray-900"
                           }`}
                         >
@@ -1121,7 +1112,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                         {breakdownList.map((item) => (
                           <div
                             key={item.name}
-                            className="flex items-center justify-between text-xs px-2 py-1.5 rounded-control hover:bg-surface-sunken transition-colors"
+                            className="flex items-center justify-between text-xs px-2 py-1.5 rounded-control hover:bg-sunken transition-colors"
                           >
                             <div className="flex items-center gap-2 truncate">
                               <span
@@ -1149,97 +1140,49 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
               </div>
 
               {/* 第五层：深度可观测性（工具输出记录 + 高消耗会话排行） */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {/* 工具输出记录（非全部调用） */}
-                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-2">
-                  <div className="flex items-center justify-between border-b border-line/60 pb-2">
-                    <h2 className="text-xs font-bold text-gray-900">工具输出压缩记录</h2>
-                    <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
-                      记录数 {fmtInt(stats.top_tools.recorded_total)}（非全部调用）
-                    </span>
+              <div className="rounded-card border border-line/70 bg-surface p-4 space-y-2 shadow-card">
+                <div className="flex items-center justify-between border-b border-line/60 pb-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-gray-900">用量溯源：高消耗会话排行</h2>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      排查上下文臃肿与长链调用（按 Token 排序）
+                    </p>
                   </div>
-                  {stats.top_tools.items.length === 0 ? (
-                    <div className="py-6 text-center text-xs text-gray-500 dark:text-gray-400">
-                      区间内无工具输出压缩记录
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-line/30">
-                      {stats.top_tools.items.map((tool) => (
-                        <div
-                          key={tool.name}
-                          className="flex items-center justify-between py-2 text-xs"
-                        >
-                          <div className="flex items-center gap-2 w-36 shrink-0">
-                            <span className="rounded-control bg-blue-500/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-blue-700 dark:text-blue-400 border border-blue-500/25">
-                              {tool.name}
-                            </span>
+                  <span className="font-mono text-xs text-gray-500 dark:text-gray-400">按 Token 排序</span>
+                </div>
+                {stats.top_sessions.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-gray-500 dark:text-gray-400">
+                    区间内无会话用量
+                  </div>
+                ) : (
+                  <div className="divide-y divide-line/30">
+                    {stats.top_sessions.map((sess) => (
+                      <div
+                        key={sess.thread_id}
+                        className="flex items-center justify-between py-2.5 text-xs hover:bg-sunken/60 px-1 rounded-control transition-colors"
+                      >
+                        <div className="max-w-[75%] space-y-1">
+                          <div className="truncate font-medium text-gray-900 text-[12.5px]">
+                            {sess.title}
                           </div>
-                          <div className="mx-3 h-1.5 flex-1 rounded-full bg-surface-sunken overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-blue-600 dark:bg-blue-500"
-                              style={{
-                                width: `${
-                                  stats.top_tools.recorded_total > 0
-                                    ? (tool.count / stats.top_tools.recorded_total) * 100
-                                    : 0
-                                }%`,
-                              }}
-                            />
-                          </div>
-                          <div className="flex items-center gap-3 font-mono text-[11px] text-gray-500 dark:text-gray-400 shrink-0">
-                            <span className="font-semibold text-gray-900">
-                              {fmtInt(tool.count)} 条
-                            </span>
-                            <span>均耗 {tool.avg_ms === null ? '—' : `${tool.avg_ms}ms`}</span>
-                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{fmtPct(tool.success_rate)}</span>
+                          <div className="flex items-center gap-2 font-mono text-[10.5px] text-gray-500 dark:text-gray-400">
+                            <span className="rounded-control bg-sunken px-1.5 py-0.5 border border-line/50">{sess.thread_id}</span>
+                            <span>{sess.model ?? '—'}</span>
+                            <span>{sess.turns} 轮次</span>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                  <p className="pt-1 text-[10px] text-gray-500 dark:text-gray-400">{stats.top_tools.scope_note}</p>
-                </div>
-
-                {/* 高消耗会话排行 */}
-                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-2">
-                  <div className="flex items-center justify-between border-b border-line/60 pb-2">
-                    <h2 className="text-xs font-bold text-gray-900">用量溯源：高消耗会话排行</h2>
-                    <span className="font-mono text-xs text-gray-500 dark:text-gray-400">按 Token 排序</span>
-                  </div>
-                  {stats.top_sessions.length === 0 ? (
-                    <div className="py-6 text-center text-xs text-gray-500 dark:text-gray-400">
-                      区间内无会话用量
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-line/30">
-                      {stats.top_sessions.map((sess) => (
-                        <div
-                          key={sess.thread_id}
-                          className="flex items-center justify-between py-2 text-xs"
-                        >
-                          <div className="max-w-[65%] space-y-0.5">
-                            <div className="truncate font-medium text-gray-900">
-                              {sess.title}
-                            </div>
-                            <div className="flex items-center gap-2 font-mono text-[10px] text-gray-500 dark:text-gray-400">
-                              <span>{sess.thread_id}</span>
-                              <span>{sess.model ?? '—'}</span>
-                              <span>{sess.turns} 轮次</span>
-                            </div>
+                        <div className="text-right font-mono shrink-0">
+                          <div className="font-bold text-gray-900 text-sm">
+                            {fmtTokens(sess.tokens)}
                           </div>
-                          <div className="text-right font-mono">
-                            <div className="font-semibold text-gray-900">
-                              {fmtTokens(sess.tokens)}
-                            </div>
-                            <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                              {fmtPct(sess.cache_rate)} 命中
-                            </div>
+                          <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                            {fmtPct(sess.cache_rate)} 命中
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
