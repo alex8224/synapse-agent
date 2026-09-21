@@ -41,6 +41,28 @@ function utcDateString(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+/**
+ * `2026-09-21` -> `2026年9月21日（周一）`.
+ *
+ * The heat map's tooltip has to name the day it points at: the grid only carries
+ * weekday rows, so an ISO string would leave the reader doing the calendar maths
+ * themselves (and the weekday is what ties the cell to its row).
+ */
+function fmtCalendarDate(iso: string): string {
+  const date = new Date(`${iso}T00:00:00Z`);
+  const weekday = WEEKDAY_LABELS[date.getUTCDay()];
+  return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日（${weekday}）`;
+}
+
+/** The heat map's series value for one day; `loc` has no source, so it stays flat. */
+function heatMetricValue(day: HeatmapDay, metric: HeatMetric): number {
+  if (metric === 'tokens') return day.tokens;
+  if (metric === 'sessions') return day.sessions;
+  return 0;
+}
+
 function breakdownFor(
   payload: UsageStatsPayload,
   dim: BreakdownDim,
@@ -54,10 +76,24 @@ interface CalendarCell {
   isFuture: boolean;
 }
 
+/** One month tick, anchored to the week column it starts at (0-based). */
+interface MonthTick {
+  column: number;
+  label: string;
+}
+
+/** The grid geometry both the ticks row and the cells row must share. */
+const HEAT_CELL_PX = 11;
+const HEAT_GAP_PX = 3.5;
+/** The weekday labels column (22px) plus its gap (6px): where the grid starts. */
+const HEAT_TICKS_OFFSET_PX = 28;
+const HEAT_WEEKS = 52;
+const HEAT_GRID_WIDTH_PX = HEAT_WEEKS * HEAT_CELL_PX + (HEAT_WEEKS - 1) * HEAT_GAP_PX;
+
 function build52WeekCalendar(
   heatDays: HeatmapDay[],
   rangeEndStr?: string | null,
-): { cells: CalendarCell[]; months: string[] } {
+): { cells: CalendarCell[]; monthTicks: MonthTick[] } {
   const dayMap = new Map<string, HeatmapDay>();
   for (const day of heatDays) {
     dayMap.set(day.date, day);
@@ -90,15 +126,24 @@ function build52WeekCalendar(
     });
   }
 
-  // 12 个月份刻度标签，顺次列出 52 周跨越的月份
-  const startMonth = startOfCalendar.getUTCMonth();
-  const months: string[] = [];
-  for (let m = 0; m < 12; m += 1) {
-    const monthNum = ((startMonth + m) % 12) + 1;
-    months.push(`${monthNum}月`);
+  // Month ticks are anchored to the column they label, never spread evenly: a
+  // month boundary lands inside a week, so an evenly spaced row drifts away from
+  // the cells it names (the axis would end on August while the last column is
+  // September).  Each column is named by its Thursday -- the day a week is
+  // "mostly" in -- so the two September days that open the window cannot claim a
+  // tick of their own, and the row lists exactly the months the grid covers.
+  const monthTicks: MonthTick[] = [];
+  let lastMonth = -1;
+  for (let column = 0; column < HEAT_WEEKS; column += 1) {
+    const thursday = cells[column * 7 + 3];
+    if (!thursday) continue;
+    const month = new Date(`${thursday.date}T00:00:00Z`).getUTCMonth();
+    if (month === lastMonth) continue;
+    lastMonth = month;
+    monthTicks.push({ column, label: `${month + 1}月` });
   }
 
-  return { cells, months };
+  return { cells, monthTicks };
 }
 
 export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onClose }) => {
@@ -299,7 +344,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
   const breakdownList = stats ? breakdownFor(stats, breakdownDim) : null;
   const C = 2 * Math.PI * 40;
 
-  const trendItems = stats?.trend.items ?? [];
+  const trendItems = useMemo(() => stats?.trend.items ?? [], [stats]);
   const trendW = 600;
   const trendH = 220;
   const padL = 40;
@@ -368,30 +413,51 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
     };
   }, [trendItems, trendMax, plotW, plotH]);
 
-  const heatDays: HeatmapDay[] = stats?.heatmap.days ?? [];
-  const heatMax = Math.max(
-    1,
-    ...heatDays.map((d) => (heatMetric === 'tokens' ? d.tokens : heatMetric === 'sessions' ? d.sessions : 0)),
-  );
-  const { cells: calendarCells, months: calendarMonths } = useMemo(
+  // Both series are read straight out of the payload; memoising them keeps the two
+  // derivations below from re-running on every unrelated re-render.
+  const heatDays = useMemo<HeatmapDay[]>(() => stats?.heatmap.days ?? [], [stats]);
+  // Quartile thresholds over the days that actually have activity.  Scaling by the
+  // window's single busiest day would flatten everything else into the lowest step
+  // as soon as one outlier day exists, which is what made the grid read as "all
+  // empty".  Quartiles keep the four steps spread over the real distribution.
+  const heatThresholds = useMemo(() => {
+    const active = heatDays
+      .map((day) => heatMetricValue(day, heatMetric))
+      .filter((value) => value > 0)
+      .sort((a, b) => a - b);
+    if (active.length === 0) return null;
+    const at = (q: number) => active[Math.min(active.length - 1, Math.floor(q * active.length))];
+    return { q1: at(0.25), q2: at(0.5), q3: at(0.75), max: active[active.length - 1] };
+  }, [heatDays, heatMetric]);
+  const { cells: calendarCells, monthTicks } = useMemo(
     () => build52WeekCalendar(heatDays, stats?.range.end),
     [heatDays, stats?.range.end],
   );
   // Five steps of the brand ramp, taken from the theme's blue role palette: the
   // empty cell is the sunken surface and the four activity steps are the same
-  // brand hue at rising weight, so a theme re-paints the whole scale.
+  // brand hue at rising weight, so a theme re-paints the whole scale.  Every step
+  // keeps a hairline frame (`border` is set on the cell, the colour here) so the
+  // calendar still reads as a grid when a day has no activity.
   const heatColors = [
-    'bg-sunken',
-    'bg-blue-500/25',
-    'bg-blue-500/50',
-    'bg-blue-600/75',
-    'bg-blue-600',
+    'bg-sunken border-line/50',
+    'bg-blue-500/35 border-transparent',
+    'bg-blue-500/60 border-transparent',
+    'bg-blue-500/85 border-transparent',
+    'bg-blue-500 border-transparent',
   ];
   const heatLevel = (day: HeatmapDay | null): number => {
-    if (!day || heatMetric === 'loc') return 0;
-    const value = heatMetric === 'tokens' ? day.tokens : day.sessions;
+    if (!day || heatThresholds === null) return 0;
+    const value = heatMetricValue(day, heatMetric);
     if (value <= 0) return 0;
-    return Math.min(4, Math.max(1, Math.ceil((value / heatMax) * 4)));
+    const { q1, q2, q3, max } = heatThresholds;
+    // Every active day carries the same load: the whole window is at its own top
+    // step, so painting it in the lowest one would understate a uniform workload.
+    if (q3 === q1) return 4;
+    if (value <= q1) return 1;
+    if (value <= q2) return 2;
+    // `max` must always reach the top step, even when the quartile lands on it.
+    if (value < max && value <= q3) return 3;
+    return 4;
   };
 
   return (
@@ -769,11 +835,28 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 </div>
 
                 <div className="overflow-x-auto pb-1">
-                  <div className="min-w-[780px]">
-                    {/* 月份横向分布：左侧留出 28px（与星期指示等宽），宽度 751px 与 52 周网格严格等宽对齐 */}
-                    <div className="flex justify-between w-[751px] ml-[28px] mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none">
-                      {calendarMonths.map((m, idx) => (
-                        <span key={idx}>{m}</span>
+                  <div
+                    className="min-w-max"
+                    style={{ width: `${HEAT_TICKS_OFFSET_PX + HEAT_GRID_WIDTH_PX}px` }}
+                  >
+                    {/* 月份刻度：与下方 52 列网格共用同一套列宽/间距，每个刻度锚定在它所标注的那一列 */}
+                    <div
+                      className="grid mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                      style={{
+                        gridTemplateColumns: `repeat(${HEAT_WEEKS}, ${HEAT_CELL_PX}px)`,
+                        columnGap: `${HEAT_GAP_PX}px`,
+                        width: `${HEAT_GRID_WIDTH_PX}px`,
+                        marginLeft: `${HEAT_TICKS_OFFSET_PX}px`,
+                      }}
+                    >
+                      {monthTicks.map((tick) => (
+                        <span
+                          key={tick.column}
+                          style={{ gridColumnStart: tick.column + 1 }}
+                          className="whitespace-nowrap"
+                        >
+                          {tick.label}
+                        </span>
                       ))}
                     </div>
 
@@ -787,10 +870,11 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       </div>
 
                       <div
-                        className="grid grid-flow-col gap-[3.5px]"
+                        className="grid grid-flow-col"
                         style={{
-                          gridTemplateRows: 'repeat(7, 11px)',
-                          gridAutoColumns: '11px',
+                          gridTemplateRows: `repeat(7, ${HEAT_CELL_PX}px)`,
+                          gridAutoColumns: `${HEAT_CELL_PX}px`,
+                          gap: `${HEAT_GAP_PX}px`,
                         }}
                       >
                         {calendarCells.map((cell) => {
@@ -798,7 +882,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                             return (
                               <div
                                 key={cell.date}
-                                className="w-[11px] h-[11px] rounded-[2px] opacity-0 pointer-events-none"
+                                className="rounded-[2px] opacity-0 pointer-events-none"
                               />
                             );
                           }
@@ -807,7 +891,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           return (
                             <div
                               key={cell.date}
-                              className={`w-[11px] h-[11px] rounded-[2px] cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
+                              className={`rounded-[2px] border cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
                                 heatColors[level]
                               }`}
                               onMouseEnter={(e) => {
@@ -823,7 +907,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                   visible: true,
                                   x: rect.left,
                                   y: rect.top - 70,
-                                  title: cell.date,
+                                  title: fmtCalendarDate(cell.date),
                                   rows,
                                 });
                               }}
@@ -842,7 +926,11 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     <span>较少</span>
                     <div className="flex items-center gap-[3px]">
                       {heatColors.map((swatch) => (
-                        <div key={swatch} className={`h-[11px] w-[11px] rounded-[2px] ${swatch}`} />
+                        <div
+                          key={swatch}
+                          className={`rounded-[2px] border ${swatch}`}
+                          style={{ width: `${HEAT_CELL_PX}px`, height: `${HEAT_CELL_PX}px` }}
+                        />
                       ))}
                     </div>
                     <span>重度使用</span>
