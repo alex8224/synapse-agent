@@ -215,7 +215,8 @@ def test_middleware_compacts_execute() -> None:
     result = mw.wrap_model_call(req, lambda r: r)
     new_tool = result.tools[0]
     assert new_tool is not tool
-    assert "sandbox" in new_tool.description.lower()
+    assert "not an OS sandbox" in new_tool.description
+    assert "glob/grep" not in new_tool.description
     assert "stdout" in new_tool.description.lower()
     assert len(new_tool.description) < 500
 

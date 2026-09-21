@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -521,30 +521,128 @@ def build_tool_error_recovery_middleware():
 
 
 def _tool_name(tool: Any) -> str:
+    """Return a tool name from either a dict-style call or a tool object."""
+    if isinstance(tool, Mapping):
+        function = tool.get("function")
+        if isinstance(function, Mapping):
+            return str(function.get("name") or "")
+        name = tool.get("name")
+        if name:
+            return str(name)
     name = getattr(tool, "name", None)
     if name:
         return str(name)
     return str(getattr(tool, "__name__", tool))
 
 
-def build_tool_exclusion_middleware(excluded: set[str] | frozenset[str] | list[str]):
-    """Hide tools from the model request (LocalShell-safe alternative to permissions).
+def _tool_call_id(tool_call: Any) -> str:
+    """Return the ``id`` from a dict-style or object-style tool call."""
+    if isinstance(tool_call, Mapping):
+        return str(tool_call.get("id") or "")
+    return str(getattr(tool_call, "id", None) or "")
 
-    deepagents ``FilesystemPermission`` cannot be combined with backends that
-    implement command execution. Use this middleware for product isolation.
+
+def build_tool_exclusion_middleware(
+    excluded: Collection[str],
+    *,
+    allowed_tools: Collection[str] | None = None,
+) -> AgentMiddleware:
+    """Hide tools from the model request and reject direct tool execution.
+
+    LocalShell-safe alternative to deepagents ``FilesystemPermission``, which
+    cannot be combined with backends that implement command execution. Use this
+    middleware for product isolation.
+
+    Two layers share one denial predicate, so the model can never run a tool
+    the request filter would have hidden:
+
+    * ``request.tools`` is filtered on the model-call path (sync + async), and
+    * ``wrap_tool_call`` / ``awrap_tool_call`` reject a forced/forged call
+      before the handler (the real tool) can execute.
+
+    Args:
+        excluded: Tool names that are always blocked. A blocked name wins over
+            ``allowed_tools``.
+        allowed_tools: Optional whitelist. When not ``None``, a tool whose name
+            is not in the set is denied too. ``None`` means "no whitelist" (only
+            ``excluded`` applies); an empty collection means "allow nothing".
     """
     blocked = frozenset(str(x) for x in excluded if x)
+    allowed = (
+        None
+        if allowed_tools is None
+        else frozenset(str(x) for x in allowed_tools if x)
+    )
 
-    def _apply(request):  # type: ignore[no-untyped-def]
-        if not blocked:
+    def _denied(name: str) -> bool:
+        # ``blocked`` always wins; the whitelist only adds denials.
+        if name in blocked:
+            return True
+        return allowed is not None and name not in allowed
+
+    def _filter_tools(request):  # type: ignore[no-untyped-def]
+        tools = list(getattr(request, "tools", None) or [])
+        if not tools:
             return request
-        tools = getattr(request, "tools", None) or []
-        filtered = [t for t in tools if _tool_name(t) not in blocked]
+        filtered = [t for t in tools if not _denied(_tool_name(t))]
         if len(filtered) != len(tools):
             return request.override(tools=filtered)
         return request
 
-    return _dual_wrap_model_call(name="exclude_tools", apply=_apply)
+    def _denial_message(request) -> ToolMessage:  # type: ignore[no-untyped-def]
+        tool_call = getattr(request, "tool_call", None)
+        name = _tool_name(tool_call) if tool_call is not None else ""
+        if not name:
+            name = "tool"
+        reason = (
+            "blocked by policy"
+            if name in blocked
+            else "not in this agent's allowed tool set"
+        )
+        return ToolMessage(
+            content=(
+                f"Permission denied: tool '{name}' is {reason}. You do not have "
+                "sufficient permissions to call this tool, so the request was "
+                "refused and the tool did not run. Do not retry this call or "
+                "attempt to work around it — choose an available tool instead."
+            ),
+            tool_call_id=_tool_call_id(tool_call) if tool_call is not None else "",
+            name=name,
+            status="error",
+        )
+
+    def wrap_model_call(self, request, handler):  # noqa: ANN001, ARG001
+        return handler(_filter_tools(request))
+
+    async def awrap_model_call(self, request, handler):  # noqa: ANN001, ARG001
+        return await handler(_filter_tools(request))
+
+    def wrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        tool_call = getattr(request, "tool_call", None)
+        name = _tool_name(tool_call) if tool_call is not None else ""
+        if _denied(name):
+            return _denial_message(request)
+        return handler(request)
+
+    async def awrap_tool_call(self, request, handler):  # noqa: ANN001, ARG001
+        tool_call = getattr(request, "tool_call", None)
+        name = _tool_name(tool_call) if tool_call is not None else ""
+        if _denied(name):
+            return _denial_message(request)
+        return await handler(request)
+
+    return type(
+        "exclude_tools",
+        (AgentMiddleware,),
+        {
+            "state_schema": AgentState,
+            "tools": [],
+            "wrap_model_call": wrap_model_call,
+            "awrap_model_call": awrap_model_call,
+            "wrap_tool_call": wrap_tool_call,
+            "awrap_tool_call": awrap_tool_call,
+        },
+    )()
 
 
 def _strip_intent_from_tool_call(tool_call: Any) -> Any:
@@ -790,11 +888,11 @@ _COMPACT_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Only use for complex multi-step tasks (3+ steps); skip for trivial tasks."
     ),
     "execute": (
-        "Execute a shell command in a sandbox environment. "
+        "Execute a command in the configured host shell, starting in the workspace. "
+        "This is not an OS sandbox. "
         "Returns combined stdout/stderr with exit code. "
         "Use timeout=SECONDS for long commands. "
-        "Join multiple commands with && or ; (not newlines). "
-        "Use glob/grep/read_file instead of find/grep/cat."
+        "Follow the shell syntax and available-tool guidance in the system prompt."
     ),
     "read_file": (
         "Read a file from the filesystem and return content with cat -n line numbers. "

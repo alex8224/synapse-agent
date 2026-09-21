@@ -154,12 +154,15 @@ def test_compile_allowlist_and_denylist(tmp_path: Path, monkeypatch) -> None:
     # inside ``compile_task_specs``, so its own import stays light.
     import synapse.runtime.middleware as middleware_mod
 
-    blocked_calls: list[set[str]] = []
-    monkeypatch.setattr(
-        middleware_mod,
-        "build_tool_exclusion_middleware",
-        lambda blocked: blocked_calls.append(set(blocked)) or "mw",
-    )
+    calls: list[tuple[set[str], set[str] | None]] = []
+
+    def fake(blocked, *, allowed_tools=None):
+        calls.append(
+            (set(blocked), None if allowed_tools is None else set(allowed_tools))
+        )
+        return "mw"
+
+    monkeypatch.setattr(middleware_mod, "build_tool_exclusion_middleware", fake)
     definition = SubAgentDefinition(
         name="x",
         description="d",
@@ -173,8 +176,10 @@ def test_compile_allowlist_and_denylist(tmp_path: Path, monkeypatch) -> None:
     )
     assert len(specs) == 1
     assert [getattr(t, "name", str(t)) for t in specs[0]["tools"]] == ["read_file", "execute"]
+    # The explicit list is forwarded as the guard's whitelist.
+    blocked, allowed = calls[0]
+    assert allowed == {"read_file", "execute"}
     # TODO tools + built-in search tools + user denylist are always blocked.
-    blocked = blocked_calls[0]
     assert "execute" in blocked
     assert "write_todos" in blocked
     assert "ls" in blocked
@@ -270,7 +275,7 @@ def test_compile_empty_tools_means_builtins_only(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         middleware_mod,
         "build_tool_exclusion_middleware",
-        lambda blocked: blocked_calls.append(set(blocked)) or "mw",
+        lambda blocked, *, allowed_tools=None: blocked_calls.append(set(blocked)) or "mw",
     )
     definition = SubAgentDefinition(name="t", description="d", system_prompt="p", tools=[])
     specs = compile_task_specs([definition], inherit_tools=_tools("find_files"))

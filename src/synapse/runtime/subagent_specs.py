@@ -21,6 +21,7 @@ with user-defined files through the same registry.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -29,7 +30,15 @@ from typing import Any, Literal
 
 import yaml
 
+from synapse.content.prompt_sections import (
+    STABLE,
+    SYSTEM_TARGET,
+    PromptSection,
+    render_system_prompt,
+)
 from synapse.settings.config_paths import layered_agents_dirs
+
+logger = logging.getLogger(__name__)
 
 # NOTE: this module stays import-light on purpose.  ``compile_task_specs`` is the
 # only place that needs the agent middleware stack (deepagents/LangChain,
@@ -47,10 +56,38 @@ _BUILTIN_SEARCH_TOOL_NAMES = frozenset({"ls", "glob", "grep"})
 
 _TODO_TOOL_NAMES = frozenset({"write_todos", "todo_write", "todos"})
 
-# Only these main-agent tools are inherited by subagents by default. Everything
-# else (session/goal/mcp/vision tools) stays out of the read-only subagent
-# context.
-DEFAULT_INHERIT_TOOL_NAMES = frozenset({"find_files", "search_files"})
+# Filesystem / search tools the deepagents subagent stack injects regardless of
+# ``spec["tools"]``. The guard's request filter (``allowed_tools``) and the
+# global exclusion set are what actually gate them per subagent.
+_FRAMEWORK_FILE_TOOL_NAMES = frozenset(
+    {"ls", "glob", "grep", "read_file", "write_file", "edit_file", "execute"}
+)
+
+# Every tool name the generated guidance can talk about (including ``execute``).
+# Used to derive the "not available" set handed to ``filesystem_tool_prompt`` so
+# a subagent is never told to use a tool it cannot call.
+_FILE_TOOL_NAMES = frozenset(
+    {
+        "find_files",
+        "search_files",
+        "read_file",
+        "patch",
+        "edit_file",
+        "write_file",
+        "ls",
+        "glob",
+        "grep",
+        "execute",
+    }
+)
+
+_WRITE_TOOL_NAMES = frozenset({"write_file", "edit_file", "patch"})
+
+# Only these main-agent tools are inherited by subagents by default. ``patch`` is
+# a first-class Synapse tool (not a deepagents built-in) so writer roles such as
+# the tester inherit it; read-only roles deny it explicitly. Everything else
+# (session/goal/mcp/vision tools) stays out of the subagent context.
+DEFAULT_INHERIT_TOOL_NAMES = frozenset({"find_files", "search_files", "patch"})
 
 # Reasoning levels accepted for frontmatter / settings overrides. ``"inherit"``
 # is additionally accepted everywhere as "skip this layer" (see _resolve_axis).
@@ -72,6 +109,11 @@ _FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)$", r
 
 
 def _tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict):
+            return str(function.get("name", ""))
+        return str(tool.get("name", ""))
     return getattr(tool, "name", getattr(tool, "__name__", str(tool)))
 
 
@@ -90,9 +132,15 @@ class SubAgentDefinition:
     # "inherit" or None => follow the main agent's model; otherwise
     # "provider:model-name".
     model: str | None = None
-    # Tool allowlist. None => inherit DEFAULT_INHERIT_TOOL_NAMES from the main
-    # agent; [] => stay on deepagents built-in tools only; [names...] => filter
-    # the main-agent tools by name.
+    # Tool allowlist. Semantics (now strict for non-empty lists):
+    #   None     => inherit DEFAULT_INHERIT_TOOL_NAMES from the main agent
+    #               (the deepagents framework tools are still injected).
+    #   []       => stay on deepagents built-in tools only (legacy behavior).
+    #   [names]  => the *final* whitelist. Names are resolved against the
+    #               inherited main-agent tools and against the deepagents
+    #               framework built-ins, so a list may name e.g. ``read_file``
+    #               or ``ls`` directly. Any tool not named here is hidden from
+    #               the model request and blocked at call time.
     tools: list[str] | None = None
     # Denylist applied against the inherited/allow-listed tool set.
     disallowed_tools: list[str] = field(default_factory=list)
@@ -346,6 +394,97 @@ def resolve_subagent_display_config(
     )
 
 
+def _effective_available_tools(
+    own_tools: list[str] | None,
+    *,
+    inherit_names: frozenset[str],
+    inherit_tool_names: frozenset[str],
+    blocked: frozenset[str],
+) -> frozenset[str]:
+    """The set of tool names a compiled subagent can actually reach.
+
+    Mirrors deepagents' tool resolution: the framework filesystem/execute tools
+    are always injected, the inherited allowlist is added for ``tools=None``,
+    and an explicit non-empty list is the final whitelist. A whitelisted name
+    only counts when it actually resolves (an inherited tool or a framework
+    built-in), so the guidance never advertises a name that names nothing.
+    Names in ``blocked`` are removed because the guard's global exclusion wins
+    over both inheritance and the allowlist.
+    """
+    resolvable = set(inherit_tool_names) | _FRAMEWORK_FILE_TOOL_NAMES
+    if own_tools is None:
+        inherited = set(inherit_names) & set(inherit_tool_names)
+        available = inherited | _FRAMEWORK_FILE_TOOL_NAMES
+    elif not own_tools:
+        available = set(_FRAMEWORK_FILE_TOOL_NAMES)
+    else:
+        available = set(own_tools) & resolvable
+    return frozenset(available - set(blocked))
+
+
+def _build_subagent_system_prompt(
+    body: str,
+    *,
+    workspace: Path | str | None,
+    shell_executable: str | None,
+    available_tools: frozenset[str],
+) -> str:
+    """Assemble a subagent system prompt from shared, policy-aware sections.
+
+    The definition body and the non-overridable path rules always ship. When the
+    workspace is known, the shared environment sections add the real workspace,
+    virtual-path mapping, shell guidance (only when ``execute`` is available),
+    and filesystem guidance generated from the *effective* tool set, followed by
+    a scope-limits block that states the enforced boundaries in capability terms.
+    They are rendered with ``scope_rules=True``, the subagent-only opt-in, so the
+    main agent's byte-stable prompt is untouched.
+    """
+    from synapse.content.prompts import (
+        MANDATORY_CODING_RULES,
+        build_environment_sections,
+        build_scope_limits_section,
+    )
+
+    sections = [
+        PromptSection(
+            name="Subagent Body",
+            source="body",
+            content=body.strip(),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        # Mandatory rules are appended at compile time so user-defined ``*.md``
+        # files (which fully replace the built-in system prompt) cannot drop the
+        # critical file-tool path rules.
+        PromptSection(
+            name="Mandatory Rules",
+            source="mandatory_rules",
+            content=MANDATORY_CODING_RULES,
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+    ]
+    if workspace is not None:
+        shell_available = "execute" in available_tools
+        hidden_builtin_search = not bool(_BUILTIN_SEARCH_TOOL_NAMES & available_tools)
+        sections.extend(
+            build_environment_sections(
+                workspace,
+                shell_executable=shell_executable,
+                excluded_tools=_FILE_TOOL_NAMES - available_tools,
+                shell_available=shell_available,
+                hidden_builtin_search=hidden_builtin_search,
+                scope_rules=True,
+            )
+        )
+        sections.append(
+            build_scope_limits_section(
+                read_only=not bool(_WRITE_TOOL_NAMES & available_tools),
+            )
+        )
+    return render_system_prompt(sections)
+
+
 def compile_task_specs(
     definitions: Sequence[SubAgentDefinition],
     *,
@@ -359,6 +498,8 @@ def compile_task_specs(
     default_model: str | None = None,
     default_reasoning_effort: str | None = None,
     extra_excluded_tools: Sequence[str] = (),
+    workspace: Path | str | None = None,
+    shell_executable: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compile task-mode definitions into deepagents ``SubAgent`` dicts.
 
@@ -366,13 +507,24 @@ def compile_task_specs(
     reserved for the future handoff / workflow compilers. Tool exclusion is
     expressed through one ``build_tool_exclusion_middleware`` instance per
     spec, mirroring the main agent's isolation strategy.
+
+    ``workspace`` / ``shell_executable`` describe the real environment so each
+    spec's system prompt carries the same workspace, virtual-path, shell, and
+    tool guidance as the main agent (built from the shared
+    :func:`synapse.content.prompts.build_environment_sections` helper). When
+    ``workspace`` is omitted the prompt keeps only the definition body plus the
+    non-overridable path rules.
     """
     # Deferred on purpose: see the module-level note above.
-    from synapse.content.prompts import MANDATORY_CODING_RULES
     from synapse.integrations.openai_oauth_middleware import (
         build_openai_oauth_compat_middleware,
     )
-    from synapse.runtime.middleware import build_tool_exclusion_middleware
+    from synapse.runtime.middleware import (
+        build_compact_tool_descriptions,
+        build_path_normalize_middleware,
+        build_strip_redundant_prompt_blocks,
+        build_tool_exclusion_middleware,
+    )
     from synapse.runtime.session_header_middleware import build_session_header_middleware
 
     specs: list[dict[str, Any]] = []
@@ -383,10 +535,6 @@ def compile_task_specs(
         spec: dict[str, Any] = {
             "name": d.name,
             "description": d.description,
-            # Mandatory rules are appended at compile time so user-defined
-            # ``*.md`` files (which fully replace the built-in system prompt)
-            # cannot drop critical file-tool path rules.
-            "system_prompt": f"{d.system_prompt.strip()}\n\n{MANDATORY_CODING_RULES.strip()}",
         }
         pinned_model = False
         if model_factory is None:
@@ -421,6 +569,12 @@ def compile_task_specs(
         # Tool allowlist resolution. None => inherit the allow-listed
         # main-agent tools; [] => built-ins only; [names] => filter by name.
         own_tools = d.tools
+        # A non-empty list is the final whitelist. Keep the raw names so the
+        # diagnostics below can report the entries that cannot take effect.
+        whitelist_names = frozenset(own_tools or ())
+        inherit_tool_names = frozenset(_tool_name(t) for t in (inherit_tools or ()))
+        if result_reader is not None:
+            inherit_tool_names |= {_tool_name(result_reader)}
         if inherit_tools is None and own_tools is None:
             # Legacy parity: no tool list and no inherit source => leave the
             # ``tools`` key unset so deepagents falls back to ``default_tools``,
@@ -434,30 +588,120 @@ def compile_task_specs(
             tools = []
             tools_set = True
         else:
-            wanted = set(own_tools)
+            wanted = set(whitelist_names)
             tools = [t for t in (inherit_tools or []) if _tool_name(t) in wanted]
+            # A non-empty list is the final whitelist. Warn about names that
+            # cannot be resolved (not an inherited tool and not a framework
+            # built-in) so a typo is visible, without echoing the surrounding
+            # tool configuration or workspace paths.
+            unresolved = wanted - inherit_tool_names - _FRAMEWORK_FILE_TOOL_NAMES
+            if unresolved:
+                logger.warning(
+                    "subagent %r: %d whitelisted tool name(s) could not be resolved",
+                    d.name,
+                    len(unresolved),
+                )
+                logger.debug(
+                    "subagent %r: unresolved tools: %s",
+                    d.name,
+                    ", ".join(sorted(unresolved)),
+                )
             tools_set = True
 
         # When tools are inherited from the main agent (None or explicit
-        # allowlist), the built-in ls/glob/grep duplicates are hidden.
+        # allowlist), the built-in ls/glob/grep duplicates are hidden. An
+        # explicitly whitelisted built-in name is exempted from *this* exclusion,
+        # so ``tools: [ls]`` keeps working when the compiler runs standalone; a
+        # caller-supplied global exclusion (the app always denies ls/glob/grep)
+        # still wins, because ``blocked`` is never stripped below.
         hide_builtin_search = own_tools is None or bool(own_tools)
 
         if tools_set:
-            if result_reader is not None:
+            # Compatibility readers are ordinary tools, not a policy bypass.
+            # A strict whitelist must name the reader before we register it.
+            if result_reader is not None and (
+                not own_tools or _tool_name(result_reader) in own_tools
+            ):
                 tools = [*tools, result_reader]
             spec["tools"] = tools
 
-        blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES | set(extra_excluded_tools or ())
+        extra_excluded = {str(x) for x in (extra_excluded_tools or ()) if str(x).strip()}
+        # The caller-supplied set carries the *global* policy (settings,
+        # ``minimal_filesystem_tools``, the always-hidden built-in search tools,
+        # and readonly). It is authoritative: neither ``tools=[]`` nor an
+        # explicit whitelist may re-enable a globally denied tool, so nothing is
+        # ever stripped from it here.
+        blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES | extra_excluded
         if hide_builtin_search:
-            blocked |= _BUILTIN_SEARCH_TOOL_NAMES
-        middleware = [
+            # The compiler's own duplicate-hiding of the deepagents built-in
+            # search tools yields to an explicit whitelist naming them; it never
+            # touches the global exclusions already in ``blocked`` above.
+            blocked |= _BUILTIN_SEARCH_TOOL_NAMES - set(own_tools or ())
+        blocked_frozen = frozenset(blocked)
+
+        available_tools = _effective_available_tools(
+            own_tools,
+            inherit_names=inherit_names,
+            inherit_tool_names=inherit_tool_names,
+            blocked=blocked_frozen,
+        )
+        if whitelist_names:
+            # A whitelist that cannot take effect must not fail silently: a name
+            # denied by global policy can never be re-enabled, and a name that
+            # resolves to nothing (a typo) drops every tool the list would
+            # otherwise have kept. Only counts reach the warning and the names
+            # stay at DEBUG, so the surrounding tool configuration is not echoed.
+            denied = sorted(whitelist_names & blocked_frozen)
+            if denied:
+                logger.warning(
+                    "subagent %r: %d whitelisted tool name(s) are denied by global policy",
+                    d.name,
+                    len(denied),
+                )
+                logger.debug("subagent %r: globally denied tools: %s", d.name, ", ".join(denied))
+            if not available_tools:
+                logger.warning(
+                    "subagent %r: the tool whitelist resolves to no available tool",
+                    d.name,
+                )
+        spec["system_prompt"] = _build_subagent_system_prompt(
+            d.system_prompt,
+            workspace=workspace,
+            shell_executable=shell_executable,
+            available_tools=available_tools,
+        )
+
+        middleware: list[Any] = [
             # Subagents have their own middleware stack; publish the active
             # thread id here too so subagent model calls carry the same
             # session-affinity headers as the main agent.
             build_session_header_middleware(),
-            *extra_middleware,
-            build_tool_exclusion_middleware(blocked),
         ]
+        if workspace is not None:
+            # Share the main agent's project-instruction injection and virtual
+            # path normalization so subagent tool calls behave identically.
+            from synapse.app.agent_md import build_agent_md_middleware
+
+            middleware.append(build_agent_md_middleware(Path(workspace)))
+            middleware.append(build_path_normalize_middleware(Path(workspace)))
+        middleware.extend(extra_middleware)
+        # Drop the framework's redundant todo / filesystem prompt blocks (the
+        # same cleanup the main agent applies) before the exclusion guard runs.
+        middleware.append(build_strip_redundant_prompt_blocks())
+        if own_tools:
+            # An explicit non-empty ``tools`` list is the final whitelist; pass
+            # it to the guard so framework built-ins named there survive the
+            # request filter. ``blocked`` still wins: the guard drops excluded
+            # tools *after* applying the whitelist, so a globally denied name
+            # cannot be re-enabled by listing it here.
+            middleware.append(
+                build_tool_exclusion_middleware(
+                    blocked_frozen, allowed_tools=frozenset(own_tools)
+                )
+            )
+        else:
+            middleware.append(build_tool_exclusion_middleware(blocked_frozen))
+        middleware.append(build_compact_tool_descriptions())
         # Pinned subagent models compile their own agent graph and therefore do
         # not inherit the parent graph's OAuth compatibility middleware. Reuse
         # it here only when the *built* model is actually an OpenAI Codex OAuth

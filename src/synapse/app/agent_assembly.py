@@ -36,7 +36,6 @@ from synapse.runtime.prompt_cache_boundary_middleware import (
     build_prompt_cache_boundary_middleware,
 )
 from synapse.runtime.steer import SteerQueue, build_steer_middleware
-from synapse.runtime.tool_contract import readonly_excluded_tools
 from synapse.tool_output.pipeline import ToolOutputTransformPipeline
 from synapse.tool_output.repository import ToolOutputRepository
 from synapse.tool_output.transformers import load_transformer_plugins
@@ -75,15 +74,13 @@ class AgentResources:
             minimal_excluded = getattr(settings, "minimal_filesystem_excluded_tools", []) or []
             effective_excluded.extend(minimal_excluded)
 
-        apply_harness_exclusions(
-            self.model_spec,
-            readonly=settings.readonly,
-            excluded_tools=effective_excluded,
+        return set(
+            apply_harness_exclusions(
+                self.model_spec,
+                readonly=settings.readonly,
+                excluded_tools=effective_excluded,
+            )
         )
-        excluded = set(effective_excluded) | {"ls", "glob", "grep"}
-        if settings.readonly:
-            excluded.update(readonly_excluded_tools())
-        return excluded
 
     def ensure_steer_queue(self) -> SteerQueue:
         if self.steer_queue is None:

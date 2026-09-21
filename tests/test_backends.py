@@ -83,6 +83,9 @@ def test_build_backend_default_shell_platform_aware(tmp_path: Path):
     )
     backend = build_backend(settings)
     assert isinstance(backend, CodingLocalShellBackend)
+    # The shared backend is rooted at the workspace, so both the filesystem
+    # tools and shell commands default to the workspace cwd.
+    assert backend.cwd == tmp_path.resolve()
     expected = "pwsh" if sys.platform == "win32" else "bash"
     assert Path(backend.shell_executable).name.lower() in {
         expected,

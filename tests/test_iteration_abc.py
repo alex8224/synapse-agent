@@ -129,7 +129,15 @@ def test_safety_profiles_and_interrupt_on():
 
 
 def test_subagents_isolation():
-    specs = build_default_subagents(isolate_tools=True)
+    from synapse.runtime.subagent_specs import DEFAULT_INHERIT_TOOL_NAMES
+
+    # The main agent's allow-listed tools plus a non-allowlisted main tool that
+    # must never leak into a subagent.
+    inherit_tools = [
+        SimpleNamespace(name=name)
+        for name in ("find_files", "search_files", "patch", "session_tool")
+    ]
+    specs = build_default_subagents(isolate_tools=True, inherit_tools=inherit_tools)
     assert specs is not None
     by_name = {s["name"]: s for s in specs}
     # LocalShell-safe isolation: middleware tool exclusion, not permissions.
@@ -137,7 +145,14 @@ def test_subagents_isolation():
     assert "middleware" in by_name["reviewer"]
     assert "permissions" not in by_name["researcher"]
     assert "permissions" not in by_name["reviewer"]
-    assert by_name["tester"].get("tools") == []
+
+    # New intent: the tester no longer pins ``tools=[]`` (built-ins only). It now
+    # inherits the main agent's targeted search allowlist so it searches the same
+    # way the main agent does; the non-allowlisted ``session_tool`` stays out.
+    tester_tools = {tool.name for tool in by_name["tester"]["tools"]}
+    assert tester_tools == set(DEFAULT_INHERIT_TOOL_NAMES)
+    assert by_name["tester"].get("tools") != []
+    assert "session_tool" not in tester_tools
 
     class _Request:
         def __init__(self, tools):  # noqa: ANN001
@@ -146,18 +161,31 @@ def test_subagents_isolation():
         def override(self, **changes):  # noqa: ANN003
             return _Request(changes.get("tools", self.tools))
 
-    tools = [
-        SimpleNamespace(name="read_file"),
-        SimpleNamespace(name="write_todos"),
-        SimpleNamespace(name="todo_write"),
-        SimpleNamespace(name="todos"),
-    ]
-    for spec in specs:
-        request = _Request(tools)
+    def _visible(spec):
+        request = _Request(
+            [
+                SimpleNamespace(name=name)
+                for name in (
+                    "read_file",
+                    "write_file",
+                    "execute",
+                    "write_todos",
+                    "todo_write",
+                    "todos",
+                )
+            ]
+        )
         for middleware in spec["middleware"]:
             if type(middleware).__name__ == "exclude_tools":
                 request = middleware.wrap_model_call(request, lambda current: current)
-        assert [tool.name for tool in request.tools] == ["read_file"]
+        return [tool.name for tool in request.tools]
+
+    # The guard hides the todo tools for every role and enforces role limits:
+    # researcher is read-only without shell, reviewer is read-only but may run
+    # shell, and the tester may write and run shell.
+    assert _visible(by_name["researcher"]) == ["read_file"]
+    assert _visible(by_name["reviewer"]) == ["read_file", "execute"]
+    assert _visible(by_name["tester"]) == ["read_file", "write_file", "execute"]
 
     lines = format_subagents_lines(specs)
     assert any("researcher" in ln for ln in lines)

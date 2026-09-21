@@ -401,17 +401,13 @@ def build_coding_agent(
         minimal_excluded = getattr(settings, "minimal_filesystem_excluded_tools", []) or []
         effective_excluded.extend(minimal_excluded)
 
-    apply_harness_exclusions(
-        model_spec,
-        readonly=settings.readonly,
-        excluded_tools=effective_excluded,
+    model_request_excluded_tools = set(
+        apply_harness_exclusions(
+            model_spec,
+            readonly=settings.readonly,
+            excluded_tools=effective_excluded,
+        )
     )
-    # Keep deepagents' built-in ``ls``, ``glob``, and ``grep`` out of model
-    # requests. Synapse registers the non-conflicting ``find_files`` and
-    # ``search_files`` tools explicitly below.
-    model_request_excluded_tools = set(effective_excluded) | {"ls", "glob", "grep"}
-    if settings.readonly:
-        model_request_excluded_tools.update({"execute", "write_file", "edit_file", "patch"})
 
     interrupt_on = build_interrupt_on(require_approval=settings.require_approval)
     with span("checkpointer"):
@@ -620,7 +616,15 @@ def build_coding_agent(
             default_reasoning_effort=settings.subagent_default_reasoning_effort,
             main_model=model_spec,
             main_reasoning_effort=main_reasoning_effort,
-            extra_excluded_tools=effective_excluded,
+            # Forward the *request-level* exclusion set (settings + minimal +
+            # always-hidden built-in search + readonly), not just the user's
+            # ``excluded_tools``, so subagents honor the same policy. The
+            # ``minimal_filesystem_tools`` chain is preserved because
+            # ``model_request_excluded_tools`` is built on top of
+            # ``effective_excluded``.
+            extra_excluded_tools=model_request_excluded_tools,
+            workspace=root,
+            shell_executable=backend.shell_executable,
         )
         subagents = subagent_build.specs
         display_configs = _resolve_display_effort_from_profiles(

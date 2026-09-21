@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain.agents.middleware import ModelRetryMiddleware
 
 from synapse.config import load_settings
@@ -15,6 +17,87 @@ from synapse.content.prompts import (
     load_coding_system_prompt,
 )
 from synapse.runtime.backends import build_backend
+
+
+@pytest.mark.parametrize("mini,readonly", [(False, False), (True, False), (True, True)])
+def test_app_forwards_final_policy_and_environment_to_all_roles(
+    tmp_path: Path, monkeypatch, mini: bool, readonly: bool
+) -> None:
+    """Exercise the app assembly, not a hand-written extra_excluded_tools list."""
+    from synapse.app import agent as agent_mod
+    from synapse.models.registry import ModelProfile, ModelRegistry
+    from synapse.settings import Settings
+
+    settings = Settings(
+        workspace=tmp_path,
+        model="openai:policy-test",
+        active_model="openai:policy-test",
+        safety_profile="readonly" if readonly else "dev-autopass",
+        checkpoint_path=tmp_path / "checkpoints.sqlite",
+        sessions_path=tmp_path / "sessions.sqlite",
+        enable_mcp=False,
+        enable_goals=False,
+        enable_memory=False,
+        enable_long_term_memory=False,
+        enable_rag=False,
+        enable_subagents=True,
+        enable_custom_subagents=False,
+        enable_prompt_cache_boundary=False,
+        skills_paths=[],
+        excluded_tools=["find_files"],
+        minimal_filesystem_tools=mini,
+        minimal_filesystem_excluded_tools=["search_files", "edit_file", "write_file"],
+        langsmith_tracing=False,
+        turbo=False,
+        _env_file=None,
+    )
+    registry = ModelRegistry(
+        profiles={settings.model: ModelProfile(name=settings.model, model=settings.model)},
+        default=settings.model,
+    )
+    monkeypatch.setattr(agent_mod, "build_session_tools", lambda **_: [])
+    monkeypatch.setattr(
+        agent_mod, "_subagent_model_factory", lambda *args, **kwargs: lambda *axes: None
+    )
+    names = {"find_files", "search_files", "patch", "read_file", "edit_file", "write_file",
+             "execute", "ls", "glob", "grep", "write_todos"}
+
+    class Request:
+        def __init__(self, tools):
+            self.tools = tools
+
+        def override(self, **changes):
+            return Request(changes.get("tools", self.tools))
+
+    with patch("deepagents.create_deep_agent", return_value=MagicMock()) as create:
+        agent_mod.build_coding_agent(
+            settings,
+            project_root=tmp_path,
+            model=MagicMock(),
+            model_registry=registry,
+            checkpointer=MagicMock(),
+            system_prompt="TEST MAIN PROMPT",
+        )
+    assembled = create.call_args.kwargs
+    request = Request([SimpleNamespace(name=name) for name in names])
+
+    def visible(middleware):
+        guard = next(m for m in middleware if type(m).__name__ == "exclude_tools")
+        return {t.name for t in guard.wrap_model_call(request, lambda r: r).tools}
+
+    parent_tools = visible(assembled["middleware"])
+    denied = {"find_files", "ls", "glob", "grep"}
+    if mini:
+        denied |= {"search_files", "edit_file", "write_file"}
+    if readonly:
+        denied |= {"execute", "patch", "edit_file", "write_file"}
+    assert denied.isdisjoint(parent_tools)
+    for spec in assembled["subagents"]:
+        assert visible(spec["middleware"]) <= parent_tools
+        assert denied.isdisjoint(visible(spec["middleware"]))
+        assert str(tmp_path.resolve()) in spec["system_prompt"]
+        if readonly:
+            assert "## Shell environment" not in spec["system_prompt"]
 
 
 def test_build_system_prompt_includes_workspace(tmp_path: Path, monkeypatch) -> None:

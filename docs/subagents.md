@@ -76,7 +76,7 @@ system prompt。
 name: security-reviewer
 description: Use after security-sensitive changes. Reviews for injection and secret leaks.
 model: inherit            # 或 "provider:model-name"
-tools: [read_file, search_files, find_files, execute]   # 可选 allowlist
+tools: [read_file, search_files, find_files, execute]   # 非空即最终严格白名单
 disallowed_tools: [write_file, edit_file]               # 可选 denylist
 ownership: task           # 预留字段，当前仅支持 task
 ---
@@ -93,11 +93,33 @@ You are a security reviewer. Inspect diffs for...
 | （正文） | 是 | 子代理 system prompt |
 | `model` | 否 | `inherit` 或 `provider:model-name`；缺省继承主 Agent 模型 |
 | `reasoning_effort` | 否 | `off`/`minimal`/`low`/`medium`/`high`/`max`；缺省继承主 Agent 当前推理级别 |
-| `tools` | 否 | allowlist：`null` 继承 `find_files`/`search_files`；`[]` 仅用 deepagents 内置工具；`[names]` 按名过滤主 Agent 工具 |
+| `tools` | 否 | 见下文「tools 语义」：`null` 继承 `find_files`/`search_files`/`patch`；`[]` 仅用框架内置工具（仍受全局排除）；`[names]` 为最终严格白名单 |
 | `disallowed_tools` | 否 | denylist，作用于继承/allowlist 之后的工具集 |
 | `ownership` | 否 | `task` 或 `handoff`（预留）；当前仅 `task` 参与编译 |
 | `output_schema` | 否 | 预留：未来 workflow 节点间结构化契约 |
 | `enabled` | 否 | `false` 时跳过编译 |
+
+### tools 语义
+
+`tools` 决定子代理最终能看到的工具集合。无论取哪种值，**全局排除始终优先**（见下文
+「工具排除规则」），`disallowed_tools` 也在继承 / 白名单之上生效。
+
+| 取值 | 语义 |
+| --- | --- |
+| 省略 / `null` | 继承主 Agent 的默认白名单 `find_files` / `search_files` / `patch`；deepagents 框架内置工具（`ls`/`glob`/`grep`/`read_file`/`write_file`/`edit_file`/`execute`）照常注入，再由全局排除与 `disallowed_tools` 收敛 |
+| `[]` | legacy 行为：只保留框架内置工具，不继承任何主 Agent 工具；全局排除与 `disallowed_tools` 仍然生效，不会因 `[]` 而放开被全局禁止的工具 |
+| `[names]` | 非空显式列表现在是**最终严格白名单**：框架内置工具同样受其约束，只有被点名的工具会暴露给模型 |
+
+- 白名单里的名字必须能解析（继承的主 Agent 工具或框架内置工具）；无法解析的名字不会
+  自动获得对应能力，只会在日志里记录 warning。
+- 被全局排除（settings 的 `excluded_tools`、`minimal_filesystem_tools`、`readonly` 等）
+  或被 `disallowed_tools` 禁止的名字，即使写进显式白名单也不会被放开。
+- 内置 `tester` 的默认值已由 `[]` 调整为 `null`，因此默认继承
+  `find_files`/`search_files`/`patch`；需要旧的「仅框架内置工具」语义时，在定义文件中
+  显式写 `tools: []`。
+- 已经生成的用户层 `tester.md` 不会被自动覆盖；若其中仍有 `tools: []`，移除该字段或
+  改成 `tools: null` 才会采用新的默认继承方式。全局排除仍适用于这些旧文件。
+- 修改定义或设置后需重建 Agent（例如重新启动）；已编译的任务不会在执行中切换策略。
 
 ## 合并与加载流程
 
@@ -133,15 +155,18 @@ flowchart TB
     R["SubagentRegistry"] --> D["遍历 definitions"]
     D --> OWN{"ownership?"}
     OWN -- "handoff" --> H["跳过，留给 compile_handoffs"]
-    OWN -- "task" --> T{"tools allowlist 指定?"}
-    T -- "是" --> F["按 name 从 inherit_tools 过滤"]
-    T -- "否" --> I2["继承白名单<br/>find_files / search_files"]
-    F --> M["model 解析"]
-    I2 --> M
+    OWN -- "task" --> T{"tools 取值?"}
+    T -- "None" --> I2["继承 find_files / search_files / patch<br/>+ 框架内置工具"]
+    T -- "[]" --> E2["仅框架内置工具<br/>（legacy，仍受全局排除）"]
+    T -- "[names]" --> F["最终严格白名单<br/>（框架内置也受约束）"]
+    I2 --> X2["全局排除优先<br/>blocked 覆盖白名单"]
+    E2 --> X2
+    F --> X2
+    X2 --> M["model 解析"]
     M --> MD{"model == inherit?"}
     MD -- "是" --> NS["不设置 spec.model"]
     MD -- "否" --> SS["写入 provider:model"]
-    NS --> MW["附加 middleware<br/>intent + 工具排除 + tool_output 转换"]
+    NS --> MW["附加 middleware<br/>环境与项目规则 + intent + 工具权限校验"]
     SS --> MW
     MW --> OUT["deepagents SubAgent dict"]
     OUT --> TG["task 工具 spec"]
@@ -149,10 +174,17 @@ flowchart TB
 
 工具排除规则（`build_tool_exclusion_middleware`）：
 
-- `disallowed_tools` 全部进入 blocked 集合；
-- 继承/allowlist 主 Agent 工具时，额外隐藏内置搜索工具 `ls`/`glob`/`grep`（避免与
-  `find_files`/`search_files` 重复）；
-- `write_todos`/`todo_write`/`todos` 总是被排除（产品级隔离）。
+- **全局排除优先**：settings 的 `excluded_tools`、`minimal_filesystem_tools` 展开的
+  排除集，以及 `readonly` 的只读排除，会和 `disallowed_tools`、内置搜索工具、
+  `write_todos`/`todo_write`/`todos`（产品级隔离）一起进入 blocked 集合。blocked 永远
+  覆盖继承与白名单，`[]` 或显式白名单都无法把被全局禁止的工具重新放开。
+- 请求过滤与执行拦截共用同一判定：被排除的工具既不会出现在模型请求里，强行 / 伪造的
+  调用也会在真正执行前被拒绝并返回 permission denied，而不是绕过限制。
+- 继承 / 白名单主 Agent 工具时，额外隐藏内置搜索工具 `ls`/`glob`/`grep`（避免与
+  `find_files`/`search_files` 重复）。独立使用编译器时可显式选择未被全局禁止的内置搜索
+  工具；正常应用装配始终全局排除这三个工具，白名单不能恢复它们。
+- 非空白名单会作为 guard 的 `allowed_tools` 传入，使被点名的框架内置工具通过请求过滤，
+  但 blocked 仍在其上生效。
 
 ## 运行时时序（task 模式）
 
@@ -170,6 +202,27 @@ sequenceDiagram
     SA-->>TT: 返回 summary 结果
     TT-->>M: 结果回传，主 agent 保留最终回答所有权
 ```
+
+## 运行环境与隔离
+
+子代理在**独立 context** 中启动，不继承主对话历史；它拿到的 system prompt 由定义正文、
+不可覆盖的文件工具路径规则、以及共享环境段落组成：
+
+- **共享 workspace**：主 Agent 与子代理看到同一个真实工作目录（host root）与同一套
+  虚拟路径映射（`/` → host root），文件工具调用行为一致。
+- **AGENTS 项目规则**：子代理通过 agent-md middleware 注入与主 Agent 相同的 `AGENTS.md`
+  项目约定，并复用虚拟路径规范化 middleware。显式工作区缺少该文件时不回退到进程 cwd
+  中另一个项目的 `AGENTS.md`。
+- **可用 shell**：只有子代理实际能调用 `execute` 时才注入 shell 指引；否则明确告知该
+  context 不能运行 shell 命令。`execute` 在 host 上执行，初始 cwd 为 workspace root；
+  这不是 OS sandbox，允许的 shell 命令仍能访问当前用户权限内的其他位置。
+- **路径范围**：默认只调查当前 workspace，除非用户明确授权其他位置。shell 中的 `.`
+  表示工作目录，不能将文件工具的虚拟根 `/` 当成 shell 工作目录。
+- **能力边界**：`## Scope limits` 明确区分工具调用权限和工具内部行为。工具级拒绝由
+  middleware 强制执行，但不会沙箱化已允许的 shell 或其他工具。当任务需要子代理不具备
+  的能力时，要求如实报告，而不是尝试绕过。
+- **工具定义一致**：主子代理复用同一 backend、工具 schema、intent 注入和描述精简逻辑；
+  子代理不注入已隐藏的 todo / 框架文件系统使用提示。
 
 ## 配置字段
 
@@ -240,7 +293,11 @@ flowchart TB
 
 ## 兼容性与降级
 
-- 无 `agents/` 目录时，`build_default_subagents()` 输出与重构前完全一致。
+- 无 `agents/` 目录时，`build_default_subagents()` 仍输出内置三个子代理；但内置 `tester`
+  的 `tools` 默认值已由 `[]` 调整为 `null`，默认继承
+  `find_files`/`search_files`/`patch`，需要旧语义时显式写 `tools: []`。
+- 兼容性收紧：显式非空 `tools: [names]` 现在按**最终严格白名单**处理（框架内置工具也受
+  约束，未知名字不自动获得能力），不再是早期的「仅按名过滤主 Agent 工具」。
 - 单个定义文件解析失败只跳过该文件，不影响其余定义与启动。
 - `permissions` 字段（deepagents FilesystemPermission）与 shell backend 不兼容，本层不暴露，
-  隔离通过工具排除 middleware + system prompt 实现。
+  隔离通过工具排除 middleware + system prompt 实现，而非 OS sandbox。

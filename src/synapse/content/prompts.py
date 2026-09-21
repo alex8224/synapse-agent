@@ -257,13 +257,46 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
-def filesystem_tool_prompt(excluded_tools: Iterable[str] | None = None) -> str:
-    """Build authoritative guidance matching the model-facing filesystem schemas."""
+def filesystem_tool_prompt(
+    excluded_tools: Iterable[str] | None = None,
+    *,
+    hidden_builtin_search: bool = True,
+    scope_rules: bool = False,
+) -> str:
+    """Build authoritative guidance matching the model-facing filesystem schemas.
+
+    ``excluded_tools`` lists tools that are not available to the caller, so the
+    guidance never advertises a tool the model cannot use. ``hidden_builtin_search``
+    records whether the DeepAgents built-in ``ls``/``glob``/``grep`` tools are
+    hidden (main agent and inheriting subagents) or still reachable (built-ins-only
+    subagents). ``scope_rules`` is the subagent-only opt-in for a caller whose tool
+    set is derived from policy: an excluded ``execute`` then also drops the "do not
+    use ``execute`` as a substitute" note. The main agent keeps that note, so its
+    prompt stays byte-stable. The rendered result is byte-identical to the
+    historical string for the defaults.
+    """
     blocked = {t.strip() for t in (excluded_tools or []) if t.strip()}
+    if hidden_builtin_search:
+        intro = (
+            "This section overrides generic DeepAgents filesystem guidance. The model-facing `ls`, "
+            "`glob`, and `grep` tools are hidden; never call them."
+        )
+    else:
+        builtin_names = ("ls", "glob", "grep")
+        active = [f"`{name}`" for name in builtin_names if name not in blocked]
+        hidden = [f"`{name}`" for name in builtin_names if name in blocked]
+        intro = (
+            "This section overrides generic DeepAgents filesystem guidance. "
+        )
+        if not hidden:
+            intro += "The DeepAgents built-in `ls`, `glob`, and `grep` tools are available."
+        elif active:
+            intro += "Available built-in search tools: " + ", ".join(active) + "."
+        if hidden:
+            intro += " Hidden built-in search tools: " + ", ".join(hidden) + "; never call them."
     rules: list[str] = [
         "## Active filesystem tools (authoritative)",
-        "This section overrides generic DeepAgents filesystem guidance. The model-facing `ls`, "
-        "`glob`, and `grep` tools are hidden; never call them.",
+        intro,
     ]
     if "find_files" not in blocked:
         rules.append(
@@ -315,7 +348,10 @@ def filesystem_tool_prompt(excluded_tools: Iterable[str] | None = None) -> str:
         "patch",
     }
     active_file_ops = non_execute_file_ops - blocked
-    if active_file_ops:
+    # For a scope-aware caller (subagent) the note only matters when it can
+    # actually run shell commands; the main agent keeps it unconditionally so its
+    # prompt stays byte-identical to the pre-refactor layout.
+    if active_file_ops and (not scope_rules or "execute" not in blocked):
         active_names = ", ".join(sorted(active_file_ops))
         rules.append(
             f"- Do not use `execute` as a substitute for file operations when active tools "
@@ -354,6 +390,143 @@ def _shell_prompt(shell_executable: str) -> str:
     return f"## Shell environment\n- The `execute` tool uses `{shell}`.\n{rules}"
 
 
+def build_workspace_block(
+    workspace: Path | str,
+    *,
+    shell_available: bool = True,
+    scope_rules: bool = False,
+) -> str:
+    """Render the shared ``## Current workspace`` block.
+
+    The host root, the virtual-root mapping, and the shell note are identical
+    for the main agent and for subagents. ``scope_rules`` is the subagent-only
+    opt-in that adds the workspace-containment / secret-handling rules and the
+    shell path convention; the main agent's coding body already states both rules,
+    so emitting them here as well would duplicate them *and* change the main
+    agent's byte-stable prompt (invalidating its prompt cache prefix).
+    ``shell_available=False`` is only honoured together with ``scope_rules``: the
+    main agent keeps its historical shell line in every configuration.
+    """
+    root = Path(workspace).resolve()
+    lines = [
+        "## Current workspace",
+        f"- Host root (shell/git only): `{root}`",
+        "- File-tool virtual root: `/` maps to the host root above",
+        f"- Mapping example: `{root / 'README.md'}` -> `/README.md`",
+    ]
+    if scope_rules:
+        lines.append(
+            "- Stay within this workspace unless the user explicitly authorizes another location."
+        )
+        lines.append("- Never expose secrets, credentials, private keys, or `.env` contents.")
+    if scope_rules and not shell_available:
+        lines.append("- Shell commands are not available to you in this context.")
+        return "\n".join(lines)
+    lines.append("- Shell commands run on the host, inside the workspace root.")
+    if scope_rules:
+        lines.append(
+            "- In shell commands, use `.` for this working directory, not `/`; "
+            "the file-tool virtual root is not a shell path."
+        )
+    return "\n".join(lines)
+
+
+def build_environment_sections(
+    workspace: Path | str,
+    *,
+    shell_executable: str | None = None,
+    excluded_tools: Iterable[str] | None = None,
+    shell_available: bool = True,
+    hidden_builtin_search: bool = True,
+    scope_rules: bool = False,
+) -> list[PromptSection]:
+    """Build the reusable workspace / filesystem / shell sections.
+
+    These sections describe the shared execution environment and are the same
+    building blocks for the main agent and for subagents. They never load or
+    create the main ``system_prompt.md`` body; the caller supplies its own body
+    (main agent: the external/default coding prompt; subagent: its definition).
+
+    ``scope_rules`` selects the scope-aware (subagent) rendering: the shell
+    section and the ``execute`` note follow the *effective* tool set, and the
+    workspace block carries the containment rules. The default rendering is the
+    historical main-agent one, byte-identical to the pre-refactor prompt.
+    """
+    root = Path(workspace).resolve()
+    excluded = frozenset(excluded_tools or ())
+    if scope_rules:
+        shell_available = shell_available and "execute" not in excluded
+    effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
+    sections = [
+        PromptSection(
+            name="Workspace",
+            source="workspace",
+            content=build_workspace_block(
+                root,
+                shell_available=shell_available,
+                scope_rules=scope_rules,
+            ),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Filesystem Tools",
+            source="filesystem_tools",
+            content=filesystem_tool_prompt(
+                excluded,
+                hidden_builtin_search=hidden_builtin_search,
+                scope_rules=scope_rules,
+            ),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+    ]
+    if shell_available:
+        sections.append(
+            PromptSection(
+                name="Shell",
+                source="shell",
+                content=_shell_prompt(effective_shell),
+                cache_hint=STABLE,
+                injection_target=SYSTEM_TARGET,
+            )
+        )
+    return sections
+
+
+def build_scope_limits_section(
+    *,
+    read_only: bool = False,
+) -> PromptSection:
+    """Render the subagent ``## Scope limits`` section.
+
+    Describe tool-level restrictions without claiming that an allowed shell or
+    another tool's internals are sandboxed. Missing capabilities must be reported
+    rather than worked around. The shell capability is stated by the workspace
+    block instead (see :func:`build_workspace_block`), so it is not repeated here.
+    The section never echoes raw configuration.
+    """
+    lines = ["## Scope limits"]
+    if read_only:
+        lines.append(
+            "- File-editing tools are unavailable. Do not use other tools to bypass "
+            "these restrictions."
+        )
+    lines.append(
+        "- Tool-name restrictions are enforced at call time. This is not an OS sandbox "
+        "and does not restrict the internals of an allowed shell command or other tool. "
+        "If the task requires a capability you do not have, report the limitation clearly "
+        "instead of attempting a workaround."
+    )
+    return PromptSection(
+        name="Scope Limits",
+        source="scope_limits",
+        content="\n".join(lines),
+        cache_hint=STABLE,
+        injection_target=SYSTEM_TARGET,
+    )
+
+
 def build_system_prompt_sections(
     workspace: Path,
     *,
@@ -366,18 +539,13 @@ def build_system_prompt_sections(
     Every section is ``stable``: the list is built once per agent build and the
     rendered result is byte-identical to the pre-registry single-string prompt.
     Request-time sections (project instructions, memory, environment) are added
-    later in the middleware chain, not here.
+    later in the middleware chain, not here. The environment sections come from
+    the shared :func:`build_environment_sections` helper so subagents reuse the
+    exact same workspace / filesystem / shell guidance. The main agent keeps the
+    default (non-``scope_rules``) rendering, so its prompt stays byte-identical.
     """
     root = Path(workspace).resolve()
     body = load_coding_system_prompt(root, ensure_user_file=ensure_user_file)
-    effective_shell = shell_executable or ("pwsh" if sys.platform == "win32" else "bash")
-    workspace_block = (
-        "## Current workspace\n"
-        f"- Host root (shell/git only): `{root}`\n"
-        "- File-tool virtual root: `/` maps to the host root above\n"
-        f"- Mapping example: `{root / 'README.md'}` -> `/README.md`\n"
-        "- Shell commands run on the host, inside the workspace root."
-    )
     return [
         PromptSection(
             name="Coding Body",
@@ -393,26 +561,10 @@ def build_system_prompt_sections(
             cache_hint=STABLE,
             injection_target=SYSTEM_TARGET,
         ),
-        PromptSection(
-            name="Workspace",
-            source="workspace",
-            content=workspace_block,
-            cache_hint=STABLE,
-            injection_target=SYSTEM_TARGET,
-        ),
-        PromptSection(
-            name="Filesystem Tools",
-            source="filesystem_tools",
-            content=filesystem_tool_prompt(excluded_tools),
-            cache_hint=STABLE,
-            injection_target=SYSTEM_TARGET,
-        ),
-        PromptSection(
-            name="Shell",
-            source="shell",
-            content=_shell_prompt(effective_shell),
-            cache_hint=STABLE,
-            injection_target=SYSTEM_TARGET,
+        *build_environment_sections(
+            root,
+            shell_executable=shell_executable,
+            excluded_tools=excluded_tools,
         ),
     ]
 

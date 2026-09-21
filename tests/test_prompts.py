@@ -116,3 +116,23 @@ def test_mandatory_path_rules_survive_external_prompt_override(tmp_path: Path):
     assert "## File-tool paths (mandatory)" in prompt
     assert "Never use Windows drive paths, host absolute paths" in prompt
     assert "convert the path to `/...`" in prompt
+
+
+def test_excluded_shell_keeps_the_main_agent_prompt_byte_stable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An excluded ``execute`` must not change the main agent's prompt.
+
+    Dropping the shell section and the ``execute`` note for an unavailable shell
+    is the subagent-only ``scope_rules`` rendering. Applying it to the main agent
+    would change its prompt and invalidate the prompt cache prefix for every user.
+    """
+    from synapse.content import prompts as prompts_mod
+
+    monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: tmp_path / "missing-user")
+    baseline = build_system_prompt(tmp_path, shell_executable="pwsh")
+    prompt = build_system_prompt(tmp_path, shell_executable="pwsh", excluded_tools=["execute"])
+
+    assert prompt == baseline
+    assert "## Shell environment" in prompt
+    assert "Do not use `execute` as a substitute" in prompt

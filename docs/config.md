@@ -117,7 +117,7 @@ name: security-reviewer
 description: Use after security-sensitive changes. Reviews for injection and secret leaks.
 model: inherit            # 或 "provider:model-name"
 reasoning_effort: high    # 可选：off/minimal/low/medium/high/max；缺省继承主 Agent
-tools: [read_file, search_files, find_files, execute]   # 可选 allowlist；省略则继承 find_files/search_files
+tools: [read_file, search_files, find_files, execute]   # 非空即最终严格白名单；省略则继承 find_files/search_files/patch
 disallowed_tools: [write_file, edit_file]               # 可选 denylist
 ownership: task           # 预留字段，仅支持 task
 ---
@@ -126,7 +126,13 @@ You are a security reviewer. Inspect diffs for...
 ```
 
 - `name` 与内置（researcher/tester/reviewer）同名时覆盖内置定义。
-- `tools: []` 表示仅使用 deepagents 内置工具（不继承主代理工具）。
+- `tools: []` 表示仅使用 deepagents 内置工具（不继承主代理工具）；全局排除
+  （`excluded_tools` / `minimal_filesystem_tools` / `readonly`）与 `disallowed_tools`
+  仍然生效。
+- `tools: [names]` 非空时是**最终严格白名单**（框架内置工具也受约束），未知名字不会自动
+  获得能力；被全局排除的工具即使点名也不会放开。
+- 内置 `tester` 的 `tools` 默认值已由 `[]` 调整为 `null`（默认继承
+  `find_files`/`search_files`/`patch`）。
 - 解析失败的文件会被跳过并记录 warning，不会导致启动失败。
 - `ownership` / `output_schema` 为未来 handoff 与 workflow 编排预留，当前仅支持 `task`。
 - 首次启动会在 `~/.synapse/agents/` 生成 `researcher.md` / `tester.md` / `reviewer.md`

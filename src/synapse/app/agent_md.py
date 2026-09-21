@@ -13,18 +13,16 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState
 
 
 def _read_agent_md(project_root: Path | None) -> str | None:
-    """Read AGENTS.md from the project root, returning content or None."""
-    candidates: list[Path] = []
-    if project_root is not None:
-        candidates.append(project_root / "AGENTS.md")
-    candidates.append(Path.cwd() / "AGENTS.md")
+    """Read this workspace's rules; never fall back to another project's cwd."""
+    root = project_root if project_root is not None else Path.cwd()
 
-    for p in candidates:
-        try:
-            if p.is_file():
-                return p.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
+    try:
+        path = root / "AGENTS.md"
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        # Project instructions are optional when absent or unreadable.
+        return None
     return None
 
 

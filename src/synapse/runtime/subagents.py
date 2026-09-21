@@ -77,10 +77,9 @@ def _builtin_definitions(
         ),
         system_prompt=(
             "You are a codebase researcher.\n"
-            "- Prefer read_file and the targeted file-search tools available to you over broad "
-            "shell scans.\n"
+            "- Prefer read_file and the targeted file-search tools available to you.\n"
             "- Do not modify files.\n"
-            "- Do not run destructive shell commands.\n"
+            "- Do not run destructive commands.\n"
             "- Return concrete file paths and short evidence snippets.\n"
             "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
@@ -106,10 +105,12 @@ def _builtin_definitions(
             "- Do not use emoji in any output.\n" + _PARALLEL_HINT
         ),
         model=tester_model,
-        # Stay on deepagents built-in tools when isolated; otherwise inherit the
-        # main-agent allowlist (find_files/search_files), matching the legacy
-        # behavior before the declarative refactor.
-        tools=[] if isolate_tools else None,
+        # Inherit the main-agent allowlist (find_files/search_files/patch) so the
+        # tester searches the same way the main agent does; the deepagents
+        # framework tools (read_file/execute/...) remain available. A user who
+        # wants the legacy built-ins-only behavior can set ``tools: []`` in the
+        # definition file, which keeps the ``[]`` semantics intact.
+        tools=None,
         source="builtin",
     )
 
@@ -237,6 +238,8 @@ def _build_default_subagent_runtime(
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
     extra_excluded_tools: Sequence[str] = (),
+    workspace: Path | str | None = None,
+    shell_executable: str | None = None,
 ) -> SubagentBuildResult:
     """Build specs plus display configs from one shared definition merge.
 
@@ -245,6 +248,10 @@ def _build_default_subagent_runtime(
     display values are resolved with the same overrides/defaults the specs
     compiler receives, falling back to the main agent's effective model and
     reasoning effort when a subagent inherits them.
+
+    ``workspace`` / ``shell_executable`` are forwarded to the compiler so each
+    subagent prompt carries the same workspace, virtual-path, shell, and tool
+    guidance as the main agent.
     """
     if not enabled:
         return SubagentBuildResult(specs=None, display_configs={})
@@ -277,6 +284,8 @@ def _build_default_subagent_runtime(
         default_model=default_model,
         default_reasoning_effort=default_reasoning_effort,
         extra_excluded_tools=extra_excluded_tools,
+        workspace=workspace,
+        shell_executable=shell_executable,
     )
     names = set(model_overrides or {}) | set(reasoning_effort_overrides or {})
     overrides = {
@@ -326,6 +335,8 @@ def build_default_subagents(
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
     extra_excluded_tools: Sequence[str] = (),
+    workspace: Path | str | None = None,
+    shell_executable: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """Return declarative SubAgent specs, or None when disabled.
 
@@ -359,6 +370,8 @@ def build_default_subagents(
         main_model=main_model,
         main_reasoning_effort=main_reasoning_effort,
         extra_excluded_tools=extra_excluded_tools,
+        workspace=workspace,
+        shell_executable=shell_executable,
     ).specs
 
 
@@ -385,6 +398,8 @@ def build_default_subagents_with_display(
     main_model: str | None = None,
     main_reasoning_effort: str | None = None,
     extra_excluded_tools: Sequence[str] = (),
+    workspace: Path | str | None = None,
+    shell_executable: str | None = None,
 ) -> SubagentBuildResult:
     """Like ``build_default_subagents``, but also returns UI display configs.
 
@@ -414,6 +429,8 @@ def build_default_subagents_with_display(
         main_model=main_model,
         main_reasoning_effort=main_reasoning_effort,
         extra_excluded_tools=extra_excluded_tools,
+        workspace=workspace,
+        shell_executable=shell_executable,
     )
 
 
