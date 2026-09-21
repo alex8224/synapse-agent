@@ -342,9 +342,73 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
   const C = 2 * Math.PI * 40;
 
   const trendItems = stats?.trend.items ?? [];
-  const trendMax = Math.max(1, ...trendItems.map((i) => i.cache + i.input + i.output));
-  const trendStep = trendItems.length > 1 ? 520 / (trendItems.length - 1) : 0;
-  const labelEvery = trendItems.length > 12 ? Math.ceil(trendItems.length / 8) : 1;
+  const trendW = 600;
+  const trendH = 220;
+  const padL = 40;
+  const padR = 20;
+  const padT = 20;
+  const padB = 30;
+  const plotW = trendW - padL - padR;
+  const plotH = trendH - padT - padB;
+
+  const trendMax = Math.max(
+    1,
+    ...trendItems.map((i) => Math.max(i.cache + i.input + i.output, i.raw)),
+  );
+  const trendGridTicks = [0, 0.25, 0.5, 0.75, 1].map((pct) => ({
+    val: Math.round(trendMax * pct),
+    y: padT + plotH - pct * plotH,
+  }));
+
+  const trendPaths = useMemo(() => {
+    if (trendItems.length === 0) return null;
+    const pCache: { x: number; y: number; yBase: number }[] = [];
+    const pInput: { x: number; y: number; yBase: number }[] = [];
+    const pOut: { x: number; y: number; yBase: number }[] = [];
+    const pRaw: { x: number; y: number }[] = [];
+
+    const getX = (idx: number) =>
+      padL + (trendItems.length > 1 ? (idx / (trendItems.length - 1)) * plotW : plotW / 2);
+    const getY = (val: number) => padT + plotH - (val / trendMax) * plotH;
+    const y0 = padT + plotH;
+
+    trendItems.forEach((d, i) => {
+      const x = getX(i);
+      const yCache = getY(d.cache);
+      const yInput = getY(d.cache + d.input);
+      const yOut = getY(d.cache + d.input + d.output);
+      const yRaw = getY(d.raw);
+
+      pCache.push({ x, y: yCache, yBase: y0 });
+      pInput.push({ x, y: yInput, yBase: yCache });
+      pOut.push({ x, y: yOut, yBase: yInput });
+      pRaw.push({ x, y: yRaw });
+    });
+
+    const drawArea = (points: { x: number; y: number; yBase: number }[]) => {
+      if (points.length === 0) return '';
+      let d = `M ${points[0].x} ${points[0].yBase}`;
+      points.forEach((p) => (d += ` L ${p.x} ${p.y}`));
+      for (let i = points.length - 1; i >= 0; i -= 1) {
+        d += ` L ${points[i].x} ${points[i].yBase}`;
+      }
+      return d + ' Z';
+    };
+
+    let dRaw = `M ${pRaw[0].x} ${pRaw[0].y}`;
+    pRaw.forEach((p, i) => {
+      if (i > 0) dRaw += ` L ${p.x} ${p.y}`;
+    });
+
+    return {
+      dCache: drawArea(pCache),
+      dInput: drawArea(pInput),
+      dOut: drawArea(pOut),
+      dRaw,
+      pRaw,
+      pOut,
+    };
+  }, [trendItems, trendMax]);
 
   const heatDays: HeatmapDay[] = stats?.heatmap.days ?? [];
   const heatMax = Math.max(
@@ -745,8 +809,8 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
 
                 <div className="overflow-x-auto pb-1">
                   <div className="min-w-[780px]">
-                    {/* 月份横向分布：左侧留出 28px（与星期指示等宽） */}
-                    <div className="flex justify-between ml-[28px] mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none">
+                    {/* 月份横向分布：左侧留出 28px（与星期指示等宽），宽度 751px 与 52 周网格严格等宽对齐 */}
+                    <div className="flex justify-between w-[751px] ml-[28px] mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none">
                       {calendarMonths.map((m, idx) => (
                         <span key={idx}>{m}</span>
                       ))}
@@ -782,7 +846,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           return (
                             <div
                               key={cell.date}
-                              className={`w-[11px] h-[11px] rounded-[2px] cursor-pointer transition-transform hover:scale-125 hover:z-10 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-gray-100 ${
+                              className={`w-[11px] h-[11px] rounded-[2px] cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
                                 heatColors[level]
                               }`}
                               onMouseEnter={(e) => {
@@ -827,155 +891,184 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 </div>
               </div>
 
-              {/* 第四层：核心双图表（分层堆叠趋势 + 环形剖析图） */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
-                {/* 左侧堆叠柱状图 */}
-                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-3 lg:col-span-3">
+              {/* 第四层：核心双图表（分层堆叠趋势 + 环形剖析图，严格对齐原型） */}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.8fr_1.2fr]">
+                {/* 左侧：每日 Token 消耗与优化分层堆叠面积图 */}
+                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-3 shadow-card">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-xs font-bold text-gray-900">{stats.trend.title}</h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">{stats.trend.subtitle}</p>
+                      <h2 className="text-sm font-bold text-gray-900">
+                        {stats.trend.title || "每日 Token 消耗与节约构成"}
+                      </h2>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {stats.trend.subtitle || "分层解析：Prompt 命中 / 全新输入 / 推理思考 / 节约对比"}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2 text-[10px] font-mono text-gray-600 dark:text-gray-400">
+                    <div className="flex items-center gap-3 text-[11px] font-mono text-gray-600 dark:text-gray-400 select-none flex-wrap justify-end">
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-sm bg-emerald-500" />
+                        <span className="h-2 w-2 rounded-[2px] bg-[#10b981]" />
                         缓存命中
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-sm bg-blue-500" />
-                        非缓存读取输入
+                        <span className="h-2 w-2 rounded-[2px] bg-[#0078d4]" />
+                        未命中输入
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-sm bg-amber-500" />
-                        输出
+                        <span className="h-2 w-2 rounded-[2px] bg-[#a855f7]" />
+                        思考推理
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-[2px] bg-[#f59e0b]" />
+                        正文输出
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="w-3 h-0.5 border-t border-dashed border-gray-400 dark:border-gray-500" />
+                        未压缩基线
                       </span>
                     </div>
                   </div>
 
-                  <div className="relative h-56 w-full">
-                    <svg
-                      className="h-full w-full overflow-visible"
-                      viewBox="0 0 600 220"
-                      preserveAspectRatio="xMidYMid meet"
-                    >
-                      {[0, 25, 50, 75, 100].map((pct) => (
-                        <line
-                          key={pct}
-                          x1="30"
-                          x2="590"
-                          y1={180 - (pct / 100) * 160}
-                          y2={180 - (pct / 100) * 160}
-                          stroke="currentColor"
-                          className="text-line/60"
-                          strokeDasharray="3 3"
-                        />
-                      ))}
-                      {trendItems.map((item, idx) => {
-                        const x = 40 + idx * trendStep;
-                        const hCache = (item.cache / trendMax) * 160;
-                        const hInput = (item.input / trendMax) * 160;
-                        const hOut = (item.output / trendMax) * 160;
-                        return (
-                          <g key={`${item.date}-${idx}`} className="cursor-pointer group">
-                            <rect
-                              x={x - 7}
-                              y={180 - hCache}
-                              width="14"
-                              height={hCache}
-                              fill="#10b981"
-                              rx="1"
-                              opacity="0.85"
+                  <div className="relative h-60 w-full">
+                    {trendPaths === null ? (
+                      <div className="flex h-full items-center justify-center text-xs text-gray-400">
+                        当前区间无趋势数据
+                      </div>
+                    ) : (
+                      <svg
+                        className="h-full w-full overflow-visible"
+                        viewBox="0 0 600 220"
+                        preserveAspectRatio="none"
+                      >
+                        {/* 背景水平网格虚线与 Y 轴刻度 */}
+                        {trendGridTicks.map((tick, idx) => (
+                          <g key={idx}>
+                            <line
+                              x1={padL}
+                              x2={trendW - padR}
+                              y1={tick.y}
+                              y2={tick.y}
+                              stroke="currentColor"
+                              className="text-line/60"
+                              strokeDasharray="3 3"
                             />
-                            <rect
-                              x={x - 7}
-                              y={180 - hCache - hInput}
-                              width="14"
-                              height={hInput}
-                              fill="#0078d4"
-                              rx="1"
-                              opacity="0.9"
-                            />
-                            <rect
-                              x={x - 7}
-                              y={180 - hCache - hInput - hOut}
-                              width="14"
-                              height={hOut}
-                              fill="#f59e0b"
-                              rx="1"
-                              opacity="0.9"
-                            />
-                            <circle
-                              cx={x}
-                              cy={180 - hCache - hInput - hOut}
-                              r="3"
+                            <text
+                              x={padL - 8}
+                              y={tick.y + 3}
+                              textAnchor="end"
+                              fontSize="10"
                               fill="currentColor"
-                              className="text-surface"
-                              stroke="#0078d4"
-                              strokeWidth="2"
-                              onMouseEnter={(e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                setTooltip({
-                                  visible: true,
-                                  x: rect.left,
-                                  y: rect.top - 120,
-                                  title: `${item.date} 用量分解`,
-                                  rows: [
-                                    { label: '缓存读取', val: fmtTokens(item.cache), color: '#10b981' },
-                                    {
-                                      label: '非缓存读取输入',
-                                      val: fmtTokens(item.input),
-                                      color: '#0078d4',
-                                    },
-                                    { label: '输出', val: fmtTokens(item.output), color: '#f59e0b' },
-                                    { label: '未压缩基准', val: fmtTokens(item.raw), color: '#9ca3af' },
-                                  ],
-                                });
-                              }}
-                              onMouseLeave={() =>
-                                setTooltip((t) => ({ ...t, visible: false }))
-                              }
-                            />
-                            {idx % labelEvery === 0 && (
+                              className="fill-gray-400 dark:fill-gray-500 font-mono"
+                            >
+                              {tick.val >= 10000 ? `${Math.round(tick.val / 10000)}w` : tick.val}
+                            </text>
+                          </g>
+                        ))}
+
+                        {/* 从底至顶堆叠面积层 */}
+                        <path d={trendPaths.dCache} fill="#10b981" fillOpacity="0.75" />
+                        <path d={trendPaths.dInput} fill="#0078d4" fillOpacity="0.85" />
+                        <path d={trendPaths.dOut} fill="#f59e0b" fillOpacity="0.9" />
+
+                        {/* 顶层：未压缩应耗基线虚线折线 */}
+                        <path
+                          d={trendPaths.dRaw}
+                          fill="none"
+                          stroke="currentColor"
+                          className="text-gray-400 dark:text-gray-400"
+                          strokeWidth="1.8"
+                          strokeDasharray="4 4"
+                        />
+
+                        {/* 数据点圆圈与交互热区 */}
+                        {trendItems.map((d, i) => {
+                          const x = padL + (trendItems.length > 1 ? (i / (trendItems.length - 1)) * plotW : plotW / 2);
+                          const yPoint = trendPaths.pRaw[i]?.y ?? 0;
+                          return (
+                            <g key={i} className="cursor-pointer group">
+                              {/* X 轴日期 */}
                               <text
                                 x={x}
-                                y="205"
+                                y={trendH - 8}
                                 textAnchor="middle"
+                                fontSize="10.5"
                                 fill="currentColor"
-                                className="text-[10px] font-mono fill-gray-500 dark:fill-gray-400"
+                                className="fill-gray-400 dark:fill-gray-500 font-mono select-none"
                               >
-                                {item.date}
+                                {d.date}
                               </text>
-                            )}
-                          </g>
-                        );
-                      })}
-                    </svg>
+                              {/* 白色实心数据小圆点 */}
+                              <circle
+                                cx={x}
+                                cy={yPoint}
+                                r="3.5"
+                                fill="#ffffff"
+                                stroke="#f59e0b"
+                                strokeWidth="2"
+                                className="transition-transform group-hover:scale-150"
+                              />
+                              {/* 透明感应交互纵条 */}
+                              <rect
+                                x={x - 14}
+                                y={padT}
+                                width="28"
+                                height={plotH}
+                                fill="transparent"
+                                onMouseEnter={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setTooltip({
+                                    visible: true,
+                                    x: rect.left,
+                                    y: rect.top - 120,
+                                    title: `${d.date} 用量构成`,
+                                    rows: [
+                                      { label: "缓存命中", val: fmtTokens(d.cache), color: "#10b981" },
+                                      { label: "未命中输入", val: fmtTokens(d.input), color: "#0078d4" },
+                                      { label: "正文输出", val: fmtTokens(d.output), color: "#f59e0b" },
+                                      { label: "未压缩基线", val: fmtTokens(d.raw), color: "#9ca3af" },
+                                    ],
+                                  });
+                                }}
+                                onMouseLeave={() =>
+                                  setTooltip((t) => ({ ...t, visible: false }))
+                                }
+                              />
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    )}
                   </div>
                 </div>
 
-                {/* 右侧多维环形剖析图 */}
-                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-3 lg:col-span-2">
+                {/* 右侧：多维环形剖析图 */}
+                <div className="rounded-card border border-line/70 bg-surface p-4 space-y-3 shadow-card">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-xs font-bold text-gray-900">结构剖析分布</h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">按真实 Token 用量分解</p>
+                      <h2 className="text-sm font-bold text-gray-900">
+                        {breakdownDim === "project"
+                          ? "项目工作区用量分布"
+                          : breakdownDim === "model"
+                          ? "模型用量分布"
+                          : "Subagent 角色分布"}
+                      </h2>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">用量与计费占比分解</p>
                     </div>
                     <div className="inline-flex rounded-control border border-line/60 bg-surface-sunken p-0.5 text-xs">
                       {(
                         [
-                          ['project', '按项目'],
-                          ['model', '按模型'],
-                          ['agent', '按角色'],
+                          ["project", "按项目"],
+                          ["model", "按模型"],
+                          ["agent", "按 Subagent"],
                         ] as const
                       ).map(([key, label]) => (
                         <button
                           key={key}
                           type="button"
                           onClick={() => handleBreakdownDimChange(key)}
-                          className={`rounded-control px-1.5 py-0.5 text-[10px] ${
+                          className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                             breakdownDim === key
-                              ? 'bg-surface font-bold text-gray-900'
-                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900'
+                              ? "bg-surface font-semibold text-gray-900 shadow-sm"
+                              : "text-gray-500 dark:text-gray-400 hover:text-gray-900"
                           }`}
                         >
                           {label}
@@ -985,14 +1078,15 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                   </div>
 
                   {breakdownList === null || breakdownList.length === 0 ? (
-                    <div className="flex h-28 items-center justify-center text-xs text-gray-500 dark:text-gray-400">
-                      {breakdownDim === 'agent'
-                        ? 'Agent/角色维度无数据来源'
-                        : '当前区间无 Token 数据'}
+                    <div className="flex h-48 items-center justify-center text-xs text-gray-400">
+                      {breakdownDim === "agent"
+                        ? "Subagent 角色无独立遥测来源"
+                        : "当前区间无 Token 数据"}
                     </div>
                   ) : (
-                    <div className="flex items-center gap-4 pt-2">
-                      <div className="relative h-28 w-28 shrink-0">
+                    <div className="flex items-center gap-5 pt-4">
+                      {/* Donut 环形图 */}
+                      <div className="relative h-[140px] w-[140px] shrink-0">
                         <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
                           {breakdownList.map((item) => {
                             const dashLen = (item.pct / 100) * C;
@@ -1004,39 +1098,48 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                 r="40"
                                 fill="transparent"
                                 stroke={item.color}
-                                strokeWidth="14"
+                                strokeWidth="16"
                                 strokeDasharray={`${dashLen} ${C - dashLen}`}
                                 strokeDashoffset={`-${(item.offset / 100) * C}`}
+                                className="transition-all hover:stroke-[20px]"
                               />
                             );
                           })}
                         </svg>
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                          <span className="font-mono text-sm font-bold text-gray-900 leading-none">
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                          <span className="font-mono text-base font-bold text-gray-900 leading-tight">
                             {fmtTokens(stats.kpi.total_tokens)}
                           </span>
-                          <span className="text-[9px] uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                          <span className="text-[10px] uppercase tracking-wider text-gray-400 font-mono">
                             Tokens
                           </span>
                         </div>
                       </div>
 
-                      <div className="flex-1 space-y-1.5 font-mono text-xs">
+                      {/* 右侧列表项 */}
+                      <div className="flex-1 flex flex-col gap-2">
                         {breakdownList.map((item) => (
                           <div
                             key={item.name}
-                            className="flex items-center justify-between text-[11px]"
+                            className="flex items-center justify-between text-xs px-2 py-1.5 rounded-control hover:bg-surface-sunken transition-colors"
                           >
-                            <span className="flex items-center gap-1.5 truncate text-gray-700 dark:text-gray-300">
+                            <div className="flex items-center gap-2 truncate">
                               <span
                                 className="h-2 w-2 rounded-full shrink-0"
-                                style={{ background: item.color }}
+                                style={{ backgroundColor: item.color }}
                               />
-                              <span className="truncate">{item.name}</span>
-                            </span>
-                            <span className="font-bold text-gray-900 shrink-0">
-                              {item.pct}%
-                            </span>
+                              <span className="text-gray-700 dark:text-gray-200 font-medium truncate">
+                                {item.name}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 font-mono text-[11.5px] shrink-0">
+                              <span className="text-gray-500 dark:text-gray-400">
+                                {fmtTokens(item.tokens)}
+                              </span>
+                              <span className="text-gray-900 font-bold w-9 text-right">
+                                {item.pct}%
+                              </span>
+                            </div>
                           </div>
                         ))}
                       </div>
