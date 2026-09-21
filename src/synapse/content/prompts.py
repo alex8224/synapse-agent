@@ -8,7 +8,6 @@ Default body ships in English. Prefer loading an external markdown file:
 If the user file is missing, it is created from the built-in default on first use.
 The workspace footer is always appended in code.
 """
-
 from __future__ import annotations
 
 import sys
@@ -193,6 +192,18 @@ and `write_file` must:
 
 The real host workspace path may only be used by shell or git commands.
 If a virtual-path error occurs, convert the path to `/...`; do not retry a host or Windows path.
+"""
+
+TOOL_INTENT_RULES = """\
+## Tool call intent
+
+Every tool call must include a short English `intent` describing its purpose, for example:
+
+* `locate authentication handler`
+* `inspect pytest configuration`
+* `run narrow regression test`
+
+Do not use generic intent values such as `run tool` or `read_file`.
 """
 
 

@@ -1,5 +1,6 @@
 import {
   Bot20Regular,
+  ArrowDownLeft16Regular,
   Checkmark16Regular,
   ChevronDown16Regular,
   ChevronRight16Regular,
@@ -14,6 +15,8 @@ import {
   groupToolsForView,
   isTerminalTool,
   toolCommand,
+  toolDetailParams,
+  toolDisplayIntent,
   toolFailureReason,
   toolPreviewLanguage,
   toolStatusLabel,
@@ -21,6 +24,7 @@ import {
   type ToolRenderNode,
 } from '../../stores/transcriptLabels.ts';
 import { CodeBlock } from '../CodeBlock.tsx';
+import { Markdown } from '../Markdown.tsx';
 import { TerminalOutput } from '../TerminalOutput.tsx';
 import { FoldStatusPill } from './FoldStatusPill.tsx';
 import type { RowRenderProps } from './context.ts';
@@ -45,6 +49,12 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
   processMeta,
   actions,
 }: RowRenderProps) {
+  const [promptExpansions, setPromptExpansions] = React.useState<Record<string, boolean>>({});
+
+  const togglePrompt = React.useCallback((key: string) => {
+    setPromptExpansions((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
   const toolList = message.tools || [];
   // The batch is flat on the wire; this is where a subagent's own steps are put back
   // under the call that started it, so they can be painted as one card instead of as
@@ -65,7 +75,7 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     // while that lifecycle update arrives.
     const toolKey = t.callId || t.id;
     const toolExpanded = toolExpansions[toolKey] === true;
-    const intent = t.label && t.label !== t.name ? t.label : '';
+    const intent = toolDisplayIntent(t);
     // A run tool's detail is its terminal session: the invocation, then what the
     // program wrote.  The invocation is known before the output is, so a call that is
     // still running can be opened to read what it is running.
@@ -76,8 +86,9 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     // summary is the body's own first line.
     const reason = toolFailureReason(t.status, t.error);
     const reasonShown = reason !== '' && !(t.preview ?? '').trimStart().startsWith(reason);
-    // A row opens when it has a body -- or, for a run tool, an invocation.
-    const hasDetail = Boolean(t.preview) || command !== '' || reasonShown;
+    const detailParams = toolExpanded ? toolDetailParams(t) : [];
+    // A row opens when it has a body, an invocation, an error, or inspectable parameters.
+    const hasDetail = Boolean(t.preview) || command !== '' || reasonShown || toolDetailParams(t).length > 0;
     // A call in flight is shown, not spelled out: the leading spinner carries "still
     // working" the way a terminal's cursor does.
     const active = t.status === 'running' || t.status === 'pending';
@@ -161,6 +172,16 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
           <div className="ml-4 border-l border-line pb-1.5 pl-2.5 pr-2 pt-1">
             {/* Result bodies can be large or expensive to parse, so they are mounted
                 only for the individual call the reader opened. */}
+            {detailParams.length > 0 && (
+              <div className="mb-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs text-gray-500">
+                {detailParams.map((param) => (
+                  <div key={param.key} className="flex items-baseline gap-1">
+                    <span className="text-gray-400">{param.key}:</span>
+                    <span className="text-gray-700">{param.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             {reasonShown && (
               <div className="whitespace-pre-wrap break-all font-mono text-[12px] leading-5 text-red-600">
                 {reason}
@@ -200,6 +221,13 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     // step line instead of painting the whole card red.
     const parentFailed = node.parent.error || node.parent.status === 'failed';
     const failedSteps = node.tools.filter((s) => s.error || s.status === 'failed').length;
+    const promptText = (node.subagentPrompt || (typeof node.parent.args?.description === 'string' ? node.parent.args.description : '')).trim();
+    const promptExpanded = promptExpansions[key] === true;
+    const isLongPrompt = promptText.length > 120 || promptText.includes('\n');
+    const resultText = (node.parent.preview ?? '').trim();
+    const failureReason = toolFailureReason(node.parent.status, node.parent.error);
+    const hasOutput = Boolean(resultText) || Boolean(failureReason) || parentFailed || subRunning;
+
     return (
       <div key={key} className="rounded-control border border-line bg-raised">
         {/* The raised fill equals the dark palette's hover step, so the header takes
@@ -254,6 +282,41 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
                 step sitting on it.  The circle is offset by the rail's own inset, so
                 it stays centred on the line at any text size. */}
             <div className="border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
+              {/* The prompt node: instructions dispatched by the main orchestrator */}
+              {promptText !== '' && (
+                <div className="relative pt-0.5">
+                  <span
+                    aria-hidden="true"
+                    className="absolute -left-[19px] top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border border-purple-200/60 bg-purple-50 text-purple-700"
+                    title="下发提词"
+                  >
+                    <ArrowDownLeft16Regular aria-hidden="true" style={{ fontSize: '10px' }} />
+                  </span>
+                  <div className="rounded-control border border-line/60 bg-sunken/40 px-2.5 py-1.5 text-xs text-gray-700">
+                    <div className="flex items-center justify-between font-mono text-[10px] text-gray-400 mb-1 select-none">
+                      <span>下发提词 · prompt</span>
+                      <span>@{node.subagentName}</span>
+                    </div>
+                    <div
+                      className={`whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-gray-800 ${
+                        promptExpanded ? '' : 'line-clamp-3'
+                      }`}
+                    >
+                      {promptText}
+                    </div>
+                    {isLongPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => togglePrompt(key)}
+                        className="mt-1 flex items-center gap-1 font-mono text-[10px] text-purple-600 hover:text-purple-700 cursor-pointer select-none transition-colors"
+                      >
+                        {promptExpanded ? '收起提词' : '展开全部提词'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {node.tools.map((t) => {
                 // The step's own outcome, so the circle can carry it at a glance; the
                 // row therefore prints no state of its own while it runs.
@@ -277,8 +340,62 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
                   </div>
                 );
               })}
-              {node.tools.length === 0 && (
+              {node.tools.length === 0 && subRunning && (
                 <div className="font-mono text-[10px] text-gray-400">等待子代理步骤…</div>
+              )}
+
+              {/* The result node: final report/output delivered by the subagent */}
+              {hasOutput && (
+                <div className="relative pt-0.5">
+                  <span
+                    aria-hidden="true"
+                    className={
+                      "absolute -left-[19px] top-2 flex h-3.5 w-3.5 items-center justify-center rounded-full " +
+                      (parentFailed
+                        ? "bg-red-100 text-red-700"
+                        : subRunning
+                        ? "bg-blue-50 text-blue-500"
+                        : "bg-green-100 text-green-700")
+                    }
+                  >
+                    {parentFailed ? (
+                      <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '10px' }} />
+                    ) : subRunning ? (
+                      <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '10px' }} />
+                    ) : (
+                      <Checkmark16Regular aria-hidden="true" style={{ fontSize: '10px' }} />
+                    )}
+                  </span>
+                  <div
+                    className={
+                      "rounded-control border px-2.5 py-2 text-xs " +
+                      (parentFailed
+                        ? "border-red-200/80 bg-red-50/30 text-red-900"
+                        : "border-line bg-raised text-gray-800")
+                    }
+                  >
+                    <div className="flex items-center justify-between font-mono text-[10px] text-gray-400 mb-1.5 select-none">
+                      <span className={"font-medium " + (parentFailed ? "text-red-700" : "")}>
+                        {parentFailed ? '交付异常 · 失败' : subRunning ? '执行中 · 生成结果中…' : '交付结果 · 报告'}
+                      </span>
+                      <span>@{node.subagentName}</span>
+                    </div>
+                    {parentFailed && failureReason && (
+                      <div className="mb-1.5 font-mono text-[10px] leading-relaxed text-red-600 whitespace-pre-wrap break-all">
+                        {failureReason}
+                      </div>
+                    )}
+                    {resultText ? (
+                      <div className="markdown-body max-w-none text-xs leading-relaxed overflow-x-auto text-gray-900">
+                        <Markdown text={resultText} />
+                      </div>
+                    ) : subRunning ? (
+                      <div className="font-mono text-[10px] text-gray-400 animate-pulse">
+                        子代理执行中，等待结果交付…
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               )}
             </div>
           </div>

@@ -13,7 +13,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import synapse.runtime.middleware as middleware_mod
-from synapse.content.prompts import MANDATORY_CODING_RULES, build_system_prompt
+from synapse.content.prompts import (
+    MANDATORY_CODING_RULES,
+    TOOL_INTENT_RULES,
+    build_system_prompt,
+)
 from synapse.runtime.subagent_specs import (
     SubAgentDefinition,
     compile_task_specs,
@@ -71,6 +75,8 @@ def test_subagent_prompt_includes_shared_workspace_and_virtual_mapping(
     assert f"- Mapping example: `{root / 'README.md'}` -> `/README.md`" in prompt
     # Shared mandatory path rules always ship.
     assert MANDATORY_CODING_RULES.strip() in prompt
+    # Shared tool intent rules always ship.
+    assert TOOL_INTENT_RULES.strip() in prompt
 
 
 def test_subagent_prompt_does_not_load_the_main_system_prompt_file(

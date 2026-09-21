@@ -24,6 +24,106 @@ export function toolStatusLabel(status: string): string {
 }
 
 /**
+ * Read a string field out of a Python `repr` dictionary by string scanning.
+ * Handles escape sequences and both single and double quotes.
+ */
+export function reprField(preview: string | null | undefined, keys: readonly string[]): string {
+  if (!preview) return '';
+  for (const key of keys) {
+    let at = preview.indexOf(`'${key}': `);
+    let keyLen = key.length + 4;
+    if (at === -1) {
+      at = preview.indexOf(`"${key}": `);
+      if (at === -1) continue;
+      keyLen = key.length + 4;
+    }
+    let index = at + keyLen;
+    const quote = preview[index];
+    if (quote !== "'" && quote !== '"') continue;
+    index += 1;
+    let value = '';
+    while (index < preview.length) {
+      const char = preview[index];
+      if (char === '\\') {
+        const escaped = preview[index + 1];
+        if (escaped === undefined) break;
+        value += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped === 'r' ? '\r' : escaped;
+        index += 2;
+        continue;
+      }
+      if (char === quote) break;
+      value += char;
+      index += 1;
+    }
+    if (value.trim() !== '') return value.trim();
+  }
+  return '';
+}
+
+const DETAIL_OMITTED_KEYS = new Set([
+  'intent',
+  'label',
+  'path',
+  'file_path',
+  'command',
+]);
+
+/** Read the subagent's task description / prompt out of arguments or live preview. */
+export function subagentPromptText(tool: ToolItemView): string {
+  if (tool.args) {
+    if (typeof tool.args.description === 'string' && tool.args.description.trim()) {
+      return tool.args.description.trim();
+    }
+    if (typeof tool.args.prompt === 'string' && tool.args.prompt.trim()) {
+      return tool.args.prompt.trim();
+    }
+  }
+  if (tool.argsPreview) {
+    return reprField(tool.argsPreview, ['description', 'prompt']);
+  }
+  return '';
+}
+/**
+ * Display intent for a tool row, falling back to meaningful arguments (e.g. query, pattern)
+ * when the model did not supply an explicit intent.
+ */
+export function toolDisplayIntent(tool: ToolItemView): string {
+  if (tool.label && tool.label !== tool.name) {
+    return tool.label;
+  }
+  if (tool.args && typeof tool.args === 'object' && !Array.isArray(tool.args)) {
+    const args = tool.args as Record<string, unknown>;
+    if (typeof args.query === 'string' && args.query.trim()) {
+      return `query: ${args.query.trim()}`;
+    }
+    if (typeof args.pattern === 'string' && args.pattern.trim()) {
+      return `pattern: ${args.pattern.trim()}`;
+    }
+  }
+  return '';
+}
+
+/**
+ * Extract structured call parameters to be inspected in detail fold.
+ */
+export function toolDetailParams(tool: ToolItemView): Array<{ key: string; value: string }> {
+  const result: Array<{ key: string; value: string }> = [];
+  if (tool.args && typeof tool.args === 'object' && !Array.isArray(tool.args)) {
+    for (const [key, val] of Object.entries(tool.args as Record<string, unknown>)) {
+      if (DETAIL_OMITTED_KEYS.has(key) || val === null || val === undefined) continue;
+      const raw = typeof val === 'string' ? val : (JSON.stringify(val) ?? '');
+      const text = raw.replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      result.push({
+        key,
+        value: text.length > 160 ? `${text.slice(0, 158)}…` : text,
+      });
+    }
+  }
+  return result;
+}
+
+/**
  * Reasoning row label.
  *
  * `duration` is `undefined` for a projected history row, `streaming` while the
@@ -209,6 +309,7 @@ export interface SubagentToolGroup {
   parent: ToolItemView;
   subagentName: string;
   subagentGoal: string;
+  subagentPrompt: string;
   tools: ToolItemView[];
 }
 
@@ -244,12 +345,14 @@ export function groupToolsForView(tools: ToolItemView[]): ToolRenderNode[] {
         || (t.label && t.label !== t.name ? t.label : '')
         || (typeof t.args?.description === 'string' ? t.args.description : '')
         || '子代理任务';
+      const subagentPrompt = subagentPromptText(t);
 
       const groupNode: SubagentToolGroup = {
         type: 'subagent',
         parent: t,
         subagentName,
         subagentGoal,
+        subagentPrompt,
         tools: [],
       };
       nodes.push(groupNode);
@@ -296,43 +399,6 @@ export function isTerminalTool(name: string): boolean {
 
 /** Argument keys carrying a run tool's invocation (mirrors the runtime's `_CMD_KEYS`). */
 const COMMAND_KEYS = ['command', 'cmd', 'code', 'script'];
-
-/**
- * Read one string field back out of a bounded `repr(args)`.
- *
- * A live batch event carries `args_preview` (Python's `repr`, bounded) instead of
- * the args object, so the only way to a field there is through the repr itself.
- * Only the quoted value after `'key': ` is taken, with the common escapes decoded;
- * anything that does not look like a plain repr yields `''`, and the caller then
- * paints what it already had.
- */
-function reprField(preview: string | null | undefined, keys: readonly string[]): string {
-  if (!preview) return '';
-  for (const key of keys) {
-    const at = preview.indexOf(`'${key}': `);
-    if (at === -1) continue;
-    let index = at + key.length + 4;
-    const quote = preview[index];
-    if (quote !== "'" && quote !== '"') continue;
-    index += 1;
-    let value = '';
-    while (index < preview.length) {
-      const char = preview[index];
-      if (char === '\\') {
-        const escaped = preview[index + 1];
-        if (escaped === undefined) break;
-        value += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped === 'r' ? '\r' : escaped;
-        index += 2;
-        continue;
-      }
-      if (char === quote) break;
-      value += char;
-      index += 1;
-    }
-    if (value.trim() !== '') return value.trim();
-  }
-  return '';
-}
 
 /**
  * The invocation a run tool was called with, for its terminal header.

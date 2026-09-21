@@ -9,9 +9,13 @@ import {
   formatToolArgs,
   groupToolsForView,
   isTerminalTool,
+  reprField,
+  subagentPromptText,
   thoughtIcon,
   thoughtLabel,
   toolCommand,
+  toolDetailParams,
+  toolDisplayIntent,
   toolFailureReason,
   toolPreviewLanguage,
   toolStatusLabel,
@@ -189,7 +193,19 @@ test('a task call opens a subagent group, named and goal-ed from its arguments',
   assert.equal(node.subagentName, 'researcher');
   assert.equal(node.subagentGoal, 'survey the repo');
   assert.equal(node.parent.name, 'task');
+  assert.equal(node.subagentPrompt, '');
   assert.deepEqual(node.tools, [], 'a task with no steps yet carries none');
+});
+
+test('a task call populates subagentPrompt from description in args', () => {
+  const node = onlyNode([
+    tool('task', {
+      id: 'c1',
+      args: { subagent_type: 'reviewer', intent: 'check security', description: 'Review all guard policies' },
+    }),
+  ]);
+  assert.ok(node.type === 'subagent');
+  assert.equal(node.subagentPrompt, 'Review all guard policies');
 });
 
 test('sub-tools land inside the task that started them, by item id or call id', () => {
@@ -297,4 +313,32 @@ test('only a program-running tool gets the terminal renderer', () => {
   assert.equal(isTerminalTool('read_file'), false);
   assert.equal(isTerminalTool('search_files'), false);
   assert.equal(isTerminalTool(''), false);
+});
+
+test('reprField extracts fields from single or double quotes and handles escapes', () => {
+  assert.equal(reprField("{'intent': 'run pytest', 'timeout': 30}", ['intent']), 'run pytest');
+  assert.equal(reprField('{"intent": "run tests\\nnow"}', ['intent']), 'run tests\nnow');
+  assert.equal(reprField("{'description': 'find error\\'s cause'}", ['description']), "find error's cause");
+  assert.equal(reprField("{'other': 123}", ['intent']), '');
+  assert.equal(reprField(null, ['intent']), '');
+});
+
+test('toolDisplayIntent falls back to query or pattern when intent is missing', () => {
+  const withLabel = { id: '1', name: 'search_files', label: 'find usages' } as ToolItemView;
+  assert.equal(toolDisplayIntent(withLabel), 'find usages');
+
+  const withQuery = { id: '2', name: 'search_files', label: 'search_files', args: { query: 'test_func' } } as ToolItemView;
+  assert.equal(toolDisplayIntent(withQuery), 'query: test_func');
+
+  const withPattern = { id: '3', name: 'find_files', label: 'find_files', args: { pattern: '*.py' } } as ToolItemView;
+  assert.equal(toolDisplayIntent(withPattern), 'pattern: *.py');
+
+  const bare = { id: '4', name: 'read_file', label: 'read_file', args: {} } as ToolItemView;
+  assert.equal(toolDisplayIntent(bare), '');
+});
+
+test('toolDetailParams extracts inspectable arguments omitting common path/command/intent keys', () => {
+  const tool = { id: '1', name: 'execute', args: { command: 'ls', intent: 'list', timeout: 30, verbose: true } } as ToolItemView;
+  const params = toolDetailParams(tool);
+  assert.deepEqual(params, [{ key: 'timeout', value: '30' }, { key: 'verbose', value: 'true' }]);
 });

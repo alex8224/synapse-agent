@@ -441,6 +441,7 @@ def _build_subagent_system_prompt(
     """
     from synapse.content.prompts import (
         MANDATORY_CODING_RULES,
+        TOOL_INTENT_RULES,
         build_environment_sections,
         build_scope_limits_section,
     )
@@ -450,6 +451,13 @@ def _build_subagent_system_prompt(
             name="Subagent Body",
             source="body",
             content=body.strip(),
+            cache_hint=STABLE,
+            injection_target=SYSTEM_TARGET,
+        ),
+        PromptSection(
+            name="Tool Intent Rules",
+            source="tool_intent_rules",
+            content=TOOL_INTENT_RULES,
             cache_hint=STABLE,
             injection_target=SYSTEM_TARGET,
         ),
