@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from synapse.tool_output import (
     ContentType,
     GitSummaryTransformer,
     LogTransformer,
+    ModelRequestCompressionEvent,
     NativeTransformer,
     SearchTransformer,
     ToolOutputRepository,
@@ -26,6 +28,7 @@ from synapse.tool_output import (
     TransformEvent,
     clear_metrics_notifier,
     detect_content_type,
+    jsonio,
     load_native_transformers,
     load_transformer_plugins,
     set_metrics_notifier,
@@ -658,6 +661,77 @@ def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) 
     assert events[0]["outcome"] == "passthrough"
     assert events[0]["ref"] is None
     assert repo.stats(thread_id="thread-a")["execution_paths"]
+
+
+def test_event_json_codec_matches_the_standard_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The accelerated codec must stay a drop-in for the stdlib on event payloads.
+
+    Both branches are exercised (the accelerator is monkeypatched away for the
+    second case) so a machine without the ``orjson`` wheel is covered too.
+    """
+    payload = {
+        "request_id": "r1",
+        "model": "gpt-5",
+        "内容": "中文标题",
+        "protected_tokens_by_reason": {"codex_historical_output": 400},
+        "live_zone_tokens": {2: 10},
+        "duration_ms": 1.5,
+        "nested": {"a": [1, 2, {"b": None}]},
+    }
+    expected = json.loads(json.dumps(payload, ensure_ascii=False))
+
+    accelerated = jsonio.dumps(payload)
+    assert json.loads(accelerated) == expected
+    assert "中文标题" in accelerated  # never ASCII-escaped
+    assert jsonio.loads(accelerated) == expected
+
+    with monkeypatch.context() as patch:
+        patch.setattr(jsonio, "orjson", None)
+        fallback = jsonio.dumps(payload)
+        assert json.loads(fallback) == expected
+        assert jsonio.loads(fallback) == expected
+
+
+def test_recorded_events_stay_readable_without_the_accelerator(tmp_path: Path) -> None:
+    """Payloads written through the accelerator are plain JSON for every reader."""
+    repo = ToolOutputRepository(tmp_path / "outputs.sqlite")
+    repo.record_model_request(
+        thread_id="thread-a",
+        event=ModelRequestCompressionEvent(
+            request_id="request-中文",
+            provider="openai",
+            api_style="responses",
+            auth_mode="payg",
+            model="gpt-5",
+            input_tokens_before=1200,
+            input_tokens_after=900,
+            provider_input_tokens=900,
+            cache_read_tokens=700,
+            uncached_input_tokens=200,
+            output_tokens=50,
+            total_saved_tokens=300,
+            turn_id="turn-中文",
+        ),
+    )
+
+    con = sqlite3.connect(tmp_path / "outputs.sqlite")
+    try:
+        raw = con.execute(
+            "SELECT event_json FROM model_request_compression_events"
+        ).fetchone()[0]
+        rollup = con.execute(
+            "SELECT model, turn_id, provider_input_tokens FROM model_request_compression_rollup"
+        ).fetchone()
+    finally:
+        con.close()
+
+    parsed = json.loads(raw)  # stdlib, not the accelerator
+    assert parsed["request_id"] == "request-中文"
+    assert parsed["turn_id"] == "turn-中文"
+    assert parsed["provider_input_tokens"] == 900
+    assert rollup == ("gpt-5", "turn-中文", 900)
 
 
 def test_repository_notifies_on_transform_and_retrieval(tmp_path: Path) -> None:

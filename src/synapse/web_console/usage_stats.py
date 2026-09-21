@@ -46,6 +46,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from synapse.tool_output import jsonio
+
 logger = logging.getLogger(__name__)
 
 #: Accepted ``range`` query values.  ``custom`` requires ``start`` and ``end``.
@@ -653,7 +655,7 @@ def _collect_workspace_models(workspace: Path) -> set[str]:
                     )
                     for row in cur:
                         try:
-                            ev = json.loads(row[0])
+                            ev = jsonio.loads(row[0])
                             if isinstance(ev, dict) and ev.get("model"):
                                 clean = _clean_model_name(str(ev["model"]))
                                 if clean:

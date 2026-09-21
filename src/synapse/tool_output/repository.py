@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from synapse.tool_output import jsonio
 from synapse.tool_output.metrics import notify_metrics_changed
 from synapse.tool_output.models import (
     ModelRequestCompressionEvent,
@@ -333,7 +334,7 @@ class ToolOutputRepository:
         projected: list[tuple[Any, ...]] = []
         for row in rows:
             try:
-                event = json.loads(row["event_json"])
+                event = jsonio.loads(row["event_json"])
             except (TypeError, ValueError):
                 continue
             if not isinstance(event, dict):
@@ -452,7 +453,7 @@ class ToolOutputRepository:
                 (
                     thread_id,
                     ref,
-                    json.dumps(event.as_dict(), ensure_ascii=False),
+                    jsonio.dumps(event.as_dict()),
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 ),
             )
@@ -505,7 +506,7 @@ class ToolOutputRepository:
             conn.execute(
                 "INSERT INTO interaction_events(thread_id, event_json, created_at) "
                 "VALUES (?, ?, ?)",
-                (thread_id, json.dumps(event, ensure_ascii=False), created),
+                (thread_id, jsonio.dumps(event), created),
             )
         notify_metrics_changed(thread_id)
 
@@ -525,7 +526,7 @@ class ToolOutputRepository:
                 "id": int(row["id"]),
                 "thread_id": row["thread_id"],
                 "created_at": row["created_at"],
-                **json.loads(row["event_json"]),
+                **jsonio.loads(row["event_json"]),
             }
             for row in rows
         ]
@@ -539,7 +540,7 @@ class ToolOutputRepository:
             ).fetchone()
         if row is None:
             return 0, 0
-        event = json.loads(row["event_json"])
+        event = jsonio.loads(row["event_json"])
         return int(event.get("turn_index", 0) or 0), int(
             event.get("model_call_index", 0) or 0
         )
@@ -562,7 +563,7 @@ class ToolOutputRepository:
                 (
                     event.request_id,
                     thread_id,
-                    json.dumps(event.as_dict(), ensure_ascii=False),
+                    jsonio.dumps(event.as_dict()),
                     created,
                 ),
             )
@@ -594,7 +595,7 @@ class ToolOutputRepository:
                 "id": int(row["id"]),
                 "thread_id": row["thread_id"],
                 "created_at": row["created_at"],
-                **json.loads(row["event_json"]),
+                **jsonio.loads(row["event_json"]),
             }
             for row in rows
         ]
@@ -610,7 +611,7 @@ class ToolOutputRepository:
         return sum(
             max(
                 0,
-                int(json.loads(row["event_json"]).get("estimated_saved_tokens", 0) or 0),
+                int(jsonio.loads(row["event_json"]).get("estimated_saved_tokens", 0) or 0),
             )
             for row in rows
         )
@@ -627,7 +628,7 @@ class ToolOutputRepository:
             ).fetchall()
             result: list[dict[str, Any]] = []
             for row in rows:
-                event = json.loads(row["event_json"])
+                event = jsonio.loads(row["event_json"])
                 retrieval = 0
                 if row["ref"]:
                     retrieval_row = conn.execute(
@@ -683,7 +684,7 @@ class ToolOutputRepository:
                 "thread_id": row["thread_id"],
                 "ref": row["ref"],
                 "created_at": row["created_at"],
-                **json.loads(row["event_json"]),
+                **jsonio.loads(row["event_json"]),
             }
             for row in tool_rows
         ]
@@ -692,7 +693,7 @@ class ToolOutputRepository:
                 "id": int(row["id"]),
                 "thread_id": row["thread_id"],
                 "created_at": row["created_at"],
-                **json.loads(row["event_json"]),
+                **jsonio.loads(row["event_json"]),
             }
             for row in request_rows
         ]
@@ -722,7 +723,7 @@ class ToolOutputRepository:
                 "id": int(row["id"]),
                 "thread_id": row["thread_id"],
                 "created_at": row["created_at"],
-                **json.loads(row["event_json"]),
+                **jsonio.loads(row["event_json"]),
             }
             for row in interaction_rows
         ]
@@ -796,9 +797,9 @@ class ToolOutputRepository:
             interaction_rows = conn.execute(
                 f"SELECT event_json FROM interaction_events{where}", params
             ).fetchall()
-        events = [json.loads(row["event_json"]) for row in rows]
-        request_events = [json.loads(row["event_json"]) for row in request_rows]
-        interaction_events = [json.loads(row["event_json"]) for row in interaction_rows]
+        events = [jsonio.loads(row["event_json"]) for row in rows]
+        request_events = [jsonio.loads(row["event_json"]) for row in request_rows]
+        interaction_events = [jsonio.loads(row["event_json"]) for row in interaction_rows]
         turn_ids = {str(item.get("turn_id") or "") for item in request_events}
         turn_ids.discard("")
         tool_calls = [item for item in interaction_events if item.get("event_type") == "tool_call"]
