@@ -914,6 +914,10 @@ interface ConsoleStore {
   mcpWarnings: string[];
   /** True while the session's MCP attach/reload RPC is in flight. */
   mcpConnecting: boolean;
+  /** Target server currently being toggled or having its tools saved, if any. */
+  mcpTogglingServer: string | null;
+  /** Action currently being performed on mcpTogglingServer. */
+  mcpTogglingAction: 'starting' | 'stopping' | 'saving' | null;
   /**
    * Whether a reload result has ever reported this session's MCP state. While
    * false the panel must not claim a server is attached *or* unattached.
@@ -1431,6 +1435,8 @@ function applyMcpResult(result: ReloadMcpResult): void {
     mcpRuntime: runtime,
     mcpWarnings: patch.warnings,
     mcpConnecting: false,
+    mcpTogglingServer: null,
+    mcpTogglingAction: null,
     mcpRuntimeKnown: true,
     mcpServers: state.mcpServers.map((server) => {
       const live = runtime[server.name];
@@ -1842,6 +1848,8 @@ function restoreBackgroundSession(
       mcpRuntime: {},
       mcpWarnings: [],
       mcpConnecting: false,
+      mcpTogglingServer: null,
+      mcpTogglingAction: null,
       mcpRuntimeKnown: false,
     };
   });
@@ -1944,6 +1952,8 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     mcpRuntime: {},
     mcpWarnings: [],
     mcpConnecting: false,
+    mcpTogglingServer: null,
+    mcpTogglingAction: null,
     mcpRuntimeKnown: false,
   });
   // Git chrome is per workspace and read-only: refresh it on every attach so a
@@ -3209,6 +3219,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   mcpRuntime: {},
   mcpWarnings: [],
   mcpConnecting: false,
+  mcpTogglingServer: null,
+  mcpTogglingAction: null,
   mcpRuntimeKnown: false,
   canSetThinking: false,
   canToggleMcpGlobal: false,
@@ -3285,7 +3297,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const current = mcpServers.find((server) => server.name === serverName);
     if (!current) return;
     const enabled = !current.enabled;
-    beginMcpConnect();
+    const action = enabled ? 'starting' : 'stopping';
+    set({ mcpTogglingServer: serverName, mcpTogglingAction: action });
     try {
       const result = await client.reloadMcp({
         session: currentSession,
@@ -3316,6 +3329,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       failMcpConnect(error instanceof Error ? error.message : String(error));
       console.error('Failed to reload MCP server:', error);
       throw error;
+    } finally {
+      set({ mcpTogglingServer: null, mcpTogglingAction: null });
     }
   },
   refreshMcpRuntime: async () => {
@@ -3330,7 +3345,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       project_id: currentSession.project_id,
       thread_id: currentSession.thread_id,
     };
-    beginMcpConnect();
+    set({ mcpTogglingServer: serverName, mcpTogglingAction: 'saving' });
     try {
       const result = await client.reloadMcp({
         session: currentSession,
@@ -3350,6 +3365,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       failMcpConnect(error instanceof Error ? error.message : String(error));
       console.error('Failed to save MCP tools:', error);
       throw error;
+    } finally {
+      set({ mcpTogglingServer: null, mcpTogglingAction: null });
     }
   },
   toggleMcpGlobal: async () => {

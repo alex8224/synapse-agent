@@ -707,6 +707,34 @@ class McpSessionPool:
 
     async def _open_one(self, server: McpServerConfig) -> tuple[_LiveServer | None, str | None]:
         if not server.enabled:
+            old = self._servers.pop(server.name, None)
+            if old is not None:
+                try:
+                    await old.session_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                try:
+                    await old.transport_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+                if old.errlog is not None:
+                    old.errlog.close()
+            return None, None
+
+        existing = self._servers.get(server.name)
+        if (
+            existing is not None
+            and getattr(existing, "session", None) is not None
+            and existing.config.transport == server.transport
+            and existing.config.command == server.command
+            and existing.config.args == server.args
+            and existing.config.env == server.env
+            and existing.config.url == server.url
+            and existing.config.headers == server.headers
+        ):
+            existing.config = server
+            return existing, None
+
             return None, None
         timeout_sec = server.timeout if server.timeout > 0 else 12.0
         try:
@@ -856,6 +884,22 @@ class McpSessionPool:
         results = await asyncio.gather(
             *[_load_one(s) for s in servers], return_exceptions=True
         )
+
+        configured_names = {s.name for s in servers}
+        for name in list(self._servers.keys()):
+            if name not in configured_names:
+                old = self._servers.pop(name, None)
+                if old is not None:
+                    try:
+                        await old.session_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    try:
+                        await old.transport_cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    if old.errlog is not None:
+                        old.errlog.close()
 
         tools: list[Any] = []
         warnings: list[str] = []

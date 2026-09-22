@@ -89,6 +89,8 @@ export const McpMaintenanceSection: React.FC = () => {
     mcpRuntimeKnown,
     mcpRuntime,
     mcpWarnings,
+    mcpTogglingServer,
+    mcpTogglingAction,
     toggleMcpServer,
     refreshMcpRuntime,
     saveMcpTools,
@@ -100,6 +102,8 @@ export const McpMaintenanceSection: React.FC = () => {
       mcpRuntimeKnown: state.mcpRuntimeKnown,
       mcpRuntime: state.mcpRuntime,
       mcpWarnings: state.mcpWarnings,
+      mcpTogglingServer: state.mcpTogglingServer,
+      mcpTogglingAction: state.mcpTogglingAction,
       toggleMcpServer: state.toggleMcpServer,
       refreshMcpRuntime: state.refreshMcpRuntime,
       saveMcpTools: state.saveMcpTools,
@@ -114,7 +118,12 @@ export const McpMaintenanceSection: React.FC = () => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string[]>>({});
   const [savingTools, setSavingTools] = useState<Record<string, boolean>>({});
+  const [isGlobalRefreshing, setIsGlobalRefreshing] = useState(false);
   const [filterQuery, setFilterQuery] = useState<Record<string, string>>({});
+
+  // Track which specific server is undergoing toggle or tool save
+  const [operatingServer, setOperatingServer] = useState<string | null>(null);
+  const [actionType, setActionType] = useState<Record<string, 'starting' | 'stopping'>>({});
 
   // Modal states for Add / Edit
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -147,6 +156,9 @@ export const McpMaintenanceSection: React.FC = () => {
 
   // Handle single start/stop toggle
   const handleToggle = async (server: McpServerDetailView) => {
+    const nextAction = server.enabled ? 'stopping' : 'starting';
+    setOperatingServer(server.name);
+    setActionType((prev) => ({ ...prev, [server.name]: nextAction }));
     try {
       await toggleMcpServer(server.name);
       setServers((prev) =>
@@ -154,6 +166,13 @@ export const McpMaintenanceSection: React.FC = () => {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOperatingServer(null);
+      setActionType((prev) => {
+        const next = { ...prev };
+        delete next[server.name];
+        return next;
+      });
     }
   };
 
@@ -193,6 +212,7 @@ export const McpMaintenanceSection: React.FC = () => {
     const payload = selected.length === discovered.length ? [] : selected;
 
     setSavingTools((prev) => ({ ...prev, [server.name]: true }));
+    setOperatingServer(server.name);
     try {
       await saveMcpTools(server.name, payload);
       setDrafts((prev) => {
@@ -205,6 +225,7 @@ export const McpMaintenanceSection: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      setOperatingServer(null);
       setSavingTools((prev) => ({ ...prev, [server.name]: false }));
     }
   };
@@ -373,7 +394,14 @@ export const McpMaintenanceSection: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void refreshMcpRuntime()}
+            onClick={async () => {
+              setIsGlobalRefreshing(true);
+              try {
+                await refreshMcpRuntime();
+              } finally {
+                setIsGlobalRefreshing(false);
+              }
+            }}
             disabled={mcpConnecting}
             title="重新连接已启用的 MCP 服务并刷新方法列表"
             className="ui-button ui-compact border border-line bg-surface hover:bg-gray-50 text-gray-700"
@@ -436,7 +464,26 @@ export const McpMaintenanceSection: React.FC = () => {
         ) : (
           servers.map((srv) => {
             const runtime = mcpRuntime[srv.name];
-            const phase = mcpServerPhase(srv, runtime, mcpConnecting, mcpRuntimeKnown);
+            const isOperatingThis = operatingServer === srv.name || mcpTogglingServer === srv.name;
+            const currentAction = actionType[srv.name] || (mcpTogglingServer === srv.name ? mcpTogglingAction : null);
+            const basePhase = mcpServerPhase(srv, runtime, isGlobalRefreshing, mcpRuntimeKnown);
+
+            let phaseDot = PHASE_DOT[basePhase];
+            let phaseLabel = PHASE_LABEL[basePhase];
+            let phaseTextColor = PHASE_TEXT[basePhase];
+
+            if (isOperatingThis) {
+              if (currentAction === 'stopping' || (currentAction === null && srv.enabled)) {
+                phaseDot = 'bg-amber-400 animate-pulse';
+                phaseLabel = '停止中…';
+                phaseTextColor = 'text-amber-600';
+              } else if (currentAction === 'starting' || (currentAction === null && !srv.enabled)) {
+                phaseDot = 'bg-amber-400 animate-pulse';
+                phaseLabel = '启动中…';
+                phaseTextColor = 'text-amber-600';
+              }
+            }
+
             const discovered = runtime?.discovered ?? srv.discovered ?? [];
             const selectedTools = selectionFor(srv);
             const isOpen = expanded[srv.name] ?? false;
@@ -455,8 +502,8 @@ export const McpMaintenanceSection: React.FC = () => {
                   <div className="flex min-w-0 items-center gap-3">
                     {/* Status Dot */}
                     <span
-                      className={`h-2.5 w-2.5 shrink-0 rounded-full ${PHASE_DOT[phase]}`}
-                      title={PHASE_LABEL[phase]}
+                      className={`h-2.5 w-2.5 shrink-0 rounded-full ${phaseDot}`}
+                      title={phaseLabel}
                     />
 
                     {/* Server Info */}
@@ -468,8 +515,8 @@ export const McpMaintenanceSection: React.FC = () => {
                         <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-600">
                           {srv.transport}
                         </span>
-                        <span className={`text-[11px] font-medium ${PHASE_TEXT[phase]}`}>
-                          {PHASE_LABEL[phase]}
+                        <span className={`text-[11px] font-medium ${phaseTextColor}`}>
+                          {phaseLabel}
                         </span>
                       </div>
 
@@ -499,12 +546,29 @@ export const McpMaintenanceSection: React.FC = () => {
                     {/* Individual Toggle Switch */}
                     <button
                       type="button"
+                      disabled={isOperatingThis}
                       onClick={() => void handleToggle(srv)}
-                      title={srv.enabled ? '点击停用此服务器' : '点击启用此服务器'}
-                      className="flex items-center gap-1.5 cursor-pointer rounded-full p-1 hover:bg-gray-100"
+                      title={
+                        isOperatingThis
+                          ? currentAction === 'stopping' || (currentAction === null && srv.enabled)
+                            ? '正在停止…'
+                            : '正在启动…'
+                          : srv.enabled
+                            ? '点击停用此服务器'
+                            : '点击启用此服务器'
+                      }
+                      className={`flex items-center gap-1.5 rounded-full p-1 hover:bg-gray-100 ${
+                        isOperatingThis ? 'opacity-60 cursor-wait' : 'cursor-pointer'
+                      }`}
                     >
                       <span className="text-xs text-gray-600 select-none">
-                        {srv.enabled ? '已启用' : '已停用'}
+                        {isOperatingThis
+                          ? currentAction === 'stopping' || (currentAction === null && srv.enabled)
+                            ? '停止中…'
+                            : '启动中…'
+                          : srv.enabled
+                            ? '已启用'
+                            : '已停用'}
                       </span>
                       <div
                         className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${

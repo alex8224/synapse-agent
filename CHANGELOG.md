@@ -6,6 +6,25 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.52
+
+### New Features
+
+- **Model Maintenance Section in Settings**: Added comprehensive model endpoint CRUD interface in the Web Console settings surface with provider grouping, proxy/WebSocket/streaming visibility, and diff-merge overwrite protection.
+- **MCP Maintenance Section in Settings**: Added dedicated MCP maintenance tab with granular per-server start/stop toggling, individual tool method whitelist selection/filtering, and full CRUD operations (add, edit, delete, reconnect).
+
+### Bug Fixes
+
+- **Accurate MCP Status Transition Text**: Resolved misleading transition state text by displaying "停止中…" instead of "启动中…" when stopping an MCP server, and strictly isolated per-server state transitions from unaffected servers.
+- **Incremental MCP Session Pool Reuse**: Ensured healthy existing connections are preserved and reused during MCP session rebinding without causing mass reconnections.
+- **Safe MCP Server Fallback**: Guarded list and management RPC endpoints against inactive sessions so the maintenance UI remains functional before any chat thread is opened.
+
+### Engineering
+
+- Added comprehensive unit tests and TypeScript contract guards covering MCP and Model maintenance RPCs (`runtime.mcp.*`, `runtime.models.*`).
+
+---
+
 ## v0.1.51
 
 ### New Features

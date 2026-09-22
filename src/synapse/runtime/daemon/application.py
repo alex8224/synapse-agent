@@ -160,26 +160,29 @@ def apply_mcp_rebinding(
                 workspace=descriptor.workspace,
                 explicit_path=project_settings.mcp_config_path,
             )
-        registry.release(pool_key)
     settings = load_project_settings(descriptor.workspace)
     active_model = binding.settings.active_model or binding.settings.model
     profile = registry_from_settings(settings).get(active_model)
     apply_profile_to_settings(settings, profile, seed_thinking=False)
+    from synapse.integrations.mcp_client import load_mcp_server_configs
+
+    server_configs = load_mcp_server_configs(
+        path=settings.mcp_config_path,
+        json_blob=settings.mcp_servers_json,
+        workspace=descriptor.workspace,
+    )
     live = registry.get(pool_key)
-    if live is not None and live.tools:
+    if live is not None:
+        load_result = live.load(server_configs)
         agent = build_coding_agent(
             settings,
             project_root=descriptor.workspace,
-            mcp_tools=list(live.tools),
+            mcp_tools=list(load_result.tools),
             load_mcp=False,
             prompt_cache_key=lambda: thread_id,
             mcp_pool_key=pool_key,
         )
     else:
-        if live is not None:
-            # An empty pool would be reused by key: drop it so the rebuild
-            # reconnects instead of attaching nothing.
-            registry.release(pool_key)
         agent = build_coding_agent(
             settings,
             project_root=descriptor.workspace,

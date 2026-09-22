@@ -53,6 +53,8 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     mcpWarnings,
     mcpConnecting,
     mcpRuntimeKnown,
+    mcpTogglingServer,
+    mcpTogglingAction,
     runtimeStatus,
     toggleMcpServer,
     refreshMcpRuntime,
@@ -65,6 +67,8 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       mcpWarnings: state.mcpWarnings,
       mcpConnecting: state.mcpConnecting,
       mcpRuntimeKnown: state.mcpRuntimeKnown,
+      mcpTogglingServer: state.mcpTogglingServer,
+      mcpTogglingAction: state.mcpTogglingAction,
       runtimeStatus: state.runtimeStatus,
       toggleMcpServer: state.toggleMcpServer,
       refreshMcpRuntime: state.refreshMcpRuntime,
@@ -76,6 +80,8 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   // persisted selection", so a refresh can never clobber an in-progress edit.
   const [draft, setDraft] = useState<Record<string, string[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [togglingServer, setTogglingServer] = useState<string | null>(null);
+  const [isGlobalRefreshing, setIsGlobalRefreshing] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   // F5 / the trigger button keeps the focus, so the panel has to take it: the
@@ -99,6 +105,15 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       ? current.filter((item) => item !== tool)
       : [...current, tool];
     setDraft((prev) => ({ ...prev, [name]: next }));
+  };
+
+  const handleToggle = async (name: string) => {
+    setTogglingServer(name);
+    try {
+      await toggleMcpServer(name);
+    } finally {
+      setTogglingServer(null);
+    }
   };
 
   const save = async (name: string) => {
@@ -131,7 +146,14 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </span>
         <div className="flex items-center gap-1.5">
           <button
-            onClick={() => void refreshMcpRuntime()}
+            onClick={async () => {
+              setIsGlobalRefreshing(true);
+              try {
+                await refreshMcpRuntime();
+              } finally {
+                setIsGlobalRefreshing(false);
+              }
+            }}
             title="重新连接已启用的 MCP 服务器并刷新工具列表"
             className="ui-button ui-compact border border-line/60 bg-surface/50 text-gray-700 hover:bg-surface text-[11px]"
           >
@@ -161,7 +183,19 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         ) : (
           mcpServers.map((srv) => {
             const runtime = mcpRuntime[srv.name];
-            const phase = mcpServerPhase(srv, runtime, mcpConnecting, mcpRuntimeKnown);
+            const isOperatingThis = togglingServer === srv.name || mcpTogglingServer === srv.name;
+            const isStopping = isOperatingThis && (srv.enabled || mcpTogglingAction === 'stopping');
+            const isStarting = isOperatingThis && (!srv.enabled || mcpTogglingAction === 'starting');
+            const basePhase = mcpServerPhase(srv, runtime, isGlobalRefreshing, mcpRuntimeKnown);
+
+            let phaseDot = PHASE_DOT[basePhase];
+            let phaseLabel = PHASE_LABEL[basePhase];
+            let phaseTextColor = PHASE_TEXT[basePhase];
+            if (isStopping) {
+              phaseDot = 'bg-amber-400 animate-pulse';
+              phaseLabel = '停止中…';
+              phaseTextColor = 'text-amber-600';
+            }
             const discovered = runtime?.discovered ?? [];
             const selection = selectionFor(srv.name);
             const dirty = draft[srv.name] !== undefined;
@@ -180,21 +214,22 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <div className="flex items-center justify-between">
                   <button
                     type="button"
+                    disabled={isOperatingThis}
                     onClick={() => {
-                      void toggleMcpServer(srv.name);
+                      void handleToggle(srv.name);
                     }}
                     title={srv.enabled ? '点击停用该服务器' : '点击启用该服务器'}
                     className="flex min-w-0 flex-1 cursor-pointer items-center justify-between text-left"
                   >
                   <div className="flex min-w-0 items-center space-x-2 truncate">
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${PHASE_DOT[phase]}`} />
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${phaseDot}`} />
                     <span className="truncate font-medium text-gray-800">{srv.name}</span>
                     <span className="font-mono text-[10px] text-gray-400">
-                      ({srv.transport})
+                      ({isStopping ? '停止中…' : isStarting ? '启动中…' : srv.transport})
                     </span>
-                    <span className={`shrink-0 text-[10px] ${PHASE_TEXT[phase]}`}>
-                      {PHASE_LABEL[phase]}
-                      {phase === 'attached' && discovered.length > 0
+                    <span className={`shrink-0 text-[10px] ${phaseTextColor}`}>
+                      {phaseLabel}
+                      {basePhase === 'attached' && !isStopping && discovered.length > 0
                         ? ` ${selection.length}/${discovered.length} 工具`
                         : ''}
                     </span>
@@ -226,7 +261,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   )}
                 </div>
 
-                {srv.enabled && phase !== 'connecting' && discovered.length === 0 && (
+                {srv.enabled && basePhase !== 'connecting' && !isStopping && discovered.length === 0 && (
                   <div className="mt-1 pl-4 font-sans text-[10px] text-gray-400">
                     （未连接：点击「重新连接」后可选择工具）
                   </div>
