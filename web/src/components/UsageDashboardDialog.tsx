@@ -1,5 +1,4 @@
 import {
-  Dismiss20Regular,
   ArrowClockwise20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -622,7 +621,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 </button>
               </div>
 
-              {/* 刷新与关闭 */}
+              {/* 刷新 */}
               <button
                 type="button"
                 onClick={handleRefresh}
@@ -631,15 +630,6 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 className="ui-icon-button"
               >
                 <ArrowClockwise20Regular className={isFetching ? 'animate-spin text-blue-600 dark:text-blue-400' : ''} />
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                title="关闭面板"
-                aria-label="关闭面板"
-                className="ui-icon-button"
-              >
-                <Dismiss20Regular />
               </button>
             </div>
           </div>
