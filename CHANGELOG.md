@@ -6,7 +6,7 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
-## v0.1.49
+## v0.1.50
 
 ### New Features
 
@@ -15,6 +15,7 @@ All entries are written in English.
 
 ### Bug Fixes
 
+- **GUI CI Packaging**: Ensured sidecar binaries and resources directory are properly staged prior to cargo compilation, preventing tauri-build glob panic across all platforms.
 - **Web Console Desktop Controls & Dragging**: Enabled proper window control (minimize/maximize/close) and title bar dragging within Tauri desktop window via Capability permissions and `data-tauri-drag-region`.
 - **Automatic Project Registration**: Added smart workspace discovery and auto-registration for the Web Console host so launching from the desktop installer seamlessly initializes and connects without requiring prior CLI setup.
 

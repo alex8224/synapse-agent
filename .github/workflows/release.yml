@@ -271,6 +271,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      - name: Setup Node.js (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare sidecar binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "rust/synapse-gui/binaries" | Out-Null
+          $targetBin = if ($IsWindows) { "synapse.exe" } else { "synapse" }
+          Copy-Item "sidecar-dist/${{ matrix.sidecar_bin }}" "rust/synapse-gui/binaries/$targetBin"
+          if (-not $IsWindows) {
+            chmod +x "rust/synapse-gui/binaries/$targetBin"
+          }
+
       - name: Build Synapse GUI
         run: cargo build --release --manifest-path rust/synapse-gui/Cargo.toml
 
@@ -286,8 +302,6 @@ jobs:
           Set-Content -LiteralPath "${{ matrix.package_name }}.sha256" -Value $hash -NoNewline
 
           # Build standard NSIS installer bundle
-          New-Item -ItemType Directory -Force -Path "rust/synapse-gui/binaries" | Out-Null
-          Copy-Item "sidecar-dist/${{ matrix.sidecar_bin }}" "rust/synapse-gui/binaries/synapse.exe"
           npx --yes @tauri-apps/cli build --bundles nsis --manifest-path rust/synapse-gui/Cargo.toml
           $installer = Get-ChildItem "rust/synapse-gui/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if ($installer) {
@@ -375,3 +389,5 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
