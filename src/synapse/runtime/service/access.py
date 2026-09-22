@@ -101,6 +101,12 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
 )
+from synapse.runtime.service.mcp_management import (
+    DeleteMcpServerCommand,
+    ListMcpServersQuery,
+    McpServerListResult,
+    SaveMcpServerCommand,
+)
 from synapse.runtime.service.model_management import (
     DeleteModelCommand,
     ListModelsQuery,
@@ -195,6 +201,8 @@ __all__ = [
     "SCREENSHOT_CONTROL",
     "MODELS_READ",
     "MODELS_WRITE",
+    "MCP_READ",
+    "MCP_WRITE",
     "STT_CONTROL",
     "WORKSPACE_REVERT",
     "WORKSPACE_OPEN_EXTERNAL",
@@ -322,6 +330,8 @@ SCREENSHOT_CONTROL = "screenshot.control"
 STT_CONTROL = "stt.control"
 MODELS_READ = "models.read"
 MODELS_WRITE = "models.write"
+MCP_READ = "mcp.read"
+MCP_WRITE = "mcp.write"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -366,6 +376,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         STT_CONTROL,
         MODELS_READ,
         MODELS_WRITE,
+        MCP_READ,
+        MCP_WRITE,
     }
 )
 
@@ -1623,6 +1635,36 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "test_model", None)
         if not callable(delegate):
             raise InvalidRequestError("model management is unavailable")
+        return await delegate(command)
+
+    async def list_mcp_servers(self, query: ListMcpServersQuery) -> McpServerListResult:
+        session = self._session_from_dto(
+            query, ListMcpServersQuery, "list MCP servers query"
+        )
+        self._authorize(session, MCP_READ)
+        delegate = getattr(self._delegate, "list_mcp_servers", None)
+        if not callable(delegate):
+            raise InvalidRequestError("MCP management is unavailable")
+        return await delegate(query)
+
+    async def save_mcp_server(self, command: SaveMcpServerCommand) -> McpServerListResult:
+        session = self._session_from_dto(
+            command, SaveMcpServerCommand, "save MCP server command"
+        )
+        self._authorize(session, MCP_WRITE)
+        delegate = getattr(self._delegate, "save_mcp_server", None)
+        if not callable(delegate):
+            raise InvalidRequestError("MCP management is unavailable")
+        return await delegate(command)
+
+    async def delete_mcp_server(self, command: DeleteMcpServerCommand) -> McpServerListResult:
+        session = self._session_from_dto(
+            command, DeleteMcpServerCommand, "delete MCP server command"
+        )
+        self._authorize(session, MCP_WRITE)
+        delegate = getattr(self._delegate, "delete_mcp_server", None)
+        if not callable(delegate):
+            raise InvalidRequestError("MCP management is unavailable")
         return await delegate(command)
 
     def watch_events(

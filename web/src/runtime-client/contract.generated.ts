@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 68 wire methods: 66 service methods
+ * The 71 wire methods: 69 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -51,6 +51,9 @@ export const WIRE_METHODS = [
   "runtime.fs.list",
   "runtime.git.diff",
   "runtime.git.status",
+  "runtime.mcp.delete",
+  "runtime.mcp.list",
+  "runtime.mcp.save",
   "runtime.models.delete",
   "runtime.models.list",
   "runtime.models.save",
@@ -114,7 +117,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (41). */
+/** Authorization capabilities enforced by the ACL layer (43). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -129,6 +132,8 @@ export const AUTHORIZATION_CAPABILITIES = [
   "fs.list",
   "git.diff",
   "git.status",
+  "mcp.read",
+  "mcp.write",
   "models.read",
   "models.write",
   "project.list",
@@ -206,6 +211,9 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.fs.list": "fs.list",
   "runtime.git.diff": "git.diff",
   "runtime.git.status": "git.status",
+  "runtime.mcp.delete": "mcp.write",
+  "runtime.mcp.list": "mcp.read",
+  "runtime.mcp.save": "mcp.write",
   "runtime.models.delete": "models.write",
   "runtime.models.list": "models.read",
   "runtime.models.save": "models.write",
@@ -581,6 +589,14 @@ export interface CreateSessionResult {
   session: SessionRef;
   created: boolean;
   title: string;
+}
+
+/**
+ * Remove one MCP server by name from configuration.
+ */
+export interface DeleteMcpServerCommand {
+  session: SessionRef;
+  name: string;
 }
 
 /**
@@ -974,6 +990,13 @@ export interface ListExternalAppsQuery {
 }
 
 /**
+ * List configured MCP servers and runtime states for one session.
+ */
+export interface ListMcpServersQuery {
+  session: SessionRef;
+}
+
+/**
  * List the model profiles visible to one session's project.
  */
 export interface ListModelsQuery {
@@ -1020,6 +1043,79 @@ export interface ListSkillsQuery {
    * python_default_kind=value python_default=null
    */
   project_id?: string | null;
+}
+
+/**
+ * Detailed projection of one configured MCP server and its live runtime state.
+ */
+export interface McpServerDetailView {
+  name: string;
+  transport: string;
+  enabled: boolean;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  command: string | null;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  args: string[];
+  /**
+   * python_default_kind=factory python_default="dict"
+   */
+  env: Record<string, string>;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  url: string | null;
+  /**
+   * python_default_kind=factory python_default="dict"
+   */
+  headers: Record<string, string>;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  tool_prefix: string | null;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  include_tools: string[];
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  exclude_tools: string[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  timeout: number | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  proxy: string | null;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  attached: boolean;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  discovered: string[];
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  loaded: string[];
+}
+
+/**
+ * All configured MCP servers for the project and global MCP status.
+ */
+export interface McpServerListResult {
+  servers: McpServerDetailView[];
+  mcp_enabled: boolean;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  warnings: string[];
 }
 
 export interface McpServerStateView {
@@ -1512,6 +1608,18 @@ export interface RuntimeEvent {
   kind: string;
   payload: JsonValue;
   version: number;
+}
+
+/**
+ * Add or update one MCP server in project/user configuration.
+ */
+export interface SaveMcpServerCommand {
+  session: SessionRef;
+  server: Record<string, JsonValue>;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  original_name?: string | null;
 }
 
 /**

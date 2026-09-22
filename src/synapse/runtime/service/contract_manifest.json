@@ -19,6 +19,8 @@
     "fs.list",
     "git.diff",
     "git.status",
+    "mcp.read",
+    "mcp.write",
     "models.read",
     "models.write",
     "project.list",
@@ -620,6 +622,54 @@
       "scope": "session",
       "scope_location": "params.session",
       "service_method": "git_status",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "mcp.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.mcp.delete",
+      "notes": [
+        "Delete one MCP server configuration and reload the session's pool."
+      ],
+      "request": "DeleteMcpServerCommand",
+      "result": "McpServerListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "delete_mcp_server",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "mcp.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.mcp.list",
+      "notes": [
+        "List configured MCP servers and runtime states for the session's project."
+      ],
+      "request": "ListMcpServersQuery",
+      "result": "McpServerListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "list_mcp_servers",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "mcp.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.mcp.save",
+      "notes": [
+        "Add or update one MCP server configuration and reload the session's pool."
+      ],
+      "request": "SaveMcpServerCommand",
+      "result": "McpServerListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "save_mcp_server",
       "wire_defaults": {}
     },
     {
@@ -2872,6 +2922,33 @@
       "origin": "python",
       "role": "result"
     },
+    "DeleteMcpServerCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Remove one MCP server by name from configuration."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "DeleteModelCommand": {
       "fields": [
         {
@@ -4366,6 +4443,24 @@
       "origin": "python",
       "role": "request"
     },
+    "ListMcpServersQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "List configured MCP servers and runtime states for one session."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ListModelsQuery": {
       "fields": [
         {
@@ -4484,6 +4579,223 @@
       ],
       "origin": "python",
       "role": "request"
+    },
+    "McpServerDetailView": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "transport",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "command",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "args",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": "dict",
+          "default_kind": "factory",
+          "name": "env",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Mapping[str, str]",
+          "required": true,
+          "ts_type": "Record<string, string>",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "url",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": "dict",
+          "default_kind": "factory",
+          "name": "headers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Mapping[str, str]",
+          "required": true,
+          "ts_type": "Record<string, string>",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "tool_prefix",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "include_tools",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "exclude_tools",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "timeout",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "proxy",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "attached",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "discovered",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "loaded",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Detailed projection of one configured MCP server and its live runtime state."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "McpServerListResult": {
+      "fields": [
+        {
+          "name": "servers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[McpServerDetailView, ...]",
+          "required": true,
+          "ts_type": "McpServerDetailView[]",
+          "wire": "json"
+        },
+        {
+          "name": "mcp_enabled",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "warnings",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "All configured MCP servers for the project and global MCP status."
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "McpServerStateView": {
       "fields": [
@@ -6245,6 +6557,44 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "SaveMcpServerCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "server",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Mapping[str, Any]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "original_name",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Add or update one MCP server in project/user configuration."
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "SaveModelCommand": {
       "fields": [

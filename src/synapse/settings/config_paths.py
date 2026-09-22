@@ -265,6 +265,101 @@ def set_mcp_server_enabled(
     return path
 
 
+def save_mcp_server(
+    server: dict[str, Any],
+    *,
+    original_name: str | None = None,
+    workspace: Path | str | None = None,
+    explicit_path: Path | str | None = None,
+) -> Path:
+    """Add or update one server entry in the highest-priority MCP config file."""
+    name = server.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("server name must be a non-empty string")
+    name = name.strip()
+    server["name"] = name
+
+    paths = [Path(explicit_path).expanduser().resolve()] if explicit_path else mcp_config_paths(
+        workspace
+    )
+    if paths:
+        path = paths[-1]
+        data = load_json_object(path)
+    else:
+        target_dir = project_config_dir(workspace) if workspace else user_config_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / MCP_FILENAME
+        data = {"servers": []}
+
+    servers = data.setdefault("servers", [])
+    if not isinstance(servers, list):
+        raise ValueError("MCP config servers must be a list")
+
+    target_name = original_name.strip() if original_name and original_name.strip() else name
+    found_idx: int | None = None
+    for idx, s in enumerate(servers):
+        if isinstance(s, dict) and s.get("name") == target_name:
+            found_idx = idx
+            break
+
+    if original_name and original_name.strip() != name:
+        for idx, s in enumerate(servers):
+            if idx != found_idx and isinstance(s, dict) and s.get("name") == name:
+                raise ValueError(f"MCP server '{name}' already exists")
+
+    if found_idx is not None:
+        existing = servers[found_idx]
+        if isinstance(existing, dict):
+            updated = dict(existing)
+            updated.update(server)
+            servers[found_idx] = updated
+        else:
+            servers[found_idx] = server
+    else:
+        for s in servers:
+            if isinstance(s, dict) and s.get("name") == name:
+                raise ValueError(f"MCP server '{name}' already exists")
+        servers.append(server)
+
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def delete_mcp_server(
+    server_name: str,
+    *,
+    workspace: Path | str | None = None,
+    explicit_path: Path | str | None = None,
+) -> Path:
+    """Remove one server entry from the highest-priority MCP config file."""
+    if not server_name.strip():
+        raise ValueError("server_name must not be empty")
+    name = server_name.strip()
+    paths = [Path(explicit_path).expanduser().resolve()] if explicit_path else mcp_config_paths(
+        workspace
+    )
+    if not paths:
+        raise FileNotFoundError("no MCP config file is available")
+    path = paths[-1]
+    data = load_json_object(path)
+    servers = data.get("servers")
+    if not isinstance(servers, list):
+        raise ValueError("MCP config servers must be a list")
+
+    original_len = len(servers)
+    new_servers = [s for s in servers if not (isinstance(s, dict) and s.get("name") == name)]
+    if len(new_servers) == original_len:
+        raise KeyError(name)
+    data["servers"] = new_servers
+
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
 def set_mcp_server_include_tools(
     server_name: str,
     include_tools: Iterable[str] | None,

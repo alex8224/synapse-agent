@@ -160,6 +160,13 @@ from synapse.runtime.service.history_store import (
     read_session_history_page,
     read_transcript_coverage,
 )
+from synapse.runtime.service.mcp_management import (
+    DeleteMcpServerCommand,
+    ListMcpServersQuery,
+    McpServerDetailView,
+    McpServerListResult,
+    SaveMcpServerCommand,
+)
 from synapse.runtime.service.model_management import (
     DeleteModelCommand,
     ListModelsQuery,
@@ -413,6 +420,65 @@ def _project_session(snapshot: SessionSnapshot) -> SessionView:
         last_activity_at=snapshot.last_activity_at.isoformat(),
         active_model=snapshot.active_model,
         model=snapshot.model,
+    )
+
+
+def _build_mcp_server_list_result(
+    settings: Any,
+    agent: Any = None,
+    workspace: Path | str | None = None,
+) -> McpServerListResult:
+    from synapse.integrations.mcp_client import load_mcp_server_configs
+
+    configs = load_mcp_server_configs(
+        path=getattr(settings, "mcp_config_path", None),
+        json_blob=getattr(settings, "mcp_servers_json", None),
+        workspace=workspace,
+    )
+    raw_states = getattr(agent, "_coding_mcp_server_states", ()) or ()
+    warnings = tuple(getattr(agent, "_coding_mcp_warnings", ()) or ())
+    states_by_name = {
+        entry["name"]: entry
+        for entry in raw_states
+        if isinstance(entry, dict) and "name" in entry
+    }
+
+    server_views: list[McpServerDetailView] = []
+    for cfg in configs:
+        state = states_by_name.get(cfg.name, {})
+        attached = bool(state.get("attached", False))
+        discovered = _text_tuple(state.get("discovered"))
+        loaded = _text_tuple(state.get("loaded"))
+        include_tools = (
+            tuple(cfg.include_tools) if cfg.include_tools is not None else ()
+        )
+        exclude_tools = (
+            tuple(cfg.exclude_tools) if cfg.exclude_tools is not None else ()
+        )
+        server_views.append(
+            McpServerDetailView(
+                name=cfg.name,
+                transport=cfg.transport,
+                enabled=bool(cfg.enabled),
+                command=cfg.command,
+                args=tuple(cfg.args or ()),
+                env=dict(cfg.env or {}),
+                url=cfg.url,
+                headers=dict(cfg.headers or {}),
+                tool_prefix=cfg.tool_prefix,
+                include_tools=include_tools,
+                exclude_tools=exclude_tools,
+                timeout=cfg.timeout,
+                proxy=cfg.proxy,
+                attached=attached,
+                discovered=discovered,
+                loaded=loaded,
+            )
+        )
+    return McpServerListResult(
+        servers=tuple(server_views),
+        mcp_enabled=bool(getattr(settings, "enable_mcp", True)),
+        warnings=warnings,
     )
 
 
@@ -2150,6 +2216,149 @@ class LocalAgentRuntimeService:
             err = re.sub(r"(Bearer\s+)[a-zA-Z0-9_\-\.]+", r"\1...", err, flags=re.IGNORECASE)
             err = err[:300] if err else "Connection failed"
             return TestModelResult(ok=False, latency_ms=latency_ms, error=err)
+
+    async def list_mcp_servers(self, query: ListMcpServersQuery) -> McpServerListResult:
+        if type(query) is not ListMcpServersQuery:
+            raise InvalidRequestError(
+                "list MCP servers query must be a ListMcpServersQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+        manager = self._resolve_manager_project(query.session.project_id)
+        self._check_project(manager, query.session)
+        agent = None
+        try:
+            session = manager.get_session_ref(query.session)
+            if session is not None:
+                agent = session.agent
+        except Exception:
+            agent = None
+        workspace = getattr(manager, "workspace", None) or getattr(
+            manager.settings, "project_root", None
+        )
+        return await asyncio.to_thread(
+            _build_mcp_server_list_result,
+            manager.settings,
+            agent,
+            workspace,
+        )
+
+    async def save_mcp_server(self, command: SaveMcpServerCommand) -> McpServerListResult:
+        if type(command) is not SaveMcpServerCommand:
+            raise InvalidRequestError(
+                "save MCP server command must be a SaveMcpServerCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        agent = None
+        try:
+            session = manager.get_session_ref(command.session)
+            if session is not None:
+                agent = session.agent
+        except Exception:
+            agent = None
+        workspace = getattr(manager, "workspace", None) or getattr(
+            manager.settings, "project_root", None
+        )
+        settings = manager.settings
+
+        payload = dict(command.server)
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidRequestError("server name must be a non-empty string")
+        payload["name"] = name.strip()
+
+        from synapse.settings.config_paths import save_mcp_server as persist_save_mcp
+
+        try:
+            await asyncio.to_thread(
+                persist_save_mcp,
+                payload,
+                original_name=command.original_name,
+                workspace=workspace,
+                explicit_path=getattr(settings, "mcp_config_path", None),
+            )
+        except (ValueError, KeyError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+        # Rebind session so the changes take effect immediately
+        if manager.get_session_ref(command.session) is not None:
+            try:
+                agent, new_settings = await asyncio.to_thread(
+                    manager.build_mcp_rebinding,
+                    command.session,
+                    None,
+                    None,
+                    None,
+                )
+                await manager.rebind_session_ref(command.session, agent, new_settings)
+            except Exception as exc:
+                _LOGGER.warning("failed to rebind session after MCP save: %s", exc)
+
+        return await asyncio.to_thread(
+            _build_mcp_server_list_result,
+            manager.settings,
+            agent,
+            workspace,
+        )
+
+    async def delete_mcp_server(self, command: DeleteMcpServerCommand) -> McpServerListResult:
+        if type(command) is not DeleteMcpServerCommand:
+            raise InvalidRequestError(
+                "delete MCP server command must be a DeleteMcpServerCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        agent = None
+        try:
+            session = manager.get_session_ref(command.session)
+            if session is not None:
+                agent = session.agent
+        except Exception:
+            agent = None
+        workspace = getattr(manager, "workspace", None) or getattr(
+            manager.settings, "project_root", None
+        )
+        settings = manager.settings
+
+        from synapse.settings.config_paths import delete_mcp_server as persist_delete_mcp
+
+        try:
+            await asyncio.to_thread(
+                persist_delete_mcp,
+                command.name,
+                workspace=workspace,
+                explicit_path=getattr(settings, "mcp_config_path", None),
+            )
+        except KeyError as exc:
+            raise NotFoundError(f"MCP server {command.name!r} not found") from exc
+        except (ValueError, FileNotFoundError) as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+        # Rebind session so deleted server is detached
+        if manager.get_session_ref(command.session) is not None:
+            try:
+                agent, new_settings = await asyncio.to_thread(
+                    manager.build_mcp_rebinding,
+                    command.session,
+                    None,
+                    None,
+                    None,
+                )
+                await manager.rebind_session_ref(command.session, agent, new_settings)
+            except Exception as exc:
+                _LOGGER.warning("failed to rebind session after MCP delete: %s", exc)
+
+        return await asyncio.to_thread(
+            _build_mcp_server_list_result,
+            manager.settings,
+            agent,
+            workspace,
+        )
 
     def watch_events(
         self,

@@ -122,6 +122,11 @@ from synapse.runtime.service.history import (
     SESSION_LIST_LIMIT_MIN,
     SESSION_LIST_OFFSET_MAX,
 )
+from synapse.runtime.service.mcp_management import (
+    DeleteMcpServerCommand,
+    ListMcpServersQuery,
+    SaveMcpServerCommand,
+)
 from synapse.runtime.service.model_management import (
     DeleteModelCommand,
     ListModelsQuery,
@@ -1346,6 +1351,25 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             session=_session(params["session"]),
             alias=_bounded_text(params["alias"], 128),
         )
+    if method == "runtime.mcp.list":
+        _fields(params, {"session"})
+        return ListMcpServersQuery(session=_session(params["session"]))
+    if method == "runtime.mcp.save":
+        _optional_fields(params, {"session", "server"}, {"original_name"})
+        if not isinstance(params.get("server"), dict):
+            raise ProtocolError(-32602, "server must be an object")
+        orig_name = params.get("original_name")
+        return SaveMcpServerCommand(
+            session=_session(params["session"]),
+            server=dict(params["server"]),
+            original_name=_bounded_text(orig_name, 128) if orig_name else None,
+        )
+    if method == "runtime.mcp.delete":
+        _fields(params, {"session", "name"})
+        return DeleteMcpServerCommand(
+            session=_session(params["session"]),
+            name=_bounded_text(params["name"], 128),
+        )
     raise ProtocolError(-32601, "method_not_found")
 
 
@@ -1488,6 +1512,12 @@ async def dispatch(
         return await service.set_default_model(dto)  # type: ignore[arg-type]
     if method == "runtime.models.test":
         return await service.test_model(dto)  # type: ignore[arg-type]
+    if method == "runtime.mcp.list":
+        return await service.list_mcp_servers(dto)  # type: ignore[arg-type]
+    if method == "runtime.mcp.save":
+        return await service.save_mcp_server(dto)  # type: ignore[arg-type]
+    if method == "runtime.mcp.delete":
+        return await service.delete_mcp_server(dto)  # type: ignore[arg-type]
     raise ProtocolError(-32601, "method_not_found")
 
 

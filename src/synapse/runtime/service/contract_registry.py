@@ -47,6 +47,8 @@ from synapse.runtime.service.access import (
     FS_LIST,
     GIT_DIFF,
     GIT_STATUS,
+    MCP_READ,
+    MCP_WRITE,
     MODELS_READ,
     MODELS_WRITE,
     PROJECT_LIST,
@@ -235,6 +237,13 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
     SessionMetadataItem,
+)
+from synapse.runtime.service.mcp_management import (
+    DeleteMcpServerCommand,
+    ListMcpServersQuery,
+    McpServerDetailView,
+    McpServerListResult,
+    SaveMcpServerCommand,
 )
 from synapse.runtime.service.model_management import (
     DeleteModelCommand,
@@ -1433,6 +1442,31 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         TestModelResult,
         role="result",
         notes=("Outcome of one connectivity probe; never contains secrets or raw payloads.",),
+    ),
+    _dto(
+        ListMcpServersQuery,
+        role="request",
+        notes=("List configured MCP servers and runtime states for one session.",),
+    ),
+    _dto(
+        McpServerDetailView,
+        role="result",
+        notes=("Detailed projection of one configured MCP server and its live runtime state.",),
+    ),
+    _dto(
+        McpServerListResult,
+        role="result",
+        notes=("All configured MCP servers for the project and global MCP status.",),
+    ),
+    _dto(
+        SaveMcpServerCommand,
+        role="request",
+        notes=("Add or update one MCP server in project/user configuration.",),
+    ),
+    _dto(
+        DeleteMcpServerCommand,
+        role="request",
+        notes=("Remove one MCP server by name from configuration.",),
     ),
     # --- transport-only shapes (no service DTO) -------------------------------
     _transport(
@@ -2780,6 +2814,57 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         ),
         notes=(
             "Probe one endpoint with a minimal request and report latency or error.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.mcp.list",
+        method_class="service",
+        request="ListMcpServersQuery",
+        result="McpServerListResult",
+        capability=MCP_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="list_mcp_servers",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "List configured MCP servers and runtime states for the session's project.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.mcp.save",
+        method_class="service",
+        request="SaveMcpServerCommand",
+        result="McpServerListResult",
+        capability=MCP_WRITE,
+        scope="session",
+        scope_location="params.session",
+        service_method="save_mcp_server",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Add or update one MCP server configuration and reload the session's pool.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.mcp.delete",
+        method_class="service",
+        request="DeleteMcpServerCommand",
+        result="McpServerListResult",
+        capability=MCP_WRITE,
+        scope="session",
+        scope_location="params.session",
+        service_method="delete_mcp_server",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Delete one MCP server configuration and reload the session's pool.",
         ),
     ),
 )

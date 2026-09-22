@@ -188,6 +188,9 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.models.delete": "delete_model",
     "runtime.models.set_default": "set_default_model",
     "runtime.models.test": "test_model",
+    "runtime.mcp.list": "list_mcp_servers",
+    "runtime.mcp.save": "save_mcp_server",
+    "runtime.mcp.delete": "delete_mcp_server",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -217,6 +220,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "stt.control",
         "models.read",
         "models.write",
+        "mcp.read",
+        "mcp.write",
     }
 )
 
@@ -288,6 +293,12 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "SetDefaultModelCommand",
         "TestModelCommand",
         "TestModelResult",
+        # MCP server maintenance surface.
+        "DeleteMcpServerCommand",
+        "ListMcpServersQuery",
+        "McpServerDetailView",
+        "McpServerListResult",
+        "SaveMcpServerCommand",
     }
 )
 

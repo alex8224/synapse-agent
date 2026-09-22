@@ -99,6 +99,12 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
 )
+from synapse.runtime.service.mcp_management import (
+    DeleteMcpServerCommand,
+    ListMcpServersQuery,
+    McpServerListResult,
+    SaveMcpServerCommand,
+)
 from synapse.runtime.service.model_management import (
     DeleteModelCommand,
     ListModelsQuery,
@@ -771,6 +777,18 @@ class AgentRuntimeService(Protocol):
 
     async def test_model(self, command: TestModelCommand) -> TestModelResult:
         """Probe one endpoint with a minimal request and report latency or error."""
+        ...
+
+    async def list_mcp_servers(self, query: ListMcpServersQuery) -> McpServerListResult:
+        """List configured MCP servers and runtime states for the session's project."""
+        ...
+
+    async def save_mcp_server(self, command: SaveMcpServerCommand) -> McpServerListResult:
+        """Add or update one MCP server configuration and reload the session's pool."""
+        ...
+
+    async def delete_mcp_server(self, command: DeleteMcpServerCommand) -> McpServerListResult:
+        """Delete one MCP server configuration and reload the session's pool."""
         ...
 
     async def read_events(self, query: ReadEventsQuery) -> EventPage: ...

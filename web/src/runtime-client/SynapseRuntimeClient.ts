@@ -37,6 +37,7 @@ import type {
   RebindSessionResult,
   ReloadMcpParams,
   ReloadMcpResult,
+  McpServerListResult,
   EventNotificationMeta,
   ModelListResult,
   TestModelResult,
@@ -531,6 +532,31 @@ export class SynapseRuntimeClient {
         maxDelayMs: options.reconnect.maxDelayMs ?? DEFAULT_RECONNECT_POLICY.maxDelayMs,
       };
     }
+  }
+
+  /**
+   * List configured MCP servers and runtime states (`runtime.mcp.list`).
+   */
+  public async mcpList(session: SessionRef): Promise<McpServerListResult> {
+    return this.call<McpServerListResult>('runtime.mcp.list', { session });
+  }
+
+  /**
+   * Add or update one MCP server (`runtime.mcp.save`).
+   */
+  public async mcpSave(
+    session: SessionRef,
+    server: Record<string, unknown>,
+    originalName?: string,
+  ): Promise<McpServerListResult> {
+    return this.call<McpServerListResult>('runtime.mcp.save', { session, server, original_name: originalName });
+  }
+
+  /**
+   * Delete one MCP server by name (`runtime.mcp.delete`).
+   */
+  public async mcpDelete(session: SessionRef, name: string): Promise<McpServerListResult> {
+    return this.call<McpServerListResult>('runtime.mcp.delete', { session, name });
   }
 
   public getState(): ConnectionState {
