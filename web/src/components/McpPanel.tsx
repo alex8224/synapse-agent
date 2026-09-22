@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Dismiss16Regular, ChevronUp16Regular, ChevronDown16Regular } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
@@ -58,6 +58,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     runtimeStatus,
     toggleMcpServer,
     refreshMcpRuntime,
+    fetchRuntimeConfig,
     saveMcpTools,
   } = useConsoleStore(
     // Only the fields this panel paints: a reasoning delta must not re-render it.
@@ -72,6 +73,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       runtimeStatus: state.runtimeStatus,
       toggleMcpServer: state.toggleMcpServer,
       refreshMcpRuntime: state.refreshMcpRuntime,
+      fetchRuntimeConfig: state.fetchRuntimeConfig,
       saveMcpTools: state.saveMcpTools,
     })),
   );
@@ -83,6 +85,16 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [togglingServer, setTogglingServer] = useState<string | null>(null);
   const [isGlobalRefreshing, setIsGlobalRefreshing] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // When opening the panel, ensure configured servers and runtime state are freshly synced
+  useEffect(() => {
+    if (!mcpConnecting) {
+      void fetchRuntimeConfig();
+      if (!mcpRuntimeKnown && mcpServers.length > 0) {
+        void refreshMcpRuntime();
+      }
+    }
+  }, []); // Run once on mount when panel opens
 
   // F5 / the trigger button keeps the focus, so the panel has to take it: the
   // hook lands on the first server row and walks the panel's controls with the
@@ -111,6 +123,9 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     setTogglingServer(name);
     try {
       await toggleMcpServer(name);
+      void fetchRuntimeConfig();
+    } catch {
+      // Errors handled via store state
     } finally {
       setTogglingServer(null);
     }
@@ -128,6 +143,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         delete next[name];
         return next;
       });
+      void fetchRuntimeConfig();
     } catch {
       // The store already published the reason through `mcpWarnings`.
     }

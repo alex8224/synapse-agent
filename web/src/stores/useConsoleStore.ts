@@ -904,7 +904,7 @@ interface ConsoleStore {
   mcpEnabled: boolean;
   canSetThinking: boolean;
   canToggleMcpGlobal: boolean;
-  toggleMcpServer: (serverName: string) => Promise<void>;
+  toggleMcpServer: (serverName: string, targetEnabled?: boolean) => Promise<void>;
   /**
    * Live MCP state per server, filled only from a reload result: the config
    * view never claims attachment.
@@ -1402,10 +1402,14 @@ async function refreshRuntimeConfig(epoch: number): Promise<void> {
     // preserveModel=true: the model resolved from open.view is authoritative
     // for the session; a config refresh must never reset it to the project default.
     const patch = mapRuntimeConfig(view, { preserveModel: true });
-    // The config projection only knows the enabled flags; keep the footer label
-    // derived from the real attach state when one has already been reported.
+    // Preserve known attached status from latest.mcpRuntime so attached flags aren't blanked.
+    const nextServers = (patch.mcpServers ?? latest.mcpServers).map((server) => {
+      const live = latest.mcpRuntime[server.name];
+      return live === undefined ? server : { ...server, attached: live.attached };
+    });
+    patch.mcpServers = nextServers;
     patch.mcpStatus = mcpRuntimeStatusLabel(
-      patch.mcpServers ?? latest.mcpServers,
+      nextServers,
       patch.mcpEnabled ?? latest.mcpEnabled,
       latest.mcpRuntime,
       latest.mcpConnecting,
@@ -1430,7 +1434,10 @@ function applyMcpResult(result: ReloadMcpResult): void {
   const store = useConsoleStore;
   const patch = mcpRuntimePatch(result);
   const state = store.getState();
-  const runtime = { ...state.mcpRuntime, ...patch.servers };
+  // When result.server is null (full session reload), prune deleted servers from mcpRuntime.
+  const runtime = result.server
+    ? { ...state.mcpRuntime, ...patch.servers }
+    : { ...patch.servers };
   store.setState({
     mcpRuntime: runtime,
     mcpWarnings: patch.warnings,
@@ -1504,7 +1511,16 @@ async function refreshMcpRuntime(epoch: number): Promise<void> {
   const store = useConsoleStore;
   const { client, currentSession, mcpEnabled, mcpServers } = store.getState();
   if (!client || client.getState() !== 'connected') return;
-  if (!mcpEnabled || !mcpServers.some((server) => server.enabled)) return;
+  if (!mcpEnabled) return;
+  if (mcpServers.length === 0) {
+    store.setState({
+      mcpRuntime: {},
+      mcpConnecting: false,
+      mcpRuntimeKnown: true,
+      mcpStatus: mcpRuntimeStatusLabel([], mcpEnabled, {}, false, true),
+    });
+    return;
+  }
   const target = {
     project_id: currentSession.project_id,
     thread_id: currentSession.thread_id,
@@ -3285,7 +3301,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       console.warn('Failed to switch runtime model:', e);
     }
   },
-  toggleMcpServer: async (serverName: string) => {
+  toggleMcpServer: async (serverName: string, targetEnabled?: boolean) => {
     const client = requireRuntimeClient();
     if (!client) return;
     const { currentSession, mcpServers } = get();
@@ -3295,8 +3311,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       thread_id: currentSession.thread_id,
     };
     const current = mcpServers.find((server) => server.name === serverName);
-    if (!current) return;
-    const enabled = !current.enabled;
+    const enabled = targetEnabled !== undefined ? targetEnabled : (current ? !current.enabled : true);
     const action = enabled ? 'starting' : 'stopping';
     set({ mcpTogglingServer: serverName, mcpTogglingAction: action });
     try {
@@ -3315,13 +3330,19 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       ) {
         return;
       }
-      set({
-        mcpServers: get().mcpServers.map((server) =>
-          server.name === serverName
-            ? { ...server, enabled: result.enabled ?? !server.enabled }
-            : server
-        ),
-      });
+      const existing = get().mcpServers;
+      const serverExists = existing.some((server) => server.name === serverName);
+      if (serverExists) {
+        set({
+          mcpServers: existing.map((server) =>
+            server.name === serverName
+              ? { ...server, enabled: result.enabled ?? enabled }
+              : server
+          ),
+        });
+      } else {
+        void refreshRuntimeConfig(sessionEpoch);
+      }
       // The result carries every server's real state, so this both records the
       // new flag and refreshes attachment/tools/warnings.
       applyMcpResult(result);

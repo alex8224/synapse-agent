@@ -93,6 +93,8 @@ export const McpMaintenanceSection: React.FC = () => {
     mcpTogglingAction,
     toggleMcpServer,
     refreshMcpRuntime,
+    fetchRuntimeConfig,
+    mcpServers,
     saveMcpTools,
   } = useConsoleStore(
     useShallow((state) => ({
@@ -102,6 +104,8 @@ export const McpMaintenanceSection: React.FC = () => {
       mcpRuntimeKnown: state.mcpRuntimeKnown,
       mcpRuntime: state.mcpRuntime,
       mcpWarnings: state.mcpWarnings,
+      mcpServers: state.mcpServers,
+      fetchRuntimeConfig: state.fetchRuntimeConfig,
       mcpTogglingServer: state.mcpTogglingServer,
       mcpTogglingAction: state.mcpTogglingAction,
       toggleMcpServer: state.toggleMcpServer,
@@ -154,16 +158,30 @@ export const McpMaintenanceSection: React.FC = () => {
     void loadServers();
   }, [loadServers]);
 
+  // Keep server enabled state in sync when changed externally (e.g. from bottom bar dialog)
+  useEffect(() => {
+    setServers((prev) =>
+      prev.map((s) => {
+        const matching = mcpServers.find((ms) => ms.name === s.name);
+        return matching && matching.enabled !== s.enabled
+          ? { ...s, enabled: matching.enabled }
+          : s;
+      })
+    );
+  }, [mcpServers]);
+
   // Handle single start/stop toggle
   const handleToggle = async (server: McpServerDetailView) => {
-    const nextAction = server.enabled ? 'stopping' : 'starting';
+    const targetEnabled = !server.enabled;
+    const nextAction = targetEnabled ? 'starting' : 'stopping';
     setOperatingServer(server.name);
     setActionType((prev) => ({ ...prev, [server.name]: nextAction }));
     try {
-      await toggleMcpServer(server.name);
+      await toggleMcpServer(server.name, targetEnabled);
       setServers((prev) =>
-        prev.map((s) => (s.name === server.name ? { ...s, enabled: !s.enabled } : s))
+        prev.map((s) => (s.name === server.name ? { ...s, enabled: targetEnabled } : s))
       );
+      await fetchRuntimeConfig();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -222,6 +240,7 @@ export const McpMaintenanceSection: React.FC = () => {
       });
       // Refresh list to update include_tools
       await loadServers();
+      await fetchRuntimeConfig();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -347,6 +366,8 @@ export const McpMaintenanceSection: React.FC = () => {
         editingOriginalName || undefined
       );
       await loadServers();
+      await fetchRuntimeConfig();
+      await refreshMcpRuntime();
       setIsModalOpen(false);
     } catch (err) {
       setModalError(err instanceof Error ? err.message : String(err));
@@ -363,6 +384,8 @@ export const McpMaintenanceSection: React.FC = () => {
       await client.mcpDelete(currentSession, name);
       setDeleteConfirmName(null);
       await loadServers();
+      await fetchRuntimeConfig();
+      await refreshMcpRuntime();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
