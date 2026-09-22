@@ -183,6 +183,11 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.stt.append": "append_stt_audio",
     "runtime.stt.finish": "finish_stt_dictation",
     "runtime.stt.cancel": "cancel_stt_dictation",
+    "runtime.models.list": "list_models",
+    "runtime.models.save": "save_model",
+    "runtime.models.delete": "delete_model",
+    "runtime.models.set_default": "set_default_model",
+    "runtime.models.test": "test_model",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -210,6 +215,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "screenshot.read",
         "screenshot.control",
         "stt.control",
+        "models.read",
+        "models.write",
     }
 )
 
@@ -272,6 +279,15 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "ListSkillsResult",
         "SkillEntry",
         "SkillListPage",
+        # Model endpoint CRUD surface.
+        "DeleteModelCommand",
+        "ListModelsQuery",
+        "ModelListResult",
+        "ModelSummary",
+        "SaveModelCommand",
+        "SetDefaultModelCommand",
+        "TestModelCommand",
+        "TestModelResult",
     }
 )
 

@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 63 wire methods: 61 service methods
+ * The 68 wire methods: 66 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -51,6 +51,11 @@ export const WIRE_METHODS = [
   "runtime.fs.list",
   "runtime.git.diff",
   "runtime.git.status",
+  "runtime.models.delete",
+  "runtime.models.list",
+  "runtime.models.save",
+  "runtime.models.set_default",
+  "runtime.models.test",
   "runtime.project.list",
   "runtime.project.register",
   "runtime.project.thinking.set",
@@ -109,7 +114,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (39). */
+/** Authorization capabilities enforced by the ACL layer (41). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -124,6 +129,8 @@ export const AUTHORIZATION_CAPABILITIES = [
   "fs.list",
   "git.diff",
   "git.status",
+  "models.read",
+  "models.write",
   "project.list",
   "project.register",
   "project.thinking",
@@ -199,6 +206,11 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.fs.list": "fs.list",
   "runtime.git.diff": "git.diff",
   "runtime.git.status": "git.status",
+  "runtime.models.delete": "models.write",
+  "runtime.models.list": "models.read",
+  "runtime.models.save": "models.write",
+  "runtime.models.set_default": "models.write",
+  "runtime.models.test": "models.read",
   "runtime.project.list": "project.list",
   "runtime.project.register": "project.register",
   "runtime.project.thinking.set": "project.thinking",
@@ -569,6 +581,14 @@ export interface CreateSessionResult {
   session: SessionRef;
   created: boolean;
   title: string;
+}
+
+/**
+ * Remove one model profile by alias.
+ */
+export interface DeleteModelCommand {
+  session: SessionRef;
+  alias: string;
 }
 
 /**
@@ -954,6 +974,13 @@ export interface ListExternalAppsQuery {
 }
 
 /**
+ * List the model profiles visible to one session's project.
+ */
+export interface ListModelsQuery {
+  session: SessionRef;
+}
+
+/**
  * ``limit`` is bounded to 1..100 and ``offset`` to 0..100000 by the wire
  * decoder; the visibility filter is applied before pagination.
  */
@@ -1025,6 +1052,34 @@ export interface McpServerView {
    * python_default_kind=value python_default=null
    */
   tool_prefix: string | null;
+}
+
+/**
+ * The whole redacted profile catalog plus thinking levels and effective default.
+ */
+export interface ModelListResult {
+  default: string;
+  thinking_levels: string[];
+  models: ModelSummary[];
+}
+
+/**
+ * Redacted projection of one model profile; never carries a secret.
+ */
+export interface ModelSummary {
+  alias: string;
+  model: string;
+  provider: string | null;
+  base_url: string | null;
+  context_window: number | null;
+  reasoning_effort: string | null;
+  image_input: string;
+  has_api_key: boolean;
+  is_default: boolean;
+  /**
+   * python_default_kind=factory python_default="dict"
+   */
+  extra: Record<string, JsonValue>;
 }
 
 /**
@@ -1460,6 +1515,19 @@ export interface RuntimeEvent {
 }
 
 /**
+ * Add or update one model profile and persist to models.json.
+ */
+export interface SaveModelCommand {
+  session: SessionRef;
+  alias: string;
+  profile: Record<string, JsonValue>;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  make_default?: boolean;
+}
+
+/**
  * Cancel one session's capture task; ``task_id`` is required.
  */
 export interface ScreenshotCancelCommand {
@@ -1758,6 +1826,14 @@ export interface SessionView {
   model: string | null;
 }
 
+/**
+ * Make one existing profile the store's default.
+ */
+export interface SetDefaultModelCommand {
+  session: SessionRef;
+  alias: string;
+}
+
 export interface SetProjectThinkingLevelCommand {
   project_id: string;
   level: string;
@@ -2048,6 +2124,23 @@ export interface SubscriptionComplete {
 export interface SubscriptionError {
   subscription_id: string;
   error: JsonRpcError;
+}
+
+/**
+ * Probe one endpoint with a minimal request.
+ */
+export interface TestModelCommand {
+  session: SessionRef;
+  alias: string;
+}
+
+/**
+ * Outcome of one connectivity probe; never contains secrets or raw payloads.
+ */
+export interface TestModelResult {
+  ok: boolean;
+  latency_ms: number;
+  error: string | null;
 }
 
 export interface TextPayload {

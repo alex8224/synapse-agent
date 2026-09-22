@@ -101,6 +101,15 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
 )
+from synapse.runtime.service.model_management import (
+    DeleteModelCommand,
+    ListModelsQuery,
+    ModelListResult,
+    SaveModelCommand,
+    SetDefaultModelCommand,
+    TestModelCommand,
+    TestModelResult,
+)
 from synapse.runtime.service.ports import AgentRuntimeService, EventWatch
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
@@ -184,6 +193,8 @@ __all__ = [
     "APPS_LIST",
     "SCREENSHOT_READ",
     "SCREENSHOT_CONTROL",
+    "MODELS_READ",
+    "MODELS_WRITE",
     "STT_CONTROL",
     "WORKSPACE_REVERT",
     "WORKSPACE_OPEN_EXTERNAL",
@@ -309,6 +320,8 @@ SCREENSHOT_CONTROL = "screenshot.control"
 #: its own grant -- ``session.read`` and ``attachments.write`` must never
 #: authorize it.
 STT_CONTROL = "stt.control"
+MODELS_READ = "models.read"
+MODELS_WRITE = "models.write"
 
 ALL_RUNTIME_CAPABILITIES = frozenset(
     {
@@ -351,6 +364,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SCREENSHOT_READ,
         SCREENSHOT_CONTROL,
         STT_CONTROL,
+        MODELS_READ,
+        MODELS_WRITE,
     }
 )
 
@@ -1567,6 +1582,48 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("session recovery is unavailable")
         return await delegate(query)
+
+    async def list_models(self, query: ListModelsQuery) -> ModelListResult:
+        session = self._session_from_dto(query, ListModelsQuery, "list models query")
+        self._authorize(session, MODELS_READ)
+        delegate = getattr(self._delegate, "list_models", None)
+        if not callable(delegate):
+            raise InvalidRequestError("model management is unavailable")
+        return await delegate(query)
+
+    async def save_model(self, command: SaveModelCommand) -> ModelListResult:
+        session = self._session_from_dto(command, SaveModelCommand, "save model command")
+        self._authorize(session, MODELS_WRITE)
+        delegate = getattr(self._delegate, "save_model", None)
+        if not callable(delegate):
+            raise InvalidRequestError("model management is unavailable")
+        return await delegate(command)
+
+    async def delete_model(self, command: DeleteModelCommand) -> ModelListResult:
+        session = self._session_from_dto(command, DeleteModelCommand, "delete model command")
+        self._authorize(session, MODELS_WRITE)
+        delegate = getattr(self._delegate, "delete_model", None)
+        if not callable(delegate):
+            raise InvalidRequestError("model management is unavailable")
+        return await delegate(command)
+
+    async def set_default_model(self, command: SetDefaultModelCommand) -> ModelListResult:
+        session = self._session_from_dto(
+            command, SetDefaultModelCommand, "set default model command"
+        )
+        self._authorize(session, MODELS_WRITE)
+        delegate = getattr(self._delegate, "set_default_model", None)
+        if not callable(delegate):
+            raise InvalidRequestError("model management is unavailable")
+        return await delegate(command)
+
+    async def test_model(self, command: TestModelCommand) -> TestModelResult:
+        session = self._session_from_dto(command, TestModelCommand, "test model command")
+        self._authorize(session, MODELS_READ)
+        delegate = getattr(self._delegate, "test_model", None)
+        if not callable(delegate):
+            raise InvalidRequestError("model management is unavailable")
+        return await delegate(command)
 
     def watch_events(
         self,

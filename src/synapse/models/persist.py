@@ -29,7 +29,7 @@ from synapse.models.registry import _profiles_from_mapping, resolve_models_confi
 from synapse.settings.config_paths import MODELS_FILENAME, project_config_dir
 
 # Alias appears in /model reload commands; keep it a single safe token.
-_VALID_ALIAS = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_VALID_ALIAS = re.compile(r"^[\w.:\-\u4e00-\u9fa5]+$")
 
 
 class ModelsStoreError(ValueError):
@@ -43,6 +43,7 @@ _PROFILE_FIELDS = (
     "api_key_env",
     "auth",
     "base_url",
+    "provider",
     "headers",
     "context_window",
     "enable_thinking",
@@ -54,6 +55,8 @@ _PROFILE_FIELDS = (
     "extra",
     "model_kwargs",
     "extra_body",
+    "openai_proxy",
+    "streaming",
 )
 
 

@@ -13,6 +13,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -159,6 +160,16 @@ from synapse.runtime.service.history_store import (
     read_session_history_page,
     read_transcript_coverage,
 )
+from synapse.runtime.service.model_management import (
+    DeleteModelCommand,
+    ListModelsQuery,
+    ModelListResult,
+    ModelSummary,
+    SaveModelCommand,
+    SetDefaultModelCommand,
+    TestModelCommand,
+    TestModelResult,
+)
 from synapse.runtime.service.ports import EventWatch
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
@@ -280,6 +291,64 @@ _LOGGER = logging.getLogger(__name__)
 #: stalled rather than merely slow; its thread stack is then captured as
 #: evidence of what blocked it.
 _OVERFLOW_STALL_THRESHOLD_S = 0.05
+
+
+def _build_model_list_result(settings: Any) -> ModelListResult:
+    from synapse.models.persist import current_default, load_models_store
+    from synapse.models.registry import registry_from_settings
+
+    reg = registry_from_settings(settings)
+    store = load_models_store(settings)
+    default_alias = current_default(store) or reg.default or ""
+    summaries: list[ModelSummary] = []
+    raw_store_models = dict(store.get("models") or {})
+    for p in reg.list_profiles():
+        has_key = bool(
+            p.api_key or (p.api_key_env and os.getenv(p.api_key_env)) or (p.auth == "openai_oauth")
+        )
+        image_input = getattr(p, "image_input", None) or "auto"
+        if image_input not in ("auto", "yes", "no"):
+            image_input = "auto"
+        provider = p.provider
+        if p.auth == "openai_oauth":
+            provider = "openai_oauth"
+        elif not provider:
+            if p.model.startswith("anthropic:"):
+                provider = "anthropic"
+            elif p.model.startswith("openai:"):
+                provider = "openai"
+
+        raw_cfg = dict(raw_store_models.get(p.name) or {})
+        raw_cfg.pop("api_key", None)
+        extra_dict = {
+            k: v
+            for k, v in raw_cfg.items()
+            if k not in ("model", "base_url", "context_window", "reasoning_effort", "image_input")
+        }
+        if getattr(p, "websocket", None) is not None:
+            extra_dict["websocket"] = p.websocket
+        if getattr(p, "extra", None):
+            extra_dict.update({k: v for k, v in p.extra.items() if k not in extra_dict})
+
+        summaries.append(
+            ModelSummary(
+                alias=p.name,
+                model=p.model,
+                provider=provider,
+                base_url=p.base_url,
+                context_window=p.context_window,
+                reasoning_effort=p.reasoning_effort,
+                image_input=image_input,
+                has_api_key=has_key,
+                is_default=(p.name == default_alias),
+                extra=extra_dict,
+            )
+        )
+    return ModelListResult(
+        default=default_alias,
+        thinking_levels=tuple(reg.thinking_levels),
+        models=tuple(summaries),
+    )
 
 
 def _to_runtime_event(
@@ -1935,6 +2004,152 @@ class LocalAgentRuntimeService:
             has_more=has_more,
             scanned_through=scanned_through,
         )
+
+    async def list_models(self, query: ListModelsQuery) -> ModelListResult:
+        if type(query) is not ListModelsQuery:
+            raise InvalidRequestError(
+                f"list models query must be a ListModelsQuery, got type {type(query).__name__!r}"
+            )
+        self._validate_ref(query.session)
+
+        manager = self._resolve_manager_project(query.session.project_id)
+        self._check_project(manager, query.session)
+        settings = manager.settings
+
+        return await asyncio.to_thread(_build_model_list_result, settings)
+
+    async def save_model(self, command: SaveModelCommand) -> ModelListResult:
+        if type(command) is not SaveModelCommand:
+            raise InvalidRequestError(
+                "save model command must be a SaveModelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+
+        from synapse.models.persist import (
+            ModelsStoreError,
+            add_profile,
+            load_models_store,
+            set_default,
+            update_profile,
+        )
+
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        settings = manager.settings
+
+        def _do_save() -> ModelListResult:
+            try:
+                store = load_models_store(settings)
+                existing = store.get("models") or {}
+                profile_payload = dict(command.profile)
+                if profile_payload.get("provider") == "openai_oauth":
+                    profile_payload["auth"] = "openai_oauth"
+                elif profile_payload.get("provider"):
+                    profile_payload.pop("auth", None)
+
+                if command.alias in existing:
+                    merged = dict(existing[command.alias])
+                    merged.update(profile_payload)
+                    update_profile(settings, command.alias, merged)
+                else:
+                    add_profile(settings, command.alias, profile_payload)
+                if command.make_default:
+                    set_default(settings, command.alias)
+                    if hasattr(settings, "model"):
+                        try:
+                            settings.model = command.alias
+                        except Exception:
+                            pass
+                return _build_model_list_result(settings)
+            except ModelsStoreError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+            except Exception as exc:
+                raise InvalidRequestError(f"save model failed: {exc}") from exc
+
+        return await asyncio.to_thread(_do_save)
+
+    async def delete_model(self, command: DeleteModelCommand) -> ModelListResult:
+        if type(command) is not DeleteModelCommand:
+            raise InvalidRequestError(
+                "delete model command must be a DeleteModelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+
+        from synapse.models.persist import ModelsStoreError, delete_profile
+
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        settings = manager.settings
+
+        def _do_delete() -> ModelListResult:
+            try:
+                delete_profile(settings, command.alias)
+                return _build_model_list_result(settings)
+            except ModelsStoreError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+
+        return await asyncio.to_thread(_do_delete)
+
+    async def set_default_model(self, command: SetDefaultModelCommand) -> ModelListResult:
+        if type(command) is not SetDefaultModelCommand:
+            raise InvalidRequestError(
+                "set default model command must be a SetDefaultModelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+
+        from synapse.models.persist import ModelsStoreError, set_default
+
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        settings = manager.settings
+
+        def _do_set_default() -> ModelListResult:
+            try:
+                set_default(settings, command.alias)
+                if hasattr(settings, "model"):
+                    try:
+                        settings.model = command.alias
+                    except Exception:
+                        pass
+                return _build_model_list_result(settings)
+            except ModelsStoreError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+
+        return await asyncio.to_thread(_do_set_default)
+
+    async def test_model(self, command: TestModelCommand) -> TestModelResult:
+        if type(command) is not TestModelCommand:
+            raise InvalidRequestError(
+                "test model command must be a TestModelCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._validate_ref(command.session)
+
+        manager = self._resolve_manager_project(command.session.project_id)
+        self._check_project(manager, command.session)
+        settings = manager.settings
+
+        t0 = time.perf_counter()
+        try:
+            from langchain_core.messages import HumanMessage
+
+            from synapse.models.registry import registry_from_settings
+
+            reg = registry_from_settings(settings)
+            chat_model = reg.build_chat_model(command.alias)
+            await asyncio.wait_for(chat_model.ainvoke([HumanMessage(content="hi")]), timeout=15.0)
+            latency_ms = max(1, int((time.perf_counter() - t0) * 1000))
+            return TestModelResult(ok=True, latency_ms=latency_ms, error=None)
+        except Exception as exc:
+            latency_ms = max(1, int((time.perf_counter() - t0) * 1000))
+            raw_err = str(exc)
+            err = re.sub(r"(sk-[a-zA-Z0-9_\-]{6})[a-zA-Z0-9_\-]+", r"\1...", raw_err)
+            err = re.sub(r"(Bearer\s+)[a-zA-Z0-9_\-\.]+", r"\1...", err, flags=re.IGNORECASE)
+            err = err[:300] if err else "Connection failed"
+            return TestModelResult(ok=False, latency_ms=latency_ms, error=err)
 
     def watch_events(
         self,

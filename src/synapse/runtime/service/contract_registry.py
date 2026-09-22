@@ -47,6 +47,8 @@ from synapse.runtime.service.access import (
     FS_LIST,
     GIT_DIFF,
     GIT_STATUS,
+    MODELS_READ,
+    MODELS_WRITE,
     PROJECT_LIST,
     PROJECT_REGISTER,
     PROJECT_THINKING,
@@ -233,6 +235,16 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
     SessionMetadataItem,
+)
+from synapse.runtime.service.model_management import (
+    DeleteModelCommand,
+    ListModelsQuery,
+    ModelListResult,
+    ModelSummary,
+    SaveModelCommand,
+    SetDefaultModelCommand,
+    TestModelCommand,
+    TestModelResult,
 )
 from synapse.runtime.service.project_list import (
     PROJECT_LIST_LIMIT_DEFAULT,
@@ -1381,6 +1393,46 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         SttCancelResult,
         role="result",
         notes=("Idempotent: ``cancelled`` is False when no dictation was open.",),
+    ),
+    _dto(
+        ListModelsQuery,
+        role="request",
+        notes=("List the model profiles visible to one session's project.",),
+    ),
+    _dto(
+        ModelSummary,
+        role="result",
+        notes=("Redacted projection of one model profile; never carries a secret.",),
+    ),
+    _dto(
+        ModelListResult,
+        role="result",
+        notes=("The whole redacted profile catalog plus thinking levels and effective default.",),
+    ),
+    _dto(
+        SaveModelCommand,
+        role="request",
+        notes=("Add or update one model profile and persist to models.json.",),
+    ),
+    _dto(
+        DeleteModelCommand,
+        role="request",
+        notes=("Remove one model profile by alias.",),
+    ),
+    _dto(
+        SetDefaultModelCommand,
+        role="request",
+        notes=("Make one existing profile the store's default.",),
+    ),
+    _dto(
+        TestModelCommand,
+        role="request",
+        notes=("Probe one endpoint with a minimal request.",),
+    ),
+    _dto(
+        TestModelResult,
+        role="result",
+        notes=("Outcome of one connectivity probe; never contains secrets or raw payloads.",),
     ),
     # --- transport-only shapes (no service DTO) -------------------------------
     _transport(
@@ -2643,6 +2695,91 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         notes=(
             "Drop the session's dictation and its buffered audio (idempotent);",
             "``cancelled`` is False when no dictation was open.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.models.list",
+        method_class="service",
+        request="ListModelsQuery",
+        result="ModelListResult",
+        capability=MODELS_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="list_models",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "List configured downstream model profiles for the session's project.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.models.save",
+        method_class="service",
+        request="SaveModelCommand",
+        result="ModelListResult",
+        capability=MODELS_WRITE,
+        scope="session",
+        scope_location="params.session",
+        service_method="save_model",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Add or update one model profile and persist to models.json.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.models.delete",
+        method_class="service",
+        request="DeleteModelCommand",
+        result="ModelListResult",
+        capability=MODELS_WRITE,
+        scope="session",
+        scope_location="params.session",
+        service_method="delete_model",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Remove one model profile from models.json.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.models.set_default",
+        method_class="service",
+        request="SetDefaultModelCommand",
+        result="ModelListResult",
+        capability=MODELS_WRITE,
+        scope="session",
+        scope_location="params.session",
+        service_method="set_default_model",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Set the default model profile in models.json.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.models.test",
+        method_class="service",
+        request="TestModelCommand",
+        result="TestModelResult",
+        capability=MODELS_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="test_model",
+        in_process=(
+            "Optional delegate method: an in-process delegate without it keeps the "
+            "wrapper constructible and reports the feature as unavailable."
+        ),
+        notes=(
+            "Probe one endpoint with a minimal request and report latency or error.",
         ),
     ),
 )

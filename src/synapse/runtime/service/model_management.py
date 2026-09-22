@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from synapse.runtime.sessions.ref import SessionRef
@@ -82,6 +82,10 @@ MODEL_PROFILE_ALLOWED_KEYS = frozenset(
         "model_kwargs",
         "extra_body",
         "provider",
+        "auth",
+        "openai_proxy",
+        "websocket",
+        "streaming",
         "enable_thinking",
         "thinking_levels",
         "parallel_tool_calls",
@@ -159,6 +163,7 @@ class ModelSummary:
     image_input: str
     has_api_key: bool
     is_default: bool
+    extra: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,3 +247,7 @@ class TestModelResult:
     ok: bool
     latency_ms: int
     error: str | None
+
+
+TestModelCommand.__test__ = False
+TestModelResult.__test__ = False

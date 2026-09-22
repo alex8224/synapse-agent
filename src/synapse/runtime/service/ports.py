@@ -99,6 +99,15 @@ from synapse.runtime.service.history import (
     SessionHistoryPage,
     SessionListPage,
 )
+from synapse.runtime.service.model_management import (
+    DeleteModelCommand,
+    ListModelsQuery,
+    ModelListResult,
+    SaveModelCommand,
+    SetDefaultModelCommand,
+    TestModelCommand,
+    TestModelResult,
+)
 from synapse.runtime.service.project_list import (
     ListProjectsQuery,
     ProjectListItem,
@@ -742,6 +751,26 @@ class AgentRuntimeService(Protocol):
 
         Optional delegate method: see ``begin_attachment``.
         """
+        ...
+
+    async def list_models(self, query: ListModelsQuery) -> ModelListResult:
+        """List configured downstream model profiles for the session's project."""
+        ...
+
+    async def save_model(self, command: SaveModelCommand) -> ModelListResult:
+        """Add or update one model profile and persist to models.json."""
+        ...
+
+    async def delete_model(self, command: DeleteModelCommand) -> ModelListResult:
+        """Remove one model profile from models.json."""
+        ...
+
+    async def set_default_model(self, command: SetDefaultModelCommand) -> ModelListResult:
+        """Set the default model profile in models.json."""
+        ...
+
+    async def test_model(self, command: TestModelCommand) -> TestModelResult:
+        """Probe one endpoint with a minimal request and report latency or error."""
         ...
 
     async def read_events(self, query: ReadEventsQuery) -> EventPage: ...

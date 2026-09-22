@@ -158,6 +158,9 @@ class ModelRegistry:
     def list_names(self) -> list[str]:
         return sorted(self.profiles)
 
+    def list_profiles(self) -> list[ModelProfile]:
+        return list(self.profiles.values())
+
     def get(self, name: str | None = None) -> ModelProfile:
         key = (name or self.default or "").strip()
         if not key:
@@ -224,6 +227,8 @@ class ModelRegistry:
         profile = self.get(name)
         kwargs: dict[str, Any] = dict(profile.extra or {})
         model_name = profile.model
+        if ":" not in model_name and profile.provider:
+            model_name = f"{profile.provider}:{model_name}"
         configured_headers = _merge_headers(self.headers, profile.headers)
 
         api_key = profile.resolved_api_key() or fallback_api_key
@@ -965,7 +970,7 @@ def registry_from_settings(settings: Any) -> ModelRegistry:
     if reg is not None:
         selected = (getattr(settings, "active_model", None) or "").strip()
         if not selected:
-            candidate = (settings.model or "").strip()
+            candidate = (getattr(settings, "model", None) or "").strip()
             if candidate in reg.profiles:
                 selected = candidate
         if selected:

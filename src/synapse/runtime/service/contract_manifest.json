@@ -19,6 +19,8 @@
     "fs.list",
     "git.diff",
     "git.status",
+    "models.read",
+    "models.write",
     "project.list",
     "project.register",
     "project.thinking",
@@ -618,6 +620,86 @@
       "scope": "session",
       "scope_location": "params.session",
       "service_method": "git_status",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "models.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.models.delete",
+      "notes": [
+        "Remove one model profile from models.json."
+      ],
+      "request": "DeleteModelCommand",
+      "result": "ModelListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "delete_model",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "models.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.models.list",
+      "notes": [
+        "List configured downstream model profiles for the session's project."
+      ],
+      "request": "ListModelsQuery",
+      "result": "ModelListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "list_models",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "models.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.models.save",
+      "notes": [
+        "Add or update one model profile and persist to models.json."
+      ],
+      "request": "SaveModelCommand",
+      "result": "ModelListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "save_model",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "models.write",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.models.set_default",
+      "notes": [
+        "Set the default model profile in models.json."
+      ],
+      "request": "SetDefaultModelCommand",
+      "result": "ModelListResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "set_default_model",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "models.read",
+      "class": "service",
+      "in_process": "Optional delegate method: an in-process delegate without it keeps the wrapper constructible and reports the feature as unavailable.",
+      "method": "runtime.models.test",
+      "notes": [
+        "Probe one endpoint with a minimal request and report latency or error."
+      ],
+      "request": "TestModelCommand",
+      "result": "TestModelResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "test_model",
       "wire_defaults": {}
     },
     {
@@ -2790,6 +2872,33 @@
       "origin": "python",
       "role": "result"
     },
+    "DeleteModelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "alias",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Remove one model profile by alias."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "DeleteSessionCommand": {
       "fields": [
         {
@@ -4257,6 +4366,24 @@
       "origin": "python",
       "role": "request"
     },
+    "ListModelsQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "List the model profiles visible to one session's project."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ListProjectsQuery": {
       "fields": [
         {
@@ -4468,6 +4595,143 @@
       "notes": [
         "Whitelisted projection: command / args / env / url / headers / API keys and",
         "per-tool include-exclude lists are never carried."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ModelListResult": {
+      "fields": [
+        {
+          "name": "default",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "thinking_levels",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "models",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ModelSummary, ...]",
+          "required": true,
+          "ts_type": "ModelSummary[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The whole redacted profile catalog plus thinking levels and effective default."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ModelSummary": {
+      "fields": [
+        {
+          "name": "alias",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "model",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "provider",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "base_url",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "context_window",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "reasoning_effort",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "image_input",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "has_api_key",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "is_default",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": "dict",
+          "default_kind": "factory",
+          "name": "extra",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Mapping[str, Any]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Redacted projection of one model profile; never carries a secret."
       ],
       "origin": "python",
       "role": "result"
@@ -5982,6 +6246,53 @@
       "origin": "python",
       "role": "result"
     },
+    "SaveModelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "alias",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "profile",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Mapping[str, Any]",
+          "required": true,
+          "ts_type": "Record<string, JsonValue>",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "make_default",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Add or update one model profile and persist to models.json."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ScreenshotCancelCommand": {
       "fields": [
         {
@@ -7159,6 +7470,33 @@
       "origin": "python",
       "role": "result"
     },
+    "SetDefaultModelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "alias",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Make one existing profile the store's default."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "SetProjectThinkingLevelCommand": {
       "fields": [
         {
@@ -8156,6 +8494,69 @@
       ],
       "origin": "transport",
       "role": "value"
+    },
+    "TestModelCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "alias",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Probe one endpoint with a minimal request."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "TestModelResult": {
+      "fields": [
+        {
+          "name": "ok",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "latency_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "error",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Outcome of one connectivity probe; never contains secrets or raw payloads."
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "TextPayload": {
       "fields": [

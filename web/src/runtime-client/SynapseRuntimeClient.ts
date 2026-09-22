@@ -38,6 +38,8 @@ import type {
   ReloadMcpParams,
   ReloadMcpResult,
   EventNotificationMeta,
+  ModelListResult,
+  TestModelResult,
   ListSessionsParams,
   SessionListResult,
   CreateSessionParams,
@@ -1270,6 +1272,51 @@ export class SynapseRuntimeClient {
    */
   public async sttCancel(session: SessionRef): Promise<SttCancelResult> {
     return this.call<SttCancelResult>('runtime.stt.cancel', { session });
+  }
+
+  /**
+   * List configured downstream model profiles (`runtime.models.list`).
+   */
+  public async modelsList(session: SessionRef): Promise<ModelListResult> {
+    return this.call<ModelListResult>('runtime.models.list', { session });
+  }
+
+  /**
+   * Add or update one model profile (`runtime.models.save`).
+   */
+  public async modelsSave(
+    session: SessionRef,
+    alias: string,
+    profile: Record<string, unknown>,
+    makeDefault = false,
+  ): Promise<ModelListResult> {
+    return this.call<ModelListResult>('runtime.models.save', {
+      session,
+      alias,
+      profile,
+      make_default: makeDefault,
+    });
+  }
+
+  /**
+   * Remove one model profile by alias (`runtime.models.delete`).
+   */
+  public async modelsDelete(session: SessionRef, alias: string): Promise<ModelListResult> {
+    return this.call<ModelListResult>('runtime.models.delete', { session, alias });
+  }
+
+  /**
+   * Make one existing profile the store's default (`runtime.models.set_default`).
+   */
+  public async modelsSetDefault(session: SessionRef, alias: string): Promise<ModelListResult> {
+    return this.call<ModelListResult>('runtime.models.set_default', { session, alias });
+  }
+
+  /**
+   * Probe one endpoint with a minimal request (`runtime.models.test`).
+   */
+  public async modelsTest(session: SessionRef, alias: string): Promise<TestModelResult> {
+    return this.call<TestModelResult>('runtime.models.test', { session, alias });
   }
 
   private setState(next: ConnectionState, reason?: string) {

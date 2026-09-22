@@ -122,6 +122,13 @@ from synapse.runtime.service.history import (
     SESSION_LIST_LIMIT_MIN,
     SESSION_LIST_OFFSET_MAX,
 )
+from synapse.runtime.service.model_management import (
+    DeleteModelCommand,
+    ListModelsQuery,
+    SaveModelCommand,
+    SetDefaultModelCommand,
+    TestModelCommand,
+)
 from synapse.runtime.service.project_list import (
     PROJECT_LIST_LIMIT_DEFAULT,
     PROJECT_LIST_LIMIT_MAX,
@@ -614,6 +621,11 @@ def _attachment_mime(value: object) -> str:
         return normalize_mime(text)
     except InvalidRequestError:
         raise ProtocolError(-32602, "invalid_params") from None
+
+def _profile_mapping(value: object) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ProtocolError(-32602, "profile must be an object")
+    return dict(value)
 
 
 def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
@@ -1305,6 +1317,35 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     if method == "runtime.stt.cancel":
         _fields(params, {"session"})
         return SttCancelCommand(session=_session(params["session"]))
+    if method == "runtime.models.list":
+        _fields(params, {"session"})
+        return ListModelsQuery(session=_session(params["session"]))
+    if method == "runtime.models.save":
+        _optional_fields(params, {"session", "alias", "profile"}, {"make_default"})
+        return SaveModelCommand(
+            session=_session(params["session"]),
+            alias=_bounded_text(params["alias"], 128),
+            profile=_profile_mapping(params["profile"]),
+            make_default=bool(params.get("make_default", False)),
+        )
+    if method == "runtime.models.delete":
+        _fields(params, {"session", "alias"})
+        return DeleteModelCommand(
+            session=_session(params["session"]),
+            alias=_bounded_text(params["alias"], 128),
+        )
+    if method == "runtime.models.set_default":
+        _fields(params, {"session", "alias"})
+        return SetDefaultModelCommand(
+            session=_session(params["session"]),
+            alias=_bounded_text(params["alias"], 128),
+        )
+    if method == "runtime.models.test":
+        _fields(params, {"session", "alias"})
+        return TestModelCommand(
+            session=_session(params["session"]),
+            alias=_bounded_text(params["alias"], 128),
+        )
     raise ProtocolError(-32601, "method_not_found")
 
 
@@ -1437,6 +1478,16 @@ async def dispatch(
         return await service.finish_stt_dictation(dto)  # type: ignore[arg-type]
     if method == "runtime.stt.cancel":
         return await service.cancel_stt_dictation(dto)  # type: ignore[arg-type]
+    if method == "runtime.models.list":
+        return await service.list_models(dto)  # type: ignore[arg-type]
+    if method == "runtime.models.save":
+        return await service.save_model(dto)  # type: ignore[arg-type]
+    if method == "runtime.models.delete":
+        return await service.delete_model(dto)  # type: ignore[arg-type]
+    if method == "runtime.models.set_default":
+        return await service.set_default_model(dto)  # type: ignore[arg-type]
+    if method == "runtime.models.test":
+        return await service.test_model(dto)  # type: ignore[arg-type]
     raise ProtocolError(-32601, "method_not_found")
 
 
