@@ -40,6 +40,8 @@ class McpServerConfig:
     # exclude_tools removes tools from the final list (applied after include).
     include_tools: list[str] | None = None
     exclude_tools: list[str] | None = None
+    timeout: float = 12.0
+    proxy: str | None = None
 
 
 @dataclass
@@ -99,6 +101,65 @@ def _stdio_errlog() -> tuple[TextIO, bool]:
     return open(os.devnull, "w", encoding="utf-8"), True  # noqa: SIM115
 
 
+def _resolve_proxy(configured: str | None = None) -> str | None:
+    """Resolve an HTTP/HTTPS proxy URL.
+
+    Order of precedence:
+    1. Explicitly configured server proxy.
+    2. Environment variables (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY).
+    3. OS system proxy (e.g. Windows Internet Settings in registry).
+    """
+    if configured:
+        return configured
+    for key in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        val = os.environ.get(key)
+        if val:
+            return val
+    try:
+        import urllib.request
+
+        if hasattr(urllib.request, "getproxies_registry"):
+            reg = urllib.request.getproxies_registry()
+            if reg:
+                return reg.get("https") or reg.get("http")
+    except Exception:
+        pass
+    return None
+
+
+def _make_http_client_factory(proxy: str | None = None) -> Any:
+    """Return an httpx client factory that respects configured or system proxy."""
+    resolved_proxy = _resolve_proxy(proxy)
+    import httpx
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        kwargs: dict[str, Any] = {
+            "follow_redirects": True,
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if headers is not None:
+            kwargs["headers"] = headers
+        if auth is not None:
+            kwargs["auth"] = auth
+        if resolved_proxy:
+            kwargs["proxy"] = resolved_proxy
+        return httpx.AsyncClient(**kwargs)
+
+    return factory
+
+
 def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
     name = str(raw.get("name") or "").strip()
     if not name:
@@ -107,6 +168,12 @@ def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
     url = raw.get("url")
     include_tools = raw.get("include_tools")
     exclude_tools = raw.get("exclude_tools")
+    timeout_raw = raw.get("timeout")
+    try:
+        timeout = float(timeout_raw) if timeout_raw is not None else 12.0
+    except (ValueError, TypeError):
+        timeout = 12.0
+    proxy = raw.get("proxy")
     return McpServerConfig(
         name=name,
         transport=str(raw.get("transport") or "stdio").strip().lower(),
@@ -119,6 +186,8 @@ def _parse_server(raw: dict[str, Any]) -> McpServerConfig:
         tool_prefix=raw.get("tool_prefix"),
         include_tools=list(include_tools) if isinstance(include_tools, list) else None,
         exclude_tools=list(exclude_tools) if isinstance(exclude_tools, list) else None,
+        timeout=timeout,
+        proxy=str(proxy).strip() if proxy else None,
     )
 
 
@@ -574,30 +643,60 @@ class McpSessionPool:
             raise ValueError(
                 f"mcp server {server.name}: url required for {server.transport}"
             )
+        client_factory = _make_http_client_factory(server.proxy)
+        timeout_sec = server.timeout if server.timeout > 0 else 12.0
+
         if server.transport in {"streamable_http", "http"}:
             from mcp.client.streamable_http import streamablehttp_client
 
             transport_cm = streamablehttp_client(
-                server.url, headers=server.headers or None
+                server.url,
+                headers=server.headers or None,
+                httpx_client_factory=client_factory,
+                timeout=timeout_sec,
             )
         else:
             from mcp.client.sse import sse_client
 
-            transport_cm = sse_client(server.url, headers=server.headers or None)
+            transport_cm = sse_client(
+                server.url,
+                headers=server.headers or None,
+                httpx_client_factory=client_factory,
+                timeout=timeout_sec,
+            )
 
-        streams = await transport_cm.__aenter__()
-        read, write = streams[0], streams[1]
-        from mcp import ClientSession
+        transport_entered = False
+        session_entered = False
+        session_cm = None
+        try:
+            streams = await asyncio.wait_for(transport_cm.__aenter__(), timeout=timeout_sec)
+            transport_entered = True
+            read, write = streams[0], streams[1]
+            from mcp import ClientSession
 
-        session_cm = ClientSession(
-            read,
-            write,
-            list_roots_callback=self._list_roots
-            if self._workspace_root is not None
-            else None,
-        )
-        session = await session_cm.__aenter__()
-        await session.initialize()
+            session_cm = ClientSession(
+                read,
+                write,
+                list_roots_callback=self._list_roots
+                if self._workspace_root is not None
+                else None,
+            )
+            session = await session_cm.__aenter__()
+            session_entered = True
+            await asyncio.wait_for(session.initialize(), timeout=timeout_sec)
+        except BaseException:
+            if session_entered and session_cm is not None:
+                try:
+                    await session_cm.__aexit__(None, None, None)
+                except BaseException:
+                    pass
+            if transport_entered:
+                try:
+                    await transport_cm.__aexit__(None, None, None)
+                except BaseException:
+                    pass
+            raise
+
         return _LiveServer(
             config=server,
             session=session,
@@ -609,15 +708,20 @@ class McpSessionPool:
     async def _open_one(self, server: McpServerConfig) -> tuple[_LiveServer | None, str | None]:
         if not server.enabled:
             return None, None
+        timeout_sec = server.timeout if server.timeout > 0 else 12.0
         try:
             if server.transport == "stdio":
-                live = await self._open_stdio(server)
+                coro = self._open_stdio(server)
             elif server.transport in {"sse", "streamable_http", "http"}:
-                live = await self._open_http(server)
+                coro = self._open_http(server)
             else:
                 return None, f"mcp server {server.name}: unsupported transport {server.transport}"
+            live = await asyncio.wait_for(coro, timeout=timeout_sec)
             self._servers[server.name] = live
             return live, None
+        except TimeoutError:
+            logger.warning("MCP server %s open timed out after %.1fs", server.name, timeout_sec)
+            return None, f"mcp server {server.name}: connection timed out after {timeout_sec:.1f}s"
         except Exception as exc:  # noqa: BLE001
             logger.warning("MCP server %s open failed: %s", server.name, exc)
             return None, f"mcp server {server.name}: {exc}"
@@ -655,30 +759,37 @@ class McpSessionPool:
             return f"MCP error: {server_name}/{tool_name}: {exc}"
 
     async def _discover(self, servers: list[McpServerConfig]) -> McpLoadResult:
-        tools: list[Any] = []
-        warnings: list[str] = []
-        ok_servers: list[str] = []
-        tool_names: list[str] = []
-
-        for server in servers:
+        async def _load_one(
+            server: McpServerConfig,
+        ) -> tuple[str, list[Any], list[str], list[str], str | None]:
             if not server.enabled:
-                continue
+                return server.name, [], [], [], None
+
             live, err = await self._open_one(server)
             if err:
-                warnings.append(err)
-                continue
+                return server.name, [], [], [], err
             if live is None:
-                continue
+                return server.name, [], [], [], None
+
+            timeout_sec = server.timeout if server.timeout > 0 else 12.0
             try:
-                listed = await live.session.list_tools()
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"mcp server {server.name}: list_tools failed: {exc}")
+                listed = await asyncio.wait_for(live.session.list_tools(), timeout=timeout_sec)
+            except TimeoutError:
                 self._servers.pop(server.name, None)
-                continue
+                return (
+                    server.name,
+                    [],
+                    [],
+                    [],
+                    f"mcp server {server.name}: list_tools timed out after {timeout_sec:.1f}s",
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._servers.pop(server.name, None)
+                err_msg = f"mcp server {server.name}: list_tools failed: {exc}"
+                return server.name, [], [], [], err_msg
 
             # Record all discovered tool names (pre-filtering) for UI introspection.
             all_raw_names = [getattr(item, "name", "") for item in listed.tools]
-            self.discovered_tools[server.name] = all_raw_names
 
             def make_call(server_name: str = server.name):
                 def _call(name: str, arguments: dict[str, Any]) -> str:
@@ -696,14 +807,11 @@ class McpSessionPool:
                 return _call
 
             call_fn = make_call()
-            include_set: set[str] | None = None
-            if server.include_tools:
-                include_set = set(server.include_tools)
-            exclude_set: set[str] | None = None
-            if server.exclude_tools:
-                exclude_set = set(server.exclude_tools)
+            include_set = set(server.include_tools) if server.include_tools else None
+            exclude_set = set(server.exclude_tools) if server.exclude_tools else None
 
-            server_tool_count = 0
+            server_tools: list[Any] = []
+            server_tool_names: list[str] = []
             for item in listed.tools:
                 tool_name_raw = getattr(item, "name", "")
                 # Per-tool filtering: include → exclude → load.
@@ -711,7 +819,6 @@ class McpSessionPool:
                     continue
                 if exclude_set is not None and tool_name_raw in exclude_set:
                     continue
-                server_tool_count += 1
                 tool = _make_tool(
                     server=server,
                     tool_name=tool_name_raw,
@@ -719,26 +826,55 @@ class McpSessionPool:
                     input_schema=getattr(item, "inputSchema", None),
                     call_fn=call_fn,
                 )
-                tools.append(tool)
-                tool_names.append(getattr(tool, "name", tool_name_raw))
+                server_tools.append(tool)
+                server_tool_names.append(getattr(tool, "name", tool_name_raw))
 
+            warning: str | None = None
             total_available = len(listed.tools)
             if include_set is not None or exclude_set is not None:
-                if server_tool_count == 0:
+                if len(server_tools) == 0:
                     include_names = sorted(include_set) if include_set else None
                     exclude_names = sorted(exclude_set) if exclude_set else None
-                    warnings.append(
+                    warning = (
                         f"mcp server {server.name}: {total_available} tools discovered "
                         f"but all filtered out (include={include_names}, exclude={exclude_names})"
                     )
-                elif server_tool_count < total_available:
+                elif len(server_tools) < total_available:
                     logger.info(
                         "mcp server %s: %d/%d tools loaded (filtered)",
-                        server.name, server_tool_count, total_available,
+                        server.name,
+                        len(server_tools),
+                        total_available,
                     )
-            elif server_tool_count == 0:
-                warnings.append(f"mcp server {server.name}: no tools discovered")
-            ok_servers.append(server.name)
+            elif len(server_tools) == 0:
+                warning = f"mcp server {server.name}: no tools discovered"
+
+            return server.name, server_tools, server_tool_names, all_raw_names, warning
+
+        # Concurrently discover all servers with complete isolation:
+        # A slow or broken server will never delay or block other servers.
+        results = await asyncio.gather(
+            *[_load_one(s) for s in servers], return_exceptions=True
+        )
+
+        tools: list[Any] = []
+        warnings: list[str] = []
+        ok_servers: list[str] = []
+        tool_names: list[str] = []
+
+        for res in results:
+            if isinstance(res, Exception):
+                warnings.append(f"mcp server unexpected error: {res}")
+                continue
+            server_name, s_tools, s_tool_names, all_raw_names, warning = res
+            if all_raw_names:
+                self.discovered_tools[server_name] = all_raw_names
+            if warning:
+                warnings.append(warning)
+            if s_tools or server_name in self._servers:
+                ok_servers.append(server_name)
+                tools.extend(s_tools)
+                tool_names.extend(s_tool_names)
 
         self.warnings = warnings
         self.tool_names = tool_names

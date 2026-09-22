@@ -150,7 +150,7 @@ class SessionEventBroker:
         self,
         thread_id: str,
         *,
-        max_events: int = 2048,
+        max_events: int = 8192,
         hard_cap: int | None = None,
     ) -> None:
         self.thread_id = thread_id

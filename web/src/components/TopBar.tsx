@@ -5,6 +5,7 @@ import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel } from '../stores/sessionList.ts';
 import { GitExplorer } from './GitExplorer.tsx';
 import { SessionInfoPanel } from './SessionInfoPanel.tsx';
+import { TauriWindowControls } from './TauriWindowControls.tsx';
 
 /**
  * Header of the workspace column: the session title on the centre line.
@@ -96,7 +97,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
 
   return (
     <>
-    <header className="material-chrome relative z-20 wco-caption grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 select-none text-sm font-sans">
+    <header className="material-chrome relative z-20 wco-caption grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 h-chrome w-full shrink-0 border-b border-line px-3 select-none text-sm font-sans" data-tauri-drag-region="deep">
       {/* Left track: identity controls and context.  `min-w-0` lets the chips
           truncate instead of widening the track and nudging the centre line. */}
       <div className="flex min-w-0 items-center gap-1.5 wco-caption-controls">
@@ -187,6 +188,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           window would swallow the click. */}
       <button
         type="button"
+        data-tauri-drag-region="false"
         ref={setTitleAnchor}
         onClick={() => setInfoOpen((open) => !open)}
         aria-expanded={infoOpen}
@@ -204,7 +206,10 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           because the two equal `1fr` sides are what keep the title centred.
           In an installed window it is also what keeps the window buttons clear of
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
-      <div className="wco-caption-reserve" />
+      <div className="flex items-center justify-end">
+        <div className="wco-caption-reserve" />
+        <TauriWindowControls />
+      </div>
     </header>
     {gitExplorer !== null && (
       <GitExplorer initialPath={gitExplorer.path} onClose={closeGitExplorer} />

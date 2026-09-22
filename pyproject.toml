@@ -1,6 +1,6 @@
 [project]
 name = "synapse-cli-agent"
-version = "0.1.48"
+version = "0.1.49"
 description = "Local coding agent built on LangChain Deep Agents (LocalShell, no sandbox)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -83,6 +83,7 @@ packages = ["src/synapse"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+    "/rust",
     "/list",
     "/skills",
     "/agent-studio-prototype",

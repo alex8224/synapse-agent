@@ -227,8 +227,98 @@ jobs:
             dist/${{ matrix.binname }}.sha256
           if-no-files-found: error
 
+  build-gui:
+    name: gui (${{ matrix.name }})
+    needs: [web-console, build-executables]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            artifact: gui-windows
+            sidecar_artifact: executable-windows
+            sidecar_bin: synapse-windows-x64.exe
+            package_name: synapse-gui-windows-x64.zip
+          - name: macos
+            os: macos-latest
+            artifact: gui-macos
+            sidecar_artifact: executable-macos
+            sidecar_bin: synapse-macos-arm64
+            package_name: synapse-gui-macos-arm64.tar.gz
+          - name: linux
+            os: ubuntu-latest
+            artifact: gui-linux
+            sidecar_artifact: executable-linux
+            sidecar_bin: synapse-linux-x64
+            package_name: synapse-gui-linux-x64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download sidecar executable
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.sidecar_artifact }}
+          path: sidecar-dist
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Build Synapse GUI
+        run: cargo build --release --manifest-path rust/synapse-gui/Cargo.toml
+
+      - name: Assemble release package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bundle | Out-Null
+          Copy-Item "rust/synapse-gui/target/release/synapse-gui.exe" "bundle/synapse-gui.exe"
+          Copy-Item "sidecar-dist/${{ matrix.sidecar_bin }}" "bundle/synapse.exe"
+          Compress-Archive -Path "bundle/*" -DestinationPath "${{ matrix.package_name }}"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "${{ matrix.package_name }}").Hash.ToLower()
+          Set-Content -LiteralPath "${{ matrix.package_name }}.sha256" -Value $hash -NoNewline
+
+          # Build standard NSIS installer bundle
+          New-Item -ItemType Directory -Force -Path "rust/synapse-gui/binaries" | Out-Null
+          Copy-Item "sidecar-dist/${{ matrix.sidecar_bin }}" "rust/synapse-gui/binaries/synapse.exe"
+          npx --yes @tauri-apps/cli build --bundles nsis --manifest-path rust/synapse-gui/Cargo.toml
+          $installer = Get-ChildItem "rust/synapse-gui/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if ($installer) {
+            Copy-Item $installer.FullName "Synapse-Windows-x64-Setup.exe"
+            $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath "Synapse-Windows-x64-Setup.exe").Hash.ToLower()
+            Set-Content -LiteralPath "Synapse-Windows-x64-Setup.exe.sha256" -Value $installerHash -NoNewline
+          }
+
+      - name: Assemble release package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p bundle
+          cp "rust/synapse-gui/target/release/synapse-gui" "bundle/synapse-gui"
+          cp "sidecar-dist/${{ matrix.sidecar_bin }}" "bundle/synapse"
+          chmod +x bundle/*
+          tar -czf "${{ matrix.package_name }}" -C bundle .
+          shasum -a 256 "${{ matrix.package_name }}" | awk '{print $1}' > "${{ matrix.package_name }}.sha256"
+
+      - name: Upload GUI package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.package_name }}
+            ${{ matrix.package_name }}.sha256
+            *-Setup.exe
+            *-Setup.exe.sha256
+          if-no-files-found: warn
+
   release:
-    needs: [build, build-executables]
+    needs: [build, build-executables, build-gui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -246,6 +336,13 @@ jobs:
           merge-multiple: true
           path: executables
 
+      - name: Download GUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gui-*
+          merge-multiple: true
+          path: gui-packages
+
       - name: Download changelog body
         uses: actions/download-artifact@v4
         with:
@@ -258,6 +355,7 @@ jobs:
           files: |
             dist/*
             executables/*
+            gui-packages/*
           body_path: release_body.md
 
   publish-pypi:

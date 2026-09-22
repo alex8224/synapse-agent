@@ -64,6 +64,8 @@ Thumbs.db
 
 # Local release executables (build artifacts, not committed)
 synapse-*.exe
+*.spec
+rust/synapse-gui/binaries/
 
 # Local PyInstaller verification output (build artifacts, not committed)
 .verify-build/

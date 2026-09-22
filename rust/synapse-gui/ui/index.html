@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synapse</title>
+  <script>
+    (function() {
+      try {
+        const stored = localStorage.getItem('synapse.console.appearance');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (stored === 'light' || (!stored && !prefersDark)) {
+          document.documentElement.classList.add('light-theme');
+        } else {
+          document.documentElement.classList.add('dark-theme');
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      color-scheme: dark light;
+      /* Dark Theme (Default) */
+      --card-bg: rgba(15, 23, 42, 0.75);
+      --card-border: rgba(255, 255, 255, 0.14);
+      --glass-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.06) 100%);
+      --title-color: #f8fafc;
+      --subtitle-color: #94a3b8;
+      --status-color: #818cf8;
+      --track-bg: rgba(255, 255, 255, 0.08);
+      --badge-bg: rgba(255, 255, 255, 0.06);
+      --badge-border: rgba(255, 255, 255, 0.12);
+      --meta-color: #64748b;
+      --aura-color: radial-gradient(circle, rgba(56, 189, 248, 0.28) 0%, rgba(99, 102, 241, 0.18) 45%, transparent 70%);
+      --glyph-inner: #0f172a;
+      --glyph-dot: #38bdf8;
+      --dot-pulse: #38bdf8;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root:not(.dark-theme) {
+        --card-bg: rgba(255, 255, 255, 0.72);
+        --card-border: rgba(0, 0, 0, 0.1);
+        --glass-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.2) 100%);
+        --title-color: #0f172a;
+        --subtitle-color: #64748b;
+        --status-color: #4f46e5;
+        --track-bg: rgba(0, 0, 0, 0.06);
+        --badge-bg: rgba(0, 0, 0, 0.04);
+        --badge-border: rgba(0, 0, 0, 0.08);
+        --meta-color: #94a3b8;
+        --aura-color: radial-gradient(circle, rgba(56, 189, 248, 0.22) 0%, rgba(99, 102, 241, 0.14) 45%, transparent 70%);
+        --glyph-inner: #ffffff;
+        --glyph-dot: #2563eb;
+        --dot-pulse: #3b82f6;
+      }
+    }
+
+    html.light-theme {
+      --card-bg: rgba(255, 255, 255, 0.72);
+      --card-border: rgba(0, 0, 0, 0.1);
+      --glass-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.2) 100%);
+      --title-color: #0f172a;
+      --subtitle-color: #64748b;
+      --status-color: #4f46e5;
+      --track-bg: rgba(0, 0, 0, 0.06);
+      --badge-bg: rgba(0, 0, 0, 0.04);
+      --badge-border: rgba(0, 0, 0, 0.08);
+      --meta-color: #94a3b8;
+      --aura-color: radial-gradient(circle, rgba(56, 189, 248, 0.22) 0%, rgba(99, 102, 241, 0.14) 45%, transparent 70%);
+      --glyph-inner: #ffffff;
+      --glyph-dot: #2563eb;
+      --dot-pulse: #3b82f6;
+    }
+
+    html.dark-theme {
+      --card-bg: rgba(15, 23, 42, 0.75);
+      --card-border: rgba(255, 255, 255, 0.14);
+      --glass-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.08) 100%);
+      --title-color: #f8fafc;
+      --subtitle-color: #94a3b8;
+      --status-color: #818cf8;
+      --track-bg: rgba(255, 255, 255, 0.08);
+      --badge-bg: rgba(255, 255, 255, 0.06);
+      --badge-border: rgba(255, 255, 255, 0.12);
+      --meta-color: #64748b;
+      --aura-color: radial-gradient(circle, rgba(56, 189, 248, 0.28) 0%, rgba(99, 102, 241, 0.18) 45%, transparent 70%);
+      --glyph-inner: #0f172a;
+      --glyph-dot: #38bdf8;
+      --dot-pulse: #38bdf8;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent !important;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .splash-container {
+      width: 100vw;
+      height: 100vh;
+      border-radius: 14px;
+      position: relative;
+      background: var(--card-bg);
+      backdrop-filter: blur(32px) saturate(190%) contrast(102%);
+      -webkit-backdrop-filter: blur(32px) saturate(190%) contrast(102%);
+      border: 1px solid var(--card-border);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.15);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 22px 20px 16px;
+      overflow: hidden;
+      transition: background 0.25s ease, border-color 0.25s ease;
+    }
+
+    /* Specular glass reflection layer */
+    .splash-container::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--glass-sheen);
+      pointer-events: none;
+      border-radius: 14px;
+    }
+
+    /* Ambient glow behind logo */
+    .aura-glow {
+      position: absolute;
+      top: 25px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 140px;
+      height: 140px;
+      background: var(--aura-color);
+      filter: blur(16px);
+      pointer-events: none;
+      z-index: 0;
+      animation: pulse-glow 3.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse-glow {
+      0% { transform: translateX(-50%) scale(0.9); opacity: 0.7; }
+      100% { transform: translateX(-50%) scale(1.15); opacity: 1; }
+    }
+
+    .drag-zone {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 38px;
+      -webkit-app-region: drag;
+      z-index: 10;
+    }
+
+    .content-zone {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin-top: 4px;
+    }
+
+    .logo-wrapper {
+      width: 66px;
+      height: 66px;
+      position: relative;
+      animation: float-breathing 4s ease-in-out infinite;
+    }
+
+    @keyframes float-breathing {
+      0%, 100% {
+        transform: translateY(0);
+        filter: drop-shadow(0 4px 12px rgba(56, 189, 248, 0.25));
+      }
+      50% {
+        transform: translateY(-2.5px);
+        filter: drop-shadow(0 8px 18px rgba(79, 70, 229, 0.38));
+      }
+    }
+
+    .logo-wrapper svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .brand-section {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      color: var(--title-color);
+      text-transform: uppercase;
+      line-height: 1.1;
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--subtitle-color);
+      letter-spacing: 0.05em;
+      font-weight: 400;
+    }
+
+    .progress-zone {
+      position: relative;
+      z-index: 2;
+      width: 210px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      margin-top: 2px;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 3px;
+      background: var(--track-bg);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-bar {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 35%;
+      background: linear-gradient(90deg, #38bdf8, #3b82f6, #6366f1);
+      border-radius: 999px;
+      animation: indeterminate 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+    }
+
+    @keyframes indeterminate {
+      0% { left: -35%; width: 30%; }
+      50% { left: 25%; width: 55%; }
+      100% { left: 100%; width: 30%; }
+    }
+
+    .status-text {
+      font-size: 11px;
+      color: var(--status-color);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      text-align: center;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      max-width: 360px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--dot-pulse);
+      box-shadow: 0 0 8px var(--dot-pulse);
+      animation: blink 1.5s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
+    .footer-zone {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      color: var(--meta-color);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      padding: 0 4px;
+    }
+
+    .badge {
+      padding: 1.5px 6px;
+      border-radius: 5px;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+    }
+  </style>
+</head>
+<body>
+  <div class="splash-container" data-tauri-drag-region>
+    <div class="drag-zone" data-tauri-drag-region></div>
+    <div class="aura-glow"></div>
+
+    <div class="content-zone">
+      <div class="logo-wrapper">
+        <svg viewBox="100 90 312 290" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="topToBottomRightGrad" x1="256" y1="140" x2="360" y2="332" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#38bdf8" />
+              <stop offset="50%" stop-color="#3b82f6" />
+              <stop offset="100%" stop-color="#4f46e5" />
+            </linearGradient>
+            <linearGradient id="bottomGrad" x1="360" y1="332" x2="152" y2="332" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#4f46e5" />
+              <stop offset="50%" stop-color="#2563eb" />
+              <stop offset="100%" stop-color="#38bdf8" />
+            </linearGradient>
+            <linearGradient id="topToBottomLeftGrad" x1="256" y1="140" x2="152" y2="332" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#38bdf8" />
+              <stop offset="60%" stop-color="#2563eb" />
+              <stop offset="100%" stop-color="#38bdf8" />
+            </linearGradient>
+            <linearGradient id="conduitToCenter" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#38bdf8" />
+              <stop offset="100%" stop-color="#4f46e5" />
+            </linearGradient>
+          </defs>
+
+          <!-- Outer Triangle Perimeter Bridges -->
+          <path d="M 256 140 L 360 332" stroke="url(#topToBottomRightGrad)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M 360 332 L 152 332" stroke="url(#bottomGrad)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M 152 332 L 256 140" stroke="url(#topToBottomLeftGrad)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" />
+
+          <!-- Interior Conduits to Central Nexus (256, 268) -->
+          <path d="M 256 140 L 256 268" stroke="url(#conduitToCenter)" stroke-width="20" stroke-linecap="round" />
+          <path d="M 360 332 L 256 268" stroke="url(#conduitToCenter)" stroke-width="20" stroke-linecap="round" />
+          <path d="M 152 332 L 256 268" stroke="url(#conduitToCenter)" stroke-width="20" stroke-linecap="round" />
+
+          <!-- Center Junction Nexus Disc -->
+          <circle cx="256" cy="268" r="22" fill="var(--glyph-inner)" stroke="#3b82f6" stroke-width="6" />
+          <circle cx="256" cy="268" r="9" fill="var(--glyph-dot)" />
+
+          <!-- Node 1: Apex Node (256, 140) -->
+          <circle cx="256" cy="140" r="32" fill="#38bdf8" />
+          <circle cx="256" cy="140" r="18" fill="var(--glyph-inner)" />
+          <circle cx="256" cy="140" r="8" fill="var(--glyph-dot)" />
+
+          <!-- Node 2: Bottom-Right Node (360, 332) -->
+          <circle cx="360" cy="332" r="32" fill="#4f46e5" />
+          <circle cx="360" cy="332" r="18" fill="var(--glyph-inner)" />
+          <circle cx="360" cy="332" r="8" fill="var(--glyph-dot)" />
+
+          <!-- Node 3: Bottom-Left Node (152, 332) -->
+          <circle cx="152" cy="332" r="32" fill="#2563eb" />
+          <circle cx="152" cy="332" r="18" fill="var(--glyph-inner)" />
+          <circle cx="152" cy="332" r="8" fill="var(--glyph-dot)" />
+        </svg>
+      </div>
+
+      <div class="brand-section">
+        <div class="brand-title">SYNAPSE</div>
+        <div class="brand-subtitle">Autonomous Agent Platform</div>
+      </div>
+    </div>
+
+    <div class="progress-zone">
+      <div class="progress-track">
+        <div class="progress-bar"></div>
+      </div>
+      <div class="status-text sub">
+        <span class="status-dot"></span>
+        <span>正在初始化运行时服务...</span>
+      </div>
+    </div>
+
+    <div class="footer-zone">
+      <span class="badge">v0.1.0</span>
+      <span>runtime · ready</span>
+    </div>
+  </div>
+</body>
+</html>

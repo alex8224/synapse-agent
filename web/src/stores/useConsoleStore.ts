@@ -1057,8 +1057,8 @@ let lastAttachedEpoch = 0;
 /**
  * Maximum number of live events held while a history page is loading.
  *
- * 8192 matches the daemon broker's *default* retention
- * (`hard_cap = max(max_events * 4, 1024)` with the default `max_events = 2048`;
+ * 32768 matches the daemon broker's *default* retention
+ * (`hard_cap = max(max_events * 4, 1024)` with the default `max_events = 8192`;
  * `src/synapse/runtime/sessions/events.py`), so under that default the buffer
  * can hold a whole replay *plus* the live events that arrive while the history
  * page loads.  It is a default, not a protocol guarantee -- a deployment can
@@ -1069,7 +1069,7 @@ let lastAttachedEpoch = 0;
  * exactly the prefix this console is trying to preserve.  The drop path below
  * stays as a safety valve should the buffer ever exceed it.
  */
-const MAX_LIVE_BUFFER = 8192;
+const MAX_LIVE_BUFFER = 32768;
 
 /**
  * Subscriptions the client fenced or that ended with an error the console could

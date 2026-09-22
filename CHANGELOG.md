@@ -6,6 +6,20 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.49
+
+### New Features
+
+- **Desktop GUI & NSIS Installer**: Added native desktop wrapper (`synapse-gui`) powered by Tauri v2 with frosted glass splash screen, system tray management, single-instance mutex, and Windows NSIS installer packaging.
+- **Theme-Adaptive Transparent Icons**: Replaced opaque squircle icons with pure transparent multi-resolution assets that seamlessly adapt to light and dark desktop themes.
+
+### Bug Fixes
+
+- **Web Console Desktop Controls & Dragging**: Enabled proper window control (minimize/maximize/close) and title bar dragging within Tauri desktop window via Capability permissions and `data-tauri-drag-region`.
+- **Automatic Project Registration**: Added smart workspace discovery and auto-registration for the Web Console host so launching from the desktop installer seamlessly initializes and connects without requiring prior CLI setup.
+
+---
+
 ## v0.1.48
 
 ### Bug Fixes

@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WS_HEARTBEAT_SECONDS,
         help="WebSocket ping interval in seconds; 0 disables (default 30)",
     )
+    parser.add_argument(
+        "--auto-register",
+        action="store_true",
+        help="Auto-register workspace in catalog if not registered",
+    )
     return parser
 
 
@@ -149,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             session_ttl_seconds=args.session_ttl_seconds,
             pair_ttl_seconds=args.pair_ttl_seconds,
             pairing_required=args.pairing,
+            auto_register=args.auto_register,
             max_concurrent_sockets=args.max_sockets,
             max_body_bytes=args.max_body_bytes,
             ws_heartbeat_seconds=args.ws_heartbeat_seconds,

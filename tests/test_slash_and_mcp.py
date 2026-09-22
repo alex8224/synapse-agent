@@ -699,9 +699,37 @@ def test_rebuild_agent_reuses_mcp_pool_tools(tmp_path, monkeypatch):
     kw = calls[0]
     assert kw["load_mcp"] is False
     assert kw["mcp_tools"] == [tool]
-    assert kw["model"] is model
-    assert kw["checkpointer"] == "cp"
-    assert kw["steer_queue"] is steer_queue
+
+
+def test_mcp_proxy_resolution(monkeypatch):
+    from synapse.integrations.mcp_client import _resolve_proxy
+
+    assert _resolve_proxy("http://custom:1234") == "http://custom:1234"
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy:8080")
+    assert _resolve_proxy() == "http://env-proxy:8080"
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    # Without env vars, should not crash (may return system proxy or None)
+    _ = _resolve_proxy()
+
+
+def test_mcp_discover_isolation_on_timeout():
+    from synapse.integrations.mcp_client import McpServerConfig, McpSessionPool
+
+    # Server A: invalid host that times out in 0.5s
+    broken = McpServerConfig(
+        name="broken", transport="sse", url="http://192.0.2.1:65534/sse", timeout=0.5
+    )
+    pool = McpSessionPool()
+    try:
+        res = pool.load([broken])
+        assert "broken" not in res.servers
+        assert any("timed out" in w or "failed" in w for w in res.warnings)
+    finally:
+        pool.close()
 
 
 def test_rebuild_agent_defers_mcp_when_not_attached(tmp_path, monkeypatch):

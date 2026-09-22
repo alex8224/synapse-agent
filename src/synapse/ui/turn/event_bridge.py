@@ -30,7 +30,7 @@ class TextualTurnEventBridge:
         renderer: TextualTurnEventRenderer,
         wake_ui: Callable[[Callable[[], None]], object],
         *,
-        max_events: int = 2048,
+        max_events: int = 8192,
         drain_batch: int = 64,
     ) -> None:
         self._renderer = renderer

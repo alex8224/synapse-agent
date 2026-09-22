@@ -98,6 +98,13 @@ export const SKILL_MENTIONS: readonly MentionEntry[] = [
   },
   {
     kind: 'skill',
+    id: 'skill:game-control',
+    label: 'game-control',
+    detail: '控制受限虚拟 Xbox 手柄和窗口截图，执行短时游戏操作与核验',
+    token: '@skill:game-control',
+  },
+  {
+    kind: 'skill',
     id: 'skill:project-session-reader',
     label: 'project-session-reader',
     detail: '读取或检索指定项目的 .synapse 会话库：列出会话、全文搜索、分页读取',

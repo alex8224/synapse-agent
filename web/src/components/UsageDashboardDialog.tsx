@@ -648,13 +648,12 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
             <div className="space-y-5">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="rounded-card border border-line bg-surface p-3.5 space-y-2 shadow-card">
-                    <div className="flex items-center justify-between">
-                      <div className="h-3 w-20 rounded bg-sunken animate-pulse" />
-                      <div className="h-3 w-10 rounded bg-sunken animate-pulse" />
+                  <div key={i} className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card min-h-[108px]">
+                    <div>
+                      <div className="h-3 w-24 rounded bg-sunken animate-pulse" />
+                      <div className="mt-2 h-7 w-28 rounded bg-sunken animate-pulse" />
                     </div>
-                    <div className="h-7 w-28 rounded bg-sunken animate-pulse" />
-                    <div className="h-4 w-32 rounded-pill bg-sunken animate-pulse" />
+                    <div className="mt-2.5 h-4 w-32 rounded-pill bg-sunken animate-pulse" />
                   </div>
                 ))}
               </div>
@@ -710,45 +709,48 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
             <div className={`space-y-5 transition-opacity duration-150 ${isFetching ? 'opacity-70' : 'opacity-100'}`}>
               {/* 第一层：核心 3 联 KPI 卡片 */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div className="rounded-card border border-line bg-surface p-3.5 space-y-1 shadow-card hover:border-line-strong transition-all">
-                  <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                    <span>累计吞吐 Token</span>
-                    <span className="font-mono text-[10px] text-gray-400 dark:text-gray-500">[TOKENS]</span>
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                  <div>
+                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                      累计吞吐 Token
+                    </div>
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-100 font-mono">
+                      {fmtTokens(stats.kpi.total_tokens)}
+                    </div>
                   </div>
-                  <div className="text-2xl font-bold tracking-tight text-gray-900 font-mono">
-                    {fmtTokens(stats.kpi.total_tokens)}
-                  </div>
-                  <div className="pt-0.5">
+                  <div className="mt-2.5">
                     <span className="inline-flex items-center gap-1 rounded-pill bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       输入 {fmtTokens(stats.kpi.provider_input_tokens)} + 输出 {fmtTokens(stats.kpi.output_tokens)}
                     </span>
                   </div>
                 </div>
 
-                <div className="rounded-card border border-line bg-surface p-3.5 space-y-1 shadow-card hover:border-line-strong transition-all">
-                  <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                    <span>Prompt 缓存命中率</span>
-                    <span className="font-mono text-[10px] text-emerald-500">[CACHE]</span>
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                  <div>
+                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                      Prompt 缓存命中率
+                    </div>
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-500 font-mono">
+                      {fmtPct(stats.kpi.cache_hit_rate)}
+                    </div>
                   </div>
-                  <div className="text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-500 font-mono">
-                    {fmtPct(stats.kpi.cache_hit_rate)}
-                  </div>
-                  <div className="pt-0.5">
+                  <div className="mt-2.5">
                     <span className="inline-flex items-center gap-1 rounded-pill bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       缓存读取 {fmtTokens(stats.kpi.cache_read_tokens)}
                     </span>
                   </div>
                 </div>
 
-                <div className="rounded-card border border-line bg-surface p-3.5 space-y-1 shadow-card hover:border-line-strong transition-all">
-                  <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                    <span>压缩节约 Token</span>
-                    <span className="font-mono text-[10px] text-purple-400">[SAVED]</span>
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                  <div>
+                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                      压缩节约 Token
+                    </div>
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-purple-600 dark:text-purple-400 font-mono">
+                      {fmtTokens(stats.kpi.saved_tokens)}
+                    </div>
                   </div>
-                  <div className="text-2xl font-bold tracking-tight text-purple-600 dark:text-purple-400 font-mono">
-                    {fmtTokens(stats.kpi.saved_tokens)}
-                  </div>
-                  <div className="pt-0.5">
+                  <div className="mt-2.5">
                     <span className="inline-flex items-center gap-1 rounded-pill bg-purple-500/10 text-purple-700 dark:text-purple-400 border border-purple-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       裁剪率 {fmtPct(stats.kpi.saved_pct)}
                     </span>

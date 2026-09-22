@@ -112,6 +112,29 @@ def resolve_project(
     catalog = ProjectCatalog(catalog_path)
     try:
         info = catalog.get_project(workspace=config.workspace)
+        if info is None and config.auto_register:
+            is_install_dir = (
+                (config.workspace / "synapse-gui.exe").exists()
+                or (config.workspace / "uninstall.exe").exists()
+                or (config.workspace / "synapse.exe").exists()
+                or config.workspace.name.lower() in ("binaries", "synapse")
+            )
+            if is_install_dir:
+                recent_projects = catalog.list_projects()
+                for rp in recent_projects:
+                    rp_path = Path(rp.workspace_path)
+                    if (
+                        rp_path.exists()
+                        and not (rp_path / "synapse-gui.exe").exists()
+                        and not (rp_path / "uninstall.exe").exists()
+                        and rp_path.name.lower() != "binaries"
+                    ):
+                        info = rp
+                        break
+                if info is None:
+                    info = catalog.register_project(Path.home())
+            else:
+                info = catalog.register_project(config.workspace)
     finally:
         catalog.close()
     if info is None:

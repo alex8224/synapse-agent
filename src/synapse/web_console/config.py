@@ -48,6 +48,7 @@ class WebConsoleConfig:
     #: mints a session for any same-origin loopback browser instead of asking for
     #: the one-time code.  Local debugging only; never the shipped default.
     pairing_required: bool = True
+    auto_register: bool = False
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     max_concurrent_sockets: int = DEFAULT_MAX_CONCURRENT_SOCKETS
     ws_heartbeat_seconds: int = DEFAULT_WS_HEARTBEAT_SECONDS

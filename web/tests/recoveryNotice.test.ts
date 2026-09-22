@@ -51,6 +51,16 @@ test('every recovery state maps to its kind, or to silence', () => {
   }
 });
 
+test('internal diagnostic technical details are humanized for the reader', () => {
+  const rawTurn = 'active turn b763e724caca49ca82b0705d8399c6cc live prefix was evicted; replay incomplete until settlement';
+  const noticeTurn = recoveryNotice('incomplete', rawTurn, 0);
+  assert.equal(noticeTurn?.detail, '重连后较早的流式输出已折叠，生成完成后将自动同步完整记录。');
+
+  const rawGap = 'watch cursor 42 stale (replay_gap); resynced from history snapshot';
+  const noticeGap = recoveryNotice('incomplete', rawGap, 0);
+  assert.equal(noticeGap?.detail, '会话已重新与最新进度同步，未完成轮次在生成结束后将自动补全完整记录。');
+});
+
 test('every rendered notice carries a non-empty Chinese headline', () => {
   for (const state of STATES) {
     const notice = recoveryNotice(state, null, 0);

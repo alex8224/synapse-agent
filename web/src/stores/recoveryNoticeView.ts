@@ -44,7 +44,7 @@ export interface RecoveryNotice {
  */
 const TITLES: Record<RecoveryNoticeKind, string> = {
   blocked: '运行时连接恢复失败',
-  degraded: '运行轮次的早期步骤不可完整恢复',
+  degraded: '运行轮次较早流式步骤已折叠',
   transient: '正在恢复运行时连接',
 };
 
@@ -81,6 +81,20 @@ function dropCount(value: number): number {
 }
 
 /**
+ * Translate internal technical diagnostic detail sentences into human-friendly explanations.
+ */
+function humanizeDetail(detail: string): string {
+  const trimmed = detail.trim();
+  if (/^active turn \S+ live prefix was evicted; replay incomplete until settlement$/i.test(trimmed)) {
+    return '重连后较早的流式输出已折叠，生成完成后将自动同步完整记录。';
+  }
+  if (/^watch cursor \S+ stale \([^)]+\); resynced from history snapshot$/i.test(trimmed)) {
+    return '会话已重新与最新进度同步，未完成轮次在生成结束后将自动补全完整记录。';
+  }
+  return trimmed;
+}
+
+/**
  * The detail line, or `null` when it would add nothing.
  *
  * `recoveryDetail` is echoed as-is, with one exception: when it is empty, or is
@@ -90,8 +104,9 @@ function dropCount(value: number): number {
  */
 function noticeDetail(recoveryDetail: string | null, title: string): string | null {
   if (recoveryDetail === null) return null;
-  if (recoveryDetail.trim() === '' || recoveryDetail.trim() === title) return null;
-  return recoveryDetail;
+  const humanized = humanizeDetail(recoveryDetail);
+  if (humanized === '' || humanized === title) return null;
+  return humanized;
 }
 
 /**

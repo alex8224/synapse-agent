@@ -129,6 +129,43 @@ Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
 
 配对码随后从 `$log\console.err` 读取（前台运行时直接出现在宿主 stderr）。
 
+Windows 上不必每次手敲命令：仓库自带 `scripts/web-console-desktop.ps1`，双击桌面图标
+即可「一步到位」——脚本按需在后台拉起宿主（已在运行就只复用，不会重复启动），等端口
+应答后打开控制台窗口。开窗优先级：**已安装的 PWA**（Start Menu 里带 `--app-id` 的
+快捷方式，即真正的应用窗口——独立任务栏身份、窗口控件覆盖标题栏、任务栏跳转列表都在），
+没有装 PWA 时用 Edge/Chrome 的 `--app=` 独立窗口，再退回默认浏览器。宿主与启动器日志、
+宿主 PID 都在
+`%LOCALAPPDATA%\Synapse\web-console`（`console.out` / `console.err` / `launcher.log` /
+`console.pid`）：
+
+```powershell
+pwsh -NoProfile -File scripts\web-console-desktop.ps1 -InstallShortcut   # 创建桌面快捷方式
+pwsh -NoProfile -File scripts\web-console-desktop.ps1 -Restart           # 停止并重启宿主，再开窗
+pwsh -NoProfile -File scripts\web-console-desktop.ps1 -Stop              # 停宿主（-WithDaemon 连 daemon 一起停）
+
+# 同一脚本的另外两个桌面入口（-ShortcutAction start|restart|stop）
+pwsh -NoProfile -File scripts\web-console-desktop.ps1 -InstallShortcut -ShortcutName "Synapse 控制台（重启）" -ShortcutAction restart
+pwsh -NoProfile -File scripts\web-console-desktop.ps1 -InstallShortcut -ShortcutName "Synapse 控制台（停止）" -ShortcutAction stop
+```
+
+桌面图标默认带 `--no-pairing`：本机 loopback 单用户场景省掉每次输码；要保留配对码校验
+就自己加 `-Pairing`，脚本会把配对码复制到剪贴板并弹窗提示。其它参数：`-Port`（默认
+8080）、`-Workspace`（默认仓库根）、`-DefaultBrowser`（不开独立窗口）、`-NoOpen`、
+`-ShortcutAction`。
+
+`-Restart` 是「停宿主 → 等端口真正释放 → 重新拉起 → 开窗」，`-Stop` 只停宿主；两者都
+**不动 daemon**——宿主自启的 daemon 作为服务继续运行、下次复用，正在跑的 agent turn
+不会被重启打断；要连运行时一起重启就加 `-WithDaemon`。宿主换进程后已经开着的窗口需要
+刷新（`Ctrl+R`）才会接上新宿主。
+
+PWA 的 origin 在安装时就固定了（`http://127.0.0.1:8080/` 或 `http://localhost:8080/`），
+所以换 `-Port` 后 PWA 窗口可能连不上：这时加 `-NoPwa` 走 `--app=`，或用
+`-PwaShortcut "<Start Menu 里的 .lnk 路径>"` 指定具体那个应用（同名装了多个时脚本会挑
+不带 `(1)` 后缀的那个，并在 `launcher.log` 里记下实际用的是哪一个）。开窗前会**校验应用
+确实还装着**——快捷方式目标 exe 存在，且该 `--app-id` 仍在对应浏览器 profile 的
+`Web Applications\Manifest Resources\<app-id>` 下；残留的旧快捷方式会被跳过并记进
+`launcher.log`，退回 `--app=` 或默认浏览器。
+
 宿主启动时 stdout 恰好一行 JSON 元数据，配对码只出现在 stderr：
 
 ```

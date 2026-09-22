@@ -1585,6 +1585,42 @@ def test_resolve_project_unknown_workspace_raises(tmp_path: Path) -> None:
     with pytest.raises(ProjectDiscoveryError):
         resolve_project(config)
 
+def test_resolve_project_auto_register(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    ProjectCatalog(catalog_path).close()
+    config = WebConsoleConfig(
+        workspace=workspace,
+        catalog_path=catalog_path,
+        runtime_port=8765,
+        auto_register=True,
+    )
+    view = resolve_project(config)
+    assert view.workspace_path == str(workspace.resolve())
+    assert view.name == "workspace"
+
+def test_resolve_project_auto_register_install_dir_fallback(tmp_path: Path) -> None:
+    install_dir = tmp_path / "Programs" / "Synapse"
+    install_dir.mkdir(parents=True)
+    (install_dir / "synapse-gui.exe").touch()
+    existing_workspace = tmp_path / "real_project"
+    existing_workspace.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    cat = ProjectCatalog(catalog_path)
+    try:
+        cat.register_project(existing_workspace)
+    finally:
+        cat.close()
+    config = WebConsoleConfig(
+        workspace=install_dir,
+        catalog_path=catalog_path,
+        runtime_port=8765,
+        auto_register=True,
+    )
+    view = resolve_project(config)
+    assert view.workspace_path == str(existing_workspace.resolve())
+
 
 def test_cli_parser_and_unresolvable_startup(tmp_path: Path) -> None:
     parser = build_parser()
