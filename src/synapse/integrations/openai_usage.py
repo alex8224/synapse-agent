@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from synapse.integrations.openai_oauth import OpenAIOAuthStore, OpenAIOAuthTokenProvider
+from synapse.integrations.openai_proxy import openai_proxy_kwargs
 
 OPENAI_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage"
 OPENAI_RESET_CREDITS_ENDPOINT = (
@@ -181,7 +182,10 @@ class CodexUsageClient:
                     return cached
         headers = self._auth_headers()
         account = self._headers_key(headers)
-        response = httpx.get(OPENAI_USAGE_ENDPOINT, headers=headers, timeout=self._timeout)
+        response = httpx.get(
+            OPENAI_USAGE_ENDPOINT, headers=headers, timeout=self._timeout,
+            **openai_proxy_kwargs(OPENAI_USAGE_ENDPOINT),
+        )
         response.raise_for_status()
         payload = response.json()
         tokens = self._store.load()
@@ -211,7 +215,10 @@ class CodexUsageClient:
                     return cached
         headers = self._auth_headers()
         account = self._headers_key(headers)
-        response = httpx.get(OPENAI_RESET_CREDITS_ENDPOINT, headers=headers, timeout=self._timeout)
+        response = httpx.get(
+            OPENAI_RESET_CREDITS_ENDPOINT, headers=headers, timeout=self._timeout,
+            **openai_proxy_kwargs(OPENAI_RESET_CREDITS_ENDPOINT),
+        )
         response.raise_for_status()
         details = parse_reset_credits_details(response.json())
         with self._lock:
@@ -238,6 +245,7 @@ class CodexUsageClient:
             body["credit_id"] = credit_id
         response = httpx.post(
             OPENAI_CONSUME_RESET_ENDPOINT, headers=headers, json=body, timeout=self._timeout,
+            **openai_proxy_kwargs(OPENAI_CONSUME_RESET_ENDPOINT),
         )
         response.raise_for_status()
         payload = response.json()

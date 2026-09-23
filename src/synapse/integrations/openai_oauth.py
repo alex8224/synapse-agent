@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from synapse.integrations.openai_proxy import openai_proxy_kwargs
 from synapse.settings.config_paths import user_config_dir
 
 OPENAI_OAUTH_ISSUER = "https://auth.openai.com"
@@ -302,7 +303,10 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
 
 def _post_token(payload: dict[str, str]) -> dict[str, Any]:
     try:
-        response = httpx.post(f"{OPENAI_OAUTH_ISSUER}/oauth/token", data=payload, timeout=30.0)
+        url = f"{OPENAI_OAUTH_ISSUER}/oauth/token"
+        response = httpx.post(
+            url, data=payload, timeout=30.0, **openai_proxy_kwargs(url)
+        )
         response.raise_for_status()
         data = response.json()
     except httpx.HTTPError as exc:
