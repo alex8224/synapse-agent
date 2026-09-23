@@ -9,11 +9,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  formatWorkflowDuration,
+  formatWorkflowTime,
+  formatWorkflowTokens,
   MalformedWorkflowPayloadError,
   parseWorkflowRun,
   parseWorkflowRunPage,
   workflowProgress,
   workflowResumeHint,
+  workflowRoleLabel,
   workflowStatusLabel,
   workflowSummary,
 } from '../src/runtime-client/workflows.ts';
@@ -126,4 +130,31 @@ test('status tokens get a label and unknown ones pass through', () => {
   assert.equal(workflowStatusLabel('uncertain'), '结果不确定');
   assert.equal(workflowStatusLabel('waiting_approval'), '等待审批');
   assert.equal(workflowStatusLabel('brand_new'), 'brand_new');
+});
+
+test('role tokens get a human-friendly label and unknown ones pass through', () => {
+  assert.equal(workflowRoleLabel('reviewer'), '审阅者 (reviewer)');
+  assert.equal(workflowRoleLabel('tester'), '测试者 (tester)');
+  assert.equal(workflowRoleLabel('custom_worker'), 'custom_worker');
+});
+
+test('formatWorkflowTokens formats token quantities concisely', () => {
+  assert.equal(formatWorkflowTokens(0), '0');
+  assert.equal(formatWorkflowTokens(500), '500');
+  assert.equal(formatWorkflowTokens(1500), '1.5k');
+  assert.equal(formatWorkflowTokens(2000), '2k');
+  assert.equal(formatWorkflowTokens(1500000), '1.5M');
+});
+
+test('formatWorkflowTime extracts concise HH:mm:ss', () => {
+  assert.match(formatWorkflowTime('2026-04-18T14:30:15Z'), /^\d{2}:\d{2}:\d{2}$/);
+  assert.equal(formatWorkflowTime('invalid-date'), 'invalid-date');
+});
+
+test('formatWorkflowDuration computes elapsed duration string', () => {
+  const start = '2026-04-18T10:00:00Z';
+  const end1 = '2026-04-18T10:00:25Z';
+  const end2 = '2026-04-18T10:02:15Z';
+  assert.equal(formatWorkflowDuration(start, end1), '25s');
+  assert.equal(formatWorkflowDuration(start, end2), '2m 15s');
 });

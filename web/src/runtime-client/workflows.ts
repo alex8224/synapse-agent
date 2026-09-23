@@ -258,3 +258,59 @@ export function workflowResumeHint(run: WorkflowRunView): string | null {
   if (!run.active) return `该运行${workflowStatusLabel(run.status)}`;
   return run.resume_detail || '该运行不能自动继续';
 }
+
+/** Role translation for subagent roles in workflow steps. */
+export function workflowRoleLabel(role: string): string {
+  const roles: Record<string, string> = {
+    architect: '架构师 (architect)',
+    planner: '规划者 (planner)',
+    implementer: '实现者 (implementer)',
+    reviewer: '审阅者 (reviewer)',
+    tester: '测试者 (tester)',
+    debugger: '调试者 (debugger)',
+    researcher: '研究者 (researcher)',
+    'release-manager': '发布管理 (release-manager)',
+  };
+  return roles[role] ?? role;
+}
+
+/** Formats token counts into compact representations (e.g. 1.2k, 15.3k, 1.4M). */
+export function formatWorkflowTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+  if (tokens < 1000) return `${Math.round(tokens)}`;
+  if (tokens < 1_000_000) {
+    const k = (tokens / 1000).toFixed(1);
+    return k.endsWith('.0') ? `${k.slice(0, -2)}k` : `${k}k`;
+  }
+  const m = (tokens / 1_000_000).toFixed(2);
+  const trimmed = m.replace(/\.?0+$/, '');
+  return `${trimmed}M`;
+}
+
+/** Concise timestamp formatted as HH:mm:ss. */
+export function formatWorkflowTime(isoString: string): string {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return isoString;
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  const s = String(date.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+/** Format elapsed duration between start and end (or current time if active). */
+export function formatWorkflowDuration(createdAt: string, finishedAt: string | null): string {
+  if (!createdAt) return '';
+  const start = new Date(createdAt).getTime();
+  if (Number.isNaN(start)) return '';
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  if (Number.isNaN(end) || end < start) return '0s';
+  const diffSec = Math.floor((end - start) / 1000);
+  if (diffSec < 60) return `${diffSec}s`;
+  const minutes = Math.floor(diffSec / 60);
+  const remainingSec = diffSec % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSec}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMin = minutes % 60;
+  return `${hours}h ${remainingMin}m`;
+}

@@ -32,6 +32,7 @@ export interface WorkflowState {
   error: string | null;
   loadRuns: () => Promise<void>;
   select: (runId: string) => Promise<void>;
+  unselect: () => void;
   start: (workflowId: string, inputs?: JsonValue) => Promise<void>;
   cancel: (runId: string) => Promise<void>;
   approve: (workflowId: string, revision: number) => Promise<void>;
@@ -72,6 +73,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   select: async (runId: string) => {
     const client = useConsoleStore.getState().client;
     const project = projectId();
+    const cached = get().runs.find((r) => r.run_id === runId);
+    if (cached) set({ selected: cached, error: null });
     if (client === null || project === '') return;
     try {
       const run = parseWorkflowRunResult(
@@ -82,6 +85,8 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       set({ error: describe(error) });
     }
   },
+
+  unselect: () => set({ selected: null, error: null }),
 
   start: async (workflowId: string, inputs?: JsonValue) => {
     const client = useConsoleStore.getState().client;
