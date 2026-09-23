@@ -231,7 +231,10 @@ async def execute_consumer_turn(
             after = opened_result.view.latest_sequence
         else:
             after = (await service.get_session(GetSessionQuery(session))).latest_sequence
-        watch = service.watch_events(session, after=after)
+        try:
+            watch = service.watch_events(session, after=after, queue_size=2048)
+        except TypeError:
+            watch = service.watch_events(session, after=after)
         async with watch as events:
             receipt = await service.submit_turn(
                 SubmitTurnCommand(session=session, text=text, attachments=attachments)
@@ -278,7 +281,13 @@ async def observe_receipt_turn(
     usage = None
     terminal: dict[str, Any] | None = None
     displayed = False
-    watch = service.watch_events(session, after=after) if events is None else None
+    try:
+        watch = (
+            service.watch_events(session, after=after, queue_size=2048)
+            if events is None else None
+        )
+    except TypeError:
+        watch = service.watch_events(session, after=after) if events is None else None
     async with watch if watch is not None else _ExistingWatch(events) as stream:
         async for event in stream:
             if event.turn_id != receipt.turn_id:

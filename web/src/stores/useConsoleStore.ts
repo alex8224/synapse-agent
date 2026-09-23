@@ -685,7 +685,8 @@ interface ConsoleStore {
 
   pendingApproval: PendingApproval | null;
   resolveApproval: (decision: 'allow_once' | 'reject_once') => Promise<void>;
-  submitPrompt: (text: string) => Promise<void>;
+  /** False only for a definite refusal; unknown receipt must never auto-resubmit. */
+  submitPrompt: (text: string) => Promise<boolean>;
   cancelActiveTurn: () => Promise<void>;
   /** Explicit user close: cancel reconnect budget and detach the watch. */
   closeRuntime: () => void;
@@ -2648,6 +2649,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       pendingApproval: null,
       activity: null,
       usage: null,
+      // Opening can wait or fail (e.g. a stalled Agent runtime). Never show the
+      // previous session's totals under this already-created, empty session.
+      sessionUsage: null,
       metricsLabel: '',
       thinkingLevelError: null,
     projectThinkingLevel: null,
@@ -3765,7 +3769,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   submitPrompt: async (text: string) => {
     // Refused before authentication: no local transcript mutation and no RPC.
     const client = requireRuntimeClient();
-    if (!client) return;
+    if (!client) return false;
     const state = get();
     const pending = state.attachments;
     const refs = attachmentRefsOf(pending);
@@ -3775,11 +3779,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // dropped and never sent without the attachment).
     if (hasPendingUploads(pending)) {
       set({ attachmentError: '仍有附件正在上传，请等待完成或取消后再发送。' });
-      return;
+      return false;
     }
     // An attachment-only turn is legal (the wire allows empty text when refs are
     // present); a fully empty submit still does nothing.
-    if (body === '' && refs.length === 0) return;
+    if (body === '' && refs.length === 0) return false;
     const { currentSession, runtimeStatus, activeTurnId } = state;
     const epoch = sessionEpoch;
 
@@ -3788,7 +3792,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         // `runtime.turn.steer` has no attachment_refs field: silently dropping
         // the images would be worse than refusing, so the composer keeps them.
         set({ attachmentError: '运行中无法携带附件插话：请等待当前轮次结束后再发送图片。' });
-        return;
+        return false;
       }
       set({ attachmentError: null });
       get().addUserMessage(body);
@@ -3807,11 +3811,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
             recoveryState: 'unknown',
             recoveryDetail: 'steer submitted during a connection drop; outcome unknown',
           });
+          return true;
         } else {
           throw err;
         }
       }
-      return;
+      return true;
     }
 
     set({ attachmentError: null });
@@ -3819,22 +3824,23 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // afterwards belongs to a different draft generation.
     composerGeneration += 1;
     get().addUserMessage(body, attachmentDisplaysOf(pending));
+    const optimisticId = get().messages.at(-1)?.id;
     set({ runtimeStatus: 'running', activeTurnId: null, activity: null });
     try {
       const opened = await client.openSession(currentSession);
       // Re-sync the authoritative totals here: this call is already being made,
       // and it is what corrects a session that was also used elsewhere.
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return true;
       set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
       if (!get().activeSubscriptionId) {
         const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
-        if (epoch !== sessionEpoch) return;
+        if (epoch !== sessionEpoch) return true;
         set({ activeSubscriptionId: watch.subscription_id });
       }
     } catch (err) {
       console.warn('Ensure open session note:', err);
     }
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch) return true;
     try {
       const receipt = await client.submitTurn({
         session: currentSession,
@@ -3843,7 +3849,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         // reads "absent" as "no attachments" and rejects an explicit null.
         ...(refs.length > 0 ? { attachment_refs: refs } : {}),
       });
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return true;
       if (receipt.turn_id) {
         set((s) => ({
           messages: bindWorkTurn(s.messages, receipt.turn_id!, Date.now()),
@@ -3860,8 +3866,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       // submitted: read the title back so the header and the list stop showing
       // the placeholder.
       refreshSessionTitleAfterTurn(currentSession, get().sessionTitle);
+      return true;
     } catch (err) {
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return true;
       if (err instanceof ConnectionLostError && err.unknownOutcome) {
         // The submit may have reached the daemon and started a turn; the
         // receipt was lost in the drop. Do NOT re-submit (duplicate tool
@@ -3872,11 +3879,14 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           recoveryState: 'unknown',
           recoveryDetail: 'submit sent but connection dropped before the receipt; outcome unknown',
         });
+        return true;
       } else {
-        const reason = String((err as Error)?.message ?? err);
-        set((s) => ({ messages: s.messages.map((m) => !m.turnId && m.work && !m.work.ended
-          ? { ...m, work: { ...m.work, ended: true, elapsed: Math.max(0, (Date.now() - (m.work.startedAt ?? Date.now())) / 1000) } }
-          : m) }));
+        // Wire errors redact the server's reason: `conflict` may mean a busy
+        // session OR a project workflow. Do not claim a workflow without evidence.
+        const reason = err instanceof RpcCallError && err.service_code === 'conflict'
+          ? '当前会话或项目正忙；若有运行中的工作流，请在工作流面板检查或取消后再发送。'
+          : String((err as Error)?.message ?? err);
+        set((s) => ({ messages: s.messages.filter((m) => m.id !== optimisticId) }));
         set({
           runtimeStatus: 'idle',
           activeTurnId: null,
@@ -3885,6 +3895,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           attachmentError: `发送失败：${reason}`,
         });
         console.error('submit failed:', err);
+        return false;
       }
     }
   },

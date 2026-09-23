@@ -28,6 +28,7 @@ import {
 } from '../src/runtime-client/SynapseRuntimeClient.ts';
 import type { SocketLike } from '../src/runtime-client/SynapseRuntimeClient.ts';
 import type { SessionItem } from '../src/stores/historyMapper.ts';
+import { EMPTY_USAGE } from '../src/stores/usageView.ts';
 
 const CAPS = { legacy_v1: true, raw_cursor: true, watch_resume: true, approval_resume: true };
 const PROJECT = 'proj';
@@ -771,6 +772,53 @@ test('a new session is persisted by the server before it is shown', async () => 
   assert.equal(state.sessionActionError, null);
 });
 
+for (const fails of [false, true]) {
+  test(`a new session clears old usage before open ${fails ? 'fails' : 'completes'}`, async () => {
+    let resolveOpen: (value: any) => void = () => {};
+    let rejectOpen: (error: Error) => void = () => {};
+    const opened = new Promise<any>((resolve, reject) => {
+      resolveOpen = resolve;
+      rejectOpen = reject;
+    });
+    const client = stubClient();
+    client.openSession = () => opened;
+    useConsoleStore.setState({
+      client: client as any,
+      activeSubscriptionId: null,
+      sessionUsage: { input: 270000, output: 100, cache: 260000 },
+      usage: { ...EMPTY_USAGE, lastInput: 270000 },
+    });
+
+    const creating = muted(() => useConsoleStore.getState().createNewSession());
+    try {
+      await tick();
+      const waiting = useConsoleStore.getState();
+      assert.equal(waiting.currentSession.thread_id, 'allocated');
+      assert.deepEqual(waiting.messages, []);
+      assert.equal(waiting.usage, null);
+      assert.equal(waiting.sessionUsage, null, 'the old 270k total must not follow the session');
+    } finally {
+      if (fails) {
+        rejectOpen(new Error('runtime unavailable'));
+      } else {
+        resolveOpen({
+          view: {
+            active_model: 'model',
+            latest_sequence: 0,
+            usage: { input_tokens: 0, output_tokens: 0, cache_tokens: 0 },
+          },
+        });
+      }
+      await creating;
+    }
+
+    const settled = useConsoleStore.getState();
+    assert.equal(settled.sessionUsage, null);
+    assert.equal(settled.usage, null);
+    assert.equal(settled.sessionActionError !== null, fails);
+  });
+}
+
 test('the first user message names the session, read back from the server', async () => {
   await muted(() => useConsoleStore.getState().createNewSession());
   assert.equal(useConsoleStore.getState().sessionTitle, '新会话 alloca');
@@ -818,6 +866,27 @@ test('a session that already has a title is not re-read', async () => {
     stubCalls.some((call) => call.method === 'runtime.session.list'),
     false,
   );
+});
+
+test('workflow gate conflict shows actionable feedback without losing the prompt', async () => {
+  const client = stubClient() as any;
+  client.submitTurn = (params: any) => {
+    stubCalls.push({ method: 'runtime.turn.submit', params });
+    return Promise.reject(new RpcCallError('runtime service error', -32000, 'conflict'));
+  };
+  useConsoleStore.setState({ client });
+
+  const accepted = await muted(() => useConsoleStore.getState().submitPrompt('my pending question'));
+
+  const state = useConsoleStore.getState();
+  assert.equal(accepted, false, 'the composer may restore a definitely refused draft');
+  assert.equal(state.runtimeStatus, 'idle');
+  assert.match(state.attachmentError ?? '', /工作流/);
+  assert.match(state.attachmentError ?? '', /取消/);
+  assert.doesNotMatch(state.attachmentError ?? '', /runtime service error/);
+  assert.equal(stubCalls.find((call) => call.method === 'runtime.turn.submit')?.params.text,
+    'my pending question');
+  assert.equal(state.messages.length, 0, 'a rejected turn must not persist a false user message');
 });
 
 test('an idempotent re-create does not inflate the session total', async () => {

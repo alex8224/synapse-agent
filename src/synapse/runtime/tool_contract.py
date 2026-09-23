@@ -111,6 +111,19 @@ def readonly_excluded_tools() -> frozenset[str]:
     )
 
 
+def read_only_tool_names() -> frozenset[str]:
+    """Tools that only ever read.
+
+    The complement of :func:`readonly_excluded_tools` for the names the table knows:
+    a caller that must keep at least one way to inspect the workspace (a read-only
+    workflow actor, whose shell tool is excluded) can tell which excluded names are
+    safe to hand back without weakening the write/shell policy.
+    """
+    return frozenset(
+        contract.name for contract in TOOL_CONTRACTS.values() if contract.read_only
+    )
+
+
 def approval_required_tools() -> frozenset[str]:
     """Tools that require explicit user approval when approval is enabled."""
     return frozenset(

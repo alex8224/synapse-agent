@@ -381,18 +381,23 @@ class WorkflowSDK:
             EVENT_CALL_STARTED,
             {"call_key": record.call_key, "role": record.role, "sequence": record.sequence},
         )
+        # Counted before the call, so a failure that happens *during* an attempt is still
+        # recorded as having used it rather than as zero.
         attempts = 0
         try:
-            result = await self._executor.execute(request, correction=False)
             attempts = 1
-            if request.schema is not None:
-                try:
+            try:
+                result = await self._executor.execute(request, correction=False)
+                if request.schema is not None:
                     validate_result(result, request.schema)
-                except ResultValidationError:
-                    # One corrective attempt, with business tools disabled: a format
-                    # problem must not become a second execution of the real task.
-                    result = await self._executor.execute(request, correction=True)
-                    attempts = 2
+            except ResultValidationError:
+                # Exactly one corrective attempt, with business tools disabled.  This
+                # covers both a malformed answer the host could not parse and a value that
+                # fails the declared schema: neither may become a second execution of the
+                # real task, and neither is retried a third time.
+                attempts = 2
+                result = await self._executor.execute(request, correction=True)
+                if request.schema is not None:
                     validate_result(result, request.schema)
         except asyncio.CancelledError:
             # The turn may already have changed files; do not claim a result.

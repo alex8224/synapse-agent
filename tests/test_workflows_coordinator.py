@@ -9,8 +9,12 @@ files.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from synapse.workflows import (
     CallRequest,
@@ -20,7 +24,8 @@ from synapse.workflows import (
     WorkflowStore,
     protocol,
 )
-from synapse.workflows.coordinator import WorkflowCoordinator
+from synapse.workflows.coordinator import EVENT_WORKER_EXIT, WorkflowCoordinator
+from synapse.workflows.process import WorkerProcess
 from synapse.workflows.protocol import WorkerConfig
 
 SCRIPT = """
@@ -38,6 +43,23 @@ import asyncio
 async def run(wf, inputs):
     await asyncio.sleep(600)
     return {}
+"""
+
+#: Writes a real traceback to stderr and then hard-exits without a protocol frame, so the
+#: parent sees stdout EOF while the stderr reader still has bytes to drain.
+CRASHING_SCRIPT = """
+import os
+import sys
+import traceback
+
+
+async def run(wf, inputs):
+    try:
+        raise RuntimeError("boom")
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+    os._exit(1)
 """
 
 
@@ -88,6 +110,50 @@ def prepared_run(tmp_path: Path, *, limits: WorkflowLimits | None = None, script
 
 
 # --- happy path -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("failure", ["factory", "spawn", "after_spawn"])
+def test_worker_start_failure_is_settled(tmp_path: Path, failure: str) -> None:
+    store, run, config = prepared_run(tmp_path)
+
+    class PartialStart(WorkerProcess):
+        def start(self) -> None:
+            self.spawn()
+            raise OSError("private startup details")
+
+    workers: list[WorkerProcess] = []
+
+    def factory(config: WorkerConfig) -> WorkerProcess:
+        if failure == "factory":
+            raise OSError("private startup details")
+        worker = (
+            PartialStart(config)
+            if failure == "after_spawn"
+            else WorkerProcess(config, python=str(tmp_path / "missing-python"))
+        )
+        workers.append(worker)
+        return worker
+
+    coordinator = WorkflowCoordinator(
+        store=store, config=config, on_call=FakeActor(), process_factory=factory
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        expected = (
+            WorkflowStatus.UNCERTAIN if failure == "after_spawn" else WorkflowStatus.FAILED
+        )
+        assert outcome.status is expected
+        assert store.get_run(run.run_id).status is expected
+        assert "could not start" in outcome.error
+        assert "private startup" not in outcome.error
+        if failure != "after_spawn":
+            assert store.active_run(run.project_id) is None
+            store.create_run(run.workflow_id, run_id="run-2")
+        assert all(not worker.alive for worker in workers)
+    finally:
+        for worker in workers:
+            worker.close()
+        store.close()
 
 
 def test_coordinator_completes_a_run_through_the_call_handler(tmp_path) -> None:
@@ -274,12 +340,20 @@ def test_coordinator_leaves_an_already_settled_run_alone(tmp_path) -> None:
 class ScriptedWorker:
     """A worker double that replays scripted messages instead of running a process."""
 
-    def __init__(self, messages: list[dict[str, Any] | None]) -> None:
+    def __init__(
+        self,
+        messages: list[dict[str, Any] | None],
+        *,
+        returncode: int | None = 0,
+        stderr: list[str] | None = None,
+    ) -> None:
         self.messages = list(messages)
         self.sent: list[dict[str, Any]] = []
         self.killed = False
         self.closed = False
-        self.returncode = 0
+        self.returncode = returncode
+        self.pid: int | None = 4242
+        self._stderr = list(stderr or ())
 
     def start(self) -> None:
         return None
@@ -292,11 +366,129 @@ class ScriptedWorker:
     def send(self, message: dict[str, Any]) -> None:
         self.sent.append(dict(message))
 
+    def wait(self, *, timeout: float | None = None) -> int | None:
+        # A worker that never reaped keeps ``None``; the coordinator must not block on it.
+        if self.returncode is None:
+            raise TimeoutError("workflow worker did not exit")
+        return self.returncode
+
     def kill(self) -> None:
         self.killed = True
 
     def close(self) -> None:
         self.closed = True
+
+    def stderr_tail(self) -> list[str]:
+        return list(self._stderr)
+
+    def drain_stderr(self, *, timeout: float | None = None) -> list[str]:
+        return list(self._stderr)
+
+
+class BlockingWaitWorker(ScriptedWorker):
+    """A worker whose exit code is not ready until the test releases the wait.
+
+    Reaching EOF with ``returncode`` still ``None`` makes the coordinator await the code
+    off the loop, which is exactly the window a cancel can land in.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([None], returncode=None)
+        self.wait_entered = threading.Event()
+        self.release = threading.Event()
+
+    def wait(self, *, timeout: float | None = None) -> int | None:
+        self.wait_entered.set()
+        self.release.wait(timeout or 30)
+        self.returncode = 1
+        return 1
+
+
+def worker_exit_events(store: WorkflowStore, run_id: str) -> list[Any]:
+    return [event for event in store.read_events(run_id) if event.kind == EVENT_WORKER_EXIT]
+
+
+def test_worker_eof_records_a_bounded_safe_diagnostic(tmp_path) -> None:
+    store, run, config = prepared_run(tmp_path)
+    worker = ScriptedWorker(
+        [None],
+        returncode=1,
+        stderr=[
+            "Traceback (most recent call last):",
+            '  File "C:\\ws\\script.py", line 12, in run',
+            '    api_key = "sk-live-LEAKEDSECRET"',
+            "RuntimeError: boom sk-live-LEAKEDSECRET",
+            "leaked AKIAIOSFODNN7EXAMPLE",
+        ],
+    )
+    coordinator = WorkflowCoordinator(
+        store=store,
+        config=config,
+        on_call=FakeActor(),
+        process_factory=lambda _config: worker,
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        # An unexpected EOF still keeps the uncertain safety semantics.
+        assert outcome.status is WorkflowStatus.UNCERTAIN, outcome
+        assert outcome.exit_code == 1
+        events = worker_exit_events(store, run.run_id)
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["phase"] == "eof"
+        assert payload["exit_code"] == 1
+        joined = "\n".join(payload["stderr"])
+        # The traceback's type and location survive...
+        assert "RuntimeError" in joined
+        assert "script.py:12" in joined
+        # ...but no secret, message or source line does.
+        assert "LEAKEDSECRET" not in joined
+        assert "AKIAIOSFODNN7EXAMPLE" not in joined
+        assert "api_key" not in joined
+    finally:
+        store.close()
+
+
+def test_worker_eof_without_a_reaped_exit_code_stays_uncertain(tmp_path) -> None:
+    """A worker that outlives the bounded wait keeps ``None`` instead of blocking."""
+    store, run, config = prepared_run(tmp_path)
+    worker = ScriptedWorker([None], returncode=None, stderr=["SystemExit: 1"])
+    coordinator = WorkflowCoordinator(
+        store=store,
+        config=config,
+        on_call=FakeActor(),
+        process_factory=lambda _config: worker,
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        assert outcome.status is WorkflowStatus.UNCERTAIN, outcome
+        assert outcome.exit_code is None
+        assert "code None" in (outcome.error or "")
+        payload = worker_exit_events(store, run.run_id)[0].payload
+        assert payload["phase"] == "eof"
+        assert payload["exit_code"] is None
+    finally:
+        store.close()
+
+
+def test_worker_start_failure_records_a_startup_diagnostic(tmp_path) -> None:
+    store, run, config = prepared_run(tmp_path)
+    def factory(_config: WorkerConfig) -> WorkerProcess:
+        raise OSError("private startup details")
+
+    coordinator = WorkflowCoordinator(
+        store=store, config=config, on_call=FakeActor(), process_factory=factory
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        assert outcome.status is WorkflowStatus.FAILED
+        events = worker_exit_events(store, run.run_id)
+        assert len(events) == 1
+        assert events[0].payload["phase"] == "startup"
+        assert events[0].payload["exit_code"] is None
+        assert events[0].payload["stderr"] == []
+    finally:
+        store.close()
 
 
 def test_unknown_message_kinds_do_not_end_a_working_run(tmp_path) -> None:
@@ -354,5 +546,124 @@ def test_scripted_call_is_answered_through_the_handler(tmp_path) -> None:
         assert worker.sent == [
             {"type": protocol.KIND_CALL_RESULT, "id": "r1", "value": {"call_key": "c1"}}
         ]
+    finally:
+        store.close()
+
+
+def test_cancel_during_the_exit_code_wait_is_reported_cancelled(tmp_path) -> None:
+    """A cancel that lands while the exit code is awaited must not be labelled uncertain.
+
+    ``_settle_exit`` awaits the worker's exit code off the event loop; a cancel arriving in
+    that window has to win, otherwise an explicit stop would be recorded as an unknown
+    outcome and could be resumed as if the run had simply died.
+    """
+    store, run, config = prepared_run(tmp_path)
+    worker = BlockingWaitWorker()
+    coordinator = WorkflowCoordinator(
+        store=store,
+        config=config,
+        on_call=FakeActor(),
+        process_factory=lambda _config: worker,
+    )
+
+    async def scenario() -> Any:
+        task = asyncio.ensure_future(coordinator.run())
+        # The coordinator is now blocked awaiting the worker's exit code.
+        assert await asyncio.to_thread(worker.wait_entered.wait, 30)
+        coordinator.cancel("user")
+        worker.release.set()
+        return await asyncio.wait_for(task, timeout=60)
+
+    try:
+        outcome = asyncio.run(scenario())
+        assert outcome.status is WorkflowStatus.CANCELLED, outcome
+        settled = store.get_run(run.run_id)
+        assert settled is not None and settled.status is WorkflowStatus.CANCELLED
+    finally:
+        worker.release.set()
+        store.close()
+
+
+@pytest.mark.parametrize("phase", ["startup", "eof"])
+def test_cancel_during_diagnostic_collection_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    store, run, config = prepared_run(tmp_path)
+    worker = ScriptedWorker([None], returncode=1)
+
+    def factory(_config: WorkerConfig) -> Any:
+        if phase == "startup":
+            raise OSError("startup failed")
+        return worker
+
+    async def drain(self: WorkflowCoordinator, _worker: Any) -> list[str]:
+        await asyncio.sleep(0)
+        self.cancel("user")
+        return []
+
+    monkeypatch.setattr(WorkflowCoordinator, "_drain_stderr", drain)
+    coordinator = WorkflowCoordinator(
+        store=store, config=config, on_call=FakeActor(), process_factory=factory
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        assert outcome.status is WorkflowStatus.CANCELLED
+        assert store.get_run(run.run_id).status is WorkflowStatus.CANCELLED
+    finally:
+        store.close()
+
+
+class DeferredReadWorker(WorkerProcess):
+    """A real worker that holds its stderr reader until the process has exited.
+
+    The reader normally races the parent's diagnostic snapshot and usually wins, which hides
+    whether the snapshot waits for it at all.  Parking the read until after exit -- then
+    pausing -- keeps the traceback buffered in the pipe while the process is reaped, so only
+    a drain that joins the reader can still see it: a deterministic reproduction of the race.
+    """
+
+    def _read_stderr(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        deadline = time.monotonic() + 30.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.3)
+        super()._read_stderr()
+
+
+def test_real_worker_stderr_traceback_is_persisted_at_eof(tmp_path) -> None:
+    """A real worker that dies without a frame still persists its stderr structure.
+
+    The stderr reader runs in its own thread, so a diagnostic taken right after stdout EOF
+    can be empty even though the worker wrote a traceback; the coordinator has to drain the
+    reader (bounded, off the loop) before snapshotting.  This drives a real subprocess with a
+    real pipe, not the scripted double, so the race is the production one.
+    """
+    store, run, config = prepared_run(tmp_path, script=CRASHING_SCRIPT)
+    worker = DeferredReadWorker(config)
+    coordinator = WorkflowCoordinator(
+        store=store,
+        config=config,
+        on_call=FakeActor(),
+        process_factory=lambda _config: worker,
+    )
+    try:
+        outcome = asyncio.run(coordinator.run())
+        assert outcome.status is WorkflowStatus.UNCERTAIN, outcome
+        assert outcome.exit_code == 1
+        events = worker_exit_events(store, run.run_id)
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["phase"] == "eof"
+        assert payload["exit_code"] == 1
+        joined = "\n".join(payload["stderr"])
+        # The traceback's type and location survive...
+        assert "RuntimeError" in joined
+        assert "<workflow>" in joined
+        # ...but its message and the source line do not.
+        assert "boom" not in joined
+        assert "raise RuntimeError" not in joined
     finally:
         store.close()

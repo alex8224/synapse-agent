@@ -751,6 +751,32 @@ class WorkflowStore:
             for row in rows
         ]
 
+    def read_recent_events(self, run_id: str, limit: int = 12) -> list[WorkflowEvent]:
+        """The most recent events for a run, oldest first.
+
+        Reads only ``limit`` rows with ``ORDER BY sequence DESC`` and reverses them, so a
+        long run's tail is reachable without scanning the whole log first: a forward
+        ``read_events`` window would silently stop at its own limit and miss the final
+        events (for example the ``worker.exit`` diagnostic of a run that just ended).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, sequence, kind, payload_json, created_at "
+                "FROM workflow_events WHERE run_id = ? "
+                "ORDER BY sequence DESC LIMIT ?",
+                (run_id, max(1, int(limit))),
+            ).fetchall()
+        return [
+            WorkflowEvent(
+                run_id=row["run_id"],
+                sequence=int(row["sequence"]),
+                kind=row["kind"],
+                payload=_load(row["payload_json"]),
+                created_at=row["created_at"],
+            )
+            for row in reversed(rows)
+        ]
+
     def approval_decisions(self, run_id: str) -> dict[str, bool]:
         """The last recorded decision for each business-approval key.
 

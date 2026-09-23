@@ -123,11 +123,19 @@ def build_actor_resources(settings: Settings) -> dict[str, Any]:
     selected_profile = registry.get(settings.active_model or registry.default)
     model_spec = selected_profile.model
     backend = build_backend(settings)
+    configured_excluded = {str(n) for n in (getattr(settings, "excluded_tools", []) or [])}
     effective_excluded = list(getattr(settings, "excluded_tools", []) or [])
+    # Names hidden *only* by the minimal-filesystem swap: the swap trades the file tools
+    # for ``execute``, so a caller that cannot use ``execute`` may hand these back.  A name
+    # the user also listed in ``excluded_tools`` is an explicit choice and stays hidden.
+    minimal_excluded: list[str] = []
     if getattr(settings, "minimal_filesystem_tools", False):
-        effective_excluded.extend(
-            getattr(settings, "minimal_filesystem_excluded_tools", []) or []
-        )
+        minimal_excluded = [
+            str(name)
+            for name in (getattr(settings, "minimal_filesystem_excluded_tools", []) or [])
+            if str(name) not in configured_excluded
+        ]
+        effective_excluded.extend(minimal_excluded)
     return {
         "model": _subagent_model_factory(registry, settings, model_cache={})(None, None),
         "model_spec": model_spec,
@@ -144,6 +152,7 @@ def build_actor_resources(settings: Settings) -> dict[str, Any]:
             readonly=settings.readonly,
             deny_paths=settings.deny_fs_paths,
         ),
+        "minimal_filesystem_excluded_tools": tuple(minimal_excluded),
         "excluded_tools": tuple(
             sorted(
                 apply_harness_exclusions(

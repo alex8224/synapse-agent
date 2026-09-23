@@ -333,6 +333,16 @@ branches, dynamic expansion, bounded rework — while every agent call still goe
 project's normal runtime. It is not a second agent system: role definitions, tool policy,
 approvals and checkpoints are the ones the rest of Synapse uses.
 
+Actor capability rules:
+
+- `readonly=True` disables shell execution, including `git diff` and `pytest`. Supply
+  collected diffs as actor input; running tests requires an authorized shell-capable actor.
+- Read-only actors may recover read tools hidden only by the minimal-filesystem mode;
+  explicit tool exclusions remain enforced. Actors with no tools can only analyze input.
+- Schema correction repairs the previous answer with all tools disabled, not by repeating
+  the task. Unexecuted tool-call markup is a failure even without a schema, never a review
+  result; do not remove the schema or repeatedly recreate a run to conceal that failure.
+
 What it is for: long, repeated or gated tasks where "the engine enforces the rules" beats
 "the model remembers them" — batch review, fix-verify-rework loops, anything that must not
 report success before a gate actually passed.
@@ -362,6 +372,24 @@ Design and status: [`docs/workflows/index.md`](docs/workflows/index.md) (方案)
   was in flight is recorded as having **no established outcome** and is never retried
   automatically.
 - **一个项目同时只有一个活跃运行**，期间该项目的普通轮次会暂停（审批续跑除外）。
+- **守护进程重启不会自动重试工作流。** 如果旧运行失去执行者，状态改为
+  `uncertain`（在执行中的 actor 调用也记为结果不确定）；项目仍暂停普通轮次，
+  需要在工作流面板显式取消该运行才能释放项目占用。取消不会撤销已发生的修改。
+- **冷启动不阻塞 Agent 事件循环。** Actor 资源初始化在后台线程执行；初始化失败或
+  worker 未能创建时，运行记录为 `failed` 并释放项目占用。若进程已创建但启动结果不明确，
+  保留 `uncertain`，不自动重试。`create_workflow` 工具仍等待运行结束后返回结果，
+  不等同于提交后立即返回。
+- **角色来自项目启用的角色注册表，不是固定内置列表。** `create_workflow` 的描述只列出
+  已解析服务实际启用的角色（未传入服务时不猜测）；脚本里 `wf.actor("...")` 的字面角色
+  （含 `role=` 关键字）与声明的 `roles` 会在写草稿、建运行之前预检，未启用即拒绝并返回
+  可用角色；动态角色表达式交给运行时校验。注册表为空时会明确说明「无可用角色」。
+- **格式纠错有边界。** Actor 的结构化回答不符合声明的 schema 时只重试一次，且该次重试
+  禁用写入与 shell 工具，因此纠正格式不会改动工作区；仍不匹配则判定该调用失败。
+- **异常退出可诊断、取消有入口。** 工具返回失败或 `uncertain` 时附带近期事件；
+  `worker.exit` 保存启动/退出阶段、退出码及脱敏后的异常类型和堆栈位置，不保存原始
+  stderr、源码行或异常消息。Windows 子进程管道统一使用 UTF-8。
+  核查 `get_workflow_run` 后，可明确调用 `cancel_workflow_run` 释放项目占用，
+  不必编辑数据库；取消不会撤销已发生的副作用，也不会自动重试未知结果。
 - **不显示进度百分比**：动态流程会继续展开，只有已派发的调用数是真实进度。
 
 ## Why it is built for long sessions

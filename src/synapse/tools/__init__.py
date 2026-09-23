@@ -5,6 +5,7 @@ from synapse.tools.filesystem_patch import build_filesystem_patch_tool
 from synapse.tools.filesystem_search import build_filesystem_search_tools
 from synapse.tools.session_tools import build_session_tools, build_tool_result_reader_tool
 from synapse.tools.workflow_tools import (
+    CANCEL_WORKFLOW_RUN_NAME,
     CREATE_WORKFLOW_NAME,
     GET_WORKFLOW_RUN_NAME,
     LIST_WORKFLOW_RUNS_NAME,
@@ -12,6 +13,7 @@ from synapse.tools.workflow_tools import (
 )
 
 __all__ = [
+    "CANCEL_WORKFLOW_RUN_NAME",
     "CREATE_WORKFLOW_NAME",
     "GET_WORKFLOW_RUN_NAME",
     "LIST_WORKFLOW_RUNS_NAME",

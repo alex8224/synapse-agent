@@ -20,16 +20,23 @@ from typing import Any
 
 from synapse.workflows import protocol
 from synapse.workflows.contract import CallStatus, WorkflowStatus
-from synapse.workflows.process import WorkerProcess
+from synapse.workflows.process import WorkerProcess, worker_stderr_summary
 from synapse.workflows.protocol import WorkerConfig
 from synapse.workflows.store import WorkflowStore, utcnow
 
 __all__ = [
     "ApprovalHandler",
     "CallHandler",
+    "EVENT_WORKER_EXIT",
     "WorkflowCoordinator",
     "WorkerOutcome",
 ]
+
+#: Event kind carrying a bounded, sanitized diagnostic for an abnormal worker end.
+#: Payload shape: ``{"phase": "startup" | "eof", "exit_code": int | None,
+#: "stderr": [str, ...]}``.  ``phase`` distinguishes a worker that never started from one
+#: that reached EOF; ``stderr`` holds only exception types and frame locations.
+EVENT_WORKER_EXIT = "worker.exit"
 
 #: Runs one agent call on the host side and returns its raw result.
 CallHandler = Callable[[Any, bool], Awaitable[Any]]
@@ -38,6 +45,10 @@ ApprovalHandler = Callable[[str, str], Awaitable[bool]]
 
 #: How long the message loop waits before re-checking the clock and the cancel flag.
 _POLL_SECONDS = 0.5
+
+#: How long the host waits, off the event loop, for an exiting worker's code before
+#: reporting ``None``.  EOF usually means the process is a moment from being reaped.
+_EXIT_CODE_WAIT_SECONDS = 2.0
 
 #: Exit code the worker uses for a start message it could not accept.
 _EXIT_BAD_CONFIG = 3
@@ -76,11 +87,37 @@ class WorkflowCoordinator:
 
     async def run(self) -> WorkerOutcome:
         """Start the worker and drive it until the run settles."""
-        worker = self.process_factory(self.config)
-        self._worker = worker
+        worker: WorkerProcess | None = None
         deadline = time.monotonic() + float(self.config.limits.max_seconds)
         try:
-            worker.start()
+            if self._cancelled:
+                return self._settle_cancelled(worker)
+            try:
+                worker = self.process_factory(self.config)
+                self._worker = worker
+                worker.start()
+            except Exception as exc:  # process startup boundary: persist an honest outcome
+                if self._cancelled:
+                    return self._settle_cancelled(worker)
+                # A start may fail after sending the program. Only a missing PID proves
+                # that no worker ran; otherwise retain uncertainty instead of inviting a retry.
+                started = worker is not None and worker.pid is not None
+                status = WorkflowStatus.UNCERTAIN if started else WorkflowStatus.FAILED
+                if started:
+                    worker.kill()
+                error = f"workflow worker could not start ({type(exc).__name__})"
+                self._record_worker_exit(
+                    "startup",
+                    None if worker is None else worker.returncode,
+                    await self._drain_stderr(worker),
+                )
+                if self._cancelled:
+                    return self._settle_cancelled(worker)
+                self._settle(status, error=error)
+                return WorkerOutcome(
+                    status=status, error=error,
+                    exit_code=None if worker is None else worker.returncode,
+                )
             return await self._drive(worker, deadline)
         finally:
             for task in list(self._tasks):
@@ -88,7 +125,8 @@ class WorkflowCoordinator:
             if self._tasks:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
             self._tasks.clear()
-            worker.close()
+            if worker is not None:
+                worker.close()
             self._worker = None
 
     def cancel(self, reason: str = "user") -> None:
@@ -123,11 +161,9 @@ class WorkflowCoordinator:
             if message is None:
                 # A cancel kills the worker, so the EOF arrives before the next flag
                 # check: the flag decides what this exit means, not the exit code.
-                return (
-                    self._settle_cancelled(worker)
-                    if self._cancelled
-                    else self._settle_exit(worker)
-                )
+                if self._cancelled:
+                    return self._settle_cancelled(worker)
+                return await self._settle_exit(worker)
             kind = message.get("type")
             if kind == protocol.KIND_CALL:
                 self._inflight[str(message.get("call_key"))] = str(message.get("id"))
@@ -160,11 +196,9 @@ class WorkflowCoordinator:
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            reply = {
-                "type": protocol.KIND_CALL_ERROR,
-                "id": request_id,
-                "error": f"{type(exc).__name__}: {exc}"[:2000],
-            }
+            # Keep the failure's class on the wire so the worker can rebuild it: a format
+            # error earns one corrective attempt, an ordinary error does not.
+            reply = protocol.call_error_message(request_id, exc)
         finally:
             self._inflight.pop(call_key, None)
         try:
@@ -210,8 +244,9 @@ class WorkflowCoordinator:
         self._settle(status, error=error)
         return WorkerOutcome(status=status, error=error, exit_code=worker.returncode)
 
-    def _settle_cancelled(self, worker: WorkerProcess) -> WorkerOutcome:
-        worker.kill()
+    def _settle_cancelled(self, worker: WorkerProcess | None) -> WorkerOutcome:
+        if worker is not None:
+            worker.kill()
         self._mark_inflight_uncertain("the workflow was cancelled while this call ran")
         # Two steps, because the state machine does not jump straight to cancelled.
         self._settle(WorkflowStatus.CANCELLING)
@@ -219,7 +254,7 @@ class WorkflowCoordinator:
         return WorkerOutcome(
             status=WorkflowStatus.CANCELLED,
             error=f"cancelled by {self._cancel_reason}",
-            exit_code=worker.returncode,
+            exit_code=None if worker is None else worker.returncode,
         )
 
     def _settle_timeout(self, worker: WorkerProcess) -> WorkerOutcome:
@@ -231,9 +266,17 @@ class WorkflowCoordinator:
             status=WorkflowStatus.FAILED, error=reason, exit_code=worker.returncode
         )
 
-    def _settle_exit(self, worker: WorkerProcess) -> WorkerOutcome:
+    async def _settle_exit(self, worker: WorkerProcess) -> WorkerOutcome:
         """The worker is gone without reporting an outcome."""
-        code = worker.returncode
+        code = await self._await_exit_code(worker)
+        # A cancel can land while the exit code is awaited off the loop; the flag decides
+        # what this exit means, not the code.  Reporting uncertainty here would mislabel an
+        # explicit cancellation as an unknown outcome.
+        if self._cancelled:
+            return self._settle_cancelled(worker)
+        self._record_worker_exit("eof", code, await self._drain_stderr(worker))
+        if self._cancelled:
+            return self._settle_cancelled(worker)
         if code == _EXIT_BAD_CONFIG:
             reason = "the workflow worker refused its configuration"
             self._settle(WorkflowStatus.FAILED, error=reason)
@@ -244,6 +287,66 @@ class WorkflowCoordinator:
         self._mark_inflight_uncertain(reason)
         self._settle(WorkflowStatus.UNCERTAIN, error=reason)
         return WorkerOutcome(status=WorkflowStatus.UNCERTAIN, error=reason, exit_code=code)
+
+    async def _await_exit_code(self, worker: WorkerProcess) -> int | None:
+        """Wait, briefly and off the event loop, for the worker's exit code.
+
+        EOF on the protocol pipe usually means the process is a moment from being reaped,
+        so a short bounded wait turns a racy ``None`` into the real code without ever
+        blocking the Agent loop.  A worker that somehow outlives the wait keeps ``None``:
+        the run is uncertain either way, and inventing a code would be worse than none.
+        """
+        code = worker.returncode
+        if code is not None:
+            return code
+        try:
+            return await asyncio.to_thread(worker.wait, timeout=_EXIT_CODE_WAIT_SECONDS)
+        except TimeoutError:
+            return worker.returncode
+        except Exception:  # noqa: BLE001 - a broken wait must not leave the run unsettled
+            return worker.returncode
+
+    def _record_worker_exit(
+        self, phase: str, code: int | None, stderr: list[str]
+    ) -> None:
+        """Persist a bounded, sanitized diagnostic for an abnormal worker end.
+
+        Raw stderr, exception messages and anything the script printed are never written:
+        this lands in the durable event log, where a secret or payload must not survive.
+        ``stderr`` is already reduced to exception types and frame locations.  A diagnostic
+        that cannot be written must not change the run's real outcome.
+        """
+        try:
+            self.store.append_event(
+                self.config.run_id,
+                EVENT_WORKER_EXIT,
+                {"phase": phase, "exit_code": code, "stderr": stderr},
+                at=self.clock(),
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping must not hide the real outcome
+            return
+
+    async def _drain_stderr(self, worker: WorkerProcess | None) -> list[str]:
+        """Snapshot a worker's stderr as a bounded, safe diagnostic, off the event loop.
+
+        The stderr reader runs in its own thread, so the join that makes the snapshot
+        complete is run through ``to_thread``: the Agent loop is never blocked by a worker's
+        output, and the join itself is bounded.  Only a traceback's exception type and frame
+        locations survive ``worker_stderr_summary``; the raw text never reaches the log.
+        """
+        if worker is None:
+            return []
+        try:
+            lines = await asyncio.to_thread(worker.drain_stderr)
+        except Exception:  # noqa: BLE001 - a diagnostic must not hide the outcome
+            try:
+                lines = worker.stderr_tail()
+            except Exception:  # noqa: BLE001 - even the fallback is best effort
+                return []
+        try:
+            return worker_stderr_summary(lines)
+        except Exception:  # noqa: BLE001 - a diagnostic must not hide the outcome
+            return []
 
     def _mark_inflight_uncertain(self, reason: str) -> None:
         """Record the calls this host answered nothing for as unknown outcomes."""

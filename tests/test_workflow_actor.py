@@ -1,11 +1,4 @@
-"""Workflow actors: role resolution, tool-policy narrowing, the result contract and caching.
-
-No model is involved.  The actor *graph* is a deepagents build whose inputs are already
-resolved here, so these tests assert the decisions that shape it — which role, which tools,
-which prompt, which checkpoint thread — plus the execution contract around the graph, which
-is what the SDK's corrective attempt depends on.
-"""
-
+"""Workflow actor policy, execution and result regression tests."""
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +26,139 @@ from synapse.app.workflow_actor import (
     usage_from_state,
 )
 from synapse.runtime.subagents import resolve_role_definitions
-from synapse.workflows import CallRequest, ResultValidationError, UnknownActorError
+from synapse.workflows import (
+    CallRequest,
+    ResultValidationError,
+    UnknownActorError,
+    WorkflowDraft,
+    WorkflowStore,
+)
 from synapse.workflows.sdk import validate_result
+
+
+@pytest.mark.parametrize("schema", [None, {"type": "object"}])
+def test_text_tool_call_is_not_a_format_error_or_success(schema: Any) -> None:
+    from langchain_core.messages import ToolMessage
+
+    from synapse.workflows.errors import WorkflowError
+
+    text = '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read_file">'
+    state = {"messages": [ToolMessage(content="old result", tool_call_id="old"),
+                          AIMessage(content=text)]}
+    with pytest.raises(WorkflowError, match="tool-call markup") as error:
+        extract_result(state, schema)
+    assert not isinstance(error.value, ResultValidationError)
+
+
+@pytest.mark.parametrize("text", ["", '```xml\n<｜｜DSML｜｜ invoke name="read_file">\n```'])
+def test_empty_or_fenced_tool_call_cannot_complete_a_text_call(text: str) -> None:
+    from synapse.workflows.errors import WorkflowError
+
+    with pytest.raises(WorkflowError):
+        extract_result({"messages": [AIMessage(content=text)]}, None)
+
+
+def test_quoted_tool_markup_is_legitimate_report_content() -> None:
+    text = 'Gateway emitted `<｜｜DSML｜｜ invoke name="read_file">` instead of a call.'
+    assert extract_result({"messages": [AIMessage(content=text)]}, None) == text
+
+
+def test_format_correction_receives_failed_answer_not_original_task() -> None:
+    seen: list[tuple[ActorSpec, CallRequest]] = []
+
+    async def run(agent: Any, spec: ActorSpec, call: CallRequest, schema: Any) -> Any:
+        seen.append((spec, call))
+        answer = "items: [confirmed bug]" if len(seen) == 1 else '{"items": ["confirmed bug"]}'
+        return {"messages": [AIMessage(content=answer)]}
+
+    subject = WorkflowActorExecutor(
+        run_id="repair", definitions=definitions(), agent_builder=StubActors(), agent_runner=run
+    )
+    call = request(prompt="RUN BUSINESS TASK", schema=SCHEMA)
+    with pytest.raises(ResultValidationError):
+        asyncio.run(subject(call, False))
+    assert asyncio.run(subject(call, True)) == {"items": ["confirmed bug"]}
+    assert "RUN BUSINESS TASK" not in seen[1][1].prompt
+    assert "items: [confirmed bug]" in seen[1][1].prompt
+    assert "Do not repeat" in seen[1][1].prompt
+    assert seen[1][0].available_tools == frozenset()
+    assert not subject._repairs
+
+
+def test_graph_cache_does_not_mix_readonly_and_writable_policy() -> None:
+    actors = StubActors()
+    subject = executor(actors, StubRunner([{"messages": [AIMessage(content="ok")]}] * 2))
+    asyncio.run(subject(request(role="tester", readonly=False), False))
+    asyncio.run(subject(request(role="tester", readonly=True), False))
+    assert len(actors.builds) == 2
+
+
+def test_minimal_read_tools_restored_without_restoring_writes_or_explicit_denials() -> None:
+    subject = WorkflowActorExecutor(
+        run_id="capabilities", definitions=definitions(),
+        inherit_tools=[SimpleNamespace(name="find_files"), SimpleNamespace(name="search_files")],
+        extra_excluded_tools=("read_file", "find_files", "search_files", "write_file"),
+        readonly_restored_tools=("read_file", "find_files", "write_file"),
+    )
+    spec = subject.spec_for(request(readonly=True))
+    assert {"read_file", "find_files"} <= spec.available_tools
+    assert not ({"execute", "write_file", "search_files"} & spec.available_tools)
+    writable = subject.spec_for(request(role="tester", readonly=False))
+    assert "read_file" not in writable.available_tools
+
+
+def test_actor_executes_real_tool_before_returning_report() -> None:
+    from dataclasses import replace
+
+    from langchain_core.tools import tool
+
+    from synapse.app.workflow_actor import _default_agent_runner
+
+    calls: list[str] = []
+
+    @tool
+    def inspect_evidence(path: str) -> str:
+        """Read supplied fixture evidence without touching the workspace."""
+        calls.append(path)
+        return "fixture contains a confirmed bug"
+
+    spec = replace(spec_for("reviewer", readonly=True),
+                   available_tools=frozenset({"inspect_evidence"}))
+    model = ScriptedChatModel(responses=[
+        AIMessage(content="", tool_calls=[{
+            "id": "read-1", "name": "inspect_evidence", "args": {"path": "/fixture.py"},
+            "type": "tool_call",
+        }]),
+        AIMessage(content='{"items": ["confirmed bug"]}'),
+    ])
+    graph = build_actor_agent(spec, correction=False, model=model, backend=None,
+                              tools=[inspect_evidence])
+    state = asyncio.run(_default_agent_runner(graph, spec, request(schema=SCHEMA), SCHEMA))
+    assert calls == ["/fixture.py"]
+    assert extract_result(state, SCHEMA) == {"items": ["confirmed bug"]}
+    assert any(getattr(msg, "type", None) == "tool" for msg in state["messages"])
+
+
+def test_correction_graph_has_no_tools_even_for_reading() -> None:
+    model = ScriptedChatModel(responses=[AIMessage(content="ok")])
+    graph = build_actor_agent(spec_for("tester"), correction=True, model=model, backend=None)
+    asyncio.run(graph.ainvoke({"messages": [{"role": "user", "content": "repair"}]}))
+    assert not any(model.bound_tools)
+
+
+def test_empty_capabilities_are_reported_in_actor_prompt() -> None:
+    from dataclasses import replace
+
+    from synapse.app.workflow_actor import _default_agent_runner
+
+    class Capture:
+        async def ainvoke(self, state: Any, config: Any) -> Any:
+            assert "none (input-only reasoning)" in state["messages"][0]["content"]
+            assert "report that limitation" in state["messages"][0]["content"]
+            return state
+
+    spec = replace(spec_for("reviewer"), available_tools=frozenset())
+    asyncio.run(_default_agent_runner(Capture(), spec, request(), None))
 
 SCHEMA: Mapping[str, Any] = {
     "type": "object",
@@ -84,6 +208,14 @@ def test_actor_never_gets_nested_orchestration_or_todo_tools() -> None:
             resolved = spec_for(role, readonly=readonly)
             assert ACTOR_ALWAYS_BLOCKED <= resolved.blocked, (role, readonly)
             assert not (ACTOR_ALWAYS_BLOCKED & resolved.available_tools)
+
+
+def test_actor_can_never_cancel_its_own_workflow_run() -> None:
+    """Cancelling is a person's decision in the panel, never a node's own move."""
+    assert "cancel_workflow_run" in ACTOR_ALWAYS_BLOCKED
+    resolved = spec_for("tester")
+    assert "cancel_workflow_run" not in resolved.available_tools
+    assert "cancel_workflow_run" in resolved.blocked
 
 
 def test_readonly_can_only_narrow_a_role() -> None:
@@ -292,6 +424,7 @@ def test_actor_graphs_are_cached_per_role_and_attempt() -> None:
     assert len(actors.builds) == 1
     assert subject.cached_graphs == 1
     # A corrective attempt is a different graph (business tools blocked).
+    subject._repairs[request(schema=SCHEMA).fingerprint()] = "items: []"
     asyncio.run(subject(request(schema=SCHEMA), True))
     assert actors.builds[-1] == ("reviewer", True)
     assert subject.cached_graphs == 2
@@ -337,6 +470,108 @@ def test_readonly_request_narrows_the_actor_the_executor_builds() -> None:
     assert runner.seen[0][2] is True
     resolved = subject.spec_for(request(role="tester", readonly=True))
     assert "write_file" not in resolved.available_tools
+
+
+def usage_store(tmp_path: Path):
+    store = WorkflowStore(tmp_path / "wf.sqlite")
+    draft = store.save_draft(
+        WorkflowDraft(
+            workflow_id="wf-1",
+            project_id="p-1",
+            source="async def run(wf, inputs):\n    return {}\n",
+        )
+    )
+    store.approve_draft("wf-1", revision=draft.revision, approved_hash=draft.script_hash)
+    run = store.create_run("wf-1", run_id="run-1")
+    return store, run
+
+
+class UsageGraph:
+    """A built-actor stand-in that answers the accounting read (``aget_state``)."""
+
+    def __init__(self, thread: list[Any]) -> None:
+        self._thread = thread
+
+    async def aget_state(self, config: Any) -> Any:
+        return SimpleNamespace(values={"messages": list(self._thread)})
+
+
+class UsageActor:
+    """Builds usage-tracking graphs and answers with scripted tokens per attempt."""
+
+    def __init__(self, answers: list[tuple[str, int]]) -> None:
+        self.thread: list[Any] = []
+        self.answers = list(answers)
+        self.builds: list[tuple[str, bool]] = []
+
+    def build(self, spec: ActorSpec, correction: bool) -> Any:
+        self.builds.append((spec.role, correction))
+        return UsageGraph(self.thread)
+
+    async def run(self, agent: Any, spec: ActorSpec, call: CallRequest, schema: Any) -> Any:
+        text, tokens = self.answers.pop(0)
+        self.thread.append(
+            AIMessage(
+                content=text,
+                usage_metadata={
+                    "input_tokens": tokens,
+                    "output_tokens": 1,
+                    "total_tokens": tokens + 1,
+                },
+            )
+        )
+        return {"messages": list(self.thread)}
+
+
+def test_executor_records_usage_when_the_answer_fails_validation(tmp_path: Path) -> None:
+    store, run = usage_store(tmp_path)
+    call = request(schema=SCHEMA)
+    store.start_call(run.run_id, call)
+    actor = UsageActor([("not json", 100)])
+    subject = WorkflowActorExecutor(
+        run_id=run.run_id,
+        definitions=definitions(),
+        workspace=Path("."),
+        agent_builder=actor.build,
+        agent_runner=actor.run,
+        store=store,
+    )
+    try:
+        with pytest.raises(ResultValidationError):
+            asyncio.run(subject(call, False))
+        record = store.get_call(run.run_id, call.call_key)
+        assert record is not None
+        # The attempt produced a state, so its tokens are charged even though the answer
+        # failed validation -- the model call really happened.
+        assert (record.input_tokens, record.output_tokens) == (100, 1)
+    finally:
+        store.close()
+
+
+def test_correction_is_charged_only_its_own_tokens(tmp_path: Path) -> None:
+    store, run = usage_store(tmp_path)
+    call = request(schema=SCHEMA)
+    store.start_call(run.run_id, call)
+    actor = UsageActor([("not json", 100), ('{"items": ["ok"]}', 200)])
+    subject = WorkflowActorExecutor(
+        run_id=run.run_id,
+        definitions=definitions(),
+        workspace=Path("."),
+        agent_builder=actor.build,
+        agent_runner=actor.run,
+        store=store,
+    )
+    try:
+        with pytest.raises(ResultValidationError):
+            asyncio.run(subject(call, False))
+        assert asyncio.run(subject(call, True)) == {"items": ["ok"]}
+        record = store.get_call(run.run_id, call.call_key)
+        assert record is not None
+        # Both attempts are charged, and the correction is charged only the tokens it added
+        # (``before`` is read per attempt), never the whole thread again.
+        assert (record.input_tokens, record.output_tokens) == (300, 2)
+    finally:
+        store.close()
 
 
 # --- the real graph, with a scripted model ---------------------------------
@@ -418,6 +653,6 @@ def test_corrective_attempt_hides_write_tools_from_the_model() -> None:
             {"configurable": {"thread_id": spec.thread_id}},
         )
     )
-    bound = set(model.bound_tools[-1])
+    bound = set(model.bound_tools[-1]) if model.bound_tools else set()
     for name in ("write_file", "edit_file", "patch", "execute"):
         assert name not in bound, sorted(bound)

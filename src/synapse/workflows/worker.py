@@ -131,7 +131,12 @@ class ParentCallExecutor:
         )
         kind = reply.get("type")
         if kind == protocol.KIND_CALL_ERROR:
-            raise WorkflowError(str(reply.get("error") or "the host could not run the call"))
+            # Rebuild the class the host raised: a schema/format failure drives the SDK's
+            # single corrective attempt, while an ordinary failure must not be retried.
+            raise protocol.workflow_error_from_wire(
+                reply.get("error_type"),
+                str(reply.get("error") or "the host could not run the call"),
+            )
         if kind != protocol.KIND_CALL_RESULT:
             raise WorkflowError(f"unexpected reply to a call: {kind!r}")
         return reply.get("value")
@@ -201,7 +206,9 @@ async def run_worker(config: protocol.WorkerConfig, channel: JsonChannel) -> Any
                 checkpointer=saver,
                 executor=ParentCallExecutor(channel),
                 approval_gate=ParentApprovalGate(channel),
-                known_roles=config.known_roles or None,
+                # An empty registry is *deny-all*, not unrestricted: passing it through as
+                # ``None`` would let a script name any role the parent never enabled.
+                known_roles=config.known_roles,
             )
             return await runner.ainvoke(config.inputs)
         finally:

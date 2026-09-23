@@ -131,9 +131,9 @@ export const CommandInput: React.FC = () => {
    * One submit path, shared by the editor's Enter, the primary button and the
    * form.
    *
-   * A refused submit (an upload still in flight) keeps the draft exactly as it
-   * is: the store publishes the reason, and the reader's own text is the one
-   * thing a failed send must never throw away.
+   * Clear optimistically to prevent a second send while waiting for the receipt.
+   * A definitive refusal (including a workflow holding the project) restores
+   * the draft only if the reader has not started a different one in the meantime.
    */
   const handleSubmit = useCallback(
     (draft?: ComposerSnapshot) => {
@@ -144,10 +144,21 @@ export const CommandInput: React.FC = () => {
         return;
       }
       if (isSnapshotEmpty(snapshot) && !readyAttachment) return;
-      void submitPrompt(snapshot.text);
+      const session = currentSession;
+      const submit = submitPrompt(snapshot.text);
       composerRef.current?.reset();
+      void submit.then((accepted) => {
+        if (session.project_id !== useConsoleStore.getState().currentSession.project_id ||
+            session.thread_id !== useConsoleStore.getState().currentSession.thread_id) return;
+        if (!accepted && composerRef.current?.snapshot().text === '') {
+          composerRef.current.restore(snapshot);
+        }
+      }).catch(() => {
+        // A failed steer can have reached the server; do not manufacture a
+        // definitely refused draft from an unknown outcome.
+      });
     },
-    [submitPrompt, uploading, readyAttachment],
+    [submitPrompt, uploading, readyAttachment, currentSession],
   );
 
   const handleFiles = useCallback(

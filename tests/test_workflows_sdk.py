@@ -72,6 +72,21 @@ class FakeExecutor:
             self.in_flight -= 1
 
 
+class RaisingExecutor:
+    """Raises the scripted outcome (an exception) or returns it, in dispatch order."""
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[tuple[str, bool]] = []
+
+    async def execute(self, request: CallRequest, *, correction: bool) -> Any:
+        self.calls.append((request.call_key, correction))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 def approved_store(tmp_path, *, limits: WorkflowLimits | None = None):
     store = WorkflowStore(tmp_path / "wf.sqlite")
     draft = store.save_draft(
@@ -331,6 +346,111 @@ def test_validation_error_message_is_bounded_and_value_free(tmp_path) -> None:
         # ...while the failing constraint and its location stay actionable.
         assert "items" in message
         assert "type" in message
+    finally:
+        store.close()
+
+
+def test_executor_format_error_gets_one_corrective_attempt(tmp_path) -> None:
+    """A host-reported format error is corrected once, with business tools disabled.
+
+    The host raises before returning a value (its answer was not parseable), so this only
+    works if the SDK treats an executor-raised :class:`ResultValidationError` the same as a
+    value that fails the schema.
+    """
+    store, run = approved_store(tmp_path)
+    executor = RaisingExecutor([
+        ResultValidationError("actor did not answer with JSON"),
+        {"items": ["fixed"]},
+    ])
+    sdk = make_sdk(store, run, executor)
+    try:
+        result = resolve(
+            sdk,
+            sdk.actor("reviewer").ask(
+                key="review:a.py", prompt="review", schema=FINDINGS_SCHEMA
+            ),
+        )
+        assert result == {"items": ["fixed"]}
+        assert executor.calls == [("review:a.py", False), ("review:a.py", True)]
+        record = store.get_call(run.run_id, "review:a.py")
+        assert record is not None and record.status is CallStatus.COMPLETED
+        assert record.attempts == 2
+    finally:
+        store.close()
+
+
+def test_executor_format_error_twice_fails_the_call(tmp_path) -> None:
+    store, run = approved_store(tmp_path)
+    executor = RaisingExecutor([
+        ResultValidationError("bad"),
+        ResultValidationError("still bad"),
+    ])
+    sdk = make_sdk(store, run, executor)
+    try:
+        with pytest.raises(ResultValidationError):
+            resolve(
+                sdk,
+                sdk.actor("reviewer").ask(
+                    key="review:a.py", prompt="review", schema=FINDINGS_SCHEMA
+                ),
+            )
+        # Exactly two attempts: the correction is not itself retried.
+        assert executor.calls == [("review:a.py", False), ("review:a.py", True)]
+        record = store.get_call(run.run_id, "review:a.py")
+        assert record is not None and record.status is CallStatus.FAILED
+        assert record.attempts == 2
+    finally:
+        store.close()
+
+
+def test_executor_ordinary_error_is_not_retried(tmp_path) -> None:
+    store, run = approved_store(tmp_path)
+    executor = RaisingExecutor([WorkflowError("the actor refused this call")])
+    sdk = make_sdk(store, run, executor)
+    try:
+        with pytest.raises(WorkflowError):
+            resolve(
+                sdk,
+                sdk.actor("reviewer").ask(
+                    key="review:a.py", prompt="review", schema=FINDINGS_SCHEMA
+                ),
+            )
+        assert executor.calls == [("review:a.py", False)]
+        record = store.get_call(run.run_id, "review:a.py")
+        assert record is not None and record.status is CallStatus.FAILED
+        assert record.attempts == 1
+    finally:
+        store.close()
+
+
+def test_executor_uncertain_result_is_not_retried(tmp_path) -> None:
+    store, run = approved_store(tmp_path)
+    executor = RaisingExecutor([CallResultUncertainError("outcome unknown")])
+    sdk = make_sdk(store, run, executor)
+    try:
+        with pytest.raises(CallResultUncertainError):
+            resolve(
+                sdk,
+                sdk.actor("reviewer").ask(
+                    key="review:a.py", prompt="review", schema=FINDINGS_SCHEMA
+                ),
+            )
+        assert executor.calls == [("review:a.py", False)]
+    finally:
+        store.close()
+
+
+def test_a_failed_attempt_is_recorded_as_one_attempt(tmp_path) -> None:
+    """Attempts are counted before the call, so a failure is not recorded as zero."""
+    store, run = approved_store(tmp_path)
+    executor = RaisingExecutor([RuntimeError("the actor exploded")])
+    sdk = make_sdk(store, run, executor)
+    try:
+        with pytest.raises(RuntimeError):
+            resolve(sdk, sdk.actor("reviewer").ask(key="review:a.py", prompt="review"))
+        record = store.get_call(run.run_id, "review:a.py")
+        assert record is not None and record.status is CallStatus.FAILED
+        assert record.attempts == 1
     finally:
         store.close()
 

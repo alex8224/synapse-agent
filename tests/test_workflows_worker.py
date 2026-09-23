@@ -8,22 +8,33 @@ answers calls from a canned map, so no model is involved.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 
+from synapse.app.workflow_actor import WorkflowActorExecutor
+from synapse.runtime.subagents import resolve_role_definitions
 from synapse.workflows import (
+    ResultValidationError,
     WorkflowDraft,
+    WorkflowError,
     WorkflowLimits,
     WorkflowStatus,
     WorkflowStore,
     protocol,
 )
-from synapse.workflows.process import WorkerProcess, worker_environment
-from synapse.workflows.protocol import WorkerConfig
+from synapse.workflows.process import (
+    WorkerProcess,
+    worker_environment,
+    worker_stderr_summary,
+)
+from synapse.workflows.protocol import WorkerConfig, workflow_error_from_wire
 
 #: Two calls; the second one is where a test kills the worker.
 SCRIPT = """
@@ -39,6 +50,37 @@ RUNAWAY_SCRIPT = """
 async def run(wf, inputs):
     while True:
         pass
+"""
+
+#: One schema-validated call, so the worker exercises its correction path.
+SCHEMA_SCRIPT = """
+SCHEMA = {
+    "type": "object",
+    "required": ["items"],
+    "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+}
+
+
+async def run(wf, inputs):
+    reviewer = wf.actor("reviewer", key="reviewer")
+    result = await reviewer.ask(key="c1", prompt="review", schema=SCHEMA)
+    return {"result": result}
+"""
+
+#: A non-ASCII script, prompt and input: the whole config crosses the pipe as UTF-8.
+UNICODE_SCRIPT = """
+async def run(wf, inputs):
+    reviewer = wf.actor("reviewer", key="reviewer")
+    answer = await reviewer.ask(key="c1", prompt="审查这个文件：中文", input={"路径": "文件.py"})
+    return {"answer": answer, "echo": inputs.get("配置")}
+"""
+
+#: Names its actor from its own inputs, so an empty role registry must refuse it before
+#: anything is dispatched.
+ROLE_SCRIPT = """
+async def run(wf, inputs):
+    actor = wf.actor(inputs["role"], key="dynamic")
+    return await actor.ask(key="c1", prompt="hi")
 """
 
 WORKER_TIMEOUT_S = 180.0
@@ -82,7 +124,14 @@ def approved_run(tmp_path: Path):
     return store, store.create_run(draft.workflow_id, run_id="run-1")
 
 
-def make_config(tmp_path: Path, run, *, script: str = SCRIPT, inputs: Any = None) -> WorkerConfig:
+def make_config(
+    tmp_path: Path,
+    run,
+    *,
+    script: str = SCRIPT,
+    inputs: Any = None,
+    known_roles: tuple[str, ...] = ("reviewer", "tester"),
+) -> WorkerConfig:
     return WorkerConfig(
         run_id=run.run_id,
         thread_id="wf-thread-1",
@@ -90,7 +139,7 @@ def make_config(tmp_path: Path, run, *, script: str = SCRIPT, inputs: Any = None
         script=script,
         inputs={} if inputs is None else inputs,
         limits=run.limits,
-        known_roles=("reviewer", "tester"),
+        known_roles=known_roles,
     )
 
 
@@ -108,6 +157,84 @@ def drive(worker: WorkerProcess, host: FakeHost, *, deadline_messages: int = 50)
             return message
         worker.send(host.reply(message))
     raise AssertionError("worker kept talking without reporting an outcome")
+
+
+class _StubGraph:
+    """A built-actor stand-in that only has to answer the accounting read."""
+
+    def __init__(self, thread: list[Any]) -> None:
+        self._thread = thread
+
+    async def aget_state(self, config: Any) -> Any:
+        return SimpleNamespace(values={"messages": list(self._thread)})
+
+
+class StubActor:
+    """A model-free actor behind the real :class:`WorkflowActorExecutor`.
+
+    The execution contract stays real -- role resolution, result extraction, schema
+    validation and per-call usage accounting -- while the "model" is a scripted list of
+    answers.  A shared message list stands in for the actor's checkpointed thread, so the
+    usage of a corrective attempt is measured exactly as it is in production.  An entry
+    that is an exception is raised instead of answered.
+    """
+
+    def __init__(self, store: WorkflowStore, run_id: str, answers: list[Any]) -> None:
+        self.store = store
+        self.run_id = run_id
+        self.thread: list[Any] = []
+        self.answers = list(answers)
+        self.builds: list[tuple[str, bool]] = []
+        self.executor = WorkflowActorExecutor(
+            run_id=run_id,
+            definitions=resolve_role_definitions(),
+            workspace=Path("."),
+            store=store,
+            agent_builder=self._build,
+            agent_runner=self._run,
+        )
+
+    def _build(self, spec: Any, correction: bool) -> Any:
+        self.builds.append((spec.role, correction))
+        return _StubGraph(self.thread)
+
+    async def _run(self, agent: Any, spec: Any, call: Any, schema: Any) -> Any:
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        text, tokens = answer
+        self.thread.append(
+            AIMessage(
+                content=text,
+                usage_metadata={
+                    "input_tokens": tokens,
+                    "output_tokens": 1,
+                    "total_tokens": tokens + 1,
+                },
+            )
+        )
+        return {"messages": list(self.thread)}
+
+
+class ActorHost:
+    """Answers worker frames by delegating calls to a real actor executor."""
+
+    def __init__(self, actor: StubActor) -> None:
+        self.actor = actor
+        self.dispatches: list[tuple[str, bool]] = []
+
+    def reply(self, message: dict[str, Any]) -> dict[str, Any]:
+        kind = message.get("type")
+        if kind != protocol.KIND_CALL:
+            raise AssertionError(f"unexpected worker message: {kind!r}")
+        request = protocol.call_request_from_payload(message)
+        correction = bool(message.get("correction"))
+        self.dispatches.append((request.call_key, correction))
+        try:
+            value = asyncio.run(self.actor.executor(request, correction))
+        except BaseException as exc:  # noqa: BLE001 - the frame is the error channel
+            return protocol.call_error_message(str(message.get("id")), exc)
+        return {"type": protocol.KIND_CALL_RESULT, "id": message.get("id"), "value": value}
 
 
 # --- happy path -------------------------------------------------------------
@@ -261,7 +388,179 @@ def test_bad_start_message_exits_with_the_config_code(tmp_path) -> None:
         store.close()
 
 
+# --- the real worker against a model-free actor -----------------------------
+
+
+def actor_run(tmp_path: Path, *, answers: list[Any], script: str = SCHEMA_SCRIPT):
+    store, run = approved_run(tmp_path)
+    config = make_config(tmp_path, run, script=script)
+    return store, run, config, StubActor(store, run.run_id, answers)
+
+
+def test_worker_corrects_one_format_failure_and_charges_both_attempts(tmp_path) -> None:
+    store, run, config, actor = actor_run(
+        tmp_path, answers=[("not json at all", 100), ('{"items": ["fixed"]}', 200)]
+    )
+    host = ActorHost(actor)
+    worker = WorkerProcess(config)
+    try:
+        with worker:
+            outcome = drive(worker, host)
+        assert outcome["type"] == protocol.KIND_RESULT, (outcome, worker.stderr_tail())
+        assert outcome["value"] == {"result": {"items": ["fixed"]}}
+        # The host's format error crossed the process boundary and earned exactly one
+        # corrective attempt: the worker had to rebuild the failure's *class* to do this.
+        assert host.dispatches == [("c1", False), ("c1", True)]
+        assert actor.builds == [("reviewer", False), ("reviewer", True)]
+        record = store.get_call(run.run_id, "c1")
+        assert record is not None and record.status.value == "completed"
+        assert record.attempts == 2
+        # Both model calls were paid for, and the correction was charged only its own
+        # tokens rather than the whole thread again.
+        assert (record.input_tokens, record.output_tokens) == (300, 2)
+    finally:
+        store.close()
+
+
+def test_worker_fails_after_two_format_failures(tmp_path) -> None:
+    store, run, config, actor = actor_run(tmp_path, answers=[("bad", 100), ("still bad", 200)])
+    host = ActorHost(actor)
+    worker = WorkerProcess(config)
+    try:
+        with worker:
+            outcome = drive(worker, host)
+        assert outcome["type"] == protocol.KIND_ERROR, (outcome, worker.stderr_tail())
+        # Exactly two attempts: the correction is not itself retried.
+        assert host.dispatches == [("c1", False), ("c1", True)]
+        settled = store.get_run(run.run_id)
+        assert settled is not None and settled.status is WorkflowStatus.FAILED
+        record = store.get_call(run.run_id, "c1")
+        assert record is not None and record.status.value == "failed"
+        assert record.attempts == 2
+        # A failed call still cost both model calls, so its usage is recorded too.
+        assert (record.input_tokens, record.output_tokens) == (300, 2)
+    finally:
+        store.close()
+
+
+def test_worker_does_not_retry_a_business_error(tmp_path) -> None:
+    store, run, config, actor = actor_run(
+        tmp_path, answers=[WorkflowError("the actor refused this call")]
+    )
+    host = ActorHost(actor)
+    worker = WorkerProcess(config)
+    try:
+        with worker:
+            outcome = drive(worker, host)
+        assert outcome["type"] == protocol.KIND_ERROR, (outcome, worker.stderr_tail())
+        # An ordinary failure is reported, not re-asked: only a format error is corrected.
+        assert host.dispatches == [("c1", False)]
+        record = store.get_call(run.run_id, "c1")
+        assert record is not None and record.status.value == "failed"
+        assert record.attempts == 1
+    finally:
+        store.close()
+
+
 # --- protocol and import boundary -------------------------------------------
+
+
+def test_empty_role_registry_denies_a_dynamic_role(tmp_path) -> None:
+    """An empty registry is deny-all, not unrestricted.
+
+    The worker used to collapse ``()`` to ``None``, which the SDK reads as "no registry,
+    any role allowed", so a script that names its actor from its inputs would have reached
+    the host.  A real worker is driven here to prove the refusal happens before dispatch.
+    """
+    store, run = approved_run(tmp_path)
+    config = make_config(
+        tmp_path,
+        run,
+        script=ROLE_SCRIPT,
+        inputs={"role": "reviewer"},
+        known_roles=(),
+    )
+    host = FakeHost()
+    worker = WorkerProcess(config)
+    try:
+        with worker:
+            outcome = drive(worker, host)
+    finally:
+        store.close()
+
+    assert outcome["type"] == protocol.KIND_ERROR, (outcome, worker.stderr_tail())
+    assert "UnknownActorError" in str(outcome.get("error"))
+    # The refused role never crossed the boundary: deny-all is enforced before dispatch.
+    assert host.dispatches == []
+
+
+def test_call_error_keeps_the_failure_class_across_the_boundary() -> None:
+    frame = protocol.call_error_message("r1", ResultValidationError("bad answer"))
+    assert frame["type"] == protocol.KIND_CALL_ERROR
+    assert frame["error_type"] == "ResultValidationError"
+    rebuilt = workflow_error_from_wire(frame.get("error_type"), frame["error"])
+    assert isinstance(rebuilt, ResultValidationError)
+    assert str(rebuilt) == "bad answer"
+    # Only a schema/format failure keeps its class.  Every other deliberate failure -- an
+    # uncertain call above all, which must not be presented as retryable -- plus an unknown
+    # or absent name, falls back to a plain WorkflowError rather than a more specific type.
+    for error_type in (None, "SomeOtherError", "CallResultUncertainError", "WorkflowError"):
+        legacy = workflow_error_from_wire(error_type, "something went wrong")
+        assert type(legacy) is WorkflowError
+        assert str(legacy) == "something went wrong"
+
+
+def test_call_error_ignores_a_non_string_error_type() -> None:
+    """A malformed frame must become an ordinary failure, never a lookup crash."""
+    for error_type in ([1], {"a": 1}, 7, True):
+        rebuilt = workflow_error_from_wire(error_type, "boom")  # type: ignore[arg-type]
+        assert type(rebuilt) is WorkflowError
+        assert str(rebuilt) == "boom"
+
+
+def test_stderr_summary_keeps_only_structural_traceback_lines() -> None:
+    """The persisted diagnostic is a traceback's shape, not whatever stderr carried."""
+    summary = worker_stderr_summary(
+        [
+            "Traceback (most recent call last):",
+            '  File "/srv/app/worker.py", line 12, in run',
+            '    api_key = "sk-live-LEAKEDSECRET"',
+            "RuntimeError: boom sk-live-LEAKEDSECRET",
+            # A script can print anything that merely looks like a traceback.
+            '  File "SECRETPATH", line 1, in leak',
+            "mysecretError",
+        ]
+    )
+    joined = "\n".join(summary)
+    assert "RuntimeError" in joined
+    assert "/srv/app/worker.py:12 in run" in joined
+    assert "LEAKEDSECRET" not in joined
+    assert "api_key" not in joined
+    # A fabricated frame (no real file) and a lowercase token are not structure.
+    assert "SECRETPATH" not in joined
+    assert "mysecretError" not in joined
+
+
+def test_worker_environment_forces_utf8_io() -> None:
+    """The parent's pipes are UTF-8, so the child must decode stdin as UTF-8 too."""
+    assert worker_environment({"PATH": "x"})["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_unicode_config_and_payload_survive_the_pipe(tmp_path) -> None:
+    store, run = approved_run(tmp_path)
+    config = make_config(tmp_path, run, script=UNICODE_SCRIPT, inputs={"配置": "中文输入"})
+    host = FakeHost()
+    worker = WorkerProcess(config)
+    try:
+        with worker:
+            outcome = drive(worker, host)
+    finally:
+        store.close()
+
+    assert outcome["type"] == protocol.KIND_RESULT, (outcome, worker.stderr_tail())
+    assert outcome["value"]["echo"] == "中文输入"
+    # The prompt crossed as UTF-8 rather than through the platform locale code page.
+    assert outcome["value"]["answer"]["input"] == {"路径": "文件.py"}
 
 
 def test_start_message_requires_identity_fields() -> None:

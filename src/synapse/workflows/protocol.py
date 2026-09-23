@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from synapse.workflows.contract import CallRequest, WorkflowLimits
+from synapse.workflows.errors import ResultValidationError, WorkflowError
 
 __all__ = [
     "KIND_APPROVAL",
@@ -31,11 +32,13 @@ __all__ = [
     "MAX_LINE_BYTES",
     "ProtocolError",
     "WorkerConfig",
+    "call_error_message",
     "call_request_from_payload",
     "call_request_payload",
     "checkpoint_path_for",
     "decode",
     "encode",
+    "workflow_error_from_wire",
 ]
 
 KIND_START = "start"
@@ -53,6 +56,50 @@ MAX_LINE_BYTES = 8 * 1024 * 1024
 
 class ProtocolError(Exception):
     """A message that cannot be encoded or decoded."""
+
+
+#: The one deliberate failure class that must survive the worker/parent process boundary in
+#: a ``call_error`` frame.  The SDK gives a ``ResultValidationError`` exactly one corrective
+#: attempt; every other host failure is an ordinary failure that must *not* be retried, so
+#: flattening them into a plain :class:`WorkflowError` is both sufficient and safer than
+#: rebuilding a specific type the SDK would not treat differently.  ``CallResultUncertainError``
+#: is deliberately absent: the SDK records a non-validation failure as failed, and mapping
+#: the class here would present an unknown outcome as retryable.
+_WIRE_ERROR_TYPES: Mapping[str, type[WorkflowError]] = {
+    ResultValidationError.__name__: ResultValidationError,
+}
+
+
+def call_error_message(request_id: str, exc: BaseException) -> dict[str, Any]:
+    """One ``call_error`` frame that keeps the failure's class across the boundary.
+
+    The bounded message already names the class, but the worker must be able to rebuild
+    the *type*: flattening a schema error and an ordinary failure into one generic error
+    would erase the distinction the SDK's single corrective attempt depends on.
+    """
+    return {
+        "type": KIND_CALL_ERROR,
+        "id": request_id,
+        "error": f"{type(exc).__name__}: {exc}"[:2000],
+        "error_type": type(exc).__name__,
+    }
+
+
+def workflow_error_from_wire(error_type: str | None, error: str) -> WorkflowError:
+    """Rebuild the deliberate failure a host reported.
+
+    ``error_type`` is the class name the host sent.  Only a schema/format failure
+    (``ResultValidationError``) earns the SDK's single corrective attempt, so only that
+    class is rebuilt; any other name -- a different deliberate failure, a frame from an
+    older host, or a non-workflow exception -- becomes a plain :class:`WorkflowError`
+    rather than a guessed, more specific type.
+    """
+    prefix = f"{error_type}: " if error_type else ""
+    detail = error[len(prefix):] if prefix and error.startswith(prefix) else error
+    # A frame from a broken or hostile peer can carry any JSON value here; only a string
+    # can name a class, so anything else is an ordinary failure instead of a lookup crash.
+    cls = _WIRE_ERROR_TYPES.get(error_type) if isinstance(error_type, str) else None
+    return (cls or WorkflowError)(detail)
 
 
 def checkpoint_path_for(db_path: str) -> str:

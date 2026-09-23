@@ -25,6 +25,7 @@ from synapse.runtime.sessions.manager import RuntimeManager
 from synapse.runtime.transport.protocol import decode_params, dispatch
 from synapse.workflows import (
     CallRequest,
+    WorkflowDraft,
     WorkflowStore,
 )
 from synapse.workflows.service import WorkflowResources, WorkflowService
@@ -183,6 +184,32 @@ def test_cancel_through_the_wire_reports_a_stopped_run(tmp_path) -> None:
         assert settled.run.active is False
 
     try:
+        asyncio.run(scenario())
+    finally:
+        store.close()
+        asyncio.run(manager.shutdown())
+
+
+def test_cancel_orphaned_run_through_wire_releases_project(tmp_path) -> None:
+    service, workflow, store, _actors, manager = service_for(tmp_path)
+    try:
+        draft = workflow.save_draft(WorkflowDraft(
+            workflow_id="wf-orphan", project_id="p1", source=SCRIPT
+        ))
+        workflow.approve_draft(draft.workflow_id, revision=draft.revision)
+        run = workflow.create_run(draft.workflow_id, run_id="orphan")
+        # Mimic a fresh manager: only durable SQLite state survived.
+        restarted = WorkflowService(workflow.resources)
+        manager.workflow_service = restarted
+
+        async def scenario() -> None:
+            cancelled = await _call(service, "runtime.workflow.run.cancel", {
+                "project_id": "p1", "run_id": run.run_id, "reason": "user"
+            })
+            assert cancelled.run.status == "cancelled"
+            assert cancelled.run.active is False
+            assert restarted.turn_refusal("other-session") is None
+
         asyncio.run(scenario())
     finally:
         store.close()
