@@ -20,6 +20,7 @@ built as a standalone graph with no subagents of its own:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,15 +44,26 @@ __all__ = [
     "actor_blocked_tools",
     "actor_thread_id",
     "build_actor_agent",
+    "build_project_workflow_service",
     "render_call_prompt",
     "resolve_actor",
     "usage_from_state",
 ]
 
+logger = logging.getLogger(__name__)
+
 #: Tools an actor never gets, whatever its role says.
 #: ``task`` would let one node start an orchestration the run cannot record or recover;
 #: the todo tools belong to the main agent's own planning, not to a workflow node.
-ACTOR_ALWAYS_BLOCKED = frozenset({"task", "write_todos", "todo_write", "todos"})
+ACTOR_ALWAYS_BLOCKED = frozenset({
+    "task",
+    "write_todos",
+    "todo_write",
+    "todos",
+    "create_workflow",
+    "get_workflow_run",
+    "list_workflow_runs",
+})
 
 #: How much of one call's input is rendered into the prompt.
 MAX_INPUT_CHARS = 20000
@@ -465,3 +477,94 @@ def usage_from_state(state: Any, *, since: int) -> tuple[int, int] | None:
         input_tokens += int(usage.get("input_tokens") or 0)
         output_tokens += int(usage.get("output_tokens") or 0)
     return (input_tokens, output_tokens) if seen else None
+
+
+def build_project_workflow_service(
+    workspace: Path | str,
+    project_settings: Any,
+    project_id: str | None = None,
+) -> Any | None:
+    """Build one project's workflow lifecycle, or ``None`` when it is unavailable.
+
+    Optional on purpose: a workflow database that cannot be opened, or an environment where
+    the actor stack cannot be assembled, degrades to ``None``.
+    """
+    try:
+        from pathlib import Path
+
+        from synapse.runtime.subagent_specs import SubagentRegistry
+        from synapse.runtime.subagents import resolve_role_definitions
+        from synapse.workflows.service import WorkflowResources, WorkflowService
+        from synapse.workflows.store import WorkflowStore
+
+        ws_path = Path(workspace).resolve()
+        pid = project_id or getattr(project_settings, "project_id", None) or ws_path.name
+
+        # ``resolved_sessions_path()`` is the session *database file*, not a directory:
+        # the workflow database is a sibling under the same state directory.
+        sessions_path = Path(project_settings.resolved_sessions_path())
+        wf_dir = sessions_path.parent / "workflows"
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        store = WorkflowStore(wf_dir / f"{pid}.sqlite")
+
+        try:
+            registry = SubagentRegistry.load(
+                ws_path,
+                extra_dirs=getattr(project_settings, "custom_agents_dirs", None),
+            )
+            custom: Any = registry.items()
+        except Exception:  # noqa: BLE001 - role files are best effort
+            custom = None
+
+        definitions = resolve_role_definitions(
+            custom_subagents=custom,
+            disable_builtin_subagents=getattr(project_settings, "disable_builtin_subagents", False),
+        )
+
+        cache: dict[str, Any] = {}
+
+        def actor_resources() -> dict[str, Any]:
+            if not cache:
+                from synapse.app.agent import build_actor_resources
+
+                cache.update(build_actor_resources(project_settings))
+            return cache
+
+        def executor_factory(run_id: str) -> Any:
+            built = actor_resources()
+            return WorkflowActorExecutor(
+                run_id=run_id,
+                definitions=definitions,
+                workspace=ws_path,
+                store=store,
+                inherit_tools=built["tools"],
+                extra_excluded_tools=built["excluded_tools"],
+                shell_executable=built["shell_executable"],
+                agent_builder=lambda spec, correction: build_actor_agent(
+                    spec,
+                    correction=correction,
+                    model=built["model"],
+                    backend=built["backend"],
+                    checkpointer=built["checkpointer"],
+                    project_root=ws_path,
+                    tools=built["tools"],
+                    permissions=built["permissions"],
+                ),
+            )
+
+        return WorkflowService(
+            WorkflowResources(
+                project_id=pid,
+                workspace=ws_path,
+                store=store,
+                roles=tuple(d.name for d in definitions if d.enabled),
+                executor_factory=executor_factory,
+            )
+        )
+    except Exception:  # noqa: BLE001 - workflows are optional per project
+        logger.warning(
+            "workflow support is unavailable for project %s",
+            project_id or getattr(project_settings, "project_id", "<unknown>"),
+            exc_info=True,
+        )
+        return None

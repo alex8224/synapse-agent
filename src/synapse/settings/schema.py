@@ -257,6 +257,12 @@ class Settings(BaseSettings):
         default=True, validation_alias="AGENT_GOAL_AUTO_CONTINUE"
     )
 
+    # -- Dynamic workflows --
+    # 模型生成的 Python 编排程序，支持子进程隔离、LangGraph 状态恢复与 Actor 角色调度。
+    enable_workflows: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_WORKFLOWS"
+    )
+
     # Project memory / skills (paths relative to project root or absolute)
     enable_memory: bool = Field(default=False, validation_alias="AGENT_ENABLE_MEMORY")
     memory_paths: list[str] = Field(

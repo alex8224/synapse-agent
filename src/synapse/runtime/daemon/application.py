@@ -71,83 +71,13 @@ def _build_workflow_service(*, descriptor: Any, project_settings: Any) -> Any | 
     the actor stack cannot be assembled, must degrade to "workflows unavailable" instead of
     failing ordinary chat for that project.
     """
-    try:
-        from pathlib import Path
+    from synapse.app.workflow_actor import build_project_workflow_service
 
-        from synapse.app.workflow_actor import WorkflowActorExecutor, build_actor_agent
-        from synapse.runtime.subagent_specs import SubagentRegistry
-        from synapse.runtime.subagents import resolve_role_definitions
-        from synapse.workflows.service import WorkflowResources, WorkflowService
-        from synapse.workflows.store import WorkflowStore
-
-        # ``resolved_sessions_path()`` is the session *database file*, not a directory:
-        # the workflow database is a sibling under the same state directory.
-        store = WorkflowStore(
-            Path(project_settings.resolved_sessions_path()).parent
-            / "workflows"
-            / f"{descriptor.project_id}.sqlite"
-        )
-        try:
-            registry = SubagentRegistry.load(
-                project_settings.workspace,
-                extra_dirs=project_settings.custom_agents_dirs,
-            )
-            custom: Any = registry.items()
-        except Exception:  # noqa: BLE001 - role files are best effort
-            custom = None
-        definitions = resolve_role_definitions(
-            custom_subagents=custom,
-            disable_builtin_subagents=project_settings.disable_builtin_subagents,
-        )
-        # Built lazily: a project that never runs a workflow must not pay for a model
-        # client, a shell backend and a checkpointer.
-        cache: dict[str, Any] = {}
-
-        def actor_resources() -> dict[str, Any]:
-            if not cache:
-                from synapse.app.agent import build_actor_resources
-
-                cache.update(build_actor_resources(project_settings))
-            return cache
-
-        def executor_factory(run_id: str) -> Any:
-            built = actor_resources()
-            return WorkflowActorExecutor(
-                run_id=run_id,
-                definitions=definitions,
-                workspace=Path(descriptor.workspace),
-                store=store,
-                inherit_tools=built["tools"],
-                extra_excluded_tools=built["excluded_tools"],
-                shell_executable=built["shell_executable"],
-                agent_builder=lambda spec, correction: build_actor_agent(
-                    spec,
-                    correction=correction,
-                    model=built["model"],
-                    backend=built["backend"],
-                    checkpointer=built["checkpointer"],
-                    project_root=descriptor.workspace,
-                    tools=built["tools"],
-                    permissions=built["permissions"],
-                ),
-            )
-
-        return WorkflowService(
-            WorkflowResources(
-                project_id=descriptor.project_id,
-                workspace=Path(descriptor.workspace),
-                store=store,
-                roles=tuple(d.name for d in definitions if d.enabled),
-                executor_factory=executor_factory,
-            )
-        )
-    except Exception:  # noqa: BLE001 - workflows are optional per project
-        _LOGGER.warning(
-            "workflow support is unavailable for project %s",
-            getattr(descriptor, "project_id", "?"),
-            exc_info=True,
-        )
-        return None
+    return build_project_workflow_service(
+        workspace=descriptor.workspace,
+        project_settings=project_settings,
+        project_id=descriptor.project_id,
+    )
 
 
 def _mcp_tool_prefix(config: Any) -> str:
@@ -442,6 +372,7 @@ class RuntimeDaemon:
                 load_mcp=None,
                 prompt_cache_key=lambda: thread_id,
                 mcp_pool_key=f"{descriptor.project_id}:{thread_id}",
+                workflow_service=workflow_service,
             )
 
         def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:

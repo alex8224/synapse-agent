@@ -331,6 +331,7 @@ def build_coding_agent(
     prompt_cache_key: Callable[[], str | None] | None = None,
     goal_service: Any | None = None,
     mcp_pool_key: str | None = None,
+    workflow_service: Any | None = None,
 ) -> Any:
     """Assemble the coding agent graph.
 
@@ -499,6 +500,21 @@ def build_coding_agent(
 
             tools.extend(build_goal_tools(service=goal_service))
         except Exception:  # noqa: BLE001 - goal 工具失败不阻断 agent 构建
+            pass
+
+    # 动态工作流工具（create_workflow / get_workflow_run / list_workflow_runs）
+    if getattr(settings, "enable_workflows", True):
+        try:
+            from synapse.tools.workflow_tools import build_workflow_tools
+
+            tools.extend(
+                build_workflow_tools(
+                    service=workflow_service,
+                    workspace=root,
+                    settings=settings,
+                )
+            )
+        except Exception:  # noqa: BLE001 - workflow 工具失败不阻断 agent 构建
             pass
 
     # -- 长期记忆 / 知识库（默认关闭，按需创建实例） --
@@ -789,6 +805,7 @@ def build_coding_agent(
     # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so
     # session-scoped cache keys survive model/MCP switches.
     agent._coding_prompt_cache_key = prompt_cache_key  # type: ignore[attr-defined]
+    agent._coding_workflow_service = workflow_service  # type: ignore[attr-defined]
     # All model I/O is async-only and bound to the process runtime loop.
     # 长期记忆 / 知识库 / 规划（默认 None，在 CLI/TUI 层异步查询）
     agent._coding_knowledge_base = _kb  # type: ignore[attr-defined]
@@ -866,6 +883,7 @@ def rebuild_coding_agent(
     registry = getattr(agent, "_coding_model_registry", None) if reuse_model else None
     model_cache = getattr(agent, "_coding_model_cache", None)
     prompt_cache_key = getattr(agent, "_coding_prompt_cache_key", None)
+    workflow_service = getattr(agent, "_coding_workflow_service", None)
     mcp_tools: list[Any] | None = None
     if load_mcp is not None:
         want_mcp = bool(load_mcp)
@@ -895,6 +913,7 @@ def rebuild_coding_agent(
         steer_queue=steer_queue,
         progress=progress,
         prompt_cache_key=prompt_cache_key,
+        workflow_service=workflow_service,
     )
 
 
