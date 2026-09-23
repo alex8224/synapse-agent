@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 71 wire methods: 69 service methods
+ * The 77 wire methods: 75 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -100,6 +100,12 @@ export const WIRE_METHODS = [
   "runtime.turn.cancel",
   "runtime.turn.steer",
   "runtime.turn.submit",
+  "runtime.workflow.draft.approve",
+  "runtime.workflow.draft.save",
+  "runtime.workflow.run.cancel",
+  "runtime.workflow.run.get",
+  "runtime.workflow.run.list",
+  "runtime.workflow.run.start",
   "runtime.workspace.open_external",
   "runtime.workspace.revert",
 ] as const;
@@ -117,7 +123,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (43). */
+/** Authorization capabilities enforced by the ACL layer (46). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -160,6 +166,9 @@ export const AUTHORIZATION_CAPABILITIES = [
   "turn.cancel",
   "turn.steer",
   "turn.submit",
+  "workflow.control",
+  "workflow.read",
+  "workflow.write",
   "workspace.open_external",
   "workspace.revert",
 ] as const;
@@ -259,6 +268,12 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.turn.cancel": "turn.cancel",
   "runtime.turn.steer": "turn.steer",
   "runtime.turn.submit": "turn.submit",
+  "runtime.workflow.draft.approve": "workflow.write",
+  "runtime.workflow.draft.save": "workflow.write",
+  "runtime.workflow.run.cancel": "workflow.control",
+  "runtime.workflow.run.get": "workflow.read",
+  "runtime.workflow.run.list": "workflow.read",
+  "runtime.workflow.run.start": "workflow.control",
   "runtime.workspace.open_external": "workspace.open_external",
   "runtime.workspace.revert": "workspace.revert",
 };
@@ -348,6 +363,12 @@ export interface ApprovalPayload {
    * python_default_kind=value python_default=[]
    */
   actions: ApprovalActionPayload[];
+}
+
+export interface ApproveWorkflowDraftCommand {
+  project_id: string;
+  workflow_id: string;
+  revision: number;
 }
 
 export interface ArtifactChunk {
@@ -458,6 +479,15 @@ export interface CancelTurnResult {
   session: SessionRef;
   turn_id: string;
   cancellation_requested: boolean;
+}
+
+export interface CancelWorkflowRunCommand {
+  project_id: string;
+  run_id: string;
+  /**
+   * python_default_kind=value python_default="user"
+   */
+  reason?: string;
 }
 
 /**
@@ -806,6 +836,11 @@ export interface GetSessionQuery {
   session: SessionRef;
 }
 
+export interface GetWorkflowRunQuery {
+  project_id: string;
+  run_id: string;
+}
+
 export interface GitDiffQuery {
   session: SessionRef;
   path: string;
@@ -1043,6 +1078,14 @@ export interface ListSkillsQuery {
    * python_default_kind=value python_default=null
    */
   project_id?: string | null;
+}
+
+export interface ListWorkflowRunsQuery {
+  project_id: string;
+  /**
+   * python_default_kind=value python_default=20
+   */
+  limit?: number;
 }
 
 /**
@@ -1636,6 +1679,40 @@ export interface SaveModelCommand {
 }
 
 /**
+ * ``revision`` is the revision the caller believes it is editing: 0 means a new
+ * draft, and any other value must match the stored revision.
+ */
+export interface SaveWorkflowDraftCommand {
+  project_id: string;
+  workflow_id: string;
+  source: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  title?: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  goal?: string;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  roles?: string[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  limits?: WorkflowLimitsView | null;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  revision?: number;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  thread_id?: string;
+}
+
+/**
  * Cancel one session's capture task; ``task_id`` is required.
  */
 export interface ScreenshotCancelCommand {
@@ -2005,6 +2082,23 @@ export interface SkillEntry {
  */
 export interface SkillListPage {
   skills: SkillEntry[];
+}
+
+/**
+ * ``inputs`` is stored with the run: a resume replays the same program with the
+ * same inputs, so a recorded call can never match a different request.
+ */
+export interface StartWorkflowRunCommand {
+  project_id: string;
+  workflow_id: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  run_id?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  inputs?: JsonValue;
 }
 
 export interface StatArtifactQuery {
@@ -2544,6 +2638,101 @@ export interface WatchStartResult {
   cursor: number;
 }
 
+export interface WorkflowCallView {
+  call_key: string;
+  actor_key: string;
+  role: string;
+  status: string;
+  attempts: number;
+  input_tokens: number;
+  output_tokens: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  error: string | null;
+}
+
+export interface WorkflowDraftResult {
+  draft: WorkflowDraftView;
+}
+
+export interface WorkflowDraftView {
+  workflow_id: string;
+  revision: number;
+  title: string;
+  goal: string;
+  roles: string[];
+  script_hash: string;
+  status: string;
+  approved: boolean;
+  updated_at: string;
+}
+
+/**
+ * ``max_calls`` / ``max_actors`` / ``max_parallel`` are hard limits;
+ * ``token_budget`` is a threshold that in-flight calls can exceed.
+ */
+export interface WorkflowLimitsView {
+  max_calls: number;
+  max_actors: number;
+  max_parallel: number;
+  max_seconds: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  token_budget: number | null;
+}
+
+export interface WorkflowRunPage {
+  runs: WorkflowRunView[];
+  total: number;
+}
+
+export interface WorkflowRunResult {
+  run: WorkflowRunView;
+}
+
+/**
+ * ``calls`` is the bounded list of calls dispatched so far: a dynamic program
+ * may still expand, so there is no total to compute a percentage from.
+ * ``resumable`` and ``resume_blockers`` come from the run's own records.
+ */
+export interface WorkflowRunView {
+  run_id: string;
+  workflow_id: string;
+  project_id: string;
+  thread_id: string;
+  status: string;
+  active: boolean;
+  resumable: boolean;
+  resume_blockers: string[];
+  blocked_calls: string[];
+  resume_detail: string;
+  calls: WorkflowCallView[];
+  input_tokens: number;
+  output_tokens: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  error: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  result: JsonValue;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  created_at: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  updated_at: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  finished_at: string | null;
+}
+
 // --- event kind -> payload union ------------------------------------------
 
 /**
@@ -2633,7 +2822,11 @@ export interface TypedRuntimeEvent<K extends RuntimeEventKind> {
 
 // --- method Params / Result aliases ---------------------------------------
 
+export type ApproveWorkflowDraftParams = ApproveWorkflowDraftCommand;
+export type ApproveWorkflowDraftResult = WorkflowDraftResult;
 export type CancelTurnParams = CancelTurnCommand;
+export type CancelWorkflowRunParams = CancelWorkflowRunCommand;
+export type CancelWorkflowRunResult = WorkflowRunResult;
 export type ClearSessionGoalParams = ClearSessionGoalCommand;
 export type CodexResetCreditsResult = CodexResetCreditsView;
 export type CodexUsageResult = CodexUsageView;
@@ -2644,6 +2837,8 @@ export type EditSessionGoalParams = EditSessionGoalCommand;
 export type GetCodexResetCreditsParams = GetCodexResetCreditsQuery;
 export type GetCodexUsageParams = GetCodexUsageQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
+export type GetWorkflowRunParams = GetWorkflowRunQuery;
+export type GetWorkflowRunResult = WorkflowRunResult;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;
 export type ListDirectoriesParams = ListDirectoriesQuery;
@@ -2652,6 +2847,8 @@ export type ListProjectsParams = ListProjectsQuery;
 export type ListSessionsParams = ListSessionsQuery;
 export type ListSkillsParams = ListSkillsQuery;
 export type ListSkillsResult = SkillListPage;
+export type ListWorkflowRunsParams = ListWorkflowRunsQuery;
+export type ListWorkflowRunsResult = WorkflowRunPage;
 export type McpServerState = McpServerStateView;
 export type NegotiateParams = Negotiation;
 export type PauseSessionGoalParams = PauseSessionGoalCommand;
@@ -2665,12 +2862,16 @@ export type ReloadMcpParams = ReloadMcpCommand;
 export type RenameSessionParams = RenameSessionCommand;
 export type ResumeSessionGoalParams = ResumeSessionGoalCommand;
 export type RuntimeConfigResult = RuntimeConfigView;
+export type SaveWorkflowDraftParams = SaveWorkflowDraftCommand;
+export type SaveWorkflowDraftResult = WorkflowDraftResult;
 export type SearchSessionsParams = SearchSessionsQuery;
 export type SessionHistoryResult = SessionHistoryPage;
 export type SessionListResult = SessionListPage;
 export type SessionRecoverabilityResult = SessionRecoverabilityView;
 export type SessionSearchResult = SessionSearchPage;
 export type SetSessionGoalParams = SetSessionGoalCommand;
+export type StartWorkflowRunParams = StartWorkflowRunCommand;
+export type StartWorkflowRunResult = WorkflowRunResult;
 export type SteerTurnParams = SteerTurnCommand;
 export type SubmitTurnParams = SubmitTurnCommand;
 export type WatchEventsParams = WatchSpec;

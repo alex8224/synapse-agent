@@ -2,16 +2,24 @@ import React, { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { CodeBlock } from './CodeBlock.tsx';
 import { GeneratedHtml } from './GeneratedHtml.tsx';
+import { MermaidLightbox } from './MermaidLightbox.tsx';
 import {
   MAX_DIAGRAM_CHARS,
   describeMermaidError,
+  freezeSvgSize,
   rejectionReason,
+  type DiagramSize,
 } from '../markdown/mermaid.ts';
 
 type Phase =
   | { status: 'idle' }
   | { status: 'rendering' }
-  | { status: 'ready'; svg: string }
+  | {
+      status: 'ready';
+      svg: string;
+      /** The drawing's own size, or `null` when the SVG carries none. */
+      size: DiagramSize | null;
+    }
   | { status: 'failed'; reason: string };
 
 type MermaidApi = typeof import('mermaid')['default'];
@@ -91,6 +99,15 @@ export interface MermaidBlockProps {
   streaming: boolean;
 }
 
+interface DiagramView {
+  /** The source these flags were chosen for; a redraw starts from the defaults. */
+  source: string;
+  zoomed: boolean;
+  actual: boolean;
+  /** The stage's height when the viewer opened, so the row cannot collapse. */
+  placeholder: number | null;
+}
+
 /**
  * A `mermaid` fence rendered as a diagram.
  *
@@ -107,7 +124,18 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   // state from the effect, so a new diagram never flashes the previous one.
   const [rendered, setRendered] = useState<{ source: string; phase: Phase } | null>(null);
   const [copied, setCopied] = useState(false);
+  /**
+   * The card's own view flags, tagged with the source they were chosen for.
+   *
+   * Deriving them during render -- the same way `phase` is derived -- is what
+   * makes a *new* diagram start from the defaults: a source change is a
+   * different drawing, so neither the viewer nor the 1:1 toggle may carry over
+   * to it, and no effect has to push that reset into state.
+   */
+  const [view, setView] = useState<DiagramView | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /** The card's stage: measured when the viewer opens (see `openViewer`). */
+  const stageRef = useRef<HTMLDivElement | null>(null);
 
   const source = code.trim();
   const rejected = rejectionReason(source);
@@ -118,6 +146,31 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
       : rendered !== null && rendered.source === source
         ? rendered.phase
         : { status: 'rendering' };
+
+  const mine = view !== null && view.source === source ? view : null;
+  const zoomed = mine?.zoomed ?? false;
+  const actualSize = mine?.actual ?? false;
+  const placeholder = mine?.placeholder ?? null;
+  const setViewFlags = (next: Partial<Omit<DiagramView, 'source'>>): void => {
+    setView({ source, zoomed, actual: actualSize, placeholder, ...next });
+  };
+
+  /**
+   * Open the viewer on the diagram the card is showing.
+   *
+   * The diagram is rendered exactly once -- mermaid's ids are not namespaced
+   * (`actor0`, `root-0`, ... besides the diagram's own id, and its theme CSS is
+   * scoped by `#<svgId>`), so the card empties its stage while the viewer is
+   * open.  Recording the stage's height first keeps the transcript row from
+   * collapsing behind the overlay and jumping when it closes.
+   */
+  const openViewer = (): void => {
+    const stage = stageRef.current;
+    setViewFlags({
+      zoomed: true,
+      placeholder: stage === null ? null : Math.round(stage.getBoundingClientRect().height),
+    });
+  };
 
   useEffect(() => {
     // `source` (not `code`) is the dependency: a whitespace-only edit does not
@@ -132,7 +185,14 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
         const mermaid = await loadMermaid();
         const { svg } = await mermaid.render(id, source, host);
         if (cancelled) return;
-        setRendered({ source, phase: { status: 'ready', svg: sanitizeSvg(svg) } });
+        // mermaid pins every diagram to the container width (`width="100%"` plus
+        // an inline `max-width`); freezing it to its own `viewBox` size is what
+        // lets the card scroll and the viewer zoom (see `markdown/mermaid.ts`).
+        const frozen = freezeSvgSize(sanitizeSvg(svg));
+        setRendered({
+          source,
+          phase: { status: 'ready', svg: frozen.html, size: frozen.size },
+        });
       } catch (error: unknown) {
         if (!cancelled) {
           setRendered({ source, phase: { status: 'failed', reason: describeMermaidError(error) } });
@@ -188,27 +248,79 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     );
   }
 
+  // A diagram with no measurable size keeps mermaid's own sizing: there is
+  // nothing to fit a viewer to, so only the copy button remains.
+  const size = phase.size;
+  const control =
+    'font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer';
+
   return (
     <>
       {host}
       <div className="my-2 overflow-hidden rounded-control border border-line bg-surface">
-        <div className="flex items-center justify-between border-b border-line bg-sunken px-2.5 py-1">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
-            mermaid
-          </span>
-          <button
-            type="button"
-            onClick={copy}
-            title="复制图形源码"
-            className="font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
-          >
-            {copied ? '已复制' : '复制源码'}
-          </button>
+        <div className="flex items-center justify-between gap-2 border-b border-line bg-sunken px-2.5 py-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
+              mermaid
+            </span>
+            {size !== null && (
+              <span className="font-mono text-[10px] text-gray-400" data-diagram-size>
+                {Math.round(size.width)} × {Math.round(size.height)}
+              </span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {size !== null && (
+              <>
+                <button
+                  type="button"
+                  data-diagram-actual
+                  onClick={() => setViewFlags({ actual: !actualSize })}
+                  title="在原始大小与适应卡片宽度之间切换"
+                  className={control}
+                >
+                  {actualSize ? '适应宽度' : '原始大小'}
+                </button>
+                <button
+                  type="button"
+                  data-diagram-zoom
+                  onClick={openViewer}
+                  title="全屏查看图形（可缩放与平移）"
+                  className={control}
+                >
+                  放大
+                </button>
+              </>
+            )}
+            <button type="button" onClick={copy} title="复制图形源码" className={control}>
+              {copied ? '已复制' : '复制源码'}
+            </button>
+          </div>
         </div>
-        <div className="overflow-x-auto px-3 py-3">
-          <GeneratedHtml html={phase.svg} className="mermaid-diagram" />
+        {/*
+          The stage, not mermaid, decides how big the drawing is, and it caps
+          its own height: a tall diagram scrolls inside the card instead of
+          stretching the transcript row to the height of the drawing.
+        */}
+        <div
+          ref={stageRef}
+          data-diagram-stage
+          style={zoomed && placeholder !== null ? { height: placeholder } : undefined}
+          className="fluent-scrollbar max-h-[28rem] overflow-auto px-3 py-3"
+        >
+          {/* Exactly one copy exists: while the viewer is open it is the one in
+              the overlay, so no mermaid id is ever duplicated in the document. */}
+          {!zoomed && (
+            <GeneratedHtml
+              html={phase.svg}
+              className={`mermaid-diagram ${actualSize ? 'mermaid-actual' : 'mermaid-fit'}`}
+            />
+          )}
         </div>
       </div>
+      {zoomed && size !== null && (
+        <MermaidLightbox svg={phase.svg} size={size} onClose={() => setViewFlags({ zoomed: false })} />
+      )}
     </>
   );
 };

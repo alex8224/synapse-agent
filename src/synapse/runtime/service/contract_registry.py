@@ -75,6 +75,9 @@ from synapse.runtime.service.access import (
     TURN_CANCEL,
     TURN_STEER,
     TURN_SUBMIT,
+    WORKFLOW_CONTROL,
+    WORKFLOW_READ,
+    WORKFLOW_WRITE,
     WORKSPACE_OPEN_EXTERNAL,
     WORKSPACE_REVERT,
 )
@@ -347,6 +350,21 @@ from synapse.runtime.service.stt import (
     SttStatusQuery,
     SttStatusView,
     SttWarmUpCommand,
+)
+from synapse.runtime.service.workflows import (
+    ApproveWorkflowDraftCommand,
+    CancelWorkflowRunCommand,
+    GetWorkflowRunQuery,
+    ListWorkflowRunsQuery,
+    SaveWorkflowDraftCommand,
+    StartWorkflowRunCommand,
+    WorkflowCallView,
+    WorkflowDraftResult,
+    WorkflowDraftView,
+    WorkflowLimitsView,
+    WorkflowRunPage,
+    WorkflowRunResult,
+    WorkflowRunView,
 )
 from synapse.runtime.sessions.ref import SessionRef
 
@@ -1608,6 +1626,49 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
         type_params=("T = JsonValue",),
     ),
+    # --- workflows ------------------------------------------------------------
+    _dto(
+        WorkflowLimitsView,
+        role="value",
+        notes=(
+            "``max_calls`` / ``max_actors`` / ``max_parallel`` are hard limits;",
+            "``token_budget`` is a threshold that in-flight calls can exceed.",
+        ),
+    ),
+    _dto(WorkflowDraftView, role="result"),
+    _dto(WorkflowCallView, role="result"),
+    _dto(
+        WorkflowRunView,
+        role="result",
+        notes=(
+            "``calls`` is the bounded list of calls dispatched so far: a dynamic program",
+            "may still expand, so there is no total to compute a percentage from.",
+            "``resumable`` and ``resume_blockers`` come from the run's own records.",
+        ),
+    ),
+    _dto(WorkflowDraftResult, role="result"),
+    _dto(WorkflowRunResult, role="result"),
+    _dto(WorkflowRunPage, role="result"),
+    _dto(
+        SaveWorkflowDraftCommand,
+        role="request",
+        notes=(
+            "``revision`` is the revision the caller believes it is editing: 0 means a new",
+            "draft, and any other value must match the stored revision.",
+        ),
+    ),
+    _dto(ApproveWorkflowDraftCommand, role="request"),
+    _dto(
+        StartWorkflowRunCommand,
+        role="request",
+        notes=(
+            "``inputs`` is stored with the run: a resume replays the same program with the",
+            "same inputs, so a recorded call can never match a different request.",
+        ),
+    ),
+    _dto(CancelWorkflowRunCommand, role="request"),
+    _dto(GetWorkflowRunQuery, role="request"),
+    _dto(ListWorkflowRunsQuery, role="request"),
 )
 
 
@@ -2866,6 +2927,123 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         notes=(
             "Delete one MCP server configuration and reload the session's pool.",
         ),
+    ),
+    WireMethod(
+        method="runtime.workflow.draft.save",
+        method_class="service",
+        request="SaveWorkflowDraftCommand",
+        result="WorkflowDraftResult",
+        capability=WORKFLOW_WRITE,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="save_workflow_draft",
+        params_alias="SaveWorkflowDraftParams",
+        result_alias="SaveWorkflowDraftResult",
+        wire_defaults=(
+            ("title", ""),
+            ("goal", ""),
+            ("roles", []),
+            ("limits", None),
+            ("revision", 0),
+        ),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable.  Writes a draft revision; a revision bump clears any previous "
+            "approval, so a changed program cannot run on an old one."
+        ),
+        notes=(
+            "``source`` is bounded to 256 KiB and must not be empty.",
+            "``revision`` must match the stored revision when non-zero.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.workflow.draft.approve",
+        method_class="service",
+        request="ApproveWorkflowDraftCommand",
+        result="WorkflowDraftResult",
+        capability=WORKFLOW_WRITE,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="approve_workflow_draft",
+        params_alias="ApproveWorkflowDraftParams",
+        result_alias="ApproveWorkflowDraftResult",
+        in_process=(
+            "Optional delegate method.  The approval names the revision *and* the script "
+            "hash the daemon stored, so it always refers to the program that will run."
+        ),
+        notes=("``revision`` must be the current stored revision.",),
+    ),
+    WireMethod(
+        method="runtime.workflow.run.start",
+        method_class="service",
+        request="StartWorkflowRunCommand",
+        result="WorkflowRunResult",
+        capability=WORKFLOW_CONTROL,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="start_workflow_run",
+        params_alias="StartWorkflowRunParams",
+        result_alias="StartWorkflowRunResult",
+        wire_defaults=(("run_id", None), ("inputs", None)),
+        in_process=(
+            "Optional delegate method.  Accepting a run starts its worker and pauses "
+            "ordinary turns for that project; the receipt is not a completion."
+        ),
+        notes=(
+            "``run_id`` is server-assigned when absent.",
+            "One active run per project: a second start is refused with conflict.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.workflow.run.cancel",
+        method_class="service",
+        request="CancelWorkflowRunCommand",
+        result="WorkflowRunResult",
+        capability=WORKFLOW_CONTROL,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="cancel_workflow_run",
+        params_alias="CancelWorkflowRunParams",
+        result_alias="CancelWorkflowRunResult",
+        wire_defaults=(("reason", "user"),),
+        in_process=(
+            "Optional delegate method.  Stops dispatch and terminates the worker; it does "
+            "not undo what the run already did, and an in-flight call is recorded as having "
+            "no established outcome."
+        ),
+        notes=("``reason`` is bounded to 64 bytes.",),
+    ),
+    WireMethod(
+        method="runtime.workflow.run.get",
+        method_class="service",
+        request="GetWorkflowRunQuery",
+        result="WorkflowRunResult",
+        capability=WORKFLOW_READ,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="get_workflow_run",
+        params_alias="GetWorkflowRunParams",
+        result_alias="GetWorkflowRunResult",
+        in_process=(
+            "Optional delegate method.  Read-only: status, calls, usage and the run's own "
+            "verdict on whether it may be resumed."
+        ),
+        notes=("Unknown run or project is not_found.",),
+    ),
+    WireMethod(
+        method="runtime.workflow.run.list",
+        method_class="service",
+        request="ListWorkflowRunsQuery",
+        result="WorkflowRunPage",
+        capability=WORKFLOW_READ,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="list_workflow_runs",
+        params_alias="ListWorkflowRunsParams",
+        result_alias="ListWorkflowRunsResult",
+        wire_defaults=(("limit", 20),),
+        in_process="Optional delegate method.  Bounded, newest first.",
+        notes=("``limit`` is bounded to 1..100 by the wire decoder.",),
     ),
 )
 

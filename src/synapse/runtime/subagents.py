@@ -215,6 +215,31 @@ def _merge_subagent_definitions(
     return [d for d in registry.items() if d.name not in disabled]
 
 
+def resolve_role_definitions(
+    *,
+    tester_model: str | None = None,
+    reviewer_model: str | None = None,
+    researcher_model: str | None = None,
+    isolate_tools: bool = True,
+    custom_subagents: Sequence[SubAgentDefinition] | None = None,
+    disable_builtin_subagents: Sequence[str] | None = None,
+) -> list[SubAgentDefinition]:
+    """The merged role definitions, for callers that need definitions not specs.
+
+    :func:`build_default_subagents_with_display` compiles ``task`` specs for the parent
+    graph; the workflow actor path needs the *definitions* themselves, and it must see the
+    same merge (built-ins, user overrides, disabled names) so one role has one identity.
+    """
+    return _merge_subagent_definitions(
+        tester_model=tester_model,
+        reviewer_model=reviewer_model,
+        researcher_model=researcher_model,
+        isolate_tools=isolate_tools,
+        custom_subagents=custom_subagents,
+        disable_builtin_subagents=disable_builtin_subagents,
+    )
+
+
 def _build_default_subagent_runtime(
     *,
     enabled: bool = True,

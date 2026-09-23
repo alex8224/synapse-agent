@@ -192,6 +192,20 @@ from synapse.runtime.service.stt import (
     SttStatusQuery,
     SttWarmUpCommand,
 )
+from synapse.runtime.service.workflows import (
+    MAX_ID_BYTES,
+    MAX_LIMIT,
+    MAX_REASON_BYTES,
+    MAX_SCRIPT_BYTES,
+    MIN_LIMIT,
+    ApproveWorkflowDraftCommand,
+    CancelWorkflowRunCommand,
+    GetWorkflowRunQuery,
+    ListWorkflowRunsQuery,
+    SaveWorkflowDraftCommand,
+    StartWorkflowRunCommand,
+    WorkflowLimitsView,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 JSONRPC_VERSION: Final = "2.0"
@@ -424,6 +438,48 @@ def _bounded_text(value: object, maximum: int, *, nonempty: bool = True) -> str:
     return text
 
 
+def _workflow_limits(value: object) -> WorkflowLimitsView | None:
+    """Decode the optional nested limits object of a draft command.
+
+    Absent means "the defaults", which is different from a present-but-invalid object:
+    the latter is rejected rather than silently replaced.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ProtocolError(-32602, "invalid_params")
+    _optional_fields(
+        value,
+        {"max_calls", "max_actors", "max_parallel", "max_seconds"},
+        {"token_budget"},
+    )
+    raw_seconds = value["max_seconds"]
+    if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, (int, float)):
+        raise ProtocolError(-32602, "invalid_params")
+    raw_budget = value.get("token_budget")
+    try:
+        return WorkflowLimitsView(
+            max_calls=_bounded_integer(
+                value["max_calls"], minimum=1, maximum=1000
+            ),
+            max_actors=_bounded_integer(
+                value["max_actors"], minimum=1, maximum=1000
+            ),
+            max_parallel=_bounded_integer(
+                value["max_parallel"], minimum=1, maximum=1000
+            ),
+            max_seconds=float(raw_seconds),
+            token_budget=(
+                None
+                if raw_budget is None
+                else _bounded_integer(raw_budget, minimum=1, maximum=2**31 - 1)
+            ),
+        )
+    except ValueError as exc:
+        raise ProtocolError(-32602, "invalid_params") from exc
+
+
+
 #: Screenshot settings bounds: field -> (minimum, maximum).  ``allow_reuse`` is a
 #: boolean and validated separately.
 _SCREENSHOT_SETTINGS_BOUNDS: Final = {
@@ -635,6 +691,10 @@ def _profile_mapping(value: object) -> Mapping[str, Any]:
 
 def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
     """Convert one validated params object into the corresponding service DTO."""
+    if method.startswith("runtime.workflow."):
+        import sys as _sys
+
+        print("DECODE PROBE", method, sorted(params.keys()), file=_sys.stderr, flush=True)
     if method == "runtime.protocol.negotiate":
         return decode_negotiation(params)
     if method == "runtime.session.open":
@@ -1211,6 +1271,73 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else _bounded_text(raw_project, MAX_PROJECT_ID_BYTES)
             ),
         )
+    if method == "runtime.workflow.draft.save":
+        _optional_fields(
+            params,
+            {"project_id", "workflow_id", "source"},
+            {"title", "goal", "roles", "limits", "revision", "thread_id"},
+        )
+        raw_roles = params.get("roles", [])
+        if not isinstance(raw_roles, list):
+            raise ProtocolError(-32602, "invalid_params")
+        return SaveWorkflowDraftCommand(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            workflow_id=_bounded_text(params["workflow_id"], MAX_ID_BYTES),
+            source=_bounded_text(params["source"], MAX_SCRIPT_BYTES),
+            title=_bounded_text(params.get("title", ""), 512, nonempty=False),
+            goal=_bounded_text(params.get("goal", ""), 4096, nonempty=False),
+            roles=tuple(_bounded_text(role, MAX_ID_BYTES) for role in raw_roles),
+            limits=_workflow_limits(params.get("limits")),
+            revision=_bounded_integer(params.get("revision", 0), minimum=0, maximum=100000),
+            thread_id=_bounded_text(params.get("thread_id", ""), MAX_ID_BYTES, nonempty=False),
+        )
+    if method == "runtime.workflow.draft.approve":
+        _optional_fields(params, {"project_id", "workflow_id", "revision"}, set())
+        return ApproveWorkflowDraftCommand(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            workflow_id=_bounded_text(params["workflow_id"], MAX_ID_BYTES),
+            revision=_bounded_integer(
+                params["revision"], minimum=1, maximum=100000
+            ),
+        )
+    if method == "runtime.workflow.run.start":
+        _optional_fields(
+            params, {"project_id", "workflow_id"}, {"run_id", "inputs"}
+        )
+        raw_run_id = params.get("run_id")
+        return StartWorkflowRunCommand(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            workflow_id=_bounded_text(params["workflow_id"], MAX_ID_BYTES),
+            run_id=(
+                None
+                if raw_run_id is None
+                else _bounded_text(raw_run_id, MAX_ID_BYTES)
+            ),
+            inputs=params.get("inputs"),
+        )
+    if method == "runtime.workflow.run.cancel":
+        _optional_fields(params, {"project_id", "run_id"}, {"reason"})
+        return CancelWorkflowRunCommand(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            run_id=_bounded_text(params["run_id"], MAX_ID_BYTES),
+            reason=_bounded_text(
+                params.get("reason", "user"), MAX_REASON_BYTES, nonempty=False
+            ),
+        )
+    if method == "runtime.workflow.run.get":
+        _optional_fields(params, {"project_id", "run_id"}, set())
+        return GetWorkflowRunQuery(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            run_id=_bounded_text(params["run_id"], MAX_ID_BYTES),
+        )
+    if method == "runtime.workflow.run.list":
+        _optional_fields(params, {"project_id"}, {"limit"})
+        return ListWorkflowRunsQuery(
+            project_id=_bounded_text(params["project_id"], MAX_ID_BYTES),
+            limit=_bounded_integer(
+                params.get("limit", 20), minimum=MIN_LIMIT, maximum=MAX_LIMIT
+            ),
+        )
     if method == "runtime.session.history":
         _optional_fields(params, {"session"}, {"before_turn", "limit"})
         before_turn = params.get("before_turn")
@@ -1474,6 +1601,18 @@ async def dispatch(
         return await service.list_directories(dto)  # type: ignore[arg-type]
     if method == "runtime.skills.list":
         return await service.list_skills(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.draft.save":
+        return await service.save_workflow_draft(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.draft.approve":
+        return await service.approve_workflow_draft(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.run.start":
+        return await service.start_workflow_run(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.run.cancel":
+        return await service.cancel_workflow_run(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.run.get":
+        return await service.get_workflow_run(dto)  # type: ignore[arg-type]
+    if method == "runtime.workflow.run.list":
+        return await service.list_workflow_runs(dto)  # type: ignore[arg-type]
     if method == "runtime.session.history":
         return await service.read_session_history(dto)  # type: ignore[arg-type]
     if method == "runtime.session.reconcile":

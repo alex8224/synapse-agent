@@ -13,6 +13,7 @@
 import { activityItem } from './activityItem.tsx';
 import { mcpItem } from './mcpItem.tsx';
 import { goalItem } from './goalItem.tsx';
+import { workflowItem } from './workflowItem.tsx';
 import { telemetryItem } from './telemetryItem.tsx';
 import { todoItem } from './todoItem.tsx';
 import { helpItem } from './helpItem.tsx';
@@ -25,6 +26,7 @@ export const BOTTOM_BAR_ITEMS: readonly BottomBarItemDefinition[] = [
   mcpItem,
   todoItem,
   goalItem,
+  workflowItem,
   telemetryItem,
   helpItem,
 ];

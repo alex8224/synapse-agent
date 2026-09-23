@@ -421,6 +421,106 @@ def _effective_available_tools(
         available = set(own_tools) & resolvable
     return frozenset(available - set(blocked))
 
+@dataclass(frozen=True, slots=True)
+class RoleToolPolicy:
+    """A role's effective tool policy, independent of how the role is invoked.
+
+    Owned by this module because the tool-policy constants live here: one role must not
+    get one policy when it runs as a ``task`` subagent and a different one when a workflow
+    actor uses it.
+    """
+
+    #: The tool objects to hand the agent, or ``None`` to leave the key unset.
+    tools: tuple[Any, ...] | None
+    tools_set: bool
+    #: The role's own allowlist exactly as declared (``None`` = inherit, ``()`` =
+    #: built-ins only, names = final whitelist).
+    declared_tools: tuple[str, ...] | None
+    #: Names removed from model requests and blocked at call time.
+    blocked: frozenset[str]
+    #: Names the role can actually reach once blocking is applied.
+    available_tools: frozenset[str]
+    #: Whitelisted names that resolve to nothing, and names global policy denies.
+    whitelist: frozenset[str]
+    unresolved: frozenset[str]
+    denied: frozenset[str]
+
+
+def resolve_role_tool_policy(
+    definition: SubAgentDefinition,
+    *,
+    inherit_tools: Sequence[Any] | None = None,
+    inherit_names: frozenset[str] = DEFAULT_INHERIT_TOOL_NAMES,
+    extra_excluded_tools: Sequence[str] = (),
+    result_reader: Any | None = None,
+) -> RoleToolPolicy:
+    """Compute one role's effective tool policy.
+
+    Shared by :func:`compile_task_specs` (the ``task`` path) and the workflow actor path,
+    so the two cannot drift into different answers for the same role.
+    """
+    own_tools = definition.tools
+    whitelist_names = frozenset(own_tools or ())
+    inherit_tool_names = frozenset(_tool_name(t) for t in (inherit_tools or ()))
+    if result_reader is not None:
+        inherit_tool_names |= {_tool_name(result_reader)}
+
+    if inherit_tools is None and own_tools is None:
+        # Legacy parity: no tool list and no inherit source => leave the ``tools`` key
+        # unset so deepagents falls back to ``default_tools``.
+        tools: list[Any] | None = None
+        tools_set = False
+    elif own_tools is None:
+        tools = [t for t in inherit_tools if _tool_name(t) in inherit_names]
+        tools_set = True
+    elif not own_tools:
+        tools = []
+        tools_set = True
+    else:
+        wanted = set(whitelist_names)
+        tools = [t for t in (inherit_tools or []) if _tool_name(t) in wanted]
+        tools_set = True
+
+    # When tools are inherited from the main agent (None or explicit allowlist), the
+    # built-in ls/glob/grep duplicates are hidden. An explicitly whitelisted built-in name
+    # is exempted from *this* exclusion; a caller-supplied global exclusion still wins.
+    hide_builtin_search = own_tools is None or bool(own_tools)
+
+    if (
+        tools_set
+        and result_reader is not None
+        and (not own_tools or _tool_name(result_reader) in own_tools)
+    ):
+        # Compatibility readers are ordinary tools, not a policy bypass: a strict
+        # whitelist must name the reader before it is registered.
+        tools = [*(tools or []), result_reader]
+
+    extra_excluded = {str(x) for x in (extra_excluded_tools or ()) if str(x).strip()}
+    # The caller-supplied set carries the *global* policy (settings,
+    # ``minimal_filesystem_tools``, the always-hidden built-in search tools, and
+    # readonly). It is authoritative: neither ``tools=[]`` nor an explicit whitelist may
+    # re-enable a globally denied tool, so nothing is stripped from it here.
+    blocked = set(definition.disallowed_tools) | _TODO_TOOL_NAMES | extra_excluded
+    if hide_builtin_search:
+        blocked |= _BUILTIN_SEARCH_TOOL_NAMES - set(own_tools or ())
+    blocked_frozen = frozenset(blocked)
+
+    return RoleToolPolicy(
+        tools=None if tools is None else tuple(tools),
+        tools_set=tools_set,
+        declared_tools=None if own_tools is None else tuple(own_tools),
+        blocked=blocked_frozen,
+        available_tools=_effective_available_tools(
+            own_tools,
+            inherit_names=inherit_names,
+            inherit_tool_names=inherit_tool_names,
+            blocked=blocked_frozen,
+        ),
+        whitelist=whitelist_names,
+        unresolved=whitelist_names - inherit_tool_names - _FRAMEWORK_FILE_TOOL_NAMES,
+        denied=whitelist_names & blocked_frozen,
+    )
+
 
 def _build_subagent_system_prompt(
     body: str,
@@ -491,6 +591,26 @@ def _build_subagent_system_prompt(
             )
         )
     return render_system_prompt(sections)
+
+
+def build_role_system_prompt(
+    definition: SubAgentDefinition,
+    *,
+    workspace: Path | str | None = None,
+    shell_executable: str | None = None,
+    available_tools: frozenset[str] = frozenset(),
+) -> str:
+    """The system prompt one role gets, for a caller building a standalone agent.
+
+    The workflow actor path reuses this so a role cannot drift into two different prompts
+    depending on whether it was invoked through the ``task`` tool or as an actor.
+    """
+    return _build_subagent_system_prompt(
+        definition.system_prompt,
+        workspace=workspace,
+        shell_executable=shell_executable,
+        available_tools=available_tools,
+    )
 
 
 def compile_task_specs(
@@ -574,92 +694,40 @@ def compile_task_specs(
                     spec["model"] = built
                     pinned_model = True
 
-        # Tool allowlist resolution. None => inherit the allow-listed
-        # main-agent tools; [] => built-ins only; [names] => filter by name.
-        own_tools = d.tools
-        # A non-empty list is the final whitelist. Keep the raw names so the
-        # diagnostics below can report the entries that cannot take effect.
-        whitelist_names = frozenset(own_tools or ())
-        inherit_tool_names = frozenset(_tool_name(t) for t in (inherit_tools or ()))
-        if result_reader is not None:
-            inherit_tool_names |= {_tool_name(result_reader)}
-        if inherit_tools is None and own_tools is None:
-            # Legacy parity: no tool list and no inherit source => leave the
-            # ``tools`` key unset so deepagents falls back to ``default_tools``,
-            # and do not append ``result_reader``.
-            tools: list[Any] | None = None
-            tools_set = False
-        elif own_tools is None:
-            tools = [t for t in inherit_tools if _tool_name(t) in inherit_names]
-            tools_set = True
-        elif not own_tools:
-            tools = []
-            tools_set = True
-        else:
-            wanted = set(whitelist_names)
-            tools = [t for t in (inherit_tools or []) if _tool_name(t) in wanted]
-            # A non-empty list is the final whitelist. Warn about names that
-            # cannot be resolved (not an inherited tool and not a framework
-            # built-in) so a typo is visible, without echoing the surrounding
-            # tool configuration or workspace paths.
-            unresolved = wanted - inherit_tool_names - _FRAMEWORK_FILE_TOOL_NAMES
-            if unresolved:
-                logger.warning(
-                    "subagent %r: %d whitelisted tool name(s) could not be resolved",
-                    d.name,
-                    len(unresolved),
-                )
-                logger.debug(
-                    "subagent %r: unresolved tools: %s",
-                    d.name,
-                    ", ".join(sorted(unresolved)),
-                )
-            tools_set = True
-
-        # When tools are inherited from the main agent (None or explicit
-        # allowlist), the built-in ls/glob/grep duplicates are hidden. An
-        # explicitly whitelisted built-in name is exempted from *this* exclusion,
-        # so ``tools: [ls]`` keeps working when the compiler runs standalone; a
-        # caller-supplied global exclusion (the app always denies ls/glob/grep)
-        # still wins, because ``blocked`` is never stripped below.
-        hide_builtin_search = own_tools is None or bool(own_tools)
-
-        if tools_set:
-            # Compatibility readers are ordinary tools, not a policy bypass.
-            # A strict whitelist must name the reader before we register it.
-            if result_reader is not None and (
-                not own_tools or _tool_name(result_reader) in own_tools
-            ):
-                tools = [*tools, result_reader]
-            spec["tools"] = tools
-
-        extra_excluded = {str(x) for x in (extra_excluded_tools or ()) if str(x).strip()}
-        # The caller-supplied set carries the *global* policy (settings,
-        # ``minimal_filesystem_tools``, the always-hidden built-in search tools,
-        # and readonly). It is authoritative: neither ``tools=[]`` nor an
-        # explicit whitelist may re-enable a globally denied tool, so nothing is
-        # ever stripped from it here.
-        blocked = set(d.disallowed_tools) | _TODO_TOOL_NAMES | extra_excluded
-        if hide_builtin_search:
-            # The compiler's own duplicate-hiding of the deepagents built-in
-            # search tools yields to an explicit whitelist naming them; it never
-            # touches the global exclusions already in ``blocked`` above.
-            blocked |= _BUILTIN_SEARCH_TOOL_NAMES - set(own_tools or ())
-        blocked_frozen = frozenset(blocked)
-
-        available_tools = _effective_available_tools(
-            own_tools,
+        policy = resolve_role_tool_policy(
+            d,
+            inherit_tools=inherit_tools,
             inherit_names=inherit_names,
-            inherit_tool_names=inherit_tool_names,
-            blocked=blocked_frozen,
+            extra_excluded_tools=extra_excluded_tools,
+            result_reader=result_reader,
         )
+        own_tools = policy.declared_tools
+        whitelist_names = policy.whitelist
+        blocked_frozen = policy.blocked
+        available_tools = policy.available_tools
+        if policy.tools_set:
+            spec["tools"] = list(policy.tools or ())
+        if policy.unresolved:
+            # A whitelisted name that resolves to nothing is a typo worth surfacing;
+            # only the count reaches the warning and the names stay at DEBUG, so the
+            # surrounding tool configuration is never echoed.
+            logger.warning(
+                "subagent %r: %d whitelisted tool name(s) could not be resolved",
+                d.name,
+                len(policy.unresolved),
+            )
+            logger.debug(
+                "subagent %r: unresolved tools: %s",
+                d.name,
+                ", ".join(sorted(policy.unresolved)),
+            )
         if whitelist_names:
             # A whitelist that cannot take effect must not fail silently: a name
             # denied by global policy can never be re-enabled, and a name that
             # resolves to nothing (a typo) drops every tool the list would
             # otherwise have kept. Only counts reach the warning and the names
             # stay at DEBUG, so the surrounding tool configuration is not echoed.
-            denied = sorted(whitelist_names & blocked_frozen)
+            denied = sorted(policy.denied)
             if denied:
                 logger.warning(
                     "subagent %r: %d whitelisted tool name(s) are denied by global policy",

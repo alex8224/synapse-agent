@@ -326,6 +326,44 @@ Three ways to talk to it:
 | **Chat** | Plain interactive REPL — `synapse chat -w .` |
 | **Run** | One-shot task that prints the answer — `synapse run "summarize this repo" -w .` |
 
+## Dynamic workflows (动态 Workflow)
+
+A workflow is a **model-generated Python program** that owns the orchestration — loops,
+branches, dynamic expansion, bounded rework — while every agent call still goes through the
+project's normal runtime. It is not a second agent system: role definitions, tool policy,
+approvals and checkpoints are the ones the rest of Synapse uses.
+
+What it is for: long, repeated or gated tasks where "the engine enforces the rules" beats
+"the model remembers them" — batch review, fix-verify-rework loops, anything that must not
+report success before a gate actually passed.
+
+| Piece | Where |
+| --- | --- |
+| Script contract, call identity, run/call state machines | `src/synapse/workflows/contract.py` |
+| Durable drafts, runs, calls, events (SQLite) | `src/synapse/workflows/store.py` |
+| The API a generated script calls (`wf.actor`, `ask`, `gather`, `approve`) | `src/synapse/workflows/sdk.py` |
+| Worker subprocess + line protocol | `src/synapse/workflows/worker.py`, `protocol.py`, `process.py` |
+| LangGraph orchestration around the script | `src/synapse/workflows/runner.py` |
+| Host-side driving, cancellation, resume verdict | `src/synapse/workflows/coordinator.py`, `recovery.py`, `service.py` |
+| Actor assembly (role-bound agent, own session identity) | `src/synapse/app/workflow_actor.py` |
+| Wire surface + console entry | `runtime.workflow.*` in `docs/workflows/index.md` |
+
+Design and status: [`docs/workflows/index.md`](docs/workflows/index.md) (方案) and
+[`docs/workflows/progress.md`](docs/workflows/progress.md) (逐阶段进度与证据).
+
+**Boundaries worth knowing before you use it:**
+
+- **本机执行，无沙箱。** The worker runs as you, with your filesystem access — same as every
+  other execution in this project. The subprocess exists to terminate a runaway program, not
+  to contain it.
+- **批准流程 ≠ 授权其中所有命令。** Approving a draft approves *that script*; the tools it
+  then runs still go through the normal tool policy and approvals.
+- **取消不撤销已发生的修改。** Cancelling stops dispatch and kills the worker; a call that
+  was in flight is recorded as having **no established outcome** and is never retried
+  automatically.
+- **一个项目同时只有一个活跃运行**，期间该项目的普通轮次会暂停（审批续跑除外）。
+- **不显示进度百分比**：动态流程会继续展开，只有已派发的调用数是真实进度。
+
 ## Why it is built for long sessions
 
 - **Long-running goals** — `/goal <objective>` survives turn boundaries, tracks tokens and elapsed time, and steers the next turn automatically until the goal is completed, paused, blocked, or budget-limited.

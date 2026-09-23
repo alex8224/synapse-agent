@@ -71,7 +71,7 @@ They launch headless Chrome/Edge through `tests/helpers/cdp.ts` (`SYNAPSE_CDP_BR
 | shell / top bar / transcript layout | `tests/shellLayout.test.ts`, `topBarLayout.test.ts`, `transcriptLayoutGuard.test.ts`, `transcriptScrollGuard.test.ts`, plus the matching `.verify.ts` |
 | sidebar session actions (rename / delete confirmation) | `tests/sessionManagement.test.ts`, `tests/sessionDeleteDialog.test.ts`, `tests/dialogKeyboardNav.verify.ts` |
 | transcript view model | `tests/historyMapper.test.ts`, `liveEventReducer.test.ts`, `liveDeltaBatch.test.ts`, `transcriptLabels.test.ts`, `transcriptVirtualization.test.ts` |
-| markdown / math / mermaid / images | `tests/markdownParser.test.ts`, `markdownRenderGuard.test.ts`, `markdownTableGuard.test.ts`, `mathBlocks.test.ts`, `mathRender.test.ts`, `mermaidPolicy.test.ts`, `imageRefs.test.ts` |
+| markdown / math / mermaid / images | `tests/markdownParser.test.ts`, `markdownRenderGuard.test.ts`, `markdownTableGuard.test.ts`, `mathBlocks.test.ts`, `mathRender.test.ts`, `mermaidPolicy.test.ts`, `mermaidViewerGuard.test.ts` (plus `mermaidViewer.verify.ts` / `imageZoom.verify.ts` for rendered geometry), `imageRefs.test.ts` |
 | runtime client / wire contract | `tests/runtimeContractFixture.test.ts`, `runtimeClientBoundary.test.ts`, `runtimeClientReconcile.test.ts`, `runtimeClientRecovery.test.ts`, `sourceGuard.test.ts` |
 | stores / views | the `tests/<name>.test.ts` matching the store (`goalView`, `mcpRuntimeView`, `usageView`, `todoView`, `sessionList`, `appearance`, ...) |
 | PWA / window controls overlay | `tests/pwaManifest.test.ts`, `tests/windowControlsOverlay.test.ts` |

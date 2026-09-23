@@ -107,6 +107,56 @@ def _resolve_display_effort_from_profiles(
     return out
 
 
+def build_actor_resources(settings: Settings) -> dict[str, Any]:
+    """The model, backend, checkpointer and policy a workflow actor needs.
+
+    Resolved through the same paths the coding agent uses, so an actor sees the same model
+    profile, workspace backend, permission rules and global tool exclusions as the rest of
+    the project.  Building this is not cheap (a model client, a shell backend, a
+    checkpointer), so callers build it lazily: a project that never runs a workflow should
+    pay nothing for the feature.
+    """
+    from synapse.tools.filesystem_patch import build_filesystem_patch_tool
+    from synapse.tools.filesystem_search import build_filesystem_search_tools
+
+    registry = registry_from_settings(settings)
+    selected_profile = registry.get(settings.active_model or registry.default)
+    model_spec = selected_profile.model
+    backend = build_backend(settings)
+    effective_excluded = list(getattr(settings, "excluded_tools", []) or [])
+    if getattr(settings, "minimal_filesystem_tools", False):
+        effective_excluded.extend(
+            getattr(settings, "minimal_filesystem_excluded_tools", []) or []
+        )
+    return {
+        "model": _subagent_model_factory(registry, settings, model_cache={})(None, None),
+        "model_spec": model_spec,
+        "backend": backend,
+        # Actor threads are namespaced (``wf:...``), so they can share the project's agent
+        # checkpoint file without colliding with any session's conversation.
+        "checkpointer": _build_checkpointer(settings),
+        "tools": [
+            *build_filesystem_search_tools(backend),
+            build_filesystem_patch_tool(backend),
+        ],
+        "permissions": build_filesystem_permissions(
+            enabled=settings.enable_fs_permissions,
+            readonly=settings.readonly,
+            deny_paths=settings.deny_fs_paths,
+        ),
+        "excluded_tools": tuple(
+            sorted(
+                apply_harness_exclusions(
+                    model_spec,
+                    readonly=settings.readonly,
+                    excluded_tools=effective_excluded,
+                )
+            )
+        ),
+        "shell_executable": getattr(backend, "shell_executable", None),
+    }
+
+
 def _subagent_model_factory(
     registry: Any,
     settings: Settings,

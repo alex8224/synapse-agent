@@ -191,6 +191,12 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.mcp.list": "list_mcp_servers",
     "runtime.mcp.save": "save_mcp_server",
     "runtime.mcp.delete": "delete_mcp_server",
+    "runtime.workflow.draft.save": "save_workflow_draft",
+    "runtime.workflow.draft.approve": "approve_workflow_draft",
+    "runtime.workflow.run.start": "start_workflow_run",
+    "runtime.workflow.run.cancel": "cancel_workflow_run",
+    "runtime.workflow.run.get": "get_workflow_run",
+    "runtime.workflow.run.list": "list_workflow_runs",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -222,6 +228,9 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "models.write",
         "mcp.read",
         "mcp.write",
+        "workflow.read",
+        "workflow.write",
+        "workflow.control",
     }
 )
 

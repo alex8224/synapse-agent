@@ -47,6 +47,9 @@
     "turn.cancel",
     "turn.steer",
     "turn.submit",
+    "workflow.control",
+    "workflow.read",
+    "workflow.write",
     "workspace.open_external",
     "workspace.revert"
   ],
@@ -1457,6 +1460,129 @@
       "wire_defaults": {}
     },
     {
+      "capability": "workflow.write",
+      "class": "service",
+      "in_process": "Optional delegate method.  The approval names the revision *and* the script hash the daemon stored, so it always refers to the program that will run.",
+      "method": "runtime.workflow.draft.approve",
+      "notes": [
+        "``revision`` must be the current stored revision."
+      ],
+      "params_alias": "ApproveWorkflowDraftParams",
+      "request": "ApproveWorkflowDraftCommand",
+      "result": "WorkflowDraftResult",
+      "result_alias": "ApproveWorkflowDraftResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "approve_workflow_draft",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "workflow.write",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  Writes a draft revision; a revision bump clears any previous approval, so a changed program cannot run on an old one.",
+      "method": "runtime.workflow.draft.save",
+      "notes": [
+        "``source`` is bounded to 256 KiB and must not be empty.",
+        "``revision`` must match the stored revision when non-zero."
+      ],
+      "params_alias": "SaveWorkflowDraftParams",
+      "request": "SaveWorkflowDraftCommand",
+      "result": "WorkflowDraftResult",
+      "result_alias": "SaveWorkflowDraftResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "save_workflow_draft",
+      "wire_defaults": {
+        "goal": "",
+        "limits": null,
+        "revision": 0,
+        "roles": [],
+        "title": ""
+      }
+    },
+    {
+      "capability": "workflow.control",
+      "class": "service",
+      "in_process": "Optional delegate method.  Stops dispatch and terminates the worker; it does not undo what the run already did, and an in-flight call is recorded as having no established outcome.",
+      "method": "runtime.workflow.run.cancel",
+      "notes": [
+        "``reason`` is bounded to 64 bytes."
+      ],
+      "params_alias": "CancelWorkflowRunParams",
+      "request": "CancelWorkflowRunCommand",
+      "result": "WorkflowRunResult",
+      "result_alias": "CancelWorkflowRunResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "cancel_workflow_run",
+      "wire_defaults": {
+        "reason": "user"
+      }
+    },
+    {
+      "capability": "workflow.read",
+      "class": "service",
+      "in_process": "Optional delegate method.  Read-only: status, calls, usage and the run's own verdict on whether it may be resumed.",
+      "method": "runtime.workflow.run.get",
+      "notes": [
+        "Unknown run or project is not_found."
+      ],
+      "params_alias": "GetWorkflowRunParams",
+      "request": "GetWorkflowRunQuery",
+      "result": "WorkflowRunResult",
+      "result_alias": "GetWorkflowRunResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "get_workflow_run",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "workflow.read",
+      "class": "service",
+      "in_process": "Optional delegate method.  Bounded, newest first.",
+      "method": "runtime.workflow.run.list",
+      "notes": [
+        "``limit`` is bounded to 1..100 by the wire decoder."
+      ],
+      "params_alias": "ListWorkflowRunsParams",
+      "request": "ListWorkflowRunsQuery",
+      "result": "WorkflowRunPage",
+      "result_alias": "ListWorkflowRunsResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "list_workflow_runs",
+      "wire_defaults": {
+        "limit": 20
+      }
+    },
+    {
+      "capability": "workflow.control",
+      "class": "service",
+      "in_process": "Optional delegate method.  Accepting a run starts its worker and pauses ordinary turns for that project; the receipt is not a completion.",
+      "method": "runtime.workflow.run.start",
+      "notes": [
+        "``run_id`` is server-assigned when absent.",
+        "One active run per project: a second start is refused with conflict."
+      ],
+      "params_alias": "StartWorkflowRunParams",
+      "request": "StartWorkflowRunCommand",
+      "result": "WorkflowRunResult",
+      "result_alias": "StartWorkflowRunResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "start_workflow_run",
+      "wire_defaults": {
+        "inputs": null,
+        "run_id": null
+      }
+    },
+    {
       "capability": "workspace.open_external",
       "class": "service",
       "in_process": "Optional delegate method, same degradation rule as `runtime.git.status`.",
@@ -1784,6 +1910,39 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "ApproveWorkflowDraftCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "workflow_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "revision",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "ArtifactChunk": {
       "fields": [
@@ -2347,6 +2506,41 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "CancelWorkflowRunCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "run_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "user",
+          "default_kind": "value",
+          "name": "reason",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "ClearSessionGoalCommand": {
       "fields": [
@@ -3721,6 +3915,30 @@
       "origin": "python",
       "role": "request"
     },
+    "GetWorkflowRunQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "run_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "GitDiffQuery": {
       "fields": [
         {
@@ -4576,6 +4794,32 @@
       ],
       "notes": [
         "``project_id`` is optional: when present, skills from that project's configured ``skills_paths`` are discovered; when null, the default repository or host skills paths are searched."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListWorkflowRunsQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 20,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
       ],
       "origin": "python",
       "role": "request"
@@ -6643,6 +6887,109 @@
       "origin": "python",
       "role": "request"
     },
+    "SaveWorkflowDraftCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "workflow_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "source",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "title",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "goal",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "roles",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "limits",
+          "nullable": true,
+          "optional": true,
+          "python_type": "WorkflowLimitsView | None",
+          "required": false,
+          "ts_type": "WorkflowLimitsView | null",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "revision",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "thread_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``revision`` is the revision the caller believes it is editing: 0 means a new",
+        "draft, and any other value must match the stored revision."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "ScreenshotCancelCommand": {
       "fields": [
         {
@@ -8104,6 +8451,56 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "StartWorkflowRunCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "workflow_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "run_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "inputs",
+          "nullable": false,
+          "optional": true,
+          "python_type": "Any",
+          "required": false,
+          "ts_type": "JsonValue",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``inputs`` is stored with the run: a resume replays the same program with the",
+        "same inputs, so a recorded call can never match a different request."
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "StatArtifactQuery": {
       "fields": [
@@ -9824,6 +10221,467 @@
         }
       ],
       "origin": "transport",
+      "role": "result"
+    },
+    "WorkflowCallView": {
+      "fields": [
+        {
+          "name": "call_key",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "actor_key",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "role",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "attempts",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "input_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "output_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "error",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WorkflowDraftResult": {
+      "fields": [
+        {
+          "name": "draft",
+          "nullable": false,
+          "optional": false,
+          "python_type": "WorkflowDraftView",
+          "required": true,
+          "ts_type": "WorkflowDraftView",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WorkflowDraftView": {
+      "fields": [
+        {
+          "name": "workflow_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "revision",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "goal",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "roles",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "script_hash",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "approved",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "updated_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WorkflowLimitsView": {
+      "fields": [
+        {
+          "name": "max_calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "max_actors",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "max_parallel",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "max_seconds",
+          "nullable": false,
+          "optional": false,
+          "python_type": "float",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "token_budget",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``max_calls`` / ``max_actors`` / ``max_parallel`` are hard limits;",
+        "``token_budget`` is a threshold that in-flight calls can exceed."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "WorkflowRunPage": {
+      "fields": [
+        {
+          "name": "runs",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[WorkflowRunView, ...]",
+          "required": true,
+          "ts_type": "WorkflowRunView[]",
+          "wire": "json"
+        },
+        {
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WorkflowRunResult": {
+      "fields": [
+        {
+          "name": "run",
+          "nullable": false,
+          "optional": false,
+          "python_type": "WorkflowRunView",
+          "required": true,
+          "ts_type": "WorkflowRunView",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "WorkflowRunView": {
+      "fields": [
+        {
+          "name": "run_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "workflow_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "thread_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "active",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "resumable",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "resume_blockers",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "blocked_calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "name": "resume_detail",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "calls",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[WorkflowCallView, ...]",
+          "required": true,
+          "ts_type": "WorkflowCallView[]",
+          "wire": "json"
+        },
+        {
+          "name": "input_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "output_tokens",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "error",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "result",
+          "nullable": false,
+          "optional": false,
+          "python_type": "Any",
+          "required": true,
+          "ts_type": "JsonValue",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "created_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "updated_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "finished_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``calls`` is the bounded list of calls dispatched so far: a dynamic program",
+        "may still expand, so there is no total to compute a percentage from.",
+        "``resumable`` and ``resume_blockers`` come from the run's own records."
+      ],
+      "origin": "python",
       "role": "result"
     }
   },

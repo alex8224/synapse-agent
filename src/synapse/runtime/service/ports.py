@@ -179,6 +179,17 @@ from synapse.runtime.service.stt import (
     SttStatusView,
     SttWarmUpCommand,
 )
+from synapse.runtime.service.workflows import (
+    ApproveWorkflowDraftCommand,
+    CancelWorkflowRunCommand,
+    GetWorkflowRunQuery,
+    ListWorkflowRunsQuery,
+    SaveWorkflowDraftCommand,
+    StartWorkflowRunCommand,
+    WorkflowDraftResult,
+    WorkflowRunPage,
+    WorkflowRunResult,
+)
 from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = ["AgentRuntimeService", "EventStream", "EventWatch"]
@@ -479,6 +490,67 @@ class AgentRuntimeService(Protocol):
         layer).
         """
         ...
+
+    async def save_workflow_draft(
+        self, command: SaveWorkflowDraftCommand
+    ) -> WorkflowDraftResult:
+        """Create or revise one workflow draft.
+
+        Project-scoped write.  A revision bump clears any previous approval, so a
+        changed program can never run on an approval given for an older one.
+
+        Optional delegate method: a delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        """
+        ...
+
+    async def approve_workflow_draft(
+        self, command: ApproveWorkflowDraftCommand
+    ) -> WorkflowDraftResult:
+        """Approve exactly one revision of one draft.
+
+        The approval names the revision *and* the script hash the daemon stored,
+        so an approval always refers to the program that will run.
+
+        Optional delegate method (see the ACL layer).
+        """
+        ...
+
+    async def start_workflow_run(
+        self, command: StartWorkflowRunCommand
+    ) -> WorkflowRunResult:
+        """Start one run of an approved draft and return its record.
+
+        The receipt means the run was accepted and its worker started, not that it
+        finished; progress is read from ``get_workflow_run``.
+
+        Optional delegate method (see the ACL layer).
+        """
+        ...
+
+    async def cancel_workflow_run(
+        self, command: CancelWorkflowRunCommand
+    ) -> WorkflowRunResult:
+        """Stop one run: stop dispatch, terminate the worker, record the outcome.
+
+        Optional delegate method (see the ACL layer).
+        """
+        ...
+
+    async def get_workflow_run(self, query: GetWorkflowRunQuery) -> WorkflowRunResult:
+        """Read one run: status, calls, usage and whether it may be resumed.
+
+        Optional delegate method (see the ACL layer).
+        """
+        ...
+
+    async def list_workflow_runs(self, query: ListWorkflowRunsQuery) -> WorkflowRunPage:
+        """List one project's runs, newest first (bounded).
+
+        Optional delegate method (see the ACL layer).
+        """
+        ...
+
 
     async def read_session_history(
         self, query: ReadSessionHistoryQuery

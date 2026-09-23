@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import concurrent.futures
 import dataclasses
@@ -254,19 +255,57 @@ def test_service_exports_protocol_and_exact_s2_error_codes() -> None:
     assert {error("x").code for error in expected} == set(expected.values())
 
     package = Path(__file__).parents[1] / "src" / "synapse" / "runtime" / "service"
-    banned = (
+    #: Modules the service package must not pull in *at import time*: a UI/CLI, a transport,
+    #: a web framework, or a model stack.  A top-level import would drag them into every
+    #: consumer of the package, which is what ``test_runtime_service_import_purity`` measures
+    #: from the outside.
+    banned_at_import_time = (
         "synapse.ui",
-        "typer",
         "synapse.acp",
+        "typer",
         "textual",
-        "http",
-        "websocket",
+        "aiohttp",
+        "httpx",
+        "websockets",
         "langchain",
+        "langgraph",
+        "deepagents",
     )
+    #: Heavy modules an *implementation* file may import inside a function, each with the
+    #: reason it is allowed.  Listing them is what keeps a new heavy dependency from being
+    #: hidden inside a function: a deferred import of anything here must be declared, and a
+    #: declaration that stops being used fails below instead of rotting into a permission.
+    deferred_allowed = {
+        "httpx": "bounded classification of an upstream HTTP failure",
+    }
+    heavy = ("aiohttp", "httpx", "websockets", "langchain", "langgraph", "deepagents")
+    used: set[str] = set()
     for path in package.glob("*.py"):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith(("import ", "from ")):
-                assert not any(token in line.casefold() for token in banned)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                modules = [node.module or ""]
+            else:
+                continue
+            for module in modules:
+                lowered = module.casefold()
+                if node.col_offset == 0:
+                    assert not any(token in lowered for token in banned_at_import_time), (
+                        f"{path.name} imports {module!r} at import time"
+                    )
+                    continue
+                for name in heavy:
+                    if lowered == name or lowered.startswith(f"{name}."):
+                        assert name in deferred_allowed, (
+                            f"{path.name} defers a heavy import that is not declared: "
+                            f"{module!r}"
+                        )
+                        used.add(name)
+    assert used == set(deferred_allowed), (
+        f"stale deferred-import allowance: {sorted(set(deferred_allowed) - used)}"
+    )
 
 
 def test_open_is_idempotent_and_projects_identity_without_command_deduplication() -> None:

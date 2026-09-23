@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
+import logging
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -26,6 +28,8 @@ from synapse.runtime.sessions.runtime import (
     UserTurn,
 )
 from synapse.runtime.steer import SteerQueue
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -142,6 +146,15 @@ class RuntimeManager:
         persist_resources: Any | None = None,
         on_status_change: Callable[[SessionSnapshot], None] | None = None,
         persist_model_binding: Callable[[str, Any], None] | None = None,
+        #: Refuses a new turn when it returns a reason (see :meth:`_check_turn_gate`).
+        #: Used to pause ordinary turns while a workflow holds the project's workspace.
+        turn_gate: Callable[[str], str | None] | None = None,
+        #: The project's workflow lifecycle, when the daemon wired one.  Exposed so the
+        #: runtime service can reach it without importing the workflow package itself.
+        workflow_service: Any | None = None,
+        #: Closed exactly once, after this manager's sessions have settled.  Each entry may
+        #: return an awaitable (e.g. a service that has to stop background work first).
+        close_hooks: Sequence[Callable[[], Any]] = (),
     ) -> None:
         self.settings = settings
         self.agent_factory = agent_factory
@@ -159,6 +172,9 @@ class RuntimeManager:
         self.persist_resources = persist_resources
         self.on_status_change = on_status_change
         self.persist_model_binding = persist_model_binding
+        self.turn_gate = turn_gate
+        self.workflow_service = workflow_service
+        self.close_hooks = tuple(close_hooks)
         self._async_runtime = async_runtime or get_async_runtime()
         self._sessions: dict[str, SessionRuntime] = {}
         self._lock = threading.RLock()
@@ -698,6 +714,7 @@ class RuntimeManager:
         *,
         _approval_claim: tuple[str, int] | None = None,
     ) -> TurnHandle:
+        self._check_turn_gate(thread_id, message)
         session = await self.open_session(thread_id)
         with self._lock:
             lifecycle_lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
@@ -866,6 +883,19 @@ class RuntimeManager:
         session = self.get_session(thread_id)
         return session.steer(text) if session is not None else False
 
+    def _check_turn_gate(self, thread_id: str, message: UserTurn) -> None:
+        """Refuse a new turn while an external owner holds the workspace.
+
+        An approval resume is deliberately exempt: answering a pending approval starts no
+        new work, and refusing it would strand a session that is waiting for a decision.
+        """
+        gate = self.turn_gate
+        if gate is None or message.approval_resume:
+            return
+        refusal = gate(thread_id)
+        if refusal:
+            raise SessionBusyError(str(refusal))
+
     def cancel(self, thread_id: str, reason: str = "user") -> bool:
         session = self.get_session(thread_id)
         return session.cancel(reason) if session is not None else False
@@ -982,11 +1012,27 @@ class RuntimeManager:
             self._sessions.clear()
             self._submit_locks.clear()
             self._queued_owners.clear()
+        await self._run_close_hooks()
         if resources is not None:
             try:
                 resources.close()
             except Exception:  # noqa: BLE001 - surface as shutdown failure below
                 raise
+
+    async def _run_close_hooks(self) -> None:
+        """Close everything the daemon attached, exactly once, after sessions settled.
+
+        A hook that fails must not stop the others: shutdown has to release as much as it
+        can, and the failure is logged rather than turned into a half-closed manager.
+        """
+        hooks, self.close_hooks = self.close_hooks, ()
+        for hook in hooks:
+            try:
+                pending = hook()
+                if inspect.isawaitable(pending):
+                    await pending
+            except Exception:  # noqa: BLE001 - one hook must not block the rest
+                logger.warning("session manager close hook failed", exc_info=True)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()

@@ -263,6 +263,16 @@ FS_LIST = "fs.list"
 #: List discoverable Agent Skills.  Catalog-scoped and strictly read-only:
 #: it returns skill metadata only and never executes code or tools.
 SKILLS_LIST = "skills.list"
+#: Read a project's workflow drafts and runs.  Project-scoped and read-only: it
+#: reports status, calls, usage and whether a stopped run may continue.
+WORKFLOW_READ = "workflow.read"
+#: Create or revise a workflow draft, and approve one revision of it.  Separate
+#: from ``workflow.control`` because writing a program and *running* one are
+#: different decisions, and an approval names one exact script hash.
+WORKFLOW_WRITE = "workflow.write"
+#: Start, cancel and resume a workflow run.  Its own capability: it is the surface
+#: that can hold a project's workspace and pause ordinary turns.
+WORKFLOW_CONTROL = "workflow.control"
 SESSION_MCP_RELOAD = "session.mcp.reload"
 SESSION_LIST = "session.list"
 #: Persist a new session's metadata row.  Project-level (there is no thread yet
@@ -351,6 +361,9 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         PROJECT_REGISTER,
         FS_LIST,
         SKILLS_LIST,
+        WORKFLOW_READ,
+        WORKFLOW_WRITE,
+        WORKFLOW_CONTROL,
         SESSION_CREATE,
         SESSION_DELETE,
         SESSION_LIST,
@@ -1566,6 +1579,103 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("skills listing is unavailable")
         return await delegate(query)
+
+    async def save_workflow_draft(self, command: object) -> object:
+        from synapse.runtime.service.workflows import SaveWorkflowDraftCommand
+
+        if type(command) is not SaveWorkflowDraftCommand:
+            raise InvalidRequestError(
+                "workflow draft command must be a SaveWorkflowDraftCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_WRITE, command.project_id
+        )
+        delegate = getattr(self._delegate, "save_workflow_draft", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(command)
+
+    async def approve_workflow_draft(self, command: object) -> object:
+        from synapse.runtime.service.workflows import ApproveWorkflowDraftCommand
+
+        if type(command) is not ApproveWorkflowDraftCommand:
+            raise InvalidRequestError(
+                "approve command must be an ApproveWorkflowDraftCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_WRITE, command.project_id
+        )
+        delegate = getattr(self._delegate, "approve_workflow_draft", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(command)
+
+    async def start_workflow_run(self, command: object) -> object:
+        from synapse.runtime.service.workflows import StartWorkflowRunCommand
+
+        if type(command) is not StartWorkflowRunCommand:
+            raise InvalidRequestError(
+                "start command must be a StartWorkflowRunCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_CONTROL, command.project_id
+        )
+        delegate = getattr(self._delegate, "start_workflow_run", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(command)
+
+    async def cancel_workflow_run(self, command: object) -> object:
+        from synapse.runtime.service.workflows import CancelWorkflowRunCommand
+
+        if type(command) is not CancelWorkflowRunCommand:
+            raise InvalidRequestError(
+                "cancel command must be a CancelWorkflowRunCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_CONTROL, command.project_id
+        )
+        delegate = getattr(self._delegate, "cancel_workflow_run", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(command)
+
+    async def get_workflow_run(self, query: object) -> object:
+        from synapse.runtime.service.workflows import GetWorkflowRunQuery
+
+        if type(query) is not GetWorkflowRunQuery:
+            raise InvalidRequestError(
+                "workflow run query must be a GetWorkflowRunQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_READ, query.project_id
+        )
+        delegate = getattr(self._delegate, "get_workflow_run", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(query)
+
+    async def list_workflow_runs(self, query: object) -> object:
+        from synapse.runtime.service.workflows import ListWorkflowRunsQuery
+
+        if type(query) is not ListWorkflowRunsQuery:
+            raise InvalidRequestError(
+                "workflow run query must be a ListWorkflowRunsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        self._authorizer.authorize_project(
+            self._principal, WORKFLOW_READ, query.project_id
+        )
+        delegate = getattr(self._delegate, "list_workflow_runs", None)
+        if not callable(delegate):
+            raise InvalidRequestError("workflows are unavailable")
+        return await delegate(query)
+
 
     async def read_session_history(
         self, query: ReadSessionHistoryQuery

@@ -64,6 +64,92 @@ _CONNECTION_PROJECT_SCOPE: ContextVar[str | None] = ContextVar(
 )
 
 
+def _build_workflow_service(*, descriptor: Any, project_settings: Any) -> Any | None:
+    """Build one project's workflow lifecycle, or ``None`` when it is unavailable.
+
+    Optional on purpose: a workflow database that cannot be opened, or an environment where
+    the actor stack cannot be assembled, must degrade to "workflows unavailable" instead of
+    failing ordinary chat for that project.
+    """
+    try:
+        from pathlib import Path
+
+        from synapse.app.workflow_actor import WorkflowActorExecutor, build_actor_agent
+        from synapse.runtime.subagent_specs import SubagentRegistry
+        from synapse.runtime.subagents import resolve_role_definitions
+        from synapse.workflows.service import WorkflowResources, WorkflowService
+        from synapse.workflows.store import WorkflowStore
+
+        # ``resolved_sessions_path()`` is the session *database file*, not a directory:
+        # the workflow database is a sibling under the same state directory.
+        store = WorkflowStore(
+            Path(project_settings.resolved_sessions_path()).parent
+            / "workflows"
+            / f"{descriptor.project_id}.sqlite"
+        )
+        try:
+            registry = SubagentRegistry.load(
+                project_settings.workspace,
+                extra_dirs=project_settings.custom_agents_dirs,
+            )
+            custom: Any = registry.items()
+        except Exception:  # noqa: BLE001 - role files are best effort
+            custom = None
+        definitions = resolve_role_definitions(
+            custom_subagents=custom,
+            disable_builtin_subagents=project_settings.disable_builtin_subagents,
+        )
+        # Built lazily: a project that never runs a workflow must not pay for a model
+        # client, a shell backend and a checkpointer.
+        cache: dict[str, Any] = {}
+
+        def actor_resources() -> dict[str, Any]:
+            if not cache:
+                from synapse.app.agent import build_actor_resources
+
+                cache.update(build_actor_resources(project_settings))
+            return cache
+
+        def executor_factory(run_id: str) -> Any:
+            built = actor_resources()
+            return WorkflowActorExecutor(
+                run_id=run_id,
+                definitions=definitions,
+                workspace=Path(descriptor.workspace),
+                store=store,
+                inherit_tools=built["tools"],
+                extra_excluded_tools=built["excluded_tools"],
+                shell_executable=built["shell_executable"],
+                agent_builder=lambda spec, correction: build_actor_agent(
+                    spec,
+                    correction=correction,
+                    model=built["model"],
+                    backend=built["backend"],
+                    checkpointer=built["checkpointer"],
+                    project_root=descriptor.workspace,
+                    tools=built["tools"],
+                    permissions=built["permissions"],
+                ),
+            )
+
+        return WorkflowService(
+            WorkflowResources(
+                project_id=descriptor.project_id,
+                workspace=Path(descriptor.workspace),
+                store=store,
+                roles=tuple(d.name for d in definitions if d.enabled),
+                executor_factory=executor_factory,
+            )
+        )
+    except Exception:  # noqa: BLE001 - workflows are optional per project
+        _LOGGER.warning(
+            "workflow support is unavailable for project %s",
+            getattr(descriptor, "project_id", "?"),
+            exc_info=True,
+        )
+        return None
+
+
 def _mcp_tool_prefix(config: Any) -> str:
     """The effective tool prefix for one server (mirrors ``mcp_client``)."""
     prefix = getattr(config, "tool_prefix", None)
@@ -441,6 +527,11 @@ class RuntimeDaemon:
         # Seed each session runtime's cumulative usage from the durable projection,
         # so a daemon restart no longer resets what the console reports.
         load_usage = persistence.load_usage if persistence.enabled else None
+        # Workflows are optional per project: a workflow database that cannot be opened
+        # degrades to "unavailable" rather than failing ordinary chat.
+        workflow_service = _build_workflow_service(
+            descriptor=descriptor, project_settings=project_settings
+        )
         return RuntimeManager(
             settings=project_settings,
             agent_factory=lambda thread_id, _shared: build_agent(
@@ -457,6 +548,17 @@ class RuntimeDaemon:
             persist_result=persist_result,
             load_usage=load_usage,
             persist_resources=persistence if persistence.enabled else None,
+            # A workflow holds the project's workspace while it runs, so ordinary turns
+            # wait rather than racing it.  Reading, approving and cancelling stay open.
+            turn_gate=(
+                None if workflow_service is None else workflow_service.turn_refusal
+            ),
+            workflow_service=workflow_service,
+            close_hooks=(
+                ()
+                if workflow_service is None
+                else (workflow_service.close, workflow_service.close_store)
+            ),
         )
 
     def _make_service(self, principal: Principal) -> Any:

@@ -1119,8 +1119,28 @@ body {
   */
   .math-block .katex-display { margin: 0; }
   .math-inline .katex { font-size: 1.05em; }
-  /* mermaid emits an inline `max-width` on its SVG; let a wide diagram scroll. */
+  /*
+    mermaid sizes its own root SVG: with its default `useMaxWidth` it writes
+    `width="100%"` plus an inline `max-width`, and an inline style outranks any
+    rule here -- every diagram was pinned to the reading column, a wide one was
+    silently scaled down, and the stage around it could never scroll.
+    `freezeSvgSize` (`src/markdown/mermaid.ts`) replaces that with the diagram's
+    own `viewBox` size, so the class decides how it is shown:
+
+    - `mermaid-fit` (the default) reproduces the column fit, so a diagram that
+      fits is shown whole and no upscaling ever happens;
+    - `mermaid-actual` shows it at 1:1 and lets the stage scroll;
+    - `mermaid-zoom-box` is the enlarged copy's box: the viewer sets its pixel
+      size from the zoom scale and the SVG fills it, so neither the frozen
+      attributes nor Tailwind's `img,svg { max-width: 100% }` preflight can
+      clamp the zoom back down.
+
+    The stage in `MermaidBlock.tsx` caps its height, so a tall diagram scrolls
+    inside the card instead of stretching the transcript row.
+  */
   .mermaid-diagram svg { max-width: 100%; height: auto; }
+  .mermaid-diagram.mermaid-actual svg { max-width: none; }
+  .mermaid-zoom-box svg { width: 100%; height: 100%; max-width: none; }
 }
 
 /*

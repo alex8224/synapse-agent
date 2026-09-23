@@ -12,7 +12,9 @@ import {
   DIRECTIVE_RE,
   MAX_DIAGRAM_CHARS,
   describeMermaidError,
+  freezeSvgSize,
   rejectionReason,
+  svgIntrinsicSize,
 } from '../src/markdown/mermaid.ts';
 
 test('an ordinary diagram is accepted', () => {
@@ -78,3 +80,72 @@ test('a non-Error failure still produces a readable reason', () => {
   assert.equal(describeMermaidError(undefined), '未知错误');
   assert.equal(describeMermaidError(new Error('   ')), '未知错误');
 });
+
+/**
+ * What mermaid actually emits for a 1600x900 flowchart: `useMaxWidth` gives the
+ * root `width="100%"` plus an inline `max-width`, `setupGraphViewbox` adds the
+ * `viewBox`, and the theme CSS is scoped by the id it was rendered under.
+ */
+const RENDERED = [
+  '<svg id="synapse-mermaid-7" width="100%" xmlns="http://www.w3.org/2000/svg"',
+  ' style="max-width: 1600px;" class="flowchart" viewBox="0 0 1600 900"',
+  ' role="graphics-document document">',
+  '<style>#synapse-mermaid-7 .node{fill:#fff}</style>',
+  '<g class="node" stroke-width="2"><rect x="0" y="0" width="10" height="20"/></g>',
+  '</svg>',
+].join('');
+
+test('a diagram reports the size mermaid measured it at', () => {
+  assert.deepEqual(svgIntrinsicSize(RENDERED), { width: 1600, height: 900 });
+});
+
+test('the size falls back to the width/height attributes', () => {
+  assert.deepEqual(
+    svgIntrinsicSize('<svg width="320" height="180" style="max-width: 320px;"><g/></svg>'),
+    { width: 320, height: 180 },
+  );
+});
+
+test('a percentage or a missing attribute is not a size', () => {
+  // `width="100%"` must never be read as 100 user units.
+  assert.equal(svgIntrinsicSize('<svg width="100%" height="900"><g/></svg>'), null);
+  assert.equal(svgIntrinsicSize('<svg class="flowchart"><g/></svg>'), null);
+  assert.equal(svgIntrinsicSize('<g/>'), null);
+  assert.equal(svgIntrinsicSize('<svg viewBox="0 0 0 0"><g/></svg>'), null);
+});
+
+test('freezing replaces mermaid sizing with the diagram own size', () => {
+  const frozen = freezeSvgSize(RENDERED);
+  assert.deepEqual(frozen.size, { width: 1600, height: 900 });
+  const tag = /<svg\b[^>]*>/i.exec(frozen.html)?.[0] ?? '';
+  assert.ok(tag.includes('width="1600"'), tag);
+  assert.ok(tag.includes('height="900"'), tag);
+  assert.equal(tag.includes('width="100%"'), false, 'the container-width attribute must go');
+  assert.equal(/max-width/.test(tag), false, 'the inline max-width must go');
+  // Everything else on the root survives, and the body is untouched.
+  assert.ok(tag.includes('id="synapse-mermaid-7"'));
+  assert.ok(tag.includes('viewBox="0 0 1600 900"'));
+  assert.ok(tag.includes('role="graphics-document document"'));
+  assert.ok(frozen.html.includes('stroke-width="2"'), 'a body attribute must not be stripped');
+  assert.ok(frozen.html.includes('<rect x="0" y="0" width="10" height="20"/>'));
+  assert.ok(frozen.html.includes('#synapse-mermaid-7 .node{fill:#fff}'));
+});
+
+test('freezing keeps the style declarations it did not come for', () => {
+  const frozen = freezeSvgSize(
+    '<svg width="100%" style="max-width: 200px; overflow: visible;" viewBox="0 0 200 100"/>',
+  );
+  const tag = /<svg\b[^>]*>/i.exec(frozen.html)?.[0] ?? '';
+  assert.ok(tag.includes('style="overflow: visible"'), tag);
+});
+
+test('freezing drops an empty style attribute', () => {
+  const frozen = freezeSvgSize('<svg width="100%" style="max-width: 200px;" viewBox="0 0 200 100"/>');
+  assert.equal(/style=/.test(frozen.html), false, frozen.html);
+});
+
+test('an unmeasurable diagram is handed back untouched', () => {
+  const markup = '<svg width="100%"><g/></svg>';
+  assert.deepEqual(freezeSvgSize(markup), { html: markup, size: null });
+});
+

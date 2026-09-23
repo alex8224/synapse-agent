@@ -457,7 +457,7 @@ Fluent 主界面可另运行 `node tests/fluentAppearance.verify.ts`：使用隔
 | 输入 | 渲染 | 失败/拒绝时的行为 |
 |---|---|---|
 | `$$...$$`（块）与 `$...$`（行内） | KaTeX（`src/markdown/tex.ts` + `src/components/MathTex.tsx`） | 回退为「公式 + LaTeX 源码」块并写明原因 |
-| ` ```mermaid ` 围栏 | mermaid（`src/components/MermaidBlock.tsx`），`import('mermaid')` 懒加载 | 回退为代码块，头部显示原因 |
+| ` ```mermaid ` 围栏 | mermaid（`src/components/MermaidBlock.tsx`），`import('mermaid')` 懒加载；大图可切「原始大小」或「放大」全屏查看（`MermaidLightbox.tsx`） | 回退为代码块，头部显示原因 |
 
 边界（`tests/markdownRenderGuard.test.ts` 静态守护）：
 
@@ -472,6 +472,21 @@ Fluent 主界面可另运行 `node tests/fluentAppearance.verify.ts`：使用隔
   图形同样拒绝——这些情况都回退为带原因的源码块；
 - mermaid 渲染到组件自己的离屏容器（不碰 `document.body`），流式未闭合的围栏在闭合前
   一直是代码块，因此不会出现半张图或红色半成品公式。
+
+图形的尺寸由控制台接管，不由 mermaid 决定：mermaid 默认给根 `<svg>` 写 `width="100%"` 加内联
+`max-width`，而内联样式压过任何样式表规则——每张图都被钉在阅读栏宽度上，宽图被静默缩小，外层
+滚动容器永远不滚动。渲染完成后 `freezeSvgSize`（`src/markdown/mermaid.ts`）把它换回图自身的
+`viewBox` 尺寸，于是：卡片默认「适应宽度」，可切「原始大小」（1:1，超出即滚动）；stage 自身限高
+`28rem` 并滚动，高图因此在卡片内滚动，而不是把一条 transcript 行撑到整张图的高度；「放大」打开
+`MermaidLightbox`，与图片预览共用 `imageZoom.ts` 的缩放/平移算术（滚轮以指针为锚缩放、拖拽平移、
+`适应窗口 / 1:1 / - / +`、`+ - 0 1`、Esc、双击在 fit 与 1:1 间切换），开图比例不低于 75%、
+不高于 1:1。无 `viewBox` 可测的图形保持 mermaid 原本的尺寸行为，且不显示「放大」。
+
+同一张图在文档里只存在一份：mermaid 的 id 不做命名空间（sequence diagram 除根 id 外还有
+`actor0`…`root-7`，主题 CSS 又以 `#<svgId>` 作用域），所以放大时卡片把 stage 清空、由
+`MermaidLightbox` 渲染这一份，并先把 stage 实测高度记下来当占位，关闭后卡片高度与打开前完全一致
+（`tests/mermaidViewer.verify.ts` 用真浏览器验收：宽度/高度、限高滚动、75% 下限、滚轮 5 个百分点
+一步、1:1、Esc，以及打开期间全文档 id 唯一）。
 
 Markdown 渲染依赖：`mermaid` / `katex` / `dompurify`；mermaid 只在实际
 出现图形时下载（构建产物里是独立 chunk），KaTeX 与其字体随主包加载，不访问任何 CDN。

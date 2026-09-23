@@ -106,6 +106,17 @@ import {
   parseArtifactPage,
 } from './artifacts.ts';
 import type { ArtifactChunkView, ArtifactEntry, ArtifactPageView } from './artifacts.ts';
+import type {
+  ApproveWorkflowDraftParams,
+  CancelWorkflowRunParams,
+  GetWorkflowRunParams,
+  ListWorkflowRunsParams,
+  ListWorkflowRunsResult,
+  SaveWorkflowDraftParams,
+  StartWorkflowRunParams,
+  WorkflowDraftResult,
+  WorkflowRunResult,
+} from './contract.generated.ts';
 import { parseGitDiff, parseGitStatus } from './git.ts';
 import type { GitDiffView, GitStatusView } from './git.ts';
 import { parseExternalAppPage, parseOpenExternalResult } from './externalApps.ts';
@@ -739,6 +750,71 @@ export class SynapseRuntimeClient {
   ): Promise<ListSkillsResult> {
     return this.call<ListSkillsResult>('runtime.skills.list', {
       project_id: params.project_id ?? null,
+    });
+  }
+
+  // --- workflows ---------------------------------------------------------
+
+  public async saveWorkflowDraft(
+    params: SaveWorkflowDraftParams,
+  ): Promise<WorkflowDraftResult> {
+    return this.call<WorkflowDraftResult>('runtime.workflow.draft.save', {
+      project_id: params.project_id,
+      workflow_id: params.workflow_id,
+      source: params.source,
+      title: params.title ?? '',
+      goal: params.goal ?? '',
+      roles: params.roles ?? [],
+      limits: params.limits ?? null,
+      revision: params.revision ?? 0,
+      thread_id: params.thread_id ?? '',
+    });
+  }
+
+  public async approveWorkflowDraft(
+    params: ApproveWorkflowDraftParams,
+  ): Promise<WorkflowDraftResult> {
+    return this.call<WorkflowDraftResult>('runtime.workflow.draft.approve', {
+      project_id: params.project_id,
+      workflow_id: params.workflow_id,
+      revision: params.revision,
+    });
+  }
+
+  public async startWorkflowRun(
+    params: StartWorkflowRunParams,
+  ): Promise<WorkflowRunResult> {
+    return this.call<WorkflowRunResult>('runtime.workflow.run.start', {
+      project_id: params.project_id,
+      workflow_id: params.workflow_id,
+      run_id: params.run_id ?? null,
+      inputs: params.inputs ?? null,
+    });
+  }
+
+  public async cancelWorkflowRun(
+    params: CancelWorkflowRunParams,
+  ): Promise<WorkflowRunResult> {
+    return this.call<WorkflowRunResult>('runtime.workflow.run.cancel', {
+      project_id: params.project_id,
+      run_id: params.run_id,
+      reason: params.reason ?? 'user',
+    });
+  }
+
+  public async getWorkflowRun(params: GetWorkflowRunParams): Promise<WorkflowRunResult> {
+    return this.call<WorkflowRunResult>('runtime.workflow.run.get', {
+      project_id: params.project_id,
+      run_id: params.run_id,
+    });
+  }
+
+  public async listWorkflowRuns(
+    params: ListWorkflowRunsParams,
+  ): Promise<ListWorkflowRunsResult> {
+    return this.call<ListWorkflowRunsResult>('runtime.workflow.run.list', {
+      project_id: params.project_id,
+      limit: params.limit ?? 20,
     });
   }
 

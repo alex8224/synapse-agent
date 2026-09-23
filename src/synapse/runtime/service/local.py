@@ -252,6 +252,23 @@ from synapse.runtime.service.stt import (
     SttStatusView,
     SttWarmUpCommand,
 )
+from synapse.runtime.service.workflow_projection import (
+    save_workflow_draft,
+    workflow_draft_view,
+    workflow_error,
+    workflow_run_view,
+)
+from synapse.runtime.service.workflows import (
+    ApproveWorkflowDraftCommand,
+    CancelWorkflowRunCommand,
+    GetWorkflowRunQuery,
+    ListWorkflowRunsQuery,
+    SaveWorkflowDraftCommand,
+    StartWorkflowRunCommand,
+    WorkflowDraftResult,
+    WorkflowRunPage,
+    WorkflowRunResult,
+)
 from synapse.runtime.sessions import (
     NoActiveTurnError as SessionNoActiveTurnError,
 )
@@ -1467,6 +1484,127 @@ class LocalAgentRuntimeService:
 
         return await asyncio.to_thread(_discover)
 
+    # -- workflows ---------------------------------------------------------
+
+    def _resolve_workflow_service(self, project_id: str) -> Any:
+        """The project's workflow lifecycle, or a named refusal.
+
+        Workflows are optional per project: a daemon that could not open the workflow
+        database reports the feature as unavailable rather than pretending a run exists.
+        """
+        manager = self._resolve_manager_project(project_id)
+        service = getattr(manager, "workflow_service", None)
+        if service is None:
+            raise InvalidRequestError("workflows are unavailable for this project")
+        return service
+
+    async def save_workflow_draft(
+        self, command: SaveWorkflowDraftCommand
+    ) -> WorkflowDraftResult:
+        """Create or revise one workflow draft."""
+        if type(command) is not SaveWorkflowDraftCommand:
+            raise InvalidRequestError(
+                "workflow draft command must be a SaveWorkflowDraftCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._resolve_workflow_service(command.project_id)
+        draft = await asyncio.to_thread(save_workflow_draft, service, command)
+        return WorkflowDraftResult(draft=workflow_draft_view(draft))
+
+    async def approve_workflow_draft(
+        self, command: ApproveWorkflowDraftCommand
+    ) -> WorkflowDraftResult:
+        """Approve exactly one revision of one draft."""
+        if type(command) is not ApproveWorkflowDraftCommand:
+            raise InvalidRequestError(
+                "approve command must be an ApproveWorkflowDraftCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._resolve_workflow_service(command.project_id)
+
+        def _approve() -> Any:
+            try:
+                return service.approve_draft(
+                    command.workflow_id, revision=command.revision
+                )
+            except Exception as exc:  # noqa: BLE001 - mapped below
+                raise workflow_error(exc) from exc
+
+        draft = await asyncio.to_thread(_approve)
+        return WorkflowDraftResult(draft=workflow_draft_view(draft))
+
+    async def start_workflow_run(
+        self, command: StartWorkflowRunCommand
+    ) -> WorkflowRunResult:
+        """Start one run of an approved draft."""
+        if type(command) is not StartWorkflowRunCommand:
+            raise InvalidRequestError(
+                "start command must be a StartWorkflowRunCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        import uuid
+
+        service = self._resolve_workflow_service(command.project_id)
+        run_id = command.run_id or f"run-{uuid.uuid4().hex[:16]}"
+
+        def _create() -> Any:
+            try:
+                return service.create_run(
+                    command.workflow_id, run_id=run_id, inputs=command.inputs
+                )
+            except Exception as exc:  # noqa: BLE001 - mapped below
+                raise workflow_error(exc) from exc
+
+        run = await asyncio.to_thread(_create)
+        try:
+            await service.start(run.run_id)
+        except Exception as exc:  # noqa: BLE001 - mapped below
+            raise workflow_error(exc) from exc
+        current = service.get_run(run.run_id) or run
+        return WorkflowRunResult(run=workflow_run_view(service, current))
+
+    async def cancel_workflow_run(
+        self, command: CancelWorkflowRunCommand
+    ) -> WorkflowRunResult:
+        """Stop one run and report the status it is settling into."""
+        if type(command) is not CancelWorkflowRunCommand:
+            raise InvalidRequestError(
+                "cancel command must be a CancelWorkflowRunCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        service = self._resolve_workflow_service(command.project_id)
+        run = service.get_run(command.run_id)
+        if run is None:
+            raise NotFoundError("unknown workflow run")
+        service.cancel(command.run_id, reason=command.reason)
+        current = service.get_run(command.run_id) or run
+        return WorkflowRunResult(run=workflow_run_view(service, current))
+
+    async def get_workflow_run(self, query: GetWorkflowRunQuery) -> WorkflowRunResult:
+        """Read one run: status, calls, usage and whether it may be resumed."""
+        if type(query) is not GetWorkflowRunQuery:
+            raise InvalidRequestError(
+                "workflow run query must be a GetWorkflowRunQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        service = self._resolve_workflow_service(query.project_id)
+        run = service.get_run(query.run_id)
+        if run is None:
+            raise NotFoundError("unknown workflow run")
+        return WorkflowRunResult(run=workflow_run_view(service, run))
+
+    async def list_workflow_runs(self, query: ListWorkflowRunsQuery) -> WorkflowRunPage:
+        """List one project's runs, newest first (bounded)."""
+        if type(query) is not ListWorkflowRunsQuery:
+            raise InvalidRequestError(
+                "workflow run query must be a ListWorkflowRunsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        service = self._resolve_workflow_service(query.project_id)
+        runs = await asyncio.to_thread(lambda: service.list_runs(limit=query.limit))
+        views = tuple(workflow_run_view(service, run) for run in runs)
+        return WorkflowRunPage(runs=views, total=len(views))
+
     async def read_session_history(
         self, query: ReadSessionHistoryQuery
     ) -> SessionHistoryPage:
@@ -2225,13 +2363,15 @@ class LocalAgentRuntimeService:
 
         t0 = time.perf_counter()
         try:
-            from langchain_core.messages import HumanMessage
-
             from synapse.models.registry import registry_from_settings
 
             reg = registry_from_settings(settings)
             chat_model = reg.build_chat_model(command.alias)
-            await asyncio.wait_for(chat_model.ainvoke([HumanMessage(content="hi")]), timeout=15.0)
+            # A plain message mapping, not a framework message object: this package must not
+            # import a model stack merely to build a one-word probe.
+            await asyncio.wait_for(
+                chat_model.ainvoke([{"role": "user", "content": "hi"}]), timeout=15.0
+            )
             latency_ms = max(1, int((time.perf_counter() - t0) * 1000))
             return TestModelResult(ok=True, latency_ms=latency_ms, error=None)
         except Exception as exc:
