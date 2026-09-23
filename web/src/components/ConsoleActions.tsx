@@ -1,5 +1,5 @@
 import {
-  FolderOpen20Regular, SignOut20Regular, WeatherMoon20Regular, WeatherSunny20Regular,
+  FolderOpen20Regular, WeatherMoon20Regular, WeatherSunny20Regular,
   WindowConsole20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
@@ -35,14 +35,12 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   orientation = 'row',
 }) => {
   const {
-    logoutConsole,
     runtimeDiagnostics,
     loadRuntimeDiagnostics,
   } = useConsoleStore(
     // Only the fields these actions paint: a reasoning delta must not re-render
     // them.
     useShallow((state) => ({
-      logoutConsole: state.logoutConsole,
       runtimeDiagnostics: state.runtimeDiagnostics,
       loadRuntimeDiagnostics: state.loadRuntimeDiagnostics,
     })),
@@ -93,16 +91,6 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
           className={trigger}
         >
           <WindowConsole20Regular aria-hidden="true" />
-        </button>
-        <button
-          onClick={() => {
-            void logoutConsole();
-          }}
-          title="退出配对（作废控制台会话，回到配对界面）"
-          aria-label="退出配对"
-          className={trigger}
-        >
-          <SignOut20Regular aria-hidden="true" />
         </button>
         {/* The icon is the theme the click switches *to*, so the button never reads
             as a status badge of the current one.  It lands next to the settings entry
