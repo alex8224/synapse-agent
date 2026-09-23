@@ -40,7 +40,7 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
   分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
   `RuntimeDiagnosticsBanner`（仅降级时出现）、`RecoveryNotice`（仅恢复/截断时出现，
   见「恢复与降级提示」）、`Transcript`、浮动的 `CommandInput`，
-  以及 `BottomBar`（运行态、MCP、goal 与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
+  以及 `BottomBar`（运行态、MCP、goal、工作流与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
   转录区据此预留底部空间，避免最新内容被输入卡遮挡。
 
 **输入卡左下是「静态清单 + 动作模块」的动作菜单。** `CommandInput.tsx` 只挂载通用菜单
