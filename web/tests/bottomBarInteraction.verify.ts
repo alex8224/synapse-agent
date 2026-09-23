@@ -374,11 +374,11 @@ async function main(): Promise<void> {
     check('the activity entry is painted', /空闲|运行中/.test(wide.left?.text ?? ''), true)
     check('the MCP entry is painted', (wide.left?.text ?? '').includes('mcp:'), true)
     check('the goal entry is painted', (wide.left?.text ?? '').includes('goal:'), true)
-    check('the strip paints the manifest entries', wide.entries, ['activity', 'mcp', 'goal', 'telemetry'])
+    check('the strip paints the manifest entries', wide.entries, ['activity', 'mcp', 'goal', 'workflow', 'telemetry'])
     check('the right track paints no control (F1 is keyboard-only)', wide.right?.entries ?? [], [])
     check('the centre track carries the telemetry entry', wide.centre?.entries, ['telemetry'])
-    check('the left track separates its three entries', wide.left?.separators, 2)
-    check('the three left entries are the manifest', wide.left?.entries.length, 3)
+    check('the left track separates its entries', wide.left?.separators, 3)
+    check('the left entries are the manifest', wide.left?.entries.length, 4)
 
     // --- 2. F1 / F5 / F6, one open id -------------------------------------
     await pressKey(client, page, 'F1')
