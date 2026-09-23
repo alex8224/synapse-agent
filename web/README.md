@@ -1,5 +1,8 @@
 # Synapse Web 控制台（React + TypeScript + Vite）
 
+切换项目后，控制台只在本机浏览器存储最后选中的项目 ID；重开窗口时会在运行时项目列表中验证该 ID 并恢复。项目已删除或不可访问时使用宿主的启动项目，不保存凭据。
+Codex 用量/额度查询失败时，界面只显示安全的错误代码；daemon 在私有状态目录的 `errors.log`（默认 `~/.synapse/runtime/errors.log`）记录异常类别和 HTTP 状态码，不记录上游错误正文或令牌。
+
 面向 runtime daemon 的浏览器控制台前端。生产运行方式与完整命令见仓库根
 `README.md`、`docs/web-console/index.md` 与 `docs/web-console/formal-host.md`。
 

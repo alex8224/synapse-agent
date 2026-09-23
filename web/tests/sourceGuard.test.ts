@@ -53,7 +53,8 @@ const files = [
  * C-12 forbids *credential* persistence, so the two non-secret UI stores below
  * are exempt from that single rule: `transcriptCache` keeps bounded per-session
  * view metadata, `appearance` keeps the reader's theme choice, and `usagePrefs`
- * keeps the usage dashboard's filter choices (project scope, range, heat metric).
+ * keeps the usage dashboard's filter choices (project scope, range, heat metric),
+ * and `lastProject` keeps only a non-secret catalog project id.
  * Every other rule still applies to them, and no other file in `src/**` may touch
  * browser storage at all.
  */
@@ -61,6 +62,7 @@ const storageExempt = new Set([
   join(webRoot, 'src', 'stores', 'transcriptCache.ts'),
   join(webRoot, 'src', 'stores', 'appearance.ts'),
   join(webRoot, 'src', 'stores', 'usagePrefs.ts'),
+  join(webRoot, 'src', 'stores', 'lastProject.ts'),
 ]);
 
 const forbidden: Array<{ name: string; pattern: RegExp }> = [

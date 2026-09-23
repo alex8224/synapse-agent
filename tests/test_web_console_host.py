@@ -1622,6 +1622,27 @@ def test_resolve_project_auto_register_install_dir_fallback(tmp_path: Path) -> N
     assert view.workspace_path == str(existing_workspace.resolve())
 
 
+def test_resolve_project_ignores_previously_registered_install_binaries(tmp_path: Path) -> None:
+    binaries = tmp_path / "Programs" / "Synapse" / "binaries"
+    binaries.mkdir(parents=True)
+    (binaries / "synapse.exe").touch()
+    workspace = tmp_path / "real_project"
+    workspace.mkdir()
+    catalog_path = tmp_path / "catalog.sqlite"
+    catalog = ProjectCatalog(catalog_path)
+    try:
+        catalog.register_project(binaries, detect_git=False)
+        catalog.register_project(workspace, detect_git=False)
+        (binaries / "synapse.exe").unlink()
+        (binaries.parent / "uninstall.exe").touch()
+    finally:
+        catalog.close()
+    view = resolve_project(WebConsoleConfig(
+        workspace=binaries, catalog_path=catalog_path, runtime_port=8765, auto_register=True,
+    ))
+    assert view.workspace_path == str(workspace.resolve())
+
+
 def test_cli_parser_and_unresolvable_startup(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(["--static-dir", "x", "--runtime-port", "9000"])

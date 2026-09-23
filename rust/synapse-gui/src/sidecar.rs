@@ -65,8 +65,18 @@ impl ProcessManager {
         if let Some(ref ws) = self.workspace {
             cmd.current_dir(ws);
         } else if let SpawnTarget::Binary { ref path, .. } = target {
-            if let Some(parent) = path.parent() {
-                cmd.current_dir(parent);
+            // Without --workspace the host treats cwd as a project. Never let
+            // the installed sidecar's binaries directory become that project.
+            if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+            {
+                cmd.current_dir(home);
+            } else if let Some(parent) = path.parent() {
+                let fallback = if parent.file_name().is_some_and(|name| name == "binaries") {
+                    parent.parent().unwrap_or(parent)
+                } else {
+                    parent
+                };
+                cmd.current_dir(fallback);
             }
         }
 

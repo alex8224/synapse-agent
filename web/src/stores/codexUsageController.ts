@@ -620,13 +620,7 @@ export class CodexUsageController {
   }
 
   private async refreshAll(epoch: number, force: boolean): Promise<void> {
-    await this.loadUsage(epoch, force);
-    // The usage await may have moved the context on: the credits read is issued
-    // for the context this chain started in, or not at all.  Reading the *new*
-    // session/client under the old epoch would spend a request on a chain whose
-    // reply is going to be dropped.
-    if (!this.isLive(epoch, this.options.read())) return;
-    await this.loadCredits(epoch, force);
+    await Promise.all([this.loadUsage(epoch, force), this.loadCredits(epoch, force)]);
   }
 
   // -- the one write ----------------------------------------------------------
@@ -682,8 +676,9 @@ export class CodexUsageController {
         this.dropCredit(pending.creditId);
         this.usageReads.invalidate();
         this.creditsReads.invalidate();
-        const usageOk = await this.loadUsage(epoch, true);
-        const creditsOk = await this.loadCredits(epoch, true);
+        const [usageOk, creditsOk] = await Promise.all([
+          this.loadUsage(epoch, true), this.loadCredits(epoch, true),
+        ]);
         if (!this.isLive(epoch, this.options.read())) return;
         this.patch({
           notice: usageOk && creditsOk ? CODEX_USAGE_REDEEMED_NOTICE : CODEX_USAGE_REFRESH_FAILED_NOTICE,

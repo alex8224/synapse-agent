@@ -6,6 +6,24 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.53
+
+### New Features
+
+- **Workspace Resume**: Restore the last selected project in the desktop console when it remains available to the runtime.
+
+### Bug Fixes
+
+- **Desktop Startup Workspace**: Prevent the packaged sidecar's `binaries` directory, including previously registered installations, from becoming the default project.
+- **Codex Usage Refresh**: Read usage and reset credits concurrently while keeping credit redemption exclusive and idempotent.
+
+### Engineering
+
+- **Safe Codex Diagnostics**: Persist bounded daemon-side error categories and HTTP status codes in a rotating private log without exposing upstream response text or credentials to the console.
+- Added regression tests for workspace fallback, Codex read concurrency, and redacted error logs.
+
+---
+
 ## v0.1.52
 
 ### New Features

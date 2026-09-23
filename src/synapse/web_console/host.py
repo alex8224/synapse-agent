@@ -111,14 +111,21 @@ def resolve_project(
         catalog_path = settings.resolved_catalog_path()
     catalog = ProjectCatalog(catalog_path)
     try:
-        info = catalog.get_project(workspace=config.workspace)
-        if info is None and config.auto_register:
-            is_install_dir = (
-                (config.workspace / "synapse-gui.exe").exists()
-                or (config.workspace / "uninstall.exe").exists()
-                or (config.workspace / "synapse.exe").exists()
-                or config.workspace.name.lower() in ("binaries", "synapse")
+        is_install_dir = (
+            (config.workspace / "synapse-gui.exe").exists()
+            or (config.workspace / "uninstall.exe").exists()
+            or (config.workspace / "synapse.exe").exists()
+            or (
+                config.workspace.name.lower() == "binaries"
+                and (config.workspace.parent / "uninstall.exe").exists()
             )
+        )
+        # An older install may already have registered binaries as a project.
+        # Do not let that catalog hit bypass the installed-app fallback.
+        info = None if is_install_dir and config.auto_register else catalog.get_project(
+            workspace=config.workspace
+        )
+        if info is None and config.auto_register:
             if is_install_dir:
                 recent_projects = catalog.list_projects()
                 for rp in recent_projects:

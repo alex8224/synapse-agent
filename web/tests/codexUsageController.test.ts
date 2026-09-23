@@ -944,7 +944,7 @@ test('a credits read in flight raises nothing, and a consume refreshes with fres
   assert.match(h.last().notice ?? '', /已兑换 1 次重置额度/);
 });
 
-test('a refresh whose usage await lands in another context reads nothing for it', async () => {
+test('a refresh started in another context never paints stale usage or credits', async () => {
   const h = build();
   h.controller.start();
   await openWithUsage(h);
@@ -955,18 +955,18 @@ test('a refresh whose usage await lands in another context reads nothing for it'
   await flush();
   assert.equal(h.transport.usageCalls.length, 2);
 
-  // The model moves while the refresh's usage read is still in flight: the retired
-  // chain must not spend a credits request on the context it never started in.
+  // Both reads start in the original context. A model switch retires their
+  // replies; neither response can paint the new context.
   const newUsage = deferred<CodexUsageView>();
   h.transport.usageReplies.push(newUsage);
   h.context.set({ model: 'model-b' });
   await flush();
   assert.equal(h.transport.usageCalls.length, 3, 'the new context gates and reads for itself');
-  assert.equal(h.transport.creditsCalls.length, 0);
+  assert.equal(h.transport.creditsCalls.length, 1);
 
   staleUsage.resolve(USAGE('gpt-5-codex', 1));
   await flush();
-  assert.equal(h.transport.creditsCalls.length, 0, 'the retired chain reads nothing');
+  assert.equal(h.transport.creditsCalls.length, 1, 'the retired chain starts no further reads');
   assert.equal(h.last().usage, null);
   newUsage.resolve(USAGE('model-b', 2));
   await flush();

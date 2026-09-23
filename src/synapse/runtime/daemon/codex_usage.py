@@ -156,11 +156,11 @@ class CodexUsageAdapter:
     """Real :class:`CodexUsageProvider` implementation for the daemon."""
 
     def __init__(self) -> None:
-        # One lock serializes every client call (reads and the consume write):
-        # the endpoints are account-scoped, so interleaving them could serve a
-        # snapshot that predates a redemption.  All ledger state is mutated
-        # under this lock, on the worker thread, never on the event loop.
+        # Writes remain exclusive, while independent GETs may run together.
+        # A writer waits for in-flight reads before checking/redeeming a credit.
         self._lock = threading.RLock()
+        self._reads_done = threading.Condition(self._lock)
+        self._active_reads = 0
         self._client: CodexUsageClient | None = None
         #: command_id -> (fingerprint, settled result); bounded replay ledger.
         self._commands: OrderedDict[str, tuple[tuple[str, ...], CodexConsumeResult]] = OrderedDict()
@@ -217,11 +217,25 @@ class CodexUsageAdapter:
 
     def _fetch_usage(self, force: bool) -> CodexUsageSnapshot:
         with self._lock:
-            return self._codex_client().fetch(force=force)
+            client = self._codex_client()
+            self._active_reads += 1
+        try:
+            return client.fetch(force=force)
+        finally:
+            with self._lock:
+                self._active_reads -= 1
+                self._reads_done.notify_all()
 
     def _fetch_credits(self, force: bool) -> ResetCredits:
         with self._lock:
-            return self._codex_client().fetch_reset_credits(force=force)
+            client = self._codex_client()
+            self._active_reads += 1
+        try:
+            return client.fetch_reset_credits(force=force)
+        finally:
+            with self._lock:
+                self._active_reads -= 1
+                self._reads_done.notify_all()
 
     # -- consume / idempotency ---------------------------------------------
 
@@ -229,6 +243,8 @@ class CodexUsageAdapter:
         self, command: ConsumeCodexResetCommand, model: str
     ) -> CodexConsumeResult:
         with self._lock:
+            while self._active_reads:
+                self._reads_done.wait()
             client = self._codex_client()
             account = client.account_key() or "unknown-account"
             fingerprint = (

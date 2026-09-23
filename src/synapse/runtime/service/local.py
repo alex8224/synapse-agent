@@ -293,6 +293,27 @@ _MIN_EVENT_BYTES = MIN_EVENT_BYTES
 _MAX_EVENT_BYTES = MAX_EVENT_BYTES
 
 _LOGGER = logging.getLogger(__name__)
+_CODEX_LOGGER = logging.getLogger("synapse.runtime.codex_usage")
+
+
+def _log_codex_failure(exc: Exception, operation: str) -> None:
+    """Log a bounded failure category without upstream text, URLs or credentials."""
+    import httpx
+
+    causes: list[str] = []
+    status: int | None = None
+    current: BaseException | None = exc
+    while current is not None and len(causes) < 4:
+        causes.append(type(current).__name__)
+        if isinstance(current, httpx.HTTPStatusError):
+            status = current.response.status_code
+        current = current.__cause__
+    _CODEX_LOGGER.error(
+        "codex %s failed: exceptions=%s status=%s",
+        operation,
+        ">".join(causes),
+        status,
+    )
 
 #: A drain gap larger than this at overflow time means the consumer loop was
 #: stalled rather than merely slow; its thread stack is then captured as
@@ -1175,8 +1196,12 @@ class LocalAgentRuntimeService:
         except CodexUsageConflictError as exc:
             raise ConflictError("reset request conflicts with an earlier one") from exc
         except Exception as exc:  # noqa: BLE001 - upstream failures are redacted here
+            # Do not log exception text or traceback: HTTP errors can include
+            # account identifiers, URLs or upstream response bodies.
+            _log_codex_failure(exc, expected.__name__)
             raise RuntimeServiceError("codex usage request failed") from exc
         if type(result) is not expected or getattr(result, "session", None) != ref:
+            _log_codex_failure(TypeError("invalid provider result"), expected.__name__)
             raise RuntimeServiceError("codex usage request failed")
         return result
 

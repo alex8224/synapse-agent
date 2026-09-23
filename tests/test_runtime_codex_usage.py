@@ -445,6 +445,51 @@ def test_provider_failures_are_redacted_and_conflicts_are_mapped(monkeypatch) ->
         run(wrong_type.get_codex_reset_credits(GetCodexResetCreditsQuery(REF)))
 
 
+def test_codex_failure_logs_category_not_exception_text(monkeypatch) -> None:
+    from synapse.runtime.service import local as local_module
+
+    messages: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        local_module._CODEX_LOGGER, "error", lambda fmt, *args: messages.append((fmt, args))
+    )
+    _profile_auth(monkeypatch, "openai_oauth")
+    manager = _manager()
+    _open(manager)
+    secret = "Bearer SENTINEL-TOKEN-abc123"
+    service = _service(manager, FakeProvider(usage=RuntimeError(secret)))
+    with pytest.raises(RuntimeServiceError):
+        run(service.get_codex_usage(GetCodexUsageQuery(REF)))
+    assert messages == [
+        ("codex %s failed: exceptions=%s status=%s", ("CodexUsageView", "RuntimeError", None))
+    ]
+
+
+def test_daemon_codex_error_log_is_bounded_and_redacted(tmp_path) -> None:
+    import logging
+
+    import httpx
+
+    from synapse.runtime.daemon.entry import _configure_error_log
+    from synapse.runtime.service.local import _log_codex_failure
+
+    handler = _configure_error_log(tmp_path)
+    try:
+        response = httpx.Response(503, request=httpx.Request("GET", "https://example.test/secret"))
+        failure = httpx.HTTPStatusError("Bearer SENTINEL-TOKEN", request=response.request,
+                                         response=response)
+        _log_codex_failure(failure, "CodexResetCreditsView")
+        handler.flush()
+        line = (tmp_path / "errors.log").read_text(encoding="utf-8")
+        assert "CodexResetCreditsView" in line
+        assert "HTTPStatusError" in line
+        assert "503" in line
+        assert "SENTINEL-TOKEN" not in line
+        assert "example.test" not in line
+    finally:
+        logging.getLogger("synapse.runtime.codex_usage").removeHandler(handler)
+        handler.close()
+
+
 # ---------------------------------------------------------------------------
 # runtime.config.get gate
 # ---------------------------------------------------------------------------
@@ -647,6 +692,32 @@ def test_adapter_projects_usage_without_the_grant_expiry() -> None:
     assert view.secondary.window_minutes == 527_040
     assert view.available_reset_count == 3
     assert 1_700_010_000.0 not in dataclasses.astuple(view)
+
+
+def test_adapter_independent_reads_can_overlap() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    client = FakeClient()
+
+    def slow_usage(*, force: bool = False) -> CodexUsageSnapshot:
+        started.set()
+        assert release.wait(3)
+        return client.snapshot
+
+    client.fetch = slow_usage  # type: ignore[method-assign]
+    adapter = _adapter(client)
+
+    async def read_both() -> None:
+        usage = asyncio.create_task(adapter.get_usage(REF, MODEL, True))
+        assert await asyncio.to_thread(started.wait, 3)
+        try:
+            credits = await asyncio.wait_for(adapter.get_reset_credits(REF, MODEL, True), 2)
+            assert credits.available_count == 0
+        finally:
+            release.set()
+        await usage
+
+    run(read_both())
 
 
 def test_adapter_drops_a_credit_row_the_console_would_reject() -> None:

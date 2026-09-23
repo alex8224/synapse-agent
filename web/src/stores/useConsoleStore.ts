@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { readLastProjectId, saveLastProjectId } from './lastProject.ts';
 import { SynapseRuntimeClient } from '../client/SynapseRuntimeClient.ts';
 import type { GitStatusView } from '../runtime-client/git.ts';
 import { describeOpenExternalFailure } from '../runtime-client/externalApps.ts';
@@ -473,7 +474,20 @@ async function connectAuthenticatedRuntime(
   // once per pairing and re-read on demand from the sidebar.  The host's
   // `GET /api/projects` survives only as a deprecated compatibility route and is
   // never a business entry point (bootstrap is host identity/pairing only).
-  void store.getState().loadProjects();
+  const projectsPromise = store.getState().loadProjects();
+  if (!readLastProjectId()) {
+    void projectsPromise;
+  } else {
+    await projectsPromise;
+  }
+  if (epoch !== authEpoch || store.getState().client !== client) return;
+  const lastProjectId = readLastProjectId();
+  if (lastProjectId && lastProjectId !== project.project_id
+      && store.getState().projects.some((item) => item.project_id === lastProjectId)) {
+    await store.getState().switchProject(lastProjectId);
+    if (store.getState().activeProjectId === lastProjectId) return;
+  }
+  if (store.getState().activeProjectId !== project.project_id) return;
   await store.getState().fetchSessions();
   if (epoch !== authEpoch || store.getState().client !== client) return;
   const first = store.getState().sessions[0];
@@ -2341,6 +2355,7 @@ async function activateProject(projectId: string): Promise<boolean> {
   const store = useConsoleStore;
   if (!requireRuntimeClient()) return false;
   if (projectId === store.getState().activeProjectId) return true;
+  const epoch = authEpoch;
   // The composer belongs to the project being left; a cross-project switch must
   // not carry (or keep uploading) its images into the new project.
   store.getState().cancelAttachments();
@@ -2414,7 +2429,9 @@ async function activateProject(projectId: string): Promise<boolean> {
     activeSubscriptionId: null,
   });
   await store.getState().fetchSessions();
-  return store.getState().activeProjectId === projectId;
+  const active = store.getState().activeProjectId === projectId;
+  if (active && epoch === authEpoch) saveLastProjectId(projectId);
+  return active;
 }
 
 export const useConsoleStore = create<ConsoleStore>((set, get) => ({
