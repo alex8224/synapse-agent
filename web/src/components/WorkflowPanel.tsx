@@ -125,21 +125,21 @@ function CallStepItem({ call, index, isLast }: { call: WorkflowCallView; index: 
       </div>
 
       {/* Card body */}
-      <div className="min-w-0 flex-1 rounded border border-line/60 bg-surface/50 p-2 text-xs transition-colors hover:border-line">
+      <div className="min-w-0 flex-1 rounded-control border border-line/60 bg-surface/50 p-2 text-xs transition-colors hover:border-line">
         <div className="flex flex-wrap items-center justify-between gap-1.5">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="font-mono text-[10px] text-gray-400">#{index + 1}</span>
             <span className="truncate font-mono font-medium text-gray-800 dark:text-gray-200">
               {call.call_key}
             </span>
-            <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-gray-600 dark:text-gray-300">
+            <span className="rounded-control bg-surface-hover px-1.5 py-0.5 text-[10px] text-gray-600 dark:text-gray-300">
               {workflowRoleLabel(call.role)}
             </span>
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5 font-numeric text-[11px] text-gray-500">
             {call.attempts > 1 && (
-              <span className="rounded bg-amber-50 px-1 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+              <span className="rounded-control bg-amber-50 px-1 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
                 重试 {call.attempts} 次
               </span>
             )}
@@ -157,7 +157,7 @@ function CallStepItem({ call, index, isLast }: { call: WorkflowCallView; index: 
         </div>
 
         {hasError && (expanded || call.status === 'failed') && (
-          <div className="mt-1.5 rounded border border-red-200/80 bg-red-50/70 p-1.5 font-mono text-[11px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+          <div className="mt-1.5 rounded-control border border-red-200/80 bg-red-50/70 p-1.5 font-mono text-[11px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
             {call.error}
           </div>
         )}
@@ -200,7 +200,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
           <button
             type="button"
             onClick={() => void cancel(run.run_id)}
-            className="cursor-pointer rounded border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
+            className="cursor-pointer rounded-control border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 active:bg-red-200 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
           >
             取消工作流
           </button>
@@ -225,19 +225,19 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
 
       {/* Metrics Micro-Cards */}
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded border border-line/60 bg-surface-hover/30 p-2 text-center">
+        <div className="rounded-control border border-line/60 bg-surface-hover/30 p-2 text-center">
           <div className="text-[10px] text-gray-500">调用步骤</div>
           <div className="font-numeric text-xs font-semibold text-gray-800 dark:text-gray-200">
             {progress.completed}/{progress.total}
           </div>
         </div>
-        <div className="rounded border border-line/60 bg-surface-hover/30 p-2 text-center">
+        <div className="rounded-control border border-line/60 bg-surface-hover/30 p-2 text-center">
           <div className="text-[10px] text-gray-500">总用量</div>
           <div className="font-numeric text-xs font-semibold text-gray-800 dark:text-gray-200">
             {formatWorkflowTokens(totalTokens)}
           </div>
         </div>
-        <div className="rounded border border-line/60 bg-surface-hover/30 p-2 text-center">
+        <div className="rounded-control border border-line/60 bg-surface-hover/30 p-2 text-center">
           <div className="text-[10px] text-gray-500">输入 / 输出</div>
           <div className="font-numeric text-[11px] text-gray-600 dark:text-gray-300">
             {formatWorkflowTokens(run.input_tokens)} / {formatWorkflowTokens(run.output_tokens)}
@@ -247,7 +247,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
 
       {/* Run error alert */}
       {run.error !== null && (
-        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+        <div className="rounded-control border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           <div className="flex items-center gap-1.5 font-medium">
             <DismissCircle16Filled aria-hidden="true" className="h-3.5 w-3.5" />
             运行失败
@@ -258,7 +258,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
 
       {/* Resume hint / blockers alert */}
       {hint !== null && run.error === null && (
-        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+        <div className="rounded-control border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
           <div className="flex items-center gap-1.5 font-medium">
             <Warning16Filled aria-hidden="true" className="h-3.5 w-3.5 text-amber-600" />
             状态提示
@@ -274,7 +274,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
           <span className="font-mono text-[10px] text-gray-400">{run.calls.length} 步</span>
         </div>
         {run.calls.length === 0 ? (
-          <div className="rounded border border-dashed border-line p-3 text-center text-xs text-gray-400">
+          <div className="rounded-control border border-dashed border-line p-3 text-center text-xs text-gray-400">
             暂未派发任何子调用
           </div>
         ) : (
@@ -293,7 +293,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
 
       {/* Outcome / Result preview */}
       {run.result !== null && (
-        <div className="space-y-1 rounded border border-line/60 bg-surface/40 p-2">
+        <div className="space-y-1 rounded-control border border-line/60 bg-surface/40 p-2">
           <div className="flex items-center justify-between">
             <button
               type="button"
@@ -310,7 +310,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
             <button
               type="button"
               onClick={handleCopyResult}
-              className="flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-500 transition-colors hover:bg-surface-hover hover:text-gray-800"
+              className="flex cursor-pointer items-center gap-1 rounded-control px-1.5 py-0.5 text-[11px] text-gray-500 transition-colors hover:bg-surface-hover hover:text-gray-800 active:bg-surface-pressed"
             >
               {copied ? (
                 <>
@@ -326,7 +326,7 @@ function RunDetailView({ run }: { run: WorkflowRunView }): React.ReactElement {
             </button>
           </div>
           {showResult && (
-            <pre className="fluent-scrollbar max-h-36 overflow-y-auto whitespace-pre-wrap rounded bg-surface-hover/60 p-2 font-mono text-[11px] text-gray-800 dark:text-gray-200">
+            <pre className="fluent-scrollbar max-h-36 overflow-y-auto whitespace-pre-wrap rounded-control bg-surface-hover/60 p-2 font-mono text-[11px] text-gray-800 dark:text-gray-200">
               {typeof run.result === 'string'
                 ? run.result
                 : JSON.stringify(run.result, null, 2)}
@@ -392,7 +392,7 @@ export const WorkflowPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) =
             }}
             disabled={loading}
             title="刷新"
-            className="flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 disabled:cursor-default disabled:text-gray-400"
+            className="flex cursor-pointer items-center gap-1 rounded-control px-1.5 py-0.5 text-[11px] text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed disabled:cursor-default disabled:text-gray-400"
           >
             <ArrowSync16Regular
               aria-hidden="true"
@@ -414,7 +414,7 @@ export const WorkflowPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) =
       </div>
 
       {error !== null && (
-        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-600 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+        <div className="rounded-control border border-red-200 bg-red-50 p-2 text-xs text-red-600 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
           {error}
         </div>
       )}
@@ -445,7 +445,7 @@ export const WorkflowPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) =
                     <button
                       type="button"
                       onClick={() => void select(run.run_id)}
-                      className="group flex w-full cursor-pointer items-center justify-between rounded-card border border-line/60 bg-surface/50 p-2 text-left transition-colors hover:border-accent/40 hover:bg-surface-hover"
+                      className="group flex w-full cursor-pointer items-center justify-between rounded-card border border-line/60 bg-surface/50 p-2 text-left transition-colors hover:border-accent/40 hover:bg-surface-hover active:bg-surface-pressed"
                     >
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center gap-1.5">
