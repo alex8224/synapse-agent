@@ -11,7 +11,6 @@ import {
   Play16Regular,
   Pause16Regular,
   Dismiss16Regular,
-  Edit16Regular,
   Checkmark16Regular,
 } from '@fluentui/react-icons';
 import React, { useState } from 'react';
@@ -78,7 +77,7 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
 
       {/* Goal Hero Card */}
       {goal && goal.status !== 'cleared' ? (
-        <div className="rounded-card border border-line bg-surface p-4 shadow-card space-y-3">
+        <div className="rounded-card border border-line/60 bg-surface/60 p-4 shadow-card space-y-3">
           <div className="flex items-start justify-between gap-2">
             <div>
               <span className="text-[10px] font-mono uppercase tracking-wider text-gray-400">
@@ -91,10 +90,10 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
             <span
               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                 goal.status === 'active'
-                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400'
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
                   : goal.status === 'paused'
-                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400'
-                  : 'bg-gray-100 text-gray-600 dark:bg-gray-800'
+                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+                  : 'bg-surface-sunken text-gray-600 border border-line/60'
               }`}
             >
               {goal.status}
@@ -110,9 +109,9 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
                   {tokenUsed.toLocaleString()} / {goal.token_budget?.toLocaleString()} ({progressPct}%)
                 </span>
               </div>
-              <div className="mt-1 h-2 w-full rounded-full bg-sunken overflow-hidden">
+              <div className="mt-1.5 h-1.5 w-full rounded-full bg-surface-sunken overflow-hidden border border-line/40">
                 <div
-                  className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                  className="h-full rounded-full bg-accent transition-all duration-300"
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
@@ -144,33 +143,33 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
               type="button"
               disabled={goalBusy}
               onClick={() => void clearGoal()}
-              className="ui-button ui-compact text-red-600 hover:bg-red-50 dark:hover:bg-red-950 text-xs ml-auto"
+              className="ui-button ui-compact text-red-600 hover:bg-red-500/10 hover:text-red-700 text-xs ml-auto"
             >
               <Dismiss16Regular /> 清除目标
             </button>
           </div>
         </div>
       ) : isEditing ? (
-        <div className="rounded-card border border-line bg-surface p-4 shadow-card space-y-3">
+        <div className="rounded-card border border-line/60 bg-surface/60 p-4 shadow-card space-y-3">
           <h4 className="text-sm font-semibold text-gray-900">设定新的长程任务目标</h4>
           <div>
-            <label className="text-[11px] text-gray-500">具体目标描述 (Objective)</label>
+            <label className="text-[11px] text-gray-400 font-medium">具体目标描述 (Objective)</label>
             <textarea
               value={objectiveInput}
               onChange={(e) => setObjectiveInput(e.target.value)}
               placeholder="例如：重构右侧栏为可扩展架构并接入所有 Tab..."
-              className="mt-1 w-full rounded-control border border-line bg-sunken/40 p-2 text-xs outline-none focus:border-accent"
+              className="ui-field mt-1 w-full p-2 text-xs text-gray-900 placeholder:text-gray-400"
               rows={3}
             />
           </div>
           <div>
-            <label className="text-[11px] text-gray-500">Token 消耗预算上限 (可选)</label>
+            <label className="text-[11px] text-gray-400 font-medium">Token 消耗预算上限 (可选)</label>
             <input
               type="number"
               value={budgetInput}
               onChange={(e) => setBudgetInput(e.target.value)}
               placeholder="例如：50000"
-              className="mt-1 w-full rounded-control border border-line bg-sunken/40 p-1.5 text-xs outline-none focus:border-accent"
+              className="ui-field ui-compact mt-1 w-full text-xs text-gray-900 placeholder:text-gray-400"
             />
           </div>
           <div className="flex justify-end gap-2 pt-2">
@@ -192,9 +191,9 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center rounded-card border border-dashed border-line p-8 text-center text-gray-400">
-          <Target16Regular className="text-3xl text-gray-300 dark:text-gray-600 mb-2" />
-          <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+        <div className="flex flex-1 flex-col items-center justify-center rounded-card border border-line/60 bg-surface/40 p-8 text-center text-gray-500 shadow-card">
+          <Target16Regular className="text-3xl text-gray-400 mb-2" />
+          <p className="text-xs font-semibold text-gray-800">
             当前会话暂未设定长程目标
           </p>
           <p className="mt-1 text-[11px] text-gray-500 max-w-[220px]">

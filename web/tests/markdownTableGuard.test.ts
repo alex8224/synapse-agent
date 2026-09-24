@@ -43,7 +43,7 @@ test('the header keeps the cell size and only differs by weight', () => {
   // code blocks use.
   assert.ok(
     table.includes(
-      'border border-line bg-sunken px-3 py-1.5 text-left font-semibold text-gray-800',
+      'border border-line bg-transparent px-3 py-1.5 text-left font-semibold text-gray-900',
     ),
     'the header must share the cell padding and size, marked only by font-semibold',
   );
@@ -145,13 +145,11 @@ test('inline code in a cell is outlined against the stripes', () => {
   assert.ok(rule.test(stylesheet), 'a code span must keep its own outline in a striped cell');
 });
 
-test('the header boundary is one step stronger than the grid', () => {
-  // Head and body have to stay distinguishable even with striped rows below, and
-  // the header fill alone (#F5F5F5 on a #FFFFFF card) is not enough in the light
-  // theme.  `--gray-300` is Fluent's `colorNeutralStroke1`, one step above the
-  // `colorNeutralStroke2` grid the cells keep.
-  const rule = /\.markdown-body thead th \{[^}]*border-bottom-width:\s*2px;[^}]*border-bottom-color:\s*rgb\(var\(--gray-300\)\);/;
-  assert.ok(rule.test(stylesheet), 'the header needs a stronger bottom rule than the grid');
+test('the header boundary uses a flat 1px subtle divider', () => {
+  // Fluent 2 flat data grid: header is flat and transparent with a refined 1px
+  // divider in --line, distinguishing from rows purely by font-semibold and color.
+  const rule = /\.markdown-body thead th \{[^}]*border-bottom-width:\s*1px;[^}]*border-bottom-color:\s*rgb\(var\(--line\)\);/;
+  assert.ok(rule.test(stylesheet), 'the header must use a 1px border matching the line role');
   assert.ok(
     stylesheet.indexOf('.markdown-body thead th') > utilitiesLayerEnd(),
     'the header rule must outrank the cell utilities',

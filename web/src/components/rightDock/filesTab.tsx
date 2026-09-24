@@ -192,25 +192,25 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
   return (
     <div className="flex h-full flex-col overflow-hidden text-xs">
       {/* Search & ZCode-style "Only Changed" Filter */}
-      <div className="flex items-center gap-1.5 border-b border-line/60 bg-sunken/40 px-2.5 py-1.5">
-        <div className="flex flex-1 items-center gap-1 rounded-control border border-line bg-surface px-2 py-0.5">
-          <Search16Regular className="text-gray-400" />
+      <div className="flex items-center gap-1.5 border-b border-line/80 px-2.5 py-1.5 shrink-0">
+        <div className="relative flex flex-1 items-center">
+          <Search16Regular className="pointer-events-none absolute left-2 text-gray-400 text-xs" />
           <input
             type="text"
             value={fileSearchQuery}
             onChange={(e) => setFileSearchQuery(e.target.value)}
             placeholder="过滤文件..."
-            className="w-full bg-transparent font-sans text-xs outline-none text-gray-900 placeholder:text-gray-400"
+            className="ui-field ui-compact w-full pl-7 pr-2 font-sans text-xs text-gray-900 placeholder:text-gray-400"
           />
         </div>
         <button
           type="button"
           onClick={toggleOnlyChangedFiles}
           title="仅显示本次任务或 Git 修改的文件 (ZCode 模式)"
-          className={`ui-button ui-compact text-[11px] font-medium border ${
+          className={`ui-button ui-compact text-[11px] transition-colors ${
             onlyChangedFiles
-              ? 'ui-primary border-transparent'
-              : 'border-line/60 bg-surface/80 text-gray-700 hover:bg-surface'
+              ? 'ui-primary'
+              : 'border border-line bg-surface text-gray-900 hover:bg-surface-hover'
           }`}
         >
           只看变更
@@ -219,28 +219,28 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
           type="button"
           onClick={() => void loadDirectory(currentPath)}
           title="刷新目录"
-          className="ui-icon-button ui-compact text-gray-500 hover:text-gray-800"
+          className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900"
         >
           <ArrowClockwise16Regular className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
       {/* Breadcrumb path navigation */}
-      <div className="flex items-center gap-1 border-b border-line/40 bg-surface px-3 py-1 font-mono text-[11px] text-gray-500">
+      <div className="flex items-center gap-1 border-b border-line/60 bg-surface/40 px-3 py-1 font-sans text-xs text-gray-400 shrink-0 overflow-x-auto no-scrollbar">
         <button
           type="button"
           onClick={() => void loadDirectory('')}
-          className="hover:text-gray-900 hover:underline"
+          className="rounded px-1.5 py-0.5 text-gray-800 hover:text-gray-900 hover:bg-surface-hover font-medium transition-colors"
         >
           根目录
         </button>
         {currentPath.split('/').filter(Boolean).map((seg, idx, arr) => (
           <React.Fragment key={idx}>
-            <span>/</span>
+            <span className="text-gray-400 select-none">/</span>
             <button
               type="button"
               onClick={() => void loadDirectory(arr.slice(0, idx + 1).join('/'))}
-              className="hover:text-gray-900 hover:underline truncate max-w-[100px]"
+              className="rounded px-1.5 py-0.5 text-gray-800 hover:text-gray-900 hover:bg-surface-hover font-medium transition-colors truncate max-w-[120px]"
             >
               {seg}
             </button>
@@ -249,7 +249,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
       </div>
 
       {/* Directory listing */}
-      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-1.5 font-mono text-[11.5px]">
+      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-2 text-xs">
         {error && (
           <div className="m-2 rounded bg-red-50 p-2 font-sans text-xs text-red-600">
             {error}
@@ -260,10 +260,10 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
           <button
             type="button"
             onClick={handleGoUp}
-            className="flex h-7 w-full cursor-pointer items-center gap-2 rounded px-2 text-left text-gray-500 hover:bg-surface-hover hover:text-gray-800 transition-colors"
+            className="ui-nav-row flex h-8 w-full cursor-pointer items-center gap-2 px-2 text-left text-gray-500 hover:text-gray-900 transition-colors mb-1"
           >
             <Folder16Regular className="text-amber-500" />
-            <span>.. (返回上级)</span>
+            <span className="font-sans text-xs">.. (返回上级)</span>
           </button>
         )}
 
@@ -276,7 +276,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
             <div
               key={entry.path}
               onClick={() => handleEntryClick(entry)}
-              className="group flex h-7 cursor-pointer items-center justify-between rounded px-2 hover:bg-surface-hover text-gray-800 transition-colors"
+              className="ui-nav-row group flex h-8 cursor-pointer items-center justify-between px-2 text-gray-800 hover:text-gray-900 transition-colors"
             >
               <div className="flex min-w-0 flex-1 items-center gap-2 truncate">
                 {isDir ? (
@@ -284,7 +284,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                 ) : (
                   <Document16Regular className="shrink-0 text-gray-400" />
                 )}
-                <span className="truncate">{name}</span>
+                <span className="truncate font-sans text-xs">{name}</span>
                 {isChanged && !isDir && (
                   <span
                     className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
@@ -299,7 +299,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                   type="button"
                   onClick={(e) => handleQuote(e, entry.path)}
                   title="引用此路径到输入框 (@path)"
-                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-blue-600 hover:bg-surface transition-colors"
+                  className="ui-icon-button ui-compact text-gray-400 hover:text-blue-600 hover:bg-surface-hover transition-colors"
                 >
                   <Mention16Regular className="text-xs" />
                 </button>
@@ -307,7 +307,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                   type="button"
                   onClick={(e) => handleOpenDefault(e, entry.path)}
                   title={isDir ? '用系统默认方式打开目录' : '用系统默认程序打开文件'}
-                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-gray-800 hover:bg-surface transition-colors"
+                  className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900 hover:bg-surface-hover transition-colors"
                 >
                   <Open16Regular className="text-xs" />
                 </button>
@@ -315,7 +315,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                   type="button"
                   onClick={(e) => handleReveal(e, entry.path)}
                   title="在系统文件管理器中定位"
-                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-amber-600 hover:bg-surface transition-colors"
+                  className="ui-icon-button ui-compact text-gray-400 hover:text-amber-600 hover:bg-surface-hover transition-colors"
                 >
                   <FolderOpen16Regular className="text-xs" />
                 </button>
@@ -323,7 +323,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                   type="button"
                   onClick={(e) => handleCopyPath(e, entry.path)}
                   title="复制文件相对路径"
-                  className="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-gray-800 hover:bg-surface transition-colors"
+                  className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900 hover:bg-surface-hover transition-colors"
                 >
                   {copiedPath === entry.path ? (
                     <Checkmark16Regular className="text-xs text-emerald-600" />
@@ -337,7 +337,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
         })}
 
         {!loading && filteredEntries.length === 0 && (
-          <div className="py-8 text-center font-sans text-xs text-gray-400">
+          <div className="py-12 text-center font-sans text-xs text-gray-400">
             {onlyChangedFiles ? '当前目录下无变更文件' : '此目录为空'}
           </div>
         )}

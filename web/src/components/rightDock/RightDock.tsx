@@ -125,10 +125,10 @@ export const RightDock: React.FC = () => {
           onDoubleClick={resetWidth}
           title="按住左右拖拽调节右侧栏宽度 (双击复位)"
           className={`group relative z-20 w-1.5 shrink-0 cursor-col-resize select-none transition-colors ${
-            isDragging ? 'bg-accent' : 'bg-transparent hover:bg-accent/40'
+            isDragging ? 'bg-accent/80' : 'bg-transparent hover:bg-accent/30'
           }`}
         >
-          <div className="absolute inset-y-0 left-0.5 w-[1px] bg-line group-hover:bg-accent/60" />
+          <div className="absolute inset-y-0 left-0.5 w-[1px] bg-line/80 group-hover:bg-accent/80 transition-colors" />
         </div>
       )}
 
@@ -137,15 +137,15 @@ export const RightDock: React.FC = () => {
         ref={dockRef}
         inert={!open}
         style={{ width: open ? `${width}px` : '0px' }}
-        className={`material-chrome relative flex h-full shrink-0 flex-col overflow-hidden select-none text-gray-900 shadow-card backdrop-blur-md ${
+        className={`material-chrome relative flex h-full shrink-0 flex-col overflow-hidden select-none text-gray-900 ${
           open ? 'border-l border-line' : 'border-l-0 pointer-events-none'
         } ${isDragging ? '' : 'transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)]'}`}
       >
         <div className="flex h-full w-full flex-col min-w-[320px] overflow-hidden">
         {/* Dock Header with Tabs */}
-        <div className="flex h-chrome items-center justify-between border-b border-line bg-surface/70 backdrop-blur-sm px-2 gap-1 overflow-hidden shrink-0">
+        <div className="flex h-chrome items-center justify-between border-b border-line px-2 gap-1 overflow-hidden shrink-0">
           {/* Tab buttons */}
-          <div className="flex items-center gap-0.5 rounded-control bg-sunken/70 p-0.5 min-w-0 overflow-x-auto fluent-scrollbar">
+          <div className="flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar py-1">
             {visibleTabs.map((tab) => {
               const isActive = tab.id === activeTab?.id;
               const Icon = tab.Icon;
@@ -159,26 +159,27 @@ export const RightDock: React.FC = () => {
                   onClick={() => setActiveTab(tab.id)}
                   title={tooltip}
                   aria-label={tab.label}
-                  className={`flex items-center gap-1.5 rounded-control py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  aria-selected={isActive}
+                  className={`flex h-7 items-center gap-1.5 rounded-control border text-xs transition-colors duration-150 whitespace-nowrap shrink-0 ${
                     showLabels ? 'px-2.5' : 'px-2'
                   } ${
                     isActive
-                      ? 'bg-surface text-gray-900 font-semibold shadow-xs border border-line/40'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-surface-hover/80'
+                      ? 'bg-surface text-gray-900 font-semibold shadow-xs border-line/60'
+                      : 'border-transparent text-gray-700 hover:text-gray-900 hover:bg-surface-hover'
                   }`}
                 >
-                  {Icon && <Icon className="shrink-0 text-sm" />}
+                  {Icon && <Icon className={`shrink-0 text-sm ${isActive ? 'text-accent' : 'text-gray-400'}`} />}
                   {showLabels && <span className="whitespace-nowrap">{tab.label}</span>}
                   {badgeValue !== null && badgeValue !== undefined && (
                     <span
-                      className={`rounded-full px-1.5 py-0.2 font-mono text-[9px] font-semibold ${
+                      className={`rounded-full px-1.5 py-0.5 font-mono text-[9.5px] font-bold leading-none text-on-accent shadow-xs ${
                         tab.badgeVariant === 'diff'
-                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                          ? 'bg-amber-600'
                           : tab.badgeVariant === 'goal'
-                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          ? 'bg-emerald-600'
                           : tab.badgeVariant === 'trace'
-                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
-                          : 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
+                          ? 'bg-purple-600'
+                          : 'bg-accent'
                       }`}
                     >
                       {badgeValue}
@@ -190,16 +191,16 @@ export const RightDock: React.FC = () => {
           </div>
 
           {/* Action buttons (HeaderExtra + Close) */}
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1 shrink-0 ml-1">
             {activeTab?.HeaderExtra && <activeTab.HeaderExtra context={dockContext} />}
             <button
               type="button"
               onClick={() => setOpen(false)}
               title="收起右侧栏 (Ctrl+J)"
               aria-label="收起右侧栏"
-              className="ui-icon-button ui-compact text-gray-400 hover:text-gray-700"
+              className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900 hover:bg-surface-hover"
             >
-              <Dismiss16Regular />
+              <Dismiss16Regular aria-hidden="true" />
             </button>
           </div>
         </div>

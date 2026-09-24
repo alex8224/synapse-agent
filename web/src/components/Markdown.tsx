@@ -196,7 +196,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ block, nodeKey: key }:
               {block.header.map((cell, cellIndex) => (
                 <th
                   key={`${key}.h${cellIndex}`}
-                  className="border border-line bg-sunken px-3 py-1.5 text-left font-semibold text-gray-800"
+                  className="border border-line bg-transparent px-3 py-1.5 text-left font-semibold text-gray-900"
                 >
                   {renderSpans(cell, `${key}.h${cellIndex}`)}
                 </th>

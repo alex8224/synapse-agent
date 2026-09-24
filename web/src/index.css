@@ -75,7 +75,11 @@
     padding: 4px 8px;
     transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
   }
-  .ui-field:focus { border-bottom-color: rgb(var(--accent)); }
+  .ui-field:focus, .ui-field:focus-visible {
+    outline: none;
+    border-color: rgb(var(--gray-400));
+    box-shadow: 0 0 0 1px rgb(var(--gray-400) / 0.3);
+  }
   .ui-field:disabled { color: rgb(var(--gray-400)); cursor: not-allowed; }
   .ui-section-label {
     font-family: var(--font-ui); font-size: var(--type-caption);
@@ -1088,9 +1092,13 @@ body {
     its own focus border.  `:where()` keeps the rule at zero specificity, so a
     component can still opt out (the sidebar tree does, to keep its edge clean).
   */
-  :where(button, a[href], input, select, textarea, [tabindex]):focus-visible {
+  :where(button, a[href], [tabindex]):focus-visible {
     outline: var(--focus-ring-width) solid rgb(var(--focus-ring));
     outline-offset: var(--focus-ring-offset);
+  }
+  :where(input, select, textarea):focus,
+  :where(input, select, textarea):focus-visible {
+    outline: none;
   }
   /*
     The composer card is the focus target, not the field inside it.
@@ -1142,6 +1150,16 @@ body {
 .markdown-body th,
 .markdown-body td {
   min-width: 8rem;
+  border-left: none;
+  border-right: none;
+}
+
+.markdown-body thead tr > th {
+  border-top: none;
+}
+
+.markdown-body tbody tr:last-child > td {
+  border-bottom: none;
 }
 
 /*
@@ -1177,8 +1195,9 @@ body {
 
 .markdown-body thead th {
   color: rgb(var(--gray-900));
-  border-bottom-width: 2px;
-  border-bottom-color: rgb(var(--gray-300));
+  background-color: transparent;
+  border-bottom-width: 1px;
+  border-bottom-color: rgb(var(--line));
 }
 
 .markdown-body td code {

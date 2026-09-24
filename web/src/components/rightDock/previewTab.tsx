@@ -50,25 +50,25 @@ export const PreviewContent: React.FC<{ context: RightDockContext }> = () => {
       {/* Mini browser address bar */}
       <form
         onSubmit={handleApplyUrl}
-        className="flex items-center gap-1.5 border-b border-line/60 bg-sunken/40 px-2.5 py-1.5"
+        className="flex items-center gap-1.5 border-b border-line/80 px-2.5 py-1.5 shrink-0"
       >
         <button
           type="button"
           onClick={handleRefresh}
           title="刷新页面"
-          className="ui-icon-button ui-compact text-gray-500 hover:text-gray-800"
+          className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900"
         >
           <ArrowClockwise16Regular />
         </button>
 
-        <div className="flex flex-1 items-center gap-1 rounded-control border border-line bg-surface px-2 py-0.5">
-          <Globe16Regular className="text-gray-400 shrink-0" />
+        <div className="relative flex flex-1 items-center">
+          <Globe16Regular className="pointer-events-none absolute left-2 text-gray-400 text-xs shrink-0" />
           <input
             type="text"
             value={inputUrl}
             onChange={(e) => setInputUrl(e.target.value)}
             placeholder="输入预览地址 (例如 http://localhost:5173)..."
-            className="w-full bg-transparent font-mono text-[11px] text-gray-900 outline-none"
+            className="ui-field ui-compact w-full pl-7 pr-2 font-mono text-[11px] text-gray-900 placeholder:text-gray-400"
           />
         </div>
 
@@ -76,14 +76,14 @@ export const PreviewContent: React.FC<{ context: RightDockContext }> = () => {
           type="button"
           onClick={handleOpenExternal}
           title="在系统独立浏览器中打开"
-          className="ui-icon-button ui-compact text-gray-500 hover:text-gray-800"
+          className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900"
         >
           <Open16Regular />
         </button>
       </form>
 
       {/* Quick port chips */}
-      <div className="flex items-center gap-1 border-b border-line/40 bg-surface px-3 py-1 font-mono text-[10.5px] text-gray-500 overflow-x-auto">
+      <div className="flex items-center gap-1 border-b border-line/60 bg-surface/30 px-3 py-1 font-mono text-[10.5px] text-gray-500 overflow-x-auto shrink-0 no-scrollbar">
         <span className="text-[10px] text-gray-400 font-sans">快捷端口:</span>
         {PRESET_URLS.map((preset) => (
           <button
@@ -93,8 +93,8 @@ export const PreviewContent: React.FC<{ context: RightDockContext }> = () => {
               setUrl(preset);
               setInputUrl(preset);
             }}
-            className={`rounded px-1.5 py-0.5 hover:bg-surface-hover ${
-              url === preset ? 'bg-blue-50 text-blue-600 font-semibold' : ''
+            className={`rounded-full px-2 py-0.5 border transition-colors ${
+              url === preset ? 'bg-accent/15 text-accent border-accent/30 font-semibold' : 'border-line/60 bg-surface/50 text-gray-600 hover:bg-surface-hover hover:text-gray-900'
             }`}
           >
             {preset.replace('http://localhost', '')}

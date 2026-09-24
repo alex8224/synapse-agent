@@ -1,6 +1,5 @@
 import {
-  FolderOpen20Regular, WeatherMoon20Regular, WeatherSunny20Regular,
-  WindowConsole20Regular,
+  WeatherMoon20Regular, WeatherSunny20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -36,13 +35,11 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
 }) => {
   const {
     runtimeDiagnostics,
-    loadRuntimeDiagnostics,
   } = useConsoleStore(
     // Only the fields these actions paint: a reasoning delta must not re-render
     // them.
     useShallow((state) => ({
       runtimeDiagnostics: state.runtimeDiagnostics,
-      loadRuntimeDiagnostics: state.loadRuntimeDiagnostics,
     })),
   );
 
@@ -71,27 +68,6 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   return (
     <div className="shrink-0" ref={rowRef}>
       <div className={orientation === 'row' ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'}>
-        <button
-          onClick={() => setOpenPanel((v) => (v === 'artifacts' ? null : 'artifacts'))}
-          title="工作区文件（只读，按块读取）"
-          aria-label="工作区文件"
-          aria-expanded={openPanel === 'artifacts'}
-          className={trigger}
-        >
-          <FolderOpen20Regular aria-hidden="true" />
-        </button>
-        <button
-          onClick={() => {
-            setOpenPanel((v) => (v === 'diagnostics' ? null : 'diagnostics'));
-            void loadRuntimeDiagnostics({ trigger: 'manual', force: true });
-          }}
-          title="运行时诊断（读取宿主只读端点）"
-          aria-label="运行时诊断"
-          aria-expanded={openPanel === 'diagnostics'}
-          className={trigger}
-        >
-          <WindowConsole20Regular aria-hidden="true" />
-        </button>
         {/* The icon is the theme the click switches *to*, so the button never reads
             as a status badge of the current one.  It lands next to the settings entry
             (`SideBar` paints that one), the console's other appearance preference. */}

@@ -126,12 +126,12 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
   onCopyText,
 }) => {
   return (
-    <div className="overflow-hidden rounded-control border border-line bg-surface shadow-xs transition-shadow hover:shadow-card">
+    <div className="overflow-hidden rounded-control border border-line/60 bg-surface/60 shadow-xs transition-all hover:bg-surface/80 hover:border-line/80 hover:shadow-card">
       {/* Turn Header Card */}
       <div
         onClick={() => onToggleTurn(turn.key)}
         className={`flex cursor-pointer items-center justify-between px-3 py-2 transition-colors select-none ${
-          isExpanded ? 'bg-sunken/60 border-b border-line/60' : 'hover:bg-surface-hover'
+          isExpanded ? 'bg-surface-hover/60 border-b border-line/60' : 'hover:bg-surface-hover/50'
         }`}
       >
         <div className="flex min-w-0 items-center gap-2">
@@ -591,9 +591,9 @@ export const TrajectoryContent: React.FC<{ context: RightDockContext }> = () => 
   const totalStepsCount = turnGroups.reduce((acc, t) => acc + t.steps.length, 0);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden text-xs bg-surface select-none font-sans">
+    <div className="flex h-full flex-col overflow-hidden text-xs select-none font-sans">
       {/* Top summary metric header */}
-      <div className="flex flex-col gap-2 border-b border-line bg-surface/80 p-2.5 shrink-0 backdrop-blur-sm">
+      <div className="flex flex-col gap-2 border-b border-line/80 p-2.5 shrink-0 bg-transparent">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-gray-800 font-mono">
@@ -624,7 +624,7 @@ export const TrajectoryContent: React.FC<{ context: RightDockContext }> = () => 
               onClick={expandedTurns.size > 0 ? collapseAllTurns : expandAllTurns}
               title={expandedTurns.size > 0 ? '全部折叠' : '全部展开'}
               aria-label={expandedTurns.size > 0 ? '全部折叠' : '全部展开'}
-              className="ui-icon-button ui-compact text-gray-500 hover:text-gray-900 border border-line/60 rounded-control transition-colors"
+              className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900 border border-line bg-surface hover:bg-surface-hover transition-colors"
             >
               {expandedTurns.size > 0 ? (
                 <ArrowCollapseAll16Regular aria-hidden="true" />
@@ -637,13 +637,13 @@ export const TrajectoryContent: React.FC<{ context: RightDockContext }> = () => 
 
         {/* Search bar */}
         <div className="relative">
-          <Search16Regular className="pointer-events-none absolute left-2.5 top-2 text-gray-400 text-xs" />
+          <Search16Regular className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="搜索轮次、调用轨迹、思考与工具..."
-            className="w-full rounded-control border border-line bg-surface py-1 pl-7 pr-2.5 text-xs text-gray-800 outline-none focus:border-accent transition-colors"
+            className="ui-field ui-compact w-full pl-7 pr-2 font-sans text-xs text-gray-900 placeholder:text-gray-400"
           />
         </div>
       </div>
