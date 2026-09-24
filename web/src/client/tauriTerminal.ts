@@ -8,6 +8,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isTauri } from './tauri.ts';
+import { TerminalCommandQueue } from './terminalCommandQueue.ts';
+
+/**
+ * One serial lane per PTY id for every native command. The view's
+ * `TerminalInputQueue` only orders keystrokes from a single component instance;
+ * an appearance/theme change rebuilds the view and a fresh input queue for the
+ * same PTY, so write, resize and close must be ordered here, across instances.
+ * Sharing the lane is what keeps a stale resize from landing after a newer one.
+ */
+const terminalCommands = new TerminalCommandQueue();
 
 export async function createTerminal(
   workspace?: string,
@@ -28,17 +38,17 @@ export async function createTerminal(
 
 export async function writeTerminal(id: number, data: string): Promise<void> {
   if (!isTauri()) return;
-  await invoke('tauri_terminal_write', { id, data });
+  await terminalCommands.run(id, () => invoke('tauri_terminal_write', { id, data }));
 }
 
 export async function resizeTerminal(id: number, cols: number, rows: number): Promise<void> {
   if (!isTauri()) return;
-  await invoke('tauri_terminal_resize', { id, cols, rows });
+  await terminalCommands.run(id, () => invoke('tauri_terminal_resize', { id, cols, rows }));
 }
 
 export async function closeTerminal(id: number): Promise<void> {
   if (!isTauri()) return;
-  await invoke('tauri_terminal_close', { id });
+  await terminalCommands.run(id, () => invoke('tauri_terminal_close', { id }));
 }
 
 export async function onTerminalData(

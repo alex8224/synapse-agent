@@ -73,6 +73,10 @@ store.setState({
   messages,
 });
 window.__rows = () => store.getState().messages.length;
+let submitted = 0;
+window.__submit = (type = 'user') => store.setState({messages: [...store.getState().messages, {
+  id: 'submitted-after-jump-' + (++submitted), type, content: '继续', timestamp: 'now',
+}]});
 window.__more = () => store.setState({historyHasMore: true});
 window.__indices = () => [...document.querySelectorAll('.console-gutter [data-index]')]
   .map((el) => Number(el.getAttribute('data-index')));
@@ -225,24 +229,40 @@ try {
     return offset >= reserved - 2 && offset <= reserved + 4;
   })()`);
 
+  // Worker parsing can change row heights after the first apparently settled
+  // landing. The same rail anchor must survive those late measurements.
+  for (let i = 0; i < 5; i += 1) {
+    await settle();
+    await check('the rail anchor survives late Markdown measurements', `(() => {
+      const el = ${targetRow};
+      const port = document.querySelector('.console-gutter');
+      const reserved = Number.parseFloat(getComputedStyle(port).scrollPaddingTop) || 0;
+      const offset = el.getBoundingClientRect().top - port.getBoundingClientRect().top;
+      return offset >= reserved - 2 && offset <= reserved + 4;
+    })()`);
+  }
+
   // --- a prepended page does not move what is on screen ----------------------
-  // Reaching the top is the real trigger: the scroll listener loads the page and
-  // the transcript has to hold the reader's place across the insert.
+  // First mount the top while paging is disabled. Capture the same MESSAGE
+  // before the load, not an index sampled after the synchronous prepend already
+  // happened (indices change, and async formatting may still be in flight).
+  await run(`(() => {
+    const port = document.querySelector('.console-gutter');
+    port.dispatchEvent(new WheelEvent('wheel', {deltaY: -1, bubbles: true}));
+    port.scrollTop = 100;
+  })()`);
+  await settle();
+  await settle();
   await run(`window.__more()`);
+  await settle();
   await run(`(() => {
     const port = document.querySelector('.console-gutter');
     port.dispatchEvent(new WheelEvent('wheel', {deltaY: -1, bubbles: true}));
     port.scrollTop = 0;
+    const first = document.querySelector('.console-gutter [data-index="0"]');
+    window.__probeTop = first.getBoundingClientRect().top;
   })()`);
   await settle();
-  const anchored = `(() => {
-    const rows = [...document.querySelectorAll('.console-gutter [data-index]')];
-    const el = rows[Math.floor(rows.length / 2)];
-    window.__probeId = el.getAttribute('data-index');
-    window.__probeTop = el.getBoundingClientRect().top;
-    return true;
-  })()`;
-  await run(anchored);
   // The load is triggered by reaching the top; if the scroll event did not fire
   // (already at 0), the button is the manual path and must behave the same.
   await run(`(() => {
@@ -257,11 +277,15 @@ try {
   }
   await check('the prepended page actually arrived',
     `window.__rows() === ${ROWS} + ${EARLIER}`);
-  await check('the prepend kept the rows on screen in place', `(() => {
-    const el = document.querySelector('.console-gutter [data-index="' + window.__probeId + '"]');
-    if (el === null) return false;
-    return Math.abs(el.getBoundingClientRect().top - window.__probeTop) <= 8;
-  })()`);
+  for (let i = 0; i < 5; i += 1) {
+    await settle();
+    await check('the prepend keeps the reading row in place through late parsing', `(() => {
+      const index = window.__indexOf('m1');
+      const el = document.querySelector('.console-gutter [data-index="' + index + '"]');
+      if (el === null) return false;
+      return Math.abs(el.getBoundingClientRect().top - window.__probeTop) <= 8;
+    })()`);
+  }
   await check('the view is still not at the bottom after the prepend', `(() => {
     const port = document.querySelector('.console-gutter');
     return port.scrollHeight - port.scrollTop - port.clientHeight > 40;
@@ -273,6 +297,27 @@ try {
   console.log(`INFO a ${ROWS}-row swap committed in ${Math.round(elapsed)} ms`);
   assert.ok(elapsed < 1500, `a ${ROWS}-row swap must not freeze the frame (took ${elapsed} ms)`);
   checks++;
+
+  // A new prompt/explicit follow must supersede a retained rail anchor; without
+  // clearing it, the next measurement would drag the reader back to old history.
+  await run(`document.querySelector('[data-turn-rail] button').click()`);
+  await settle();
+  await run(`window.__submit()`);
+  await settle();
+  await settle();
+  await check('a new prompt supersedes the rail jump and follows the newest row', `(() => {
+    const port = document.querySelector('.console-gutter');
+    return port.scrollHeight - port.scrollTop - port.clientHeight < 40;
+  })()`);
+  await run(`document.querySelector('[data-turn-rail] button').click()`);
+  await settle();
+  await run(`window.dispatchEvent(new Event('transcript:jump-bottom')); window.__submit('assistant')`);
+  await settle();
+  await settle();
+  await check('explicit follow supersedes the rail jump', `(() => {
+    const port = document.querySelector('.console-gutter');
+    return port.scrollHeight - port.scrollTop - port.clientHeight < 40;
+  })()`);
 
   console.log(`ALL ${checks} CHECKS PASSED`);
 } finally {

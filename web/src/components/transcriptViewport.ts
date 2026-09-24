@@ -33,16 +33,14 @@ export const ESTIMATED_ROW_PX = 140;
 export const OVERSCAN_ROWS = 8;
 
 /**
- * The `scrollTop` that leaves `distanceFromBottom` pixels of content below the
- * viewport.
+ * The `scrollTop` that holds a message's content offset at its viewport offset.
  *
- * Prepending an earlier history page grows the content *above* the viewport, so
- * the distance from the bottom is what has to be preserved: it is the only
- * quantity the prepend does not change, which is what makes this exact rather
- * than an estimate of the inserted height.
+ * Prepending changes the message's content offset; asynchronous parsing can
+ * also resize rows below it. Anchoring the message, not the document bottom,
+ * keeps those unrelated measurements from shifting what the reader sees.
  */
-export function anchoredScrollTop(scrollHeight: number, distanceFromBottom: number): number {
-  return Math.max(0, scrollHeight - distanceFromBottom);
+export function anchoredScrollTop(contentOffset: number, viewportOffset: number): number {
+  return Math.max(0, contentOffset - viewportOffset);
 }
 
 /** What `Transcript` hands to `TurnRail`. */

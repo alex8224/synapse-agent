@@ -82,3 +82,24 @@ test('a transcript row that did not grow is not re-rendered', () => {
     'Markdown must not re-render text that did not change',
   );
 });
+
+test('Markdown parses off-thread and reuses unchanged block renderers', () => {
+  const markdown = read('src/components/Markdown.tsx');
+  assert.ok(markdown.includes('new Worker('));
+  assert.ok(markdown.includes('MarkdownParseQueue'));
+  assert.equal(/\bparseMarkdown\s*\(/.test(markdown), false,
+    'never restore a synchronous parser on the terminal/input thread');
+  assert.ok(markdown.includes('const MarkdownBlock = React.memo('));
+  assert.equal(markdown.includes('startTransition('), false,
+    'urgent streaming store updates can starve a transition until the turn ends');
+  assert.ok(read('src/markdown/parse.worker.ts').includes('parseMarkdown(data.text)'));
+});
+
+test('terminal input uses the serial queue and ignores disposed listeners', () => {
+  const terminal = read('src/components/terminal/XtermView.tsx');
+  assert.ok(terminal.includes('new TerminalInputQueue('));
+  assert.match(terminal, /term\.onData\([\s\S]*?inputQueue\?\.enqueue\(data\)/);
+  assert.ok(terminal.includes('inputQueue?.dispose()'));
+  assert.ok(terminal.includes('if (disposed)'));
+  assert.ok(terminal.includes('cancelAnimationFrame(initialFrame)'));
+});

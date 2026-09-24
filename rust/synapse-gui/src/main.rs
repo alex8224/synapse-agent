@@ -20,93 +20,130 @@ struct AppState {
     terminal_mgr: Arc<Mutex<TerminalManager>>,
 }
 
-#[tauri::command]
-fn tauri_open_path(workspace: Option<String>, path: String) -> Result<(), String> {
-    let ws = workspace
+/// Resolve the workspace one command operates on.
+///
+/// An explicit argument always wins; otherwise the auto-detection the GUI has
+/// always used applies, and `.` stays the last resort.
+fn command_workspace(workspace: Option<String>) -> PathBuf {
+    workspace
         .map(PathBuf::from)
         .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let target = if std::path::Path::new(&path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        ws.join(path)
-    };
-    git_fs::open_path(&target)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Run one blocking command body on the async blocking pool and await it.
+///
+/// The chat transcript and the embedded terminal share this process, and Tauri
+/// executes a non-async command on the main thread, so a body that waits on a
+/// PTY write, a `git` subprocess or a file read freezes the whole window.
+/// Awaiting such a body inline inside an `async` command would starve the async
+/// runtime just as badly, so the body is handed to `spawn_blocking` and runs on
+/// a dedicated thread while the command itself stays `async`.
+///
+/// Ordering: bodies that touch the same terminal never overlap, because the
+/// caller awaits each IPC before sending the next keystroke and every body
+/// holds the same `TerminalManager` mutex.
+async fn run_blocking<T, F>(label: &'static str, task: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        // A panic in one body fails that command instead of the window.
+        .map_err(|err| format!("{label}失败: {err}"))?
 }
 
 #[tauri::command]
-fn tauri_reveal_in_folder(workspace: Option<String>, path: String) -> Result<(), String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let target = if std::path::Path::new(&path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        ws.join(path)
-    };
-    git_fs::reveal_in_explorer(&target)
+async fn tauri_open_path(workspace: Option<String>, path: String) -> Result<(), String> {
+    // `open::that` waits for the launcher process it spawns, so this blocks.
+    run_blocking("打开路径", move || {
+        let ws = command_workspace(workspace);
+        let target = if std::path::Path::new(&path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            ws.join(path)
+        };
+        git_fs::open_path(&target)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_git_status(workspace: Option<String>) -> Result<git_fs::GitStatusView, String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::get_git_status(&ws)
+async fn tauri_reveal_in_folder(workspace: Option<String>, path: String) -> Result<(), String> {
+    // The Windows path waits on `explorer`; the other platforms spawn a helper.
+    run_blocking("在文件管理器中显示", move || {
+        let ws = command_workspace(workspace);
+        let target = if std::path::Path::new(&path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            ws.join(path)
+        };
+        git_fs::reveal_in_explorer(&target)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_git_diff(workspace: Option<String>, path: String) -> Result<git_fs::GitDiffView, String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::get_git_diff(&ws, &path)
+async fn tauri_git_status(workspace: Option<String>) -> Result<git_fs::GitStatusView, String> {
+    // `git status --porcelain` plus `git diff --numstat` shell out twice.
+    run_blocking("读取 git 状态", move || {
+        git_fs::get_git_status(&command_workspace(workspace))
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_list_artifacts(
+async fn tauri_git_diff(
+    workspace: Option<String>,
+    path: String,
+) -> Result<git_fs::GitDiffView, String> {
+    run_blocking("读取 git 差异", move || {
+        git_fs::get_git_diff(&command_workspace(workspace), &path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn tauri_list_artifacts(
     workspace: Option<String>,
     subpath: Option<String>,
 ) -> Result<git_fs::ArtifactPage, String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::list_artifacts(&ws, subpath.as_deref())
+    // A workspace listing walks the directory tree on disk.
+    run_blocking("列出文件", move || {
+        git_fs::list_artifacts(&command_workspace(workspace), subpath.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_stat_artifact(
+async fn tauri_stat_artifact(
     workspace: Option<String>,
     path: String,
 ) -> Result<git_fs::ArtifactStat, String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::stat_artifact(&ws, &path)
+    run_blocking("读取文件信息", move || {
+        git_fs::stat_artifact(&command_workspace(workspace), &path)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_read_artifact(
+async fn tauri_read_artifact(
     workspace: Option<String>,
     path: String,
     offset: Option<u64>,
     limit: Option<u64>,
 ) -> Result<git_fs::ArtifactChunk, String> {
-    let ws = workspace
-        .map(PathBuf::from)
-        .or_else(resolve_workspace)
-        .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::read_artifact_chunk(
-        &ws,
-        &path,
-        offset.unwrap_or(0),
-        limit.unwrap_or(git_fs::MAX_ARTIFACT_CHUNK_BYTES),
-    )
+    // A chunk is up to 1 MiB off disk, so it never runs on the UI thread.
+    run_blocking("读取文件内容", move || {
+        git_fs::read_artifact_chunk(
+            &command_workspace(workspace),
+            &path,
+            offset.unwrap_or(0),
+            limit.unwrap_or(git_fs::MAX_ARTIFACT_CHUNK_BYTES),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -218,7 +255,7 @@ fn resolve_static_dir() -> Option<PathBuf> {
 
 
 #[tauri::command]
-fn tauri_terminal_create(
+async fn tauri_terminal_create(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     workspace: Option<String>,
@@ -226,39 +263,58 @@ fn tauri_terminal_create(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<u32, String> {
+    // The shared manager is cloned out of the borrowed state so the blocking
+    // body owns everything it touches (`State` itself is not `'static`).
+    let terminal_mgr = state.terminal_mgr.clone();
     let ws = workspace.map(PathBuf::from).or_else(resolve_workspace);
-    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
-    mgr.create_terminal(app, ws, shell, cols.unwrap_or(80), rows.unwrap_or(24))
+    run_blocking("创建终端", move || {
+        let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        mgr.create_terminal(app, ws, shell, cols.unwrap_or(80), rows.unwrap_or(24))
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_terminal_write(
+async fn tauri_terminal_write(
     state: tauri::State<'_, AppState>,
     id: u32,
     data: String,
 ) -> Result<(), String> {
-    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
-    mgr.write_terminal(id, &data)
+    // Writes for one terminal are serialised by the caller: it awaits each IPC
+    // before sending the next keystroke, and every body takes the same mutex,
+    // so the shell still sees the bytes in the order they were typed.
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("终端写入", move || {
+        let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        mgr.write_terminal(id, &data)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_terminal_resize(
+async fn tauri_terminal_resize(
     state: tauri::State<'_, AppState>,
     id: u32,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
-    mgr.resize_terminal(id, cols, rows)
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("终端调整大小", move || {
+        let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        mgr.resize_terminal(id, cols, rows)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tauri_terminal_close(
-    state: tauri::State<'_, AppState>,
-    id: u32,
-) -> Result<(), String> {
-    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
-    mgr.close_terminal(id)
+async fn tauri_terminal_close(state: tauri::State<'_, AppState>, id: u32) -> Result<(), String> {
+    // Closing kills the child process tree, which is a blocking syscall.
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("关闭终端", move || {
+        let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        mgr.close_terminal(id)
+    })
+    .await
 }
 
 fn main() {
@@ -505,4 +561,57 @@ fn dirs_or_local() -> PathBuf {
         return PathBuf::from(home).join(".synapse");
     }
     PathBuf::from(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread::ThreadId;
+
+    /// The blocking body must not run on the caller's thread: that hop is what
+    /// keeps one slow `git` call or PTY write from freezing chat rendering.
+    #[test]
+    fn blocking_bodies_run_off_the_calling_thread() {
+        let caller: ThreadId = std::thread::current().id();
+        let worker = tauri::async_runtime::block_on(run_blocking("测试", || {
+            Ok(std::thread::current().id())
+        }))
+        .expect("blocking task must succeed");
+        assert_ne!(caller, worker);
+    }
+
+    /// The IPC contract of every offloaded command is unchanged: the body's own
+    /// `Ok` value and `Err` string still reach the caller verbatim.
+    #[test]
+    fn blocking_results_and_errors_round_trip_unchanged() {
+        let value = tauri::async_runtime::block_on(run_blocking("测试", || Ok(7u32)))
+            .expect("blocking task must succeed");
+        assert_eq!(value, 7);
+
+        let err = tauri::async_runtime::block_on(run_blocking("测试", || {
+            Err::<u32, String>("终端会话 1 不存在".to_string())
+        }))
+        .expect_err("the body error must be reported");
+        assert_eq!(err, "终端会话 1 不存在");
+    }
+
+    /// A panicking body must fail that one command: the caller still receives an
+    /// error string instead of a response that never arrives.
+    #[test]
+    fn a_panicking_body_becomes_an_error_string() {
+        let err = tauri::async_runtime::block_on(run_blocking::<u32, _>("读取文件", || {
+            panic!("boom")
+        }))
+        .expect_err("a panicking body must be reported as an error");
+        assert!(err.starts_with("读取文件"), "unexpected error: {err}");
+    }
+
+    /// An explicit workspace argument is used as given, exactly like before the
+    /// commands became async.
+    #[test]
+    fn an_explicit_workspace_is_used_verbatim() {
+        let resolved = command_workspace(Some("a/b".into()));
+        assert_eq!(resolved, PathBuf::from("a/b"));
+        assert!(resolved.is_relative(), "the argument must not be resolved");
+    }
 }

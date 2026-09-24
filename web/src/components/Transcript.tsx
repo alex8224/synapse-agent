@@ -235,6 +235,8 @@ export const Transcript: React.FC = () => {
   );
 
   const suppressPinnedReflowForInteraction = useCallback(() => {
+    pendingJump.current = null;
+    prependAnchor.current = null;
     suppressPinnedReflow.current = true;
     if (suppressPinnedReflowTimer.current !== null) {
       clearTimeout(suppressPinnedReflowTimer.current);
@@ -404,20 +406,20 @@ export const Transcript: React.FC = () => {
   });
   const totalSize = virtualizer.getTotalSize();
   /**
-   * Distance from the bottom captured just before an earlier page is prepended.
+   * The reading row and its viewport offset before an earlier page is prepended.
    *
-   * Prepending grows the content above the viewport, and the browser's scroll
-   * anchoring cannot help here (the rows are absolutely positioned), so the
-   * distance from the bottom is re-applied until the new rows have been measured.
+   * Distance from the bottom is not invariant: Worker parsing can resize rows
+   * BELOW the reader too. Hold one message instead, through late measurements.
    */
-  const prependAnchor = useRef<number | null>(null);
+  const prependAnchor = useRef<{ id: string; offset: number } | null>(null);
   /**
-   * A rail jump that has not landed exactly yet.
+   * A rail jump held until the reader takes over.
    *
    * The offset of a row that has never been rendered is an estimate; the jump
    * brings that row into the window, the first measurement corrects its height,
-   * and the offset is re-applied until it stops moving.  Converges in two or three
-   * passes, and never fights the reader (a gesture clears it, like the prepend).
+   * and worker-rendered Markdown can change it again after that first landing.
+   * Keep re-applying through late measurements, not just the first convergence;
+   * a gesture, fold, new prompt or explicit follow clears it, like the prepend.
    */
   const pendingJump = useRef<{ id: string; reserved: number } | null>(null);
 
@@ -451,8 +453,7 @@ export const Transcript: React.FC = () => {
     return () => observer.disconnect();
   }, [chromeKey]);
 
-  // Re-apply the prepend anchor whenever the list's height changes, which is how
-  // the corrections that follow each new row's first measurement get applied.
+  // Re-apply the rail anchor through both first and asynchronous measurements.
   useLayoutEffect(() => {
     const jump = pendingJump.current;
     if (jump === null) return;
@@ -465,21 +466,24 @@ export const Transcript: React.FC = () => {
     const offset = virtualizer.getOffsetForIndex(index, 'start');
     if (scroller === null || offset === undefined) return;
     const target = Math.max(0, offset[0] - jump.reserved);
-    if (Math.abs(target - scroller.scrollTop) <= 2) {
-      pendingJump.current = null;
-      return;
-    }
+    if (Math.abs(target - scroller.scrollTop) <= 2) return;
     scroller.scrollTop = target;
   }, [totalSize, virtualizer, visibleMessages]);
 
   useLayoutEffect(() => {
-    const distance = prependAnchor.current;
-    if (distance === null) return;
+    const anchor = prependAnchor.current;
+    if (anchor === null) return;
     const scroller = scrollerRef.current;
-    if (scroller === null) return;
-    const next = anchoredScrollTop(scroller.scrollHeight, distance);
+    const index = visibleMessages.findIndex((m) => m.id === anchor.id);
+    if (index < 0) {
+      prependAnchor.current = null;
+      return;
+    }
+    const offset = virtualizer.getOffsetForIndex(index, 'start');
+    if (scroller === null || offset === undefined) return;
+    const next = anchoredScrollTop(offset[0], anchor.offset);
     if (Math.abs(next - scroller.scrollTop) > 1) scroller.scrollTop = next;
-  }, [totalSize, messages]);
+  }, [totalSize, virtualizer, visibleMessages]);
 
   /**
    * Keep a pinned view pinned while the list's height changes.
@@ -531,6 +535,7 @@ export const Transcript: React.FC = () => {
           // Jumping somewhere specific is the reader leaving the newest row behind:
           // the follow must not pull the view back when the next row is measured.
           pinnedToBottom.current = false;
+          prependAnchor.current = null;
           // `scroll-padding-top` reserves the header's height for `scrollIntoView`,
           // which a programmatic offset bypasses, so it is applied here instead.
           const reserved = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
@@ -550,12 +555,21 @@ export const Transcript: React.FC = () => {
   // button uses, and a changing callback would re-attach that listener.
   const handleLoadEarlier = useCallback(() => {
     skipAutoScroll.current = true;
+    pendingJump.current = null;
     const scroller = scrollerRef.current;
-    // Capture the anchor *before* the store prepends: `scrollHeight` grows by the
-    // inserted page, and only the distance from the bottom survives that.
-    prependAnchor.current = scroller === null ? null : scroller.scrollHeight - scroller.scrollTop;
+    prependAnchor.current = null;
+    if (scroller !== null) {
+      const reserved = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+      const row = virtualizer.getVirtualItemForOffset(scroller.scrollTop + reserved);
+      if (row !== undefined) {
+        prependAnchor.current = {
+          id: String(row.key),
+          offset: row.start - scroller.scrollTop,
+        };
+      }
+    }
     loadEarlierHistory();
-  }, [loadEarlierHistory]);
+  }, [loadEarlierHistory, virtualizer]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -631,13 +645,16 @@ export const Transcript: React.FC = () => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
     // The view is at the bottom now, whatever moved it there in between.
     pinnedToBottom.current = true;
-    // Following the newest row supersedes any anchor still held from a prepend.
+    // Following the newest row supersedes a prepend or rail-jump anchor.
     prependAnchor.current = null;
+    pendingJump.current = null;
   }, [messages]);
 
   useEffect(() => {
     const handleJumpBottom = () => {
       pinnedToBottom.current = true;
+      pendingJump.current = null;
+      prependAnchor.current = null;
     };
     window.addEventListener('transcript:jump-bottom', handleJumpBottom);
     return () => window.removeEventListener('transcript:jump-bottom', handleJumpBottom);

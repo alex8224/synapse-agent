@@ -82,21 +82,21 @@ test('the transcript still owns its scrollport and its scroll rules', () => {
   );
 });
 
-test('a prepended page keeps the distance from the bottom', () => {
-  // The prepend grows the content above the viewport, so the distance from the
-  // bottom is the invariant: `scrollHeight - scrollTop` is captured before the
-  // page arrives and re-applied until the new rows have been measured.
+test('a prepended page keeps the reading row at the same viewport offset', () => {
+  // Only changes above the anchored message move scrollTop. A late parse of a
+  // row below it must not move the reader along with the document bottom.
   assert.equal(anchoredScrollTop(1000, 200), 800);
   assert.equal(anchoredScrollTop(1500, 200), 1300, 'the added height shifts the viewport down');
   assert.equal(anchoredScrollTop(100, 200), 0, 'the result is never negative');
+  assert.equal(anchoredScrollTop(1000, -20), 1020, 'a partially visible row stays partially visible');
   assert.ok(
-    /prependAnchor\.current = scroller === null \? null : scroller\.scrollHeight - scroller\.scrollTop/
-      .test(transcript),
-    'the anchor must be captured before the store prepends',
+    transcript.includes('id: String(row.key)') &&
+    transcript.includes('offset: row.start - scroller.scrollTop'),
+    'the message identity and viewport offset must be captured before prepending',
   );
   assert.ok(
-    transcript.includes('anchoredScrollTop(scroller.scrollHeight, distance)'),
-    'the captured distance must be re-applied from the new scroll height',
+    transcript.includes('anchoredScrollTop(offset[0], anchor.offset)'),
+    'the anchor must be re-applied from the message offset, not the document bottom',
   );
 });
 

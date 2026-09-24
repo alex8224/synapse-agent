@@ -20,6 +20,7 @@ import {
 import type { TerminalTabSession } from '../../stores/useTerminalStore.ts';
 import { useTerminalStore } from '../../stores/useTerminalStore.ts';
 import { useAppearanceStore } from '../../stores/appearance.ts';
+import { TerminalInputQueue } from './terminalInputQueue.ts';
 
 interface XtermViewProps {
   session: TerminalTabSession;
@@ -69,14 +70,15 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
 
   // Tab activation observer: re-fit & focus when switching back
   useEffect(() => {
-    if (isActive) {
-      requestAnimationFrame(() => {
-        try {
-          doFitRef.current?.();
-          xtermRef.current?.focus();
-        } catch {}
-      });
-    }
+    if (!isActive) return;
+    const frame = requestAnimationFrame(() => {
+      try {
+        doFitRef.current?.();
+        xtermRef.current?.focus();
+      } catch {}
+    });
+    // A tab switch can unmount or re-activate before the frame lands.
+    return () => cancelAnimationFrame(frame);
   }, [isActive]);
 
   useEffect(() => {
@@ -138,13 +140,43 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
       return true;
     });
 
+    // Set on cleanup so a late frame, font callback or resize observer cannot
+    // reach the terminal after it has been disposed.
+    let disposed = false;
+    const reportedErrors = new Set<string>();
+    const reportError = (message: string): void => {
+      if (disposed || reportedErrors.has(message)) return;
+      reportedErrors.add(message);
+      // Only fixed local messages: native error details can contain shell data.
+      term.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
+    };
+    // Last dimensions handed to the PTY. The ResizeObserver fires on every
+    // layout pass, so re-invoking resize with unchanged cols/rows is pure churn.
+    let lastCols = -1;
+    let lastRows = -1;
+
+    const syncSize = () => {
+      const ptyId = session.ptyId;
+      if (!ptyId || disposed || term.cols <= 0 || term.rows <= 0) return;
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols;
+      lastRows = term.rows;
+      // A failed resize is visible and may be retried by the next fit, even if
+      // the dimensions have not changed since the failed attempt.
+      void resizeTerminal(ptyId, term.cols, term.rows).catch(() => {
+        if (disposed) return;
+        lastCols = -1;
+        lastRows = -1;
+        reportError('终端尺寸同步失败，请重新调整面板大小');
+      });
+    };
+
     const doFit = () => {
+      if (disposed) return;
       try {
         if (containerRef.current && containerRef.current.clientWidth > 0 && containerRef.current.clientHeight > 0) {
           fitAddon.fit();
-          if (session.ptyId && term.cols > 0 && term.rows > 0) {
-            void resizeTerminal(session.ptyId, term.cols, term.rows);
-          }
+          syncSize();
         }
       } catch {}
     };
@@ -153,43 +185,73 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
     // Immediate fit and deferred fit once web fonts are fully rendered
     doFit();
     if (typeof document !== 'undefined' && 'fonts' in document) {
-      document.fonts.ready.then(() => {
-        doFit();
-      });
+      document.fonts.ready
+        .then(() => {
+          doFit();
+        })
+        // Font loading is optional: the initial fit uses the fallback font.
+        .catch(() => {});
     }
-    requestAnimationFrame(() => doFit());
+    const initialFrame = requestAnimationFrame(() => doFit());
 
     xtermRef.current = term;
     terminalInstances.set(session.id, term);
     fitAddonRef.current = fitAddon;
 
+    const ptyId = session.ptyId;
+
+    // Every keystroke goes through one serial queue per PTY: the native write
+    // command is async on a blocking worker, so concurrent invokes could reach
+    // the PTY out of order. A failure is surfaced once, in place, and the queue
+    // keeps accepting input; `dispose` drops the input that never made it out.
+    const inputQueue = ptyId
+      ? new TerminalInputQueue(
+          (data) => writeTerminal(ptyId, data),
+          {
+            onError: () => reportError('终端输入发送失败，请重试'),
+          },
+        )
+      : null;
+
     // Stream user input from xterm to native PTY
     const dataSub = term.onData((data) => {
-      if (session.ptyId) {
-        void writeTerminal(session.ptyId, data);
-      }
+      inputQueue?.enqueue(data);
     });
 
     let cleanupDataStream: (() => void) | null = null;
     let cleanupExitStream: (() => void) | null = null;
 
-    if (session.ptyId) {
-      void onTerminalData(session.ptyId, (data) => {
+    if (ptyId) {
+      void onTerminalData(ptyId, (data) => {
+        if (disposed) return;
         term.write(data);
-      }).then((unlisten) => {
-        cleanupDataStream = unlisten;
-      });
+      })
+        .then((unlisten) => {
+          // The listener can resolve after the effect tore down; unregister it
+          // immediately instead of leaking it for the component's lifetime.
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          cleanupDataStream = unlisten;
+        })
+        .catch(() => reportError('终端输出连接失败，请重新打开终端'));
 
-      void onTerminalExit(session.ptyId, () => {
-        if (session.ptyId) {
-          handleSessionExit(session.ptyId);
-        }
-      }).then((unlisten) => {
-        cleanupExitStream = unlisten;
-      });
+      void onTerminalExit(ptyId, () => {
+        if (disposed) return;
+        handleSessionExit(ptyId);
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          cleanupExitStream = unlisten;
+        })
+        .catch(() => reportError('终端退出监听失败，请重新打开终端'));
 
       // Synchronize initial dimensions
-      void resizeTerminal(session.ptyId, term.cols, term.rows);
+      syncSize();
     } else if (session.status === 'error') {
       term.writeln(`\r\n\x1b[31m启动终端失败: ${session.errorMessage || '无法连接原生 PTY'}\x1b[0m\r\n`);
     }
@@ -202,11 +264,19 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      disposed = true;
+      cancelAnimationFrame(initialFrame);
+      if (doFitRef.current === doFit) doFitRef.current = null;
       terminalInstances.delete(session.id);
       dataSub.dispose();
       resizeObserver.disconnect();
+      // Drop unsent view input. The bridge's per-PTY lane still orders an
+      // in-flight write before any replacement view's commands for the same PTY.
+      inputQueue?.dispose();
       if (cleanupDataStream) cleanupDataStream();
       if (cleanupExitStream) cleanupExitStream();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
       term.dispose();
     };
   }, [session.ptyId, session.status, session.errorMessage, session.id, appearance]);

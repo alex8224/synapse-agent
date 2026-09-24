@@ -4,6 +4,19 @@
 Codex 用量/额度查询失败时，界面只显示安全的错误代码；daemon 在私有状态目录的 `errors.log`（默认 `~/.synapse/runtime/errors.log`）记录异常类别和 HTTP 状态码，不记录上游错误正文或令牌。
 Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求在没有显式代理环境变量时使用系统 Internet 代理设置（含排除项）；`HTTPS_PROXY` / `ALL_PROXY` 优先，代理地址不会写入上述日志。
 
+## 集成终端与聊天响应
+
+桌面端通过底栏终端入口或 `Ctrl` + 反引号打开集成终端。聊天输出时仍可输入命令、接收终端输出；
+终端内的 `Ctrl+C` 发给 shell，不会取消 Agent 回合。
+
+- Markdown 解析放在独立 Worker，待处理更新只保留每条消息的最新版本；已渲染且未变化的块复用，
+  避免每个流式片段重新渲染整段回答。聊天仍持续显示，不推迟到回合结束。
+- Worker 不可用或文档超过解析上限时显示完整纯文本，不退回主线程做重解析。
+- 原生 PTY、Git 与文件读取在后台线程执行，终端输入按顺序发送，避免阻塞桌面 UI。
+
+部署须使用完整的 `npm run build` 产物（包括 Worker 文件），并重新构建桌面壳以启用原生线程修复。
+回归验收：`node --test tests/terminalResponsiveness.verify.ts`（真实浏览器、模拟 PTY、长文本流式输出与持续键入）。
+
 面向 runtime daemon 的浏览器控制台前端。生产运行方式与完整命令见仓库根
 `README.md`、`docs/web-console/index.md` 与 `docs/web-console/formal-host.md`。
 
