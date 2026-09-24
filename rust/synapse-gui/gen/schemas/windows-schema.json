@@ -243,6 +243,12 @@
           "markdownDescription": "Enables the tauri_reveal_in_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_stat_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-stat-artifact",
+          "markdownDescription": "Enables the tauri_stat_artifact command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_terminal_close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-terminal-close",
@@ -337,6 +343,12 @@
           "type": "string",
           "const": "deny-tauri-reveal-in-folder",
           "markdownDescription": "Denies the tauri_reveal_in_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_stat_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-stat-artifact",
+          "markdownDescription": "Denies the tauri_stat_artifact command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_terminal_close command without any pre-configured scope.",

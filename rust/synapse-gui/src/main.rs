@@ -79,15 +79,34 @@ fn tauri_list_artifacts(
 }
 
 #[tauri::command]
-fn tauri_read_artifact(
+fn tauri_stat_artifact(
     workspace: Option<String>,
     path: String,
-) -> Result<git_fs::ArtifactContent, String> {
+) -> Result<git_fs::ArtifactStat, String> {
     let ws = workspace
         .map(PathBuf::from)
         .or_else(resolve_workspace)
         .unwrap_or_else(|| PathBuf::from("."));
-    git_fs::read_artifact(&ws, &path)
+    git_fs::stat_artifact(&ws, &path)
+}
+
+#[tauri::command]
+fn tauri_read_artifact(
+    workspace: Option<String>,
+    path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> Result<git_fs::ArtifactChunk, String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    git_fs::read_artifact_chunk(
+        &ws,
+        &path,
+        offset.unwrap_or(0),
+        limit.unwrap_or(git_fs::MAX_ARTIFACT_CHUNK_BYTES),
+    )
 }
 
 #[tauri::command]
@@ -273,6 +292,7 @@ fn main() {
             tauri_git_status,
             tauri_git_diff,
             tauri_list_artifacts,
+            tauri_stat_artifact,
             tauri_read_artifact,
             tauri_open_path,
             tauri_reveal_in_folder,

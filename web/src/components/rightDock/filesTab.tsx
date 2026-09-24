@@ -23,8 +23,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { useRightDockStore } from '../../stores/useRightDockStore.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
-import { fetchListArtifacts, openPathWithDefault, revealInFileManager } from '../../client/tauriGitFs.ts';
-import type { ArtifactEntry } from '../../client/artifacts.ts';
+import { openPathWithDefault, revealInFileManager } from '../../client/tauriGitFs.ts';
+import { createArtifactSurface } from '../../client/artifactSurface.ts';
+import { ARTIFACT_LIST_LIMIT, type ArtifactEntry } from '../../client/artifacts.ts';
 
 function entryBaseName(fullPath: string): string {
   const parts = fullPath.split('/').filter(Boolean);
@@ -35,6 +36,8 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
   const {
     client,
     currentSession,
+    workspacePath: sessionWorkspacePath,
+    rpcReady,
     gitStatus,
     openFileViewer,
     projects,
@@ -43,6 +46,8 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
     useShallow((state) => ({
       client: state.client,
       currentSession: state.currentSession,
+      workspacePath: state.workspacePath,
+      rpcReady: state.connectionState === 'connected',
       gitStatus: state.gitStatus,
       openFileViewer: state.openFileViewer,
       projects: state.projects,
@@ -51,6 +56,14 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
   );
 
   const activeProject = projects.find((p) => p.project_id === activeProjectId);
+  // The project list can still be loading when the tree mounts, so the attached
+  // session's own workspace path is the fallback the native commands resolve
+  // against — never the desktop process's own working directory.
+  const workspacePath = activeProject?.workspace_path ?? sessionWorkspacePath;
+  const surface = useMemo(
+    () => createArtifactSurface(client, workspacePath, rpcReady),
+    [client, workspacePath, rpcReady],
+  );
   const onlyChangedFiles = useRightDockStore((s) => s.onlyChangedFiles);
   const toggleOnlyChangedFiles = useRightDockStore((s) => s.toggleOnlyChangedFiles);
   const fileSearchQuery = useRightDockStore((s) => s.fileSearchQuery);
@@ -63,11 +76,11 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   const loadDirectory = useCallback(async (path: string) => {
-    if (!client || client.getState() !== 'connected') return;
+    if (surface === null) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchListArtifacts(client, currentSession, path, activeProject?.workspace_path);
+      const res = await surface.listArtifacts(currentSession, path, null, ARTIFACT_LIST_LIMIT);
       setEntries(res.entries);
       setCurrentPath(path);
     } catch (err) {
@@ -75,7 +88,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
     } finally {
       setLoading(false);
     }
-  }, [client, currentSession, activeProject?.workspace_path]);
+  }, [surface, currentSession]);
 
   useEffect(() => {
     void loadDirectory('');
@@ -161,12 +174,12 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
 
   const handleOpenDefault = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void openPathWithDefault(path, activeProject?.workspace_path);
+    void openPathWithDefault(path, workspacePath);
   };
 
   const handleReveal = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void revealInFileManager(path, activeProject?.workspace_path);
+    void revealInFileManager(path, workspacePath);
   };
 
   const handleCopyPath = (e: React.MouseEvent, path: string) => {

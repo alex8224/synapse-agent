@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Image20Regular, ImageOff20Regular } from '@fluentui/react-icons';
 import { useConsoleStore } from '../stores/useConsoleStore.ts';
 import { toWorkspacePath } from '../markdown/filePaths.ts';
@@ -14,6 +14,7 @@ import {
   formatBytes,
 } from '../client/artifacts.ts';
 import type { ArtifactEntry, ArtifactImageLoader } from '../client/artifacts.ts';
+import { createArtifactSurface } from '../client/artifactSurface.ts';
 
 /**
  * How long a reference must stay unchanged before the console reads it.
@@ -72,10 +73,19 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
   const workspacePath = useConsoleStore((s) => s.workspacePath);
+  const rpcReady = useConsoleStore((s) => s.connectionState === 'connected');
   const paired = useConsoleStore((s) => s.pairingState === 'paired');
 
   const srcKind = classifyImageSrc(src);
   const path = srcKind === 'local' ? toWorkspacePath(src, workspacePath) : null;
+
+  // The same surface the file panel reads through: the Tauri native bridge on the
+  // desktop build (so an image the workspace policy ignores still previews), the
+  // read-only runtime RPC in the browser console.
+  const surface = useMemo(
+    () => createArtifactSurface(client, workspacePath, rpcReady),
+    [client, workspacePath, rpcReady],
+  );
 
   const [state, setState] = useState<ImageState>({ kind: 'resolving' });
   const [zoomed, setZoomed] = useState(false);
@@ -87,9 +97,9 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
   // One loader per rendered image: it owns the object URL, so unmounting (or a
   // session change) revokes the blob instead of leaking it.
   useEffect(() => {
-    if (!client) return;
+    if (surface === null) return;
     const loader = createArtifactImageLoader({
-      read: client,
+      read: surface,
       urls: {
         create: (bytes, mime) => URL.createObjectURL(new Blob([bytes.slice()], { type: mime })),
         revoke: (url) => URL.revokeObjectURL(url),
@@ -100,11 +110,11 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
       loaderRef.current = null;
       loader.dispose();
     };
-  }, [client]);
+  }, [surface]);
 
   useEffect(() => {
     if (srcKind !== 'local' || path === null) return;
-    if (!client || !paired) {
+    if (surface === null || !paired) {
       setState({
         kind: 'unavailable',
         reason: paired ? '运行时客户端尚未就绪' : '控制台尚未与运行时配对',
@@ -122,7 +132,7 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
           // workspace first, exactly as a transcript file click does.
           let target = path;
           if (!target.includes('/')) {
-            const found = await locateArtifact(client, session, target).catch(() => null);
+            const found = await locateArtifact(surface, session, target).catch(() => null);
             if (found === null) {
               if (!cancelled) {
                 setState({ kind: 'unavailable', reason: `工作区里找不到 ${target}` });
@@ -131,7 +141,7 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
             }
             target = found;
           }
-          const entry = await client.statArtifact(session, target);
+          const entry = await surface.statArtifact(session, target);
           if (cancelled) return;
           if (entry.kind === 'directory') {
             setState({ kind: 'unavailable', reason: `${target} 是目录，不是图片` });
@@ -164,7 +174,7 @@ const MarkdownImageBody: React.FC<{ alt: string; src: string }> = ({ alt, src })
     };
     // The session identity, not the object, is what a read depends on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, paired, path, srcKind, sessionKey]);
+  }, [surface, paired, path, srcKind, sessionKey]);
 
   if (srcKind === 'remote') {
     return (

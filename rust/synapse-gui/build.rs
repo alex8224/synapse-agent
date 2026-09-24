@@ -10,6 +10,7 @@ fn main() {
             "tauri_git_status",
             "tauri_git_diff",
             "tauri_list_artifacts",
+            "tauri_stat_artifact",
             "tauri_read_artifact",
             "tauri_open_path",
             "tauri_reveal_in_folder",

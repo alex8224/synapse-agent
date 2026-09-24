@@ -32,6 +32,7 @@ import {
   parentArtifactPath,
 } from '../client/artifacts.ts';
 import { diffLines } from '../client/artifactsDiff.ts';
+import { createArtifactSurface } from '../client/artifactSurface.ts';
 import type {
   ArtifactEntry,
   ArtifactImageLoader,
@@ -85,8 +86,12 @@ const DIFF_SIGN: Record<'context' | 'add' | 'remove', string> = {
 
 /**
  * Workspace file browser: a paged, filterable directory tree plus a bounded text
- * viewer and a *real* line diff, backed by the read-only
- * `runtime.artifacts.stat/list/read` surface.
+ * viewer and a *real* line diff, backed by the artifact surface
+ * (`client/artifactSurface.ts`): the Tauri native bridge on the desktop build,
+ * the read-only `runtime.artifacts.stat/list/read` RPC in the browser console.
+ * The desktop bridge is what makes ignored build output (a Rust crate's
+ * `target/` directory) browsable, and it is bounded the same way: one clamped
+ * chunk per read call.
  *
  * Bounded by construction:
  * - one page per list call, paging only through an explicit "load more";
@@ -134,6 +139,8 @@ export const ArtifactsPanel: React.FC<{
   onClose: () => void;
 }> = ({ anchor = null, centered = false, initialPath = null, onClose }) => {
   const client = useConsoleStore((s) => s.client);
+  const workspacePath = useConsoleStore((s) => s.workspacePath);
+  const rpcReady = useConsoleStore((s) => s.connectionState === 'connected');
   const currentSession = useConsoleStore((s) => s.currentSession);
   const paired = useConsoleStore((s) => s.pairingState === 'paired');
   const openExternalError = useConsoleStore((s) => s.openExternalError);
@@ -167,6 +174,14 @@ export const ArtifactsPanel: React.FC<{
   const session = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
   const sessionKey = `${session.project_id}/${session.thread_id}`;
 
+  // One surface for every artifact call: the Tauri native bridge on the desktop
+  // build (which shows what is really on disk, ignored build output included),
+  // the read-only runtime RPC in the browser console.
+  const surface = useMemo(
+    () => createArtifactSurface(client, workspacePath, rpcReady),
+    [client, workspacePath, rpcReady],
+  );
+
   const beginRequest = (): number => {
     requestRef.current += 1;
     return requestRef.current;
@@ -175,11 +190,11 @@ export const ArtifactsPanel: React.FC<{
 
   const loadDir = useCallback(
     async (path: string) => {
-      if (!client || !paired) return;
+      if (surface === null || !paired) return;
       setListLoading(true);
       setListError(null);
       try {
-        const page = await client.listArtifacts(session, path, null, ARTIFACT_LIST_LIMIT);
+        const page = await surface.listArtifacts(session, path, null, ARTIFACT_LIST_LIMIT);
         setEntries(page.entries);
         setNextCursor(page.nextCursor);
         setDir(page.path);
@@ -193,15 +208,15 @@ export const ArtifactsPanel: React.FC<{
     },
     // The session identity, not the object, is what a reload depends on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, paired, sessionKey],
+    [surface, paired, sessionKey],
   );
 
   // Declared before the "open the initial path" effect below: an image path
   // opened on mount needs the loader to exist by the time that effect runs.
   useEffect(() => {
-    if (!client) return;
+    if (surface === null) return;
     const loader = createArtifactImageLoader({
-      read: client,
+      read: surface,
       urls: {
         create: (bytes, mime) => URL.createObjectURL(new Blob([bytes.slice()], { type: mime })),
         revoke: (url) => URL.revokeObjectURL(url),
@@ -214,7 +229,7 @@ export const ArtifactsPanel: React.FC<{
       imageLoaderRef.current = null;
       loader.dispose();
     };
-  }, [client]);
+  }, [surface]);
 
   // A result that lands after unmount must not be published either: the fence
   // outlives the component, the state update does not.
@@ -226,7 +241,7 @@ export const ArtifactsPanel: React.FC<{
   );
 
   useEffect(() => {
-    if (!client || !paired) return;
+    if (surface === null || !paired) return;
     if (initialPath === null || initialPath === '') {
       void loadDir('.');
       return;
@@ -238,7 +253,7 @@ export const ArtifactsPanel: React.FC<{
       if (!path.includes('/')) {
         let found: string | null = null;
         try {
-          found = await locateArtifact(client, session, path);
+          found = await locateArtifact(surface, session, path);
         } catch {
           found = null;
         }
@@ -251,7 +266,7 @@ export const ArtifactsPanel: React.FC<{
       }
       await loadDir(parentArtifactPath(path));
       try {
-        const entry = await client.statArtifact(session, path);
+        const entry = await surface.statArtifact(session, path);
         await openEntry(entry);
       } catch (err) {
         setFileError(describe(err));
@@ -259,14 +274,14 @@ export const ArtifactsPanel: React.FC<{
     })();
     // The session identity, not the object, is what a reload depends on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialPath, loadDir, client, paired, sessionKey]);
+  }, [initialPath, loadDir, surface, paired, sessionKey]);
 
   const loadMoreEntries = async (): Promise<void> => {
-    if (!client || nextCursor === null || listLoading) return;
+    if (surface === null || nextCursor === null || listLoading) return;
     setListLoading(true);
     setListError(null);
     try {
-      const page = await client.listArtifacts(session, dir, nextCursor, ARTIFACT_LIST_LIMIT);
+      const page = await surface.listArtifacts(session, dir, nextCursor, ARTIFACT_LIST_LIMIT);
       setEntries((prev) => [...prev, ...page.entries]);
       setNextCursor(page.nextCursor);
     } catch (err) {
@@ -284,12 +299,18 @@ export const ArtifactsPanel: React.FC<{
    * the new path.
    */
   const readFromStart = async (entry: ArtifactEntry, resetBaseline: boolean): Promise<void> => {
-    if (!client) return;
+    if (surface === null) return;
     const token = beginRequest();
     setFileLoading(true);
     setFileError(null);
     try {
-      const chunk = await client.readArtifact(session, entry.path, 0, ARTIFACT_CHUNK_BYTES, null);
+      const chunk = await surface.readArtifact(
+        session,
+        entry.path,
+        0,
+        ARTIFACT_CHUNK_BYTES,
+        null,
+      );
       if (!isCurrent(token)) return;
       const text = decodeBase64Text(chunk.data_base64);
       setFile({
@@ -340,7 +361,7 @@ export const ArtifactsPanel: React.FC<{
       await loadDir(entry.path);
       return;
     }
-    if (!client) return;
+    if (surface === null) return;
     // A directory stays in the list (drilling in re-lists it); only a file
     // swaps the phone band to the preview pane.
     setMobileDetail(true);
@@ -370,7 +391,7 @@ export const ArtifactsPanel: React.FC<{
   };
 
   const appendChunk = async (): Promise<void> => {
-    if (!client || file === null || file.eof || fileLoading) return;
+    if (surface === null || file === null || file.eof || fileLoading) return;
     if (file.loadedBytes >= ARTIFACT_HARD_MAX_BYTES) {
       setFileError(
         `已达到单文件硬上限 ${formatBytes(ARTIFACT_HARD_MAX_BYTES)}，停止读取（可用「重新读取」回到开头）`,
@@ -384,7 +405,7 @@ export const ArtifactsPanel: React.FC<{
     setFileLoading(true);
     setFileError(null);
     try {
-      const chunk = await client.readArtifact(
+      const chunk = await surface.readArtifact(
         session,
         path,
         offset,

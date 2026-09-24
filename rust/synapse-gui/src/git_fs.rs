@@ -1,6 +1,7 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +22,136 @@ mod tests {
         let page = list_artifacts(&cwd, None).expect("should list workspace dir");
         assert!(page.total > 0, "workspace directory should not be empty");
         assert!(page.entries.iter().any(|e| e.name == "Cargo.toml"));
+    }
+
+    /// A fresh, empty workspace directory private to one test.
+    fn temp_workspace(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("synapse-gui-git-fs-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_list_artifacts_walks_into_gitignored_build_output() {
+        let dir = temp_workspace("nested");
+        fs::create_dir_all(dir.join("rust/gui/target/debug")).unwrap();
+        fs::write(dir.join("rust/gui/target/debug/app.exe"), b"bin").unwrap();
+        // A `.gitignore` hiding the build output must not hide it from the
+        // desktop tree: the native surface lists what is on disk.
+        fs::write(dir.join(".gitignore"), "**/target/\n").unwrap();
+
+        let top = list_artifacts(&dir, None).unwrap();
+        assert!(
+            top.entries.iter().any(|e| e.path == "rust"),
+            "the workspace root must list the source tree"
+        );
+
+        let gui = list_artifacts(&dir, Some("rust/gui")).unwrap();
+        assert!(
+            gui.entries.iter().any(|e| e.path == "rust/gui/target"),
+            "a gitignored build directory must still be listed"
+        );
+
+        let target = list_artifacts(&dir, Some("rust/gui/target")).unwrap();
+        assert_eq!(target.entries.len(), 1);
+        assert_eq!(target.entries[0].path, "rust/gui/target/debug");
+        assert!(target.entries[0].is_dir);
+
+        let debug = list_artifacts(&dir, Some("rust/gui/target/debug")).unwrap();
+        assert_eq!(debug.entries.len(), 1);
+        assert_eq!(debug.entries[0].path, "rust/gui/target/debug/app.exe");
+        assert!(!debug.entries[0].is_dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stat_and_chunked_read_stay_bounded() {
+        let dir = temp_workspace("chunked");
+        let payload: Vec<u8> = (0..(MAX_ARTIFACT_CHUNK_BYTES as usize * 2 + 7))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        fs::write(dir.join("big.bin"), &payload).unwrap();
+
+        let stat = stat_artifact(&dir, "big.bin").expect("stat must succeed");
+        assert!(!stat.is_dir);
+        assert_eq!(stat.size, payload.len() as u64);
+        assert!(stat.revision.is_some(), "a file carries a read fingerprint");
+
+        // An oversized request is clamped instead of pulling the whole file.
+        let first = read_artifact_chunk(&dir, "big.bin", 0, u64::MAX).unwrap();
+        assert_eq!(first.byte_length, MAX_ARTIFACT_CHUNK_BYTES);
+        assert_eq!(first.next_offset, MAX_ARTIFACT_CHUNK_BYTES);
+        assert!(!first.eof);
+        assert_eq!(first.revision, stat.revision);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&first.data_base64)
+            .unwrap();
+        assert_eq!(decoded.len(), first.byte_length as usize);
+        assert_eq!(decoded[..], payload[..first.byte_length as usize]);
+
+        // Walking the file chunk by chunk ends exactly at its size, and no chunk
+        // ever exceeds the cap.
+        let mut offset = 0u64;
+        let mut seen = 0usize;
+        loop {
+            let chunk = read_artifact_chunk(&dir, "big.bin", offset, u64::MAX).unwrap();
+            assert_eq!(chunk.offset, offset);
+            assert!(chunk.byte_length <= MAX_ARTIFACT_CHUNK_BYTES);
+            seen += chunk.byte_length as usize;
+            if chunk.eof {
+                assert_eq!(chunk.next_offset, payload.len() as u64);
+                break;
+            }
+            assert!(chunk.next_offset > offset, "a read must advance");
+            offset = chunk.next_offset;
+        }
+        assert_eq!(seen, payload.len());
+
+        // Past the end is an error, never a silent empty chunk.
+        assert!(read_artifact_chunk(&dir, "big.bin", payload.len() as u64 + 1, 16).is_err());
+        // A directory is not a readable artifact.
+        assert!(read_artifact_chunk(&dir, ".", 0, 16).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_artifact_paths_cannot_escape_the_workspace() {
+        let dir = temp_workspace("escape");
+        assert!(stat_artifact(&dir, "../outside.txt").is_err());
+        assert!(read_artifact_chunk(&dir, "..\\outside.txt", 0, 16).is_err());
+        assert!(list_artifacts(&dir, Some("a/../../b")).is_err());
+        // A segment carrying a drive prefix would make `PathBuf::push` replace the
+        // whole path, so it is refused instead of re-rooting the read.
+        assert!(stat_artifact(&dir, "a/C:/outside.txt").is_err());
+        assert!(read_artifact_chunk(&dir, "C:outside.txt", 0, 16).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_a_name_with_spaces_round_trips_untrimmed() {
+        let dir = temp_workspace("spaces");
+        fs::write(dir.join(" padded.txt"), b"padded").unwrap();
+
+        let listed = list_artifacts(&dir, None).unwrap();
+        let entry = listed
+            .entries
+            .iter()
+            .find(|e| e.name == " padded.txt")
+            .expect("the listing keeps the name verbatim");
+
+        // The echoed path is the listed path: the caller compares the two (the
+        // image loader refuses a chunk whose path is not the one it asked for).
+        let stat = stat_artifact(&dir, &entry.path).expect("stat must resolve it");
+        assert_eq!(stat.path, entry.path);
+        assert_eq!(stat.size, 6);
+        let chunk = read_artifact_chunk(&dir, &entry.path, 0, 16).unwrap();
+        assert_eq!(chunk.path, entry.path);
+        assert!(chunk.eof);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -62,6 +193,9 @@ pub struct ArtifactEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified_at: Option<String>,
+    /// Stat fingerprint (`size:mtime_ns`) the file surfaces use to fence paged
+    /// reads and to invalidate cached previews.
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,12 +205,29 @@ pub struct ArtifactPage {
     pub total: usize,
 }
 
+/// Largest byte range one `read_artifact_chunk` call returns.
+pub const MAX_ARTIFACT_CHUNK_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArtifactContent {
+pub struct ArtifactStat {
     pub path: String,
-    pub content: String,
+    pub is_dir: bool,
     pub size: u64,
-    pub is_binary: bool,
+    pub modified_at: Option<String>,
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactChunk {
+    pub path: String,
+    pub offset: u64,
+    pub data_base64: String,
+    pub byte_length: u64,
+    pub next_offset: u64,
+    pub eof: bool,
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub revision: Option<String>,
 }
 
 /// Helper to run git commands with suppressed window on Windows
@@ -305,11 +456,7 @@ pub fn get_git_diff(workspace: &Path, file_path: &str) -> Result<GitDiffView, St
 /// List artifacts in workspace directory
 pub fn list_artifacts(workspace: &Path, subpath: Option<&str>) -> Result<ArtifactPage, String> {
     let rel_sub = subpath.unwrap_or("").trim_start_matches(['/', '\\']);
-    let target_dir = if rel_sub.is_empty() || rel_sub == "." {
-        workspace.to_path_buf()
-    } else {
-        workspace.join(rel_sub)
-    };
+    let target_dir = resolve_artifact_path(workspace, rel_sub)?;
 
     if !target_dir.exists() {
         return Err(format!("目录不存在: {}", target_dir.display()));
@@ -327,21 +474,14 @@ pub fn list_artifacts(workspace: &Path, subpath: Option<&str>) -> Result<Artifac
             }
 
             let path_buf = entry.path();
-            let is_dir = path_buf.is_dir();
-            let size = if is_dir {
-                0
-            } else {
-                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            // `fs::metadata` (not `DirEntry::metadata`) so a symlinked directory
+            // is listed as the directory it points at, exactly as before.
+            let metadata = fs::metadata(&path_buf).ok();
+            let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let size = match metadata.as_ref() {
+                Some(m) if !is_dir => m.len(),
+                _ => 0,
             };
-
-            let modified_at = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|time| {
-                    let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
-                    Some(format!("{}s", duration.as_secs()))
-                });
 
             let rel_path = path_buf
                 .strip_prefix(workspace)
@@ -353,7 +493,8 @@ pub fn list_artifacts(workspace: &Path, subpath: Option<&str>) -> Result<Artifac
                 name: file_name,
                 is_dir,
                 size,
-                modified_at,
+                modified_at: metadata.as_ref().and_then(modified_at_of),
+                revision: metadata.as_ref().and_then(revision_of),
             });
         }
     }
@@ -368,35 +509,135 @@ pub fn list_artifacts(workspace: &Path, subpath: Option<&str>) -> Result<Artifac
     let total = entries.len();
     Ok(ArtifactPage {
         entries,
-        path: rel_sub.to_string(),
+        // Mirror the RPC's canonical root (`.`), so a caller that feeds the
+        // echoed path back in lands on the same directory either way.
+        path: if rel_sub.is_empty() {
+            ".".to_string()
+        } else {
+            rel_sub.to_string()
+        },
         total,
     })
 }
 
-/// Read text artifact content
-pub fn read_artifact(workspace: &Path, file_path: &str) -> Result<ArtifactContent, String> {
-    let clean_path = file_path.trim_start_matches(['/', '\\']);
-    let target = workspace.join(clean_path);
+/// Stat fingerprint of one entry (`size:mtime_ns`).
+fn revision_of(metadata: &fs::Metadata) -> Option<String> {
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())?;
+    Some(format!("{}:{}", metadata.len(), modified_ns))
+}
 
-    if !target.exists() || !target.is_file() {
-        return Err(format!("文件不存在: {}", target.display()));
+/// Last modification time in whole seconds since the Unix epoch.
+fn modified_at_of(metadata: &fs::Metadata) -> Option<String> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| format!("{}s", duration.as_secs()))
+}
+
+/// Resolve a workspace-relative artifact path.
+///
+/// The desktop file surfaces only ever send a path a listing produced, but a
+/// transcript reference can carry anything the model wrote, so a `..` segment is
+/// refused instead of being joined into the workspace blindly.
+fn resolve_artifact_path(workspace: &Path, path: &str) -> Result<PathBuf, String> {
+    // Only the leading separators are stripped: a real file name may begin or end
+    // with a space, and trimming it would resolve a different path than the one a
+    // listing reported (and than the one the caller gets echoed back).
+    let trimmed = path.trim_start_matches(['/', '\\']);
+    if trimmed.is_empty() || trimmed == "." {
+        return Ok(workspace.to_path_buf());
     }
+    if Path::new(trimmed).is_absolute() {
+        return Err(format!("路径必须是工作区内的相对路径: {}", path));
+    }
+    let mut resolved = workspace.to_path_buf();
+    for segment in trimmed.split(['/', '\\']) {
+        match segment {
+            "" | "." => {}
+            ".." => return Err(format!("路径不能离开工作区: {}", path)),
+            name => {
+                // `PathBuf::push` replaces the whole buffer when the pushed
+                // component carries a prefix (`C:`), so a segment that is not one
+                // plain name is refused rather than silently re-rooting the path.
+                if !is_plain_path_segment(name) {
+                    return Err(format!("路径必须是工作区内的相对路径: {}", path));
+                }
+                resolved.push(name);
+            }
+        }
+    }
+    Ok(resolved)
+}
 
-    let bytes = fs::read(&target).map_err(|e| format!("读取文件失败: {}", e))?;
-    let size = bytes.len() as u64;
+/// Whether `segment` is exactly one ordinary path component.
+///
+/// A Windows drive (`C:`), a rooted segment (`\x`) or anything else carrying a
+/// prefix fails here; on Unix a colon is a legal file-name character, so such a
+/// name still passes.
+fn is_plain_path_segment(segment: &str) -> bool {
+    let mut components = Path::new(segment).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
 
-    // Check binary heuristic
-    let is_binary = bytes.iter().take(1024).any(|&b| b == 0);
-    let content = if is_binary {
-        "[二进制文件内容]".to_string()
-    } else {
-        String::from_utf8_lossy(&bytes).to_string()
-    };
+/// Stat one artifact inside the workspace.
+pub fn stat_artifact(workspace: &Path, path: &str) -> Result<ArtifactStat, String> {
+    let target = resolve_artifact_path(workspace, path)?;
+    let metadata = fs::metadata(&target).map_err(|e| format!("无法读取文件信息: {}", e))?;
+    let is_dir = metadata.is_dir();
+    Ok(ArtifactStat {
+        path: path.trim_start_matches(['/', '\\']).to_string(),
+        is_dir,
+        size: if is_dir { 0 } else { metadata.len() },
+        modified_at: modified_at_of(&metadata),
+        revision: revision_of(&metadata),
+    })
+}
 
-    Ok(ArtifactContent {
-        path: clean_path.to_string(),
-        content,
+/// Read one bounded byte range of a workspace artifact.
+///
+/// `limit` is clamped to `MAX_ARTIFACT_CHUNK_BYTES`, so a single call can never
+/// pull a whole build artifact (a multi-hundred-megabyte binary under `target/`,
+/// say) into memory; the caller advances with `next_offset` until `eof`.
+pub fn read_artifact_chunk(
+    workspace: &Path,
+    path: &str,
+    offset: u64,
+    limit: u64,
+) -> Result<ArtifactChunk, String> {
+    let target = resolve_artifact_path(workspace, path)?;
+    let metadata = fs::metadata(&target).map_err(|e| format!("无法读取文件信息: {}", e))?;
+    if !metadata.is_file() {
+        return Err(format!("不是文件: {}", target.display()));
+    }
+    let size = metadata.len();
+    if offset > size {
+        return Err(format!("读取偏移超出文件末尾: {} > {}", offset, size));
+    }
+    let bound = limit.clamp(1, MAX_ARTIFACT_CHUNK_BYTES).min(size - offset);
+    let mut bytes = vec![0u8; bound as usize];
+    if !bytes.is_empty() {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = fs::File::open(&target).map_err(|e| format!("读取文件失败: {}", e))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| format!("读取文件失败: {}", e))?;
+        file.read_exact(&mut bytes)
+            .map_err(|e| format!("读取文件失败: {}", e))?;
+    }
+    let next_offset = offset + bound;
+    Ok(ArtifactChunk {
+        path: path.trim_start_matches(['/', '\\']).to_string(),
+        offset,
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        byte_length: bound,
+        next_offset,
+        eof: next_offset >= size,
         size,
-        is_binary,
+        modified_at: modified_at_of(&metadata),
+        revision: revision_of(&metadata),
     })
 }

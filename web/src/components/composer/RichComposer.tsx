@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Dismiss20Regular } from '@fluentui/react-icons';
 import { flushSync } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
@@ -44,6 +44,7 @@ import { useConsoleStore } from '../../stores/useConsoleStore';
 import type { PendingAttachment } from '../../stores/useConsoleStore.ts';
 import type { TranscriptAttachment } from '../../stores/historyAttachments.ts';
 import { ARTIFACT_LIST_LIMIT } from '../../runtime-client/artifacts.ts';
+import { createArtifactSurface } from '../../client/artifactSurface.ts';
 
 /** A pill the editor is currently rendering, in document order. */
 type MountedPill =
@@ -161,14 +162,24 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     null,
   );
 
-  const { listArtifacts, listSkills, currentSession } = useConsoleStore(
+  const { client, workspacePath, rpcReady, listSkills, currentSession } = useConsoleStore(
     // Only what a directory read needs: a reasoning delta must never re-render
     // the surface the reader is typing into.
     useShallow((state) => ({
-      listArtifacts: state.listArtifacts,
+      client: state.client,
+      workspacePath: state.workspacePath,
+      rpcReady: state.connectionState === 'connected',
       listSkills: state.listSkills,
       currentSession: state.currentSession,
     })),
+  );
+
+  // The `@` catalog reads the same surface the file panel does: the Tauri native
+  // bridge on the desktop build (ignored build output included), the runtime RPC
+  // in the browser console.
+  const artifactSurface = useMemo(
+    () => createArtifactSurface(client, workspacePath, rpcReady),
+    [client, workspacePath, rpcReady],
   );
 
   /** Recompute emptiness and publish it. */
@@ -318,12 +329,16 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     if (mentionDir === files.dir) return;
     let active = true;
     setFilesLoading(true);
-    void listArtifacts(
-      currentSession,
-      mentionDir === '' ? '.' : mentionDir.replace(/\/+$/, ''),
-      null,
-      ARTIFACT_LIST_LIMIT,
-    )
+    const request =
+      artifactSurface === null
+        ? Promise.reject(new Error('运行时客户端尚未就绪'))
+        : artifactSurface.listArtifacts(
+            currentSession,
+            mentionDir === '' ? '.' : mentionDir.replace(/\/+$/, ''),
+            null,
+            ARTIFACT_LIST_LIMIT,
+          );
+    void request
       .then((page) => {
         if (!active) return;
         setFiles({
@@ -345,7 +360,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     return () => {
       active = false;
     };
-  }, [mentionDir, files.dir, listArtifacts, currentSession]);
+  }, [mentionDir, files.dir, artifactSurface, currentSession]);
 
   // Read discoverable Agent Skills through the runtime RPC once the mention
   // list is opened (falling back to the static mirror if offline/unpaired).
