@@ -15,6 +15,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import os
 import signal
 import struct
@@ -53,6 +54,9 @@ from synapse.web_console.host import (
     RelayBackpressureStats,
     RelayProjectScopeGuard,
     WebConsoleHost,
+    _pump,
+    _relay_log_level,
+    _RelayOutcome,
     resolve_project,
 )
 from synapse.web_console.security import (
@@ -228,8 +232,11 @@ class FakeDaemon:
     decided by the server rather than by the console host.
     """
 
-    def __init__(self, token: str = TOKEN) -> None:
+    def __init__(self, token: str = TOKEN, *, close_code: int | None = None) -> None:
         self.token = token
+        #: When set, the daemon ends the relay with this WebSocket close code
+        #: right after bearer auth (models an overloaded daemon returning 1013).
+        self.close_code = close_code
         self.authorized_project_ids = frozenset({PROJECT_ID})
         self.connections = 0
         self.turn_active = False
@@ -267,6 +274,11 @@ class FakeDaemon:
         )
         self.connections += 1
         try:
+            if self.close_code is not None:
+                # A daemon-side terminal close; the reason is a marker the host
+                # log must never echo (only the numeric code may travel).
+                await connection.close(code=self.close_code, reason="daemon-reason-secret")
+                return
             async for raw in connection:
                 self.received.append(raw)
                 try:
@@ -521,6 +533,276 @@ def test_bounded_frame_buffer_enforces_its_frame_and_byte_bounds() -> None:
     # FIFO order, and the end-of-stream sentinel always fits in the reserved slot.
     assert _run(drain_all()) == [(WSMsgType.BINARY, b"a"), (WSMsgType.BINARY, b"b")]
     assert by_frames.pending_bytes == 0
+
+
+# --- unit: relay terminal-cause reporting ---------------------------------
+
+
+class _FakeMessage:
+    """The two ``WSMessage`` attributes the pump reads (``type``/``data``)."""
+
+    def __init__(self, type_: WSMsgType, data: Any) -> None:
+        self.type = type_
+        self.data = data
+
+
+class _FakeRelaySource:
+    """A frame source for the pump unit tests, mirroring aiohttp's iteration.
+
+    Yields the given frames, then raises ``StopAsyncIteration`` (an ordinary
+    end-of-stream) unless ``block_when_exhausted`` keeps the reader pending so a
+    stalled sender can win the race.  ``close_code`` mirrors the read-only
+    attribute aiohttp exposes for the peer's own close code.
+    """
+
+    def __init__(
+        self,
+        frames: list[_FakeMessage] | None = None,
+        *,
+        close_code: int | None = None,
+        block_when_exhausted: bool = False,
+    ) -> None:
+        self._frames = list(frames or [])
+        self.close_code = close_code
+        self._block = block_when_exhausted
+
+    def __aiter__(self) -> _FakeRelaySource:
+        return self
+
+    async def __anext__(self) -> _FakeMessage:
+        if self._frames:
+            return self._frames.pop(0)
+        if self._block:
+            await asyncio.Event().wait()
+        raise StopAsyncIteration
+
+    async def send_str(self, payload: str) -> None:  # pragma: no cover - never a destination
+        raise AssertionError("the source is never used as a destination")
+
+
+class _FakeRelayDestination:
+    """Records sent frames; can stall a send (timeout) or fail it (reset)."""
+
+    def __init__(
+        self,
+        *,
+        stall: bool = False,
+        fail: BaseException | None = None,
+        delay: float = 0.0,
+    ) -> None:
+        self.sent: list[Any] = []
+        self._stall = stall
+        self._fail = fail
+        self._delay = delay
+
+    async def _send(self, payload: Any) -> None:
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._fail is not None:
+            raise self._fail
+        if self._stall:
+            await asyncio.Event().wait()
+        self.sent.append(payload)
+
+    async def send_str(self, payload: str) -> None:
+        await self._send(payload)
+
+    async def send_bytes(self, payload: bytes) -> None:
+        await self._send(payload)
+
+
+class _OversizeError(Exception):
+    """Stand-in for aiohttp's ``WebSocketError`` (a 1009 oversize rejection)."""
+
+
+def test_pump_reports_eof_with_the_source_close_code() -> None:
+    """A daemon-side 1013 close surfaces as the pump's own close code."""
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource(close_code=1013),
+            _FakeRelayDestination(),
+            direction="daemon->browser",
+        )
+        assert isinstance(outcome, _RelayOutcome)
+        assert outcome.direction == "daemon->browser"
+        assert outcome.cause == "eof"
+        assert outcome.upstream_code == 1013
+        assert outcome.error_type is None
+
+    _run(run())
+
+
+def test_pump_reports_a_peer_error_class_and_close_code() -> None:
+    """An oversize ``WSMsgType.ERROR`` is a fixed cause plus a class name."""
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource(
+                [_FakeMessage(WSMsgType.ERROR, _OversizeError("frame too big"))],
+                close_code=1009,
+            ),
+            _FakeRelayDestination(),
+            direction="browser->daemon",
+        )
+        assert outcome.cause == "peer_error"
+        assert outcome.error_type == "_OversizeError"
+        assert outcome.upstream_code == 1009
+
+    _run(run())
+
+
+def test_pump_reports_overflow_when_the_buffer_bound_is_reached() -> None:
+    """A stalled consumer ends the relay with ``overflow`` and counted drops."""
+
+    async def run() -> None:
+        stats = RelayBackpressureStats()
+        source = _FakeRelaySource(
+            [_FakeMessage(WSMsgType.TEXT, "payload") for _ in range(RELAY_MAX_PENDING_FRAMES + 8)],
+            block_when_exhausted=True,
+        )
+        outcome = await _pump(
+            source,
+            _FakeRelayDestination(stall=True),
+            direction="daemon->browser",
+            send_timeout=30.0,
+            stats=stats,
+        )
+        assert outcome.cause == "overflow"
+        assert stats.overflow_closes == 1
+        assert stats.dropped_frames >= 1
+        assert outcome.buffered_frames <= RELAY_MAX_PENDING_FRAMES
+
+    _run(run())
+
+
+def test_pump_reports_a_send_timeout() -> None:
+    """A frame that cannot be sent within ``send_timeout`` ends the relay."""
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource([_FakeMessage(WSMsgType.TEXT, "frame")], block_when_exhausted=True),
+            _FakeRelayDestination(stall=True),
+            direction="daemon->browser",
+            send_timeout=0.05,
+        )
+        assert outcome.cause == "send_timeout"
+        assert outcome.error_type is None
+
+    _run(run())
+
+
+def test_pump_reports_a_send_failure_with_the_class_name_only() -> None:
+    """A failed send carries the exception *class*, never its message text."""
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource([_FakeMessage(WSMsgType.TEXT, "frame")], block_when_exhausted=True),
+            _FakeRelayDestination(fail=ConnectionResetError("fixture-secret-frame-text")),
+            direction="browser->daemon",
+        )
+        assert outcome.cause == "send_failed"
+        assert outcome.error_type == "ConnectionResetError"
+
+    _run(run())
+
+
+def test_pump_send_failure_wins_when_reader_and_drain_finish_together() -> None:
+    """A reset landing in the same tick as the last frame is not lost as ``eof``.
+
+    The source yields both frames without blocking, so the second ``read`` and
+    the failing ``drain`` complete in one ``asyncio.wait`` tick: the drain's
+    terminal cause must win over the default end-of-stream.
+    """
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource(
+                [
+                    _FakeMessage(WSMsgType.TEXT, "one"),
+                    _FakeMessage(WSMsgType.TEXT, "two"),
+                ]
+            ),
+            _FakeRelayDestination(fail=ConnectionResetError("fixture-secret-reset")),
+            direction="daemon->browser",
+        )
+        assert outcome.cause == "send_failed"
+        assert outcome.error_type == "ConnectionResetError"
+
+    _run(run())
+
+
+def test_pump_send_failure_wins_over_a_reader_eof() -> None:
+    """An immediate EOF racing the reset must not mask the failed send."""
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource([_FakeMessage(WSMsgType.TEXT, "only")]),
+            _FakeRelayDestination(fail=ConnectionResetError("fixture-secret-reset")),
+            direction="daemon->browser",
+        )
+        assert outcome.cause == "send_failed"
+        assert outcome.error_type == "ConnectionResetError"
+
+    _run(run())
+
+
+def test_pump_reports_a_failed_flush_after_the_reader_eof() -> None:
+    """A reset during the post-EOF flush is reported, not swallowed as ``eof``.
+
+    The delayed send keeps the drain pending when the reader reaches EOF, so the
+    failure only surfaces while the ``finally`` block flushes the buffer; its
+    final non-``ok`` result must still become the safe terminal cause.
+    """
+
+    async def run() -> None:
+        outcome = await _pump(
+            _FakeRelaySource([_FakeMessage(WSMsgType.TEXT, "only")]),
+            _FakeRelayDestination(fail=ConnectionResetError("fixture-secret-reset"), delay=0.01),
+            direction="daemon->browser",
+        )
+        assert outcome.cause == "send_failed"
+        assert outcome.error_type == "ConnectionResetError"
+
+    _run(run())
+
+
+def test_pump_keeps_eof_when_the_flush_succeeds() -> None:
+    """A clean EOF with a successful flush stays ``eof`` (never ``send_failed``)."""
+
+    async def run() -> None:
+        destination = _FakeRelayDestination()
+        outcome = await _pump(
+            _FakeRelaySource(
+                [
+                    _FakeMessage(WSMsgType.TEXT, "one"),
+                    _FakeMessage(WSMsgType.BINARY, b"two"),
+                ]
+            ),
+            destination,
+            direction="daemon->browser",
+        )
+        assert outcome.cause == "eof"
+        assert outcome.error_type is None
+        assert destination.sent == ["one", b"two"]
+
+    _run(run())
+
+
+def test_relay_log_level_marks_ordinary_and_abnormal_endings() -> None:
+    """Ordinary disconnects stay at INFO; the incident causes warn."""
+
+    def outcome(cause: str, code: int | None) -> _RelayOutcome:
+        return _RelayOutcome(direction="daemon->browser", cause=cause, upstream_code=code)
+
+    assert _relay_log_level(outcome("eof", 1000)) == logging.INFO
+    assert _relay_log_level(outcome("eof", None)) == logging.INFO
+    # The daemon 1013 incident: a plain EOF with a non-ordinary close code.
+    assert _relay_log_level(outcome("eof", 1013)) == logging.WARNING
+    assert _relay_log_level(outcome("peer_error", 1009)) == logging.WARNING
+    assert _relay_log_level(outcome("overflow", None)) == logging.WARNING
+    assert _relay_log_level(outcome("send_timeout", None)) == logging.WARNING
+    assert _relay_log_level(outcome("send_failed", None)) == logging.WARNING
 
 
 def test_pair_cookie_default_max_age_matches_the_config_default(tmp_path: Path) -> None:
@@ -1431,6 +1713,7 @@ def test_oversized_frame_is_rejected_and_relay_cleans_up(tmp_path: Path) -> None
 
 def test_relay_outbound_buffer_is_bounded_and_slow_consumer_is_cleaned_up(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """B2-1/B2-2: the outbound buffer has a measurable bound and is cleaned up.
 
@@ -1438,7 +1721,8 @@ def test_relay_outbound_buffer_is_bounded_and_slow_consumer_is_cleaned_up(
     capped by ``RELAY_MAX_PENDING_FRAMES`` / ``RELAY_MAX_PENDING_BYTES``, the
     bound itself ends the relay (``overflow_closes``; the per-frame
     ``send_timeout_seconds`` is 30s here, so it cannot be the trigger), and the
-    relay slot, its tasks and the daemon connection are released afterwards.
+    relay slot, its tasks and the daemon connection are released afterwards.  The
+    bound-driven end is also reported in the relay log with the fixed cause.
     """
     static = static_root(tmp_path)
 
@@ -1492,7 +1776,111 @@ def test_relay_outbound_buffer_is_bounded_and_slow_consumer_is_cleaned_up(
             await host.close()
             await daemon.close()
 
-    _run(run())
+    with caplog.at_level(logging.INFO, logger="synapse.web_console.host"):
+        _run(run())
+
+    text = caplog.text
+    assert "web console relay ended" in text
+    assert "cause=overflow" in text
+    assert "direction=daemon->browser" in text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_daemon_busy_1013_is_logged_and_the_browser_still_closes_1000(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A daemon that ends the relay with 1013 is diagnosable, not silent.
+
+    The browser wire contract is unchanged -- the console still closes it with
+    the fixed ``1000 console socket closed`` -- while the host log records the
+    daemon's ``1013`` close code and never the daemon's reason string or token.
+    """
+    static = static_root(tmp_path)
+
+    async def run() -> None:
+        daemon = FakeDaemon(close_code=1013)
+        runtime_port = await daemon.start()
+        config = make_config(tmp_path, runtime_port=runtime_port, static_dir=static)
+        host = WebConsoleHost(config, project_view(config.workspace))
+        metadata = await host.start()
+        port = metadata["port"]
+        try:
+            async with ClientSession() as session:
+                cookie = await pair_session(session, port, host)
+                async with session.ws_connect(
+                    f"ws://127.0.0.1:{port}/runtime-ws",
+                    origin=f"http://127.0.0.1:{port}",
+                    headers=_cookie_header(cookie),
+                ) as ws:
+                    message = await asyncio.wait_for(ws.receive(), 5)
+                    # The frozen browser close contract: 1000, never the 1013.
+                    assert message.type is WSMsgType.CLOSE
+                    assert message.data == 1000
+                await wait_until(lambda: host._active_sockets == 0)
+        finally:
+            await host.close()
+            await daemon.close()
+
+    with caplog.at_level(logging.INFO, logger="synapse.web_console.host"):
+        _run(run())
+
+    text = caplog.text
+    assert "web console relay ended" in text
+    assert "direction=daemon->browser" in text
+    assert "cause=eof" in text
+    assert "upstream_code=1013" in text
+    # The daemon's reason string and the bearer token never reach the log.
+    assert "daemon-reason-secret" not in text
+    assert TOKEN not in text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_relay_log_never_contains_a_frame_payload_or_the_daemon_token(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The relay is a verbatim pipe, but its log line only carries fixed tokens."""
+    static = static_root(tmp_path)
+    secret = "fixture-secret-frame-payload-4d2a"
+
+    async def run() -> None:
+        daemon = FakeDaemon()
+        runtime_port = await daemon.start()
+        config = make_config(tmp_path, runtime_port=runtime_port, static_dir=static)
+        host = WebConsoleHost(config, project_view(config.workspace))
+        metadata = await host.start()
+        port = metadata["port"]
+        try:
+            async with ClientSession() as session:
+                cookie = await pair_session(session, port, host)
+                async with session.ws_connect(
+                    f"ws://127.0.0.1:{port}/runtime-ws",
+                    origin=f"http://127.0.0.1:{port}",
+                    headers=_cookie_header(cookie),
+                ) as ws:
+                    await ws.send_str(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "runtime.echo",
+                                "params": {"blob": secret},
+                            }
+                        )
+                    )
+                    reply = await asyncio.wait_for(ws.receive(), 5)
+                    assert secret in reply.data  # relayed verbatim to the browser
+                await wait_until(lambda: host._active_sockets == 0)
+        finally:
+            await host.close()
+            await daemon.close()
+
+    with caplog.at_level(logging.INFO, logger="synapse.web_console.host"):
+        _run(run())
+
+    text = caplog.text
+    assert "web console relay ended" in text
+    assert secret not in text
+    assert TOKEN not in text
 
 
 def test_daemon_unreachable_still_serves_static_and_ws_fails_fast(tmp_path: Path) -> None:

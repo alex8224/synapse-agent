@@ -2140,6 +2140,147 @@ def test_d10_relay_outbound_bound_is_measured_on_the_real_stack(tmp_path: Path) 
     _run(run())
 
 
+# --- D12: host relay replay burst (backend yield across the relay) -----------
+
+
+#: Small-event replay burst sized to the backend transport regression's largest
+#: parametrization (``test_runtime_transport_websocket_s7``), so the *relay* is
+#: what is under test, not the daemon-side writer queue alone.
+REPLAY_BURST = 870
+
+
+def test_d12_watch_replay_burst_through_the_host_relay_stays_ordered(
+    tmp_path: Path,
+) -> None:
+    """A >=870-event replay crosses the real host relay intact (no 1000, no leak).
+
+    The backend transport regression proves the daemon's per-event yield keeps a
+    replay burst inside its bounded writer queue.  This is the missing *host
+    relay* half of that chain: the browser connects to the real
+    ``WebConsoleHost`` ``/runtime-ws`` (relayed to the real daemon), the session
+    broker is pre-seeded with ``REPLAY_BURST`` small events, and
+    ``runtime.events.watch`` must deliver its ack first, then every replayed
+    cursor in order, then a live event, then keep serving ordinary RPC.  Nothing
+    may overflow the relay's bounded buffer, leak a relay task, or close the
+    browser socket with a spurious ``1000``.
+    """
+
+    async def run() -> None:
+        stack = _Stack(tmp_path)
+        await stack.start()
+        ws: Any = None
+        try:
+            async with ClientSession() as session:
+                cookie = await stack.authenticate(session)
+                ref = _ref(stack.project_id, "t1")
+                frames: list[str] = []
+                ws = await session.ws_connect(
+                    stack.ws_url(), origin=stack.origin, headers=_cookie_header(cookie)
+                )
+                await ws.send_str(_rpc(1, "runtime.session.open", {"session": ref}))
+                opened = await _reply(ws, frames, request_id=1)
+                assert opened["result"]["created"] is True
+
+                # Pre-seed the live session broker (no transport, no model turn).
+                broker = stack.sessions["t1"].broker
+                for index in range(1, REPLAY_BURST + 1):
+                    broker.emit(_delta("replay-turn", str(index)))
+
+                # watch after=0: the ack is written before any replayed frame.
+                await ws.send_str(
+                    _rpc(2, "runtime.events.watch", {"session": ref, "after": 0})
+                )
+                watched = await _reply(ws, frames, request_id=2)
+                subscription_id = watched["result"]["subscription_id"]
+                assert isinstance(subscription_id, str) and subscription_id
+
+                cursors: list[int] = []
+                while len(cursors) < REPLAY_BURST:
+                    message = await asyncio.wait_for(ws.receive(), TIMEOUT)
+                    assert message.type == WSMsgType.TEXT, message.type
+                    frames.append(message.data)
+                    payload = json.loads(message.data)
+                    assert payload.get("method") == "runtime.event", payload
+                    assert payload["params"]["subscription_id"] == subscription_id
+                    cursors.append(payload["params"]["cursor"])
+                assert cursors == list(range(1, REPLAY_BURST + 1))
+
+                # A live event after the burst still arrives, in order.
+                broker.emit(_delta("replay-turn", "live"))
+                live = await asyncio.wait_for(ws.receive(), TIMEOUT)
+                assert live.type == WSMsgType.TEXT
+                frames.append(live.data)
+                live_payload = json.loads(live.data)
+                assert live_payload["method"] == "runtime.event"
+                assert live_payload["params"]["cursor"] == REPLAY_BURST + 1
+
+                # Ordinary business RPC is still served after the burst.
+                await ws.send_str(_rpc(3, "runtime.session.get", {"session": ref}))
+                fetched = await _reply(ws, frames, request_id=3)
+                assert fetched["result"]["thread_id"] == "t1"
+
+                # Resume from a non-zero cursor: only the tail replays, in order.
+                await ws.send_str(
+                    _rpc(
+                        4,
+                        "runtime.events.watch",
+                        {"session": ref, "after": REPLAY_BURST - 1},
+                    )
+                )
+                resumed = await _reply(ws, frames, request_id=4)
+                tail_id = resumed["result"]["subscription_id"]
+                tail: list[int] = []
+                while len(tail) < 2:
+                    message = await asyncio.wait_for(ws.receive(), TIMEOUT)
+                    assert message.type == WSMsgType.TEXT, message.type
+                    frames.append(message.data)
+                    payload = json.loads(message.data)
+                    if (
+                        payload.get("method") == "runtime.event"
+                        and payload["params"]["subscription_id"] == tail_id
+                    ):
+                        tail.append(payload["params"]["cursor"])
+                assert tail == [REPLAY_BURST, REPLAY_BURST + 1]
+
+                # Detach both subscriptions; the replies are still served.
+                await ws.send_str(
+                    _rpc(5, "runtime.events.unwatch", {"subscription_id": tail_id})
+                )
+                assert (await _reply(ws, frames, request_id=5))["result"] == {"removed": True}
+                await ws.send_str(
+                    _rpc(6, "runtime.events.unwatch", {"subscription_id": subscription_id})
+                )
+                assert (await _reply(ws, frames, request_id=6))["result"] == {"removed": True}
+                await _wait_until(lambda: not broker._subscribers)
+                assert not broker._subscribers
+
+                # The relay never overflowed, dropped a frame or hit its bound.
+                stats = stack.host.relay_stats
+                assert stats.overflow_closes == 0
+                assert stats.dropped_frames == 0
+                assert stats.peak_pending_frames <= RELAY_MAX_PENDING_FRAMES
+                assert stats.peak_pending_bytes <= RELAY_MAX_PENDING_BYTES
+                # The browser socket is still healthy: no spurious close (1000).
+                assert ws.close_code is None
+                await ws.close()
+
+            # Slot, relay tasks and the upstream daemon connection are released.
+            await _wait_until(
+                lambda: stack.host._active_sockets == 0
+                and stack.daemon.server._connections == set()
+                and not stack.host._relay_tasks
+                and not _lingering_relay_tasks(),
+                label="relay slot/tasks/daemon connection were not released",
+            )
+        finally:
+            if ws is not None and not ws.closed:
+                with contextlib.suppress(Exception):
+                    await ws.close()
+            await stack.close()
+
+    _run(run())
+
+
 # --- F §6.2: two registered projects -----------------------------------------
 
 

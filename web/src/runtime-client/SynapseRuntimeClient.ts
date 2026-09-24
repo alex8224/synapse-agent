@@ -169,12 +169,21 @@ export interface ReconnectPolicy {
   maxAttempts: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  /**
+   * How long one generation must stay connected before a later drop restores
+   * the full `maxAttempts` budget.  A handshake alone is not "healthy": the
+   * host can accept and immediately drop the socket (masking a real refusal),
+   * so resetting on `open` would loop forever.  Optional; falls back to
+   * `DEFAULT_RECONNECT_POLICY.stableConnectionMs`.
+   */
+  stableConnectionMs?: number;
 }
 
 export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = {
   maxAttempts: 5,
   baseDelayMs: 300,
   maxDelayMs: 8000,
+  stableConnectionMs: 10_000,
 };
 
 /** A late/duplicate response is intentionally ignored; the request stays open. */
@@ -477,8 +486,11 @@ function sameSession(a: SessionRef, b: SessionRef): boolean {
  * - typed errors that keep the server `service_code` (`replay_gap`,
  *   `event_overflow`, `invalid_cursor`, ...) so callers can distinguish an
  *   explicit gap from a transient transport failure;
- * - an optional bounded reconnect budget (never infinite) that is armed only
- *   after a healthy `connect()` and cancelled by `disconnect()` / user close;
+ * - an optional bounded reconnect budget (never infinite) armed only after a
+ *   healthy `connect()`; a handshake alone does not refill it — only a
+ *   generation that stays up for `ReconnectPolicy.stableConnectionMs` does, so
+ *   a host that accepts and immediately drops the socket still exhausts
+ *   `maxAttempts`;
  * - a registry of concurrent watches, each with its own resume cursor, so
  *   several sessions can stream at once and a re-attach can resume from the
  *   exact last delivered scanned position (monotonically, no duplicate, no
@@ -500,6 +512,12 @@ export class SynapseRuntimeClient {
   private armed = false;
   private closingUser = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Pending stability window that refills the reconnect budget once the current
+   * generation has stayed connected long enough (see `armStableBudget`).  The
+   * handle is the fence: a callback only acts while it still owns this field.
+   */
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private reconnectPolicy: ReconnectPolicy = { ...DEFAULT_RECONNECT_POLICY };
   private opening: Promise<void> | null = null;
@@ -530,6 +548,8 @@ export class SynapseRuntimeClient {
         maxAttempts: options.reconnect.maxAttempts ?? DEFAULT_RECONNECT_POLICY.maxAttempts,
         baseDelayMs: options.reconnect.baseDelayMs ?? DEFAULT_RECONNECT_POLICY.baseDelayMs,
         maxDelayMs: options.reconnect.maxDelayMs ?? DEFAULT_RECONNECT_POLICY.maxDelayMs,
+        stableConnectionMs:
+          options.reconnect.stableConnectionMs ?? DEFAULT_RECONNECT_POLICY.stableConnectionMs,
       };
     }
   }
@@ -1383,6 +1403,8 @@ export class SynapseRuntimeClient {
 
   private openSocket(): Promise<void> {
     const gen = ++this.generation;
+    // A new socket supersedes any stability window from the previous generation.
+    this.clearStableTimer();
     let settled = false;
     this.setState('connecting');
     // No credentials are ever carried in the WebSocket URL: the console host
@@ -1432,7 +1454,10 @@ export class SynapseRuntimeClient {
           // an initial connect failure stays a plain observable error instead
           // of silently retrying before the console ever reached the daemon.
           this.armed = true;
-          this.reconnectAttempts = 0;
+          // A handshake alone is not "healthy": the host can accept and drop at
+          // once, so only a generation that stays up for `stableConnectionMs`
+          // refills the budget (see `armStableBudget`).
+          this.armStableBudget(gen);
           resolve();
         })();
       };
@@ -1453,6 +1478,8 @@ export class SynapseRuntimeClient {
         }
         const detail = describeSocketClose(ev);
         this.ws = null;
+        // The generation is gone: drop its window so it cannot outlive the socket.
+        this.clearStableTimer();
         if (!settled) {
           settled = true;
           this.openReject = null;
@@ -1481,6 +1508,13 @@ export class SynapseRuntimeClient {
     this.closingUser = true;
     this.armed = false;
     this.clearReconnectTimer();
+    this.clearStableTimer();
+    // A manual close ends the recovery lifecycle: the next `connect()` starts
+    // from a full budget instead of inheriting a half-spent one.  The reset
+    // lives here (an explicit user close) and not in `connect()` because the
+    // host calls `connect()` as an ensure-connected during recovery, where
+    // refilling the budget would let a flapping endpoint loop forever.
+    this.reconnectAttempts = 0;
     const socket = this.ws;
     this.ws = null;
     if (socket) {
@@ -1511,6 +1545,40 @@ export class SynapseRuntimeClient {
     }
   }
 
+  /**
+   * Arm the stability window for the freshly negotiated generation `gen`.
+   *
+   * Only a window that elapses for the still-current, still-live generation
+   * refills the budget; a handshake dropped at once leaves `reconnectAttempts`
+   * untouched so a flapping endpoint still exhausts `maxAttempts`.  The handle
+   * is `unref`'d where available (Node) so a pending window cannot keep the
+   * process alive after the socket is gone.
+   */
+  private armStableBudget(gen: number) {
+    this.clearStableTimer();
+    const windowMs =
+      this.reconnectPolicy.stableConnectionMs ?? DEFAULT_RECONNECT_POLICY.stableConnectionMs ?? 0;
+    const timer = setTimeout(() => {
+      // Fence first: a replayed or replaced fire owns nothing, so it must leave
+      // the live handle and the budget untouched.
+      if (this.stableTimer !== timer || gen !== this.generation) return;
+      if (this.state !== 'connected' || this.ws === null) return;
+      this.stableTimer = null;
+      this.reconnectAttempts = 0;
+    }, Math.max(0, windowMs));
+    // Browsers return a numeric handle with no `unref`; Node's `Timeout` has
+    // one.  Guard the call so both hosts share the same code.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.stableTimer = timer;
+  }
+
+  private clearStableTimer() {
+    if (this.stableTimer !== null) {
+      clearTimeout(this.stableTimer);
+      this.stableTimer = null;
+    }
+  }
+
   private handleUnexpectedClose(reason: string) {
     if (this.closingUser || !this.armed) {
       this.setState('disconnected', reason);
@@ -1525,7 +1593,8 @@ export class SynapseRuntimeClient {
     try {
       await this.openOnce();
       if (this.closingUser) return;
-      this.reconnectAttempts = 0;
+      // A successful handshake does not refill the budget; the fresh
+      // generation's own stability window does, once it has proven healthy.
       const policy = this.reconnectPolicy;
       this.emitRecovery({
         phase: 'reconnected',

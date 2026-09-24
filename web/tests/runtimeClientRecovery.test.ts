@@ -25,7 +25,7 @@ class FakeSocket implements SocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: any }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: { code?: number; reason?: string }) => void) | null = null;
   sent: string[] = [];
   inbox: string[] = [];
 
@@ -63,11 +63,11 @@ class FakeSocket implements SocketLike {
     this.readyState = 1;
     this.onopen?.();
   }
-  serverDrop(): void {
+  serverDrop(ev?: { code?: number; reason?: string }): void {
     this.readyState = 3;
     const cb = this.onclose;
     this.onclose = null;
-    cb?.();
+    cb?.(ev);
   }
 }
 
@@ -84,6 +84,74 @@ class Factory {
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 const tickN = (n: number) => new Promise<void>((r) => setTimeout(r, n));
+
+/**
+ * Let the newest socket finish its handshake (when it is still connecting) and
+ * then drop it at once with a clean `1000` close.
+ *
+ * This is the flapping host the reconnect-budget fix targets: the handshake
+ * always succeeds, so a client that refilled its budget on `open` would open a
+ * new socket forever instead of ever reaching the terminal `error` state.
+ */
+async function dropNewestAfterHandshake(factory: Factory): Promise<boolean> {
+  await tickN(20);
+  const socket = factory.sockets[factory.calls - 1];
+  if (!socket || socket.readyState === 3) return false;
+  if (socket.readyState !== 1) {
+    socket.serverOpen();
+    await tick();
+  }
+  socket.serverDrop({ code: 1000, reason: '' });
+  return true;
+}
+
+/**
+ * Track the live timers so a test can prove a long stability window never
+ * outlives its connection (a stray 10s timer would keep the Node process alive
+ * after the socket is gone).  The client reads the global `setTimeout` /
+ * `clearTimeout` at call time, so patching them covers its timers and this
+ * file's own `tick` helpers alike.
+ *
+ * Each callback is also captured, so a test can replay one after its
+ * `clearTimeout` — a task that already fired cannot be cancelled in a browser.
+ */
+function trackTimers() {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const live = new Set<unknown>();
+  const captured = new Map<unknown, { ms?: number; run: () => void }>();
+  (globalThis as any).setTimeout = (fn: (...a: any[]) => void, ms?: number, ...rest: any[]) => {
+    const handle = realSet(() => {
+      live.delete(handle);
+      fn(...rest);
+    }, ms);
+    live.add(handle);
+    captured.set(handle, { ms, run: () => fn(...rest) });
+    return handle;
+  };
+  (globalThis as any).clearTimeout = (handle: any) => {
+    live.delete(handle);
+    realClear(handle);
+  };
+  return {
+    live,
+    /** Handle of the single live timer scheduled with `ms`. */
+    handleFor(ms: number): unknown {
+      for (const handle of live) {
+        if (captured.get(handle)?.ms === ms) return handle;
+      }
+      throw new Error(`no live timer scheduled with ${ms}ms`);
+    },
+    /** Replay a captured callback as a task that outlived its `clearTimeout`. */
+    fireStale(handle: unknown) {
+      captured.get(handle)?.run();
+    },
+    restore() {
+      (globalThis as any).setTimeout = realSet;
+      (globalThis as any).clearTimeout = realClear;
+    },
+  };
+}
 
 async function openClient(opts?: {
   maxAttempts?: number;
@@ -448,4 +516,222 @@ test('a fenced subscription reports no second failure and no late completion', a
   );
   assert.equal(client.getWatchCursor(), 0, 'a late completion may not advance the fenced watch');
   client.disconnect();
+});
+
+// --- reconnect-budget stability window (flapping-host fix) -------------------
+
+test('a handshake that drops immediately still exhausts the bounded budget (real 1000 close)', async () => {
+  const factory = new Factory();
+  const recoveries: any[] = [];
+  const client = new SynapseRuntimeClient({
+    url: 'ws://loopback',
+    socketFactory: factory.make,
+    reconnect: { maxAttempts: 5, baseDelayMs: 1, maxDelayMs: 3, stableConnectionMs: 10_000 },
+    onRecovery: (i) => recoveries.push(i),
+  });
+  const cp = client.connect();
+  await tick();
+  factory.sockets[0].serverOpen();
+  await cp;
+  assert.equal(client.getState(), 'connected');
+
+  // The host accepts every socket and drops it at once with a clean 1000 close
+  // (masking the real 1013 "try again later"). A completed handshake must not
+  // refill the budget, or this loops forever opening a new socket each time.
+  for (let i = 0; i < 10 && client.getState() !== 'error'; i += 1) {
+    assert.ok(await dropNewestAfterHandshake(factory), `reconnect socket #${i + 1} should exist`);
+  }
+
+  assert.equal(client.getState(), 'error', 'the flapping endpoint must hit the terminal budget');
+  assert.equal(factory.calls, 1 + 5, 'exactly the initial connect plus maxAttempts reconnects');
+  assert.deepEqual(
+    recoveries.map((i) => `${i.phase}:${i.attempt}`),
+    [
+      'reconnecting:1',
+      'reconnected:1',
+      'reconnecting:2',
+      'reconnected:2',
+      'reconnecting:3',
+      'reconnected:3',
+      'reconnecting:4',
+      'reconnected:4',
+      'reconnecting:5',
+      'reconnected:5',
+      'failed:5',
+    ],
+    'the budget advances on every drop and never rolls back on a handshake',
+  );
+  client.disconnect();
+});
+
+test('a generation that stays connected past the window restores the full budget', async () => {
+  const factory = new Factory();
+  const recoveries: any[] = [];
+  const client = new SynapseRuntimeClient({
+    url: 'ws://loopback',
+    socketFactory: factory.make,
+    reconnect: { maxAttempts: 4, baseDelayMs: 1, maxDelayMs: 3, stableConnectionMs: 25 },
+    onRecovery: (i) => recoveries.push(i),
+  });
+  const cp = client.connect();
+  await tick();
+  factory.sockets[0].serverOpen();
+  await cp;
+
+  const reconnecting = () =>
+    recoveries.filter((r) => r.phase === 'reconnecting').map((r) => r.attempt);
+
+  // Spend two attempts: each reconnect handshakes and is dropped at once, so
+  // the budget keeps counting (a handshake alone must not refill it).
+  factory.sockets[0].serverDrop({ code: 1000, reason: '' });
+  await tickN(15);
+  factory.sockets[1].serverOpen();
+  await tick();
+  factory.sockets[1].serverDrop({ code: 1000, reason: '' });
+  await tickN(15);
+  const gen3 = factory.sockets[2];
+  gen3.serverOpen();
+  await tick();
+  assert.equal(client.getState(), 'connected');
+  assert.deepEqual(reconnecting(), [1, 2], 'two flapping reconnects spend attempts 1 and 2');
+
+  // Let the third generation stay connected past its window: the budget refills.
+  await tickN(40);
+
+  // The next failure is attempt 1 again, not attempt 3.
+  gen3.serverDrop({ code: 1000, reason: '' });
+  await tick();
+  assert.deepEqual(reconnecting(), [1, 2, 1], 'a stable generation refills the budget');
+  client.disconnect();
+});
+
+test('a manual disconnect then reconnect starts a fresh budget', async () => {
+  const factory = new Factory();
+  const recoveries: any[] = [];
+  const client = new SynapseRuntimeClient({
+    url: 'ws://loopback',
+    socketFactory: factory.make,
+    reconnect: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 3, stableConnectionMs: 10_000 },
+    onRecovery: (i) => recoveries.push(i),
+  });
+  const cp = client.connect();
+  await tick();
+  factory.sockets[0].serverOpen();
+  await cp;
+
+  // Flap until the budget is exhausted.
+  for (let i = 0; i < 8 && client.getState() !== 'error'; i += 1) {
+    await dropNewestAfterHandshake(factory);
+  }
+  assert.equal(client.getState(), 'error');
+  const callsAtExhaustion = factory.calls;
+
+  // A manual close ends the recovery lifecycle...
+  client.disconnect();
+  assert.equal(client.getState(), 'disconnected');
+  recoveries.length = 0;
+
+  // ...and the next user connect gets a full budget: its first drop is attempt 1.
+  const cp2 = client.connect();
+  await tick();
+  const fresh = factory.sockets[factory.calls - 1];
+  assert.ok(factory.calls > callsAtExhaustion, 'a manual reconnect opens a new socket');
+  fresh.serverOpen();
+  await cp2;
+  assert.equal(client.getState(), 'connected');
+  fresh.serverDrop({ code: 1000, reason: '' });
+  await tick();
+  const reconnecting = recoveries.filter((r) => r.phase === 'reconnecting');
+  assert.equal(reconnecting.length, 1, 'the fresh connection reconnects once');
+  assert.equal(reconnecting[0].attempt, 1, 'a manual reconnect starts from a full budget');
+  assert.equal(reconnecting[0].maxAttempts, 2);
+  client.disconnect();
+});
+
+test('a stability window is cleared with its generation and never outlives the connection', async () => {
+  const tracker = trackTimers();
+  try {
+    const factory = new Factory();
+    const client = new SynapseRuntimeClient({
+      url: 'ws://loopback',
+      socketFactory: factory.make,
+      reconnect: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 3, stableConnectionMs: 10_000 },
+    });
+    const cp = client.connect();
+    await tick();
+    factory.sockets[0].serverOpen();
+    await cp;
+    // A live generation arms exactly one long window.
+    assert.equal(tracker.live.size, 1, 'a live generation arms exactly one window');
+
+    // Drop it: the window is cleared with the generation, so the reconnect arms
+    // exactly one *new* window — a stale one can never refill the new budget.
+    factory.sockets[0].serverDrop({ code: 1000, reason: '' });
+    await tickN(20);
+    const s1 = factory.sockets[1];
+    s1.serverOpen();
+    await tick();
+    assert.equal(client.getState(), 'connected');
+    assert.equal(tracker.live.size, 1, 'a replaced generation leaves no stale window behind');
+
+    // A manual close clears the last one, so nothing keeps the host alive.
+    client.disconnect();
+    assert.equal(tracker.live.size, 0, 'a manual close clears the pending window');
+  } finally {
+    tracker.restore();
+  }
+});
+
+test('a stale stability callback cannot refill the budget nor drop the live handle', async () => {
+  const tracker = trackTimers();
+  try {
+    const factory = new Factory();
+    const recoveries: any[] = [];
+    const client = new SynapseRuntimeClient({
+      url: 'ws://loopback',
+      socketFactory: factory.make,
+      reconnect: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 3, stableConnectionMs: 10_000 },
+      onRecovery: (i) => recoveries.push(i),
+    });
+    const cp = client.connect();
+    await tick();
+    factory.sockets[0].serverOpen();
+    await cp;
+
+    // gen 1 is healthy and owns exactly one long window; capture its callback.
+    const staleHandle = tracker.handleFor(10_000);
+
+    // The socket drops and the window is cleared, but a task that already fired
+    // cannot be cancelled. Replay it while the generation has not advanced yet:
+    // the worst case for a naive fence, since `gen` still matches.
+    factory.sockets[0].serverDrop({ code: 1000, reason: '' });
+    tracker.fireStale(staleHandle);
+    await tickN(20);
+
+    const reconnecting = () =>
+      recoveries.filter((r) => r.phase === 'reconnecting').map((r) => r.attempt);
+    assert.deepEqual(reconnecting(), [1], 'the replayed task must not refill the budget');
+
+    // gen 2 handshakes and arms a fresh window of its own.
+    const s2 = factory.sockets[1];
+    s2.serverOpen();
+    await tick();
+    assert.equal(client.getState(), 'connected');
+    const liveHandle = tracker.handleFor(10_000);
+    assert.notEqual(liveHandle, staleHandle, 'the new generation arms a new window');
+
+    // Replaying the dead generation's task must not wipe the live handle either.
+    tracker.fireStale(staleHandle);
+    assert.ok(tracker.live.has(liveHandle), 'the live window must survive a stale fire');
+
+    // The next drop is still attempt 2 and clears the live window: a lost handle
+    // would leak the timer, a phantom refill would restart the count at 1.
+    s2.serverDrop({ code: 1000, reason: '' });
+    await tickN(20);
+    assert.deepEqual(reconnecting(), [1, 2], 'the budget keeps advancing across stale fires');
+    assert.equal(tracker.live.has(liveHandle), false, 'the drop still clears the live window');
+    client.disconnect();
+  } finally {
+    tracker.restore();
+  }
 });

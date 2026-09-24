@@ -37,7 +37,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1055,6 +1055,7 @@ class WebConsoleHost:
                                 _pump(
                                     socket,
                                     daemon_socket,
+                                    direction=_RELAY_DIRECTIONS[0],
                                     send_timeout=self.config.send_timeout_seconds,
                                     stats=self.relay_stats,
                                     scope_guard=self._scope_guard,
@@ -1064,6 +1065,7 @@ class WebConsoleHost:
                                 _pump(
                                     daemon_socket,
                                     socket,
+                                    direction=_RELAY_DIRECTIONS[1],
                                     send_timeout=self.config.send_timeout_seconds,
                                     stats=self.relay_stats,
                                 )
@@ -1076,7 +1078,11 @@ class WebConsoleHost:
                             )
                             for task in pending:
                                 task.cancel()
-                            await asyncio.gather(*pending, return_exceptions=True)
+                            # Consume every pump result (finished and cancelled) so
+                            # a stray unretrieved exception can never print an
+                            # untrusted message, then log the fixed cause.
+                            results = await asyncio.gather(*pumps, return_exceptions=True)
+                            _log_relay_termination(_RELAY_DIRECTIONS, results, self.relay_stats)
                         finally:
                             self._relay_tasks.difference_update(pumps)
                             if not daemon_socket.closed:
@@ -1221,6 +1227,108 @@ async def _close_socket(socket: web.WebSocketResponse, code: int, message: bytes
         pass
 
 
+#: Fixed, allowlisted terminal causes of a relay direction: only these tokens
+#: (never a payload, peer reason, exception message, header, token or config)
+#: may appear in the relay's log line.
+RELAY_CAUSE_EOF = "eof"
+RELAY_CAUSE_PEER_CLOSE = "peer_close"
+RELAY_CAUSE_PEER_CLOSED = "peer_closed"
+RELAY_CAUSE_PEER_ERROR = "peer_error"
+RELAY_CAUSE_OVERFLOW = "overflow"
+RELAY_CAUSE_SEND_TIMEOUT = "send_timeout"
+RELAY_CAUSE_SEND_FAILED = "send_failed"
+RELAY_CAUSE_INTERNAL_ERROR = "internal_error"
+
+#: Peer close codes that mean "an ordinary, expected disconnect" (never warn).
+RELAY_ORDINARY_CLOSE_CODES = frozenset({1000, 1001, 1005})
+
+#: Causes that always deserve a warning, whatever the peer close code.
+_RELAY_ABNORMAL_CAUSES = frozenset(
+    {
+        RELAY_CAUSE_OVERFLOW,
+        RELAY_CAUSE_SEND_TIMEOUT,
+        RELAY_CAUSE_SEND_FAILED,
+        RELAY_CAUSE_PEER_ERROR,
+        RELAY_CAUSE_INTERNAL_ERROR,
+    }
+)
+
+#: The two relay directions, in the order the handler starts their pump tasks.
+_RELAY_DIRECTIONS = ("browser->daemon", "daemon->browser")
+
+
+@dataclass(frozen=True, slots=True)
+class _RelayOutcome:
+    """Terminal cause of one relay direction; every field is a safe token.
+
+    ``cause`` is a ``RELAY_CAUSE_*`` value, ``upstream_code`` a peer close code,
+    ``error_type`` an exception class name (never ``str(error)``) and
+    ``buffered_*`` this direction's own buffer snapshot.
+    """
+
+    direction: str
+    cause: str
+    upstream_code: int | None = None
+    error_type: str | None = None
+    buffered_frames: int = 0
+    buffered_bytes: int = 0
+
+
+def _relay_log_level(outcome: _RelayOutcome) -> int:
+    """WARNING for an abnormal relay end, INFO for an ordinary disconnect.
+
+    aiohttp's async iterator swallows the CLOSE frame, so the close code is
+    consulted too: a daemon ``1013`` overload reads as a plain EOF yet must warn.
+    """
+    if outcome.cause in _RELAY_ABNORMAL_CAUSES:
+        return logging.WARNING
+    if (
+        outcome.upstream_code is not None
+        and outcome.upstream_code not in RELAY_ORDINARY_CLOSE_CODES
+    ):
+        return logging.WARNING
+    return logging.INFO
+
+
+def _log_relay_termination(
+    directions: tuple[str, ...],
+    results: Sequence[Any],
+    stats: RelayBackpressureStats,
+) -> None:
+    """Log one fixed-classification line per finished relay direction.
+
+    A completed pump yields a :class:`_RelayOutcome`; a cancelled one (the peer
+    ended the relay first) and an unexpected one whose class name -- never its
+    message -- is logged.
+    """
+    for direction, result in zip(directions, results, strict=True):
+        if isinstance(result, _RelayOutcome):
+            logger.log(
+                _relay_log_level(result),
+                "web console relay ended direction=%s cause=%s upstream_code=%s "
+                "error_type=%s buffered_frames=%d buffered_bytes=%d "
+                "overflow_closes=%d dropped_frames=%d peak_pending_frames=%d "
+                "peak_pending_bytes=%d",
+                result.direction,
+                result.cause,
+                result.upstream_code,
+                result.error_type,
+                result.buffered_frames,
+                result.buffered_bytes,
+                stats.overflow_closes,
+                stats.dropped_frames,
+                stats.peak_pending_frames,
+                stats.peak_pending_bytes,
+            )
+        elif isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            logger.warning(
+                "web console relay ended direction=%s cause=%s error_type=%s",
+                direction,
+                RELAY_CAUSE_INTERNAL_ERROR,
+                type(result).__name__,
+            )
+
+
 @dataclass
 class RelayBackpressureStats:
     """High-water marks of the bounded relay buffer (evidence, never secrets).
@@ -1313,30 +1421,40 @@ class BoundedFrameBuffer:
         return frame
 
 
-async def _send(sender: Any, payload: Any, timeout: float | None) -> None:
-    """Send one frame, bounding how long a slow consumer may stall the relay."""
-    if timeout is None:
-        await sender(payload)
-        return
-    await asyncio.wait_for(sender(payload), timeout)
+_SEND_OK = "ok"
+
+
+async def _send_one(sender: Any, payload: Any, timeout: float | None) -> tuple[str, str | None]:
+    """Send one frame; a fixed cause plus an exception *class name* on failure.
+
+    Bounds how long a slow consumer may stall the relay.  Only the class name
+    travels back: a transport error's ``str`` can embed payload or peer content.
+    """
+    try:
+        if timeout is None:
+            await sender(payload)
+        else:
+            await asyncio.wait_for(sender(payload), timeout)
+    except TimeoutError:
+        return RELAY_CAUSE_SEND_TIMEOUT, None
+    except (RuntimeError, ConnectionResetError) as exc:
+        return RELAY_CAUSE_SEND_FAILED, type(exc).__name__
+    return _SEND_OK, None
 
 
 async def _drain(
     buffer: BoundedFrameBuffer, destination: Any, *, send_timeout: float | None
-) -> None:
+) -> tuple[str, str | None]:
     """Send buffered frames in order until the stream ends or the peer stalls."""
     while True:
         frame = await buffer.next_frame()
         if frame is None:
-            return
+            return _SEND_OK, None
         kind, payload = frame
-        try:
-            if kind is WSMsgType.TEXT:
-                await _send(destination.send_str, payload, send_timeout)
-            else:
-                await _send(destination.send_bytes, payload, send_timeout)
-        except (RuntimeError, ConnectionResetError, TimeoutError):
-            return
+        sender = destination.send_str if kind is WSMsgType.TEXT else destination.send_bytes
+        cause, error_type = await _send_one(sender, payload, send_timeout)
+        if cause != _SEND_OK:
+            return cause, error_type
 
 
 async def _anext_or_none(iterator: Any) -> Any:
@@ -1347,23 +1465,38 @@ async def _anext_or_none(iterator: Any) -> Any:
         return None
 
 
-async def _send_back(source: Any, payload: str, timeout: float | None) -> bool:
-    """Answer the reader's own peer; ``False`` when that peer stalls/closes."""
-    try:
-        await _send(source.send_str, payload, timeout)
-    except (RuntimeError, ConnectionResetError, TimeoutError):
-        return False
-    return True
+def _drain_terminal_cause(drain: asyncio.Task[Any]) -> tuple[str, str | None]:
+    """Fixed terminal cause of a finished drain task (never the exception text)."""
+    if drain.cancelled():  # pragma: no cover - the caller never cancels a finished drain
+        return RELAY_CAUSE_EOF, None
+    error = drain.exception()
+    if error is not None:
+        return RELAY_CAUSE_SEND_FAILED, type(error).__name__
+    result = drain.result()
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    return RELAY_CAUSE_EOF, None  # pragma: no cover - _drain always returns a pair
+
+
+def _source_close_code(source: Any) -> int | None:
+    """The source's own WebSocket close code, when it exposes a bounded integer.
+
+    aiohttp stores only the peer's close code here (never a reason), so it is
+    safe to log.
+    """
+    code = getattr(source, "close_code", None)
+    return code if isinstance(code, int) else None
 
 
 async def _pump(
     source: Any,
     destination: Any,
     *,
+    direction: str,
     send_timeout: float | None = None,
     stats: RelayBackpressureStats | None = None,
     scope_guard: RelayProjectScopeGuard | None = None,
-) -> None:
+) -> _RelayOutcome:
     """Copy text/binary frames one direction through an explicitly bounded buffer.
 
     Frames are read from ``source`` into a :class:`BoundedFrameBuffer` and sent
@@ -1377,6 +1510,9 @@ async def _pump(
     relay slot.  ``send_timeout`` stays the per-frame bound: a frame that cannot
     be sent within it ends the relay the same way.
 
+    The return value is the direction's :class:`_RelayOutcome` (a fixed cause,
+    close code and exception class name) so the handler can log why it ended.
+
     ``scope_guard`` is the single, documented exception to the verbatim pipe (see
     :class:`RelayProjectScopeGuard`): it is only attached to the browser -> daemon
     direction, and only a request it rejects is *not* forwarded.  The rejection is
@@ -1388,35 +1524,54 @@ async def _pump(
     read: asyncio.Task[Any] | None = None
     overflow = False
     cancelled = False
+    cause = RELAY_CAUSE_EOF
+    error_type: str | None = None
     try:
         while not drain.done():
             read = asyncio.create_task(_anext_or_none(iterator))
             done, _pending = await asyncio.wait({read, drain}, return_when=asyncio.FIRST_COMPLETED)
-            if read not in done:
-                # The drain task ended (send failed or timed out): the relay is over.
+            if drain in done:
+                # The drain ended (send failed or timed out): the relay is over.
+                # This wins even when the reader also finished in the same tick.
+                cause, error_type = _drain_terminal_cause(drain)
                 break
             message = read.result()
             if message is None:
                 break
             kind = message.type
-            if kind in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
+            if kind is WSMsgType.CLOSE:
+                cause = RELAY_CAUSE_PEER_CLOSE
+                break
+            if kind in (WSMsgType.CLOSING, WSMsgType.CLOSED):
+                cause = RELAY_CAUSE_PEER_CLOSED
+                break
+            if kind is WSMsgType.ERROR:
+                cause = RELAY_CAUSE_PEER_ERROR
+                error_type = type(message.data).__name__ if message.data is not None else None
                 break
             if kind not in (WSMsgType.TEXT, WSMsgType.BINARY):
                 continue
             if kind == WSMsgType.TEXT and scope_guard is not None:
                 rejection = scope_guard.rejection(message.data)
                 if rejection is not None:
-                    if not await _send_back(source, rejection, send_timeout):
+                    back_cause, back_error = await _send_one(
+                        source.send_str, rejection, send_timeout
+                    )
+                    if back_cause != _SEND_OK:
+                        cause, error_type = back_cause, back_error
                         break
                     continue
             if not buffer.try_put(kind, message.data):
                 overflow = True
                 buffer.record_overflow()
+                cause = RELAY_CAUSE_OVERFLOW
                 break
     except asyncio.CancelledError:
         cancelled = True
         raise
     finally:
+        buffered_frames = buffer.pending_frames
+        buffered_bytes = buffer.pending_bytes
         if read is not None and not read.done():
             read.cancel()
         buffer.close()
@@ -1428,3 +1583,27 @@ async def _pump(
         except asyncio.CancelledError:
             drain.cancel()
             raise
+    if cause in (RELAY_CAUSE_EOF, RELAY_CAUSE_PEER_CLOSE, RELAY_CAUSE_PEER_CLOSED):
+        # A benign read ending can still hide a failed flush: the drain sends the
+        # frames buffered before EOF, and only now is its final result known.  A
+        # primary cause (overflow, peer_error, ...) is never overridden.
+        drain_cause, drain_error = _drain_terminal_cause(drain)
+        if drain_cause != _SEND_OK:
+            cause, error_type = drain_cause, drain_error
+    if cause in (
+        RELAY_CAUSE_EOF,
+        RELAY_CAUSE_PEER_CLOSE,
+        RELAY_CAUSE_PEER_CLOSED,
+        RELAY_CAUSE_PEER_ERROR,
+    ):
+        upstream_code = _source_close_code(source)
+    else:
+        upstream_code = None
+    return _RelayOutcome(
+        direction=direction,
+        cause=cause,
+        upstream_code=upstream_code,
+        error_type=error_type,
+        buffered_frames=buffered_frames,
+        buffered_bytes=buffered_bytes,
+    )

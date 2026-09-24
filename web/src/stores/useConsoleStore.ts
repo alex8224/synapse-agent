@@ -19,7 +19,11 @@ import {
   ConnectionLostError,
   RpcCallError,
 } from '../client/SynapseRuntimeClient.ts';
-import type { ConnectionState, SubscriptionNotice } from '../client/SynapseRuntimeClient.ts';
+import type {
+  ClientOptions,
+  ConnectionState,
+  SubscriptionNotice,
+} from '../client/SynapseRuntimeClient.ts';
 import type {
   RuntimeEvent,
   SessionRef,
@@ -261,133 +265,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
   const targetUrl = deriveRuntimeSocketUrl(window.location);
   const client = new SynapseRuntimeClient({
     url: targetUrl,
-    onStateChange: (state, reason) => {
-      const prev = store.getState().connectionState;
-      store.setState({ connectionState: state });
-      if (state === 'connected') {
-        // The recovery lifecycle (reconnecting/resumed/gap/failed) is driven
-        // by onRecovery below; a plain transition back to connected with no
-        // prior drop stays idle.
-        return;
-      }
-      if (state === 'error' || state === 'disconnected') {
-        // Relay unavailable / connection failure (including the host's frozen
-        // `1011` + `runtime daemon unavailable` close, whose code and reason are
-        // carried in `reason`).  Read the host's read-only diagnostics so the
-        // user sees the daemon endpoint / state dir / start hint instead of only
-        // the frozen close copy.  The action is gated (paired only) and
-        // single-flight, so this can never become a request storm.
-        if (reason !== 'closed by user') {
-          void store.getState().loadRuntimeDiagnostics({
-            trigger: prev === 'connected' ? 'relay_unavailable' : 'connect_failed',
-            detail: reason ?? null,
-          });
-        }
-      }
-      if (prev === 'connected' && !(reason === 'closed by user')) {
-        // Unexpected drop: the old subscription id is dead. Clear it so live
-        // events delivered right after the resume watch are buffered and
-        // merged once the new subscription is attributed, never dropped.
-        // Anything still queued for the display window belongs to the dead
-        // subscription and is applied now, while it is still attributable.
-        flushPendingDeltas();
-        // Every background watch is dead too: the socket that carried them is
-        // gone and recovery only resumes the *attached* session's watch. Their
-        // transcripts are kept, but they are marked stale so returning to one
-        // re-attaches from history instead of trusting a stream that stopped.
-        store.setState((s) => ({
-          activeSubscriptionId: null,
-          recoveryState: 'reconnecting',
-          backgroundViews: markBackgroundViewsStale(s.backgroundViews),
-        }));
-      }
-    },
-    onRecovery: (info) => {
-      if (info.phase === 'reconnecting') {
-        store.setState({
-          recoveryState: 'reconnecting',
-          recoveryDetail: `${info.reason ?? 'connection lost'} (attempt ${info.attempt}/${info.maxAttempts})`,
-        });
-      } else if (info.phase === 'reconnected') {
-        // Transport is back; resume the same session's watch from its last
-        // delivered cursor (never a silent after=0).
-        const s = store.getState();
-        const attached =
-          lastAttachedSession !== null &&
-          lastAttachedEpoch !== 0 &&
-          lastAttachedEpoch === sessionEpoch &&
-          s.currentSession.project_id === lastAttachedSession.project_id &&
-          s.currentSession.thread_id === lastAttachedSession.thread_id;
-        if (attached) {
-          void resumeAttachedWatch();
-        } else if (!s.historyLoading) {
-          // The previous attach was interrupted by the drop (or the user
-          // switched while offline): re-attach the current session from the
-          // authoritative history snapshot. attachToSession is idempotent and
-          // guarded by its own epoch bump, so this can never stack with a
-          // concurrent attach started by the user.
-          void attachToSession(s.currentSession, s.sessionTitle);
-        }
-      } else if (info.phase === 'failed') {
-        store.setState({
-          recoveryState: 'failed',
-          recoveryDetail: info.reason ?? 'reconnect budget exhausted',
-        });
-      }
-    },
-    onSubscriptionNotice: handleSubscriptionNotice,
-    onEvent: (event, meta) => {
-      const state = store.getState();
-      const activeId = state.activeSubscriptionId;
-      const subId = meta?.subscription_id;
-      if (subId !== undefined && subId !== activeId) {
-        // Not the active subscription: the id is the only thing that says which
-        // view a frame belongs to.  A background view keeps streaming into its
-        // own transcript; a stale frame from a replaced subscription is dropped
-        // exactly as before.
-        const key = backgroundViewKeyForSubscription(state.backgroundViews, subId);
-        if (key !== undefined) {
-          applyBackgroundEvents(key, [{ event, subscription_id: subId }]);
-          return;
-        }
-        // While no active subscription is attributed yet (the attach window)
-        // the frame can only be the incoming watch, so it is buffered below.
-        if (activeId !== null) return;
-      }
-      const buffering = store.getState().historyLoading || activeId === null;
-      if (buffering) {
-        // Holding this event for the snapshot is an ordering boundary: whatever
-        // is still queued for the display window must land first.
-        flushPendingDeltas();
-        // History page not yet applied (or watch handshake in flight): hold the
-        // event and merge it after the snapshot lands so nothing is dropped and
-        // history is never over-written by live deltas. The buffer is bounded:
-        // once full, the oldest events are dropped and the drop is observable.
-        store.setState((s) => {
-          const next = [...s.liveEventBuffer, { event, subscription_id: subId }];
-          const dropped = next.length - MAX_LIVE_BUFFER;
-          return dropped > 0
-            ? {
-                liveEventBuffer: next.slice(dropped),
-                liveBufferDroppedCount: s.liveBufferDroppedCount + dropped,
-              }
-            : { liveEventBuffer: next };
-        });
-        return;
-      }
-      if (isCoalescibleDeltaKind(event.kind)) {
-        // Streamed text: held for the display window and merged with the chunks
-        // that arrive behind it instead of costing one store update each.
-        queueDelta({ event, subscription_id: subId });
-        return;
-      }
-      // Every other event is an ordering boundary for the deltas queued behind
-      // it (a completed thought must close *after* its text has been applied).
-      flushPendingDeltas();
-      // The terminal-totals fold lives in `applyLiveEvents`, after the update, so
-      // the reduction itself stays pure.
-      applyLiveEvents([{ event, subscription_id: subId }]);
-    },
+    ...consoleClientCallbacks(),
   });
 
   store.setState({
@@ -1074,6 +952,62 @@ let lastAttachedSession: { project_id: string; thread_id: string } | null = null
 let lastAttachedEpoch = 0;
 
 /**
+ * The resume position kept across an unexpected drop of the *attached* session.
+ *
+ * `onStateChange` clears `activeSubscriptionId` the moment the socket drops, so
+ * events delivered right after the resumed watch are buffered until the new
+ * subscription is attributed.  The client, however, keeps the dead watch's
+ * frozen cursor, and `resumeAttachedWatch` needs that exact position to continue
+ * without replaying the running turn from its start.  This carries it (and
+ * whether the initial history page was still in flight) keyed to the
+ * session/epoch it belongs to, so a resume can never apply another session's
+ * position.  Cleared by any attach/switch/close/logout.
+ */
+/**
+ * Which history read a drop abandoned, or null for none.  The first page of a
+ * fresh attach is re-read after the resume; an earlier page only cancels
+ * pagination (the rendered transcript and its cursor are kept), so a drop must
+ * not conflate the two.
+ */
+type PendingHistoryKind = 'initial' | 'earlier';
+
+/** The history read in flight for the session on screen, or null. */
+let pendingHistoryKind: PendingHistoryKind | null = null;
+
+interface DroppedResumePoint {
+  session: { project_id: string; thread_id: string };
+  epoch: number;
+  subscriptionId: string;
+  cursor: number | null;
+  /** The history read the drop abandoned, or null when none was in flight. */
+  pendingHistory: PendingHistoryKind | null;
+}
+
+let droppedResumePoint: DroppedResumePoint | null = null;
+
+/**
+ * Monotonic fence for the history read of the session on screen.
+ *
+ * A drop while `loadInitialHistory` / `loadEarlierHistory` is in flight must
+ * invalidate that response: the socket teardown rejects the pending RPC, and
+ * applying that rejection would paint a spurious error banner (and flush the
+ * buffer the resumed watch is about to re-attribute).  The drop bumps this
+ * token; each reader captures it and discards a stale resolution/rejection.
+ */
+let historyGeneration = 0;
+
+/**
+ * Monotonic fence for one recovery attempt.
+ *
+ * Two `resumeAttachedWatch` runs can overlap when the socket flaps (a second
+ * reconnect starts before the first resume's `open`/`reconcile`/`watch`
+ * handshake settles).  Only the newest attempt may publish `resumed`/`failed`;
+ * an older one must abandon silently, so a stale catch can never mark a fresh
+ * connection failed.  Session switches are already fenced by `sessionEpoch`.
+ */
+let recoveryToken = 0;
+
+/**
  * Maximum number of live events held while a history page is loading.
  *
  * 32768 matches the daemon broker's *default* retention
@@ -1326,6 +1260,16 @@ function clearAttached(): void {
   lastAttachedEpoch = 0;
   lastLiveEpoch = null;
   attachCoverage = null;
+  // A full attach/switch/close/logout discards the dead watch's resume position:
+  // it belongs to the session that was attached before the drop, and applying it
+  // to another session (or after a deliberate close) would resume the wrong
+  // stream from the wrong cursor.
+  droppedResumePoint = null;
+  pendingHistoryKind = null;
+  // Fence any history read still in flight: the new attach/close owns the
+  // transcript now, so an abandoned page's rejection must not paint a banner
+  // (e.g. after `closeRuntime`) or flush its buffer into the new session.
+  historyGeneration += 1;
 }
 
 /** Broker epoch recorded when the pre-drop watch was attached (or null). */
@@ -1341,15 +1285,36 @@ let attachCoverage: SessionRecoverabilityResult | null = null;
 
 
 /**
+ * Whether a turn's events are already durable in the transcript.
+ *
+ * Two independent reads can say so: the reconcile snapshot's probe and the turn
+ * ids the applied history page rendered.  They are separate round trips, so a
+ * turn can settle between them; the rendered page is the direct evidence and
+ * the probe also covers a turn whose events arrived after the page.
+ */
+function isDurableTurn(
+  turnId: string | null,
+  renderedTurnIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (turnId === null) return false;
+  if (renderedTurnIds?.has(turnId) === true) return true;
+  return isCoveredTurn(attachCoverage, turnId);
+}
+
+/**
  * Apply buffered live events that belong to the current subscription.
  *
  * When ``applyCoverageDedupe`` is true (the fresh-attach / full-resync path),
- * buffered events whose turn the attach snapshot already reports as durable
- * are dropped: the history page just rendered that turn, so replaying it would
- * duplicate content. Cursor-resume paths never dedupe (their replays are by
- * construction events the client has not seen).
+ * buffered events whose turn is already durable are dropped: the history page
+ * already rendered their content. Terminal events still supply the usage delta
+ * since the original attach's totals, even when their content is durable.
+ * The active turn is never suppressed. Cursor-resume paths keep the original
+ * totals baseline and consume only events not yet delivered.
  */
-function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
+function flushBufferedLiveEvents(
+  applyCoverageDedupe = false,
+  renderedTurnIds?: ReadonlySet<string>,
+): void {
   const store = useConsoleStore;
   const state = store.getState();
   const activeId = state.activeSubscriptionId;
@@ -1357,16 +1322,23 @@ function flushBufferedLiveEvents(applyCoverageDedupe = false): void {
   const buffered = state.liveEventBuffer.filter(
     (entry) => entry.subscription_id === undefined || entry.subscription_id === activeId,
   );
+  // A terminal buffered after open supersedes its active-turn snapshot. The
+  // history page may already contain that turn's final content.
+  const completed = new Set(
+    buffered.filter((entry) => isTurnTerminalKind(entry.event.kind))
+      .map((entry) => entry.event.turn_id),
+  );
   const pending = applyCoverageDedupe
     ? buffered.filter(
-        (entry) => isTurnTerminalKind(entry.event.kind) ||
-          entry.event.turn_id === state.activeTurnId ||
-          !isCoveredTurn(attachCoverage, entry.event.turn_id ?? null),
+        (entry) =>
+          isTurnTerminalKind(entry.event.kind) ||
+          (entry.event.turn_id === state.activeTurnId && !completed.has(entry.event.turn_id)) ||
+          !isDurableTurn(entry.event.turn_id ?? null, renderedTurnIds),
       )
     : buffered;
   store.setState({ liveEventBuffer: [] });
   // Replayed as one run: the same events, one state update instead of one per
-  // event, and the terminal-totals fold still happens for each of them.
+  // event, and the terminal-totals fold still happens for each kept event.
   applyLiveEvents(pending);
 }
 
@@ -1764,6 +1736,211 @@ export function handleSubscriptionNotice(notice: SubscriptionNotice): void {
 }
 
 /**
+ * The console-side callbacks the runtime client drives.
+ *
+ * Extracted from `startAuthenticatedRuntime` so the drop/resume bookkeeping is a
+ * named unit a test can exercise through a real `SynapseRuntimeClient` (drop its
+ * socket and reconnect) instead of hand-clearing `activeSubscriptionId`, which
+ * would only assert against the test's own fake.
+ */
+export function consoleClientCallbacks(): Pick<
+  ClientOptions,
+  'onStateChange' | 'onRecovery' | 'onSubscriptionNotice' | 'onEvent'
+> {
+  const store = useConsoleStore;
+  return {
+    onStateChange: (state, reason) => {
+      const prev = store.getState().connectionState;
+      store.setState({ connectionState: state });
+      if (state === 'connected') {
+        // The recovery lifecycle (reconnecting/resumed/gap/failed) is driven
+        // by onRecovery below; a plain transition back to connected with no
+        // prior drop stays idle.
+        return;
+      }
+      if (state === 'error' || state === 'disconnected') {
+        // Relay unavailable / connection failure (including the host's frozen
+        // `1011` + `runtime daemon unavailable` close, whose code and reason are
+        // carried in `reason`).  Read the host's read-only diagnostics so the
+        // user sees the daemon endpoint / state dir / start hint instead of only
+        // the frozen close copy.  The action is gated (paired only) and
+        // single-flight, so this can never become a request storm.
+        if (reason !== 'closed by user') {
+          void store.getState().loadRuntimeDiagnostics({
+            trigger: prev === 'connected' ? 'relay_unavailable' : 'connect_failed',
+            detail: reason ?? null,
+          });
+        }
+      }
+      if (prev === 'connected' && !(reason === 'closed by user')) {
+        // Unexpected drop: the old subscription id is dead.  Keep the dead
+        // watch's resume position keyed to this session/epoch *before* clearing
+        // it, then clear the id so live events delivered right after the resume
+        // watch are buffered and merged once the new subscription is attributed,
+        // never dropped.  Anything still queued for the display window belongs
+        // to the dead subscription and is applied now, while it is still
+        // attributable.
+        // Invalidate any resume still waiting on this socket's handshake: its
+        // transport is gone, so a late resolve must never publish over the fresh
+        // connection's own resume.
+        recoveryToken += 1;
+        flushPendingDeltas();
+        const before = store.getState();
+        const droppedId = before.activeSubscriptionId;
+        const runtimeClient = before.client;
+        if (droppedId !== null && runtimeClient !== null) {
+          // The client keeps a dropped watch's frozen cursor until it is
+          // re-watched, so this is the exact last delivered position.  Keeping
+          // it is what lets the resume continue from there instead of resyncing
+          // from history and replaying the running turn from its start.
+          const pendingHistory: PendingHistoryKind | null = before.historyLoading
+            ? pendingHistoryKind ?? 'initial'
+            : null;
+          droppedResumePoint = {
+            session: { ...before.currentSession },
+            epoch: sessionEpoch,
+            subscriptionId: droppedId,
+            cursor: runtimeClient.getWatchCursor(droppedId),
+            pendingHistory,
+          };
+          if (pendingHistory === null) {
+            // No page in flight: the buffer is only the dead watch's
+            // already-attributed events, so apply them while they are still
+            // attributable (the resumed subscription's id would filter them out).
+            flushBufferedLiveEvents();
+          } else {
+            // The page is abandoned: fence its rejection so it cannot paint an
+            // error banner or flush the buffer out of order.
+            historyGeneration += 1;
+            if (pendingHistory === 'earlier') {
+              // Pagination, not the first page: cancel it, keep the rendered
+              // transcript and the earlier-page cursor for a user retry, and
+              // land the buffered events now.  The resume must not re-read the
+              // first page.
+              store.setState({ historyLoading: false });
+              flushBufferedLiveEvents();
+            }
+          }
+          pendingHistoryKind = null;
+        } else {
+          // A drop with no attributed subscription (the resume handshake /
+          // history retry window): keep the point already held for *this*
+          // session/epoch so a second drop still resumes from its cursor instead
+          // of falling back to a full resync.  A point for another session/epoch
+          // is stale and dropped.
+          const held = droppedResumePoint;
+          const stillCurrent =
+            held !== null &&
+            held.epoch === sessionEpoch &&
+            held.session.project_id === before.currentSession.project_id &&
+            held.session.thread_id === before.currentSession.thread_id;
+          if (!stillCurrent) {
+            droppedResumePoint = null;
+          } else if (before.historyLoading) {
+            historyGeneration += 1;
+          }
+        }
+        // Every background watch is dead too: the socket that carried them is
+        // gone and recovery only resumes the *attached* session's watch. Their
+        // transcripts are kept, but they are marked stale so returning to one
+        // re-attaches from history instead of trusting a stream that stopped.
+        store.setState((s) => ({
+          activeSubscriptionId: null,
+          recoveryState: 'reconnecting',
+          backgroundViews: markBackgroundViewsStale(s.backgroundViews),
+        }));
+      }
+    },
+    onRecovery: (info) => {
+      if (info.phase === 'reconnecting') {
+        store.setState({
+          recoveryState: 'reconnecting',
+          recoveryDetail: `${info.reason ?? 'connection lost'} (attempt ${info.attempt}/${info.maxAttempts})`,
+        });
+      } else if (info.phase === 'reconnected') {
+        // Transport is back; resume the same session's watch from its last
+        // delivered cursor (never a silent after=0).
+        const s = store.getState();
+        const attached =
+          lastAttachedSession !== null &&
+          lastAttachedEpoch !== 0 &&
+          lastAttachedEpoch === sessionEpoch &&
+          s.currentSession.project_id === lastAttachedSession.project_id &&
+          s.currentSession.thread_id === lastAttachedSession.thread_id;
+        if (attached) {
+          void resumeAttachedWatch();
+        } else if (!s.historyLoading) {
+          // The previous attach was interrupted by the drop (or the user
+          // switched while offline): re-attach the current session from the
+          // authoritative history snapshot. attachToSession is idempotent and
+          // guarded by its own epoch bump, so this can never stack with a
+          // concurrent attach started by the user.
+          void attachToSession(s.currentSession, s.sessionTitle);
+        }
+      } else if (info.phase === 'failed') {
+        store.setState({
+          recoveryState: 'failed',
+          recoveryDetail: info.reason ?? 'reconnect budget exhausted',
+        });
+      }
+    },
+    onSubscriptionNotice: handleSubscriptionNotice,
+    onEvent: (event, meta) => {
+      const state = store.getState();
+      const activeId = state.activeSubscriptionId;
+      const subId = meta?.subscription_id;
+      if (subId !== undefined && subId !== activeId) {
+        // Not the active subscription: the id is the only thing that says which
+        // view a frame belongs to.  A background view keeps streaming into its
+        // own transcript; a stale frame from a replaced subscription is dropped
+        // exactly as before.
+        const key = backgroundViewKeyForSubscription(state.backgroundViews, subId);
+        if (key !== undefined) {
+          applyBackgroundEvents(key, [{ event, subscription_id: subId }]);
+          return;
+        }
+        // While no active subscription is attributed yet (the attach window)
+        // the frame can only be the incoming watch, so it is buffered below.
+        if (activeId !== null) return;
+      }
+      const buffering = store.getState().historyLoading || activeId === null;
+      if (buffering) {
+        // Holding this event for the snapshot is an ordering boundary: whatever
+        // is still queued for the display window must land first.
+        flushPendingDeltas();
+        // History page not yet applied (or watch handshake in flight): hold the
+        // event and merge it after the snapshot lands so nothing is dropped and
+        // history is never over-written by live deltas. The buffer is bounded:
+        // once full, the oldest events are dropped and the drop is observable.
+        store.setState((s) => {
+          const next = [...s.liveEventBuffer, { event, subscription_id: subId }];
+          const dropped = next.length - MAX_LIVE_BUFFER;
+          return dropped > 0
+            ? {
+                liveEventBuffer: next.slice(dropped),
+                liveBufferDroppedCount: s.liveBufferDroppedCount + dropped,
+              }
+            : { liveEventBuffer: next };
+        });
+        return;
+      }
+      if (isCoalescibleDeltaKind(event.kind)) {
+        // Streamed text: held for the display window and merged with the chunks
+        // that arrive behind it instead of costing one store update each.
+        queueDelta({ event, subscription_id: subId });
+        return;
+      }
+      // Every other event is an ordering boundary for the deltas queued behind
+      // it (a completed thought must close *after* its text has been applied).
+      flushPendingDeltas();
+      // The terminal-totals fold lives in `applyLiveEvents`, after the update, so
+      // the reduction itself stays pure.
+      applyLiveEvents([{ event, subscription_id: subId }]);
+    },
+  };
+}
+
+/**
  * Fold a batch of background events into their view and mark it freshly
  * touched, so the LRU reflects real activity and not just a switch.
  */
@@ -1944,6 +2121,10 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     });
   }
 
+  // The attach's whole window (open/reconcile/watch/history) is an "initial"
+  // read: a drop before the page lands must re-read the first page, never treat
+  // it as a cancelled earlier-page load.
+  pendingHistoryKind = 'initial';
   store.setState({
     currentSession: session,
     sessionTitle: resolveSessionTitle(session, title),
@@ -2081,6 +2262,20 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
 }
 
 /**
+ * The turn ids worth probing for durable coverage: every turn with a buffered
+ * event plus the current active turn, capped at the server's probe limit.
+ */
+function probeTurnIds(state: Pick<ConsoleStore, 'liveEventBuffer' | 'activeTurnId'>): string[] {
+  const seen = new Set<string>();
+  for (const entry of state.liveEventBuffer) {
+    const turnId = entry.event.turn_id;
+    if (turnId) seen.add(turnId);
+  }
+  if (state.activeTurnId) seen.add(state.activeTurnId);
+  return [...seen].slice(0, 32);
+}
+
+/**
  * Best-effort baseline capture of the live broker epoch after an attach.
  *
  * The stored epoch is what later resume logic compares against to detect that
@@ -2096,17 +2291,9 @@ async function captureLiveEpoch(epoch: number): Promise<void> {
   try {
     // Probe the turn ids of events buffered while this attach was in flight so
     // the snapshot can also drive duplicate suppression at flush time.
-    const buffered = store.getState().liveEventBuffer;
-    const seen = new Set<string>();
-    for (const entry of buffered) {
-      const turnId = entry.event.turn_id;
-      if (turnId) seen.add(turnId);
-    }
-    const activeTurnId = store.getState().activeTurnId;
-    if (activeTurnId) seen.add(activeTurnId);
     const snapshot: SessionRecoverabilityResult = await client.reconcileSession({
       session: currentSession,
-      probe_turn_ids: [...seen].slice(0, 32),
+      probe_turn_ids: probeTurnIds(store.getState()),
     });
     if (epoch === sessionEpoch) {
       lastLiveEpoch = snapshot.live_epoch;
@@ -2146,27 +2333,63 @@ export async function resumeAttachedWatch(): Promise<void> {
   if (current.project_id !== session.project_id || current.thread_id !== session.thread_id) {
     return; // the switch flow owns the new session's attach
   }
-  // The cursor must belong to the session on screen.  `getWatchCursor()` with no
-  // argument answers the *most recently registered* watch, which after an
-  // A -> B -> A restore is B's -- resuming A from B's sequence.  Attribute by the
-  // active subscription; with none attributed the position is unknown, never
-  // guessed from another watch.
+  // The cursor must belong to the session on screen.  `onStateChange` cleared
+  // `activeSubscriptionId` on the drop (so the resumed watch's events buffer),
+  // but the client kept the dead watch's frozen cursor; the resume point kept
+  // the pair.  With no matching point the position is unknown, never guessed
+  // from another watch (`getWatchCursor()` with no argument answers the most
+  // recently registered watch, which after an A -> B -> A restore is B's).
+  const held = droppedResumePoint;
+  const matched =
+    held !== null &&
+    held.epoch === epoch &&
+    held.session.project_id === session.project_id &&
+    held.session.thread_id === session.thread_id
+      ? held
+      : null;
   const activeSubscriptionId = store.getState().activeSubscriptionId;
   const cursor =
-    activeSubscriptionId === null ? null : client.getWatchCursor(activeSubscriptionId);
+    matched !== null
+      ? matched.cursor
+      : activeSubscriptionId === null
+        ? null
+        : client.getWatchCursor(activeSubscriptionId);
+  const pendingHistory = matched !== null ? matched.pendingHistory : null;
+  const droppedSubscriptionId = matched !== null ? matched.subscriptionId : null;
+  // Fence this attempt: a second drop's resume (or a switch) supersedes it, and
+  // only the newest attempt may publish its outcome.
+  const token = ++recoveryToken;
+  const superseded = (): boolean => token !== recoveryToken || epoch !== sessionEpoch;
   store.setState({ recoveryState: 'resuming', recoveryDetail: null });
   try {
     const opened = await client.openSession(session);
-    if (epoch !== sessionEpoch) return;
+    if (superseded()) return;
+    if (opened.view && pendingHistory === 'initial') {
+      // A retried first page needs the current active turn, not the pre-drop
+      // one, or it would un-settle a now-durable history row. Ordinary resumes
+      // instead replay the old turn's tail before advancing to a newer turn.
+      // Keep the original usage baseline: terminal events since the saved
+      // cursor supply the missing increments, including buffered terminals.
+      // Adopting the newer snapshot's totals here would count them twice.
+      store.setState({
+        runtimeStatus: opened.view.status === 'running' ? 'running' : 'idle',
+        activeTurnId: opened.view.active_turn_id ?? null,
+        modelName: opened.view.active_model || opened.view.model || store.getState().modelName,
+      });
+    }
     const fallbackAfter = opened.view?.latest_sequence ?? 0;
     // Formal recovery snapshot (phase-4A): ask the server for durable coverage
     // + live broker state before deciding whether the stored cursor is still
     // continuable. A peer that predates `runtime.session.reconcile` answers a
     // typed method/feature error and degrades to the legacy bounded cursor
     // behavior below - never a silent after=0 and never a fake lossless resume.
+    // Probe the buffered turn ids so the snapshot can also suppress duplicates.
     let snapshot: SessionRecoverabilityResult | null = null;
     try {
-      snapshot = await client.reconcileSession({ session });
+      snapshot = await client.reconcileSession({
+        session,
+        probe_turn_ids: probeTurnIds(store.getState()),
+      });
     } catch (err) {
       const e = err as RpcCallError;
       const serviceCode = e?.service_code;
@@ -2178,6 +2401,9 @@ export async function resumeAttachedWatch(): Promise<void> {
         code === -32601;
       if (!unsupported) throw err; // transport / typed failures surface as failed
     }
+    // Reconcile is a separate round trip: a switch (or another drop) during it
+    // must abandon this attempt before any decision/watch/resync attach.
+    if (superseded() || client.getState() !== 'connected') return;
     const decision = decideResumeAfterDrop({
       snapshot,
       baselineEpoch: lastLiveEpoch,
@@ -2187,13 +2413,47 @@ export async function resumeAttachedWatch(): Promise<void> {
     });
     if (decision.action === 'resume' || decision.action === 'legacy_resume') {
       const watch = await client.watchEvents(session, decision.after);
-      if (epoch !== sessionEpoch) return;
+      if (superseded()) {
+        // A newer attempt superseded this one: release the orphaned lease
+        // instead of leaking the client's registry slot.
+        void client.unwatchEvents(watch.subscription_id);
+        return;
+      }
+      if (pendingHistory === 'initial' && droppedSubscriptionId !== null) {
+        // The dead watch left events buffered because the first history page
+        // never landed.  Re-attribute exactly that subscription's entries to the
+        // fresh watch so the retry's merge keeps them; the session/epoch match
+        // was checked above, so nothing foreign is adopted.  An earlier-page
+        // drop already flushed its buffer at drop time.
+        store.setState((s) => ({
+          liveEventBuffer: s.liveEventBuffer.map((entry) =>
+            entry.subscription_id === droppedSubscriptionId
+              ? { ...entry, subscription_id: watch.subscription_id }
+              : entry,
+          ),
+        }));
+      }
       store.setState({
         activeSubscriptionId: watch.subscription_id,
         recoveryState: 'resumed',
       });
       if (snapshot !== null) lastLiveEpoch = snapshot.live_epoch;
-      flushBufferedLiveEvents();
+      // Refresh coverage from this resume's snapshot: the pre-drop one did not
+      // cover a turn that settled during the outage.
+      attachCoverage = snapshot;
+      // The position is now the live watch's own: a later drop re-captures it.
+      droppedResumePoint = null;
+      if (pendingHistory === 'initial') {
+        // The first page never landed: re-read it now that the fresh watch is
+        // attributed.  `historyLoading` is still true, so events from the fresh
+        // watch keep buffering and `loadInitialHistory` merges the re-attributed
+        // buffer on top exactly once.
+        await loadInitialHistory(epoch);
+      } else {
+        // No page (or an earlier page the drop already cancelled): land whatever
+        // is buffered for the fresh watch.
+        flushBufferedLiveEvents();
+      }
       void refreshRuntimeConfig(epoch);
       return;
     }
@@ -2204,6 +2464,7 @@ export async function resumeAttachedWatch(): Promise<void> {
     await attachToSession(session, title);
     const latest = store.getState();
     if (
+      token === recoveryToken &&
       latest.currentSession.project_id === session.project_id &&
       latest.currentSession.thread_id === session.thread_id
     ) {
@@ -2222,7 +2483,7 @@ export async function resumeAttachedWatch(): Promise<void> {
       );
     }
   } catch (err) {
-    if (epoch !== sessionEpoch) return;
+    if (superseded()) return;
     const code = (err as RpcCallError)?.service_code;
     if (code === 'replay_gap' || code === 'invalid_cursor') {
       // Explicit gap surfaced by the watch handshake itself: full resync from
@@ -2238,7 +2499,11 @@ export async function resumeAttachedWatch(): Promise<void> {
         // `incomplete` (never a permanent `resync`).
         store.setState({ recoveryState: 'incomplete', recoveryDetail: detail });
       }
-    } else {
+    } else if (client.getState() === 'connected') {
+      // A typed failure on a live connection is a real recovery failure.  A
+      // transport loss is NOT: the client is reconnecting and a later
+      // `reconnected` will resume, so a stale handshake must never paint
+      // `failed` over the fresh attempt.
       store.setState({
         recoveryState: 'failed',
         recoveryDetail: String((err as Error)?.message ?? err),
@@ -2251,6 +2516,11 @@ async function loadInitialHistory(epoch: number): Promise<void> {
   const store = useConsoleStore;
   const { client, currentSession } = store.getState();
   if (!client) return;
+  // A drop while this page is in flight bumps `historyGeneration`; the rejected
+  // RPC must then be discarded instead of painting an error banner and flushing
+  // the buffer the resumed watch is about to re-attribute.
+  const generation = historyGeneration;
+  pendingHistoryKind = 'initial';
   const historyRef = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
   try {
     // A content-rich session can exceed the runtime's per-page cap; walk down
@@ -2258,11 +2528,19 @@ async function loadInitialHistory(epoch: number): Promise<void> {
     const res = await readHistoryPage((limit) =>
       client.readSessionHistory(latestHistoryParams(historyRef, limit)),
     );
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch || generation !== historyGeneration) return;
+    // The turn ids this page actually rendered.  They are the direct evidence
+    // that a buffered turn is already durable, independent of the reconcile
+    // snapshot (history and reconcile are separate reads).
+    let renderedTurnIds = new Set<string>();
     if (res.available) {
       let messages = mapHistoryEvents(res.events, { startTurn: res.start_turn, pageTag: 'latest' });
       const state = store.getState();
-      const active = state.runtimeStatus === 'running' ? state.activeTurnId : null;
+      const completed = state.liveEventBuffer.some((entry) =>
+        (entry.subscription_id === undefined || entry.subscription_id === state.activeSubscriptionId) &&
+        entry.event.turn_id === state.activeTurnId && isTurnTerminalKind(entry.event.kind),
+      );
+      const active = state.runtimeStatus === 'running' && !completed ? state.activeTurnId : null;
       if (active && messages.some((m) => m.turnId === active)) {
         messages = messages.map((m) => m.turnId === active && m.work
           ? { ...m, work: { ...m.work, ended: false } } : m);
@@ -2275,6 +2553,11 @@ async function loadInitialHistory(epoch: number): Promise<void> {
           content: '当前轮次运行中', work: { ended: false },
         });
       }
+      renderedTurnIds = new Set(
+        res.events
+          .map((event) => event.turn_id)
+          .filter((id): id is string => typeof id === 'string'),
+      );
       messages = restoreTranscriptViews(messages, readTranscriptViews(currentSession));
       store.setState({
         messages,
@@ -2304,11 +2587,11 @@ async function loadInitialHistory(epoch: number): Promise<void> {
         historyTotalTurns: 0,
       });
     }
-    // Fresh-attach flush: drop buffered events whose turn is already durable
-    // in the attach snapshot (history page renders them; no duplicate replay).
-    flushBufferedLiveEvents(true);
+    // Fresh-attach flush: drop buffered events whose turn is already durable in
+    // the rendered page or reconcile snapshot; retain terminal usage deltas.
+    flushBufferedLiveEvents(true, renderedTurnIds);
   } catch (err) {
-    if (epoch === sessionEpoch) {
+    if (epoch === sessionEpoch && generation === historyGeneration) {
       console.error('loadSessionHistory error:', err);
       // Never leave the user staring at an empty transcript with no reason.
       store.setState({
@@ -2317,6 +2600,10 @@ async function loadInitialHistory(epoch: number): Promise<void> {
       });
       flushBufferedLiveEvents(true);
     }
+  } finally {
+    // Only the current read may clear the marker; a fenced one leaves it to the
+    // read that replaced it.
+    if (generation === historyGeneration) pendingHistoryKind = null;
   }
 }
 
@@ -3199,13 +3486,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const { currentSession, historyLoading, historyHasMore, historyStartTurn } = get();
     if (historyLoading || !historyHasMore) return;
     const epoch = sessionEpoch;
+    // Same fence as `loadInitialHistory`: a drop mid-page must invalidate this
+    // response instead of painting an error over the resumed watch.
+    const generation = historyGeneration;
+    pendingHistoryKind = 'earlier';
     const historyRef = { project_id: currentSession.project_id, thread_id: currentSession.thread_id };
     set({ historyLoading: true });
     try {
       const res = await readHistoryPage((limit) =>
         client.readSessionHistory(earlierHistoryParams(historyRef, historyStartTurn, limit)),
       );
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch || generation !== historyGeneration) return;
       if (!res.available) {
         set({
           historyLoading: false,
@@ -3231,11 +3522,13 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       }));
       flushBufferedLiveEvents();
     } catch (err) {
-      if (epoch === sessionEpoch) {
+      if (epoch === sessionEpoch && generation === historyGeneration) {
         console.error('loadEarlierHistory error:', err);
         set({ historyLoading: false, historyError: describeHistoryFailure(err) });
         flushBufferedLiveEvents();
       }
+    } finally {
+      if (generation === historyGeneration) pendingHistoryKind = null;
     }
   },
 
@@ -3577,6 +3870,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // ones (best-effort abort) and drop the composer before the state reset.
     get().cancelAttachments();
     sessionEpoch++;
+    // A logout fences any in-flight resume: its handshake must not publish over
+    // the wiped pairing.
+    recoveryToken += 1;
     // The next pairing gets a fresh diagnostics read and a fresh latch.
     resetRuntimeDiagnostics();
     // The whole console state is being wiped: queued deltas have no session to
@@ -3663,7 +3959,13 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (client) {
       client.disconnect();
     }
+    // `clearAttached` fences the pending history read (its rejection must not
+    // paint a banner after the close); the session epoch and recovery token
+    // additionally fence an in-flight attach/resume so a late handshake cannot
+    // register a watch on the closed runtime or overwrite the reset state.
     clearAttached();
+    sessionEpoch += 1;
+    recoveryToken += 1;
     // Deliberate detach: the queue belongs to the subscription being dropped.
     flushPendingDeltas();
     // A user close detaches every watch, so no background view can be trusted
@@ -3675,6 +3977,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       recoveryDetail: null,
       activeSubscriptionId: null,
       backgroundViews: {},
+      historyLoading: false,
     });
   },
   loadRuntimeDiagnostics: async (options) => {

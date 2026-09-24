@@ -980,6 +980,139 @@ def test_e2e_watch_response_is_first_then_replay_and_live_event() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("replay_count", [127, 128, 129, 870])
+def test_e2e_watch_replay_burst_larger_than_writer_queue_stays_ordered(replay_count: int) -> None:
+    """A replay burst must not overflow the bounded writer queue.
+
+    ``_Outgoing.put`` uses ``put_nowait`` (``wait_written=False``) and the whole
+    ``pump -> notify -> send -> put`` path completes without ever suspending, so
+    a synchronous replay stream can enqueue more than ``outgoing_queue_size``
+    events before the writer task gets a scheduler slice.  The writer queue is
+    deliberately bounded and overflow is a 1013 policy decision, so the pump must
+    yield once per accepted event instead of the transport growing the queue.
+    """
+
+    async def run() -> None:
+        broker = SessionEventBroker("t1")
+        manager = RuntimeManager(
+            settings=type("S", (), {"model": "x"})(),
+            agent_factory=lambda tid, shared: object(),
+            project_id="p1",
+        )
+        session = SessionRuntime(
+            thread_id="t1",
+            project_id="p1",
+            agent=object(),
+            settings=manager.settings,
+            broker=broker,
+        )
+        manager._sessions["t1"] = session
+        service = LocalAgentRuntimeService(lambda project_id: manager)
+        for i in range(1, replay_count + 1):
+            broker.emit(
+                TurnEvent(EVENT_VERSION, "t1", "turn", i, TurnEventKind.ANSWER_DELTA, TextPayload(str(i)))
+            )
+        server = await _start(
+            lambda headers: Principal("a"),
+            lambda p: bind_access(service, p, _all_grants("a")),
+        )
+        try:
+            async with connect(f"ws://127.0.0.1:{server.bound_addresses[0][1]}") as ws:
+                await ws.send(wire("runtime.events.watch", {"session": session_params(), "after": 0}, 1))
+                ack = json.loads(await ws.recv())
+                assert ack["id"] == 1 and "result" in ack
+                subscription_id = ack["result"]["subscription_id"]
+                cursors = []
+                for _ in range(replay_count):
+                    message = json.loads(await ws.recv())
+                    assert message["method"] == "runtime.event"
+                    cursors.append(message["params"]["cursor"])
+                assert cursors == list(range(1, replay_count + 1))
+                broker.emit(
+                    TurnEvent(EVENT_VERSION, "t1", "turn", replay_count + 1, TurnEventKind.ANSWER_DELTA, TextPayload("live"))
+                )
+                live = json.loads(await ws.recv())
+                assert live["method"] == "runtime.event"
+                assert live["params"]["cursor"] == replay_count + 1
+                # The connection stays usable for ordinary business RPC after the burst.
+                await ws.send(wire("runtime.session.get", {"session": session_params()}, 2))
+                assert (await _recv_id(ws, 2))["result"]["thread_id"] == "t1"
+                # Detach releases the broker subscription with no leak.
+                await ws.send(wire("runtime.events.unwatch", {"subscription_id": subscription_id}, 3))
+                assert (await _recv_id(ws, 3))["result"] == {"removed": True}
+                await _wait_until(lambda: not broker._subscribers)
+                assert not broker._subscribers
+        finally:
+            await server.close()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_subscription_pump_still_overflows_1013_for_slow_writer() -> None:
+    """The per-event yield must not weaken backpressure for a slow client.
+
+    The pump now suspends once per accepted event so a fast writer can drain,
+    but a client whose socket never flushes still fills the bounded queue and
+    hits the same 1013 policy instead of the transport growing memory.
+    """
+
+    async def run() -> None:
+        connection = _NoopConnection()
+        started = asyncio.Event()
+
+        async def blocked_send(message: str) -> None:
+            del message
+            started.set()
+            await connection.release_send.wait()
+
+        connection.send = blocked_send  # type: ignore[method-assign]
+
+        class Owner:
+            outgoing_queue_size = 1
+            max_subscriptions = 1
+
+            @staticmethod
+            def _schedule_writer_failure() -> None:
+                return
+
+        class Lease:
+            def __init__(self) -> None:
+                self.exits = 0
+
+            async def __aexit__(self, *args: object) -> None:
+                self.exits += 1
+
+        class Stream:
+            cursor = type("Cursor", (), {"sequence": 0})()
+
+            def __init__(self) -> None:
+                self.count = 0
+
+            def __aiter__(self) -> Any:
+                return self
+
+            async def __anext__(self) -> Any:
+                self.count += 1
+                return {"n": self.count}
+
+        state = _Connection(connection, _SpyService(), Owner())  # type: ignore[arg-type]
+        lease = Lease()
+        subscription = _Subscription(state, "sub", lease, Stream())
+        state.subscriptions["sub"] = subscription
+        subscription.task = asyncio.create_task(subscription.pump())
+        await asyncio.wait_for(started.wait(), 2)
+        await _wait_until(lambda: bool(connection.closed))
+        assert connection.closed == [(1013, OVERFLOW_REASON)]
+        assert lease.exits == 1
+        assert not state.subscriptions
+        await asyncio.gather(subscription.task, return_exceptions=True)
+        connection.release_send.set()
+        await state.writer.close(graceful=False)
+
+    asyncio.run(run())
+
+
 def test_e2e_watch_filter_advances_raw_cursor_and_unwatch_is_idempotent() -> None:
     async def run() -> None:
         manager = RuntimeManager(settings=type("S", (), {"model": "x"})(), agent_factory=lambda tid, shared: object(), project_id="p1")

@@ -184,6 +184,11 @@ class _Subscription:
                     {"subscription_id": self.subscription_id, "event": event, "cursor": cursor},
                 ):
                     return
+                # Both replay iteration and notify/put_nowait can complete
+                # without suspending. Let the writer run between events so a
+                # healthy replay cannot fill its queue in one scheduler slice.
+                # A genuinely slow consumer still hits the bounded 1013 policy.
+                await asyncio.sleep(0)
             await self.owner.notify(
                 "runtime.subscription.complete",
                 {"subscription_id": self.subscription_id, "cursor": self.stream.cursor.sequence},
