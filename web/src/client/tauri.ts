@@ -20,6 +20,19 @@ export async function tauriMinimize(): Promise<void> {
   }
 }
 
+export async function tauriOpenPath(path: string): Promise<boolean> {
+  const internals = (window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<void> };
+  }).__TAURI_INTERNALS__;
+  if (internals?.invoke) {
+    try {
+      await internals.invoke('open_path', { path });
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
 export async function tauriToggleMaximize(): Promise<void> {
   const internals = (window as unknown as {
     __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<void> };

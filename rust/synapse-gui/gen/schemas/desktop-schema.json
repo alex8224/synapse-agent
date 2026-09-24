@@ -195,10 +195,52 @@
           "markdownDescription": "Enables the minimize_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-path",
+          "markdownDescription": "Enables the open_path command without any pre-configured scope."
+        },
+        {
           "description": "Enables the restart_service command without any pre-configured scope.",
           "type": "string",
           "const": "allow-restart-service",
           "markdownDescription": "Enables the restart_service command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_diff command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-diff",
+          "markdownDescription": "Enables the tauri_git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-status",
+          "markdownDescription": "Enables the tauri_git_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_list_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-list-artifacts",
+          "markdownDescription": "Enables the tauri_list_artifacts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-open-path",
+          "markdownDescription": "Enables the tauri_open_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_read_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-read-artifact",
+          "markdownDescription": "Enables the tauri_read_artifact command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_reveal_in_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-reveal-in-folder",
+          "markdownDescription": "Enables the tauri_reveal_in_folder command without any pre-configured scope."
         },
         {
           "description": "Enables the toggle_maximize_window command without any pre-configured scope.",
@@ -225,10 +267,52 @@
           "markdownDescription": "Denies the minimize_window command without any pre-configured scope."
         },
         {
+          "description": "Denies the open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-path",
+          "markdownDescription": "Denies the open_path command without any pre-configured scope."
+        },
+        {
           "description": "Denies the restart_service command without any pre-configured scope.",
           "type": "string",
           "const": "deny-restart-service",
           "markdownDescription": "Denies the restart_service command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_diff command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-diff",
+          "markdownDescription": "Denies the tauri_git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-status",
+          "markdownDescription": "Denies the tauri_git_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_list_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-list-artifacts",
+          "markdownDescription": "Denies the tauri_list_artifacts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-open-path",
+          "markdownDescription": "Denies the tauri_open_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_read_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-read-artifact",
+          "markdownDescription": "Denies the tauri_read_artifact command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_reveal_in_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-reveal-in-folder",
+          "markdownDescription": "Denies the tauri_reveal_in_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the toggle_maximize_window command without any pre-configured scope.",

@@ -177,9 +177,44 @@ fn resolve_target(workspace: Option<&Path>) -> Result<SpawnTarget, String> {
         if let Some(w) = ws {
             args.push("--workspace".into());
             args.push(w.to_string_lossy().into());
+            let static_dir = w.join("web").join("dist");
+            if static_dir.exists() {
+                args.push("--static-dir".into());
+                args.push(static_dir.to_string_lossy().into());
+            }
         }
         args
     };
+
+    // 1. In source checkout with .venv, prioritize local development environment
+    if let Some(ws) = workspace {
+        let python_rel = if cfg!(windows) {
+            PathBuf::from(".venv").join("Scripts").join("python.exe")
+        } else {
+            PathBuf::from(".venv").join("bin").join("python")
+        };
+        let venv_python = ws.join(python_rel);
+        if venv_python.exists() {
+            let mut args = vec![
+                "-m".into(),
+                "synapse.web_console.entry".into(),
+                "--workspace".into(),
+                ws.to_string_lossy().into(),
+                "--port".into(),
+                "0".into(),
+                "--no-pairing".into(),
+            ];
+            let static_dir = ws.join("web").join("dist");
+            if static_dir.exists() {
+                args.push("--static-dir".into());
+                args.push(static_dir.to_string_lossy().into());
+            }
+            return Ok(SpawnTarget::Python {
+                path: venv_python,
+                args,
+            });
+        }
+    }
 
     // 1. Check beside the GUI executable or in subdirectories
     if let Ok(current_exe) = std::env::current_exe() {

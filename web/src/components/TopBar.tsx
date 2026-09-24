@@ -1,4 +1,4 @@
-import { PanelLeft20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
+import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
 import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -6,6 +6,7 @@ import { projectLabel } from '../stores/sessionList.ts';
 import { GitExplorer } from './GitExplorer.tsx';
 import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 import { TauriWindowControls } from './TauriWindowControls.tsx';
+import { useRightDockStore } from '../stores/useRightDockStore.ts';
 
 /**
  * Header of the workspace column: the session title on the centre line.
@@ -62,6 +63,8 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
   const openGitExplorer = useConsoleStore((state) => state.openGitExplorer);
   const closeGitExplorer = useConsoleStore((state) => state.closeGitExplorer);
   const [infoOpen, setInfoOpen] = useState(false);
+  const rightDockOpen = useRightDockStore((s) => s.open);
+  const toggleRightDock = useRightDockStore((s) => s.toggleOpen);
   // The panel anchors to the title.  The element is held in state rather than read
   // off a ref while rendering, so the anchor belongs to the render that uses it.
   const [titleAnchor, setTitleAnchor] = useState<HTMLButtonElement | null>(null);
@@ -206,7 +209,20 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           because the two equal `1fr` sides are what keep the title centred.
           In an installed window it is also what keeps the window buttons clear of
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          data-tauri-drag-region="false"
+          onClick={() => toggleRightDock()}
+          title="展开/收起辅助工作台 (Ctrl+J)"
+          aria-label="展开/收起辅助工作台"
+          aria-expanded={rightDockOpen}
+          className={`ui-icon-button wco-caption-controls text-gray-500 hover:text-gray-900 ${
+            rightDockOpen ? 'text-accent bg-accent/10 font-bold' : ''
+          }`}
+        >
+          <PanelRight20Regular aria-hidden="true" />
+        </button>
         <div className="wco-caption-reserve" />
         <TauriWindowControls />
       </div>

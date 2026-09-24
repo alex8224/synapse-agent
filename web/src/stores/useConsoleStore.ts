@@ -3,6 +3,7 @@ import { readLastProjectId, saveLastProjectId } from './lastProject.ts';
 import { SynapseRuntimeClient } from '../client/SynapseRuntimeClient.ts';
 import type { GitStatusView } from '../runtime-client/git.ts';
 import { describeOpenExternalFailure } from '../runtime-client/externalApps.ts';
+import { fetchGitStatus } from '../client/tauriGitFs.ts';
 import type { ExternalAppView } from '../runtime-client/externalApps.ts';
 import type { OpenExternalMode } from '../runtime-client/externalApps.ts';
 import {
@@ -3703,7 +3704,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const session = get().currentSession;
     if (!session.thread_id) return;
     try {
-      const status = await client.gitStatus(session);
+      const activeProject = get().projects.find((p) => p.project_id === get().activeProjectId);
+      const status = await fetchGitStatus(client, session, activeProject?.workspace_path);
       // A session switch mid-flight must not paint another session's tree.
       if (get().currentSession.thread_id !== session.thread_id) return;
       set({

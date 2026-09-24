@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-reveal-in-folder"
+description = "Enables the tauri_reveal_in_folder command without any pre-configured scope."
+commands.allow = ["tauri_reveal_in_folder"]
+
+[[permission]]
+identifier = "deny-tauri-reveal-in-folder"
+description = "Denies the tauri_reveal_in_folder command without any pre-configured scope."
+commands.deny = ["tauri_reveal_in_folder"]

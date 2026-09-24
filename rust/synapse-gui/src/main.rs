@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod git_fs;
 mod sidecar;
 
 use sidecar::{ProcessManager, SharedProcessManager};
@@ -14,6 +15,76 @@ use tauri::{
 #[derive(Clone)]
 struct AppState {
     proc_mgr: SharedProcessManager,
+}
+
+#[tauri::command]
+fn tauri_open_path(workspace: Option<String>, path: String) -> Result<(), String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let target = if std::path::Path::new(&path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        ws.join(path)
+    };
+    git_fs::open_path(&target)
+}
+
+#[tauri::command]
+fn tauri_reveal_in_folder(workspace: Option<String>, path: String) -> Result<(), String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let target = if std::path::Path::new(&path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        ws.join(path)
+    };
+    git_fs::reveal_in_explorer(&target)
+}
+
+#[tauri::command]
+fn tauri_git_status(workspace: Option<String>) -> Result<git_fs::GitStatusView, String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    git_fs::get_git_status(&ws)
+}
+
+#[tauri::command]
+fn tauri_git_diff(workspace: Option<String>, path: String) -> Result<git_fs::GitDiffView, String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    git_fs::get_git_diff(&ws, &path)
+}
+
+#[tauri::command]
+fn tauri_list_artifacts(
+    workspace: Option<String>,
+    subpath: Option<String>,
+) -> Result<git_fs::ArtifactPage, String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    git_fs::list_artifacts(&ws, subpath.as_deref())
+}
+
+#[tauri::command]
+fn tauri_read_artifact(
+    workspace: Option<String>,
+    path: String,
+) -> Result<git_fs::ArtifactContent, String> {
+    let ws = workspace
+        .map(PathBuf::from)
+        .or_else(resolve_workspace)
+        .unwrap_or_else(|| PathBuf::from("."));
+    git_fs::read_artifact(&ws, &path)
 }
 
 #[tauri::command]
@@ -35,6 +106,11 @@ fn toggle_maximize_window(window: WebviewWindow) {
 #[tauri::command]
 fn close_window(window: WebviewWindow) {
     let _ = window.hide();
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    open::that(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -128,7 +204,14 @@ fn main() {
             toggle_maximize_window,
             close_window,
             get_console_url,
-            restart_service
+            restart_service,
+            open_path,
+            tauri_git_status,
+            tauri_git_diff,
+            tauri_list_artifacts,
+            tauri_read_artifact,
+            tauri_open_path,
+            tauri_reveal_in_folder
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

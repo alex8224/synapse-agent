@@ -24,6 +24,13 @@
     "allow-toggle-maximize-window",
     "allow-close-window",
     "allow-get-console-url",
-    "allow-restart-service"
+    "allow-restart-service",
+    "allow-open-path",
+    "allow-tauri-open-path",
+    "allow-tauri-reveal-in-folder",
+    "allow-tauri-git-status",
+    "allow-tauri-git-diff",
+    "allow-tauri-list-artifacts",
+    "allow-tauri-read-artifact"
   ]
 }

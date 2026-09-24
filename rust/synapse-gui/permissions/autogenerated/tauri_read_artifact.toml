@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-read-artifact"
+description = "Enables the tauri_read_artifact command without any pre-configured scope."
+commands.allow = ["tauri_read_artifact"]
+
+[[permission]]
+identifier = "deny-tauri-read-artifact"
+description = "Denies the tauri_read_artifact command without any pre-configured scope."
+commands.deny = ["tauri_read_artifact"]
