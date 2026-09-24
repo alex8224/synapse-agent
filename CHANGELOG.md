@@ -6,6 +6,30 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.54
+
+### New Features
+
+- **Integrated Terminal**: Add a central bottom terminal with a native PTY, multiple tabs, split view, and Fluent design.
+- **Right Auxiliary Dock**: Add a right dock with Files, Changes, Trajectory, Goals and Preview tabs, backed by native git and filesystem operations.
+- **System Proxy Fallback**: Fall back to the Windows system proxy for Codex and OAuth requests when no explicit proxy is configured.
+- **Fluent Console Redesign**: Follow Fluent design, synchronize dock animations, group trajectory rows by turn, and expand full diffs without a scrollbar.
+- **Window Header**: Adjust the header control layout and extend the integrated terminal's keyboard shortcuts.
+
+### Bug Fixes
+
+- **Desktop File Browsing**: Read the desktop console's file views from the real filesystem, so paths the workspace ignore policy hides (a Rust crate's `target/` directory) can be listed and opened again.
+
+### Engineering
+
+- Added a bounded native artifact surface (`tauri_stat_artifact`, chunked `tauri_read_artifact`) and routed the file panel, `@` mentions, the files tab and markdown images through one shared surface that prefers the native bridge on the desktop build.
+- Build the web console before installing dependencies in the docs workflow, which failed on every push to `main` because the package force-includes `web/dist`.
+- Optimized trajectory tab rendering and converted its toggle control to an icon.
+- Dropped the logout entry from the console actions.
+- Added regression tests for the artifact surface, the native git/fs bridge, the right dock contract, and the desktop console layout.
+
+---
+
 ## v0.1.53
 
 ### New Features
