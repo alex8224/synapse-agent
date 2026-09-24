@@ -18,6 +18,7 @@ export interface GitDiffViewProps {
   diff: GitDiffViewData | null;
   diffError: string | null;
   selectedPath: string | null;
+  fitContent?: boolean;
 }
 
 /**
@@ -77,6 +78,7 @@ export const GitDiffView: React.FC<GitDiffViewProps> = ({
   diff,
   diffError,
   selectedPath,
+  fitContent = false,
 }) => {
   const [viewMode, setViewMode] = useState<'unified' | 'split'>('unified');
   const [showHeader, setShowHeader] = useState(false);
@@ -139,7 +141,7 @@ export const GitDiffView: React.FC<GitDiffViewProps> = ({
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+    <div className={`flex min-h-0 min-w-0 flex-1 flex-col bg-canvas ${fitContent ? 'overflow-visible' : 'overflow-hidden'}`}>
       {/* Diff Controls & Statistics Bar.  The path is the flexible column: it
           truncates (with the full path in `title`) so a deep workspace path can
           never push the view toggle off the right edge. */}
@@ -231,7 +233,7 @@ export const GitDiffView: React.FC<GitDiffViewProps> = ({
       )}
 
       {/* Diff Content Scroll Area */}
-      <div className="fluent-scrollbar min-h-0 flex-1 overflow-auto">
+      <div className={`fluent-scrollbar min-h-0 flex-1 ${fitContent ? 'overflow-x-auto overflow-y-visible' : 'overflow-auto'}`}>
         <div className={viewMode === 'unified' ? 'min-w-full w-max' : 'w-full'}>
           {parsed.hunks.map((hunk) => (
             <HunkBlock key={hunk.id} hunk={hunk} viewMode={viewMode} />

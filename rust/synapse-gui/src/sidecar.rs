@@ -30,14 +30,16 @@ pub struct ProcessManager {
     child: Option<Child>,
     current_meta: Option<HostMetadata>,
     workspace: Option<PathBuf>,
+    static_dir: Option<PathBuf>,
 }
 
 impl ProcessManager {
-    pub fn new(workspace: Option<PathBuf>) -> Self {
+    pub fn new(workspace: Option<PathBuf>, static_dir: Option<PathBuf>) -> Self {
         Self {
             child: None,
             current_meta: None,
             workspace,
+            static_dir,
         }
     }
 
@@ -48,7 +50,7 @@ impl ProcessManager {
     pub fn start(&mut self) -> Result<HostMetadata, String> {
         self.stop();
 
-        let target = resolve_target(self.workspace.as_deref())?;
+        let target = resolve_target(self.workspace.as_deref(), self.static_dir.as_deref())?;
         let mut cmd = match &target {
             SpawnTarget::Binary { path, args } => {
                 let mut c = Command::new(path);
@@ -159,7 +161,22 @@ impl Drop for ProcessManager {
 
 pub type SharedProcessManager = Arc<Mutex<ProcessManager>>;
 
-fn resolve_target(workspace: Option<&Path>) -> Result<SpawnTarget, String> {
+fn resolve_target(workspace: Option<&Path>, static_dir: Option<&Path>) -> Result<SpawnTarget, String> {
+    let resolve_static = |ws: Option<&Path>| -> Option<PathBuf> {
+        if let Some(s) = static_dir {
+            if s.exists() {
+                return Some(s.to_path_buf());
+            }
+        }
+        if let Some(w) = ws {
+            let default_dist = w.join("web").join("dist");
+            if default_dist.exists() {
+                return Some(default_dist);
+            }
+        }
+        None
+    };
+
     let binary_name = if cfg!(windows) {
         "synapse.exe"
     } else {
@@ -177,11 +194,10 @@ fn resolve_target(workspace: Option<&Path>) -> Result<SpawnTarget, String> {
         if let Some(w) = ws {
             args.push("--workspace".into());
             args.push(w.to_string_lossy().into());
-            let static_dir = w.join("web").join("dist");
-            if static_dir.exists() {
-                args.push("--static-dir".into());
-                args.push(static_dir.to_string_lossy().into());
-            }
+        }
+        if let Some(s) = resolve_static(ws) {
+            args.push("--static-dir".into());
+            args.push(s.to_string_lossy().into());
         }
         args
     };
@@ -204,10 +220,9 @@ fn resolve_target(workspace: Option<&Path>) -> Result<SpawnTarget, String> {
                 "0".into(),
                 "--no-pairing".into(),
             ];
-            let static_dir = ws.join("web").join("dist");
-            if static_dir.exists() {
+            if let Some(s) = resolve_static(Some(ws)) {
                 args.push("--static-dir".into());
-                args.push(static_dir.to_string_lossy().into());
+                args.push(s.to_string_lossy().into());
             }
             return Ok(SpawnTarget::Python {
                 path: venv_python,

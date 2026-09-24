@@ -226,7 +226,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
       </div>
 
       {/* Accordion File & Diff list */}
-      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-1.5 space-y-1">
+      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-1.5 space-y-1.5 flex flex-col">
         {filteredFiles.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center text-gray-400 font-sans">
             <DocumentEdit16Regular className="mb-2 text-2xl text-gray-300" />
@@ -242,7 +242,9 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
             return (
               <div
                 key={file.path}
-                className="overflow-hidden rounded-control border border-line/80 bg-surface shadow-xs"
+                className={`overflow-hidden rounded-control border border-line/80 bg-surface shadow-xs transition-shadow hover:shadow-card ${
+                  isExpanded ? 'flex flex-col flex-1 min-h-[320px]' : ''
+                }`}
               >
                 <div
                   onClick={() => toggleExpand(file.path)}
@@ -307,17 +309,18 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
                 </div>
 
                 {isExpanded && (
-                  <div className="bg-surface max-h-[26rem] overflow-auto border-t border-line/40">
+                  <div className="bg-surface border-t border-line/40 flex-1 min-h-[260px] overflow-x-auto overflow-y-visible">
                     {cache?.loading ? (
-                      <div className="flex items-center justify-center py-6 text-gray-400">
-                        <ArrowClockwise16Regular className="animate-spin mr-1.5" />
-                        <span>正在计算差异…</span>
+                      <div className="flex items-center justify-center py-10 text-gray-400">
+                        <ArrowClockwise16Regular className="animate-spin mr-2 text-base text-accent" />
+                        <span className="font-sans text-xs">正在计算代码差异…</span>
                       </div>
                     ) : (
                       <GitDiffView
                         diff={cache?.diff ?? null}
                         diffError={cache?.error ?? null}
                         selectedPath={file.path}
+                        fitContent={true}
                       />
                     )}
                   </div>

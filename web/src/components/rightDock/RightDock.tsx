@@ -80,6 +80,9 @@ export const RightDock: React.FC = () => {
     [visibleTabs, activeTabId],
   );
 
+  // Responsive label visibility: hide labels and show only icons when dock width is tight
+  const showLabels = width >= 435;
+
   // Drag-to-resize logic
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -113,53 +116,59 @@ export const RightDock: React.FC = () => {
     [visibilityContext, activeTabId, setActiveTab, setOpen],
   );
 
-  if (!open) {
-    return null;
-  }
-
   return (
     <>
-      {/* Draggable Resizer Separator */}
-      <div
-        onMouseDown={handleMouseDown}
-        onDoubleClick={resetWidth}
-        title="按住左右拖拽调节右侧栏宽度 (双击复位)"
-        className={`group relative z-20 w-1.5 shrink-0 cursor-col-resize select-none transition-colors ${
-          isDragging ? 'bg-accent' : 'bg-transparent hover:bg-accent/40'
-        }`}
-      >
-        <div className="absolute inset-y-0 left-0.5 w-[1px] bg-line group-hover:bg-accent/60" />
-      </div>
+      {/* Draggable Resizer Separator - visible only when dock is open */}
+      {open && (
+        <div
+          onMouseDown={handleMouseDown}
+          onDoubleClick={resetWidth}
+          title="按住左右拖拽调节右侧栏宽度 (双击复位)"
+          className={`group relative z-20 w-1.5 shrink-0 cursor-col-resize select-none transition-colors ${
+            isDragging ? 'bg-accent' : 'bg-transparent hover:bg-accent/40'
+          }`}
+        >
+          <div className="absolute inset-y-0 left-0.5 w-[1px] bg-line group-hover:bg-accent/60" />
+        </div>
+      )}
 
-      {/* Dock Container */}
+      {/* Dock Container with Fluent Design Acrylic/Chrome and Left-Sidebar parity animation */}
       <aside
         ref={dockRef}
-        style={{ width: `${width}px` }}
-        className="flex shrink-0 flex-col overflow-hidden border-l border-line bg-surface text-gray-900 shadow-card"
+        inert={!open}
+        style={{ width: open ? `${width}px` : '0px' }}
+        className={`material-chrome relative flex h-full shrink-0 flex-col overflow-hidden select-none text-gray-900 shadow-card backdrop-blur-md ${
+          open ? 'border-l border-line' : 'border-l-0 pointer-events-none'
+        } ${isDragging ? '' : 'transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)]'}`}
       >
+        <div className="flex h-full w-full flex-col min-w-[320px] overflow-hidden">
         {/* Dock Header with Tabs */}
-        <div className="flex h-chrome items-center justify-between border-b border-line bg-surface px-2">
+        <div className="flex h-chrome items-center justify-between border-b border-line bg-surface/70 backdrop-blur-sm px-2 gap-1 overflow-hidden shrink-0">
           {/* Tab buttons */}
-          <div className="flex items-center gap-1 rounded-control bg-sunken/60 p-0.5">
+          <div className="flex items-center gap-0.5 rounded-control bg-sunken/70 p-0.5 min-w-0 overflow-x-auto fluent-scrollbar">
             {visibleTabs.map((tab) => {
               const isActive = tab.id === activeTab?.id;
               const Icon = tab.Icon;
               const badgeValue = tab.badge ? tab.badge(visibilityContext) : null;
+              const tooltip = badgeValue !== null && badgeValue !== undefined ? `${tab.label} (${badgeValue})` : tab.label;
 
               return (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  title={tab.label}
-                  className={`flex items-center gap-1.5 rounded-[4px] px-2.5 py-1 text-xs font-medium transition-all ${
+                  title={tooltip}
+                  aria-label={tab.label}
+                  className={`flex items-center gap-1.5 rounded-control py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    showLabels ? 'px-2.5' : 'px-2'
+                  } ${
                     isActive
-                      ? 'bg-surface text-gray-900 font-semibold shadow-card'
-                      : 'text-gray-500 hover:text-gray-800'
+                      ? 'bg-surface text-gray-900 font-semibold shadow-xs border border-line/40'
+                      : 'text-gray-500 hover:text-gray-900 hover:bg-surface-hover/80'
                   }`}
                 >
                   {Icon && <Icon className="shrink-0 text-sm" />}
-                  <span>{tab.label}</span>
+                  {showLabels && <span className="whitespace-nowrap">{tab.label}</span>}
                   {badgeValue !== null && badgeValue !== undefined && (
                     <span
                       className={`rounded-full px-1.5 py-0.2 font-mono text-[9px] font-semibold ${
@@ -181,7 +190,7 @@ export const RightDock: React.FC = () => {
           </div>
 
           {/* Action buttons (HeaderExtra + Close) */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             {activeTab?.HeaderExtra && <activeTab.HeaderExtra context={dockContext} />}
             <button
               type="button"
@@ -198,6 +207,7 @@ export const RightDock: React.FC = () => {
         {/* Tab Body Content */}
         <div className="flex-1 overflow-hidden">
           {activeTab && <activeTab.Content context={dockContext} />}
+        </div>
         </div>
       </aside>
     </>

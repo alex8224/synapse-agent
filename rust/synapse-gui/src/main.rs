@@ -180,9 +180,24 @@ fn resolve_workspace() -> Option<PathBuf> {
     None
 }
 
+fn resolve_static_dir() -> Option<PathBuf> {
+    // Check CLI argument --static-dir <path> or -s <path>
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if (args[i] == "--static-dir" || args[i] == "-s") && i + 1 < args.len() {
+            let p = PathBuf::from(&args[i + 1]);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     let workspace = resolve_workspace();
-    let proc_mgr = Arc::new(Mutex::new(ProcessManager::new(workspace)));
+    let static_dir = resolve_static_dir();
+    let proc_mgr = Arc::new(Mutex::new(ProcessManager::new(workspace, static_dir)));
     let state = AppState {
         proc_mgr: proc_mgr.clone(),
     };
