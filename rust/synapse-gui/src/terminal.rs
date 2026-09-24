@@ -7,9 +7,9 @@ use tauri::{AppHandle, Emitter};
 pub struct TerminalInstance {
     #[allow(dead_code)]
     pub id: u32,
+    pub child_pid: Option<u32>,
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
-    pub child: Box<dyn portable_pty::Child + Send>,
 }
 
 #[derive(Default)]
@@ -73,10 +73,11 @@ impl TerminalManager {
             }
         }
 
-        let child = pty_pair
+        let mut child = pty_pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell '{}': {}", shell_cmd, e))?;
+        let child_pid = child.process_id();
 
         let mut reader = pty_pair
             .master
@@ -88,7 +89,8 @@ impl TerminalManager {
             .take_writer()
             .map_err(|e| format!("Failed to take PTY writer: {}", e))?;
 
-        let app_clone = app.clone();
+        let app_data = app.clone();
+        let app_exit = app.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -97,20 +99,25 @@ impl TerminalManager {
                     Ok(n) => {
                         let text = String::from_utf8_lossy(&buf[..n]).to_string();
                         let event_name = format!("terminal-data-{}", id);
-                        let _ = app_clone.emit(&event_name, text);
+                        let _ = app_data.emit(&event_name, text);
                     }
                     Err(_) => break,
                 }
             }
+        });
+
+        // Wait for child process exit in dedicated thread
+        std::thread::spawn(move || {
+            let _ = child.wait();
             let exit_event = format!("terminal-exit-{}", id);
-            let _ = app_clone.emit(&exit_event, id);
+            let _ = app_exit.emit(&exit_event, id);
         });
 
         let instance = TerminalInstance {
             id,
+            child_pid,
             writer,
             master: pty_pair.master,
-            child,
         };
 
         self.instances.insert(id, instance);
@@ -148,8 +155,21 @@ impl TerminalManager {
     }
 
     pub fn close_terminal(&mut self, id: u32) -> Result<(), String> {
-        if let Some(mut inst) = self.instances.remove(&id) {
-            let _ = inst.child.kill();
+        if let Some(inst) = self.instances.remove(&id) {
+            if let Some(pid) = inst.child_pid {
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string(), "/T"])
+                        .status();
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .status();
+                }
+            }
             Ok(())
         } else {
             Err(format!("Terminal session {} not found", id))

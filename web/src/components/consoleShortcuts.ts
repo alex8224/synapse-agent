@@ -10,7 +10,7 @@
  *  - `title` is the trigger tooltip's text; `withChord` appends the chord, so a
  *    tooltip can never advertise a key the help list does not mention.
  *
- * The other chords (Enter, Ctrl+C, Ctrl+B, Ctrl+N, Ctrl+K, Ctrl+Shift+L, F2) are
+ * The other chords (Enter, Ctrl+C, Ctrl+B, Ctrl+J, Ctrl+`, Ctrl+N, Ctrl+K, Ctrl+Shift+L, F2) are
  * implemented by the composer, the shell and the model picker; they are listed here
  * as copy only, which is why `key` is optional.  Only the keys a bottom-bar entry
  * claims are answered by the bar itself.
@@ -52,6 +52,8 @@ export const CONSOLE_SHORTCUTS: readonly ConsoleShortcut[] = [
   { chord: 'Enter', label: '发送指令 / 运行态下排队插话' },
   { chord: 'Ctrl + C', label: '中止当前运行中的轮次' },
   { chord: 'Ctrl + B', label: '展开 / 收起侧边栏' },
+  { chord: 'Ctrl + J', label: '展开 / 收起辅助工作台' },
+  { chord: 'Ctrl + `', label: '展开 / 收起集成终端' },
   { chord: 'Ctrl + N', label: '新建会话' },
   { chord: 'Ctrl + K', label: '搜索会话' },
   { chord: THEME_SHORTCUT_CHORD, label: '切换浅色 / 深色主题' },

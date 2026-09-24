@@ -15,31 +15,26 @@ import {
   Add16Regular,
   Dismiss16Regular,
   SquareMultiple16Regular,
-  LayoutColumnTwo16Regular,
-  Broom16Regular,
   Sparkle16Regular,
   WindowConsole20Regular,
 } from '@fluentui/react-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useTerminalStore } from '../../stores/useTerminalStore.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
-import { XtermView } from './XtermView.tsx';
+import { XtermView, terminalInstances, getTerminalContext } from './XtermView.tsx';
+import { insertTextAtCaret } from '../composer/composerSelection.ts';
 
 export const BottomTerminalPanel: React.FC = () => {
   const {
     open,
     height,
     isMaximized,
-    isSplit,
     activeSessionId,
-    splitSessionId,
     sessions,
     setOpen,
     setHeight,
     toggleMaximize,
-    toggleSplit,
     setActiveSession,
-    setSplitSession,
     createSession,
     closeSession,
   } = useTerminalStore(
@@ -47,16 +42,12 @@ export const BottomTerminalPanel: React.FC = () => {
       open: s.open,
       height: s.height,
       isMaximized: s.isMaximized,
-      isSplit: s.isSplit,
       activeSessionId: s.activeSessionId,
-      splitSessionId: s.splitSessionId,
       sessions: s.sessions,
       setOpen: s.setOpen,
       setHeight: s.setHeight,
       toggleMaximize: s.toggleMaximize,
-      toggleSplit: s.toggleSplit,
       setActiveSession: s.setActiveSession,
-      setSplitSession: s.setSplitSession,
       createSession: s.createSession,
       closeSession: s.closeSession,
     })),
@@ -114,24 +105,37 @@ export const BottomTerminalPanel: React.FC = () => {
     [sessions, activeSessionId],
   );
 
-  const splitSession = useMemo(() => {
-    if (!isSplit) return null;
-    return (
-      sessions.find((s) => s.id === splitSessionId) ??
-      sessions.find((s) => s.id !== activeSession?.id) ??
-      null
-    );
-  }, [isSplit, sessions, splitSessionId, activeSession]);
-
   // Send terminal action to composer
   const handleSendToComposer = useCallback(() => {
-    const composer = document.getElementById('console-composer') as HTMLInputElement | HTMLTextAreaElement | null;
-    if (composer) {
-      const text = `请根据当前工作区终端环境与执行输出进行分析与处理：\n`;
-      composer.value = text;
-      composer.focus();
+    const composer = document.getElementById('console-composer') as HTMLElement | null;
+    if (!composer) return;
+
+    const term = activeSession ? terminalInstances.get(activeSession.id) : null;
+    const context = term ? getTerminalContext(term) : { text: '', hasSelection: false };
+
+    let prompt = '';
+    if (context.text) {
+      const heading = context.hasSelection
+        ? '请分析以下终端选中的内容并给出解决建议：'
+        : '请分析以下终端命令的执行输出与报错信息并给出解决建议：';
+      prompt = `${heading}\n\`\`\`terminal\n${context.text}\n\`\`\`\n`;
+    } else {
+      prompt = '请根据当前工作区终端环境与执行输出进行分析与处理：\n';
     }
-  }, []);
+
+    composer.focus();
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      const current = composer.value;
+      const pad = current && !current.endsWith('\n') ? '\n\n' : '';
+      composer.value = `${current}${pad}${prompt}`;
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+    } else {
+      const currentText = composer.textContent || '';
+      const pad = currentText && !currentText.endsWith('\n') ? '\n\n' : '';
+      insertTextAtCaret(composer, `${pad}${prompt}`);
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }, [activeSession]);
 
   const panelHeight = isMaximized ? 'calc(100% - 42px)' : `${height}px`;
 
@@ -139,7 +143,7 @@ export const BottomTerminalPanel: React.FC = () => {
     <div
       inert={!open}
       style={{ height: open ? panelHeight : '0px' }}
-      className={`material-chrome absolute bottom-0 left-0 right-0 z-40 flex flex-col overflow-hidden select-none border-t border-line shadow-panel backdrop-blur-md ${
+      className={`material-chrome relative w-full shrink-0 flex flex-col overflow-hidden select-none border-t border-line shadow-panel backdrop-blur-md ${
         open ? 'opacity-100' : 'opacity-0 pointer-events-none border-t-0'
       } ${isDragging ? '' : 'transition-[height] duration-250 ease-[cubic-bezier(0,0,0,1)]'}`}
     >
@@ -148,15 +152,13 @@ export const BottomTerminalPanel: React.FC = () => {
         onMouseDown={handleMouseDown}
         onDoubleClick={() => setHeight(300)}
         title="按住上下拖拽调节终端高度 (双击复位)"
-        className={`group absolute top-0 left-0 right-0 z-50 h-1.5 cursor-row-resize transition-colors ${
-          isDragging ? 'bg-accent' : 'bg-transparent hover:bg-accent/40'
+        className={`group absolute top-0 left-0 right-0 z-50 h-2 cursor-row-resize transition-colors ${
+          isDragging ? 'bg-accent/80' : 'bg-transparent hover:bg-accent/30'
         }`}
-      >
-        <div className="absolute inset-x-0 top-0.5 h-[1px] bg-line group-hover:bg-accent/60" />
-      </div>
+      />
 
       {/* Terminal Header with Multi-Tabs and Complex Action Bar */}
-      <div className="flex h-9 items-center justify-between border-b border-line bg-surface/80 px-2 select-none shrink-0 backdrop-blur-sm">
+      <div className="flex h-9 items-center justify-between border-b border-line/70 bg-surface/90 px-2.5 pt-0.5 select-none shrink-0 backdrop-blur-sm">
         {/* Left: Session Tabs */}
         <div className="flex items-center gap-1 overflow-x-auto fluent-scrollbar min-w-0 pr-2">
           {sessions.map((session) => {
@@ -201,21 +203,6 @@ export const BottomTerminalPanel: React.FC = () => {
 
         {/* Right: Complex Actions Toolbar */}
         <div className="flex items-center gap-1 shrink-0">
-          {/* Split Terminal */}
-          <button
-            type="button"
-            onClick={toggleSplit}
-            title={isSplit ? '取消分屏' : '左右分屏终端 (Split Terminal)'}
-            className={`flex items-center gap-1 rounded-control px-2 py-1 text-[11px] font-medium transition-colors ${
-              isSplit
-                ? 'bg-accent/15 text-accent font-semibold'
-                : 'text-gray-500 hover:text-gray-900 hover:bg-surface-hover'
-            }`}
-          >
-            <LayoutColumnTwo16Regular className="text-xs" />
-            <span className="hidden sm:inline">{isSplit ? '分屏中' : '分屏'}</span>
-          </button>
-
           {/* Send to Composer / Agent */}
           <button
             type="button"
@@ -251,22 +238,25 @@ export const BottomTerminalPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* Terminal View Body (Single or Split) */}
-      <div className="flex-1 flex overflow-hidden bg-canvas">
-        {activeSession ? (
-          <div className="flex-1 h-full min-w-0 overflow-hidden">
-            <XtermView key={activeSession.id} session={activeSession} />
-          </div>
+      {/* Terminal View Body: Keep-Alive all sessions in DOM */}
+      <div className="flex-1 flex overflow-hidden bg-canvas relative">
+        {sessions.length > 0 ? (
+          sessions.map((session) => {
+            const isActive = session.id === activeSession?.id;
+            return (
+              <div
+                key={session.id}
+                className={`absolute inset-0 h-full w-full overflow-hidden ${
+                  isActive ? 'block z-10' : 'hidden z-0'
+                }`}
+              >
+                <XtermView session={session} isActive={isActive} />
+              </div>
+            );
+          })
         ) : (
           <div className="flex-1 flex items-center justify-center text-xs text-gray-400">
             暂无活动终端会话，点击上方 “+” 新建
-          </div>
-        )}
-
-        {/* Secondary Split Pane */}
-        {isSplit && splitSession && (
-          <div className="flex-1 h-full min-w-0 border-l border-line overflow-hidden">
-            <XtermView key={splitSession.id} session={splitSession} />
           </div>
         )}
       </div>

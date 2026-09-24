@@ -150,7 +150,7 @@ export function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         useRightDockStore.getState().toggleOpen();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.code === 'Backquote')) {
         e.preventDefault();
         useTerminalStore.getState().toggleOpen();
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
@@ -215,24 +215,26 @@ export function App() {
           the material invisible.  Everything in the pane is a flex row that takes
           its own height, so nothing else can overflow it.
         */}
-        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col material-pane">
-          {/* Only rendered when the relay is down and the read-only diagnostics
-              read succeeded; see the component for the degradation rules. */}
-          <RuntimeDiagnosticsBanner />
-          {/* Recovery / truncation state of the running turn's live replay.  An
-              in-flow strip like the banner above it, not a floating layer: the
-              transcript scroller reaches up behind the header, and a positioned
-              overlay would cover the newest lines it is describing. */}
-          <RecoveryNotice />
-          <ErrorBoundary level="panel" sectionTitle="消息历史">
-            <Transcript />
-          </ErrorBoundary>
-          <ErrorBoundary level="panel" sectionTitle="输入框">
-            <CommandInput />
-          </ErrorBoundary>
-          <ScreenshotTaskBanner />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col material-pane">
+            {/* Only rendered when the relay is down and the read-only diagnostics
+                read succeeded; see the component for the degradation rules. */}
+            <RuntimeDiagnosticsBanner />
+            {/* Recovery / truncation state of the running turn's live replay.  An
+                in-flow strip like the banner above it, not a floating layer: the
+                transcript scroller reaches up behind the header, and a positioned
+                overlay would cover the newest lines it is describing. */}
+            <RecoveryNotice />
+            <ErrorBoundary level="panel" sectionTitle="消息历史">
+              <Transcript />
+            </ErrorBoundary>
+            <ErrorBoundary level="panel" sectionTitle="输入框">
+              <CommandInput />
+            </ErrorBoundary>
+            <ScreenshotTaskBanner />
+          </main>
           <BottomTerminalPanel />
-        </main>
+        </div>
         <RightDock />
         </div>
         <BottomBar />

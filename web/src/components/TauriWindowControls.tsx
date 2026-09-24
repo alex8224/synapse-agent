@@ -9,7 +9,7 @@ export const TauriWindowControls: React.FC = () => {
   return (
     <div
       data-tauri-drag-region="false"
-      className="wco-caption-controls flex items-center justify-end gap-1 shrink-0 ml-auto select-none"
+      className="wco-caption-controls flex items-center justify-end gap-1 shrink-0 select-none"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       <button

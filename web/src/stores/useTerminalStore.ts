@@ -23,9 +23,7 @@ interface TerminalStoreState {
   open: boolean;
   height: number;
   isMaximized: boolean;
-  isSplit: boolean;
   activeSessionId: string | null;
-  splitSessionId: string | null;
   sessions: TerminalTabSession[];
 
   // Actions
@@ -33,12 +31,11 @@ interface TerminalStoreState {
   toggleOpen: () => void;
   setHeight: (height: number) => void;
   toggleMaximize: () => void;
-  toggleSplit: () => void;
   setActiveSession: (id: string) => void;
-  setSplitSession: (id: string | null) => void;
   createSession: (workspace?: string, shell?: string) => Promise<string>;
   closeSession: (id: string) => Promise<void>;
   updateSessionPty: (id: string, ptyId: number, status: 'running' | 'exited' | 'error', errorMessage?: string) => void;
+  handleSessionExit: (ptyId: number) => void;
 }
 
 const DEFAULT_HEIGHT = 300;
@@ -48,9 +45,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   open: false,
   height: DEFAULT_HEIGHT,
   isMaximized: false,
-  isSplit: false,
   activeSessionId: null,
-  splitSessionId: null,
   sessions: [],
 
   setOpen: (open) => set({ open }),
@@ -65,26 +60,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
 
   toggleMaximize: () => set((state) => ({ isMaximized: !state.isMaximized })),
 
-  toggleSplit: () => {
-    const { isSplit, sessions, activeSessionId } = get();
-    if (!isSplit) {
-      // If opening split and we have another session, select it for split, otherwise create one
-      const remaining = sessions.filter((s) => s.id !== activeSessionId);
-      if (remaining.length > 0) {
-        set({ isSplit: true, splitSessionId: remaining[0].id });
-      } else {
-        set({ isSplit: true, splitSessionId: null });
-        void get().createSession();
-      }
-    } else {
-      set({ isSplit: false, splitSessionId: null });
-    }
-  },
-
   setActiveSession: (id) => set({ activeSessionId: id }),
-
-  setSplitSession: (id) => set({ splitSessionId: id }),
-
   createSession: async (workspace, shell) => {
     const id = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const count = get().sessions.length + 1;
@@ -101,12 +77,9 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
 
     set((state) => {
       const nextSessions = [...state.sessions, newSession];
-      const activeId = state.activeSessionId ? state.activeSessionId : id;
-      const splitId = state.isSplit && !state.splitSessionId ? id : state.splitSessionId;
       return {
         sessions: nextSessions,
-        activeSessionId: activeId,
-        splitSessionId: splitId,
+        activeSessionId: id,
       };
     });
 
@@ -121,7 +94,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   },
 
   closeSession: async (id) => {
-    const { sessions, activeSessionId, splitSessionId } = get();
+    const { sessions, activeSessionId } = get();
     const session = sessions.find((s) => s.id === id);
     if (session?.ptyId) {
       try {
@@ -131,21 +104,17 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
 
     const nextSessions = sessions.filter((s) => s.id !== id);
     let nextActive = activeSessionId === id ? (nextSessions[0]?.id ?? null) : activeSessionId;
-    let nextSplit = splitSessionId === id ? null : splitSessionId;
 
     if (nextSessions.length === 0) {
       set({
         sessions: [],
         activeSessionId: null,
-        splitSessionId: null,
         open: false,
       });
     } else {
       set({
         sessions: nextSessions,
         activeSessionId: nextActive,
-        splitSessionId: nextSplit,
-        isSplit: nextSplit !== null,
       });
     }
   },
@@ -156,5 +125,12 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
         s.id === id ? { ...s, ptyId, status, errorMessage } : s,
       ),
     }));
+  },
+
+  handleSessionExit: (ptyId: number) => {
+    const target = get().sessions.find((s) => s.ptyId === ptyId);
+    if (target) {
+      void get().closeSession(target.id);
+    }
   },
 }));
