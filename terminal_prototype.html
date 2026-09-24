@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synapse - 中央底部集成终端高保真原型</title>
+  <style>
+    /* ==========================================================================
+       Synapse Fluent 2 视觉系统规范
+       ========================================================================== */
+    :root {
+      --font-sans: "Segoe UI Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      --font-mono: "Cascadia Code", "Consolas", ui-monospace, Menlo, Monaco, monospace;
+      --radius-control: 4px;
+      --radius-card: 6px;
+      --motion-fluent: 250ms cubic-bezier(0, 0, 0, 1);
+      --accent: #0078d4;
+      --accent-hover: #1084d9;
+      --accent-active: #006cbe;
+      --accent-subtle: rgba(0, 120, 212, 0.12);
+    }
+
+    [data-theme="dark"] {
+      --canvas: #1e1e1e;
+      --surface: #252526;
+      --surface-chrome: rgba(37, 37, 38, 0.85);
+      --surface-sunken: #181818;
+      --surface-hover: #2d2d2d;
+      --surface-active: #373737;
+      --border-line: #333333;
+      --border-line-subtle: #2b2b2b;
+      --text-primary: #cccccc;
+      --text-secondary: #8c8c8c;
+      --text-muted: #5a5a5a;
+      --term-bg: #181818;
+      --term-fg: #d4d4d4;
+      --term-cursor: #0078d4;
+      --shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.45);
+      --shadow-panel: 0 -4px 16px rgba(0, 0, 0, 0.35);
+    }
+
+    [data-theme="light"] {
+      --canvas: #f3f3f3;
+      --surface: #ffffff;
+      --surface-chrome: rgba(255, 255, 255, 0.88);
+      --surface-sunken: #f8f9fa;
+      --surface-hover: #f0f0f0;
+      --surface-active: #e5e5e5;
+      --border-line: #e0e0e0;
+      --border-line-subtle: #eaeaea;
+      --text-primary: #1f1f1f;
+      --text-secondary: #616161;
+      --text-muted: #9e9e9e;
+      --term-bg: #fdfdfd;
+      --term-fg: #24292e;
+      --term-cursor: #0078d4;
+      --shadow-flyout: 0 8px 20px rgba(0, 0, 0, 0.1);
+      --shadow-panel: 0 -4px 16px rgba(0, 0, 0, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      color: var(--text-primary);
+      background-color: var(--canvas);
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 细滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(128, 128, 128, 0.25);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(128, 128, 128, 0.45);
+    }
+
+    /* 主布局框架 */
+    .app-root {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 28px);
+      overflow: hidden;
+    }
+
+    /* 左侧栏 */
+    .sidebar {
+      width: 240px;
+      background: var(--surface-chrome);
+      backdrop-filter: blur(16px);
+      border-right: 1px solid var(--border-line);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    .sidebar-header {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border-line-subtle);
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 6px;
+    }
+    .session-item {
+      padding: 8px 10px;
+      border-radius: var(--radius-control);
+      margin-bottom: 2px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      transition: background 0.15s ease;
+    }
+    .session-item:hover {
+      background: var(--surface-hover);
+      color: var(--text-primary);
+    }
+    .session-item.active {
+      background: var(--accent-subtle);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* 中央工作区 */
+    .center-workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      position: relative;
+      background: var(--canvas);
+    }
+
+    /* 顶栏 */
+    .topbar {
+      height: 42px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      flex-shrink: 0;
+    }
+    .topbar-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* 按钮基础 */
+    .ui-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: var(--radius-control);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.15s ease;
+    }
+    .ui-btn:hover {
+      background: var(--surface-hover);
+      color: var(--text-primary);
+    }
+    .ui-btn.active {
+      background: var(--accent-subtle);
+      color: var(--accent);
+      border-color: rgba(0, 120, 212, 0.3);
+    }
+    .ui-btn-accent {
+      background: var(--accent);
+      color: #fff;
+    }
+    .ui-btn-accent:hover {
+      background: var(--accent-hover);
+      color: #fff;
+    }
+
+    /* 中央消息列表 */
+    .chat-transcript {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .msg-card {
+      background: var(--surface);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      padding: 12px 14px;
+      max-width: 85%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .msg-user {
+      align-self: flex-end;
+      background: var(--accent-subtle);
+      border-color: rgba(0, 120, 212, 0.25);
+    }
+    .msg-assistant {
+      align-self: flex-start;
+    }
+
+    /* 输入框容器 */
+    .composer-area {
+      padding: 10px 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--border-line);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .composer-box {
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      background: var(--canvas);
+      padding: 8px 12px;
+      min-height: 48px;
+      font-family: inherit;
+      color: var(--text-primary);
+      outline: none;
+    }
+    .composer-box:focus {
+      border-color: var(--accent);
+    }
+
+    /* ==========================================================================
+       底部集成终端面板 (VS Code 风格，中央宽屏展开)
+       ========================================================================== */
+    .bottom-terminal-panel {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--term-bg);
+      border-top: 1px solid var(--border-line);
+      display: flex;
+      flex-direction: column;
+      z-index: 40;
+      box-shadow: var(--shadow-panel);
+      transition: height var(--motion-fluent), transform var(--motion-fluent);
+      overflow: hidden;
+    }
+    .bottom-terminal-panel.collapsed {
+      height: 0 !important;
+      transform: translateY(100%);
+      pointer-events: none;
+      border-top: none;
+    }
+
+    /* 拖拽高度把手 */
+    .term-resizer {
+      height: 4px;
+      background: transparent;
+      cursor: row-resize;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      transition: background 0.15s ease;
+    }
+    .term-resizer:hover, .term-resizer.dragging {
+      background: var(--accent);
+    }
+
+    /* 终端标题栏与 Tab */
+    .term-header {
+      height: 36px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .term-tabs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 100%;
+      overflow-x: auto;
+    }
+    .term-tab-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      height: 28px;
+      border-radius: var(--radius-control);
+      font-size: 11px;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      color: var(--text-secondary);
+      border: 1px solid transparent;
+      transition: all 0.12s ease;
+      white-space: nowrap;
+    }
+    .term-tab-item:hover {
+      background: var(--surface-hover);
+      color: var(--text-primary);
+    }
+    .term-tab-item.active {
+      background: var(--canvas);
+      color: var(--text-primary);
+      border-color: var(--border-line);
+      font-weight: 600;
+    }
+    .term-tab-close {
+      opacity: 0.5;
+      cursor: pointer;
+      font-size: 13px;
+      padding: 0 2px;
+      border-radius: 2px;
+    }
+    .term-tab-close:hover {
+      opacity: 1;
+      background: rgba(255, 0, 0, 0.2);
+      color: #ff5555;
+    }
+
+    .term-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* 终端主显示区 (支持分屏 Split) */
+    .term-body-container {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+    .term-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 8px 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--term-fg);
+      background: var(--term-bg);
+      line-height: 1.55;
+      overflow-y: auto;
+    }
+    .term-pane.split-secondary {
+      border-left: 1px solid var(--border-line);
+    }
+
+    /* 命令行输出与高亮模拟 */
+    .cmd-line {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .cmd-prompt {
+      color: #569cd6;
+      font-weight: bold;
+    }
+    .cmd-dir {
+      color: #4ec9b0;
+    }
+    .cmd-arrow {
+      color: #dcdcaa;
+    }
+    .cmd-text {
+      color: #ffffff;
+      font-weight: 500;
+    }
+    .cmd-out-success {
+      color: #6a9955;
+    }
+    .cmd-out-info {
+      color: #9cdcfe;
+    }
+    .cmd-out-warn {
+      color: #ce9178;
+    }
+    .cmd-out-accent {
+      color: #0078d4;
+      font-weight: bold;
+    }
+    .cmd-input-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .term-cursor {
+      display: inline-block;
+      width: 7px;
+      height: 14px;
+      background: var(--term-cursor);
+      vertical-align: middle;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    /* 右侧工作台 (收起态) */
+    .right-dock-stub {
+      width: 44px;
+      background: var(--surface-chrome);
+      border-left: 1px solid var(--border-line);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 8px;
+    }
+
+    /* 全局底栏 (BottomBar) */
+    .bottombar {
+      height: 28px;
+      background: var(--surface-chrome);
+      border-top: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 10px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      z-index: 60;
+    }
+    .bottombar-left, .bottombar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bottombar-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 6px;
+      border-radius: var(--radius-control);
+      cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    .bottombar-item:hover {
+      background: var(--surface-hover);
+      color: var(--text-primary);
+    }
+    .bottombar-item.highlight {
+      background: var(--accent-subtle);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #107c41;
+    }
+
+    /* 设计说明标签与浮层 */
+    .design-note-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0, 120, 212, 0.9);
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      z-index: 100;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* 快捷悬浮提示卡 */
+    .floating-callout {
+      position: absolute;
+      bottom: 42px;
+      left: 120px;
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-card);
+      padding: 8px 12px;
+      font-size: 11px;
+      box-shadow: var(--shadow-flyout);
+      z-index: 70;
+      max-width: 320px;
+      pointer-events: none;
+      animation: floatIn 0.3s ease;
+    }
+    @keyframes floatIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 主布局框架 -->
+  <div class="app-root">
+
+    <!-- 1. 左侧导航栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span>项目与会话</span>
+        <button class="ui-btn" title="新建会话">+</button>
+      </div>
+      <div class="session-list">
+        <div class="session-item active">
+          <span>💬</span>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">中央集成终端设计与开发</span>
+        </div>
+        <div class="session-item">
+          <span>💬</span>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">优化侧栏 Fluent 动画</span>
+        </div>
+        <div class="session-item">
+          <span>💬</span>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">模型维护界面配置实现</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 2. 中央核心工作区 -->
+    <main class="center-workspace" id="centerWorkspace">
+
+      <!-- 顶栏 (TopBar) -->
+      <header class="topbar">
+        <div class="topbar-title">
+          <span>synapse</span>
+          <span style="color: var(--text-muted);">/</span>
+          <span style="font-weight: 400; color: var(--text-secondary);">中央集成终端设计</span>
+        </div>
+        <div class="topbar-actions">
+          <!-- 顶栏终端触发图标 -->
+          <button id="topbarTerminalBtn" class="ui-btn" title="打开/收起底部集成终端 (Ctrl+`)" onclick="toggleTerminal()">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15.5v-11zM4.5 4a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-11zm1.65 3.15a.5.5 0 0 1 .7 0l2.5 2.5a.5.5 0 0 1 0 .7l-2.5 2.5a.5.5 0 0 1-.7-.7L8.29 10.5 6.15 8.35a.5.5 0 0 1 0-.7zm4.35 6.35a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z"/>
+            </svg>
+            <span>终端</span>
+          </button>
+
+          <button class="ui-btn" title="切换浅色/深色主题" onclick="toggleTheme()">
+            <span id="themeIcon">☀️</span>
+          </button>
+          <button class="ui-btn" title="辅助工作台 (Ctrl+J)">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15.5v-11zM11 4v12h4.5a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5H11z"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 对话与交互记录区 -->
+      <div class="chat-transcript">
+        <div class="msg-card msg-user">
+          <p>请实现中央底部的集成终端，底栏空间大，可以做更多复杂功能。</p>
+        </div>
+        <div class="msg-card msg-assistant">
+          <p>已设计中央底部集成终端方案。底栏拥有完整的屏幕横向宽度（1200px+），能够杜绝命令行折行，支持多 Tab 终端、左右分屏 (Split)、快速执行 Agent 建议命令等高级特性。</p>
+        </div>
+      </div>
+
+      <!-- 消息输入区 -->
+      <div class="composer-area">
+        <textarea class="composer-box" placeholder="给 Synapse 发送消息，或点击底部终端图标执行命令..."></textarea>
+      </div>
+
+      <!-- 3. 中央底部高保真终端面板 (核心组件) -->
+      <div id="terminalPanel" class="bottom-terminal-panel" style="height: 320px;">
+        <!-- 拖拽高度把手 -->
+        <div id="termResizer" class="term-resizer" title="按住上下拖拽调整终端高度"></div>
+
+        <!-- 终端顶栏 Tab & 控制区 -->
+        <div class="term-header">
+          <!-- 终端 Tab 列表 -->
+          <div class="term-tabs">
+            <div class="term-tab-item active" onclick="switchTermTab(1)">
+              <span>⚡</span>
+              <span>1: pwsh (Synapse)</span>
+              <span class="term-tab-close" onclick="event.stopPropagation()">×</span>
+            </div>
+            <div class="term-tab-item" onclick="switchTermTab(2)">
+              <span>🌐</span>
+              <span>2: npm run dev (web)</span>
+              <span class="term-tab-close" onclick="event.stopPropagation()">×</span>
+            </div>
+            <div class="term-tab-item" onclick="switchTermTab(3)">
+              <span>🦀</span>
+              <span>3: cargo check</span>
+              <span class="term-tab-close" onclick="event.stopPropagation()">×</span>
+            </div>
+            <!-- 新建终端按钮 -->
+            <button class="ui-btn" style="padding: 2px 6px; font-size: 14px;" title="新建终端会话" onclick="addTermTab()">+</button>
+          </div>
+
+          <!-- 终端复杂操作工具栏 (利用大空间优势) -->
+          <div class="term-actions">
+            <!-- 左右分屏切换 -->
+            <button class="ui-btn" id="splitBtn" title="左右分屏终端 (Split Terminal)" onclick="toggleSplit()">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15.5v-11zm1.5-.5a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5H9V4H4.5zm5.5 0v12h4.5a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5H10z"/>
+              </svg>
+              <span>分屏</span>
+            </button>
+
+            <!-- 清屏 -->
+            <button class="ui-btn" title="清屏 (Ctrl+L)" onclick="clearTerminal()">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M4 5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5zm1 5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1H5z"/>
+              </svg>
+              <span>清屏</span>
+            </button>
+
+            <!-- 发送给 Agent 联动 -->
+            <button class="ui-btn" title="提取终端输出给 Agent 进行分析" onclick="sendToAgent()">
+              <span>🤖 分析输出</span>
+            </button>
+
+            <!-- 最大化 / 还原 -->
+            <button class="ui-btn" id="maxBtn" title="最大化 / 还原终端面板" onclick="toggleMaximize()">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15.5v-11zm1.5-.5a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-11z"/>
+              </svg>
+            </button>
+
+            <!-- 关闭/收起面板 -->
+            <button class="ui-btn" title="收起终端面板" onclick="toggleTerminal()">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M4.646 4.646a.5.5 0 0 1 .708 0L10 9.293l4.646-4.647a.5.5 0 0 1 .708.708L10.707 10l4.647 4.646a.5.5 0 0 1-.708.708L10 10.707l-4.646 4.647a.5.5 0 0 1-.708-.708L9.293 10 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 终端主体输出渲染 -->
+        <div class="term-body-container" id="termBodyContainer">
+          <!-- 主终端窗口 -->
+          <div class="term-pane" id="mainTermPane">
+            <div class="cmd-line">
+              <span class="cmd-prompt">PS</span>
+              <span class="cmd-dir">F:\project\agent\autoagents\synapse</span>
+              <span class="cmd-arrow">&gt;</span>
+              <span class="cmd-text">git status -s</span>
+            </div>
+            <div class="cmd-out-success"> M rust/synapse-gui/src/main.rs</div>
+            <div class="cmd-out-success"> M web/src/components/rightDock/RightDock.tsx</div>
+            <div class="cmd-out-success"> M web/src/components/rightDock/trajectoryTab.tsx</div>
+            <div style="margin-bottom: 6px;"></div>
+
+            <div class="cmd-line">
+              <span class="cmd-prompt">PS</span>
+              <span class="cmd-dir">F:\project\agent\autoagents\synapse</span>
+              <span class="cmd-arrow">&gt;</span>
+              <span class="cmd-text">cargo check --manifest-path rust/synapse-gui/Cargo.toml</span>
+            </div>
+            <div class="cmd-out-info">   Checking synapse-gui v0.1.0</div>
+            <div class="cmd-out-success">    Finished `dev` profile [unoptimized + debuginfo] in 3.42s</div>
+            <div style="margin-bottom: 6px;"></div>
+
+            <!-- 当前输入提示行 -->
+            <div class="cmd-input-row">
+              <span class="cmd-prompt">PS</span>
+              <span class="cmd-dir">F:\project\agent\autoagents\synapse</span>
+              <span class="cmd-arrow">&gt;</span>
+              <span id="termInputText" style="color: #fff; font-weight: 500;">npm run build</span>
+              <span class="term-cursor"></span>
+            </div>
+          </div>
+
+          <!-- 分屏辅终端窗口 (默认隐藏，点击分屏切换) -->
+          <div class="term-pane split-secondary" id="splitTermPane" style="display: none;">
+            <div class="cmd-line">
+              <span class="cmd-prompt">VITE</span>
+              <span class="cmd-dir">web (port 5173)</span>
+              <span class="cmd-arrow">&gt;</span>
+              <span class="cmd-text">vite v8.2.2 dev server running</span>
+            </div>
+            <div class="cmd-out-accent">  ➜  Local:   http://localhost:5173/</div>
+            <div class="cmd-out-info">  ➜  Network: use --host to expose</div>
+            <div class="cmd-out-success">  ✓ 2493 modules transformed.</div>
+            <div class="cmd-line" style="margin-top: 10px;">
+              <span class="cmd-out-warn">[HMR] connected. Watching for file changes...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- 4. 右侧辅助工作台窄条 (对比参照) -->
+    <aside class="right-dock-stub" title="右侧辅助工作台">
+      <button class="ui-btn" title="文件">📁</button>
+      <button class="ui-btn" title="审查 (Git)">🌿</button>
+      <button class="ui-btn" title="轨迹">📜</button>
+      <button class="ui-btn" title="目标">🎯</button>
+    </aside>
+
+  </div>
+
+  <!-- 5. 全局底栏 (BottomBar) -->
+  <footer class="bottombar">
+    <div class="bottombar-left">
+      <div class="status-dot"></div>
+      <span style="font-weight: 500; color: var(--text-primary);">空闲 (就绪)</span>
+      <span style="color: var(--border-line);">|</span>
+
+      <!-- 核心重点：底栏终端快捷入口按钮 (用户所提的“在底栏添加一个终端图标，点击可以从底栏打开终端”) -->
+      <div id="bottombarTerminalBtn" class="bottombar-item highlight" onclick="toggleTerminal()" title="点击展开/收起底部集成终端 (Ctrl+`)">
+        <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15.5v-11zM4.5 4a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-11zm1.65 3.15a.5.5 0 0 1 .7 0l2.5 2.5a.5.5 0 0 1 0 .7l-2.5 2.5a.5.5 0 0 1-.7-.7L8.29 10.5 6.15 8.35a.5.5 0 0 1 0-.7zm4.35 6.35a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z"/>
+        </svg>
+        <span style="font-weight: 600;">终端: 3 实例</span>
+      </div>
+
+      <span style="color: var(--border-line);">|</span>
+      <div class="bottombar-item"><span>gemini-3.8-flash</span></div>
+      <span style="color: var(--border-line);">|</span>
+      <div class="bottombar-item"><span>MCP: 2 on</span></div>
+    </div>
+
+    <div class="bottombar-right">
+      <div class="bottombar-item"><span>UTF-8</span></div>
+      <span style="color: var(--border-line);">|</span>
+      <div class="bottombar-item"><span>269.7M / 255.0M</span></div>
+    </div>
+  </footer>
+
+  <!-- 提示弹层 -->
+  <div class="floating-callout" id="callout">
+    💡 <strong>大空间优势：</strong>底栏终端占满 100% 中央区域（宽达 1400px），支持向上拖拽高度、多 Tab 会话与分屏运行！
+  </div>
+
+  <script>
+    // 终端展开状态
+    let isTermOpen = true;
+    let isMaximized = false;
+    let isSplit = false;
+    let defaultHeight = 320;
+
+    const termPanel = document.getElementById('terminalPanel');
+    const topbarBtn = document.getElementById('topbarTerminalBtn');
+    const bottombarBtn = document.getElementById('bottombarTerminalBtn');
+    const splitPane = document.getElementById('splitTermPane');
+    const splitBtn = document.getElementById('splitBtn');
+    const maxBtn = document.getElementById('maxBtn');
+    const resizer = document.getElementById('termResizer');
+
+    // 切换终端展开与收起
+    function toggleTerminal() {
+      isTermOpen = !isTermOpen;
+      if (isTermOpen) {
+        termPanel.classList.remove('collapsed');
+        topbarBtn.classList.add('active');
+        bottombarBtn.classList.add('highlight');
+      } else {
+        termPanel.classList.add('collapsed');
+        topbarBtn.classList.remove('active');
+        bottombarBtn.classList.remove('highlight');
+      }
+    }
+
+    // 切换最大化
+    function toggleMaximize() {
+      isMaximized = !isMaximized;
+      if (isMaximized) {
+        termPanel.style.height = 'calc(100% - 42px)';
+        maxBtn.classList.add('active');
+      } else {
+        termPanel.style.height = defaultHeight + 'px';
+        maxBtn.classList.remove('active');
+      }
+    }
+
+    // 切换左右分屏
+    function toggleSplit() {
+      isSplit = !isSplit;
+      splitPane.style.display = isSplit ? 'flex' : 'none';
+      if (isSplit) {
+        splitBtn.classList.add('active');
+      } else {
+        splitBtn.classList.remove('active');
+      }
+    }
+
+    // 清屏
+    function clearTerminal() {
+      const pane = document.getElementById('mainTermPane');
+      pane.innerHTML = `
+        <div class="cmd-input-row">
+          <span class="cmd-prompt">PS</span>
+          <span class="cmd-dir">F:\\project\\agent\\autoagents\\synapse</span>
+          <span class="cmd-arrow">&gt;</span>
+          <span class="term-cursor"></span>
+        </div>
+      `;
+    }
+
+    // 切换 Tab
+    function switchTermTab(index) {
+      document.querySelectorAll('.term-tab-item').forEach((el, i) => {
+        if (i === index - 1) el.classList.add('active');
+        else el.classList.remove('active');
+      });
+    }
+
+    // 新增 Tab
+    function addTermTab() {
+      const tabs = document.querySelector('.term-tabs');
+      const count = document.querySelectorAll('.term-tab-item').length + 1;
+      const newTab = document.createElement('div');
+      newTab.className = 'term-tab-item active';
+      newTab.onclick = () => switchTermTab(count);
+      newTab.innerHTML = `
+        <span>⚡</span>
+        <span>${count}: pwsh</span>
+        <span class="term-tab-close" onclick="event.stopPropagation(); this.parentElement.remove();">×</span>
+      `;
+      document.querySelectorAll('.term-tab-item').forEach(el => el.classList.remove('active'));
+      tabs.insertBefore(newTab, tabs.lastElementChild);
+    }
+
+    // 发送给 Agent
+    function sendToAgent() {
+      const box = document.querySelector('.composer-box');
+      box.value = "请分析以下终端输出异常并给出修复建议：\n\n[终端最后执行结果]\nChecking synapse-gui v0.1.0\nFinished `dev` profile in 3.42s";
+      box.focus();
+    }
+
+    // 切换主题
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      document.getElementById('themeIcon').textContent = next === 'dark' ? '☀️' : '🌙';
+    }
+
+    // 快捷键支持 (Ctrl + ` 打开终端)
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault();
+        toggleTerminal();
+      }
+    });
+
+    // 拖拽调整终端高度
+    let isDragging = false;
+    let startY = 0;
+    let startH = 0;
+
+    resizer.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      resizer.classList.add('dragging');
+      startY = e.clientY;
+      startH = termPanel.offsetHeight;
+      document.body.style.cursor = 'row-resize';
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const deltaY = startY - e.clientY;
+      let newH = startH + deltaY;
+      const maxH = window.innerHeight - 100;
+      if (newH < 120) newH = 120;
+      if (newH > maxH) newH = maxH;
+      defaultHeight = newH;
+      termPanel.style.height = newH + 'px';
+      if (isMaximized) isMaximized = false;
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        resizer.classList.remove('dragging');
+        document.body.style.cursor = '';
+      }
+    });
+
+    // 4 秒后隐藏提示气泡
+    setTimeout(() => {
+      const c = document.getElementById('callout');
+      if (c) c.style.display = 'none';
+    }, 4500);
+  </script>
+</body>
+</html>

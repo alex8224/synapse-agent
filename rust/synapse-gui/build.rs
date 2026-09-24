@@ -13,6 +13,10 @@ fn main() {
             "tauri_read_artifact",
             "tauri_open_path",
             "tauri_reveal_in_folder",
+            "tauri_terminal_create",
+            "tauri_terminal_write",
+            "tauri_terminal_resize",
+            "tauri_terminal_close",
         ]),
     ))
     .expect("failed to run tauri-build");

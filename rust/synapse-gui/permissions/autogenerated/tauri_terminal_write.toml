@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-terminal-write"
+description = "Enables the tauri_terminal_write command without any pre-configured scope."
+commands.allow = ["tauri_terminal_write"]
+
+[[permission]]
+identifier = "deny-tauri-terminal-write"
+description = "Denies the tauri_terminal_write command without any pre-configured scope."
+commands.deny = ["tauri_terminal_write"]

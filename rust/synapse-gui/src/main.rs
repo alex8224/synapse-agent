@@ -2,8 +2,10 @@
 
 mod git_fs;
 mod sidecar;
+mod terminal;
 
 use sidecar::{ProcessManager, SharedProcessManager};
+use terminal::TerminalManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -15,6 +17,7 @@ use tauri::{
 #[derive(Clone)]
 struct AppState {
     proc_mgr: SharedProcessManager,
+    terminal_mgr: Arc<Mutex<TerminalManager>>,
 }
 
 #[tauri::command]
@@ -194,12 +197,58 @@ fn resolve_static_dir() -> Option<PathBuf> {
     None
 }
 
+
+#[tauri::command]
+fn tauri_terminal_create(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    workspace: Option<String>,
+    shell: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<u32, String> {
+    let ws = workspace.map(PathBuf::from).or_else(resolve_workspace);
+    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
+    mgr.create_terminal(app, ws, shell, cols.unwrap_or(80), rows.unwrap_or(24))
+}
+
+#[tauri::command]
+fn tauri_terminal_write(
+    state: tauri::State<'_, AppState>,
+    id: u32,
+    data: String,
+) -> Result<(), String> {
+    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
+    mgr.write_terminal(id, &data)
+}
+
+#[tauri::command]
+fn tauri_terminal_resize(
+    state: tauri::State<'_, AppState>,
+    id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
+    mgr.resize_terminal(id, cols, rows)
+}
+
+#[tauri::command]
+fn tauri_terminal_close(
+    state: tauri::State<'_, AppState>,
+    id: u32,
+) -> Result<(), String> {
+    let mut mgr = state.terminal_mgr.lock().map_err(|e| e.to_string())?;
+    mgr.close_terminal(id)
+}
+
 fn main() {
     let workspace = resolve_workspace();
     let static_dir = resolve_static_dir();
     let proc_mgr = Arc::new(Mutex::new(ProcessManager::new(workspace, static_dir)));
     let state = AppState {
         proc_mgr: proc_mgr.clone(),
+        terminal_mgr: Arc::new(Mutex::new(TerminalManager::new())),
     };
 
     tauri::Builder::default()
@@ -226,7 +275,11 @@ fn main() {
             tauri_list_artifacts,
             tauri_read_artifact,
             tauri_open_path,
-            tauri_reveal_in_folder
+            tauri_reveal_in_folder,
+            tauri_terminal_create,
+            tauri_terminal_write,
+            tauri_terminal_resize,
+            tauri_terminal_close
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

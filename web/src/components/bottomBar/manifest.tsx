@@ -16,6 +16,7 @@ import { goalItem } from './goalItem.tsx';
 import { telemetryItem } from './telemetryItem.tsx';
 import { todoItem } from './todoItem.tsx';
 import { helpItem } from './helpItem.tsx';
+import { terminalItem } from './terminalItem.tsx';
 import { codexUsageItem } from './codexUsageItem.tsx';
 import type { BottomBarItemDefinition } from './contract.ts';
 
@@ -23,6 +24,7 @@ export const BOTTOM_BAR_ITEMS: readonly BottomBarItemDefinition[] = [
   activityItem,
   codexUsageItem,
   mcpItem,
+  terminalItem,
   todoItem,
   goalItem,
   telemetryItem,

@@ -243,6 +243,30 @@
           "markdownDescription": "Enables the tauri_reveal_in_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_terminal_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-terminal-close",
+          "markdownDescription": "Enables the tauri_terminal_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_terminal_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-terminal-create",
+          "markdownDescription": "Enables the tauri_terminal_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_terminal_resize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-terminal-resize",
+          "markdownDescription": "Enables the tauri_terminal_resize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_terminal_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-terminal-write",
+          "markdownDescription": "Enables the tauri_terminal_write command without any pre-configured scope."
+        },
+        {
           "description": "Enables the toggle_maximize_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-toggle-maximize-window",
@@ -313,6 +337,30 @@
           "type": "string",
           "const": "deny-tauri-reveal-in-folder",
           "markdownDescription": "Denies the tauri_reveal_in_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_terminal_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-terminal-close",
+          "markdownDescription": "Denies the tauri_terminal_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_terminal_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-terminal-create",
+          "markdownDescription": "Denies the tauri_terminal_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_terminal_resize command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-terminal-resize",
+          "markdownDescription": "Denies the tauri_terminal_resize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_terminal_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-terminal-write",
+          "markdownDescription": "Denies the tauri_terminal_write command without any pre-configured scope."
         },
         {
           "description": "Denies the toggle_maximize_window command without any pre-configured scope.",

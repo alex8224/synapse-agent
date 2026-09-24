@@ -9,6 +9,8 @@ import { RecoveryNotice } from './components/RecoveryNotice.tsx';
 import { CommandInput } from './components/CommandInput';
 import { ScreenshotTaskBanner } from './components/ScreenshotTaskBanner.tsx';
 import { RightDock } from './components/rightDock/RightDock.tsx';
+import { BottomTerminalPanel } from './components/terminal/BottomTerminalPanel.tsx';
+import { useTerminalStore } from './stores/useTerminalStore.ts';
 import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
 import { BackgroundAlerts } from './components/BackgroundAlerts';
@@ -148,6 +150,9 @@ export function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         useRightDockStore.getState().toggleOpen();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault();
+        useTerminalStore.getState().toggleOpen();
       } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
         // The same one click the sidebar's toggle makes, from anywhere: the shell
         // owns the chord and `consoleShortcuts` owns its copy (the F1 list).
@@ -226,6 +231,7 @@ export function App() {
             <CommandInput />
           </ErrorBoundary>
           <ScreenshotTaskBanner />
+          <BottomTerminalPanel />
         </main>
         <RightDock />
         </div>

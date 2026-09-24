@@ -31,6 +31,10 @@
     "allow-tauri-git-status",
     "allow-tauri-git-diff",
     "allow-tauri-list-artifacts",
-    "allow-tauri-read-artifact"
+    "allow-tauri-read-artifact",
+    "allow-tauri-terminal-create",
+    "allow-tauri-terminal-write",
+    "allow-tauri-terminal-resize",
+    "allow-tauri-terminal-close"
   ]
 }

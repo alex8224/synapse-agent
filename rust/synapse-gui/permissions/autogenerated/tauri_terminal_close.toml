@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-terminal-close"
+description = "Enables the tauri_terminal_close command without any pre-configured scope."
+commands.allow = ["tauri_terminal_close"]
+
+[[permission]]
+identifier = "deny-tauri-terminal-close"
+description = "Denies the tauri_terminal_close command without any pre-configured scope."
+commands.deny = ["tauri_terminal_close"]

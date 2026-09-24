@@ -1,4 +1,4 @@
-import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
+import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular, WindowConsole20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -7,6 +7,7 @@ import { GitExplorer } from './GitExplorer.tsx';
 import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 import { TauriWindowControls } from './TauriWindowControls.tsx';
 import { useRightDockStore } from '../stores/useRightDockStore.ts';
+import { useTerminalStore } from '../stores/useTerminalStore.ts';
 
 /**
  * Header of the workspace column: the session title on the centre line.
@@ -65,6 +66,8 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
   const [infoOpen, setInfoOpen] = useState(false);
   const rightDockOpen = useRightDockStore((s) => s.open);
   const toggleRightDock = useRightDockStore((s) => s.toggleOpen);
+  const terminalOpen = useTerminalStore((s) => s.open);
+  const toggleTerminal = useTerminalStore((s) => s.toggleOpen);
   // The panel anchors to the title.  The element is held in state rather than read
   // off a ref while rendering, so the anchor belongs to the render that uses it.
   const [titleAnchor, setTitleAnchor] = useState<HTMLButtonElement | null>(null);
@@ -210,6 +213,19 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           In an installed window it is also what keeps the window buttons clear of
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
       <div className="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          data-tauri-drag-region="false"
+          onClick={() => toggleTerminal()}
+          title="打开/收起底部终端 (Ctrl+`)"
+          aria-label="打开/收起底部终端"
+          aria-expanded={terminalOpen}
+          className={`ui-icon-button wco-caption-controls text-gray-500 hover:text-gray-900 ${
+            terminalOpen ? 'text-accent bg-accent/10 font-bold' : ''
+          }`}
+        >
+          <WindowConsole20Regular aria-hidden="true" />
+        </button>
         <button
           type="button"
           data-tauri-drag-region="false"
