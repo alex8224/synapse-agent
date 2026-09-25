@@ -14,6 +14,7 @@ import {
   ChevronDown16Regular,
   ChevronRight16Regular,
   FolderOpen16Regular,
+  Open16Regular,
   Code16Regular,
   Copy16Regular,
   Checkmark16Regular,
@@ -24,10 +25,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { GitDiffView } from '../GitDiffView.tsx';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
-import { fetchGitStatus, fetchGitDiff, revealInFileManager } from '../../client/tauriGitFs.ts';
+import { fetchGitStatus, fetchGitDiff, revealInFileManager, openInVsCode, toAbsolutePath } from '../../client/tauriGitFs.ts';
 import {
   changeStatusCode,
-  changeStatusLabel,
   type GitDiffView as GitDiffPayload,
   type GitFileChangeView,
   type GitStatusView,
@@ -47,26 +47,76 @@ function splitPath(fullPath: string): { fileName: string; dirName: string } {
   };
 }
 
+function renderStatusBadge(file: GitFileChangeView) {
+  const code = changeStatusCode(file);
+  const index = code[0] ?? ' ';
+  const worktree = code[1] ?? ' ';
+
+  let label = '已修改';
+  let short = 'M';
+  let colorClass = 'text-amber-600 bg-amber-500/10 border-amber-500/30';
+
+  if (code.includes('?')) {
+    label = '未跟踪';
+    short = 'U';
+    colorClass = 'text-emerald-600 bg-emerald-500/10 border-emerald-500/30';
+  } else if (index === 'A' || worktree === 'A') {
+    label = '新文件';
+    short = 'A';
+    colorClass = 'text-emerald-600 bg-emerald-500/10 border-emerald-500/30';
+  } else if (index === 'D' || worktree === 'D') {
+    label = '已删除';
+    short = 'D';
+    colorClass = 'text-red-600 bg-red-500/10 border-red-500/30';
+  } else if (index === 'R' || worktree === 'R') {
+    label = '已重命名';
+    short = 'R';
+    colorClass = 'text-purple-600 bg-purple-500/10 border-purple-500/30';
+  } else if (index === 'M' && worktree === 'M') {
+    label = '已暂存+已修改';
+    short = 'M+';
+    colorClass = 'text-orange-600 bg-orange-500/10 border-orange-500/30';
+  } else if (index === 'M') {
+    label = '已暂存';
+    short = 'S';
+    colorClass = 'text-blue-600 bg-blue-500/10 border-blue-500/30';
+  }
+
+  return (
+    <span
+      title={`${label} (${code})`}
+      className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold border ${colorClass}`}
+    >
+      {short}
+    </span>
+  );
+}
+
 export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
   const {
     client,
     currentSession,
+    workspacePath: sessionWorkspacePath,
     gitStatus,
     loadGitStatus,
+    openFileViewer,
     projects,
     activeProjectId,
   } = useConsoleStore(
     useShallow((state) => ({
       client: state.client,
       currentSession: state.currentSession,
+      workspacePath: state.workspacePath,
       gitStatus: state.gitStatus,
       loadGitStatus: state.loadGitStatus,
+      openFileViewer: state.openFileViewer,
       projects: state.projects,
       activeProjectId: state.activeProjectId,
     })),
   );
 
   const activeProject = projects.find((p) => p.project_id === activeProjectId);
+  const workspacePath = activeProject?.workspace_path || sessionWorkspacePath || '';
   const [localStatus, setLocalStatus] = useState<GitStatusView | null>(null);
   const [filter, setFilter] = useState<ChangeFilterKind>('all');
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -81,14 +131,14 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
     setLoading(true);
     try {
       await loadGitStatus();
-      const st = await fetchGitStatus(client, currentSession, activeProject?.workspace_path);
+      const st = await fetchGitStatus(client, currentSession, workspacePath);
       setLocalStatus(st);
     } catch {
       // Degrade gracefully
     } finally {
       setLoading(false);
     }
-  }, [client, currentSession, loadGitStatus, activeProject?.workspace_path]);
+  }, [client, currentSession, loadGitStatus, workspacePath]);
 
   useEffect(() => {
     void refreshStatus();
@@ -105,7 +155,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
       }));
 
       try {
-        const res = await fetchGitDiff(client, currentSession, path, activeProject?.workspace_path);
+        const res = await fetchGitDiff(client, currentSession, path, workspacePath);
         setDiffCache((prev) => ({
           ...prev,
           [path]: { diff: res, error: null, loading: false },
@@ -121,7 +171,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
         }));
       }
     },
-    [client, currentSession, diffCache, activeProject?.workspace_path],
+    [client, currentSession, diffCache, workspacePath],
   );
 
   const toggleExpand = useCallback(
@@ -155,21 +205,26 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
 
   const handleCopyPath = useCallback((e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(path);
+    const absPath = toAbsolutePath(path, workspacePath);
+    void navigator.clipboard.writeText(absPath);
     setCopiedPath(path);
     setTimeout(() => setCopiedPath(null), 1500);
-  }, []);
+  }, [workspacePath]);
 
   const handleOpenVSCode = useCallback((e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    const cleanPath = path.replace(/\\/g, '/');
-    window.open(`vscode://file/${encodeURI(cleanPath)}`, '_self');
-  }, []);
+    void openInVsCode(path, workspacePath, client, currentSession);
+  }, [workspacePath, client, currentSession]);
 
   const handleReveal = useCallback((e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void revealInFileManager(path, activeProject?.workspace_path);
-  }, [activeProject?.workspace_path]);
+    void revealInFileManager(path, workspacePath, client, currentSession);
+  }, [workspacePath, client, currentSession]);
+
+  const handleOpenViewer = useCallback((e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    openFileViewer(path);
+  }, [openFileViewer]);
 
   const allFiles = localStatus?.files ?? gitStatus?.files ?? [];
   const filteredFiles = allFiles.filter((file: GitFileChangeView) => {
@@ -229,7 +284,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
       </div>
 
       {/* Accordion File & Diff list */}
-      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-2 flex flex-col">
+      <div className="fluent-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-1.5">
         {filteredFiles.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none font-sans">
             <div className="rounded-card border border-line bg-surface/80 p-6 flex flex-col items-center justify-center text-center shadow-card max-w-[260px]">
@@ -249,14 +304,14 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
             return (
               <div
                 key={file.path}
-                className={`overflow-hidden rounded-control border border-line/60 bg-surface/60 transition-all ${
-                  isExpanded ? 'flex flex-col flex-1 min-h-[320px] shadow-card bg-surface/90 border-line' : 'hover:bg-surface/80 hover:border-line/80'
+                className={`overflow-hidden rounded-control border transition-all ${
+                  isExpanded ? 'shadow-card bg-surface/95 border-line mb-2' : 'bg-surface/70 border-line/60 hover:bg-surface hover:border-line/80'
                 }`}
               >
                 <div
                   onClick={() => toggleExpand(file.path)}
-                  className={`group flex h-8 cursor-pointer items-center justify-between px-2.5 transition-colors ${
-                    isExpanded ? 'bg-surface-hover/60 border-b border-line/60' : 'hover:bg-surface-hover/50'
+                  className={`group flex min-h-[34px] cursor-pointer items-center justify-between px-2.5 py-1.5 transition-colors ${
+                    isExpanded ? 'bg-surface-hover/70 border-b border-line/60' : 'hover:bg-surface-hover/50'
                   }`}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-1.5 mr-2">
@@ -267,9 +322,9 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
                         <ChevronRight16Regular className="text-xs" />
                       )}
                     </span>
-                    <span className="font-semibold text-gray-900 truncate shrink-0">{fileName}</span>
+                    <span className="font-semibold text-gray-900 truncate shrink-0 text-xs leading-normal">{fileName}</span>
                     {dirName && (
-                      <span className="text-[11px] text-gray-400 truncate min-w-0">
+                      <span className="text-[11px] text-gray-400 truncate min-w-0 leading-normal">
                         {dirName}
                       </span>
                     )}
@@ -277,6 +332,14 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
 
                   <div className="flex shrink-0 items-center gap-1.5">
                     <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 mr-1">
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenViewer(e, file.path)}
+                        title="在内置查看器中打开"
+                        className="ui-icon-button ui-compact text-gray-400 hover:text-gray-900 hover:bg-surface-hover transition-colors"
+                      >
+                        <Open16Regular className="text-xs" />
+                      </button>
                       <button
                         type="button"
                         onClick={(e) => handleOpenVSCode(e, file.path)}
@@ -306,17 +369,12 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
                         )}
                       </button>
                     </div>
-                    <span
-                      title={changeStatusLabel(file)}
-                      className="shrink-0 rounded-full bg-surface-sunken/80 border border-line/60 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase text-gray-600"
-                    >
-                      {changeStatusCode(file)}
-                    </span>
+                    {renderStatusBadge(file)}
                   </div>
                 </div>
 
                 {isExpanded && (
-                  <div className="bg-surface/80 border-t border-line/60 flex-1 min-h-[260px] overflow-x-auto overflow-y-visible">
+                  <div className="bg-canvas border-t border-line/60 max-h-[480px] overflow-auto">
                     {cache?.loading ? (
                       <div className="flex items-center justify-center py-10 text-gray-400">
                         <ArrowClockwise16Regular className="animate-spin mr-2 text-base text-accent" />

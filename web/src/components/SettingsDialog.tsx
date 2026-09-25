@@ -56,6 +56,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   // the browser, so it is read from its own small store rather than the console's.
   const appearance = useAppearanceStore((state) => state.appearance);
   const setAppearance = useAppearanceStore((state) => state.setAppearance);
+  const vibrancy = useAppearanceStore((state) => state.vibrancy);
+  const setVibrancy = useAppearanceStore((state) => state.setVibrancy);
+  const resetVibrancy = useAppearanceStore((state) => state.resetVibrancy);
   const {
     workspacePath,
     gitBranch,
@@ -293,6 +296,73 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
               </span>
             }
           />
+
+          {/* Frosted Glass / Vibrancy Tuning */}
+          <div className="mt-3 rounded-control border border-line/70 bg-surface/40 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-800 flex items-center gap-1.5">
+                <span>毛玻璃效果微调</span>
+              </span>
+              <button
+                type="button"
+                onClick={resetVibrancy}
+                className="ui-button ui-compact text-[11px] text-gray-500 hover:text-gray-900 border border-line bg-surface"
+              >
+                恢复默认
+              </button>
+            </div>
+
+            {/* Blur intensity */}
+            <div>
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>模糊扩散强度</span>
+                <span className="font-mono text-gray-500">{vibrancy.blurRadius}px</span>
+              </div>
+              <input
+                type="range"
+                min="8"
+                max="40"
+                step="1"
+                value={vibrancy.blurRadius}
+                onChange={(e) => setVibrancy({ blurRadius: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer h-1.5 bg-line rounded-full"
+              />
+            </div>
+
+            {/* Window background opacity */}
+            <div>
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>整窗底色浓度 (遮光率)</span>
+                <span className="font-mono text-gray-500">{Math.round(vibrancy.shellOpacity * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.30"
+                max="0.95"
+                step="0.01"
+                value={vibrancy.shellOpacity}
+                onChange={(e) => setVibrancy({ shellOpacity: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer h-1.5 bg-line rounded-full"
+              />
+            </div>
+
+            {/* Content pane opacity */}
+            <div>
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>正文阅读区衬底浓度</span>
+                <span className="font-mono text-gray-500">{Math.round(vibrancy.paneOpacity * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.30"
+                max="0.90"
+                step="0.01"
+                value={vibrancy.paneOpacity}
+                onChange={(e) => setVibrancy({ paneOpacity: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer h-1.5 bg-line rounded-full"
+              />
+            </div>
+          </div>
         </Section>
 
         <Section title="工作区">

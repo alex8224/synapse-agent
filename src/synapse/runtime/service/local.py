@@ -2138,6 +2138,7 @@ class LocalAgentRuntimeService:
                     profile_payload["auth"] = "openai_oauth"
                 elif profile_payload.get("provider"):
                     profile_payload.pop("auth", None)
+                profile_payload.pop("provider", None)
 
                 if command.alias in existing:
                     merged = dict(existing[command.alias])
@@ -2154,8 +2155,14 @@ class LocalAgentRuntimeService:
                             pass
                 return _build_model_list_result(settings)
             except ModelsStoreError as exc:
+                _LOGGER.warning(
+                    "save_model store validation failed alias=%r: %s", command.alias, exc
+                )
                 raise InvalidRequestError(str(exc)) from exc
             except Exception as exc:
+                _LOGGER.exception(
+                    "save_model unexpected error alias=%r: %s", command.alias, exc
+                )
                 raise InvalidRequestError(f"save model failed: {exc}") from exc
 
         return await asyncio.to_thread(_do_save)
@@ -2179,6 +2186,7 @@ class LocalAgentRuntimeService:
                 delete_profile(settings, command.alias)
                 return _build_model_list_result(settings)
             except ModelsStoreError as exc:
+                _LOGGER.warning("delete_model failed for alias=%r: %s", command.alias, exc)
                 raise InvalidRequestError(str(exc)) from exc
 
         return await asyncio.to_thread(_do_delete)
@@ -2207,6 +2215,7 @@ class LocalAgentRuntimeService:
                         pass
                 return _build_model_list_result(settings)
             except ModelsStoreError as exc:
+                _LOGGER.warning("set_default_model failed for alias=%r: %s", command.alias, exc)
                 raise InvalidRequestError(str(exc)) from exc
 
         return await asyncio.to_thread(_do_set_default)

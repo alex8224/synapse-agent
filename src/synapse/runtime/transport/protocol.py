@@ -1379,7 +1379,12 @@ async def dispatch(
     """Decode and invoke a non-connection-specific service operation."""
     if method == "runtime.protocol.negotiate":
         raise ProtocolError(-32601, "method_not_found")
-    dto = decode_params(method, params)
+    try:
+        dto = decode_params(method, params)
+    except ProtocolError:
+        raise
+    except (ValueError, TypeError) as exc:
+        raise ProtocolError(-32602, f"invalid_params: {exc}") from exc
     if isinstance(dto, WatchSpec):
         return dto
     if method == "runtime.session.open":

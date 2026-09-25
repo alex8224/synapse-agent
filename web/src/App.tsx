@@ -15,6 +15,7 @@ import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
 import { BackgroundAlerts } from './components/BackgroundAlerts';
 import { PairingGate } from './components/PairingGate';
+import { isTauri } from './client/tauri';
 import { NEW_SESSION_ACTION, readShortcutAction } from './client/deepLink';
 import { useAppearanceStore } from './stores/appearance.ts';
 import { useConsoleStore } from './stores/useConsoleStore';
@@ -47,6 +48,12 @@ export function App() {
     else if (tablet) setTabletCollapsed((collapsed) => !collapsed);
     else toggleSidebar();
   }, [mobile, tablet, toggleSidebar]);
+
+  useEffect(() => {
+    if (isTauri() && typeof document !== 'undefined') {
+      document.documentElement.dataset.tauri = 'true';
+    }
+  }, []);
 
   useEffect(() => {
     const phone = window.matchMedia('(max-width: 767px)');

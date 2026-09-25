@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import types
 import uuid
 from collections.abc import Callable, Mapping
@@ -47,6 +48,44 @@ OVERFLOW_REASON = "runtime transport output overflow"
 MIN_MESSAGE_BYTES = 1024
 MAX_HOST_BYTES = 255
 MAX_INFLIGHT_LIMIT = 1024
+
+
+_LOGGER = logging.getLogger("synapse.runtime.transport.websocket")
+
+
+def _log_rpc_error(method: str, request_id: object, error: BaseException) -> None:
+    """Generic logging for RPC failure across all methods and error types."""
+    if isinstance(error, ProtocolError):
+        _LOGGER.warning(
+            "RPC protocol error method=%s id=%s code=%s service_code=%s: %s",
+            method,
+            request_id,
+            error.code,
+            error.service_code,
+            error.message,
+        )
+    elif isinstance(error, RuntimeServiceError):
+        _LOGGER.warning(
+            "RPC service error method=%s id=%s service_code=%s: %s",
+            method,
+            request_id,
+            error.code,
+            type(error).__name__,
+        )
+    elif isinstance(error, WireProjectionError):
+        _LOGGER.exception(
+            "RPC wire projection error method=%s id=%s: unable to project result to wire format",
+            method,
+            request_id,
+        )
+    else:
+        _LOGGER.exception(
+            "RPC unhandled internal error method=%s id=%s error_type=%s: %s",
+            method,
+            request_id,
+            type(error).__name__,
+            error,
+        )
 
 
 @dataclass(slots=True)
@@ -503,6 +542,7 @@ class _Connection:
                 result = await self._select_protocol(request)
                 await self.send(self._encode_response(request.id, result))
             except ProtocolError as error:
+                _log_rpc_error(request.method, request.id, error)
                 await self.send(
                     self._encode_error(
                         error.request_id if error.request_id is not None else request.id,
@@ -514,6 +554,7 @@ class _Connection:
         try:
             await self._select_protocol(request)
         except ProtocolError as error:
+            _log_rpc_error(request.method, request.id, error)
             await self.send(
                 self._encode_error(
                     error.request_id or request.id, error.code, error.service_code
@@ -524,6 +565,7 @@ class _Connection:
             try:
                 subscription_id = decode_params(request.method, request.params)
             except ProtocolError as error:
+                _log_rpc_error(request.method, request.id, error)
                 await self.send(
                     self._encode_error(
                         error.request_id if error.request_id is not None else request.id,
@@ -537,10 +579,16 @@ class _Connection:
                     raise
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
+                _log_rpc_error(request.method, request.id, error)
                 code, _message, service_code = service_error(error)
                 await self.send(self._encode_error(request.id, code, service_code))
                 return
             if not isinstance(subscription_id, str):
+                _LOGGER.warning(
+                    "RPC unwatch invalid subscription_id type method=%s id=%s",
+                    request.method,
+                    request.id,
+                )
                 await self.send(self._encode_error(request.id, -32602, "invalid_params"))
                 return
             subscription = self.subscriptions.get(subscription_id)
@@ -565,6 +613,7 @@ class _Connection:
                 await self.start_subscription(subscription_id)
                 return
             except ProtocolError as error:
+                _log_rpc_error(request.method, request.id, error)
                 await self.send(
                     self._encode_error(
                         error.request_id if error.request_id is not None else request.id,
@@ -578,6 +627,7 @@ class _Connection:
                     raise
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
+                _log_rpc_error(request.method, request.id, error)
                 code, _message, service_code = service_error(error)
                 await self.send(self._encode_error(request.id, code, service_code))
                 return
@@ -585,6 +635,7 @@ class _Connection:
             try:
                 result = await dispatch(self.service, request.method, request.params)
             except ProtocolError as error:
+                _log_rpc_error(request.method, request.id, error)
                 await self.send(
                     self._encode_error(
                         error.request_id if error.request_id is not None else request.id,
@@ -598,12 +649,14 @@ class _Connection:
                     raise
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
+                _log_rpc_error(request.method, request.id, error)
                 code, _message, service_code = service_error(error)
                 await self.send(self._encode_error(request.id, code, service_code))
                 return
         try:
             await self.send(self._encode_response(request.id, project_result(result)))
         except WireProjectionError:
+            _log_rpc_error(request.method, request.id, WireProjectionError())
             await self.send(self._encode_error(request.id, -32603, "internal_error"))
 
     async def run(self) -> None:

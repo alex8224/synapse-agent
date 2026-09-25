@@ -17,6 +17,8 @@ import {
   fetchListArtifacts,
   fetchReadArtifact,
   fetchStatArtifact,
+  toAbsolutePath,
+  openInVsCode,
   openPathWithDefault,
   revealInFileManager,
 } from '../src/client/tauriGitFs.ts';
@@ -57,6 +59,52 @@ test('tauriGitFs uses client RPC when not running in Tauri', async () => {
   const res = await fetchGitStatus(mockClient, dummySession, '/fake/path');
   assert.equal(rpcCalled, true, 'must invoke client.gitStatus RPC when outside Tauri');
   assert.equal(res.branch, 'main');
+
+  g.window = origWindow;
+});
+
+test('toAbsolutePath resolves relative paths against workspace and preserves absolute paths', () => {
+  assert.equal(toAbsolutePath('src/main.rs', 'F:/workspace'), 'F:/workspace/src/main.rs');
+  assert.equal(toAbsolutePath('/src/main.rs', 'F:/workspace/'), 'F:/workspace/src/main.rs');
+  assert.equal(toAbsolutePath('src\\main.rs', 'F:\\workspace'), 'F:/workspace/src/main.rs');
+  assert.equal(toAbsolutePath('F:/workspace/src/main.rs', 'C:/other'), 'F:/workspace/src/main.rs');
+  assert.equal(toAbsolutePath('C:\\path\\file.txt', 'F:/workspace'), 'C:/path/file.txt');
+});
+
+test('openInVsCode, revealInFileManager, and openPathWithDefault invoke Tauri IPC with absolute paths', async () => {
+  const g = globalThis as unknown as { window?: Record<string, unknown> };
+  const origWindow = g.window;
+
+  const invokedCommands: Array<{ cmd: string; args?: unknown }> = [];
+  g.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd: string, args?: unknown) => {
+        invokedCommands.push({ cmd, args });
+        return null;
+      },
+    },
+  };
+
+  await openInVsCode('src/main.rs', 'F:/workspace');
+  assert.equal(invokedCommands[0].cmd, 'tauri_open_in_vscode');
+  assert.deepEqual(invokedCommands[0].args, {
+    workspace: 'F:/workspace',
+    path: 'F:/workspace/src/main.rs',
+  });
+
+  await revealInFileManager('src/main.rs', 'F:/workspace');
+  assert.equal(invokedCommands[1].cmd, 'tauri_reveal_in_folder');
+  assert.deepEqual(invokedCommands[1].args, {
+    workspace: 'F:/workspace',
+    path: 'F:/workspace/src/main.rs',
+  });
+
+  await openPathWithDefault('src/main.rs', 'F:/workspace');
+  assert.equal(invokedCommands[2].cmd, 'tauri_open_path');
+  assert.deepEqual(invokedCommands[2].args, {
+    workspace: 'F:/workspace',
+    path: 'F:/workspace/src/main.rs',
+  });
 
   g.window = origWindow;
 });

@@ -199,3 +199,37 @@ def test_protocol_decode_and_dispatch(fake_env):
         )
     )
     assert isinstance(dispatched_res, ModelListResult)
+
+
+def test_save_model_supports_extended_fields_and_wire_dispatch(fake_env):
+    profile_with_extensions = {
+        "model": "openai:deepseek-v4.1-flash",
+        "base_url": "http://127.0.0.1:8317/v1",
+        "context_window": 1000000,
+        "image_input": "yes",
+        "provider": "openai",
+        "extra_body": {"top_p": 0.95},
+        "max_tokens": 256000,
+        "thinking": "max",
+        "use_responses_api": False,
+    }
+    # Verify decode_params supports extended fields without ValueError
+    decoded = decode_params(
+        "runtime.models.save",
+        {
+            "session": {"project_id": "test-proj", "thread_id": "thread-1"},
+            "alias": "deepseek-v4-flash",
+            "profile": profile_with_extensions,
+            "make_default": False,
+        },
+    )
+    assert isinstance(decoded, SaveModelCommand)
+    assert decoded.profile["max_tokens"] == 256000
+    assert decoded.profile["thinking"] == "max"
+
+    # Verify dispatch executes save_model successfully
+    res = run(fake_env.service.save_model(decoded))
+    assert isinstance(res, ModelListResult)
+    saved = next(m for m in res.models if m.alias == "deepseek-v4-flash")
+    assert saved.model == "openai:deepseek-v4.1-flash"
+    assert saved.context_window == 1000000

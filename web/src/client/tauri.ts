@@ -1,10 +1,17 @@
 /** Helper for detecting and communicating with the Tauri GUI wrapper. */
 
 export function isTauri(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  if (typeof window === 'undefined') return false;
+  const w = window as unknown as { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+  const detected = Boolean(
+    w.__TAURI_INTERNALS__ ||
+      w.__TAURI__ ||
+      (typeof window.location !== 'undefined' && window.location.search.includes('tauri=1'))
   );
+  if (detected && typeof document !== 'undefined') {
+    document.documentElement.dataset.tauri = 'true';
+  }
+  return detected;
 }
 
 export async function tauriMinimize(): Promise<void> {
@@ -43,6 +50,18 @@ export async function tauriToggleMaximize(): Promise<void> {
     } catch {
       await internals.invoke('toggle_maximize_window');
     }
+  }
+}
+
+export async function tauriSetWindowTheme(appearance: 'system' | 'light' | 'dark'): Promise<void> {
+  const internals = (window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: unknown) => Promise<void> };
+  }).__TAURI_INTERNALS__;
+  if (internals?.invoke) {
+    try {
+      const dark = appearance === 'system' ? null : appearance === 'dark';
+      await internals.invoke('tauri_set_window_theme', { dark });
+    } catch {}
   }
 }
 

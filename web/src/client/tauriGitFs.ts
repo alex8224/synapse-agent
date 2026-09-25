@@ -11,7 +11,7 @@
  * quietly replaced by the ignore-filtered runtime RPC.  Git stays best-effort.
  */
 import { isTauri } from './tauri.ts';
-import type { GitStatusView, GitDiffView } from '../runtime-client/git.ts';
+import { parseGitDiff, parseGitStatus, type GitStatusView, type GitDiffView } from '../runtime-client/git.ts';
 import { ARTIFACT_CHUNK_BYTES, ARTIFACT_LIST_LIMIT } from '../runtime-client/artifacts.ts';
 import type {
   ArtifactChunkView,
@@ -69,6 +69,18 @@ export function hasNativeArtifactSurface(): boolean {
 }
 
 /**
+ * Resolve a path to its absolute filesystem form given a workspace root.
+ */
+export function toAbsolutePath(path: string, workspacePath?: string): string {
+  const cleanPath = path.replace(/\\/g, '/');
+  const ws = (workspacePath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const isAbs =
+    /^[a-zA-Z]:[/\\]/.test(cleanPath) || cleanPath.startsWith('\\\\') || (cleanPath.startsWith('/') && !ws);
+  if (isAbs) return cleanPath;
+  return ws ? `${ws}/${cleanPath.replace(/^\/+/, '')}` : cleanPath;
+}
+
+/**
  * Map one native record to the entry shape the file panel renders.
  *
  * The native surface reports no MIME type, exactly like the server's
@@ -89,17 +101,32 @@ function toArtifactEntry(raw: RawArtifactEntry | RawArtifactStat): ArtifactEntry
 /**
  * Open file or directory using system default program via Tauri native IPC.
  */
-export async function openPathWithDefault(path: string, workspacePath?: string): Promise<void> {
+export async function openPathWithDefault(
+  path: string,
+  workspacePath?: string,
+  client?: SynapseRuntimeClient | null,
+  session?: SessionRef,
+): Promise<void> {
   const internals = getTauriInternals();
+  const absPath = toAbsolutePath(path, workspacePath);
   if (isTauri() && internals) {
     try {
       await internals.invoke('tauri_open_path', {
         workspace: workspacePath || undefined,
-        path,
+        path: absPath,
       });
       return;
     } catch (err) {
       console.warn('Tauri native open_path failed:', err);
+    }
+  }
+
+  if (client && session?.thread_id) {
+    try {
+      const cleanRel = path.replace(/\\/g, '/').replace(/^\/+/, '');
+      await client.openExternal({ session, path: cleanRel });
+    } catch (err) {
+      console.warn('Runtime client openExternal failed:', err);
     }
   }
 }
@@ -107,18 +134,73 @@ export async function openPathWithDefault(path: string, workspacePath?: string):
 /**
  * Reveal file or directory in OS file manager (Explorer / Finder) via Tauri native IPC.
  */
-export async function revealInFileManager(path: string, workspacePath?: string): Promise<void> {
+export async function revealInFileManager(
+  path: string,
+  workspacePath?: string,
+  client?: SynapseRuntimeClient | null,
+  session?: SessionRef,
+): Promise<void> {
   const internals = getTauriInternals();
+  const absPath = toAbsolutePath(path, workspacePath);
   if (isTauri() && internals) {
     try {
       await internals.invoke('tauri_reveal_in_folder', {
         workspace: workspacePath || undefined,
-        path,
+        path: absPath,
       });
       return;
     } catch (err) {
       console.warn('Tauri native reveal_in_folder failed:', err);
     }
+  }
+
+  if (client && session?.thread_id) {
+    try {
+      const cleanRel = path.replace(/\\/g, '/').replace(/^\/+/, '');
+      await client.openExternal({ session, path: cleanRel, mode: 'reveal' });
+    } catch (err) {
+      console.warn('Runtime client reveal failed:', err);
+    }
+  }
+}
+
+/**
+ * Open file in VS Code: prefers native Tauri IPC with fallback to runtime client or vscode:// protocol.
+ */
+export async function openInVsCode(
+  path: string,
+  workspacePath?: string,
+  client?: SynapseRuntimeClient | null,
+  session?: SessionRef,
+): Promise<void> {
+  const internals = getTauriInternals();
+  const absPath = toAbsolutePath(path, workspacePath);
+  const cleanRel = path.replace(/\\/g, '/').replace(/^\/+/, '');
+
+  if (isTauri() && internals) {
+    try {
+      await internals.invoke('tauri_open_in_vscode', {
+        workspace: workspacePath || undefined,
+        path: absPath,
+      });
+      return;
+    } catch (err) {
+      console.warn('Tauri native open_in_vscode failed:', err);
+    }
+  }
+
+  if (client && session?.thread_id) {
+    try {
+      await client.openExternal({ session, path: cleanRel, appId: 'vscode' });
+      return;
+    } catch {
+      // Degrade to URL scheme
+    }
+  }
+
+  if (absPath) {
+    const formatted = absPath.startsWith('/') ? absPath : `/${absPath}`;
+    window.open(`vscode://file${encodeURI(formatted)}`, '_self');
   }
 }
 
@@ -139,10 +221,10 @@ export async function fetchGitStatus(
   const internals = getTauriInternals();
   if (isTauri() && internals) {
     try {
-      const res = await internals.invoke<GitStatusView>('tauri_git_status', {
+      const res = await internals.invoke<unknown>('tauri_git_status', {
         workspace: workspacePath || undefined,
       });
-      return res;
+      return parseGitStatus(res);
     } catch (err) {
       console.warn('Tauri 2 native git status error, falling back to RPC:', err);
     }
@@ -166,11 +248,11 @@ export async function fetchGitDiff(
   const internals = getTauriInternals();
   if (isTauri() && internals) {
     try {
-      const res = await internals.invoke<GitDiffView>('tauri_git_diff', {
+      const res = await internals.invoke<unknown>('tauri_git_diff', {
         workspace: workspacePath || undefined,
         path: filePath,
       });
-      return res;
+      return parseGitDiff(res);
     } catch (err) {
       console.warn('Tauri 2 native git diff error, falling back to RPC:', err);
     }

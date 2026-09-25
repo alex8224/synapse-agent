@@ -3414,6 +3414,7 @@ dependencies = [
  "base64 0.22.1",
  "open",
  "portable-pty",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tauri",
@@ -3421,6 +3422,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "window-vibrancy",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -163,15 +163,26 @@ export function diffLineClass(line: string): string {
  * prints it (`M ` staged, ` M` worktree, `??` untracked).
  */
 export function changeStatusCode(change: GitFileChangeView): string {
-  return `${change.indexStatus}${change.worktreeStatus}`;
+  const index =
+    change.indexStatus ??
+    (change as unknown as { index_status?: string }).index_status ??
+    ' ';
+  const worktree =
+    change.worktreeStatus ??
+    (change as unknown as { worktree_status?: string }).worktree_status ??
+    ' ';
+  return `${index}${worktree}`;
 }
 
 /** Human label for one change code. */
 export function changeStatusLabel(change: GitFileChangeView): string {
   const code = changeStatusCode(change);
-  if (code === '??') return '未跟踪';
-  if (change.indexStatus !== ' ' && change.worktreeStatus !== ' ') return '已暂存+已修改';
-  if (change.indexStatus !== ' ') return '已暂存';
-  if (change.worktreeStatus === 'D') return '已删除';
+  if (code.includes('?')) return '未跟踪';
+  const index = code[0] ?? ' ';
+  const worktree = code[1] ?? ' ';
+  if (index !== ' ' && worktree !== ' ') return '已暂存+已修改';
+  if (index !== ' ') return '已暂存';
+  if (worktree === 'D') return '已删除';
+  if (worktree === 'A') return '新文件';
   return '已修改';
 }

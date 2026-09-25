@@ -1,0 +1,11 @@
+# Permission for tauri_set_window_theme
+
+[[permission]]
+identifier = "allow-tauri-set-window-theme"
+description = "Enables the tauri_set_window_theme command without any pre-configured scope."
+commands.allow = ["tauri_set_window_theme"]
+
+[[permission]]
+identifier = "deny-tauri-set-window-theme"
+description = "Denies the tauri_set_window_theme command without any pre-configured scope."
+commands.deny = ["tauri_set_window_theme"]

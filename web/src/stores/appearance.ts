@@ -18,6 +18,7 @@
  * {@link readStoredAppearance} and {@link readStoredOpenWith}.
  */
 import { create } from 'zustand';
+import { isTauri, tauriSetWindowTheme } from '../client/tauri.ts';
 
 export type Appearance = 'system' | 'light' | 'dark';
 
@@ -32,6 +33,24 @@ export const OPEN_WITH_MEMORY_LIMIT = 32;
 
 /** Remembered application id per extension key (`'.tsx'`, or `''` for none). */
 export type OpenWithMemory = Readonly<Record<string, string>>;
+
+export interface VibrancyConfig {
+  /** Overall shell background opacity (0.30 - 0.95, default 0.70) */
+  shellOpacity: number;
+  /** Content pane opacity (0.30 - 0.90, default 0.58) */
+  paneOpacity: number;
+  /** Backdrop blur radius in pixels (8 - 40, default 24) */
+  blurRadius: number;
+}
+
+export const DEFAULT_VIBRANCY: VibrancyConfig = {
+  shellOpacity: 0.70,
+  paneOpacity: 0.58,
+  blurRadius: 24,
+};
+
+/** Where vibrancy / frosted glass preferences are persisted. */
+export const VIBRANCY_STORAGE_KEY = 'synapse.console.vibrancy';
 
 /** Both appearances use the same Fluent component language. */
 export const LIGHT_THEME = 'fluent-light';
@@ -119,12 +138,26 @@ function applyAppearance(theme: string | null): void {
   applyFrameColor(theme);
 }
 
+/** Apply custom frosted glass vibrancy parameters to CSS custom properties. */
+export function applyVibrancy(config: VibrancyConfig): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.setProperty('--tauri-shell-opacity', config.shellOpacity.toFixed(2));
+  root.style.setProperty('--tauri-pane-opacity', config.paneOpacity.toFixed(2));
+  root.style.setProperty('--tauri-blur-radius', `${Math.round(config.blurRadius)}px`);
+}
+
 interface AppearanceStore {
   appearance: Appearance;
   openWith: OpenWithMemory;
+  vibrancy: VibrancyConfig;
   setAppearance: (appearance: Appearance) => void;
   /** Flip to the explicit opposite of the palette on screen (button / Ctrl+Shift+L). */
   toggleAppearance: () => void;
+  /** Fine-tune frosted glass / vibrancy parameters. */
+  setVibrancy: (patch: Partial<VibrancyConfig>) => void;
+  /** Reset frosted glass / vibrancy parameters to defaults. */
+  resetVibrancy: () => void;
   /** Remember (or, with `null`, forget) the application for one extension. */
   rememberOpenWith: (extension: string, appId: string | null) => void;
 }
@@ -172,6 +205,43 @@ function persistAppearance(appearance: Appearance): void {
     store.setItem(APPEARANCE_STORAGE_KEY, appearance);
   } catch {
     /* Quota or blocked storage: the choice still applies to this session. */
+  }
+}
+
+export function readStoredVibrancy(): VibrancyConfig {
+  const store = storage();
+  if (store === null) return { ...DEFAULT_VIBRANCY };
+  try {
+    const raw = store.getItem(VIBRANCY_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_VIBRANCY };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return { ...DEFAULT_VIBRANCY };
+    const p = parsed as Record<string, unknown>;
+    const shellOpacity =
+      typeof p.shellOpacity === 'number' && p.shellOpacity >= 0.2 && p.shellOpacity <= 1
+        ? p.shellOpacity
+        : DEFAULT_VIBRANCY.shellOpacity;
+    const paneOpacity =
+      typeof p.paneOpacity === 'number' && p.paneOpacity >= 0.2 && p.paneOpacity <= 1
+        ? p.paneOpacity
+        : DEFAULT_VIBRANCY.paneOpacity;
+    const blurRadius =
+      typeof p.blurRadius === 'number' && p.blurRadius >= 4 && p.blurRadius <= 60
+        ? p.blurRadius
+        : DEFAULT_VIBRANCY.blurRadius;
+    return { shellOpacity, paneOpacity, blurRadius };
+  } catch {
+    return { ...DEFAULT_VIBRANCY };
+  }
+}
+
+export function persistVibrancy(config: VibrancyConfig): void {
+  const store = storage();
+  if (store === null) return;
+  try {
+    store.setItem(VIBRANCY_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    /* Quota or blocked storage */
   }
 }
 
@@ -236,13 +306,33 @@ export function prefersDark(): boolean {
 export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
   appearance: 'system',
   openWith: {},
+  vibrancy: DEFAULT_VIBRANCY,
   setAppearance: (appearance) => {
     applyAppearance(themeFor(appearance, prefersDark()));
     persistAppearance(appearance);
+    if (isTauri()) {
+      void tauriSetWindowTheme(appearance);
+    }
     set({ appearance });
   },
   toggleAppearance: () =>
     get().setAppearance(oppositeAppearance(get().appearance, prefersDark())),
+  setVibrancy: (patch) => {
+    set((state) => {
+      const next = { ...state.vibrancy, ...patch };
+      persistVibrancy(next);
+      applyVibrancy(next);
+      return { vibrancy: next };
+    });
+  },
+  resetVibrancy: () => {
+    set(() => {
+      const def = { ...DEFAULT_VIBRANCY };
+      persistVibrancy(def);
+      applyVibrancy(def);
+      return { vibrancy: def };
+    });
+  },
   rememberOpenWith: (extension, appId) => {
     set((state) => {
       const next: Record<string, string> = { ...state.openWith };
@@ -269,12 +359,24 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
  */
 export function initAppearance(): void {
   const stored = readStoredAppearance();
+  const storedVibrancy = readStoredVibrancy();
   applyAppearance(themeFor(stored, prefersDark()));
-  useAppearanceStore.setState({ appearance: stored, openWith: readStoredOpenWith() });
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  applyVibrancy(storedVibrancy);
+  useAppearanceStore.setState({ appearance: stored, openWith: readStoredOpenWith(), vibrancy: storedVibrancy });
+  if (typeof window === 'undefined') return;
+  if (isTauri()) {
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.tauri = 'true';
+    }
+    void tauriSetWindowTheme(stored);
+  }
+  if (typeof window.matchMedia !== 'function') return;
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     const { appearance } = useAppearanceStore.getState();
     if (appearance !== 'system') return;
     applyAppearance(themeFor(appearance, prefersDark()));
+    if (isTauri()) {
+      void tauriSetWindowTheme('system');
+    }
   });
 }

@@ -15,6 +15,9 @@
         "url": "index.html",
         "decorations": false,
         "transparent": true,
+        "windowEffects": {
+          "effects": ["acrylic"]
+        },
         "width": 400,
         "height": 250,
         "center": true,
@@ -27,7 +30,11 @@
         "label": "main",
         "url": "index.html",
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["acrylic"],
+          "color": [15, 18, 24, 160]
+        },
         "width": 1280,
         "height": 840,
         "minWidth": 800,

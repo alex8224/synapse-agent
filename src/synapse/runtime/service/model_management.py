@@ -74,6 +74,7 @@ MODEL_PROFILE_ALLOWED_KEYS = frozenset(
     {
         "model",
         "api_key",
+        "api_key_env",
         "base_url",
         "reasoning_effort",
         "image_input",
@@ -91,6 +92,17 @@ MODEL_PROFILE_ALLOWED_KEYS = frozenset(
         "parallel_tool_calls",
         "turbo",
         "extra",
+        "max_tokens",
+        "thinking",
+        "use_responses_api",
+        "wire_api",
+        "timeout_secs",
+        "max_retries",
+        "max_input_bytes",
+        "fallback_model",
+        "allow_remote_urls",
+        "think",
+        "default_thinking",
     }
 )
 
@@ -127,12 +139,13 @@ def _validate_alias_reference(value: object, field: str = "alias") -> str:
 def _validate_profile(value: object) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("profile must be a mapping")
-    unknown = set(value) - MODEL_PROFILE_ALLOWED_KEYS
-    if unknown:
-        raise ValueError(f"profile has unsupported keys: {sorted(unknown)}")
-    for key in value:
+    for key, _val in value.items():
         if type(key) is not str:
             raise ValueError("profile keys must be strings")
+        if not key or not re.match(r"^[\w.:\-]+$", key) or len(key) > 64:
+            raise ValueError(
+                f"profile key {key!r} contains invalid characters or exceeds 64 characters"
+            )
     return value
 
 

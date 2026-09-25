@@ -43,7 +43,6 @@ _PROFILE_FIELDS = (
     "api_key_env",
     "auth",
     "base_url",
-    "provider",
     "headers",
     "context_window",
     "enable_thinking",
@@ -57,6 +56,17 @@ _PROFILE_FIELDS = (
     "extra_body",
     "openai_proxy",
     "streaming",
+    "max_tokens",
+    "thinking",
+    "use_responses_api",
+    "timeout_secs",
+    "max_retries",
+    "max_input_bytes",
+    "fallback_model",
+    "allow_remote_urls",
+    "think",
+    "default_thinking",
+    "turbo",
 )
 
 

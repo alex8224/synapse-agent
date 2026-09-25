@@ -118,29 +118,28 @@ export const RightDock: React.FC = () => {
 
   return (
     <>
-      {/* Draggable Resizer Separator - visible only when dock is open */}
-      {open && (
-        <div
-          onMouseDown={handleMouseDown}
-          onDoubleClick={resetWidth}
-          title="按住左右拖拽调节右侧栏宽度 (双击复位)"
-          className={`group relative z-20 w-1.5 shrink-0 cursor-col-resize select-none transition-colors ${
-            isDragging ? 'bg-accent/80' : 'bg-transparent hover:bg-accent/30'
-          }`}
-        >
-          <div className="absolute inset-y-0 left-0.5 w-[1px] bg-line/80 group-hover:bg-accent/80 transition-colors" />
-        </div>
-      )}
-
       {/* Dock Container with Fluent Design Acrylic/Chrome and Left-Sidebar parity animation */}
       <aside
         ref={dockRef}
         inert={!open}
         style={{ width: open ? `${width}px` : '0px' }}
-        className={`material-chrome relative flex h-full shrink-0 flex-col overflow-hidden select-none text-gray-900 ${
+        className={`material-chrome relative flex h-full shrink-0 flex-col select-none text-gray-900 ${
           open ? 'border-l border-line' : 'border-l-0 pointer-events-none'
         } ${isDragging ? '' : 'transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)]'}`}
       >
+        {/* Draggable Resizer Separator - overlay on the left border without in-flow gap */}
+        {open && (
+          <div
+            onMouseDown={handleMouseDown}
+            onDoubleClick={resetWidth}
+            title="按住左右拖拽调节右侧栏宽度 (双击复位)"
+            className={`group absolute -left-1.5 inset-y-0 z-30 w-3 cursor-col-resize select-none transition-colors ${
+              isDragging ? 'bg-accent/40' : 'hover:bg-accent/20'
+            }`}
+          >
+            <div className="absolute inset-y-0 left-1.5 w-[1px] bg-line/80 group-hover:bg-accent/80 transition-colors" />
+          </div>
+        )}
         <div className="flex h-full w-full flex-col min-w-[320px] overflow-hidden">
         {/* Dock Header with Tabs */}
         <div className="flex h-chrome items-center justify-between border-b border-line px-2 gap-1 overflow-hidden shrink-0">

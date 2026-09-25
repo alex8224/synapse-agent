@@ -774,6 +774,100 @@ body {
   padding: 0;
 }
 
+/*
+  Under the native desktop client (Tauri), the operating system synthesizes
+  Acrylic / Mica vibrancy directly onto the window background. Make html, body
+  and the root layers translucent so the desktop blur shines through clearly.
+*/
+html[data-tauri='true'],
+html[data-tauri='true'] body,
+html[data-tauri='true'] #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+html[data-tauri='true'] .console-shell {
+  background-color: rgba(15, 18, 24, var(--tauri-shell-opacity, 0.70)) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .console-shell {
+  background-color: rgba(245, 247, 250, var(--tauri-shell-opacity, 0.75)) !important;
+}
+
+/* Content workspace pane: high opacity fill (~91% effective) ensures comfortable text readability */
+html[data-tauri='true'] .material-pane {
+  background-color: rgba(18, 22, 31, var(--tauri-pane-opacity, 0.58)) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .material-pane {
+  background-color: rgba(255, 255, 255, var(--tauri-pane-opacity, 0.58)) !important;
+}
+
+/* Chrome layer (sidebar rail & auxiliary dock) */
+html[data-tauri='true'] .material-chrome {
+  background-color: rgba(20, 24, 34, 0.28) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .material-chrome {
+  background-color: rgba(240, 243, 248, 0.28) !important;
+}
+
+/* TopBar / Title bar: strong blur and enhanced frosted translucency */
+html[data-tauri='true'] header.material-chrome,
+html[data-tauri='true'] .wco-caption {
+  background-color: rgba(16, 20, 28, 0.12) !important;
+  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(200%) !important;
+  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(200%) !important;
+  border-bottom-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] header.material-chrome,
+html[data-tauri='true'][data-theme='fluent-light'] .wco-caption {
+  background-color: rgba(255, 255, 255, 0.18) !important;
+  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(200%) !important;
+  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(200%) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Thought reasoning cards and pills in transcript: translucent frosted glass with soft sheen and blur */
+html[data-tauri='true'] .thought-card,
+html[data-tauri='true'] .fluent-accordion-content .material-card {
+  background-color: rgba(255, 255, 255, 0.035) !important;
+  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
+  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.28), inset 0 1px 0 0 rgba(255, 255, 255, 0.14) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .thought-card,
+html[data-tauri='true'][data-theme='fluent-light'] .fluent-accordion-content .material-card {
+  background-color: rgba(255, 255, 255, 0.45) !important;
+  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
+  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06), inset 0 1px 0 0 rgba(255, 255, 255, 0.7) !important;
+}
+
+html[data-tauri='true'] .thought-pill {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  -webkit-backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
+  backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html[data-tauri='true'] .thought-pill:hover {
+  background-color: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(255, 255, 255, 0.20) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
+  background-color: rgba(255, 255, 255, 0.60) !important;
+  -webkit-backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
+  backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
 @layer utilities {
   /*
     Reading column and its gutters.

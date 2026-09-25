@@ -54,15 +54,63 @@ where
         .map_err(|err| format!("{label}失败: {err}"))?
 }
 
+fn apply_window_vibrancy(window: &WebviewWindow, dark: Option<bool>) {
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::HasWindowHandle;
+        let is_dark = dark.unwrap_or(true);
+        if let Ok(handle) = window.window_handle() {
+            if let raw_window_handle::RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+                let hwnd = win32_handle.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                unsafe {
+                    windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                        hwnd,
+                        windows_sys::Win32::Graphics::Dwm::DWMWA_USE_IMMERSIVE_DARK_MODE as _,
+                        &(is_dark as u32) as *const _ as _,
+                        4,
+                    );
+                }
+            }
+        }
+
+        let is_dark = dark.unwrap_or(true);
+        let tint = if is_dark {
+            Some((15, 18, 24, 160))
+        } else {
+            Some((245, 247, 250, 180))
+        };
+        if let Err(e) = window_vibrancy::apply_acrylic(window, tint) {
+            eprintln!("apply_acrylic 失败: {e:?}，回退至 apply_mica");
+            let _ = window_vibrancy::apply_mica(window, dark);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window_vibrancy::apply_vibrancy(
+            window,
+            window_vibrancy::NSVisualEffectMaterial::HudWindow,
+            None,
+            None,
+        );
+    }
+}
+
+#[tauri::command]
+fn tauri_set_window_theme(window: WebviewWindow, dark: Option<bool>) -> Result<(), String> {
+    apply_window_vibrancy(&window, dark);
+    Ok(())
+}
+
 #[tauri::command]
 async fn tauri_open_path(workspace: Option<String>, path: String) -> Result<(), String> {
     // `open::that` waits for the launcher process it spawns, so this blocks.
     run_blocking("打开路径", move || {
-        let ws = command_workspace(workspace);
-        let target = if std::path::Path::new(&path).is_absolute() {
-            PathBuf::from(path)
+        let clean_path = path.trim_start_matches(['/', '\\']);
+        let target = if std::path::Path::new(&path).is_absolute() || path.starts_with(r"\\") {
+            PathBuf::from(&path)
         } else {
-            ws.join(path)
+            let ws = command_workspace(workspace);
+            ws.join(clean_path)
         };
         git_fs::open_path(&target)
     })
@@ -73,13 +121,29 @@ async fn tauri_open_path(workspace: Option<String>, path: String) -> Result<(), 
 async fn tauri_reveal_in_folder(workspace: Option<String>, path: String) -> Result<(), String> {
     // The Windows path waits on `explorer`; the other platforms spawn a helper.
     run_blocking("在文件管理器中显示", move || {
-        let ws = command_workspace(workspace);
-        let target = if std::path::Path::new(&path).is_absolute() {
-            PathBuf::from(path)
+        let clean_path = path.trim_start_matches(['/', '\\']);
+        let target = if std::path::Path::new(&path).is_absolute() || path.starts_with(r"\\") {
+            PathBuf::from(&path)
         } else {
-            ws.join(path)
+            let ws = command_workspace(workspace);
+            ws.join(clean_path)
         };
         git_fs::reveal_in_explorer(&target)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn tauri_open_in_vscode(workspace: Option<String>, path: String) -> Result<(), String> {
+    run_blocking("在 VS Code 中打开", move || {
+        let clean_path = path.trim_start_matches(['/', '\\']);
+        let target = if std::path::Path::new(&path).is_absolute() || path.starts_with(r"\\") {
+            PathBuf::from(&path)
+        } else {
+            let ws = command_workspace(workspace);
+            ws.join(clean_path)
+        };
+        git_fs::open_in_vscode(&target)
     })
     .await
 }
@@ -191,9 +255,11 @@ fn do_restart_service(app: &AppHandle, state: &AppState) -> Result<String, Strin
     };
 
     if let Some(window) = app.get_webview_window("main") {
-        let eval_script = format!("window.location.replace('{}');", url);
+        let sep = if url.contains('?') { "&" } else { "?" };
+        let eval_script = format!("window.location.replace('{}{}tauri=1');", url, sep);
         let _ = window.eval(&eval_script);
         let _ = window.show();
+        apply_window_vibrancy(&window, None);
         let _ = window.set_focus();
     }
     Ok(url)
@@ -342,6 +408,7 @@ fn main() {
             minimize_window,
             toggle_maximize_window,
             close_window,
+            tauri_set_window_theme,
             get_console_url,
             restart_service,
             open_path,
@@ -351,6 +418,7 @@ fn main() {
             tauri_stat_artifact,
             tauri_read_artifact,
             tauri_open_path,
+            tauri_open_in_vscode,
             tauri_reveal_in_folder,
             tauri_terminal_create,
             tauri_terminal_write,
@@ -360,20 +428,12 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            // Apply native vibrancy effect to the compact splash window on macOS
-            if let Some(_splash) = app.get_webview_window("splash") {
-                #[cfg(target_os = "windows")]
-                {
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = window_vibrancy::apply_vibrancy(
-                        &_splash,
-                        window_vibrancy::NSVisualEffectMaterial::HudWindow,
-                        None,
-                        None,
-                    );
-                }
+            // Apply native vibrancy / acrylic blur effect to windows
+            if let Some(splash) = app.get_webview_window("splash") {
+                apply_window_vibrancy(&splash, None);
+            }
+            if let Some(main_window) = app.get_webview_window("main") {
+                apply_window_vibrancy(&main_window, None);
             }
 
             // Set up system tray menu
@@ -507,9 +567,11 @@ fn main() {
                 match start_res {
                     Ok(meta) => {
                         if let Some(window) = bg_handle.get_webview_window("main") {
-                            let eval_script = format!("window.location.replace('{}');", meta.url);
+                            let sep = if meta.url.contains('?') { "&" } else { "?" };
+                            let eval_script = format!("window.location.replace('{}{}tauri=1');", meta.url, sep);
                             let _ = window.eval(&eval_script);
                             let _ = window.show();
+                            apply_window_vibrancy(&window, None);
                             let _ = window.set_focus();
                         }
                         if let Some(splash) = bg_handle.get_webview_window("splash") {

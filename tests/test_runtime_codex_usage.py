@@ -12,6 +12,7 @@ import asyncio
 import dataclasses
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -487,6 +488,27 @@ def test_daemon_codex_error_log_is_bounded_and_redacted(tmp_path) -> None:
         assert "example.test" not in line
     finally:
         logging.getLogger("synapse.runtime.codex_usage").removeHandler(handler)
+        logging.getLogger("synapse.runtime").removeHandler(handler)
+        handler.close()
+
+
+def test_generic_runtime_error_log_captures_transport_errors(tmp_path: Path) -> None:
+    import logging
+
+    from synapse.runtime.daemon.entry import _configure_error_log
+    from synapse.runtime.transport.websocket import _log_rpc_error
+
+    handler = _configure_error_log(tmp_path)
+    try:
+        err = ValueError("test generic transport failure")
+        _log_rpc_error("runtime.models.save", 42, err)
+        handler.flush()
+        log_text = (tmp_path / "errors.log").read_text(encoding="utf-8")
+        assert "runtime.models.save" in log_text
+        assert "test generic transport failure" in log_text
+    finally:
+        logging.getLogger("synapse.runtime.codex_usage").removeHandler(handler)
+        logging.getLogger("synapse.runtime").removeHandler(handler)
         handler.close()
 
 

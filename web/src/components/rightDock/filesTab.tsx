@@ -23,7 +23,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { useRightDockStore } from '../../stores/useRightDockStore.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
-import { openPathWithDefault, revealInFileManager } from '../../client/tauriGitFs.ts';
+import { openPathWithDefault, revealInFileManager, toAbsolutePath } from '../../client/tauriGitFs.ts';
 import { createArtifactSurface } from '../../client/artifactSurface.ts';
 import { ARTIFACT_LIST_LIMIT, type ArtifactEntry } from '../../client/artifacts.ts';
 
@@ -174,17 +174,18 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
 
   const handleOpenDefault = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void openPathWithDefault(path, workspacePath);
+    void openPathWithDefault(path, workspacePath, client, currentSession);
   };
 
   const handleReveal = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void revealInFileManager(path, workspacePath);
+    void revealInFileManager(path, workspacePath, client, currentSession);
   };
 
   const handleCopyPath = (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(path);
+    const absPath = toAbsolutePath(path, workspacePath);
+    void navigator.clipboard.writeText(absPath);
     setCopiedPath(path);
     setTimeout(() => setCopiedPath(null), 1500);
   };

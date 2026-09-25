@@ -62,7 +62,7 @@ export const ThoughtRow = React.memo(function ThoughtRow({
           <div
             onClick={() => actions.onToggleExpand(message.id)}
             onMouseMove={updateSpotlight}
-            className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
+            className="thought-pill inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
           >
             {message.duration === 'streaming' ? (
               <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
@@ -74,7 +74,7 @@ export const ThoughtRow = React.memo(function ThoughtRow({
           </div>
           <div className="fluent-accordion" data-expanded={expanded}>
             <div className="fluent-accordion-content pt-1.5">
-              <div className="material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
+              <div className="thought-card material-card rounded-card border border-line p-3 text-sm text-gray-700 shadow-card">
                 <Markdown text={message.content ?? ''} />
               </div>
             </div>

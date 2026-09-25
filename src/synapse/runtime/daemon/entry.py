@@ -30,6 +30,8 @@ def _configure_error_log(state_dir: Path) -> RotatingFileHandler:
     logger = logging.getLogger("synapse.runtime.codex_usage")
     logger.addHandler(handler)
     logger.propagate = False
+    runtime_logger = logging.getLogger("synapse.runtime")
+    runtime_logger.addHandler(handler)
     return handler
 
 
@@ -66,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if handler is not None:
             logging.getLogger("synapse.runtime.codex_usage").removeHandler(handler)
+            logging.getLogger("synapse.runtime").removeHandler(handler)
             handler.close()
 
 

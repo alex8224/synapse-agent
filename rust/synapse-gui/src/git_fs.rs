@@ -375,19 +375,79 @@ pub fn open_path(target: &Path) -> Result<(), String> {
     open::that(target).map_err(|e| format!("打开失败: {}", e))
 }
 
+/// Open a file in VS Code using CLI or protocol handler
+pub fn open_in_vscode(target: &Path) -> Result<(), String> {
+    let target_str = target.to_string_lossy().to_string();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // 1. Try `code` in PATH
+        let mut cmd = Command::new("code");
+        cmd.arg(&target_str);
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+
+        // 2. Try known VS Code install locations on Windows
+        let mut candidates = Vec::new();
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join(r"Programs\Microsoft VS Code\Code.exe"));
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(pf).join(r"Microsoft VS Code\Code.exe"));
+        }
+        if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(pf86).join(r"Microsoft VS Code\Code.exe"));
+        }
+        for candidate in candidates {
+            if candidate.exists() {
+                let mut cmd = Command::new(&candidate);
+                cmd.arg(&target_str);
+                cmd.creation_flags(0x08000000);
+                if cmd.spawn().is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("code");
+        cmd.arg(&target_str);
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+    }
+
+    // 3. Fall back to protocol handler: vscode://file/<path>
+    let url = if target_str.starts_with('/') {
+        format!("vscode://file{}", target_str)
+    } else {
+        format!("vscode://file/{}", target_str.replace('\\', "/"))
+    };
+    open::that(&url).map_err(|e| format!("打开 VS Code 失败: {}", e))
+}
+
 /// Reveal a file or directory in the system file manager (Explorer / Finder / etc.)
 pub fn reveal_in_explorer(target: &Path) -> Result<(), String> {
-    if !target.exists() {
-        return Err(format!("路径不存在: {}", target.display()));
-    }
+    let target_buf: PathBuf = if !target.exists() {
+        target.parent().filter(|p| p.exists()).map(|p| p.to_path_buf()).ok_or_else(|| {
+            format!("路径不存在: {}", target.display())
+        })?
+    } else {
+        target.to_path_buf()
+    };
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         let mut cmd = Command::new("explorer");
-        if target.is_dir() {
-            cmd.arg(target);
+        if target_buf.is_dir() {
+            cmd.arg(&target_buf);
         } else {
-            cmd.arg(format!("/select,{}", target.display()));
+            cmd.arg(format!("/select,{}", target_buf.display()));
         }
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         cmd.spawn().map_err(|e| format!("启动文件管理器失败: {}", e))?;
@@ -395,12 +455,12 @@ pub fn reveal_in_explorer(target: &Path) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg("-R").arg(target).spawn().map_err(|e| format!("启动 Finder 失败: {}", e))?;
+        Command::new("open").arg("-R").arg(&target_buf).spawn().map_err(|e| format!("启动 Finder 失败: {}", e))?;
         Ok(())
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let dir = if target.is_dir() { target } else { target.parent().unwrap_or(target) };
+        let dir = if target_buf.is_dir() { &target_buf } else { target_buf.parent().unwrap_or(&target_buf) };
         open::that(dir).map_err(|e| format!("打开目录失败: {}", e))
     }
 }

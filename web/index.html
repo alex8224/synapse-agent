@@ -35,6 +35,10 @@
       } catch (e) {
         /* Blocked storage: the bundle falls back to following the system. */
       }
+      try {
+        var isTauri = Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__ || window.location.search.indexOf('tauri=1') !== -1);
+        if (isTauri) document.documentElement.dataset.tauri = 'true';
+      } catch (e) {}
     </script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />

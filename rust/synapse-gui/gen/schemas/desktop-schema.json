@@ -225,6 +225,12 @@
           "markdownDescription": "Enables the tauri_list_artifacts command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_open_in_vscode command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-open-in-vscode",
+          "markdownDescription": "Enables the tauri_open_in_vscode command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_open_path command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-open-path",
@@ -241,6 +247,12 @@
           "type": "string",
           "const": "allow-tauri-reveal-in-folder",
           "markdownDescription": "Enables the tauri_reveal_in_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_set_window_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-set-window-theme",
+          "markdownDescription": "Enables the tauri_set_window_theme command without any pre-configured scope."
         },
         {
           "description": "Enables the tauri_stat_artifact command without any pre-configured scope.",
@@ -327,6 +339,12 @@
           "markdownDescription": "Denies the tauri_list_artifacts command without any pre-configured scope."
         },
         {
+          "description": "Denies the tauri_open_in_vscode command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-open-in-vscode",
+          "markdownDescription": "Denies the tauri_open_in_vscode command without any pre-configured scope."
+        },
+        {
           "description": "Denies the tauri_open_path command without any pre-configured scope.",
           "type": "string",
           "const": "deny-tauri-open-path",
@@ -343,6 +361,12 @@
           "type": "string",
           "const": "deny-tauri-reveal-in-folder",
           "markdownDescription": "Denies the tauri_reveal_in_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_set_window_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-set-window-theme",
+          "markdownDescription": "Denies the tauri_set_window_theme command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_stat_artifact command without any pre-configured scope.",

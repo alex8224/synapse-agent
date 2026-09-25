@@ -13,6 +13,7 @@ fn main() {
             "tauri_stat_artifact",
             "tauri_read_artifact",
             "tauri_open_path",
+            "tauri_open_in_vscode",
             "tauri_reveal_in_folder",
             "tauri_terminal_create",
             "tauri_terminal_write",
