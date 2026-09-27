@@ -1659,6 +1659,58 @@ function markBackgroundViewsStale(
 }
 
 /**
+ * Record the position a terminated watch can be resumed from, and land whatever
+ * it already delivered.
+ *
+ * Shared by a transport drop (`onStateChange`) and a watch the *server*
+ * terminated (`event_overflow`): both leave the client holding the dead
+ * subscription's frozen cursor, and both must apply the buffer while it is still
+ * attributable -- the resumed subscription carries a fresh id, so a frame left
+ * buffered for the dead one would be filtered out of the merge and lost.
+ *
+ * The three history states must not be conflated: the first page of a fresh
+ * attach is retried after the resume, an earlier page only cancels pagination
+ * (the rendered transcript and its cursor are kept), and no page in flight means
+ * there is nothing to abandon.
+ */
+function captureDroppedResumePoint(
+  state: ConsoleStore,
+  subscriptionId: string,
+  cursor: number | null,
+): void {
+  const store = useConsoleStore;
+  const pendingHistory: PendingHistoryKind | null = state.historyLoading
+    ? pendingHistoryKind ?? 'initial'
+    : null;
+  droppedResumePoint = {
+    session: { ...state.currentSession },
+    epoch: sessionEpoch,
+    subscriptionId,
+    cursor,
+    pendingHistory,
+  };
+  // The flag describes the read that was in flight for the *dead* watch, so it is
+  // consumed by this capture whichever of the three cases applies.
+  pendingHistoryKind = null;
+  if (pendingHistory === null) {
+    // No page in flight: the buffer is only the dead watch's already-attributed
+    // events, so apply them while they are still attributable.
+    flushBufferedLiveEvents();
+    return;
+  }
+  // The page is abandoned: fence its rejection so it cannot paint an error banner
+  // or flush the buffer out of order.
+  historyGeneration += 1;
+  if (pendingHistory === 'earlier') {
+    // Pagination, not the first page: cancel it, keep the rendered transcript and
+    // the earlier-page cursor for a user retry, and land the buffered events now.
+    // The resume must not re-read the first page.
+    store.setState({ historyLoading: false });
+    flushBufferedLiveEvents();
+  }
+}
+
+/**
  * Route one watch-lifecycle notice to the session that owns its subscription.
  *
  * Extracted from the client callback so the routing is directly testable.  The
@@ -1698,12 +1750,25 @@ export function handleSubscriptionNotice(notice: SubscriptionNotice): void {
   if (notice.type === 'error') {
     const code = notice.service_code;
     if (code === 'replay_gap' || code === 'invalid_cursor' || code === 'event_overflow') {
-      // Watch ended server-side with an explicit gap/overflow: full resync from
-      // the history snapshot (formal), not silent recovery.  A gap always means
-      // events were evicted, so the durable state is `incomplete` with the gap
-      // detail -- never a `resync` left set forever.
       const { client: c, currentSession, sessionTitle } = store.getState();
       if (!c || c.getState() !== 'connected') return;
+      // An overflow is the daemon's *own* bounded watch queue, not a lost socket:
+      // the client still holds the dead subscription's frozen cursor and the
+      // broker still retains the events that queue dropped.  Resume from that
+      // exact position -- the same decision a transport drop takes -- because a
+      // full re-attach can only replay what the broker still retains: it drops
+      // the already-rendered head of the running turn, and it paints a degraded
+      // strip even when the recovery lost nothing.
+      if (code === 'event_overflow') {
+        const deadId = subId ?? store.getState().activeSubscriptionId;
+        const cursor = deadId === null ? null : c.getWatchCursor(deadId);
+        if (recoverTerminatedWatch(deadId, cursor)) return;
+      }
+      // Watch ended server-side with an explicit gap/overflow the resume position
+      // cannot continue: full resync from the history snapshot (formal), not
+      // silent recovery.  A gap always means events were evicted, so the durable
+      // state is `incomplete` with the gap detail -- never a `resync` left set
+      // forever.
       store.setState({
         recoveryState: 'incomplete',
         recoveryDetail: `watch terminated (${code}); resynced from history snapshot`,
@@ -1793,35 +1858,7 @@ export function consoleClientCallbacks(): Pick<
           // re-watched, so this is the exact last delivered position.  Keeping
           // it is what lets the resume continue from there instead of resyncing
           // from history and replaying the running turn from its start.
-          const pendingHistory: PendingHistoryKind | null = before.historyLoading
-            ? pendingHistoryKind ?? 'initial'
-            : null;
-          droppedResumePoint = {
-            session: { ...before.currentSession },
-            epoch: sessionEpoch,
-            subscriptionId: droppedId,
-            cursor: runtimeClient.getWatchCursor(droppedId),
-            pendingHistory,
-          };
-          if (pendingHistory === null) {
-            // No page in flight: the buffer is only the dead watch's
-            // already-attributed events, so apply them while they are still
-            // attributable (the resumed subscription's id would filter them out).
-            flushBufferedLiveEvents();
-          } else {
-            // The page is abandoned: fence its rejection so it cannot paint an
-            // error banner or flush the buffer out of order.
-            historyGeneration += 1;
-            if (pendingHistory === 'earlier') {
-              // Pagination, not the first page: cancel it, keep the rendered
-              // transcript and the earlier-page cursor for a user retry, and
-              // land the buffered events now.  The resume must not re-read the
-              // first page.
-              store.setState({ historyLoading: false });
-              flushBufferedLiveEvents();
-            }
-          }
-          pendingHistoryKind = null;
+          captureDroppedResumePoint(before, droppedId, runtimeClient.getWatchCursor(droppedId));
         } else {
           // A drop with no attributed subscription (the resume handshake /
           // history retry window): keep the point already held for *this*
@@ -2510,6 +2547,64 @@ export async function resumeAttachedWatch(): Promise<void> {
       });
     }
   }
+}
+
+/**
+ * Recover from a watch the *server* terminated, without throwing the running
+ * turn's live prefix away.
+ *
+ * `event_overflow` is the daemon's bounded watch queue, not a lost socket: the
+ * client still holds the dead subscription's frozen cursor and the broker still
+ * retains the events that queue dropped, so the exact last delivered position is
+ * continuable.  This takes the same decision a transport drop takes
+ * (`decideResumeAfterDrop` -> resume / resync / incomplete), which is what keeps
+ * the already-rendered head of the running turn on screen.
+ *
+ * Returns whether it took ownership of the recovery.  `false` means the position
+ * is unusable -- no cursor, the notice does not name the attached session's own
+ * watch, or the resume preconditions no longer hold -- and the caller must fall
+ * back to the full resync from the history snapshot.  It never starts from a
+ * fabricated `after=0`.
+ */
+function recoverTerminatedWatch(subscriptionId: string | null, cursor: number | null): boolean {
+  const store = useConsoleStore;
+  const client = store.getState().client;
+  const session = store.getState().currentSession;
+  if (subscriptionId === null || cursor === null || client === null) return false;
+  if (store.getState().activeSubscriptionId !== subscriptionId) return false;
+  // The resume continues *this* session's stream: an attach/switch that already
+  // cleared the baseline owns the transcript now, and another session's watch
+  // must never be replayed under this one.
+  if (
+    lastAttachedSession === null ||
+    lastAttachedEpoch !== sessionEpoch ||
+    lastAttachedSession.project_id !== session.project_id ||
+    lastAttachedSession.thread_id !== session.thread_id
+  ) {
+    return false;
+  }
+  const watchSession = client.getWatchSession?.(subscriptionId) ?? null;
+  if (
+    watchSession === null ||
+    watchSession.project_id !== session.project_id ||
+    watchSession.thread_id !== session.thread_id
+  ) {
+    return false;
+  }
+  // The terminated watch can never deliver again: remember it, so a view that
+  // still names it is not mistaken for a live one if this resume fails.
+  deadSubscriptions.add(subscriptionId);
+  // Deltas still queued for the display window were delivered by the dead watch
+  // and belong to the transcript: land them while they are still attributable,
+  // exactly as a drop does, so the resumed subscription's earlier events cannot
+  // be rendered ahead of them.
+  flushPendingDeltas();
+  captureDroppedResumePoint(store.getState(), subscriptionId, cursor);
+  // Same ordering as a drop: the buffer landed above, then the attribution is
+  // cleared so the resumed watch's frames buffer until it is named.
+  store.setState({ activeSubscriptionId: null, recoveryState: 'resuming', recoveryDetail: null });
+  void resumeAttachedWatch();
+  return true;
 }
 
 async function loadInitialHistory(epoch: number): Promise<void> {

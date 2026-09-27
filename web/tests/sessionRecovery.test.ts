@@ -315,6 +315,28 @@ class FakeSocket implements SocketLike {
     this.onmessage?.({ data: typeof frame === 'string' ? frame : JSON.stringify(frame) });
   }
 
+  /**
+   * Deliver the server's own watch-termination notice for one subscription.
+   *
+   * The daemon terminates a watch when its bounded event queue overflows
+   * (`event_overflow`).  That is not a transport failure -- the socket stays up --
+   * so a test must be able to produce it without dropping the connection.
+   */
+  subscriptionError(subscriptionId: string, serviceCode: string): void {
+    this.push({
+      jsonrpc: '2.0',
+      method: 'runtime.subscription.error',
+      params: {
+        subscription_id: subscriptionId,
+        error: {
+          code: -32000,
+          message: 'runtime service error',
+          data: { service_code: serviceCode },
+        },
+      },
+    });
+  }
+
   /** Deliver one live `runtime.event` frame for the given subscription. */
   notify(subscriptionId: string, cursor: number, kind = 'answer_delta', text = 'x'): void {
     this.push({
@@ -519,6 +541,129 @@ test('a running cold attach replays from the turn start, but the resume continue
     'the resume continues from the delivered cursor, not the turn start',
   );
   assert.equal(useConsoleStore.getState().recoveryState, 'resumed');
+});
+
+test('a watch the daemon killed (event_overflow) resumes from the delivered cursor and keeps the prefix', async () => {
+  setScenario({
+    status: 'running',
+    activeTurnId: 'turn-1',
+    latestSequence: 15920,
+    latestTurnId: 'turn-1',
+    latestTurnIntact: true,
+    latestTurnFirstSequence: 15051,
+  });
+  await connectStore();
+  await attach(A);
+  // A long running turn is replayed from its first event on attach.
+  assert.deepEqual(factory.last.watchAfters, [{ thread: 'a', after: 15050 }]);
+  const killed = useConsoleStore.getState().activeSubscriptionId!;
+  assert.equal(killed, 'sub-1');
+
+  // Two deltas render before the daemon's bounded watch queue overflows.
+  factory.last.notify(killed, 15051, 'answer_delta', 'PREFIX');
+  factory.last.notify(killed, 15052, 'answer_delta', 'KEPT');
+  assert.equal(client.getWatchCursor(killed), 15052);
+
+  // The daemon's *own* bound, not a lost socket: the subscription is terminated
+  // with an explicit overflow while the connection stays healthy.  The events the
+  // queue dropped are still in the broker, so the position is continuable.
+  factory.last.subscriptionError(killed, 'event_overflow');
+  await waitFor(() => useConsoleStore.getState().activeSubscriptionId === 'sub-2', 'resumed watch');
+
+  assert.deepEqual(
+    factory.last.watchAfters,
+    [
+      { thread: 'a', after: 15050 },
+      { thread: 'a', after: 15052 },
+    ],
+    'the resume continues from the delivered cursor, not from the turn start',
+  );
+  const state = useConsoleStore.getState();
+  assert.equal(state.recoveryState, 'resumed');
+  assert.equal(
+    recoveryNotice(state.recoveryState, state.recoveryDetail, state.liveBufferDroppedCount),
+    null,
+    'a recovery that lost nothing renders no degraded strip',
+  );
+  const rendered = state.messages.map((message) => message.content ?? '').join('|');
+  assert.ok(rendered.includes('PREFIX'), 'the already-rendered prefix survives the recovery');
+  assert.ok(rendered.includes('KEPT'), 'the deltas delivered before the kill are not dropped');
+});
+
+test('an event_overflow whose prefix was evicted still resyncs and reports the loss', async () => {
+  setScenario({
+    status: 'running',
+    activeTurnId: 'turn-1',
+    latestSequence: 15920,
+    latestTurnId: 'turn-1',
+    // The broker evicted the running turn's head: the retained remainder can be
+    // replayed, the head cannot.
+    latestTurnIntact: false,
+    latestTurnFirstSequence: 15051,
+    liveDroppedThrough: 15052,
+  });
+  await connectStore();
+  await attach(A);
+  const killed = useConsoleStore.getState().activeSubscriptionId!;
+  // The evicted head is already gone from the broker, so this attach replays only
+  // the retained remainder; the deltas below are the ones it did deliver.
+  assert.deepEqual(factory.last.watchAfters, [{ thread: 'a', after: 15052 }]);
+  factory.last.notify(killed, 15053, 'answer_delta', 'RETAINED');
+  factory.last.notify(killed, 15054, 'answer_delta', 'MORE');
+  assert.equal(client.getWatchCursor(killed), 15054);
+
+  factory.last.subscriptionError(killed, 'event_overflow');
+  await waitFor(
+    () => {
+      const id = useConsoleStore.getState().activeSubscriptionId;
+      return id !== null && id !== killed;
+    },
+    'resynced watch',
+  );
+
+  // An honest recovery: the events are gone, so the strip stays and the resync
+  // replays only what the broker still retains (never a silent `after=0`).
+  const state = useConsoleStore.getState();
+  assert.equal(state.recoveryState, 'incomplete');
+  assert.match(String(state.recoveryDetail), /live prefix was evicted/);
+  assert.notEqual(
+    recoveryNotice(state.recoveryState, state.recoveryDetail, state.liveBufferDroppedCount),
+    null,
+    'an evicted prefix is a real loss and must stay visible',
+  );
+  const resync = factory.last.watchAfters.at(-1);
+  assert.ok(
+    resync !== undefined && resync.after !== undefined && resync.after >= 15052,
+    `the resync replays the retained remainder (after=${resync?.after})`,
+  );
+});
+
+test('an event_overflow naming another session\'s watch is never resumed under this one', async () => {
+  await connectStore();
+  await attach(A);
+  const aSub = useConsoleStore.getState().activeSubscriptionId!;
+  // B's watch is live on the same connection.  The routing keys off
+  // `activeSubscriptionId`, so force the one state it cannot see through: the
+  // store is on A while the terminated id belongs to B.
+  const bWatch = await client.watchEvents(B);
+  useConsoleStore.setState({ activeSubscriptionId: bWatch.subscription_id });
+
+  const before = factory.last.watchAfters.length;
+  factory.last.subscriptionError(bWatch.subscription_id, 'event_overflow');
+  await waitFor(
+    () =>
+      String(useConsoleStore.getState().recoveryDetail ?? '').includes(
+        'resynced after event_overflow',
+      ),
+    'the full resync of the session on screen',
+  );
+
+  assert.notEqual(aSub, bWatch.subscription_id);
+  assert.deepEqual(
+    factory.last.watchAfters.slice(before).map((watch) => watch.thread),
+    ['a'],
+    'the fallback re-attaches the session on screen, never B',
+  );
 });
 
 test('an A -> B -> A drop resumes A from A\'s cursor, not the most recently registered B', async () => {
