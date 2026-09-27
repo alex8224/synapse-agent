@@ -950,10 +950,13 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
         )
     if method == "runtime.events.watch":
         _optional_fields(params, {"session"}, {"after", "queue_size", "filter", "max_event_bytes"})
+        # The default must match the service's own (``local._DEFAULT_QUEUE_SIZE``):
+        # the contract manifest declares this value, and a watch that asks for less
+        # than the daemon would hold just moves the overflow onto the client.
         return WatchSpec(
             session=_session(params["session"]),
             after=_integer(params.get("after", 0), minimum=0),
-            queue_size=_bounded_integer(params.get("queue_size", 128), minimum=1, maximum=4096),
+            queue_size=_bounded_integer(params.get("queue_size", 1024), minimum=1, maximum=4096),
             event_filter=_filter(params.get("filter", {"kinds": [], "turn_ids": []})),
             max_event_bytes=_bounded_integer(
                 params.get("max_event_bytes", 1024 * 1024),

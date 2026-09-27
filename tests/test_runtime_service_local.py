@@ -208,6 +208,24 @@ def _event(thread_id: str, turn_id: str, sequence: int, text: str) -> TurnEvent:
     )
 
 
+def _plain_event(thread_id: str, turn_id: str, sequence: int, text: str) -> TurnEvent:
+    """One *non-coalescible* event, for the tests about the bounded queue itself.
+
+    ``_event`` emits a text delta, and the watch folds consecutive deltas of one
+    message into a single event once the bound is reached instead of terminating
+    (see ``LocalEventStream._coalesce_locked``).  A test that needs the bound to
+    end the subscription therefore has to use a kind whose payload cannot merge.
+    """
+    return TurnEvent(
+        version=EVENT_VERSION,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        sequence=sequence,
+        kind=TurnEventKind.INFO,
+        payload={"note": text},
+    )
+
+
 def _result(thread_id: str, turn_id: str) -> TurnResult:
     return TurnResult(
         turn_id=turn_id,
@@ -740,7 +758,7 @@ def test_watch_queue_overflow_raises_event_overflow_and_cleans_up() -> None:
         watcher = service.watch_events(ref, after=0, queue_size=4)
         stream = await watcher.__aenter__()
         for sequence in range(1, 8):
-            factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+            factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
         await asyncio.sleep(0)
 
         with pytest.raises(EventOverflowError) as excinfo:
@@ -966,14 +984,14 @@ def test_watch_overflow_preempts_unconsumed_replay() -> None:
         receipt = await service.submit_turn(SubmitTurnCommand(session=ref, text="hello"))
         # Three replay candidates are pending before the watcher is created.
         for sequence in range(1, 4):
-            factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+            factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
 
         watcher = service.watch_events(ref, after=0, queue_size=2)
         stream = await watcher.__aenter__()
         # Live overflow even though replay was never consumed: the overflow
         # error must surface first and no buffered tail may be emitted.
         for sequence in range(4, 40):
-            factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+            factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
         await asyncio.sleep(0.05)
 
         with pytest.raises(EventOverflowError):
@@ -1127,8 +1145,9 @@ def test_context_break_exit_cleans_up_subscription() -> None:
 def test_watch_drain_coalesces_under_thread_burst_and_pending_is_bounded() -> None:
     """A burst of emits from a real thread while the service loop is blocked
     must schedule at most one drain per watcher (never one per event), the
-    producer must not block, and the logical pending live count stays bounded
-    until the absorbing overflow."""
+    producer must not block, and the bounded queue must *fold* the burst rather
+    than terminate the watch: the pending live count stays inside ``queue_size``
+    and every byte of text still reaches the consumer."""
 
     result: dict[str, Any] = {"ready": threading.Event(), "entered_block": threading.Event()}
     result["release_block"] = threading.Event()
@@ -1165,13 +1184,17 @@ def test_watch_drain_coalesces_under_thread_burst_and_pending_is_bounded() -> No
         await asyncio.sleep(0)  # yields so the blocker can block the loop
 
         # The loop is unblocked only after the burst; drains then settle the
-        # stream into its absorbing overflow state.
+        # backlog.  The 200-event delta burst folded into the four slots the
+        # bound allows, so the watch is still alive and delivers all of it.
         await asyncio.sleep(0.1)
-        with pytest.raises(EventOverflowError):
-            await stream.__anext__()
-        with pytest.raises(StopAsyncIteration):
-            await stream.__anext__()
-        assert stream.closed is True
+        delivered = [
+            await asyncio.wait_for(stream.__anext__(), timeout=10) for _ in range(4)
+        ]
+        result["sequences"] = [event.sequence for event in delivered]
+        result["text"] = "".join(str(event.payload["text"]) for event in delivered)
+        assert watcher.closed is False
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(stream.__anext__(), timeout=0.05)
 
         # Clean up on the same loop that owns the settlement tasks.
         session = manager.get_session("a")
@@ -1213,6 +1236,12 @@ def test_watch_drain_coalesces_under_thread_burst_and_pending_is_bounded() -> No
     assert not thread.is_alive()
     if result["error"] is not None:
         raise result["error"]
+
+    # Three events kept their own slot and the 197th..200th delta folded into the
+    # fourth: the sequence of the survivor is the newest one it carries, and the
+    # whole burst's text arrives exactly once.
+    assert result["sequences"] == [1, 2, 3, 200]
+    assert result["text"] == "".join(f"x{sequence}" for sequence in range(1, 201))
 
 
 def _unprojectable_event(thread_id: str, sequence: int) -> TurnEvent:
@@ -1525,7 +1554,7 @@ def test_watch_replay_projection_race_with_live_overflow_drops_replay() -> None:
     # blocked: the overflow must suppress the captured replay entirely.
     factory = result["factory"]
     for sequence in range(2, 40):
-        factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+        factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
     result["release_projection"].set()
     thread.join(10)
     assert not thread.is_alive()
@@ -1789,7 +1818,7 @@ def test_watch_drain_projection_error_does_not_override_earlier_overflow() -> No
     factory = result["factory"]
     # Overflow the queue while the drain is blocked in projection.
     for sequence in range(2, 40):
-        factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+        factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
     result["release_projection"].set()
     thread.join(10)
     assert not thread.is_alive()
@@ -1850,7 +1879,7 @@ def test_watch_open_replay_projection_error_does_not_override_earlier_overflow()
     factory = result["factory"]
     # Overflow the queue while replay projection is blocked.
     for sequence in range(2, 40):
-        factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+        factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
     result["release_projection"].set()
     thread.join(10)
     assert not thread.is_alive()
@@ -1915,13 +1944,13 @@ def test_watch_committed_projection_error_is_not_overridden_by_later_overflow() 
     assert result["projection_entered"].wait(10)
     factory = result["factory"]
     # Fill up to queue_size - 1 (pending < 4): no overflow yet.
-    factory.turns["a"].sink.emit(_event("a", "turn-1", 2, "x2"))
-    factory.turns["a"].sink.emit(_event("a", "turn-1", 3, "x3"))
+    factory.turns["a"].sink.emit(_plain_event("a", "turn-1", 2, "x2"))
+    factory.turns["a"].sink.emit(_plain_event("a", "turn-1", 3, "x3"))
     result["release_projection"].set()
     assert result["error_committed"].wait(10)
     # After the projection error committed, later ingests cannot override it.
     for sequence in range(4, 40):
-        factory.turns["a"].sink.emit(_event("a", "turn-1", sequence, f"x{sequence}"))
+        factory.turns["a"].sink.emit(_plain_event("a", "turn-1", sequence, f"x{sequence}"))
     thread.join(10)
     assert not thread.is_alive()
     if result["error"] is not None:

@@ -2396,7 +2396,10 @@ class RuntimeWebSocketClient(GoalClientMixin):
         session: SessionRef,
         *,
         after: int = 0,
-        queue_size: int = 128,
+        #: Matches the daemon's own default (``_DEFAULT_QUEUE_SIZE``): a watch
+        #: that asks for less than the server would hold just moves the overflow
+        #: into this client's own queue.
+        queue_size: int = 1024,
         event_filter: EventFilter = EventFilter(),
         filter: EventFilter | None = None,
         max_event_bytes: int = 1024 * 1024,

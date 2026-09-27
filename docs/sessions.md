@@ -184,9 +184,12 @@ Web 控制台客户端（`web/src/client/SynapseRuntimeClient.ts` + store）对�
   用旧游标静默续接新 broker；active turn 前缀被逐出 ⇒ 进入 `incomplete`，
   直至结算后按 durable 补全，**不冒充无损**。
 - **显式 gap / 全量重同步**：游标超窗（`replay_gap`/`invalid_cursor`）或
-  订阅被 `event_overflow` 终止时，store 进入可观测的 `resync` 态并**从正式
-  历史快照全量重同步**（`runtime.session.history` 最新页 +
+  订阅被 `event_overflow` 终止时，store 先按**最后投递游标**续接（与断线
+  同一套 `decideResumeAfterDrop` 判定，broker 仍持有那批事件时无损）；
+  判定不可续接（epoch 变化、游标越窗、在跑轮次前缀被逐出）才**从正式历史
+  快照全量重同步**（`runtime.session.history` 最新页 +
   `open.view.latest_sequence` 之后 watch），而不是用 `after=0` 冒充成功。
+  真丢了事件才显示「较早流式步骤已折叠」，无损续接不再报警。
 - **重复抑制**：attach 快照 `probe[]` 已判定 `covered`（持久化赢过重连竞争）
   的 turn，其缓冲中的 live 回放被丢弃——历史页会渲染整轮，重放即重复内容。
 - **typed 错误保留 service_code**：RPC 错误带 `service_code`

@@ -548,7 +548,7 @@
       "in_process": "In-process ``watch_events`` returns an EventWatch lease (async context manager) whose stream yields RuntimeEvent values; the wire answers with {subscription_id, cursor} and then pushes runtime.event notifications.",
       "method": "runtime.events.watch",
       "notes": [
-        "``queue_size`` is bounded to 1..4096 by the wire decoder."
+        "``queue_size`` is bounded to 1..4096 by the wire decoder.  At that bound the daemon folds consecutive text deltas of one message into a single event instead of terminating the watch, so it sizes the distinct backlog rather than the delta rate."
       ],
       "params_alias": "WatchEventsParams",
       "request": "WatchSpec",
@@ -564,7 +564,7 @@
           "turn_ids": []
         },
         "max_event_bytes": 1048576,
-        "queue_size": 128
+        "queue_size": 1024
       }
     },
     {

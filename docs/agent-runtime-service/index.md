@@ -148,7 +148,7 @@ S1 交付（含六轮硬化审查修复）：
 - 新包 `src/synapse/runtime/service/`：`commands.py`、`queries.py`、`events.py`、`errors.py`、`ports.py`、`local.py`。
 - DTO 全部 frozen；`config_overrides` 构造时 `deepcopy` 隔离 + 顶层只读（嵌套值不承诺深度不可变）；事件 payload 经递归 JSON normalizer 严格投影（`json.dumps(dataclasses.asdict(event), allow_nan=False)` 恒可序列化），不暴露 `TurnEvent` 实例。
 - `SessionEventBroker` 新增 `SessionEventWindow`/`read_after`/`subscribe_from`（严格游标 `0..latest`，stale cursor 原子 gap 检测，订阅关闭通知恰一次）；`_LOSSLESS` 全量保留新增硬上限。
-- `watch_events` 是 context-only lease（`EventWatch`/`EventStream` 双 Protocol）：订阅延迟到 `__aenter__`，未 enter 不注册；broker 回调经 `threading.Lock` 有界 ingress + 单 drain 合并投递，溢出是吸收性终态（恰一次 `event_overflow` 后 EOF）；source close 唤醒 blocked stream 且先消费已接受事件再 EOF，绝不关闭/取消 session。
+- `watch_events` 是 context-only lease（`EventWatch`/`EventStream` 双 Protocol）：订阅延迟到 `__aenter__`，未 enter 不注册；broker 回调经 `threading.Lock` 有界 ingress + 单 drain 合并投递；**到界时先折叠文本增量**（同一 kind/turn/message 的 delta 合并为一个事件，被吸收的 sequence 留待该事件投递时才释放，游标因此不会越过消费者尚未拿到的文本），无法折叠的积压（工具/终止事件、跨 message、超过字节预算）仍是吸收性终态（恰一次 `event_overflow` 后 EOF）；source close 唤醒 blocked stream 且先消费已接受事件再 EOF，绝不关闭/取消 session。
 - sessions 层提供 typed 异常（`SessionBusyError`/`RuntimeClosedError`/`InvalidEventCursorError`），service 只映射 typed busy/closed，普通 `RuntimeError` 原样上抛。
 - 错误码：`not_found`、`conflict`、`replay_gap`、`closed`、`invalid_session`、`event_overflow`、`invalid_cursor`、`invalid_request`、`invalid_event_payload`。
 - 新增测试：`tests/test_runtime_service_contracts.py`、`tests/test_runtime_service_local.py`，并在 `tests/test_session_runtime.py` 补充 broker 用例。
@@ -190,7 +190,7 @@ S1 门禁（全部通过，含硬化后新增用例）：
 4. 两 session 事件隔离；read 使用 session sequence 并保留 turn-local sequence。
 5. replay+live 无 gap/无重复；watch 关闭后 turn 继续并可 settle。
 6. 严格游标：`read_after`/`subscribe_from` 拒绝负数与 future 游标；stale cursor 明确 `replay_gap`；空 broker / cursor=latest 合法。
-7. 有界队列溢出明确 `event_overflow`（恰一次后 EOF，无 tail；优先于未消费 replay）且订阅清理；burst 下 `call_soon_threadsafe` 合并为常数次、producer 不阻塞。
+7. 有界队列到界时先折叠文本增量（同 kind/turn/message 的 delta 合并，文本不丢、游标不越；见 `tests/test_runtime_service_subscription_overflow.py`），无法折叠的积压才明确 `event_overflow`（恰一次后 EOF，无 tail；优先于未消费 replay）且订阅清理；burst 下 `call_soon_threadsafe` 合并为常数次、producer 不阻塞。
 8. 架构护栏：service 不直接实例化 `AgentTurnRuntime`、不调用 `stream_agent`/`agent.ainvoke`；lease 不可被裸 `async for` 迭代。
 9. producer 自抛 `InvalidEventPayloadError` 与普通 `Exception` 一样经公共边界脱敏（新错误、`from None`、无 secret/cause）；内部可信 rejection 以精确公开类型保留安全消息（cycle/depth/key/NaN/unknown）；`BaseException` 原样穿透。
 10. replay/live 投影中的 `BaseException` 确定性清理：订阅关闭、failed lease 可观察且不可重入、live 终态 EOF 唤醒 reader；不转 service error、不吞 `KeyboardInterrupt`/`SystemExit`/`CancelledError`。

@@ -105,6 +105,7 @@ from synapse.runtime.service.errors import (
     TurnMismatchError,
     UnknownSttEngineError,
 )
+from synapse.runtime.service.event_types import TextPayload, TurnEvent, TurnEventKind
 from synapse.runtime.service.events import (
     DEFAULT_MAX_EVENT_BYTES,
     DEFAULT_SCAN_LIMIT,
@@ -278,9 +279,23 @@ from synapse.stt.providers import provider_info
 
 __all__ = ["LocalAgentRuntimeService", "LocalEventStream", "LocalEventWatch"]
 
-_DEFAULT_QUEUE_SIZE = 128
+#: Unconsumed-event bound for one watch.  A turn streams one event per model
+#: delta, so a fast model (or a burst of them across the sessions a console
+#: streams at once) reaches a small bound long before the consumer is at fault;
+#: the watch coalesces text deltas at this bound (see ``_coalesce_locked``), so
+#: the value sizes the *distinct* backlog rather than the delta rate.
+_DEFAULT_QUEUE_SIZE = 1024
 _MIN_QUEUE_SIZE = 1
 _MAX_QUEUE_SIZE = 4096
+#: Text deltas whose payloads concatenate are the only coalescible kind: folding
+#: two of them delivers every byte the consumer would have received separately.
+_COALESCIBLE_KINDS = (TurnEventKind.ANSWER_DELTA, TurnEventKind.REASONING_DELTA)
+#: Upper bound on the text one folded event may carry, in characters.  Keeps a
+#: single merged frame (and the console's own buffer) sane under a long stall.
+_MERGE_TEXT_LIMIT = 64 * 1024
+#: Conservative allowance for everything in a projected event except its text
+#: (kind, ids, sequence, version and JSON punctuation).
+_MERGE_BYTE_OVERHEAD = 512
 _READ_LIMIT_MIN = 1
 _READ_LIMIT_MAX = 1024
 #: Wire bound for one reasoning-level token (the shared catalog is tiny).
@@ -411,6 +426,104 @@ def _to_runtime_event(
             f"kind={result.kind!r}, type={type(event).__name__!r}"
         )
     return result
+
+
+def _text_delta_payload(payload: object) -> tuple[str, str | None] | None:
+    """Return ``(text, message_id)`` for a coalescible text payload, else ``None``.
+
+    Both shapes are accepted because the two fold sites see different ones: the
+    ingress still holds the producer's ``TextPayload`` while a projected live tail
+    holds its JSON projection (``{"text": ..., "message_id": ...}``).  A payload
+    carrying anything else is not foldable -- an unknown field could mean
+    something the two texts cannot simply concatenate.
+    """
+    if isinstance(payload, TextPayload):
+        return payload.text, payload.message_id
+    if isinstance(payload, Mapping):
+        if not set(payload).issubset({"text", "message_id"}):
+            return None
+        text = payload.get("text")
+        message_id = payload.get("message_id")
+        if not isinstance(text, str) or not (message_id is None or isinstance(message_id, str)):
+            return None
+        return text, message_id
+    return None
+
+
+def _fold_text_deltas(
+    tail: tuple[object, object, object],
+    arriving: tuple[object, object, object],
+    budget: int,
+) -> tuple[str, str | None] | None:
+    """Fold two text deltas into one, or return ``None`` when they must stay apart.
+
+    ``tail`` and ``arriving`` are ``(kind, turn_id, payload)`` triples.  Only the
+    same kind in the same turn *and* the same message may fold: ``message_id`` is
+    what the console deduplicates a completed answer by, so folding across
+    messages could attribute one message's text to another.  ``budget`` caps the
+    merged text in characters, and a fold that would cross it is refused so the
+    caller keeps its bounded-queue policy instead of raising
+    ``EventTooLargeError`` later.
+    """
+    kind, turn_id, payload = tail
+    other_kind, other_turn_id, other_payload = arriving
+    if kind not in _COALESCIBLE_KINDS or kind != other_kind or turn_id != other_turn_id:
+        return None
+    left = _text_delta_payload(payload)
+    right = _text_delta_payload(other_payload)
+    if left is None or right is None or left[1] != right[1]:
+        return None
+    merged = left[0] + right[0]
+    if len(merged) > budget:
+        return None
+    return merged, left[1]
+
+
+def _merged_envelope(
+    arriving: SessionEventEnvelope, folded: tuple[str, str | None]
+) -> SessionEventEnvelope:
+    """One unprojected envelope carrying the folded text and the arriving sequence.
+
+    The merged event keeps the arriving event's identity (sequence, turn sequence,
+    version) because it is the newest state of that message, and the folded text
+    starts where the absorbed event's text started.
+    """
+    text, message_id = folded
+    event = arriving.event
+    return SessionEventEnvelope(
+        thread_id=arriving.thread_id,
+        sequence=arriving.sequence,
+        turn_id=arriving.turn_id,
+        event=TurnEvent(
+            version=event.version,
+            thread_id=event.thread_id,
+            turn_id=event.turn_id,
+            sequence=event.sequence,
+            kind=event.kind,
+            payload=TextPayload(text=text, message_id=message_id),
+        ),
+    )
+
+
+def _merged_runtime_event(
+    tail: RuntimeEvent, arriving: SessionEventEnvelope, folded: tuple[str, str | None]
+) -> RuntimeEvent:
+    """One projected event carrying the folded text and the arriving sequence.
+
+    The payload keeps the tail's own key set, so the projection this event was
+    built from stays exactly as the consumer would have seen it twice.
+    """
+    text, _message_id = folded
+    tail_payload = tail.payload if isinstance(tail.payload, dict) else {}
+    payload = {**tail_payload, "text": text}
+    return RuntimeEvent(
+        sequence=arriving.sequence,
+        turn_sequence=arriving.event.sequence,
+        turn_id=tail.turn_id,
+        kind=tail.kind,
+        payload=payload,
+        version=tail.version,
+    )
 
 
 def _describe_cursor(value: object) -> str:
@@ -2704,6 +2817,14 @@ class LocalEventStream:
       loop through ``call_soon_threadsafe`` with at most one drain pending per
       watcher.  It never blocks, never projects JSON, and never touches
       asyncio primitives directly.
+    - A text delta that arrives once the bound is reached folds into the newest
+      backlog tail (``_coalesce_locked``) instead of terminating the
+      subscription: the folded text travels with the surviving event while the
+      absorbed sequences stay pending until it is delivered, so the counter keeps
+      meaning "deliverable events the consumer has not taken" and the cursor keeps
+      meaning "text the consumer fully has".  A delta burst can therefore no
+      longer end a watch whose consumer is merely slower than the producer; only a
+      backlog with nothing left to fold does.
     - One logical pending live counter covers ingress + loop-side live; the
       total unconsumed live never exceeds ``queue_size``.  Drains move data
       without decrementing; the counter falls only when ``__anext__`` returns
@@ -2788,7 +2909,18 @@ class LocalEventStream:
         self._advance_cursor_locked(sequence)
 
     def _mark_delivered_locked(self, sequence: int) -> None:
-        self._pending_matches.discard(sequence)
+        """Commit one delivered sequence, and everything folded into it.
+
+        A folded event (``_coalesce_locked``) deliberately leaves the sequences it
+        absorbed in the pending set: they are what pins the cursor at the last
+        position whose text the consumer has *fully* received.  Delivering the
+        surviving event is what releases them, because its text covers them all --
+        so a resume from the reported cursor replays either the merged event or
+        the originals, never a hole and never the same text twice.
+        """
+        if self._pending_matches:
+            for absorbed in [item for item in self._pending_matches if item <= sequence]:
+                self._pending_matches.discard(absorbed)
         self._advance_cursor_locked(sequence)
 
     def _advance_cursor(self, sequence: int) -> None:
@@ -3044,6 +3176,62 @@ class LocalEventStream:
         except Exception:  # noqa: BLE001 - diagnostics never mask the overflow
             return "<unavailable>"
 
+    # -- coalescing --------------------------------------------------------
+
+    def _merge_budget(self) -> int:
+        """Largest folded text (characters) that cannot cross the byte cap.
+
+        Deliberately conservative: UTF-8 needs at most four bytes per character,
+        so a text of this length plus the fixed overhead stays inside
+        ``max_event_bytes``.  A watch configured with a tiny cap therefore folds
+        nothing and keeps the bounded-queue policy instead of failing a merged
+        event as ``event_too_large``.
+        """
+        usable = min(_MERGE_TEXT_LIMIT, self._max_event_bytes - _MERGE_BYTE_OVERHEAD)
+        return max(0, usable // 4)
+
+    def _coalesce_locked(self, envelope: SessionEventEnvelope) -> bool:
+        """Fold one arriving delta into the backlog tail instead of overflowing.
+
+        Returns whether the event was absorbed.  Only the *newest* pending tail is
+        a legal target: folding into an older event would move this text backwards
+        in the stream.  The folded event carries the arriving sequence, and the
+        absorbed sequence stays pending until that event is delivered: the pending
+        set is what pins the reported cursor at the last position whose text the
+        consumer has fully received, so a resume can never skip the folded text
+        nor replay it twice.  The pending *counter* does not grow, because the
+        arriving event never became a deliverable event of its own.
+
+        Anything that cannot fold -- a tool/terminal/activity event, another turn,
+        another message, or a fold past the byte budget -- returns ``False`` and
+        leaves the caller's terminal overflow policy exactly as it was.
+        """
+        if envelope.event.kind not in _COALESCIBLE_KINDS:
+            return False
+        budget = self._merge_budget()
+        if budget <= 0:
+            return False
+        arriving = (envelope.event.kind, envelope.event.turn_id, envelope.event.payload)
+        if self._ingress:
+            tail = self._ingress[-1]
+            folded = _fold_text_deltas(
+                (tail.event.kind, tail.event.turn_id, tail.event.payload), arriving, budget
+            )
+            if folded is None:
+                return False
+            self._ingress[-1] = _merged_envelope(envelope, folded)
+            return True
+        if self._live:
+            live_tail = self._live[-1]
+            folded = _fold_text_deltas(
+                (live_tail.kind, live_tail.turn_id, live_tail.payload), arriving, budget
+            )
+            if folded is None:
+                return False
+            self._live[-1] = _merged_runtime_event(live_tail, envelope, folded)
+            return True
+        return False
+
     # -- delivery ----------------------------------------------------------
 
     def _ingest(self, envelope: SessionEventEnvelope) -> None:
@@ -3051,7 +3239,10 @@ class LocalEventStream:
 
         Never blocks, never projects JSON, and never touches asyncio objects;
         the loop is woken through ``call_soon_threadsafe`` with at most one
-        drain pending per watcher.
+        drain pending per watcher.  At the bound a coalescible text delta folds
+        into the backlog tail (``_coalesce_locked``) instead of terminating the
+        subscription, so the bound measures deliverable events rather than the
+        producer's delta rate.
         """
         schedule = False
         diagnostics: tuple[float, int, int, float, float] | None = None
@@ -3063,20 +3254,26 @@ class LocalEventStream:
                 return
             self._record_scan_locked(envelope.sequence, matched=True)
             if self._pending >= self._queue_size:
-                diagnostics = (
-                    time.monotonic(),
-                    self._pending,
-                    self._accepted,
-                    self._opened_at,
-                    self._last_drain_at,
-                )
-                self._fail_locked(
-                    EventOverflowError(
-                        f"event queue overflow for session "
-                        f"{self._session.project_id}:{self._session.thread_id}; "
-                        "subscription terminated"
+                if self._coalesce_locked(envelope):
+                    self._accepted += 1
+                else:
+                    # Nothing left to fold: the backlog is genuinely unconsumed
+                    # work (tool/terminal events, another message, or a merged
+                    # text past the byte budget), so the bound still terminates.
+                    diagnostics = (
+                        time.monotonic(),
+                        self._pending,
+                        self._accepted,
+                        self._opened_at,
+                        self._last_drain_at,
                     )
-                )
+                    self._fail_locked(
+                        EventOverflowError(
+                            f"event queue overflow for session "
+                            f"{self._session.project_id}:{self._session.thread_id}; "
+                            "subscription terminated"
+                        )
+                    )
                 schedule = not self._drain_scheduled
                 self._drain_scheduled = True
             else:

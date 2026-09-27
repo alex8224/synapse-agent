@@ -522,7 +522,15 @@ export class SynapseRuntimeClient {
   private reconnectPolicy: ReconnectPolicy = { ...DEFAULT_RECONNECT_POLICY };
   private opening: Promise<void> | null = null;
   private openReject: ((err: ConnectionLostError) => void) | null = null;
-  private watchQueueSize = 128;
+  /**
+   * Unconsumed-event bound asked of the daemon for every watch (1..4096).
+   *
+   * Matches the daemon's own default: a watch that asks for less than the server
+   * would hold just moves the overflow onto the client. The daemon folds text
+   * deltas at this bound instead of terminating the watch, so this sizes the
+   * *distinct* backlog, not the streaming delta rate.
+   */
+  private watchQueueSize = 1024;
   /**
    * Every registered watch, keyed by subscription id and held in registration
    * order.  The Map order answers the legacy single-watch getters (the last

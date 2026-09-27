@@ -1957,7 +1957,7 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         params_alias="WatchEventsParams",
         wire_defaults=(
             ("after", 0),
-            ("queue_size", 128),
+            ("queue_size", 1024),
             ("filter", {"kinds": [], "turn_ids": []}),
             ("max_event_bytes", DEFAULT_MAX_EVENT_BYTES),
         ),
@@ -1966,7 +1966,12 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "manager) whose stream yields RuntimeEvent values; the wire answers with "
             "{subscription_id, cursor} and then pushes runtime.event notifications."
         ),
-        notes=("``queue_size`` is bounded to 1..4096 by the wire decoder.",),
+        notes=(
+            "``queue_size`` is bounded to 1..4096 by the wire decoder.  At that bound the "
+            "daemon folds consecutive text deltas of one message into a single event "
+            "instead of terminating the watch, so it sizes the distinct backlog rather "
+            "than the delta rate.",
+        ),
     ),
     WireMethod(
         method="runtime.project.thinking.set",
