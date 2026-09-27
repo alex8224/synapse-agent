@@ -11,9 +11,15 @@
  * The section is deliberately honest about the local engine: it shows the reason it
  * cannot run (a missing extra or model set) instead of hiding the option, because
  * "why did nothing change?" is the question a silent fallback would leave behind.
+ *
+ * It is honest about the platform too: a cloud engine authenticates its WebSocket
+ * *handshake* with headers, which a browser cannot set, so the engine runs only in
+ * the desktop shell -- and the choice is still stored, it simply falls back to the
+ * browser's own recognizer in a browser tab.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore.ts';
+import { isTauri } from '../client/tauri.ts';
 import { needsWarmUp, speechEngineErrorMessage } from './composer/sttEngine.ts';
 import type { SttStatusView } from '../runtime-client/types.ts';
 
@@ -31,6 +37,8 @@ export const SpeechEngineSection: React.FC = () => {
   const projectId = useConsoleStore((state) => state.currentSession.project_id);
   const threadId = useConsoleStore((state) => state.currentSession.thread_id);
   const bumpSttRevision = useConsoleStore((state) => state.bumpSttRevision);
+  // The desktop shell's IPC is present for the whole page lifetime.
+  const [desktopShell] = useState(isTauri);
 
   const [status, setStatus] = useState<SttStatusView | null>(null);
   const [modelDir, setModelDir] = useState('');
@@ -154,7 +162,13 @@ export const SpeechEngineSection: React.FC = () => {
                 onClick={() => apply(option.id, modelDir.trim() === '' ? null : modelDir.trim())}
                 disabled={busy || client === null}
                 aria-pressed={engine === option.id}
-                title={option.available ? option.detail : (option.reason ?? option.detail)}
+                title={
+                  option.kind === 'cloud' && !desktopShell
+                    ? `${option.detail}（仅桌面端可用：浏览器无法设置它需要的握手请求头）`
+                    : option.available
+                      ? option.detail
+                      : (option.reason ?? option.detail)
+                }
                 className={`ui-button border ${
                   engine === option.id ? 'ui-primary border-accent' : 'border-line bg-surface'
                 }`}
@@ -231,6 +245,11 @@ export const SpeechEngineSection: React.FC = () => {
       <p className="mt-1 text-xs text-gray-600">
         本地引擎完全离线、不联网；首次使用需加载模型（约 1 分钟），之后常驻。
       </p>
+      {!desktopShell && (
+        <p className="mt-1 text-xs text-gray-600">
+          云端引擎只在桌面端可用：它靠自定义握手请求头鉴权，浏览器无法设置。在浏览器里选择云端引擎会回退到浏览器内置识别。
+        </p>
+      )}
       {error !== null && (
         <p role="alert" className="mt-1 text-xs text-red-700">
           {error}

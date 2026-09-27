@@ -207,6 +207,36 @@
           "markdownDescription": "Enables the restart_service command without any pre-configured scope."
         },
         {
+          "description": "Enables the stt_cloud_append command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cloud-append",
+          "markdownDescription": "Enables the stt_cloud_append command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_cloud_begin command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cloud-begin",
+          "markdownDescription": "Enables the stt_cloud_begin command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_cloud_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cloud-cancel",
+          "markdownDescription": "Enables the stt_cloud_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_cloud_finish command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cloud-finish",
+          "markdownDescription": "Enables the stt_cloud_finish command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stt_cloud_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stt-cloud-status",
+          "markdownDescription": "Enables the stt_cloud_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_git_diff command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-git-diff",
@@ -319,6 +349,36 @@
           "type": "string",
           "const": "deny-restart-service",
           "markdownDescription": "Denies the restart_service command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cloud_append command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cloud-append",
+          "markdownDescription": "Denies the stt_cloud_append command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cloud_begin command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cloud-begin",
+          "markdownDescription": "Denies the stt_cloud_begin command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cloud_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cloud-cancel",
+          "markdownDescription": "Denies the stt_cloud_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cloud_finish command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cloud-finish",
+          "markdownDescription": "Denies the stt_cloud_finish command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stt_cloud_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stt-cloud-status",
+          "markdownDescription": "Denies the stt_cloud_status command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_git_diff command without any pre-configured scope.",

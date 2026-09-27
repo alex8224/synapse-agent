@@ -2,10 +2,10 @@
 
 mod git_fs;
 mod sidecar;
+mod stt;
 mod terminal;
 
 use sidecar::{ProcessManager, SharedProcessManager};
-use terminal::TerminalManager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -13,11 +13,13 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WebviewWindow, WindowEvent,
 };
+use terminal::TerminalManager;
 
 #[derive(Clone)]
 struct AppState {
     proc_mgr: SharedProcessManager,
     terminal_mgr: Arc<Mutex<TerminalManager>>,
+    stt_mgr: Arc<Mutex<stt::SttManager>>,
 }
 
 /// Resolve the workspace one command operates on.
@@ -319,7 +321,6 @@ fn resolve_static_dir() -> Option<PathBuf> {
     None
 }
 
-
 #[tauri::command]
 async fn tauri_terminal_create(
     app: AppHandle,
@@ -383,13 +384,76 @@ async fn tauri_terminal_close(state: tauri::State<'_, AppState>, id: u32) -> Res
     .await
 }
 
+// --- cloud dictation -------------------------------------------------------
+//
+// The vendor authenticates the WebSocket handshake with headers, which a browser's
+// `WebSocket` cannot set -- so the socket is opened here, and the API key is read
+// from the user's speech config by this process.  The key never appears in a command
+// result, an event or an error string.
+
+#[tauri::command]
+fn stt_cloud_status() -> stt::SttCloudStatus {
+    stt::SttManager::status()
+}
+
+#[tauri::command]
+fn stt_cloud_begin(state: tauri::State<AppState>) -> Result<stt::SttCloudBegin, String> {
+    let mut manager = state.stt_mgr.lock().map_err(|e| e.to_string())?;
+    manager.begin()
+}
+
+/// Feed one chunk of 16-bit PCM.  The body is a base64 decode plus a bounded
+/// channel send, so it stays on the calling thread rather than the blocking pool.
+#[tauri::command]
+fn stt_cloud_append(
+    state: tauri::State<AppState>,
+    session_id: u64,
+    data_base64: String,
+) -> Result<stt::SttCloudAppend, String> {
+    let mut manager = state.stt_mgr.lock().map_err(|e| e.to_string())?;
+    Ok(manager.append(session_id, &data_base64))
+}
+
+#[tauri::command]
+async fn stt_cloud_finish(
+    state: tauri::State<'_, AppState>,
+    session_id: u64,
+) -> Result<stt::SttCloudFinish, String> {
+    // The session leaves the map first, so waiting up to 20 s for the vendor's
+    // last frame never holds the manager lock.
+    let session = {
+        let mut manager = state.stt_mgr.lock().map_err(|e| e.to_string())?;
+        manager.take(session_id)
+    };
+    let Some(mut session) = session else {
+        return Ok(stt::SttCloudFinish::default());
+    };
+    let update = run_blocking("结束语音会话", move || Ok(session.finish())).await?;
+    Ok(stt::SttCloudFinish {
+        finalized: update.finalized,
+    })
+}
+
+#[tauri::command]
+fn stt_cloud_cancel(
+    state: tauri::State<AppState>,
+    session_id: u64,
+) -> Result<stt::SttCloudCancel, String> {
+    let mut manager = state.stt_mgr.lock().map_err(|e| e.to_string())?;
+    Ok(stt::SttCloudCancel {
+        cancelled: manager.cancel(session_id),
+    })
+}
+
 fn main() {
     let workspace = resolve_workspace();
+
     let static_dir = resolve_static_dir();
     let proc_mgr = Arc::new(Mutex::new(ProcessManager::new(workspace, static_dir)));
     let state = AppState {
         proc_mgr: proc_mgr.clone(),
         terminal_mgr: Arc::new(Mutex::new(TerminalManager::new())),
+        stt_mgr: Arc::new(Mutex::new(stt::SttManager::new())),
     };
 
     tauri::Builder::default()
@@ -423,7 +487,12 @@ fn main() {
             tauri_terminal_create,
             tauri_terminal_write,
             tauri_terminal_resize,
-            tauri_terminal_close
+            tauri_terminal_close,
+            stt_cloud_status,
+            stt_cloud_begin,
+            stt_cloud_append,
+            stt_cloud_finish,
+            stt_cloud_cancel
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

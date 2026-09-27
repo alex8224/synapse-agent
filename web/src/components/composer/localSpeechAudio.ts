@@ -33,6 +33,26 @@ export const LOCAL_STT_CHUNK_MS = 600;
 /** Samples in one target chunk at the announced rate (9600 at 16 kHz). */
 export const LOCAL_STT_CHUNK_SAMPLES = (LOCAL_STT_SAMPLE_RATE * LOCAL_STT_CHUNK_MS) / 1000;
 
+/**
+ * Target chunk length for a hosted cloud engine: the vendor asks for 100-200 ms
+ * packets and warns that other sizes hurt recognition.
+ *
+ * This window is the dominant term in how long the reader waits to see a word.  The
+ * engine can only report progress when audio arrives, so a 600 ms window quantizes
+ * every update to 600 ms -- whereas the hop the audio takes to get there is a
+ * loopback round trip, well under a millisecond.  Shrinking the window is therefore
+ * the whole latency win; the transport is not.
+ *
+ * It must not go below the desktop shell's own packet floor
+ * (`rust/synapse-gui/src/stt/doubao.rs`, `DEFAULT_PACKET_MS`): the shell re-frames
+ * whatever it is handed, so a narrower chunk would be merged straight back and buy
+ * nothing.
+ */
+export const CLOUD_STT_CHUNK_MS = 100;
+
+/** Samples in one cloud chunk at the announced rate (3200 at 16 kHz). */
+export const CLOUD_STT_CHUNK_SAMPLES = (LOCAL_STT_SAMPLE_RATE * CLOUD_STT_CHUNK_MS) / 1000;
+
 /** The wire bound on one decoded chunk, in bytes (mirrors the service's 64 KiB). */
 export const LOCAL_STT_MAX_CHUNK_BYTES = 64 * 1024;
 

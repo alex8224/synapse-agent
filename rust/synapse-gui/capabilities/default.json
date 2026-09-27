@@ -38,6 +38,11 @@
     "allow-tauri-terminal-create",
     "allow-tauri-terminal-write",
     "allow-tauri-terminal-resize",
-    "allow-tauri-terminal-close"
+    "allow-tauri-terminal-close",
+    "allow-stt-cloud-status",
+    "allow-stt-cloud-begin",
+    "allow-stt-cloud-append",
+    "allow-stt-cloud-finish",
+    "allow-stt-cloud-cancel"
   ]
 }

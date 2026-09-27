@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stt-cloud-begin"
+description = "Enables the stt_cloud_begin command without any pre-configured scope."
+commands.allow = ["stt_cloud_begin"]
+
+[[permission]]
+identifier = "deny-stt-cloud-begin"
+description = "Denies the stt_cloud_begin command without any pre-configured scope."
+commands.deny = ["stt_cloud_begin"]

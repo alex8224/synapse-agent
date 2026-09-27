@@ -205,3 +205,29 @@ def test_a_cloud_dictation_without_a_key_is_refused() -> None:
         service.begin(
             SessionRef(project_id="p", thread_id="t"), engine="doubao", model_dir=None
         )
+
+
+def test_a_cloud_dictation_is_not_relayed_through_the_runtime() -> None:
+    """The desktop shell owns the hosted connection, so the daemon refuses to relay.
+
+    A cloud vendor authenticates the WebSocket *handshake* with headers, which the
+    console's ``WebSocket`` cannot set -- so the shell opens that socket itself and
+    reads the stored key itself, which is what keeps the credential out of the
+    console.  Relaying the audio through here as well would be a second copy of the
+    same wire protocol to keep correct, so a configured key must not change the
+    answer: the refusal names the desktop app instead.
+    """
+    from synapse.runtime.sessions.ref import SessionRef
+
+    service = SttService(
+        engine_factory=lambda _dir: _FakeEngine(),
+        key_lookup=lambda provider: "secret" if provider == "doubao" else None,
+    )
+    with pytest.raises(SttUnavailableError) as raised:
+        service.begin(
+            SessionRef(project_id="p", thread_id="t"), engine="doubao", model_dir=None
+        )
+    assert "桌面端" in str(raised.value)
+    # Nothing was left open, and the credential never entered the error text.
+    assert service.cancel(SessionRef(project_id="p", thread_id="t")).cancelled is False
+    assert "secret" not in str(raised.value)

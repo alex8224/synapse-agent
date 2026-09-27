@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stt-cloud-cancel"
+description = "Enables the stt_cloud_cancel command without any pre-configured scope."
+commands.allow = ["stt_cloud_cancel"]
+
+[[permission]]
+identifier = "deny-stt-cloud-cancel"
+description = "Denies the stt_cloud_cancel command without any pre-configured scope."
+commands.deny = ["stt_cloud_cancel"]

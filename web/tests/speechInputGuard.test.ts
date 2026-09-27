@@ -227,19 +227,52 @@ test('the local engine hook never names the Web Speech global', () => {
   );
 });
 
-test('the local hook reaches the client through the store, not a socket of its own', () => {
+test('the streaming hook is handed a transport and opens no socket of its own', () => {
+  // The daemon's offline engine and the desktop shell's cloud connection are two
+  // ends behind one interface, so the capture code is written once.  What the hook
+  // must never do is *decide* which end, or build one: that is `sttEngine`'s decision
+  // and `sttTransport`'s job.
   assert.ok(
-    localHook.includes('useConsoleStore('),
-    'the hook reads the runtime client from the console store, like the panels do',
+    localHook.includes('transport: SttTransport | null'),
+    'the transport is handed in, not looked up',
   );
   assert.equal(
-    /WebSocket|new SynapseRuntimeClient/.test(localHook),
+    /useConsoleStore\(|WebSocket|new SynapseRuntimeClient/.test(localHook),
     false,
-    'the hook opens no transport of its own',
+    'the hook reads no store and opens no transport of its own',
   );
-  for (const method of ['.sttBegin(', '.sttAppend(', '.sttFinish(', '.sttCancel(']) {
-    assert.ok(localHook.includes(method), `the local engine streams via ${method}`);
+  assert.ok(localHook.includes('transport.begin()'), 'the dictation is opened by the transport');
+  for (const verb of ['.append(', '.finish()', '.cancel()']) {
+    assert.ok(
+      localHook.includes(`dictation${verb}`),
+      `the hook drives the dictation through the transport via ${verb}`,
+    );
   }
+  // The window follows the transport: a cloud engine is asked for 100-200 ms packets,
+  // and that window -- not the relay -- is what shortens the wait for a word.
+  assert.ok(
+    localHook.includes('CLOUD_STT_CHUNK_SAMPLES'),
+    'a cloud dictation uses the narrower chunk window',
+  );
+});
+
+test('both speech ends live behind one transport interface', () => {
+  const transport = read('components', 'composer', 'sttTransport.ts');
+  const bridge = read('client', 'tauriStt.ts');
+  assert.ok(
+    transport.includes("readonly id: 'runtime' | 'tauri'"),
+    'two ends, one shape the capture hook can be written against',
+  );
+  assert.ok(transport.includes('client.sttBegin('), 'the daemon end is the runtime RPC');
+  assert.ok(transport.includes('sttCloudBegin('), 'the desktop end is the shell IPC');
+  // The credential is the one thing that must not be reachable from this side: the
+  // shell reads it from the user's speech config and never sends it back.
+  assert.equal(/api[_-]?key/i.test(transport), false, 'no credential reaches the transport');
+  assert.equal(/api[_-]?key/i.test(bridge), false, 'no credential crosses the IPC bridge');
+  assert.ok(
+    bridge.includes("isTauri()"),
+    'the bridge refuses to run outside the desktop shell',
+  );
 });
 
 test('the audio helpers stay DOM-free for the offline tests', () => {
@@ -252,24 +285,32 @@ test('the audio helpers stay DOM-free for the offline tests', () => {
   );
 });
 
-test('the engine switch is driven by the runtime status, not a local guess', () => {
+test('the engine and the platform together decide the route, not a local guess', () => {
   assert.ok(
     card.includes('useLocalSpeechInput('),
-    'the card must be able to run the local engine',
+    'the card must be able to stream audio',
   );
   assert.ok(
     card.includes('.sttStatus('),
     'the card asks the runtime which engine is configured',
   );
-  assert.match(card, /const usingRuntimeEngine = usesRuntimeEngine\(sttStatus\)/);
-  assert.match(card, /const speech = usingRuntimeEngine \? localSpeech : browserSpeech/);
+  assert.match(card, /const route = speechRoute\(sttStatus, desktopShell\)/);
+  assert.match(card, /const speech = route === 'browser' \? browserSpeech : localSpeech/);
   assert.ok(
     card.includes('usesLocalEngine(sttStatus)'),
     'local-only copy remains distinct from cloud provider routing',
   );
   assert.ok(
     card.includes('speechNotice'),
-    'an unavailable local engine surfaces its reason in the card notice region',
+    'an engine that cannot run surfaces its reason in the card notice region',
+  );
+  // A runtime status alone is not enough to say an engine can run: a cloud engine
+  // needs a handshake header only the desktop shell can set, so the platform has to
+  // be consulted, and a cloud engine in a browser must say so rather than look idle.
+  assert.ok(card.includes('isTauri'), 'the platform is part of the answer');
+  assert.ok(
+    card.includes("selectedProvider?.kind === 'cloud'"),
+    'the unreachable-in-a-browser case is named in the notice',
   );
 });
 

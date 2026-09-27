@@ -34,12 +34,26 @@ export function usesLocalEngine(status: SttStatusView | null): boolean {
   return status !== null && status.engine === 'local' && status.available;
 }
 
-/** Local and cloud providers both receive PCM through the runtime, not Web Speech. */
-export function usesRuntimeEngine(status: SttStatusView | null): boolean {
-  if (status === null || !status.available) return false;
-  if (status.engine === 'local') return true;
+/**
+ * Which end a dictation runs on, given the engine the runtime reports.
+ *
+ * Three routes, and the platform is part of the answer.  A `local` provider is the
+ * daemon's offline engine and always streams PCM through the runtime.  A `cloud`
+ * provider is a hosted WebSocket that authenticates its *handshake* with headers,
+ * which a browser's `WebSocket` cannot set -- so only the desktop shell can reach it,
+ * and in a plain browser the cloud engine falls back to the browser's own recognizer
+ * rather than to a runtime that no longer serves it.  Every state that can run
+ * neither end (no status yet, an unusable engine, an unknown id) is `browser`.
+ */
+export type SpeechRoute = 'browser' | 'runtime' | 'tauri';
+
+export function speechRoute(status: SttStatusView | null, inDesktopShell: boolean): SpeechRoute {
+  if (status === null || !status.available) return 'browser';
+  if (status.engine === 'local') return 'runtime';
   const provider = status.providers?.find((item) => item.id === status.engine);
-  return provider?.kind === 'cloud' || provider?.kind === 'local';
+  if (provider?.kind === 'local') return 'runtime';
+  if (provider?.kind === 'cloud') return inDesktopShell ? 'tauri' : 'browser';
+  return 'browser';
 }
 
 /**

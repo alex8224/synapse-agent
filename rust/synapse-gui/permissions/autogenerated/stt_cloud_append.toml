@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stt-cloud-append"
+description = "Enables the stt_cloud_append command without any pre-configured scope."
+commands.allow = ["stt_cloud_append"]
+
+[[permission]]
+identifier = "deny-stt-cloud-append"
+description = "Denies the stt_cloud_append command without any pre-configured scope."
+commands.deny = ["stt_cloud_append"]

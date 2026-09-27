@@ -1,5 +1,5 @@
 import { Stop20Filled, ArrowUp20Regular, Mic20Regular, RecordStop20Filled } from '@fluentui/react-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AddProjectDialog } from './AddProjectDialog.tsx';
 import { ModelControls } from './ModelControls.tsx';
 import { ActionMenu } from './composer/actions/ActionMenu.tsx';
@@ -10,7 +10,9 @@ import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocum
 import { useSpeechInput, type SpeechInputOptions } from './composer/useSpeechInput.ts';
 import { useLocalSpeechInput } from './composer/useLocalSpeechInput.ts';
 import { captionText } from './composer/speechInput.ts';
-import { needsWarmUp, usesLocalEngine, usesRuntimeEngine } from './composer/sttEngine.ts';
+import { needsWarmUp, speechRoute, usesLocalEngine } from './composer/sttEngine.ts';
+import { runtimeSttTransport, tauriSttTransport } from './composer/sttTransport.ts';
+import { isTauri } from '../client/tauri.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import type { SttStatusView } from '../runtime-client/types.ts';
 import { useScreenshotStore } from '../stores/screenshotTask.ts';
@@ -53,11 +55,11 @@ import { useShallow } from 'zustand/react/shallow';
  * directory as a new project (then switches to it and opens a session).
  *
  * The microphone sits beside the action menu because it is an input affordance
- * with state to show, not a menu row: it toggles speech recognition (the
- * browser's own, so Chrome and Edge only) and hands each finalized phrase to the
- * editor at the caret.  Its lifecycle lives in `composer/useSpeechInput.ts` and
- * is entry-local -- no store, no runtime, no wire surface -- so this card only
- * decides *where* a phrase lands.
+ * with state to show, not a menu row: it toggles speech recognition and hands each
+ * finalized phrase to the editor at the caret.  Three engines exist and this card
+ * picks between them -- the browser's own recognizer (Chrome / Edge), the daemon's
+ * offline model, and the desktop shell's hosted cloud connection -- but every
+ * lifecycle lives in `composer/` and every phrase still lands in one place.
  *
  * The card floats over the transcript (`.console-pane-inset` reserves its height
  * in the scroller), which is what makes its own acrylic visible: a blur needs
@@ -220,11 +222,27 @@ export const CommandInput: React.FC = () => {
     onTranscript: (phrase) => composerRef.current?.insertSpoken(phrase),
   };
   const browserSpeech = useSpeechInput(speechOptions);
-  const localSpeech = useLocalSpeechInput(speechOptions);
+  // The desktop shell's IPC is present for the whole page lifetime, so the platform
+  // is read once instead of on every render.
+  const [desktopShell] = useState(isTauri);
+  // One decision, made from the engine the runtime reports *and* the platform: a
+  // cloud engine's handshake needs headers only the desktop shell can set, so in a
+  // plain browser it is not "unavailable for now", it is unreachable.
+  const route = speechRoute(sttStatus, desktopShell);
+  const speechTransport = useMemo(() => {
+    if (route === 'tauri') return tauriSttTransport();
+    if (route === 'runtime' && client !== null) {
+      return runtimeSttTransport(client, {
+        project_id: currentSession.project_id,
+        thread_id: currentSession.thread_id,
+      });
+    }
+    return null;
+  }, [route, client, currentSession.project_id, currentSession.thread_id]);
+  const localSpeech = useLocalSpeechInput(speechOptions, speechTransport);
   const runtimeEngine = sttStatus !== null && sttStatus.engine !== 'browser' ? sttStatus : null;
-  const usingRuntimeEngine = usesRuntimeEngine(sttStatus);
-  const speech = usingRuntimeEngine ? localSpeech : browserSpeech;
-  const activeEngineLabel = usingRuntimeEngine
+  const speech = route === 'browser' ? browserSpeech : localSpeech;
+  const activeEngineLabel = route !== 'browser'
     ? sttStatus?.providers?.find((item) => item.id === sttStatus.engine)?.label
       ?? sttStatus?.engine ?? '运行时语音引擎'
     : '浏览器内置';
@@ -264,16 +282,23 @@ export const CommandInput: React.FC = () => {
 
   /**
    * One notice region for the things that can refuse input: a refused
-   * attachment, a microphone that could not be used, and a local engine the
-   * runtime reports as unavailable (no models, missing extra).  One region keeps
-   * the card's height change -- which the transcript's reserved space is
-   * measured from -- in a single place, and a refused upload outranks the rest
-   * when several are set, because it is the one the reader can still fix here.
+   * attachment, a microphone that could not be used, and a selected engine that
+   * cannot run here -- either because the runtime reports it unusable (no models,
+   * missing extra) or because it is a cloud engine and this is a plain browser,
+   * where its handshake cannot be authenticated at all.  One region keeps the
+   * card's height change -- which the transcript's reserved space is measured
+   * from -- in a single place, and a refused upload outranks the rest when
+   * several are set, because it is the one the reader can still fix here.
    */
+  const selectedProvider = runtimeEngine?.providers?.find(
+    (item) => item.id === runtimeEngine.engine,
+  );
   const speechNotice =
-    runtimeEngine !== null && !runtimeEngine.available
-      ? `${runtimeEngine.reason ?? '语音引擎不可用'}；当前使用浏览器内置识别`
-      : null;
+    runtimeEngine === null || route !== 'browser'
+      ? null
+      : selectedProvider?.kind === 'cloud' && !desktopShell
+        ? `${activeEngineLabel}仅桌面端可用；当前使用浏览器内置识别`
+        : `${runtimeEngine.reason ?? '语音引擎不可用'}；当前使用浏览器内置识别`;
   const composerNotice = attachmentError ?? speech.error ?? speechNotice;
 
   // The reason a disabled button cannot be used is in the label as well as the
@@ -285,18 +310,18 @@ export const CommandInput: React.FC = () => {
   const speechLabel = warming
     ? '语音输入（正在加载本地模型）'
     : !speech.supported
-      ? usingRuntimeEngine
-        ? '语音输入（运行时语音输入不可用）'
-        : '语音输入（当前浏览器不支持）'
+      ? route === 'browser'
+        ? '语音输入（当前浏览器不支持）'
+        : '语音输入（语音引擎不可用）'
       : speech.listening
         ? '停止语音输入'
         : '语音输入';
   const speechTitle = warming
     ? '正在加载本地语音模型：首次约 1 分钟，之后常驻内存'
     : !speech.supported
-      ? usingRuntimeEngine
-        ? `${activeEngineLabel}不可用，请检查麦克风权限与运行时设置`
-        : '当前浏览器不支持语音输入（Chrome / Edge 可用）'
+      ? route === 'browser'
+        ? '当前浏览器不支持语音输入（Chrome / Edge 可用）'
+        : `${activeEngineLabel}不可用，请检查麦克风权限与语音设置`
       : speech.listening
         ? `停止语音输入：${activeEngineLabel}`
         : usingLocalEngine

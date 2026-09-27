@@ -1,52 +1,60 @@
 /**
- * The microphone button's *local* lifecycle: capture audio in the browser and
- * stream it to the runtime's own speech-to-text engine.
+ * The microphone button's *streaming* lifecycle: capture audio in the browser and
+ * hand it to a transport that knows where it goes.
  *
- * This is the local counterpart of `useSpeechInput`: it exposes the very same
- * controller shape (`supported` / `listening` / `error` / `interim` / `toggle`)
- * and the same options shape (`onTranscript`), so the card can pick one engine
- * and treat both identically.  What differs is where the audio goes: instead of
- * a browser-owned recognition session that ends at every pause, this hook opens
- * the microphone with `getUserMedia`, converts the stream to 16 kHz mono
- * int16 PCM and streams ~600 ms chunks through `runtime.stt.begin / append /
- * finish / cancel` on the console's runtime client.
+ * This is the counterpart of `useSpeechInput`: it exposes the very same controller
+ * shape (`supported` / `listening` / `error` / `interim` / `toggle`) and the same
+ * options shape (`onTranscript`), so the card can pick one engine and treat both
+ * identically.  What differs is where the audio goes: instead of a browser-owned
+ * recognition session that ends at every pause, this hook opens the microphone with
+ * `getUserMedia`, converts the stream to 16 kHz mono int16 PCM and streams it in
+ * fixed windows through a {@link SttTransport}.
  *
- * The client comes from `useConsoleStore` (`s.client` + `s.currentSession`),
- * exactly the way `GitExplorer` and `ArtifactsPanel` reach it -- the hook adds
- * no store state of its own, opens no socket, and never reads a global of its
- * own.  The card decides *which* engine runs; this hook only runs when asked.
+ * The transport is handed in, not looked up.  The daemon's offline engine and the
+ * desktop shell's cloud connection are the two ends, and neither this hook nor the
+ * card needs to know which one it got -- which is also why the hook reads no store
+ * state, opens no socket, and touches no global of its own.  The card decides *which*
+ * engine runs, and `sttEngine.speechRoute` decides which transport that implies.
+ *
+ * The chunk window follows the transport: a cloud engine is asked for 100-200 ms
+ * packets, and a smaller window is the only thing that shortens the wait for a word.
  *
  * Two sinks, not interchangeable (same as the browser engine): `interim` is the
  * latest provisional `partial`, which the caption may only *show*, and each
- * `finalized` sentence is authoritative and goes to `onTranscript`.  On a
- * deliberate stop the carry-over tail is flushed and `runtime.stt.finish` is
- * called, so the reader's last sentence is corrected and returned; on unmount
- * the dictation is cancelled, because there is nowhere left to deliver it.
+ * `finalized` sentence is authoritative and goes to `onTranscript`.  On a deliberate
+ * stop the carry-over tail is flushed and the dictation is finished, so the reader's
+ * last sentence is corrected and returned; on unmount it is cancelled, because there
+ * is nowhere left to deliver it.
  *
- * Degrades instead of throwing: a missing `getUserMedia` / `AudioContext`, or a
- * refused `runtime.stt.begin`, turns into `supported: false` plus a readable
- * `error`.
+ * Degrades instead of throwing: a missing `getUserMedia` / `AudioContext`, a
+ * transport that cannot run here, or a refused `begin`, turns into `supported: false`
+ * plus a readable `error`.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { useConsoleStore } from '../../stores/useConsoleStore';
-import type { SessionRef } from '../../client/types.ts';
-import type { SynapseRuntimeClient } from '../../client/SynapseRuntimeClient.ts';
 import type { SpeechInputController, SpeechInputOptions } from './useSpeechInput.ts';
+import type { SttSessionHandle, SttTransport } from './sttTransport.ts';
 import {
+  CLOUD_STT_CHUNK_SAMPLES,
   createSampleBatcher,
   pcmChunkToBase64,
   resampleTo16k,
   type SampleBatcher,
 } from './localSpeechAudio.ts';
 
-/** Samples per `ScriptProcessorNode` callback (~85 ms at 48 kHz). */
-const SCRIPT_PROCESSOR_BUFFER = 4096;
+/**
+ * Samples per `ScriptProcessorNode` callback (~21 ms at 48 kHz).
+ *
+ * The batcher is only fed when this callback fires, so the callback period is a floor
+ * under the chunk window: a 100 ms window realised through 85 ms blocks is really a
+ * 171 ms window.  The block is therefore kept well below the narrowest window we use.
+ */
+const SCRIPT_PROCESSOR_BUFFER = 1024;
 
 /** One live capture: the audio graph, its batcher and its append ordering. */
 interface ActiveCapture {
-  client: SynapseRuntimeClient;
-  session: SessionRef;
+  /** The dictation this capture streams into. */
+  dictation: SttSessionHandle;
   stream: MediaStream;
   context: AudioContext;
   source: MediaStreamAudioSourceNode;
@@ -107,18 +115,25 @@ function createAudioContext(sampleRate: number): AudioContext {
   }
 }
 
-export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputController {
-  const client = useConsoleStore((state) => state.client);
-  const projectId = useConsoleStore((state) => state.currentSession.project_id);
-  const threadId = useConsoleStore((state) => state.currentSession.thread_id);
-
+export function useLocalSpeechInput(
+  options: SpeechInputOptions,
+  transport: SttTransport | null,
+): SpeechInputController {
   // The capability check runs once (a lazy initializer): a browser does not grow
   // `getUserMedia` while the card is mounted.  It is also the first error.
   const [capability] = useState(detectAudioCapture);
-  const [supported, setSupported] = useState(capability.available);
+  const [blocked, setBlocked] = useState(false);
   const [listening, setListening] = useState(false);
-  const [error, setError] = useState<string | null>(capability.reason);
+  const [error, setError] = useState<string | null>(null);
   const [interim, setInterim] = useState('');
+
+  // A transport is not a capability the reader can grant: without one there is no
+  // engine to stream to, whatever the microphone does.
+  const transportReason = transport === null ? '当前语音引擎在此环境不可用' : transport.unavailable;
+  const supported = capability.available && !blocked && transportReason === null;
+  // A live failure wins while it is set, and otherwise the engine's own state is
+  // reported: a missing transport must not be masked by a stale error.
+  const reportedError = error ?? capability.reason ?? transportReason;
 
   const mountedRef = useRef(true);
   const intentRef = useRef<'off' | 'on'>('off');
@@ -131,15 +146,6 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
-  const clientRef = useRef(client);
-  useEffect(() => {
-    clientRef.current = client;
-  }, [client]);
-  const sessionRef = useRef<SessionRef>({ project_id: projectId, thread_id: threadId });
-  useEffect(() => {
-    sessionRef.current = { project_id: projectId, thread_id: threadId };
-  }, [projectId, threadId]);
-
   /** Deliver each authoritative sentence to the one insertion sink. */
   const publishFinalized = useCallback((phrases: readonly string[]) => {
     for (const phrase of phrases) {
@@ -155,8 +161,9 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
    */
   const deliver = useCallback(
     async (capture: ActiveCapture, dataBase64: string): Promise<void> => {
-      const result = await capture.client.sttAppend(capture.session, dataBase64);
+      const result = await capture.dictation.append(dataBase64);
       if (!capture.stopping) setInterim(result.partial);
+      if (result.error !== null && result.error !== '') setError(result.error);
       publishFinalized(result.finalized);
     },
     [publishFinalized],
@@ -209,11 +216,11 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
             capture.appendChain = capture.appendChain.then(() => deliver(capture, dataBase64));
           }
           await capture.appendChain;
-          const result = await capture.client.sttFinish(capture.session);
+          const result = await capture.dictation.finish();
           publishFinalized(result.finalized);
         } else {
           await capture.appendChain.catch(() => undefined);
-          await capture.client.sttCancel(capture.session);
+          await capture.dictation.cancel();
         }
       } catch (err) {
         setError(localSpeechErrorMessage(err));
@@ -262,16 +269,14 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
 
   /** Open the microphone and start streaming to the runtime. */
   const start = useCallback(async (): Promise<void> => {
-    const activeClient = clientRef.current;
-    const session = sessionRef.current;
-    if (activeClient === null || session.thread_id === '') {
-      setSupported(false);
-      setError('尚未连接运行时，本地语音输入不可用');
+    if (transport === null || transport.unavailable !== null) {
+      setBlocked(true);
+      setError(transport?.unavailable ?? '当前语音引擎在此环境不可用');
       return;
     }
     const capability = detectAudioCapture();
     if (!capability.available) {
-      setSupported(false);
+      setBlocked(true);
       setError(capability.reason);
       return;
     }
@@ -287,14 +292,14 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
         for (const track of stream.getTracks()) track.stop();
         return;
       }
-      const begin = await activeClient.sttBegin(session);
+      const started = await transport.begin();
       if (intentRef.current !== 'on' || !mountedRef.current) {
         for (const track of stream.getTracks()) track.stop();
-        await activeClient.sttCancel(session).catch(() => undefined);
+        await started.session.cancel().catch(() => undefined);
         return;
       }
 
-      context = createAudioContext(begin.sample_rate);
+      context = createAudioContext(started.sampleRate);
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER, 1, 1);
       // A muted gain keeps the processor's callback firing without routing the
@@ -302,14 +307,17 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
       const gain = context.createGain();
       gain.gain.value = 0;
       const capture: ActiveCapture = {
-        client: activeClient,
-        session,
+        dictation: started.session,
         stream,
         context,
         source,
         processor,
         gain,
-        batcher: createSampleBatcher(),
+        // A cloud engine is asked for 100-200 ms packets; the daemon's own engine
+        // keeps the wider window it was tuned with.
+        batcher: createSampleBatcher(
+          transport.id === 'tauri' ? CLOUD_STT_CHUNK_SAMPLES : undefined,
+        ),
         appendChain: Promise.resolve(),
         stopping: false,
       };
@@ -337,10 +345,10 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
       }
       // A refused `begin` (or any setup failure that is not a permission
       // decision) means the local engine cannot run here at all.
-      if (!isPermissionError(err)) setSupported(false);
+      if (!isPermissionError(err)) setBlocked(true);
       reportError(err);
     }
-  }, [handleAudio, reportError, teardown]);
+  }, [handleAudio, reportError, teardown, transport]);
 
   const toggle = useCallback(() => {
     if (intentRef.current === 'on') {
@@ -379,5 +387,5 @@ export function useLocalSpeechInput(options: SpeechInputOptions): SpeechInputCon
     [teardown],
   );
 
-  return { supported, listening, error, interim, toggle };
+  return { supported, listening, error: reportedError, interim, toggle };
 }

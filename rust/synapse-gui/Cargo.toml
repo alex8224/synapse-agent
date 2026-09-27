@@ -10,7 +10,24 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time"] }
+# `macros` is not optional: the cloud session's socket loop is a `tokio::select!`.
+# It used to be pulled in only through the dev-dependencies below, which feature
+# unification hid from `cargo check --all-targets` but not from `cargo build`.
+tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "time", "net", "macros"] }
+
+# --- cloud dictation (Doubao / Volcengine) -----------------------------------
+# The socket is owned by Rust on purpose: the API key travels in a handshake
+# header, so it must never reach the webview (that rules out
+# `tauri-plugin-websocket`, which connects from JavaScript).
+# `rustls-tls-native-roots` verifies against the platform trust store, the same
+# one the Python client uses; the `ring` provider is selected explicitly because
+# other crates in this graph disable rustls' default features.
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
+
 open = "5"
 window-vibrancy = "0.6"
 portable-pty = "0.9.0"
@@ -18,5 +35,11 @@ raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Dwm", "Win32_Foundation"] }
+
+[dev-dependencies]
+# The mock WebSocket server and the session tests need a multi-threaded runtime
+# with timers and `#[tokio::test]`; none of this reaches the shipped binary.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

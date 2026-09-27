@@ -26,6 +26,12 @@ already renders.
 
 Framing is pure and unit-tested offline; the transport is verified against the live
 service, because a wire protocol is not something a fake can vouch for.
+
+This module is no longer on the console's path.  The desktop shell has its own client
+(``rust/synapse-gui/src/stt/doubao.rs``) so the API key never has to reach the webview,
+and :class:`~synapse.runtime.service.stt.SttService` refuses to relay a cloud dictation
+at all.  What remains here is the reference implementation the Rust twin is ported
+from, and the client for any non-console caller of :mod:`synapse.stt`.
 """
 
 from __future__ import annotations

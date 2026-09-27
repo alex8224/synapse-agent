@@ -19,6 +19,11 @@ fn main() {
             "tauri_terminal_write",
             "tauri_terminal_resize",
             "tauri_terminal_close",
+            "stt_cloud_status",
+            "stt_cloud_begin",
+            "stt_cloud_append",
+            "stt_cloud_finish",
+            "stt_cloud_cancel",
         ]),
     ))
     .expect("failed to run tauri-build");

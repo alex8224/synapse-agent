@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stt-cloud-finish"
+description = "Enables the stt_cloud_finish command without any pre-configured scope."
+commands.allow = ["stt_cloud_finish"]
+
+[[permission]]
+identifier = "deny-stt-cloud-finish"
+description = "Denies the stt_cloud_finish command without any pre-configured scope."
+commands.deny = ["stt_cloud_finish"]

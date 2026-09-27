@@ -1,10 +1,17 @@
 """Runtime wire surface for local speech-to-text (composer dictation).
 
-The console's composer can dictate with the browser's own recognizer or with the
-host's *local* engine (the optional ``stt-local`` extra).  This module owns the
-transport-neutral half of the local path: the frozen request/result DTOs, the
-per-chunk byte bound, and the session-scoped :class:`SttService` that drives one
-dictation at a time.
+The console's composer can dictate with the browser's own recognizer, with the host's
+*local* engine (the optional ``stt-local`` extra), or -- in the desktop app -- with a
+hosted cloud engine the *shell* connects to.  This module owns the transport-neutral
+half of the local path: the frozen request/result DTOs, the per-chunk byte bound, and
+the session-scoped :class:`SttService` that drives one dictation at a time.
+
+A cloud engine is deliberately *not* relayed here.  Its vendor authenticates the
+WebSocket **handshake** with headers, which the console's ``WebSocket`` cannot set, so
+the desktop shell owns that connection (``rust/synapse-gui/src/stt/``) and reads the
+stored key itself -- which is also what keeps the credential out of the console.  The
+provider stays in the registry so the settings screen can still offer it and store its
+key; asking the daemon to dictate with one is refused with a reason that says so.
 
 Design rules:
 
@@ -32,7 +39,7 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from synapse.runtime.service.errors import (
     InvalidRequestError,
@@ -40,7 +47,6 @@ from synapse.runtime.service.errors import (
     SttUnavailableError,
 )
 from synapse.runtime.sessions.ref import SessionRef
-from synapse.stt.doubao import DoubaoSession
 from synapse.stt.engine import LocalSttEngine, SttStatus
 from synapse.stt.models import SttUnavailable
 from synapse.stt.providers import PROVIDERS, SttProviderInfo, provider_ids, provider_info
@@ -471,12 +477,12 @@ class SttService:
         if info is None:
             raise SttUnavailableError(f"未知的语音引擎：{engine}")
         if info.kind == "cloud":
-            key = self._key_lookup(info.id)
-            if key is None:
-                raise SttUnavailableError(f"未配置 {info.label} 的 API Key")
-            dictation = self._cloud_session(info.id, key)
-            if dictation is None:
-                raise SttUnavailableError(f"{info.label} 尚未实现")
+            # A hosted engine is the desktop shell's connection, not this daemon's: the
+            # vendor authenticates the handshake with headers the console cannot set,
+            # and the shell reads the stored key itself.  The provider is still listed
+            # (so its key can be stored and its state reported), but the audio is not
+            # relayed through here -- one implementation of a wire protocol is enough.
+            raise SttUnavailableError(f"{info.label}由桌面端承载，运行时不再中转")
         else:
             local = self._engine(model_dir)
             try:
@@ -485,18 +491,6 @@ class SttService:
                 raise SttUnavailableError(exc.reason) from exc
         self._sessions[session] = dictation
         return SttBeginResult(sample_rate=STT_SAMPLE_RATE)
-
-    @staticmethod
-    def _cloud_session(provider_id: str, api_key: str) -> Any:
-        """The client for one cloud provider, or None when it is not implemented.
-
-        The single place that knows which hosted services exist: adding another one
-        means one entry in ``synapse.stt.providers`` and one branch here, with no
-        change to the wire, the service or the console.
-        """
-        if provider_id == "doubao":
-            return DoubaoSession(api_key=api_key)
-        return None
 
     def append(
         self, session: SessionRef, *, data_base64: str, model_dir: str | None
