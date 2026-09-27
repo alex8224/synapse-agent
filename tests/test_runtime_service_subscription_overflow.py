@@ -319,6 +319,46 @@ def test_a_non_coalescible_backlog_still_terminates_the_watch() -> None:
     asyncio.run(run())
 
 
+def test_a_delta_behind_a_non_foldable_tail_still_terminates() -> None:
+    """Folding only ever reaches the *newest* backlog slot.
+
+    A fold may not reorder text, so a delta that arrives while the newest slot is
+    a tool/terminal/activity event has nowhere to go: the bound applies to it
+    exactly as before.  This is the remaining shape of the production symptom --
+    a stalled consumer with a *mixed* backlog, not a pure delta flood.
+    """
+
+    async def run() -> None:
+        factory = _SessionFactory("p1")
+        manager = _manager(factory, project_id="p1")
+        service = _service(manager)
+        ref = SessionRef(project_id="p1", thread_id="a")
+        receipt = await service.submit_turn(SubmitTurnCommand(session=ref, text="hello"))
+        sink = factory.turns["a"].sink
+
+        watcher = service.watch_events(ref, after=0, queue_size=4)
+        stream = await watcher.__aenter__()
+
+        # Three deltas fill most of the bound; a non-foldable event takes the last
+        # slot, so the next delta meets a tail it cannot fold into.
+        _emit_burst(sink, "a", receipt.turn_id, count=3)
+        sink.emit(_plain_event("a", receipt.turn_id, 4, "note4"))
+        assert watcher.closed is False
+        _emit_burst(sink, "a", receipt.turn_id, count=1, start=5)
+        assert watcher.closed is True
+
+        with pytest.raises(EventOverflowError) as excinfo:
+            await stream.__anext__()
+        assert excinfo.value.code == "event_overflow"
+        with pytest.raises(StopAsyncIteration):
+            await stream.__anext__()
+
+        factory.turns["a"].future.set_result(_result("a", receipt.turn_id))
+        await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_overflow_logs_stalled_consumer_loop_diagnostics(caplog) -> None:
     """The absorbing overflow logs the bound, the rate and the stalled loop stack.
 
