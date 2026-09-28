@@ -59,6 +59,7 @@ from synapse.runtime.service.access import (
     SESSION_CLOSE,
     SESSION_CREATE,
     SESSION_DELETE,
+    SESSION_FORK,
     SESSION_GOAL,
     SESSION_LIST,
     SESSION_MCP_RELOAD,
@@ -319,6 +320,8 @@ from synapse.runtime.service.session_management import (
     CreateSessionResult,
     DeleteSessionCommand,
     DeleteSessionResult,
+    ForkSessionCommand,
+    ForkSessionResult,
     RenameSessionCommand,
     RenameSessionResult,
     SearchSessionsQuery,
@@ -717,6 +720,26 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
             "``thread_id`` is optional; when it is absent the server allocates the real "
             "id and returns it, so a client never invents one.",
             "``title`` is optional, non-empty, and at most 120 characters.",
+        ),
+    ),
+    _dto(
+        ForkSessionCommand,
+        role="request",
+        notes=(
+            "Forks one *open* session into a fresh one.",
+            "``source`` must already be open in the runtime; otherwise the fork is "
+            "rejected rather than copying nothing.",
+            "``through_turn`` is optional: when set, the child inherits everything "
+            "before that user turn, otherwise the whole completed history.",
+            "``thread_id`` is optional; the server allocates the child id otherwise.",
+        ),
+    ),
+    _dto(
+        ForkSessionResult,
+        role="result",
+        notes=(
+            "``forked_from`` is the parent thread id (provenance only).",
+            "``message_count`` is the number of projected text messages seeded.",
         ),
     ),
     _dto(
@@ -2193,6 +2216,28 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "``thread_id`` is optional; when it is absent the server allocates the real "
             "id and returns it in the result, so a client never invents one.",
             "``title`` is optional, non-empty, and bounded to 120 characters.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.session.fork",
+        method_class="service",
+        request="ForkSessionCommand",
+        result="ForkSessionResult",
+        capability=SESSION_FORK,
+        scope="session",
+        scope_location="params.source",
+        service_method="fork_session",
+        params_alias="ForkSessionParams",
+        in_process=(
+            "Optional delegate method; authorization is session-scoped on the *source*. "
+            "The source must already be open: the fork reads its durable messages and "
+            "seeds a fresh terminal thread, so an unopened source is rejected."
+        ),
+        notes=(
+            "``through_turn`` is optional: when set, the child inherits everything "
+            "before that user turn; otherwise the whole completed history is copied.",
+            "``thread_id`` is optional; the server allocates the child id otherwise.",
+            "``forked_from`` in the result is the parent thread id (provenance only).",
         ),
     ),
     WireMethod(

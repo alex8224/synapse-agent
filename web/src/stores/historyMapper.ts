@@ -215,6 +215,13 @@ export interface SessionItem {
   title: string;
   updated_at: string;
   time_label: string;
+  /**
+   * Parent thread id when this session was forked, else undefined.
+   *
+   * Provenance only: the sidebar labels a forked session so a reader can tell
+   * it came from another session, and it never affects runtime behavior.
+   */
+  forked_from_thread_id?: string;
 }
 
 export interface SessionListView {
@@ -311,6 +318,9 @@ export function toSessionItem(item: SessionMetadataItem): SessionItem {
     title: displaySessionTitle(item.title, item.thread_id),
     updated_at: item.updated_at,
     time_label: timeLabelFromIso(item.updated_at),
+    ...(item.forked_from_thread_id
+      ? { forked_from_thread_id: item.forked_from_thread_id }
+      : {}),
   };
 }
 

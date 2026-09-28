@@ -3,6 +3,7 @@ import {
   ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
   CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
   DataUsage20Regular,
+  BranchFork16Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -520,6 +521,20 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                                         style={{ fontSize: '12px' }}
                                       />
                                     )}
+                                  </span>
+                                )}
+                                {/* Provenance only: a forked session is marked so a
+                                    reader can tell it came from another session.
+                                    The parent's thread id is the tooltip (its title
+                                    may have changed or been deleted since). */}
+                                {sess.forked_from_thread_id !== undefined && (
+                                  <span
+                                    role="img"
+                                    aria-label="分叉自其他会话"
+                                    title={`分叉自 ${sess.forked_from_thread_id}`}
+                                    className="flex h-3 w-3 shrink-0 items-center justify-center text-gray-400"
+                                  >
+                                    <BranchFork16Regular aria-hidden="true" style={{ fontSize: '12px' }} />
                                   </span>
                                 )}
                                 <span className="min-w-0 flex-1 truncate">{sess.title}</span>

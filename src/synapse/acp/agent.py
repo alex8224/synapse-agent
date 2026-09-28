@@ -324,6 +324,30 @@ class SynapseACPAgent:
         except Exception:
             logger.debug("failed to sync ACP session into TUI store", exc_info=True)
 
+    def _record_fork_origin(
+        self,
+        cwd: Path,
+        parent: ACPStoredSession,
+        child: ACPStoredSession,
+    ) -> None:
+        """Write the child's fork lineage into the TUI session store.
+
+        Lineage is provenance only: it is written once and never affects the
+        child's runtime. A missing child row is created so the lineage is not
+        silently lost when the workspace keeps a TUI store.
+        """
+        try:
+            with self._tui_store(cwd) as store:
+                if store.get(child.thread_id) is None:
+                    store.ensure(child.thread_id, title=child.title)
+                store.set_fork_origin(
+                    child.thread_id,
+                    parent_thread_id=parent.thread_id,
+                    boundary="latest",
+                )
+        except Exception:
+            logger.debug("failed to record fork lineage", exc_info=True)
+
     async def new_session(
         self,
         cwd: str,
@@ -624,6 +648,9 @@ class SynapseACPAgent:
                 session_id=stored.session_id,
             )
             await source_managed.copy_state(stored.thread_id)
+            # Record immutable lineage on the child's TUI row. Best-effort: a
+            # missing row (workspace without a TUI store) must not fail a fork.
+            self._record_fork_origin(stored.cwd, source, stored)
         except BaseException:
             await self._close_client_services(stored.session_id)
             self._release_mcp_pool(stored.session_id)

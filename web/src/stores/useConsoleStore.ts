@@ -684,6 +684,14 @@ interface ConsoleStore {
   loadSessionHistory: (session: SessionRef) => Promise<void>;
   loadEarlierHistory: () => Promise<void>;
   createNewSession: () => Promise<void>;
+  /**
+   * Fork the current session into a new one and attach to it.
+   *
+   * `turnId` (a user-turn boundary) copies everything before that turn; omit it
+   * to fork the whole completed history.  Tool outputs are omitted by the
+   * runtime (tool calls are kept as a summary).
+   */
+  forkSession: (turnId?: string) => Promise<void>;
   fetchSessions: () => Promise<void>;
   // Session list pagination (explicit paging; no unbounded auto paging).
   sessionsNextOffset: number | null;
@@ -3066,6 +3074,46 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         }
       }
     }
+  },
+  forkSession: async (turnId) => {
+    const client = requireRuntimeClient();
+    if (!client) return;
+    const { currentSession } = get();
+    if (currentSession.project_id === '' || currentSession.thread_id === '') return;
+    // Forking leaves the current session the same way a new session does: stop
+    // any in-flight upload bound to the session being left.
+    get().cancelAttachments();
+    const forked = await client
+      .forkSession({
+        source: currentSession,
+        ...(turnId ? { through_turn: turnId } : {}),
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fork session:', err);
+        set({ sessionActionError: describeSessionActionError(err, '分叉会话失败') });
+        return null;
+      });
+    if (forked === null) return;
+    const nextSession: SessionRef = forked.session;
+    const newTitle = displaySessionTitle(null, nextSession.thread_id);
+    // Show the child in the sidebar immediately; `attachToSession` re-reads the
+    // authoritative list afterwards.
+    set((s) => ({
+      sessions: [
+        {
+          thread_id: nextSession.thread_id,
+          title: newTitle,
+          updated_at: new Date().toISOString(),
+          time_label: '刚刚',
+          forked_from_thread_id: forked.forked_from,
+        },
+        ...s.sessions.filter((item) => item.thread_id !== nextSession.thread_id),
+      ],
+      sessionsTotal: s.sessionsTotal + 1,
+      sessionActionError: null,
+    }));
+    await attachToSession(nextSession, newTitle);
+    await get().fetchSessions();
   },
   fetchSessions: async () => {
     const client = requireRuntimeClient();

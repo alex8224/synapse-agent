@@ -28,6 +28,7 @@ ROOT_COMMANDS: list[str] = [
     "/sessions",
     "/session",
     "/new",
+    "/fork",
     "/switch",
     "/rename",
     "/export",

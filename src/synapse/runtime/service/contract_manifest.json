@@ -31,6 +31,7 @@
     "session.close",
     "session.create",
     "session.delete",
+    "session.fork",
     "session.goal",
     "session.list",
     "session.mcp.reload",
@@ -931,6 +932,25 @@
       "scope": "session",
       "scope_location": "params.session",
       "service_method": "delete_session",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.fork",
+      "class": "service",
+      "in_process": "Optional delegate method; authorization is session-scoped on the *source*. The source must already be open: the fork reads its durable messages and seeds a fresh terminal thread, so an unopened source is rejected.",
+      "method": "runtime.session.fork",
+      "notes": [
+        "``through_turn`` is optional: when set, the child inherits everything before that user turn; otherwise the whole completed history is copied.",
+        "``thread_id`` is optional; the server allocates the child id otherwise.",
+        "``forked_from`` in the result is the parent thread id (provenance only)."
+      ],
+      "params_alias": "ForkSessionParams",
+      "request": "ForkSessionCommand",
+      "result": "ForkSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.source",
+      "service_method": "fork_session",
       "wire_defaults": {}
     },
     {
@@ -3620,6 +3640,115 @@
           "ts_type": "string",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ForkSessionCommand": {
+      "fields": [
+        {
+          "name": "source",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "through_turn",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "thread_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Forks one *open* session into a fresh one.",
+        "``source`` must already be open in the runtime; otherwise the fork is rejected rather than copying nothing.",
+        "``through_turn`` is optional: when set, the child inherits everything before that user turn, otherwise the whole completed history.",
+        "``thread_id`` is optional; the server allocates the child id otherwise."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ForkSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "forked_from",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "boundary",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "message_count",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``forked_from`` is the parent thread id (provenance only).",
+        "``message_count`` is the number of projected text messages seeded."
       ],
       "origin": "python",
       "role": "result"
@@ -7514,6 +7643,17 @@
         },
         {
           "name": "summary",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "forked_from_thread_id",
           "nullable": true,
           "optional": false,
           "python_type": "str | None",

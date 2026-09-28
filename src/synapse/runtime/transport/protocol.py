@@ -25,6 +25,7 @@ from synapse.runtime.service import (
     CreateSessionCommand,
     DeleteSessionCommand,
     EventFilter,
+    ForkSessionCommand,
     GetCodexResetCreditsQuery,
     GetCodexUsageQuery,
     GetRuntimeConfigQuery,
@@ -1136,6 +1137,29 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else uuid.uuid4().hex
             ),
         )
+    if method == "runtime.session.fork":
+        # ``through_turn`` and ``thread_id`` are optional: the server allocates
+        # the child id when omitted, and the whole completed history is copied
+        # when no turn boundary is given.
+        _optional_fields(params, {"source"}, {"through_turn", "thread_id", "command_id"})
+        return ForkSessionCommand(
+            source=_session(params["source"]),
+            through_turn=(
+                None
+                if params.get("through_turn") is None
+                else _session_text(params["through_turn"])
+            ),
+            thread_id=(
+                None
+                if params.get("thread_id") is None
+                else _session_text(params["thread_id"])
+            ),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.session.delete":
         _optional_fields(params, {"session"}, {"command_id"})
         return DeleteSessionCommand(
@@ -1470,6 +1494,8 @@ async def dispatch(
         return await service.create_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.rename":
         return await service.rename_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.session.fork":
+        return await service.fork_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.delete":
         return await service.delete_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.search":

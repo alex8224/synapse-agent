@@ -23,7 +23,14 @@ class _Checkpointer:
         self.deleted.append(thread_id)
 
 
-class _ForkCheckpointer:
+class _ForkCopyProbe:
+    """Records calls to the ACP ``copy_session_state`` callback.
+
+    The real lightweight fork is exercised in ``tests/test_session_fork.py``;
+    here we only verify the ACP orchestration (child creation, rollback, and
+    lineage), so the copy step is an injected callback rather than a checker.
+    """
+
     def __init__(self) -> None:
         self.copies: list[tuple[str, str]] = []
         self.deleted: list[str] = []
@@ -188,7 +195,7 @@ def test_fork_without_checkpoint_copy_is_rejected(tmp_path: Path) -> None:
 def test_fork_copies_checkpoint_and_keeps_child_independent(tmp_path: Path) -> None:
     async def run() -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
-        checkpointer = _ForkCheckpointer()
+        checkpointer = _ForkCopyProbe()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
             async def copy(target: str) -> None:
@@ -226,7 +233,7 @@ def test_fork_copies_checkpoint_and_keeps_child_independent(tmp_path: Path) -> N
 def test_fork_copy_failure_rolls_back_child_resources(tmp_path: Path) -> None:
     async def run() -> None:
         catalog = ACPSessionCatalog(tmp_path / "catalog.sqlite")
-        checkpointer = _ForkCheckpointer()
+        checkpointer = _ForkCopyProbe()
 
         async def factory(descriptor: ACPSessionDescriptor) -> ACPManagedSession:
             async def copy(target: str) -> None:

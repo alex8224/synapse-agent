@@ -223,6 +223,8 @@ from synapse.runtime.service.session_management import (
     CreateSessionResult,
     DeleteSessionCommand,
     DeleteSessionResult,
+    ForkSessionCommand,
+    ForkSessionResult,
     RenameSessionCommand,
     RenameSessionResult,
     SearchSessionsQuery,
@@ -1448,6 +1450,10 @@ class LocalAgentRuntimeService:
     async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:
         """Rewrite one session's title; a missing session is ``not_found``."""
         return await self._session_metadata.rename(command)
+
+    async def fork_session(self, command: ForkSessionCommand) -> ForkSessionResult:
+        """Fork one open session into a fresh one; delegate to the metadata service."""
+        return await self._session_metadata.fork(command)
 
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:
         """Delete one session and its conversation (busy rejected).

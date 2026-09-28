@@ -49,6 +49,7 @@ HELP_TEXT = """## Slash Commands
 | `/sessions`, `/session list [n]` | List recent sessions |
 | `/session`, `/session show` | Show current session |
 | `/new` | Create new session |
+| `/fork` | Fork current session into a new one |
 | `/switch <id>` | Switch to session |
 | `/rename <title>` | Rename current session |
 | `/session delete <id>` | Delete session metadata |
@@ -343,6 +344,7 @@ def handle_slash(
         "/sessions",
         "/session",
         "/new",
+        "/fork",
         "/switch",
         "/rename",
         "/export",
@@ -356,7 +358,7 @@ def handle_slash(
             and not result.error
             and result.thread_id
             and result.thread_id != thread_id
-            and cmd in {"/switch", "/session", "/new"}
+            and cmd in {"/switch", "/session", "/new", "/fork"}
         ):
             persist_error = _persist_model_binding(settings, thread_id)
             if persist_error:
@@ -367,7 +369,7 @@ def handle_slash(
             and not result.error
             and result.thread_id
             and result.thread_id != thread_id
-            and cmd in {"/switch", "/session"}
+            and cmd in {"/switch", "/session", "/fork"}
         ):
             new_agent, notes = _restore_thread_model(
                 settings=settings,

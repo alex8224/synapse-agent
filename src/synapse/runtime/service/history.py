@@ -95,6 +95,10 @@ class SessionMetadataItem:
     created_at: str
     updated_at: str
     summary: str | None
+    #: Provenance for a forked session: the parent thread id it was forked
+    #: from, or ``None`` for a normal session.  Read-only lineage used by the UI
+    #: to label a session as "forked from ..."; it never affects the runtime.
+    forked_from_thread_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

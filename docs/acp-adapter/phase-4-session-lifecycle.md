@@ -38,9 +38,32 @@
 
 - P0 会话方法矩阵全部有成功和非法转换测试。
 - load 历史顺序、角色、工具和图片投影正确。
-- fork 后父子 checkpoint 独立。
+- fork 后父子 checkpoint 独立（子会话为独立终态 thread）。
 - delete/close 不影响其他 session。
 - 分页在并发更新下有明确、测试过的稳定规则。
+
+## 5.1 fork 语义（轻量投影）
+
+`session/fork` 采用**轻量投影**而非 checkpoint 深拷贝：
+
+- 读取父 thread 的 messages，按 user 轮边界切分。
+- 投影为**纯文本** user/assistant 消息：
+  - 用户文本与 assistant 的可见文本逐字保留；
+  - `tool_calls`、`ToolMessage` 结果与 reasoning/thinking **一律丢弃**，不内联
+    工具调用摘要（把工具 JSON 当成模型"说过的话"会被模型模仿，导致行为异常）；
+  - 只调用工具、无可见文本的轮次不产生消息。
+- 通过 `CheckpointSeeder.seed_messages` 写入全新子 thread，并在 `END` 封口。
+- 落盘后立即用 `TranscriptProjection.replace_from_messages` 重建子会话投影，
+  否则历史读取（只读投影）会显示为空对话，而模型仍能从 checkpoint 回忆起来。
+- 在子会话的 TUI 行记录血缘 `forked_from_thread_id` / `forked_from_boundary`
+  / `forked_from_turn_id`（best-effort，缺失 TUI store 不影响 fork）。
+
+不采用 `checkpointer.copy_thread`：安装的 `SqliteSaver` 不实现它，且它会把
+DeltaChannel 祖先链逐条物理复制。轻量投影避免该膨胀，也使工具调用与结果的
+配对校验不再成为约束（工具结果在投影阶段即被丢弃）。
+
+血缘是只读的“出生证明”：写入后不随子会话演化更新；父会话删除后指针悬空属
+预期（血缘用于溯源，不参与运行时）。
 
 ## 6. 风险与回滚
 

@@ -426,6 +426,29 @@ synapse sessions export <thread_id> -f md
 synapse sessions export <thread_id> -f md --stdout
 ```
 
+## 会话分叉（fork）
+
+从当前会话派生出一个**全新的独立会话**，用于"从某一点重新开始"而不影响原会话。
+
+入口：
+
+- TUI：`/fork`（从当前会话末尾分叉，并自动切换到子会话）。
+- Web 控制台：每条 assistant 回答下方、复制按钮旁的**分叉按钮**（从该轮之前分叉，
+  并自动切换到子会话）。
+- 运行时 RPC：`runtime.session.fork`（`source` 必须是**已打开**的会话）。
+
+分叉语义（轻量投影，不是 checkpoint 深拷贝）：
+
+- 子会话只继承父会话的**纯文本历史**：用户文本与 assistant 的可见文本逐字保留；
+- **工具调用、工具输出、reasoning/thinking 一律丢弃**（不内联工具调用摘要：
+  把工具 JSON 当成模型"说过的话"会被模型模仿，导致后续行为异常）；
+- 只调用工具、没有可见文本的轮次不产生任何消息，子会话是干净的对话记录；
+- 子会话是独立终态 thread，可继续对话、删除，删除父会话不影响子会话。
+
+血缘：子会话的元数据行记录 `forked_from_thread_id` / `forked_from_boundary`，
+会话列表会为分叉会话显示来源标记（TUI 显示 `[fork of <父id>]`，Web 侧栏显示分叉
+图标）。血缘仅供溯源，不参与运行时；父会话被删除后指针悬空属预期。
+
 ## Codex 会话导入
 
 支持查看和导入 OpenAI Codex 的历史会话记录。

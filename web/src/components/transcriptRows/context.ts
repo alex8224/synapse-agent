@@ -40,6 +40,14 @@ export interface RowActions {
    * reported back in the transcript rather than swallowed.
    */
   onRevertFile: (turnId: string, path: string) => void;
+  /**
+   * Fork the session into a new one, starting before this assistant turn.
+   *
+   * The parent must be open; the runtime seeds a fresh terminal thread from the
+   * projected text history (tool outputs omitted) and the console attaches to
+   * the child.  `turnId` is the boundary turn the row belongs to.
+   */
+  onFork: (turnId: string) => void;
 }
 
 /** What every row renderer is handed. */

@@ -155,6 +155,8 @@ from synapse.runtime.service.session_management import (
     CreateSessionResult,
     DeleteSessionCommand,
     DeleteSessionResult,
+    ForkSessionCommand,
+    ForkSessionResult,
     RenameSessionCommand,
     RenameSessionResult,
     SearchSessionsQuery,
@@ -273,6 +275,10 @@ SESSION_RENAME = "session.rename"
 #: Remove one session's metadata row and thread goal.  Checkpoints and the
 #: transcript projection are retained, so this is not "erase the conversation".
 SESSION_DELETE = "session.delete"
+#: Fork one open session into a fresh one.  A write: it persists a new session
+#: row and seeds a new thread from the parent's projected history, so a
+#: read-only grant must never authorize it.
+SESSION_FORK = "session.fork"
 #: Search one project's persisted session *metadata* (title/summary/model/ids).
 #: It is never a full-text transcript search and never creates a database.
 SESSION_SEARCH = "session.search"
@@ -353,6 +359,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SKILLS_LIST,
         SESSION_CREATE,
         SESSION_DELETE,
+        SESSION_FORK,
         SESSION_LIST,
         SESSION_MCP_RELOAD,
         SESSION_RENAME,
@@ -1434,6 +1441,29 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "rename_session", None)
         if not callable(delegate):
             raise InvalidRequestError("session rename is unavailable")
+        return await delegate(command)
+
+    async def fork_session(self, command: ForkSessionCommand) -> ForkSessionResult:
+        """Authorize ``session.fork`` on the source session, then delegate.
+
+        The capability is session-scoped on the *source* (the fork reads its
+        history and creates a child), so a grant for another session never
+        authorizes it.  A write, so a read-only grant must not authorize it.
+        Optional delegate method; the ACL check runs before the delegate is
+        consulted.
+        """
+        if type(command) is not ForkSessionCommand:
+            raise InvalidRequestError(
+                "fork command must be a ForkSessionCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        source = command.source
+        if type(source) is not SessionRef or not source.project_id or not source.thread_id:
+            raise InvalidRequestError("fork command must contain a valid source SessionRef")
+        self._authorize(source, SESSION_FORK)
+        delegate = getattr(self._delegate, "fork_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session fork is unavailable")
         return await delegate(command)
 
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:

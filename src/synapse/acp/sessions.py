@@ -407,18 +407,31 @@ def make_runtime_session_factory(
                 pass
             raise
         async def copy_state(target_thread_id: str) -> None:
-            checkpointer = getattr(
-                built_agents.get(descriptor.thread_id), "_coding_checkpointer", None
+            # Lightweight fork: project the parent transcript into text-only
+            # messages (assistant text + an inline tool-call summary; tool
+            # outputs dropped) and seed them into the fresh child thread.
+            # This deliberately does not use checkpoint copy_thread, which is
+            # unsupported by the installed SqliteSaver and would copy the full
+            # DeltaChannel chain verbatim.
+            source_agent = built_agents.get(descriptor.thread_id)
+            if source_agent is None:
+                raise RuntimeError("session fork requires the source agent")
+
+            from synapse.integrations.checkpoint_seed import CheckpointSeeder
+            from synapse.sessions.fork import fork_thin
+            from synapse.sessions.transcript import load_messages_from_agent
+
+            messages = await asyncio.to_thread(
+                load_messages_from_agent, source_agent, descriptor.thread_id
             )
-            copier = getattr(checkpointer, "acopy_thread", None)
-            if callable(copier):
-                await copier(descriptor.thread_id, target_thread_id)
-                return
-            copier = getattr(checkpointer, "copy_thread", None)
-            if callable(copier):
-                await asyncio.to_thread(copier, descriptor.thread_id, target_thread_id)
-                return
-            raise RuntimeError("checkpoint backend does not support session fork")
+            seeder = CheckpointSeeder(source_agent)
+            await asyncio.to_thread(
+                fork_thin,
+                parent_thread_id=descriptor.thread_id,
+                child_thread_id=target_thread_id,
+                messages=messages,
+                seeder=seeder,
+            )
 
         async def delete_state() -> None:
             checkpointer = getattr(

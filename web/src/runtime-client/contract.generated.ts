@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 71 wire methods: 69 service methods
+ * The 72 wire methods: 70 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -70,6 +70,7 @@ export const WIRE_METHODS = [
   "runtime.session.close",
   "runtime.session.create",
   "runtime.session.delete",
+  "runtime.session.fork",
   "runtime.session.get",
   "runtime.session.goal",
   "runtime.session.goal.clear",
@@ -117,7 +118,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (43). */
+/** Authorization capabilities enforced by the ACL layer (44). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -144,6 +145,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "session.close",
   "session.create",
   "session.delete",
+  "session.fork",
   "session.goal",
   "session.list",
   "session.mcp.reload",
@@ -229,6 +231,7 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.session.close": "session.close",
   "runtime.session.create": "session.create",
   "runtime.session.delete": "session.delete",
+  "runtime.session.fork": "session.fork",
   "runtime.session.get": "session.read",
   "runtime.session.goal": "session.read",
   "runtime.session.goal.clear": "session.goal",
@@ -776,6 +779,40 @@ export interface FinishAttachmentResult {
   size: number;
   mime: string;
   revision: string;
+}
+
+/**
+ * Forks one *open* session into a fresh one.
+ * ``source`` must already be open in the runtime; otherwise the fork is rejected rather than copying nothing.
+ * ``through_turn`` is optional: when set, the child inherits everything before that user turn, otherwise the whole completed history.
+ * ``thread_id`` is optional; the server allocates the child id otherwise.
+ */
+export interface ForkSessionCommand {
+  source: SessionRef;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  through_turn?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  thread_id?: string | null;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
+}
+
+/**
+ * ``forked_from`` is the parent thread id (provenance only).
+ * ``message_count`` is the number of projected text messages seeded.
+ */
+export interface ForkSessionResult {
+  command_id: string;
+  session: SessionRef;
+  forked_from: string;
+  boundary: string;
+  message_count: number;
 }
 
 export interface GetCodexResetCreditsQuery {
@@ -1879,6 +1916,10 @@ export interface SessionMetadataItem {
   created_at: string;
   updated_at: string;
   summary: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  forked_from_thread_id: string | null;
 }
 
 export interface SessionRecoverabilityView {
@@ -2641,6 +2682,7 @@ export type ConsumeCodexResetParams = ConsumeCodexResetCommand;
 export type CreateSessionParams = CreateSessionCommand;
 export type DeleteSessionParams = DeleteSessionCommand;
 export type EditSessionGoalParams = EditSessionGoalCommand;
+export type ForkSessionParams = ForkSessionCommand;
 export type GetCodexResetCreditsParams = GetCodexResetCreditsQuery;
 export type GetCodexUsageParams = GetCodexUsageQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;

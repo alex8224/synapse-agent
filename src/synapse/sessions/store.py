@@ -103,6 +103,9 @@ class SessionInfo:
     summary: str | None = None
     active_model: str | None = None
     thinking: str | None = None
+    forked_from_thread_id: str | None = None
+    forked_from_boundary: str | None = None
+    forked_from_turn_id: str | None = None
 
     def binding(self) -> ModelBinding:
         return ModelBinding(
@@ -122,6 +125,9 @@ class SessionInfo:
             "updated_at": self.updated_at,
             "tags": self.tags,
             "summary": self.summary,
+            "forked_from_thread_id": self.forked_from_thread_id,
+            "forked_from_boundary": self.forked_from_boundary,
+            "forked_from_turn_id": self.forked_from_turn_id,
         }
 
 
@@ -160,6 +166,9 @@ class SessionStore:
         )
         self._ensure_column("active_model", "TEXT")
         self._ensure_column("thinking", "TEXT")
+        self._ensure_column("forked_from_thread_id", "TEXT")
+        self._ensure_column("forked_from_boundary", "TEXT")
+        self._ensure_column("forked_from_turn_id", "TEXT")
         self._conn.commit()
 
     def _ensure_column(self, name: str, decl: str) -> None:
@@ -502,6 +511,33 @@ class SessionStore:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def set_fork_origin(
+        self,
+        thread_id: str,
+        *,
+        parent_thread_id: str,
+        boundary: str,
+        turn_id: str | None = None,
+    ) -> bool:
+        """Record immutable lineage for a forked thread.
+
+        Lineage is a birth certificate: it is written once at fork time and is
+        never rewritten as the child evolves. Deleting the parent leaves the
+        pointer dangling by design (lineage is for provenance, not runtime).
+        """
+        cur = self._conn.execute(
+            """
+            UPDATE sessions
+            SET forked_from_thread_id = ?,
+                forked_from_boundary = ?,
+                forked_from_turn_id = ?
+            WHERE thread_id = ?
+            """,
+            (parent_thread_id, boundary, turn_id, thread_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def delete(self, thread_id: str) -> bool:
         cur = self._conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
         # GoalStore 使用同一个数据库，但旧数据库可能尚未创建该表。
@@ -637,6 +673,17 @@ class SessionStore:
             summary=row["summary"],
             active_model=row["active_model"] if "active_model" in keys else None,
             thinking=row["thinking"] if "thinking" in keys else None,
+            forked_from_thread_id=(
+                row["forked_from_thread_id"]
+                if "forked_from_thread_id" in keys
+                else None
+            ),
+            forked_from_boundary=(
+                row["forked_from_boundary"] if "forked_from_boundary" in keys else None
+            ),
+            forked_from_turn_id=(
+                row["forked_from_turn_id"] if "forked_from_turn_id" in keys else None
+            ),
         )
 
 
@@ -657,8 +704,11 @@ def format_session_table(
     lines = ["thread_id     updated_at                 model                  title"]
     for s in rows:
         model = s.binding().display()[:20]
+        # Provenance only: a forked session is suffixed with the parent thread id
+        # so the list shows where it came from (the parent may already be gone).
+        marker = f"  [fork of {s.forked_from_thread_id}]" if s.forked_from_thread_id else ""
         lines.append(
-            f"{s.thread_id:<12} {s.updated_at:<24} {model:<20} {s.title[:100]}"
+            f"{s.thread_id:<12} {s.updated_at:<24} {model:<20} {s.title[:100]}{marker}"
         )
         if include_summary and (s.summary or "").strip():
             lines.append(f"  summary: {(s.summary or '').strip()[:120]}")

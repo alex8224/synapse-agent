@@ -32,6 +32,8 @@ export type {
   CreateSessionResult,
   DeleteSessionParams,
   DeleteSessionResult,
+  ForkSessionParams,
+  ForkSessionResult,
   DirectoryEntry,
   DirectoryListing,
   EditSessionGoalParams,

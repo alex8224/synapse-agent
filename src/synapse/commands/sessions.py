@@ -176,6 +176,85 @@ def _export_lines(
     )
 
 
+def _fork_session(
+    *,
+    store: SessionStore,
+    settings: Any,
+    agent: Any,
+    parent_thread_id: str,
+) -> SlashResult:
+    """Fork the current session into a fresh one and switch to it.
+
+    Lightweight projection: the child inherits the parent's text history
+    (assistant text plus an inline tool-call summary; tool outputs are dropped).
+    Requires the parent agent to be loaded; without one the fork is refused
+    rather than copying nothing.
+    """
+    if agent is None:
+        return SlashResult(
+            handled=True,
+            lines=["fork requires an open session"],
+            error=True,
+        )
+    from synapse.integrations.checkpoint_seed import CheckpointSeeder
+    from synapse.sessions.fork import fork_thin, rebuild_fork_projection
+    from synapse.sessions.transcript import load_messages_from_agent
+
+    child_tid = allocate_thread_id()
+    bind = binding_from_settings(settings)
+    parent = store.get(parent_thread_id)
+    parent_title = parent.title if parent is not None else None
+    store.ensure(
+        child_tid,
+        title=f"Fork of {parent_title}" if parent_title else None,
+        model=_model_name(settings),
+        active_model=getattr(settings, "active_model", None),
+        thinking=bind.thinking,
+    )
+    try:
+        messages = load_messages_from_agent(agent, parent_thread_id)
+        result = fork_thin(
+            parent_thread_id=parent_thread_id,
+            child_thread_id=child_tid,
+            messages=messages,
+            seeder=CheckpointSeeder(agent),
+        )
+        # Build the child's transcript projection so the switched-to session
+        # renders the inherited history instead of an empty conversation.
+        rebuild_fork_projection(settings, agent, child_tid)
+    except Exception as exc:  # noqa: BLE001 - surface a failed fork to the user
+        store.delete(child_tid)
+        return SlashResult(
+            handled=True,
+            lines=[f"fork failed: {exc}"],
+            error=True,
+        )
+    store.set_fork_origin(
+        child_tid,
+        parent_thread_id=parent_thread_id,
+        boundary=result.origin.boundary,
+    )
+    store.set_last_model_binding(bind)
+    return SlashResult(
+        handled=True,
+        lines=[
+            f"forked thread_id={child_tid}  from={parent_thread_id}",
+            f"copied {result.message_count} messages (tool outputs omitted)",
+        ],
+        markdown=(
+            "## Forked\n\n"
+            f"- **thread_id**: `{child_tid}`\n"
+            f"- **forked_from**: `{parent_thread_id}`\n"
+            f"- **messages**: {result.message_count}\n\n"
+            "*Tool outputs are omitted; tool calls are kept as a summary.*"
+        ),
+        thread_id=child_tid,
+        settings_changed=True,
+        clear_log=True,
+        reload_transcript=True,
+    )
+
+
 def handle_session(
     cmd: str,
     args: list[str],
@@ -231,6 +310,14 @@ def handle_session(
             thread_id=tid,
             clear_log=True,
             reload_transcript=False,
+        )
+
+    if cmd == "/fork":
+        return _fork_session(
+            store=store,
+            settings=settings,
+            agent=agent,
+            parent_thread_id=thread_id,
         )
 
     if cmd == "/switch":

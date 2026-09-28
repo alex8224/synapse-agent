@@ -673,6 +673,72 @@ class RuntimeManager:
         future = self._async_runtime.submit(self.submit(thread_id, message))
         return future.result()
 
+    async def fork_session_ref(
+        self,
+        ref: SessionRef,
+        *,
+        child_thread_id: str,
+        through_turn: str | None = None,
+        record_origin: Callable[[str, str], None] | None = None,
+    ) -> tuple[Any, int]:
+        """Fork one *open* session into a fresh thread; return ``(result, count)``.
+
+        The source must already be open (its agent/checkpointer loaded); a fork
+        reads the parent's durable messages and seeds a new terminal thread with
+        the projected text history.  This never copies the checkpoint chain and
+        never mutates the parent.
+
+        Runs the read/project/seed work on a worker thread (it is blocking SQLite
+        I/O) under the parent's lifecycle coordinator, so a concurrent delete of
+        the parent linearizes against the fork instead of racing it.
+
+        After the child thread is seeded its transcript projection is rebuilt
+        from the new checkpoint, so both the TUI and the web console render the
+        inherited history immediately (the history read is projection-only; a
+        missing projection would show an empty conversation while the agent can
+        still recall it from the checkpoint).  This is best-effort: a settings
+        object without a session path skips it.
+
+        ``record_origin`` (child_thread_id, boundary) writes the lineage row;
+        it is best-effort and runs after the child thread is seeded.
+        """
+        from synapse.integrations.checkpoint_seed import CheckpointSeeder
+        from synapse.sessions.fork import fork_thin, rebuild_fork_projection
+        from synapse.sessions.transcript import load_messages_from_agent
+
+        thread_id = self._check_ref(ref)
+        boundary = "through_turn" if through_turn else "latest"
+        with self._lock:
+            if self._closed:
+                raise RuntimeClosedError("RuntimeManager is closed")
+            lock = self._lifecycle_locks.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeClosedError("RuntimeManager is closed")
+                session = self._sessions.get(thread_id)
+            if session is None:
+                raise RuntimeClosedError("cannot fork a session that is not open")
+            agent = session.binding.agent
+
+            def _do_fork() -> tuple[Any, int]:
+                messages = load_messages_from_agent(agent, thread_id)
+                result = fork_thin(
+                    parent_thread_id=thread_id,
+                    child_thread_id=child_thread_id,
+                    messages=messages,
+                    seeder=CheckpointSeeder(agent),
+                    boundary=boundary,
+                    turn_id=through_turn,
+                )
+                rebuild_fork_projection(self.settings, agent, child_thread_id)
+                return result, result.message_count
+
+            result, count = await asyncio.to_thread(_do_fork)
+        if record_origin is not None:
+            record_origin(child_thread_id, boundary)
+        return result, count
+
     def register_session(self, runtime: SessionRuntime) -> SessionRuntime:
         """Register an assembled session graph without replacing a live runtime."""
         with self._lock:

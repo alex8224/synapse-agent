@@ -84,6 +84,7 @@ _SESSION_LIST_COLUMNS = (
     "created_at",
     "updated_at",
     "summary",
+    "forked_from_thread_id",
 )
 
 
@@ -289,6 +290,7 @@ def _session_item(row: sqlite3.Row) -> SessionMetadataItem:
         created_at=str(values.get("created_at") or ""),
         updated_at=str(values.get("updated_at") or ""),
         summary=_optional_text(values.get("summary")),
+        forked_from_thread_id=_optional_text(values.get("forked_from_thread_id")),
     )
 
 

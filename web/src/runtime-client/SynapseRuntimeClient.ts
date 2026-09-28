@@ -47,6 +47,8 @@ import type {
   CreateSessionResult,
   RenameSessionParams,
   RenameSessionResult,
+  ForkSessionParams,
+  ForkSessionResult,
   DeleteSessionParams,
   DeleteSessionResult,
   SearchSessionsParams,
@@ -674,6 +676,23 @@ export class SynapseRuntimeClient {
     };
     if (params.command_id !== undefined) payload.command_id = params.command_id;
     return this.call<RenameSessionResult>('runtime.session.rename', payload);
+  }
+
+  /**
+   * Fork one open session into a fresh one (`runtime.session.fork`).
+   *
+   * The source must already be open in the runtime; the child inherits the
+   * parent's projected text history (tool outputs omitted) and a new terminal
+   * thread is seeded.  `through_turn` selects the boundary (everything before
+   * that user turn); omit it to copy the whole completed history.  The returned
+   * `session` is the child and `forked_from` is the parent thread id.
+   */
+  public async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+    const payload: Record<string, unknown> = { source: params.source };
+    if (params.through_turn !== undefined) payload.through_turn = params.through_turn;
+    if (params.thread_id !== undefined) payload.thread_id = params.thread_id;
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<ForkSessionResult>('runtime.session.fork', payload);
   }
 
   /**

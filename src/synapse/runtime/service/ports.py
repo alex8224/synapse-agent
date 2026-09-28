@@ -155,6 +155,8 @@ from synapse.runtime.service.session_management import (
     CreateSessionResult,
     DeleteSessionCommand,
     DeleteSessionResult,
+    ForkSessionCommand,
+    ForkSessionResult,
     RenameSessionCommand,
     RenameSessionResult,
     SearchSessionsQuery,
@@ -422,6 +424,18 @@ class AgentRuntimeService(Protocol):
         a store that refused leaves ``retained_history`` true and is named in
         ``purge_failures``, so a UI reports what survived instead of claiming a
         clean erasure.
+
+        Optional delegate method: see ``create_session``.
+        """
+        ...
+
+    async def fork_session(self, command: ForkSessionCommand) -> ForkSessionResult:
+        """Fork one *open* session into a fresh one and record its lineage.
+
+        The source must already be open: the fork reads the parent's durable
+        messages through its loaded agent and seeds a new terminal thread with
+        the projected text history.  An unopened source (or a project with no
+        live manager) is reported as a request error rather than copying nothing.
 
         Optional delegate method: see ``create_session``.
         """

@@ -26,6 +26,8 @@ __all__ = [
     "CreateSessionResult",
     "DeleteSessionCommand",
     "DeleteSessionResult",
+    "ForkSessionCommand",
+    "ForkSessionResult",
     "RenameSessionCommand",
     "RenameSessionResult",
     "SearchSessionsQuery",
@@ -147,6 +149,51 @@ class CreateSessionResult:
     session: SessionRef
     created: bool
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForkSessionCommand:
+    """Fork one *open* session into a fresh one.
+
+    ``source`` must already be open in the runtime (its agent/checkpointer is
+    loaded); otherwise the fork is rejected.  ``through_turn`` selects the fork
+    boundary: when set, the child inherits everything *before* that user turn;
+    when ``None`` the whole completed history is copied.  ``thread_id`` is
+    optional and only lets a caller pin the child id (tests, replay); the server
+    allocates one otherwise.
+    """
+
+    source: SessionRef
+    through_turn: str | None = None
+    thread_id: str | None = None
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        _validate_ref(self.source)
+        if self.thread_id is not None:
+            if type(self.thread_id) is not str or not self.thread_id.strip():
+                raise ValueError("thread_id must be a non-empty string when provided")
+            object.__setattr__(self, "thread_id", self.thread_id.strip())
+        if self.through_turn is not None:
+            if type(self.through_turn) is not str or not self.through_turn.strip():
+                raise ValueError("through_turn must be a non-empty string when provided")
+            object.__setattr__(self, "through_turn", self.through_turn.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class ForkSessionResult:
+    """The freshly forked child session and its lineage.
+
+    ``message_count`` is the number of projected text messages seeded into the
+    child; ``forked_from`` is the parent's thread id (the same project), kept
+    for provenance only.
+    """
+
+    command_id: str
+    session: SessionRef
+    forked_from: str
+    boundary: str
+    message_count: int
 
 
 @dataclass(frozen=True, slots=True)

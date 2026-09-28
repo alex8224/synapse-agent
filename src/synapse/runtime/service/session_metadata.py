@@ -58,6 +58,8 @@ from synapse.runtime.service.session_management import (
     CreateSessionResult,
     DeleteSessionCommand,
     DeleteSessionResult,
+    ForkSessionCommand,
+    ForkSessionResult,
     RenameSessionCommand,
     RenameSessionResult,
     SearchSessionsQuery,
@@ -89,6 +91,13 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
+def _fork_child_title(parent_title: str | None, child_thread_id: str) -> str:
+    """Derive a readable, placeholder-free title for a forked child."""
+    base = (parent_title or "").strip() or "session"
+    title = f"Fork of {base}"
+    return title[:120] if title else child_thread_id
+
+
 def _item_from_info(info: Any) -> SessionMetadataItem:
     return SessionMetadataItem(
         thread_id=str(getattr(info, "thread_id", "") or ""),
@@ -98,6 +107,9 @@ def _item_from_info(info: Any) -> SessionMetadataItem:
         created_at=str(getattr(info, "created_at", "") or ""),
         updated_at=str(getattr(info, "updated_at", "") or ""),
         summary=_optional_text(getattr(info, "summary", None)),
+        forked_from_thread_id=_optional_text(
+            getattr(info, "forked_from_thread_id", None)
+        ),
     )
 
 
@@ -256,6 +268,23 @@ class SessionStoreMetadataStore:
             with self._open() as store:
                 deleted = store.delete(thread_id)
         return bool(deleted)
+
+    def set_fork_origin(
+        self,
+        thread_id: str,
+        *,
+        parent_thread_id: str,
+        boundary: str,
+    ) -> bool:
+        """Record a forked child's lineage on its metadata row."""
+        with self._lock, self._open() as store:
+            return bool(
+                store.set_fork_origin(
+                    thread_id,
+                    parent_thread_id=parent_thread_id,
+                    boundary=boundary,
+                )
+            )
 
 
 def _default_store_factory(path: Path) -> Any:
@@ -425,6 +454,72 @@ class SessionMetadataService:
             session=command.session,
             title=item.title,
             renamed=True,
+        )
+
+    async def fork(self, command: ForkSessionCommand) -> ForkSessionResult:
+        """Fork one open session into a fresh one and record its lineage.
+
+        The source must be open in this project's live manager: the fork reads
+        the parent's durable messages through its loaded agent and seeds a new
+        terminal thread, so a manager-less project (or an unopened session) is
+        rejected with ``InvalidRequestError`` rather than silently copying
+        nothing.  The child's metadata row is created first (so lineage has a
+        row to attach to), then the thread is seeded, then lineage is written.
+        """
+        if type(command) is not ForkSessionCommand:
+            raise InvalidRequestError(
+                "fork command must be a ForkSessionCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        self._raise_if_closed()
+        async with self._mutation_lock:
+            context = await self._context(command.source.project_id)
+            manager = context.manager
+            fork_ref = getattr(manager, "fork_session_ref", None)
+            if not callable(fork_ref):
+                raise InvalidRequestError("session fork is unavailable for this project")
+            store = self._store(context)
+            from synapse.sessions.store import allocate_thread_id
+
+            child_thread_id = command.thread_id or allocate_thread_id()
+            child_ref = SessionRef(
+                project_id=command.source.project_id,
+                thread_id=child_thread_id,
+            )
+            parent = await asyncio.to_thread(
+                store.ensure, command.source.thread_id, title=None
+            )
+            parent_title = parent[0].title
+            await asyncio.to_thread(
+                store.ensure,
+                child_thread_id,
+                title=_fork_child_title(parent_title, child_thread_id),
+            )
+
+            def _record_origin(child_id: str, boundary: str) -> None:
+                store.set_fork_origin(
+                    child_id,
+                    parent_thread_id=command.source.thread_id,
+                    boundary=boundary,
+                )
+
+            try:
+                _result, count = await fork_ref(
+                    command.source,
+                    child_thread_id=child_thread_id,
+                    through_turn=command.through_turn,
+                    record_origin=_record_origin,
+                )
+            except Exception:
+                # A failed fork must not leave an orphan metadata row.
+                await asyncio.to_thread(store.delete, child_thread_id)
+                raise
+        return ForkSessionResult(
+            command_id=command.command_id,
+            session=child_ref,
+            forked_from=command.source.thread_id,
+            boundary="through_turn" if command.through_turn else "latest",
+            message_count=count,
         )
 
     async def touch(

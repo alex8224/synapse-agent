@@ -192,6 +192,7 @@ export const Transcript: React.FC = () => {
     loadEarlierHistory,
     openGitExplorer,
     revertTurnChange,
+    forkSession,
     revertError,
     dismissRevertError,
   } = useConsoleStore(
@@ -213,6 +214,7 @@ export const Transcript: React.FC = () => {
       loadEarlierHistory: state.loadEarlierHistory,
       openGitExplorer: state.openGitExplorer,
       revertTurnChange: state.revertTurnChange,
+      forkSession: state.forkSession,
       revertError: state.revertError,
       dismissRevertError: state.dismissRevertError,
     })),
@@ -696,8 +698,18 @@ export const Transcript: React.FC = () => {
       onRevertFile: (turnId, path) => {
         void revertTurnChange(turnId, path);
       },
+      onFork: (turnId) => {
+        void forkSession(turnId === '' ? undefined : turnId);
+      },
     }),
-    [handleToggleExpand, handleToggleTool, handleToggleSubagent, openGitExplorer, revertTurnChange],
+    [
+      handleToggleExpand,
+      handleToggleTool,
+      handleToggleSubagent,
+      openGitExplorer,
+      revertTurnChange,
+      forkSession,
+    ],
   );
 
   /**
