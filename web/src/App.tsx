@@ -43,6 +43,10 @@ export function App() {
   const [tabletCollapsed, setTabletCollapsed] = useState(true);
   const drawerRef = useRef<HTMLDivElement>(null);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const closeNavigationDrawer = useCallback(() => {
+    closeDrawer();
+    setTabletCollapsed(true);
+  }, [closeDrawer]);
   const toggleNavigation = useCallback(() => {
     if (mobile) setDrawerOpen((open) => !open);
     else if (tablet) setTabletCollapsed((collapsed) => !collapsed);
@@ -74,7 +78,10 @@ export function App() {
   useEffect(() => useConsoleStore.subscribe((state, previous) => {
     if (state.currentSession.thread_id !== previous.currentSession.thread_id ||
         state.currentSession.project_id !== previous.currentSession.project_id ||
-        state.pairingState !== previous.pairingState) closeDrawer();
+        state.pairingState !== previous.pairingState) {
+      closeDrawer();
+      setTabletCollapsed(true);
+    }
     if (state.searchFocusToken !== previous.searchFocusToken) {
       if (mobile) setDrawerOpen(true);
       if (tablet) setTabletCollapsed(false);
@@ -82,7 +89,8 @@ export function App() {
   }), [closeDrawer, mobile, tablet]);
 
   useEffect(() => {
-    if (!mobile || !drawerOpen) return;
+    const isDrawerActive = (mobile && drawerOpen) || (tablet && !tabletCollapsed);
+    if (!isDrawerActive) return;
     const previous = document.activeElement as HTMLElement | null;
     drawerRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
     const handleKey = (event: KeyboardEvent) => {
@@ -91,6 +99,7 @@ export function App() {
       if (event.key === 'Escape') {
         event.preventDefault();
         closeDrawer();
+        setTabletCollapsed(true);
       }
       if (event.key === 'Tab') {
         const items = Array.from(drawerRef.current.querySelectorAll<HTMLElement>(
@@ -110,7 +119,7 @@ export function App() {
       document.removeEventListener('keydown', handleKey);
       previous?.focus();
     };
-  }, [mobile, drawerOpen, closeDrawer]);
+  }, [mobile, drawerOpen, tablet, tabletCollapsed, closeDrawer]);
 
   useEffect(() => {
     initClient();
@@ -157,6 +166,13 @@ export function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         useRightDockStore.getState().toggleOpen();
+      } else if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        (e.key === '`' || e.key === '~' || e.code === 'Backquote')
+      ) {
+        e.preventDefault();
+        useTerminalStore.getState().toggleMaximize();
       } else if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.code === 'Backquote')) {
         e.preventDefault();
         useTerminalStore.getState().toggleOpen();
@@ -200,20 +216,23 @@ export function App() {
       one continuous rail from the top edge to the bottom.
     */
     <div className="console-shell material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
-      {mobile && drawerOpen && <button className="navigation-scrim" aria-label="关闭导航" onClick={closeDrawer} tabIndex={-1} />}
-      <div ref={drawerRef} id="console-navigation" className={mobile ? 'navigation-drawer' : 'navigation-column'}
+      {((mobile && drawerOpen) || (tablet && !tabletCollapsed)) && (
+        <button className="navigation-scrim" aria-label="关闭导航" onClick={closeNavigationDrawer} tabIndex={-1} />
+      )}
+      <div ref={drawerRef} id="console-navigation" className={mobile ? 'navigation-drawer' : (tablet && !tabletCollapsed) ? 'navigation-drawer' : 'navigation-column'}
         hidden={mobile && !drawerOpen} role={mobile ? 'dialog' : undefined}
         aria-modal={mobile && drawerOpen ? true : undefined} aria-label={mobile ? '项目与会话导航' : undefined}>
-        {mobile && (
-          <button className="ui-icon-button navigation-close" aria-label="关闭导航" onClick={closeDrawer}>
+        {(mobile || (tablet && !tabletCollapsed)) && (
+          <button className="ui-icon-button navigation-close" aria-label="关闭导航" onClick={closeNavigationDrawer}>
             <Dismiss20Regular aria-hidden="true" />
           </button>
         )}
         <SideBar collapsed={mobile ? false : tablet ? tabletCollapsed : undefined}
-          onExpand={tablet ? () => setTabletCollapsed(false) : undefined} />
+          onExpand={tablet ? () => setTabletCollapsed(false) : undefined}
+          onNavigate={closeNavigationDrawer} />
       </div>
       <div className="console-workspace flex min-w-0 flex-1 flex-col overflow-hidden" inert={mobile && drawerOpen}>
-        <TopBar onToggleNavigation={toggleNavigation} navigationExpanded={mobile ? drawerOpen : undefined} />
+        <TopBar onToggleNavigation={toggleNavigation} navigationExpanded={mobile ? drawerOpen : tablet ? !tabletCollapsed : undefined} />
         <div className="flex min-h-0 flex-1 overflow-hidden">
         {/*
           Deliberately *not* `overflow-hidden`: the transcript scroller reaches up

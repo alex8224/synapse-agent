@@ -127,8 +127,8 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      // Allow global shortcuts to pass through to window (e.g. Ctrl+` to toggle terminal)
-      if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.code === 'Backquote')) {
+      // Allow global shortcuts to pass through to window (e.g. Ctrl+` toggle, Ctrl+Shift+` maximize)
+      if ((e.ctrlKey || e.metaKey) && (e.key === '`' || e.key === '~' || e.code === 'Backquote')) {
         return false;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'j' || e.code === 'KeyJ')) {

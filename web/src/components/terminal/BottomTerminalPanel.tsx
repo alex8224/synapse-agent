@@ -22,6 +22,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useTerminalStore } from '../../stores/useTerminalStore.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { XtermView, terminalInstances, getTerminalContext } from './XtermView.tsx';
+import { TERMINAL_MAXIMIZE_CHORD } from '../consoleShortcuts.ts';
 import { insertTextAtCaret } from '../composer/composerSelection.ts';
 
 export const BottomTerminalPanel: React.FC = () => {
@@ -158,7 +159,13 @@ export const BottomTerminalPanel: React.FC = () => {
       />
 
       {/* Terminal Header with Multi-Tabs and Complex Action Bar */}
-      <div className="flex h-9 items-center justify-between border-b border-line/70 bg-surface/90 px-2.5 pt-0.5 select-none shrink-0 backdrop-blur-sm">
+      <div
+        onDoubleClick={(e) => {
+          if ((e.target as HTMLElement).closest('button')) return;
+          toggleMaximize();
+        }}
+        className="flex h-9 items-center justify-between border-b border-line/70 bg-surface/90 px-2.5 pt-0.5 select-none shrink-0 backdrop-blur-sm"
+      >
         {/* Left: Session Tabs */}
         <div className="flex items-center gap-1 overflow-x-auto fluent-scrollbar min-w-0 pr-2">
           {sessions.map((session) => {
@@ -218,7 +225,11 @@ export const BottomTerminalPanel: React.FC = () => {
           <button
             type="button"
             onClick={toggleMaximize}
-            title={isMaximized ? '还原面板尺寸' : '最大化终端面板'}
+            title={
+              isMaximized
+                ? `还原面板尺寸 (${TERMINAL_MAXIMIZE_CHORD})`
+                : `最大化终端面板 (${TERMINAL_MAXIMIZE_CHORD})`
+            }
             className={`ui-icon-button ui-compact text-gray-500 hover:text-gray-900 ${
               isMaximized ? 'text-accent' : ''
             }`}

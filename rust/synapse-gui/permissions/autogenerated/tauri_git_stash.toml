@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-git-stash"
+description = "Enables the tauri_git_stash command without any pre-configured scope."
+commands.allow = ["tauri_git_stash"]
+
+[[permission]]
+identifier = "deny-tauri-git-stash"
+description = "Denies the tauri_git_stash command without any pre-configured scope."
+commands.deny = ["tauri_git_stash"]

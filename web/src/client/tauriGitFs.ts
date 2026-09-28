@@ -11,7 +11,19 @@
  * quietly replaced by the ignore-filtered runtime RPC.  Git stays best-effort.
  */
 import { isTauri } from './tauri.ts';
-import { parseGitDiff, parseGitStatus, type GitStatusView, type GitDiffView } from '../runtime-client/git.ts';
+import {
+  GIT_LOG_PAGE_SIZE,
+  parseGitCommitDetail,
+  parseGitDiff,
+  parseGitLog,
+  parseGitRefs,
+  parseGitStatus,
+  type GitCommitDetailView,
+  type GitDiffView,
+  type GitLogView,
+  type GitRefsView,
+  type GitStatusView,
+} from '../runtime-client/git.ts';
 import { ARTIFACT_CHUNK_BYTES, ARTIFACT_LIST_LIMIT } from '../runtime-client/artifacts.ts';
 import type {
   ArtifactChunkView,
@@ -262,6 +274,107 @@ export async function fetchGitDiff(
     throw new Error('Runtime client not available');
   }
   return await client.gitDiff(session, filePath);
+}
+
+/** Raised when a history read is asked for outside the desktop shell. */
+export class GitHistoryUnavailableError extends Error {
+  constructor(message = 'git 历史只在桌面壳中可用') {
+    super(message);
+    this.name = 'GitHistoryUnavailableError';
+  }
+}
+
+/**
+ * Whether the desktop shell can answer git history at all.
+ *
+ * The history panel is native-only by decision: the shell reads the repository
+ * itself, and there is no runtime RPC behind it to fall back to (the daemon
+ * serves `git.status` / `git.diff` only). A plain browser therefore hides the
+ * panel instead of showing one that could never load -- the same rule the
+ * artifact calls follow, which is why both expose a probe rather than a
+ * fallback.
+ */
+export function hasNativeGitHistory(): boolean {
+  return isTauri() && getTauriInternals() !== null;
+}
+
+/** The native internals, or the typed error that says why there are none. */
+function requireGitHistory(): TauriInternals {
+  const internals = getTauriInternals();
+  if (!isTauri() || !internals) {
+    throw new GitHistoryUnavailableError();
+  }
+  return internals;
+}
+
+/** Branches, tags, stashes and worktrees of the session's workspace. */
+export async function fetchGitRefs(workspacePath?: string): Promise<GitRefsView> {
+  const internals = requireGitHistory();
+  const res = await internals.invoke<unknown>('tauri_git_refs', {
+    workspace: workspacePath || undefined,
+  });
+  return parseGitRefs(res);
+}
+
+/** What one page of history is asked for. */
+export interface GitLogRequest {
+  /** A branch, a tag or a sha; `null` means the current `HEAD`. */
+  rev?: string | null;
+  limit?: number;
+  skip?: number;
+  /** Only the commits on this branch itself, not the ones merged into it. */
+  firstParent?: boolean;
+  path?: string | null;
+}
+
+/** One page of a revision's history, newest first. */
+export async function fetchGitLog(
+  request: GitLogRequest = {},
+  workspacePath?: string,
+): Promise<GitLogView> {
+  const internals = requireGitHistory();
+  const res = await internals.invoke<unknown>('tauri_git_log', {
+    workspace: workspacePath || undefined,
+    rev: request.rev ?? undefined,
+    limit: request.limit ?? GIT_LOG_PAGE_SIZE,
+    skip: request.skip ?? 0,
+    // The shell's command is `rename_all = "snake_case"`, so this key stays
+    // snake_case instead of being camelCased on the way out.
+    first_parent: request.firstParent ?? false,
+    path: request.path ?? undefined,
+  });
+  return parseGitLog(res);
+}
+
+/**
+ * One commit: its metadata, the files it changed against its first parent, and
+ * -- when a path is given -- that file's diff inside the commit.
+ */
+export async function fetchGitCommit(
+  sha: string,
+  path?: string,
+  workspacePath?: string,
+): Promise<GitCommitDetailView> {
+  const internals = requireGitHistory();
+  const res = await internals.invoke<unknown>('tauri_git_commit', {
+    workspace: workspacePath || undefined,
+    sha,
+    path: path ?? undefined,
+  });
+  return parseGitCommitDetail(res);
+}
+
+/** One stash's diff. Read-only: `git stash show -p` never applies or drops it. */
+export async function fetchGitStashDiff(
+  index: number,
+  workspacePath?: string,
+): Promise<GitDiffView> {
+  const internals = requireGitHistory();
+  const res = await internals.invoke<unknown>('tauri_git_stash', {
+    workspace: workspacePath || undefined,
+    index,
+  });
+  return parseGitDiff(res);
 }
 
 /**

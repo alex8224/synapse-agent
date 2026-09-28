@@ -156,7 +156,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
               className="ui-button min-w-0 h-7 text-xs px-2 rounded-control text-gray-700 hover:bg-surface-hover active:bg-surface-pressed transition-colors"
             >
               <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
-              <span className="max-w-[14rem] truncate font-medium">{gitBranch}</span>
+              <span className="max-w-[6rem] sm:max-w-[14rem] truncate font-medium">{gitBranch}</span>
               {gitStatus !== null && gitStatus.ahead > 0 && (
                 <span className="text-emerald-600 font-numeric text-[11px]">↑{gitStatus.ahead}</span>
               )}
@@ -170,7 +170,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
                 }`}
               ></span>
               {hasLineCounts && (
-                <span className="font-numeric text-[11px] tracking-tight shrink-0">
+                <span className="hidden sm:inline-block font-numeric text-[11px] tracking-tight shrink-0">
                   <span className="text-emerald-600">+{insertions}</span>{' '}
                   <span className="text-red-600">-{deletions}</span>
                 </span>
@@ -197,7 +197,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
         aria-expanded={infoOpen}
         aria-label={sessionTitle === '' ? '会话信息' : `会话信息：${sessionTitle}`}
         title={sessionTitle}
-        className="ui-session-title wco-caption-controls flex min-w-0 max-w-[32rem] cursor-pointer items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 transition-colors hover:bg-surface-hover/50"
+        className="ui-session-title wco-caption-controls flex min-w-0 max-w-[14rem] sm:max-w-[20rem] md:max-w-[24rem] lg:max-w-[32rem] cursor-pointer items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 transition-colors hover:bg-surface-hover/50"
       >
         <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />
         <span className="truncate font-medium">{sessionTitle}</span>
@@ -209,7 +209,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           because the two equal `1fr` sides are what keep the title centred.
           In an installed window it is also what keeps the window buttons clear of
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
-      <div className="flex items-center justify-end gap-1">
+      <div className="flex items-center justify-end gap-1 shrink-0 min-w-fit">
         <button
           type="button"
           data-tauri-drag-region="false"

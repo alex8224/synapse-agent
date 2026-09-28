@@ -6,8 +6,8 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
 
 ## 集成终端与聊天响应
 
-桌面端通过底栏终端入口或 `Ctrl` + 反引号打开集成终端。聊天输出时仍可输入命令、接收终端输出；
-终端内的 `Ctrl+C` 发给 shell，不会取消 Agent 回合。
+桌面端通过底栏终端入口或 `Ctrl` + 反引号打开集成终端，支持通过 `Ctrl` + `Shift` + 反引号或双击面板标题栏切换最大化／还原。
+聊天输出时仍可输入命令、接收终端输出；终端内的 `Ctrl+C` 发给 shell，不会取消 Agent 回合。
 
 - Markdown 解析放在独立 Worker，待处理更新只保留每条消息的最新版本；已渲染且未变化的块复用，
   避免每个流式片段重新渲染整段回答。聊天仍持续显示，不推迟到回合结束。
@@ -251,6 +251,37 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 渲染器）。卡片默认折叠，展开后才显示步骤；折叠状态是**行内视图状态**（不写回 store，所以不会重建 `messages` 数组、
 也不会把转录拽到底部）。分组规则由 `tests/transcriptLabels.test.ts` 守护，卡面、标记与状态动画由
 `tests/transcriptLayoutGuard.test.ts` 守护。
+
+## Git 分支与历史（右侧栏「分支」页）
+
+右侧栏的「分支」页（`src/components/rightDock/gitTab.tsx`）用**三层下钻**看仓库对象历史：
+分支 / 标签 / 暂存 / 工作树 → 某个版本（分支或标签）的提交历史 → 一次提交的改动文件与单文件 diff。
+右栏宽度只有 280–760px，所以三层是**同一列里的下钻**（顶部面包屑返回上一层），不做左右分栏；
+下钻位置（层、版本、提交、展开的文件）存在 `src/stores/gitHistoryStore.ts`，切走再切回不会回到顶层——
+这也是未来窄屏要复用的形态：同一份状态换一种布局，而不是另一份状态。
+
+**这一页只在桌面壳里存在。** 全部读取都走 Tauri 原生 git（`tauri_git_refs` / `tauri_git_log` /
+`tauri_git_commit` / `tauri_git_stash`，实现在 `rust/synapse-gui/src/git_fs.rs`），**没有**对应的
+daemon 契约方法（`runtime.git.*` 仍然只有 `status` / `diff`）。因此普通浏览器里这个 tab 由可用性源
+`hasNativeGitHistory()` 直接隐藏——宁可没有入口，也不给一个永远加载不出来的面板。
+
+- **只读**：没有任何 add / commit / checkout / stage / push；读取一律带 `GIT_OPTIONAL_LOCKS=0`
+  （`git status` 不会顺手刷新索引）。传进来的版本名与路径都先校验（拒绝前导 `-`、`..`、`@{`、反斜杠、
+  盘符等），因为它们落在 argv 位置，否则会被 git 当成选项。上限：分支与标签各 200、每页 50 条提交、
+  一次提交 200 个文件、单个 diff 256KB（超出截断并显示提示）。
+- **一次提交的改动文件是提交自己的**：对比**第一父**（首个提交对比空树），所以合并提交显示的是它带进来的
+  改动，而不是合并结果；它**不会**从工作区状态（相对 `HEAD` 的存量差异）推导出来——那份差异会把此前
+  每一轮的改动重复算进来。
+- **引用来自一次调用**：分支与标签由一次 `for-each-ref` 同时读出，领先/落后取自 `%(upstream:track)`，
+  不为每个分支单独跑 `rev-list`；另有 `stash list` 与 `worktree list` 各一次，共三次有界进程。
+  提交行上的 `HEAD` / 分支 / 标签徽标由这份引用推导，不再跑一次 `log --decorate`。
+- **按需读取**：提交的文件清单只在打开该提交时读；某个文件的 diff 只在第一次展开时读，折叠后再展开不重复读；
+  stash 的差异同样只在展开时读（`git stash show -p`，不会 apply / drop）。
+- 「只看本分支」= `--first-parent`；路径过滤框按回车生效（`git log -- <path>`）。两者都重读第 0 页。
+
+验收：`node --test tests/gitHistory.test.ts`（解码器、原生专属、分页与按需读取、只读与「不从工作区推导」
+的静态守护）、`tests/rightDockContract.test.ts`（新 tab 的模块登记与 order）、
+`cargo test --manifest-path rust/synapse-gui/Cargo.toml`（读取器与参数校验，用临时仓库跑真实 git）。
 
 ## 使用统计与工程效能面板
 

@@ -114,7 +114,7 @@ export const TurnRail: React.FC<{ viewport: TranscriptViewport }> = ({ viewport 
   };
 
   return (
-    <div className="console-turn-rail pointer-events-none absolute left-2.5 top-1/2 z-20 -translate-y-1/2 select-none">
+    <div className="console-turn-rail pointer-events-none absolute left-2.5 top-1/2 z-20 -translate-y-1/2 select-none hidden lg:block">
       <div
         title="会话轮次快速导航"
         className="pointer-events-auto flex flex-col items-center gap-1.5 rounded-full border border-line/70 bg-surface/85 px-1.5 py-2.5 shadow-flyout backdrop-blur-md transition-all duration-200 hover:border-line hover:bg-surface/95"

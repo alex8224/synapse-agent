@@ -43,6 +43,14 @@ export const HELP_SHORTCUT_KEY = 'F1';
 export const THEME_SHORTCUT_CHORD = 'Ctrl + Shift + L';
 
 /**
+ * The terminal maximize toggle's chord.
+ *
+ * `Ctrl+Shift+\`` is answered by the shell (`App.tsx`) and advertised by the
+ * bottom terminal panel's maximize button; both read this one string.
+ */
+export const TERMINAL_MAXIMIZE_CHORD = 'Ctrl + Shift + `';
+
+/**
  * The help list, in the order it renders.
  *
  * The F1 / F5 / F6 rows are also the strip's own bindings: the bar resolves a
@@ -54,6 +62,7 @@ export const CONSOLE_SHORTCUTS: readonly ConsoleShortcut[] = [
   { chord: 'Ctrl + B', label: '展开 / 收起侧边栏' },
   { chord: 'Ctrl + J', label: '展开 / 收起辅助工作台' },
   { chord: 'Ctrl + `', label: '展开 / 收起集成终端' },
+  { chord: TERMINAL_MAXIMIZE_CHORD, label: '最大化 / 还原集成终端' },
   { chord: 'Ctrl + N', label: '新建会话' },
   { chord: 'Ctrl + K', label: '搜索会话' },
   { chord: THEME_SHORTCUT_CHORD, label: '切换浅色 / 深色主题' },

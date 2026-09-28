@@ -51,7 +51,7 @@ export const goalItem: BottomBarItemDefinition = {
           className="shrink-0 text-gray-500"
           style={{ fontSize: '15px' }}
         />
-        <span className="max-w-[18rem] truncate">
+        <span className="max-w-[10rem] sm:max-w-[18rem] truncate">
           {goalText === '' ? 'goal: 未设置' : goalText}
         </span>
       </button>

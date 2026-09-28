@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-git-refs"
+description = "Enables the tauri_git_refs command without any pre-configured scope."
+commands.allow = ["tauri_git_refs"]
+
+[[permission]]
+identifier = "deny-tauri-git-refs"
+description = "Denies the tauri_git_refs command without any pre-configured scope."
+commands.deny = ["tauri_git_refs"]

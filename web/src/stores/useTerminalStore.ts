@@ -58,7 +58,13 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
     set({ height: clamped, isMaximized: false });
   },
 
-  toggleMaximize: () => set((state) => ({ isMaximized: !state.isMaximized })),
+  toggleMaximize: () =>
+    set((state) => {
+      if (!state.open) {
+        return { open: true, isMaximized: true };
+      }
+      return { isMaximized: !state.isMaximized };
+    }),
 
   setActiveSession: (id) => set({ activeSessionId: id }),
   createSession: async (workspace, shell) => {

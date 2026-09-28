@@ -9,6 +9,7 @@
  */
 import { filesTab } from './filesTab.tsx';
 import { changesTab } from './changesTab.tsx';
+import { gitTab } from './gitTab.tsx';
 import { trajectoryTab } from './trajectoryTab.tsx';
 import { goalsTab } from './goalsTab.tsx';
 import { previewTab } from './previewTab.tsx';
@@ -17,6 +18,7 @@ import type { RightDockTabDefinition } from './contract.ts';
 export const RIGHT_DOCK_MANIFEST: readonly RightDockTabDefinition[] = [
   filesTab,
   changesTab,
+  gitTab,
   trajectoryTab,
   goalsTab,
   previewTab,

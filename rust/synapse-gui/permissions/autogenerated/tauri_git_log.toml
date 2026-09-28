@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-git-log"
+description = "Enables the tauri_git_log command without any pre-configured scope."
+commands.allow = ["tauri_git_log"]
+
+[[permission]]
+identifier = "deny-tauri-git-log"
+description = "Denies the tauri_git_log command without any pre-configured scope."
+commands.deny = ["tauri_git_log"]

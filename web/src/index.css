@@ -1355,6 +1355,7 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: rgb(var(--surface));
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
 }
 .navigation-drawer[hidden] { display: none; }
 .navigation-drawer nav, .navigation-drawer nav > div { width: 100%; }
@@ -1366,7 +1367,7 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
 @media (max-width: 767px) {
   .console-gutter { padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); }
   .console-workspace > header {
-    grid-template-columns: auto minmax(0, 1fr); gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px;
     padding-top: env(safe-area-inset-top, 0px);
     height: calc(var(--chrome-h) + env(safe-area-inset-top, 0px));
   }

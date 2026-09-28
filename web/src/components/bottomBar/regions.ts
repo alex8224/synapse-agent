@@ -20,7 +20,7 @@ import type {
 
 /** Classes of each track.  `empty:hidden` keeps an unused track out of the flow. */
 export const REGION_CLASS: Record<BottomBarRegion, string> = {
-  left: 'flex min-w-0 items-center gap-2.5 empty:hidden',
+  left: 'flex min-w-0 items-center gap-2.5 overflow-hidden empty:hidden',
   center: 'flex shrink-0 items-center justify-self-center gap-2 tabular-nums empty:hidden',
   right: 'flex min-w-0 items-center gap-2 empty:hidden',
 };

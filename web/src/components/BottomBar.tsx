@@ -87,16 +87,30 @@ interface OpenOverlay {
 }
 
 /** The phone band, from the same breakpoint the shell lays out for. */
-function useCompactStrip(): boolean {
-  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches);
+function useCompactStrip(barRef?: React.RefObject<HTMLElement | null>): boolean {
+  const [mediaCompact, setMediaCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches);
+  const [containerCompact, setContainerCompact] = useState(false);
   useEffect(() => {
     const query = window.matchMedia(COMPACT_QUERY);
-    const update = () => setCompact(query.matches);
+    const update = () => setMediaCompact(query.matches);
     update();
     query.addEventListener('change', update);
     return () => query.removeEventListener('change', update);
   }, []);
-  return compact;
+
+  useEffect(() => {
+    const element = barRef?.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerCompact(entry.contentRect.width < 880);
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [barRef]);
+
+  return mediaCompact || containerCompact;
 }
 
 /** One entry's control.  A keyboard-only entry paints nothing at all. */
@@ -174,9 +188,9 @@ export const BottomBar: React.FC = () => {
   // Only the facts the strip itself decides on: what each entry paints is its
   // own subscription (a reasoning delta must not re-render the strip).
   const sessionOpen = useConsoleStore((state) => state.currentSession.thread_id !== '');
-  const compact = useCompactStrip();
   const [open, setOpen] = useState<OpenOverlay | null>(null);
   const barRef = useRef<HTMLElement | null>(null);
+  const compact = useCompactStrip(barRef);
   // Only the keyboard path needs this registry: a click hands the strip the
   // trigger element itself, and the element the open overlay hangs from is part
   // of the open state (never read from a ref while rendering).

@@ -237,10 +237,34 @@
           "markdownDescription": "Enables the stt_cloud_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_git_commit command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-commit",
+          "markdownDescription": "Enables the tauri_git_commit command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_git_diff command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-git-diff",
           "markdownDescription": "Enables the tauri_git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-log",
+          "markdownDescription": "Enables the tauri_git_log command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_refs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-refs",
+          "markdownDescription": "Enables the tauri_git_refs command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_stash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-stash",
+          "markdownDescription": "Enables the tauri_git_stash command without any pre-configured scope."
         },
         {
           "description": "Enables the tauri_git_status command without any pre-configured scope.",
@@ -381,10 +405,34 @@
           "markdownDescription": "Denies the stt_cloud_status command without any pre-configured scope."
         },
         {
+          "description": "Denies the tauri_git_commit command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-commit",
+          "markdownDescription": "Denies the tauri_git_commit command without any pre-configured scope."
+        },
+        {
           "description": "Denies the tauri_git_diff command without any pre-configured scope.",
           "type": "string",
           "const": "deny-tauri-git-diff",
           "markdownDescription": "Denies the tauri_git_diff command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-log",
+          "markdownDescription": "Denies the tauri_git_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_refs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-refs",
+          "markdownDescription": "Denies the tauri_git_refs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_stash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-stash",
+          "markdownDescription": "Denies the tauri_git_stash command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_git_status command without any pre-configured scope.",

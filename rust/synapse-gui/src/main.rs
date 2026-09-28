@@ -171,6 +171,66 @@ async fn tauri_git_diff(
 }
 
 #[tauri::command]
+async fn tauri_git_refs(workspace: Option<String>) -> Result<git_fs::GitRefsView, String> {
+    // One `for-each-ref` (branches and tags together), one `stash list` and one
+    // `worktree list` shell out; never one process per branch.
+    run_blocking("读取 git 引用", move || {
+        git_fs::get_git_refs(&command_workspace(workspace))
+    })
+    .await
+}
+
+// `rename_all = "snake_case"` keeps the argument names identical on both sides of
+// the IPC boundary, the way the rest of this project's payloads are spelled.
+#[tauri::command(rename_all = "snake_case")]
+async fn tauri_git_log(
+    workspace: Option<String>,
+    rev: Option<String>,
+    limit: Option<u32>,
+    skip: Option<u32>,
+    first_parent: Option<bool>,
+    path: Option<String>,
+) -> Result<git_fs::GitLogView, String> {
+    // `git log` walks the history, so it never runs on the UI thread. A `limit`
+    // of 0 asks for the largest page the reader allows.
+    run_blocking("读取 git 历史", move || {
+        git_fs::get_git_log(
+            &command_workspace(workspace),
+            rev.as_deref(),
+            limit.unwrap_or(0),
+            skip.unwrap_or(0),
+            first_parent.unwrap_or(false),
+            path.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn tauri_git_commit(
+    workspace: Option<String>,
+    sha: String,
+    path: Option<String>,
+) -> Result<git_fs::GitCommitDetailView, String> {
+    // Two diffs (`--name-status` and `--numstat`) plus the metadata read.
+    run_blocking("读取提交详情", move || {
+        git_fs::get_git_commit(&command_workspace(workspace), &sha, path.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn tauri_git_stash(
+    workspace: Option<String>,
+    index: u32,
+) -> Result<git_fs::GitDiffView, String> {
+    run_blocking("读取 stash 差异", move || {
+        git_fs::get_git_stash_diff(&command_workspace(workspace), index)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn tauri_list_artifacts(
     workspace: Option<String>,
     subpath: Option<String>,
@@ -478,6 +538,10 @@ fn main() {
             open_path,
             tauri_git_status,
             tauri_git_diff,
+            tauri_git_refs,
+            tauri_git_log,
+            tauri_git_commit,
+            tauri_git_stash,
             tauri_list_artifacts,
             tauri_stat_artifact,
             tauri_read_artifact,

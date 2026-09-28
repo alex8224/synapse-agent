@@ -1,5 +1,6 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -162,6 +163,259 @@ mod tests {
         let st = get_git_status(&repo).expect("git status should succeed on synapse repo");
         assert!(st.branch.is_some(), "should detect git branch");
     }
+
+    /// Run one git command in a test repository, panicking on failure.
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("git must be runnable");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    /// A throwaway repository with three commits, a tag, a rename and a stash,
+    /// so the history readers are exercised without depending on this checkout.
+    fn seeded_repo(name: &str) -> PathBuf {
+        let dir = temp_workspace(name);
+        git_in(&dir, &["init", "-b", "main"]);
+        git_in(&dir, &["config", "user.name", "Test"]);
+        git_in(&dir, &["config", "user.email", "test@example.com"]);
+        fs::write(dir.join("first.txt"), "one\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-m", "first commit"]);
+        fs::write(dir.join("first.txt"), "one\ntwo\n").unwrap();
+        fs::write(dir.join("second.txt"), "second\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-m", "second commit"]);
+        git_in(&dir, &["tag", "v1"]);
+        git_in(&dir, &["mv", "second.txt", "renamed.txt"]);
+        git_in(&dir, &["commit", "-m", "rename second"]);
+        fs::write(dir.join("first.txt"), "one\ntwo\nthree\n").unwrap();
+        git_in(&dir, &["stash", "push", "-m", "work in progress"]);
+        dir
+    }
+
+    #[test]
+    fn test_refs_read_branches_tags_stashes_and_worktrees() {
+        let dir = seeded_repo("refs");
+        let refs = get_git_refs(&dir).expect("refs must read");
+        assert_eq!(refs.current.as_deref(), Some("main"));
+        assert!(!refs.truncated);
+
+        let main = refs
+            .branches
+            .iter()
+            .find(|branch| branch.name == "main")
+            .expect("the local branch must be listed");
+        assert!(main.is_head);
+        assert_eq!(main.kind, "local");
+        assert_eq!(main.tip_subject, "rename second");
+        assert_eq!(main.tip_sha.len(), 7);
+        // The upstream is unset here, so no ahead/behind is claimed.
+        assert!(main.upstream.is_none());
+        assert_eq!((main.ahead, main.behind), (0, 0));
+
+        let tag = refs
+            .tags
+            .iter()
+            .find(|tag| tag.name == "v1")
+            .expect("the tag must be listed");
+        assert!(!tag.annotated, "`git tag v1` is a lightweight tag");
+        // The tag was made before the rename commit, so it points at the commit
+        // before the branch tip -- a tag is not the tip by definition.
+        let log = get_git_log(&dir, None, 5, 0, false, None).unwrap();
+        assert_eq!(tag.target_sha, log.commits[1].short_sha);
+        assert_ne!(tag.target_sha, main.tip_sha);
+
+        assert_eq!(refs.stashes.len(), 1);
+        assert_eq!(refs.stashes[0].index, 0);
+        assert_eq!(refs.stashes[0].name, "stash@{0}");
+        assert!(refs.stashes[0].message.contains("work in progress"));
+
+        assert_eq!(refs.worktrees.len(), 1);
+        assert!(refs.worktrees[0].is_main);
+        assert_eq!(refs.worktrees[0].branch.as_deref(), Some("main"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_log_pages_and_reports_more() {
+        let dir = seeded_repo("log");
+        let page = get_git_log(&dir, None, 2, 0, false, None).expect("log must read");
+        assert_eq!(page.rev, "HEAD");
+        assert_eq!(page.commits.len(), 2);
+        assert!(
+            page.more,
+            "a third commit exists, so the page is not the end"
+        );
+        assert_eq!(page.commits[0].subject, "rename second");
+        assert_eq!(page.commits[0].parents.len(), 1);
+
+        let whole = get_git_log(&dir, None, 5, 0, false, None).unwrap();
+        assert_eq!(whole.commits.len(), 3);
+        assert!(!whole.more);
+
+        // A page past the end is empty, not an error.
+        let past_end = get_git_log(&dir, None, 5, 9, false, None).unwrap();
+        assert!(past_end.commits.is_empty());
+
+        // A path filter keeps only the commits that touched that path.
+        let filtered = get_git_log(&dir, None, 5, 0, false, Some("first.txt")).unwrap();
+        assert_eq!(filtered.commits.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_commit_detail_lists_files_and_one_diff() {
+        let dir = seeded_repo("detail");
+        let log = get_git_log(&dir, None, 5, 0, false, None).unwrap();
+        let head_sha = log.commits[0].sha.clone();
+
+        let detail = get_git_commit(&dir, &head_sha, None).expect("detail must read");
+        assert_eq!(detail.sha, head_sha);
+        assert_eq!(detail.subject, "rename second");
+        assert!(
+            detail.diff.is_none(),
+            "no path was asked for, so no diff is read"
+        );
+        assert_eq!(detail.files.len(), 1);
+        let renamed = &detail.files[0];
+        assert_eq!(renamed.status, "R100");
+        assert_eq!(renamed.path, "renamed.txt");
+        assert_eq!(renamed.old_path.as_deref(), Some("second.txt"));
+        assert_eq!(renamed.insertions, Some(0));
+        assert_eq!(renamed.deletions, Some(0));
+        assert!(!renamed.binary);
+
+        // The first commit has no parent: it is compared against the empty tree.
+        let root_sha = log.commits.last().unwrap().sha.clone();
+        let root = get_git_commit(&dir, &root_sha, Some("first.txt")).unwrap();
+        assert!(root.parents.is_empty());
+        assert_eq!(root.files.len(), 1);
+        assert_eq!(root.files[0].status, "A");
+        assert_eq!(root.files[0].insertions, Some(1));
+        let diff = root.diff.expect("the asked-for path's diff must be read");
+        assert!(!diff.empty);
+        assert!(diff.text.contains("+one"));
+        assert!(!diff.binary);
+        assert!(!diff.truncated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stash_diff_is_read_without_applying_it() {
+        let dir = seeded_repo("stash");
+        let diff = get_git_stash_diff(&dir, 0).expect("the stash must be readable");
+        assert_eq!(diff.path, "stash@{0}");
+        assert!(!diff.empty);
+        assert!(diff.text.contains("+three"));
+        assert!(!diff.binary);
+        // Reading it must not have popped it: the entry is still there.
+        assert_eq!(get_git_refs(&dir).unwrap().stashes.len(), 1);
+        // A stash that does not exist is an error, never a fabricated empty diff.
+        assert!(get_git_stash_diff(&dir, 7).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_an_unborn_repository_has_an_empty_log() {
+        let dir = temp_workspace("unborn");
+        git_in(&dir, &["init", "-b", "main"]);
+        let log =
+            get_git_log(&dir, None, 10, 0, false, None).expect("an unborn HEAD is not a failure");
+        assert!(log.commits.is_empty());
+        assert!(!log.more);
+        // A revision that does not exist is still reported.
+        assert!(get_git_log(&dir, Some("nope"), 10, 0, false, None).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_revisions_and_paths_cannot_smuggle_options() {
+        for bad in [
+            "",
+            "--upload-pack=x",
+            "-n",
+            "HEAD~1",
+            "a..b",
+            "a@{1}",
+            "/main",
+            ".hidden",
+            "main.",
+            "a b",
+            "a;b",
+            "refs/heads/../x",
+        ] {
+            assert!(validate_git_rev(bad).is_err(), "{bad} must be refused");
+        }
+        for good in [
+            "main",
+            "HEAD",
+            "v1",
+            "feature/right-panel",
+            "abc1234",
+            "origin/main",
+            "release-1.0",
+        ] {
+            assert!(validate_git_rev(good).is_ok(), "{good} must be accepted");
+        }
+        for bad in [
+            "",
+            "/abs.txt",
+            "..\\win.txt",
+            "a/../../b",
+            "-x",
+            "a/C:/x.txt",
+            "C:x.txt",
+            "a//b",
+            "a/./b",
+        ] {
+            assert!(validate_git_path(bad).is_err(), "{bad} must be refused");
+        }
+        for good in ["a.txt", "src/synapse/app/agent.py", "a b/c.txt"] {
+            assert!(validate_git_path(good).is_ok(), "{good} must be accepted");
+        }
+    }
+
+    #[test]
+    fn test_numstat_and_name_status_parsers() {
+        let numstat = "40\t0\ttests/a.py\0".to_string()
+            + "0\t0\t\0old/a.rs\0new/a.rs\0"
+            + "-\t-\tassets/logo.png\0";
+        let counts = parse_numstat(&numstat);
+        assert_eq!(counts.get("tests/a.py"), Some(&(Some(40), Some(0), false)));
+        assert_eq!(counts.get("new/a.rs"), Some(&(Some(0), Some(0), false)));
+        assert_eq!(counts.get("assets/logo.png"), Some(&(None, None, true)));
+        let status = "M\0tests/a.py\0R100\0old/a.rs\0new/a.rs\0A\0added.txt\0";
+        let records = parse_name_status(status);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].0, "M");
+        assert_eq!(records[0].1, "tests/a.py");
+        assert!(records[0].2.is_none());
+        assert_eq!(records[1].0, "R100");
+        assert_eq!(records[1].1, "new/a.rs");
+        assert_eq!(records[1].2.as_deref(), Some("old/a.rs"));
+        assert_eq!(records[2].0, "A");
+    }
+
+    #[test]
+    fn test_cap_text_stays_on_a_character_boundary() {
+        let mut text = "中文中文".to_string();
+        assert!(
+            cap_text(&mut text, 7),
+            "7 bytes lands inside the third character"
+        );
+        assert_eq!(text, "中文");
+        let mut fits = "abc".to_string();
+        assert!(!cap_text(&mut fits, 3));
+        assert_eq!(fits, "abc");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +438,137 @@ pub struct GitDiffView {
     pub binary: bool,
     pub truncated: bool,
     pub empty: bool,
+}
+
+/// Commits one `get_git_log` page returns at most.
+pub const MAX_GIT_LOG_PAGE: u32 = 200;
+/// Branches (and, separately, tags) one refs read reports before it truncates.
+pub const MAX_GIT_REFS: usize = 200;
+/// Changed files one commit detail reports before it truncates.
+pub const MAX_GIT_COMMIT_FILES: usize = 200;
+/// One historical diff (a commit's file, or a stash) is capped here.
+pub const MAX_GIT_DIFF_BYTES: usize = 256 * 1024;
+/// The empty tree: what a root commit (one with no parent) is compared against,
+/// so the detail reader never has to special-case a repository's first commit.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/// The field separator byte every reader below splits on. The two escape
+/// spellings are not interchangeable: `for-each-ref` expands `%1f` but leaves
+/// `%x1f` literal, while `log`, `show` and `stash list` expand `%x1f` but leave
+/// `%1f` literal. Both spellings are therefore pinned in the format constants
+/// rather than here.
+const US: char = '\u{1f}';
+/// `git for-each-ref`: ref name, short name, tip sha, upstream, upstream
+/// tracking, date, subject, current-branch marker, symref, peeled target, kind.
+const REF_FORMAT: &str = "--format=%(refname)%1f%(refname:short)%1f%(objectname:short)%1f%(upstream:short)%1f%(upstream:track)%1f%(authordate:iso-strict)%1f%(subject)%1f%(HEAD)%1f%(symref)%1f%(*objectname:short)%1f%(objecttype)";
+/// `git log`: full sha, short sha, author, author date, parents, subject.
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%P%x1f%s";
+/// `git show -s`: the log fields plus the body last, so a body that contains the
+/// separator cannot shift the fields before it.
+const COMMIT_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%P%x1f%s%x1f%b";
+/// `git stash list`: the reflog selector (`stash@{0}`) and the message. It is the
+/// log family, so it needs `%x1f`.
+const STASH_FORMAT: &str = "--format=%gd%x1f%s";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitBranchView {
+    pub name: String,
+    /// `local` or `remote`.
+    pub kind: String,
+    pub tip_sha: String,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub tip_date: String,
+    pub tip_subject: String,
+    pub is_head: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitTagView {
+    pub name: String,
+    /// The commit the tag points at. For an annotated tag this is the peeled
+    /// target, never the tag object itself.
+    pub target_sha: String,
+    pub annotated: bool,
+    pub date: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStashView {
+    pub index: u32,
+    pub name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeView {
+    pub path: String,
+    pub head_sha: String,
+    pub branch: Option<String>,
+    pub is_main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRefsView {
+    pub current: Option<String>,
+    pub branches: Vec<GitBranchView>,
+    pub tags: Vec<GitTagView>,
+    pub stashes: Vec<GitStashView>,
+    pub worktrees: Vec<GitWorktreeView>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitView {
+    pub sha: String,
+    pub short_sha: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub authored_at: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitLogView {
+    /// The revision this page was read for (`HEAD` when none was asked for).
+    pub rev: String,
+    pub commits: Vec<GitCommitView>,
+    /// True when the page is not the end of the history.
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitFileView {
+    pub path: String,
+    /// git's own status letter (`A`, `M`, `D`, `R100`, `C75`, …), verbatim.
+    pub status: String,
+    /// Set only for a rename or a copy: the path the file came from.
+    pub old_path: Option<String>,
+    pub insertions: Option<u32>,
+    pub deletions: Option<u32>,
+    /// A binary change carries no line counts, exactly as git reports it.
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitDetailView {
+    pub sha: String,
+    pub short_sha: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub authored_at: String,
+    pub subject: String,
+    pub body: String,
+    pub files: Vec<GitCommitFileView>,
+    pub insertions: u32,
+    pub deletions: u32,
+    pub truncated: bool,
+    /// One file's diff inside this commit, present only when a path was asked
+    /// for. The commit is always compared against its first parent (a root
+    /// commit against the empty tree), so a merge commit reports what it brought
+    /// in rather than a combined diff.
+    pub diff: Option<GitDiffView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,9 +617,28 @@ pub struct ArtifactChunk {
 
 /// Helper to run git commands with suppressed window on Windows
 fn run_git_cmd(workspace: &Path, args: &[&str]) -> Result<String, String> {
+    run_git_cmd_with(workspace, args, false)
+}
+
+/// Read-only git: `GIT_OPTIONAL_LOCKS=0` is what makes "read-only" true rather
+/// than aspirational -- it is the switch that stops git from refreshing and
+/// rewriting the index while it answers. Every history read goes through here;
+/// nothing on this surface stages, commits, checks out or moves anything.
+fn run_git_cmd_ro(workspace: &Path, args: &[&str]) -> Result<String, String> {
+    run_git_cmd_with(workspace, args, true)
+}
+
+fn run_git_cmd_with(
+    workspace: &Path,
+    args: &[&str],
+    optional_locks_off: bool,
+) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.current_dir(workspace);
     cmd.args(args);
+    if optional_locks_off {
+        cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    }
 
     #[cfg(windows)]
     {
@@ -510,6 +914,590 @@ pub fn get_git_diff(workspace: &Path, file_path: &str) -> Result<GitDiffView, St
         binary,
         truncated: false,
         empty,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Branch / tag / stash / worktree inventory, history, and commit detail.
+//
+// All of it is read-only, bounded, and argument-validated: a revision or a path
+// arriving from the webview is never handed to git unexamined, because both land
+// in argv positions where a leading `-` would be read as an option.
+// ---------------------------------------------------------------------------
+
+/// A revision the history readers accept: a branch, a tag, or a sha.
+///
+/// Deliberately stricter than git's own revision syntax. `HEAD~1`, `a..b` and
+/// `@{upstream}` are all valid revisions, but this surface only ever asks for one
+/// ref at a time, and refusing them here is what makes a leading `-` (an option
+/// injection) impossible rather than merely unlikely.
+pub fn validate_git_rev(rev: &str) -> Result<(), String> {
+    if rev.is_empty() {
+        return Err("revision 不能为空".to_string());
+    }
+    if rev.len() > 255 {
+        return Err(format!("revision 过长: {} 字节", rev.len()));
+    }
+    if rev.starts_with('-') || rev.starts_with('.') || rev.starts_with('/') {
+        return Err(format!("revision 不能以 '-' '.' '/' 开头: {rev}"));
+    }
+    if rev.ends_with('.') || rev.ends_with('/') || rev.contains("..") || rev.contains("@{") {
+        return Err(format!("revision 不是合法引用: {rev}"));
+    }
+    if !rev
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._/-@".contains(c))
+    {
+        return Err(format!("revision 只允许字母、数字与 . _ / - @ : {rev}"));
+    }
+    Ok(())
+}
+
+/// A workspace-relative POSIX path, or an error.
+///
+/// Same rule as the artifact surface: no drive prefix, no backslash, no empty,
+/// `.` or `..` segment -- and no leading `-`, which a pathspec position would
+/// otherwise read as an option.
+pub fn validate_git_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+    if path.len() > 4096 {
+        return Err("路径过长".to_string());
+    }
+    if path.starts_with('-') {
+        return Err("路径不能以 '-' 开头".to_string());
+    }
+    if path.starts_with('/') || path.contains('\\') || path.contains(':') {
+        return Err("路径必须是工作区相对的 POSIX 路径".to_string());
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err("路径不能包含空段或父目录段".to_string());
+    }
+    Ok(())
+}
+
+/// Cap a string at `cap` bytes on a character boundary; reports whether it cut.
+fn cap_text(text: &mut String, cap: usize) -> bool {
+    if text.len() <= cap {
+        return false;
+    }
+    let mut end = cap;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    true
+}
+
+/// `%(upstream:track)` (`[ahead 1, behind 2]`, or empty) as counts.
+fn parse_track(track: &str) -> (u32, u32) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    let inner = track.trim().trim_start_matches('[').trim_end_matches(']');
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("ahead ") {
+            ahead = value.trim().parse::<u32>().unwrap_or(0);
+        } else if let Some(value) = part.strip_prefix("behind ") {
+            behind = value.trim().parse::<u32>().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// One numstat record's `(added, removed, binary)`.
+fn numstat_counts(added: &str, removed: &str) -> (Option<u32>, Option<u32>, bool) {
+    if added == "-" || removed == "-" {
+        return (None, None, true);
+    }
+    (
+        added.parse::<u32>().ok(),
+        removed.parse::<u32>().ok(),
+        false,
+    )
+}
+
+/// Parse `git diff --numstat -z` into `path -> (added, removed, binary)`.
+///
+/// With `-z` a single-path record is one NUL-terminated token holding
+/// `added\tremoved\tpath`, while a rename or a copy is a token holding
+/// `added\tremoved\t` followed by two more tokens (the old, then the new path).
+/// A binary change reports `-` for both columns and carries no line counts.
+fn parse_numstat(raw: &str) -> HashMap<String, (Option<u32>, Option<u32>, bool)> {
+    let mut counts = HashMap::new();
+    let mut tokens = raw.split('\0').filter(|token| !token.is_empty());
+    while let Some(token) = tokens.next() {
+        let mut parts = token.splitn(3, '\t');
+        let added = parts.next().unwrap_or("");
+        let removed = parts.next().unwrap_or("");
+        let rest = parts.next().unwrap_or("");
+        if rest.is_empty() {
+            // A rename or a copy: the next two tokens are the old and new path.
+            match (tokens.next(), tokens.next()) {
+                (Some(_old), Some(new)) => {
+                    counts.insert(new.to_string(), numstat_counts(added, removed));
+                }
+                _ => break,
+            }
+            continue;
+        }
+        counts.insert(rest.to_string(), numstat_counts(added, removed));
+    }
+    counts
+}
+
+/// Parse `git diff --name-status -z` into `(status, path, old_path)` records.
+///
+/// A rename or a copy is `status\0old\0new`; everything else is `status\0path`.
+fn parse_name_status(raw: &str) -> Vec<(String, String, Option<String>)> {
+    let mut records = Vec::new();
+    let mut tokens = raw.split('\0').filter(|token| !token.is_empty());
+    while let Some(status) = tokens.next() {
+        let status = status.to_string();
+        if status.starts_with('R') || status.starts_with('C') {
+            match (tokens.next(), tokens.next()) {
+                (Some(old), Some(new)) => {
+                    records.push((status, new.to_string(), Some(old.to_string())));
+                }
+                _ => break,
+            }
+            continue;
+        }
+        match tokens.next() {
+            Some(path) => records.push((status, path.to_string(), None)),
+            None => break,
+        }
+    }
+    records
+}
+
+/// The stash entries of one workspace (`git stash list`).
+fn read_stashes(workspace: &Path) -> Result<Vec<GitStashView>, String> {
+    let raw = run_git_cmd_ro(workspace, &["stash", "list", STASH_FORMAT])?;
+    let mut stashes = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, US);
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let message = parts.next().unwrap_or("").to_string();
+        let index = name
+            .strip_prefix("stash@{")
+            .and_then(|rest| rest.strip_suffix('}'))
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .unwrap_or(0);
+        stashes.push(GitStashView {
+            index,
+            name,
+            message,
+        });
+    }
+    Ok(stashes)
+}
+
+/// The worktrees of one repository (`git worktree list --porcelain`).
+///
+/// The paths are absolute and are reported as such: this surface exists for the
+/// desktop shell, which already reads the reader's own filesystem.
+fn read_worktrees(workspace: &Path) -> Result<Vec<GitWorktreeView>, String> {
+    let raw = run_git_cmd_ro(workspace, &["worktree", "list", "--porcelain"])?;
+    // One blank-line separated block per worktree: `worktree <path>`,
+    // `HEAD <sha>`, then `branch <ref>` or `detached`.
+    let mut worktrees: Vec<GitWorktreeView> = Vec::new();
+    let mut current: Option<(Option<String>, String, Option<String>)> = None;
+    let flush = |current: &mut Option<(Option<String>, String, Option<String>)>,
+                 worktrees: &mut Vec<GitWorktreeView>| {
+        if let Some((Some(path), head_sha, branch)) = current.take() {
+            let is_main = worktrees.is_empty();
+            worktrees.push(GitWorktreeView {
+                path,
+                head_sha,
+                branch,
+                is_main,
+            });
+        }
+    };
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            flush(&mut current, &mut worktrees);
+            continue;
+        }
+        let entry = current.get_or_insert_with(|| (None, String::new(), None));
+        if let Some(value) = line.strip_prefix("worktree ") {
+            entry.0 = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            entry.1 = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("branch ") {
+            let value = value.trim();
+            entry.2 = Some(
+                value
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(value)
+                    .to_string(),
+            );
+        }
+    }
+    flush(&mut current, &mut worktrees);
+    Ok(worktrees)
+}
+
+/// Branches, tags, stashes and worktrees of one workspace.
+///
+/// Three bounded read-only calls: one `for-each-ref` covers branches and tags
+/// together (with `%(upstream:track)` answering ahead/behind without a
+/// `rev-list` per branch), one `stash list`, one `worktree list`.
+pub fn get_git_refs(workspace: &Path) -> Result<GitRefsView, String> {
+    let raw = run_git_cmd_ro(
+        workspace,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            REF_FORMAT,
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+
+    let mut branches: Vec<GitBranchView> = Vec::new();
+    let mut tags: Vec<GitTagView> = Vec::new();
+    let mut truncated = false;
+
+    for line in raw.lines() {
+        let fields: Vec<&str> = line.split(US).collect();
+        if fields.len() < 11 {
+            continue;
+        }
+        let refname = fields[0];
+        let short = fields[1];
+        let object_short = fields[2];
+        let upstream = fields[3];
+        let (ahead, behind) = parse_track(fields[4]);
+        let date = fields[5];
+        let subject = fields[6];
+        let head = fields[7];
+        let symref = fields[8];
+        let peeled = fields[9];
+        let object_kind = fields[10];
+        // `refs/remotes/origin/HEAD` is a symbolic alias of another ref, not a
+        // branch of its own; listing it would duplicate `origin/main`.
+        if !symref.is_empty() {
+            continue;
+        }
+        if refname.starts_with("refs/tags/") {
+            if tags.len() >= MAX_GIT_REFS {
+                truncated = true;
+                continue;
+            }
+            let annotated = object_kind == "tag";
+            tags.push(GitTagView {
+                name: short.to_string(),
+                // An annotated tag's own object is a tag object; the commit it
+                // points at is the peeled one.
+                target_sha: if annotated && !peeled.is_empty() {
+                    peeled
+                } else {
+                    object_short
+                }
+                .to_string(),
+                annotated,
+                date: date.to_string(),
+                subject: subject.to_string(),
+            });
+            continue;
+        }
+        let is_local = refname.starts_with("refs/heads/");
+        if !is_local && !refname.starts_with("refs/remotes/") {
+            continue;
+        }
+        if branches.len() >= MAX_GIT_REFS {
+            truncated = true;
+            continue;
+        }
+        branches.push(GitBranchView {
+            name: short.to_string(),
+            kind: if is_local { "local" } else { "remote" }.to_string(),
+            tip_sha: object_short.to_string(),
+            upstream: if upstream.is_empty() {
+                None
+            } else {
+                Some(upstream.to_string())
+            },
+            ahead,
+            behind,
+            tip_date: date.to_string(),
+            tip_subject: subject.to_string(),
+            is_head: head.trim() == "*",
+        });
+    }
+
+    let current = branches
+        .iter()
+        .find(|branch| branch.is_head)
+        .map(|branch| branch.name.clone());
+
+    Ok(GitRefsView {
+        current,
+        stashes: read_stashes(workspace)?,
+        worktrees: read_worktrees(workspace)?,
+        branches,
+        tags,
+        truncated,
+    })
+}
+
+/// One page of a revision's history, newest first.
+///
+/// `limit + 1` commits are asked for, so "there is more" is an answer rather
+/// than a guess; the extra one is dropped before returning.
+pub fn get_git_log(
+    workspace: &Path,
+    rev: Option<&str>,
+    limit: u32,
+    skip: u32,
+    first_parent: bool,
+    path: Option<&str>,
+) -> Result<GitLogView, String> {
+    let rev = rev.unwrap_or("HEAD");
+    validate_git_rev(rev)?;
+    let page = match limit {
+        0 => MAX_GIT_LOG_PAGE,
+        value => value.min(MAX_GIT_LOG_PAGE),
+    };
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        "--no-color".to_string(),
+        LOG_FORMAT.to_string(),
+        "-n".to_string(),
+        (page + 1).to_string(),
+        "--skip".to_string(),
+        skip.to_string(),
+    ];
+    if first_parent {
+        args.push("--first-parent".to_string());
+    }
+    args.push(rev.to_string());
+    if let Some(path) = path {
+        validate_git_path(path)?;
+        args.push("--".to_string());
+        args.push(path.to_string());
+    }
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let raw = match run_git_cmd_ro(workspace, &borrowed) {
+        Ok(raw) => raw,
+        Err(error) => {
+            // A repository with no commit yet has no history to show, which is an
+            // empty log rather than a failure -- but only when it was `HEAD`, the
+            // default, that could not be read. A revision the caller named still
+            // reports itself, so a typo is never silently an empty history.
+            let unborn = rev == "HEAD"
+                && run_git_cmd_ro(workspace, &["rev-parse", "--verify", "HEAD"]).is_err();
+            if !unborn {
+                return Err(error);
+            }
+            return Ok(GitLogView {
+                rev: rev.to_string(),
+                commits: Vec::new(),
+                more: false,
+            });
+        }
+    };
+
+    let mut commits: Vec<GitCommitView> = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // `splitn` keeps a subject that happens to contain the separator intact.
+        let mut fields = line.splitn(6, US);
+        let sha = fields.next().unwrap_or("").to_string();
+        let short_sha = fields.next().unwrap_or("").to_string();
+        let author = fields.next().unwrap_or("").to_string();
+        let authored_at = fields.next().unwrap_or("").to_string();
+        let parents = fields.next().unwrap_or("");
+        let subject = fields.next().unwrap_or("").to_string();
+        if sha.is_empty() {
+            continue;
+        }
+        commits.push(GitCommitView {
+            sha,
+            short_sha,
+            parents: parents.split_whitespace().map(str::to_string).collect(),
+            author,
+            authored_at,
+            subject,
+        });
+    }
+    let more = commits.len() > page as usize;
+    commits.truncate(page as usize);
+    Ok(GitLogView {
+        rev: rev.to_string(),
+        commits,
+        more,
+    })
+}
+
+/// One path's diff inside one commit, bounded and binary-safe.
+fn git_commit_file_diff(
+    workspace: &Path,
+    parent: &str,
+    sha: &str,
+    path: &str,
+) -> Result<GitDiffView, String> {
+    let raw = run_git_cmd_ro(
+        workspace,
+        &["diff", "--no-color", "--unified=3", parent, sha, "--", path],
+    )?;
+    if raw.contains('\u{0}') || (raw.contains("Binary files ") && raw.contains(" differ")) {
+        return Ok(GitDiffView {
+            path: path.to_string(),
+            text: String::new(),
+            binary: true,
+            truncated: false,
+            empty: false,
+        });
+    }
+    let mut text = raw;
+    let truncated = cap_text(&mut text, MAX_GIT_DIFF_BYTES);
+    Ok(GitDiffView {
+        path: path.to_string(),
+        empty: text.trim().is_empty(),
+        text,
+        binary: false,
+        truncated,
+    })
+}
+
+/// One commit: its metadata, the files it changed against its first parent, and
+/// -- when a path is asked for -- that file's diff inside the commit.
+pub fn get_git_commit(
+    workspace: &Path,
+    sha: &str,
+    path: Option<&str>,
+) -> Result<GitCommitDetailView, String> {
+    validate_git_rev(sha)?;
+    if let Some(path) = path {
+        validate_git_path(path)?;
+    }
+    let raw = run_git_cmd_ro(workspace, &["show", "-s", COMMIT_FORMAT, sha])?;
+    let mut fields = raw.splitn(7, US);
+    let full_sha = fields.next().unwrap_or("").trim().to_string();
+    let short_sha = fields.next().unwrap_or("").to_string();
+    let author = fields.next().unwrap_or("").to_string();
+    let authored_at = fields.next().unwrap_or("").to_string();
+    let parents: Vec<String> = fields
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let subject = fields.next().unwrap_or("").to_string();
+    let body = fields.next().unwrap_or("").trim().to_string();
+    if full_sha.is_empty() {
+        return Err(format!("无法读取提交: {sha}"));
+    }
+
+    // A root commit has no parent to compare against, so it is compared against
+    // the empty tree; a merge commit is compared against its first parent, which
+    // is what "what did this commit bring in" means for a history list.
+    let parent = parents
+        .first()
+        .cloned()
+        .unwrap_or_else(|| EMPTY_TREE.to_string());
+
+    let name_status = run_git_cmd_ro(
+        workspace,
+        &["diff", "--name-status", "-M", "-z", parent.as_str(), sha],
+    )?;
+    let numstat = run_git_cmd_ro(
+        workspace,
+        &["diff", "--numstat", "-M", "-z", parent.as_str(), sha],
+    )
+    .unwrap_or_default();
+    let counts = parse_numstat(&numstat);
+
+    let mut files: Vec<GitCommitFileView> = Vec::new();
+    let mut truncated = false;
+    let mut insertions = 0u32;
+    let mut deletions = 0u32;
+    for (status, file_path, old_path) in parse_name_status(&name_status) {
+        if files.len() >= MAX_GIT_COMMIT_FILES {
+            truncated = true;
+            break;
+        }
+        let (added, removed, binary) = counts
+            .get(&file_path)
+            .copied()
+            .unwrap_or((None, None, false));
+        insertions += added.unwrap_or(0);
+        deletions += removed.unwrap_or(0);
+        files.push(GitCommitFileView {
+            path: file_path,
+            status,
+            old_path,
+            insertions: added,
+            deletions: removed,
+            binary,
+        });
+    }
+
+    let diff = match path {
+        Some(path) => Some(git_commit_file_diff(workspace, &parent, sha, path)?),
+        None => None,
+    };
+
+    Ok(GitCommitDetailView {
+        sha: full_sha,
+        short_sha,
+        parents,
+        author,
+        authored_at,
+        subject,
+        body,
+        files,
+        insertions,
+        deletions,
+        truncated,
+        diff,
+    })
+}
+
+/// One stash's diff, read-only: `git stash show -p` never applies or drops it.
+pub fn get_git_stash_diff(workspace: &Path, index: u32) -> Result<GitDiffView, String> {
+    let spec = format!("stash@{{{index}}}");
+    let raw = run_git_cmd_ro(
+        workspace,
+        &[
+            "stash",
+            "show",
+            "-p",
+            "--no-color",
+            "--unified=3",
+            spec.as_str(),
+        ],
+    )?;
+    if raw.contains('\u{0}') || (raw.contains("Binary files ") && raw.contains(" differ")) {
+        return Ok(GitDiffView {
+            path: spec,
+            text: String::new(),
+            binary: true,
+            truncated: false,
+            empty: false,
+        });
+    }
+    let mut text = raw;
+    let truncated = cap_text(&mut text, MAX_GIT_DIFF_BYTES);
+    Ok(GitDiffView {
+        path: spec,
+        empty: text.trim().is_empty(),
+        text,
+        binary: false,
+        truncated,
     })
 }
 

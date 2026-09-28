@@ -63,8 +63,8 @@ function sessionStatusesOf(state: {
  * project fetches its page lazily the first time it is expanded, so opening the
  * console never fans out into one RPC per registered project.
  */
-export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> = ({
-  collapsed, onExpand,
+export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onNavigate?: () => void }> = ({
+  collapsed, onExpand, onNavigate,
 }) => {
   const {
     isSidebarCollapsed: storedCollapsed,
@@ -218,7 +218,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
         }`}
       >
         <button
-          onClick={() => createNewSession()}
+          onClick={() => { createNewSession(); onNavigate?.(); }}
           title="在当前项目新建会话 (Ctrl+N)"
           aria-label="新建会话"
           className="ui-icon-button"
@@ -279,7 +279,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
             `+` and Ctrl+N; per-project creation stays on each project row. */}
         <button
           type="button"
-          onClick={() => createNewSession()}
+          onClick={() => { createNewSession(); onNavigate?.(); }}
           title="在当前项目新建会话 (Ctrl+N)"
           className="ui-button ui-primary mb-4 w-full"
         >
@@ -415,6 +415,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                 <button
                   type="button"
                   onClick={() => {
+                    onNavigate?.();
                     void createSessionInProject(project.project_id);
                   }}
                   title={`在 ${projectLabel(project)} 新建会话`}
@@ -486,6 +487,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void }> =
                               <button
                                 type="button"
                                 onClick={() => {
+                                  onNavigate?.();
                                   void switchProject(project.project_id, sess.thread_id);
                                 }}
                                 title={`${sess.title}\n${sess.thread_id}`}
