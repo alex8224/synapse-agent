@@ -6,6 +6,26 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.55
+
+### New Features
+
+- **Session Fork**: Fork a session into a new, independent conversation, from the console's per-answer fork button, the TUI `/fork` command, and the ACP `session/fork` operation. A fork projects the completed history into plain user/assistant text, seeds a fresh thread, rebuilds its transcript projection, and records lineage so the child shows where it came from.
+- **Desktop Git History**: Add a desktop-only "Branches" page in the right dock that drills from branches, tags, stashes and worktrees into a revision's commits and then into a commit's changed files and per-file diff, backed by read-only Tauri git commands.
+- **Cloud Dictation in the Desktop Shell**: Let the Tauri shell own the hosted speech engine's WebSocket (its handshake needs headers a browser cannot set), keeping the API key inside the shell process, and route the composer by engine and platform behind one transport interface.
+- **Desktop Vibrancy Controls**: Enhance acrylic translucency with user-facing vibrancy controls, and fix git explorer status and actions.
+
+### Bug Fixes
+
+- **Runtime Watch Overflow**: Fold a text delta burst at the watch bound instead of terminating the watch, so a fast model no longer drops events the consumer had already accepted; a non-coalescible backlog still terminates as before.
+- **Console Recovery**: Resume a server-terminated watch from the delivered cursor instead of a fresh snapshot, so a recovered running turn keeps its already-rendered head and the degraded strip only appears when events were really evicted.
+
+### Engineering
+
+- Run native Tauri command bodies (PTY write, git subprocess, file reads) on the blocking pool and parse Markdown in a dedicated Worker, so a streaming long answer no longer freezes the window or the integrated terminal.
+- Raise the runtime watch queue default from 128 to 1024, kept in sync across the wire decoder, the declared contract default, the Python client and the console watch request.
+- Harden relay termination logging, reconnect budget stability, and cursor-based recovery; flatten Markdown table headers, streamline sidebar actions, and polish the right dock UI.
+
 ## v0.1.54
 
 ### New Features
