@@ -71,7 +71,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [selectedProjectScope, setSelectedProjectScope] = useState<string>('all');
+  const [onlyCurrentProject, setOnlyCurrentProject] = useState(false);
 
   // Store bindings
   const currentSession = useConsoleStore((s) => s.currentSession);
@@ -86,6 +86,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
   const backgroundViews = useConsoleStore((s) => s.backgroundViews);
   const switchSession = useConsoleStore((s) => s.switchSession);
   const switchProject = useConsoleStore((s) => s.switchProject);
+  const toggleProjectExpanded = useConsoleStore((s) => s.toggleProjectExpanded);
   const resolveApproval = useConsoleStore((s) => s.resolveApproval);
 
   // Safe helper to resolve project display name
@@ -109,6 +110,17 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
     }
     return '';
   }, []);
+
+  // Preload sessions for registered projects when switcher opens so search is instantly comprehensive
+  useEffect(() => {
+    if (isOpen) {
+      projects.forEach((p) => {
+        if (p.project_id !== currentSession.project_id && !projectSessions[p.project_id]) {
+          void toggleProjectExpanded(p.project_id);
+        }
+      });
+    }
+  }, [isOpen, projects, currentSession.project_id, projectSessions, toggleProjectExpanded]);
 
   // Aggregate all sessions across active project and cached background projects
   const allItems = useMemo<SwitcherSessionItem[]>(() => {
@@ -218,24 +230,22 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
     extractSummary,
   ]);
 
-  // Filter by selected project scope first
+  // Filter by project scope toggle
   const scopedItems = useMemo(() => {
-    if (selectedProjectScope === 'all') return allItems;
-    return allItems.filter((item) => item.project_id === selectedProjectScope);
-  }, [allItems, selectedProjectScope]);
+    if (!onlyCurrentProject) return allItems;
+    return allItems.filter((item) => item.project_id === currentSession.project_id);
+  }, [allItems, onlyCurrentProject, currentSession.project_id]);
 
   // Filter items by search query, with strict default capping to prevent clutter
   const filteredItems = useMemo(() => {
-    const MAX_DEFAULT_RECENT = 6;
     const q = query.trim().toLowerCase();
     if (!q) {
-      // Default view: highlight active and recent without dumping all 50+ sessions
       const approval = scopedItems.filter((i) => i.status === 'approval');
       const running = scopedItems.filter((i) => i.status === 'running');
-      const recent = scopedItems.filter((i) => i.status === 'idle').slice(0, MAX_DEFAULT_RECENT);
-      return [...approval, ...running, ...recent];
+      const currentProjRecent = scopedItems.filter((i) => i.status === 'idle' && i.project_id === currentSession.project_id).slice(0, 5);
+      const otherProjRecent = scopedItems.filter((i) => i.status === 'idle' && i.project_id !== currentSession.project_id).slice(0, 3);
+      return [...approval, ...running, ...currentProjRecent, ...otherProjRecent];
     }
-    // Query view: search across titles, projects, tools, and summaries (capped at 15)
     return scopedItems.filter((item) => {
       const pLabel = resolveProjectLabel(item.project_id).toLowerCase();
       const titleMatch = item.title.toLowerCase().includes(q);
@@ -243,27 +253,36 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
       const activityMatch = item.activity?.detail?.toLowerCase().includes(q) ?? false;
       const summaryMatch = item.lastSummary.toLowerCase().includes(q);
       return titleMatch || projectMatch || activityMatch || summaryMatch;
-    }).slice(0, 15);
-  }, [scopedItems, query, resolveProjectLabel]);
+    }).slice(0, 12);
+  }, [scopedItems, query, currentSession.project_id, resolveProjectLabel]);
 
   // Categorize filtered items into clear visual sections
   const categorizedGroups = useMemo(() => {
-    const running = filteredItems.filter((i) => i.status === 'running');
-    const approval = filteredItems.filter((i) => i.status === 'approval');
-    const recent = filteredItems.filter((i) => i.status === 'idle');
+    const q = query.trim();
+    if (q) {
+      return [{ key: 'search-results', label: `搜索匹配结果 (${filteredItems.length})`, count: filteredItems.length, items: filteredItems }];
+    }
+
+    const activeTasks = filteredItems.filter((i) => i.status === 'running' || i.status === 'approval');
+    const currentProjectSessions = filteredItems.filter((i) => i.status === 'idle' && i.project_id === currentSession.project_id);
+    const otherProjectSessions = filteredItems.filter((i) => i.status === 'idle' && i.project_id !== currentSession.project_id);
 
     const groups: Array<{ key: string; label: string; count: number; items: SwitcherSessionItem[] }> = [];
-    if (approval.length > 0) {
-      groups.push({ key: 'approval', label: '等待安全审批', count: approval.length, items: approval });
+    if (activeTasks.length > 0) {
+      groups.push({ key: 'active', label: '进行中的任务', count: activeTasks.length, items: activeTasks });
     }
-    if (running.length > 0) {
-      groups.push({ key: 'running', label: '正在运行的任务', count: running.length, items: running });
+    if (currentProjectSessions.length > 0) {
+      const currentLabel = resolveProjectLabel(currentSession.project_id);
+      groups.push({ key: 'current-project', label: `当前项目 (${currentLabel})`, count: currentProjectSessions.length, items: currentProjectSessions });
     }
-    if (recent.length > 0) {
-      groups.push({ key: 'recent', label: '会话列表', count: recent.length, items: recent });
+    if (otherProjectSessions.length > 0) {
+      groups.push({ key: 'other-projects', label: '其他项目常用会话', count: otherProjectSessions.length, items: otherProjectSessions });
+    }
+    if (groups.length === 0 && filteredItems.length > 0) {
+      groups.push({ key: 'all', label: '会话列表', count: filteredItems.length, items: filteredItems });
     }
     return groups;
-  }, [filteredItems]);
+  }, [filteredItems, query, currentSession.project_id, resolveProjectLabel]);
 
   // Ensure selectedIndex is always within range
   useEffect(() => {
@@ -319,13 +338,10 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
         return;
       }
 
-      // Tab: Rotate project scope
+      // Tab: Toggle scope between All Projects and Current Project
       if (e.key === 'Tab') {
         e.preventDefault();
-        const scopes = ['all', ...projects.map((p) => p.project_id)];
-        const currentIdx = scopes.indexOf(selectedProjectScope);
-        const nextIdx = (currentIdx + 1) % scopes.length;
-        setSelectedProjectScope(scopes[nextIdx]);
+        setOnlyCurrentProject((prev) => !prev);
         setSelectedIndex(0);
         return;
       }
@@ -370,7 +386,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
         }
       }
     },
-    [filteredItems, selectedIndex, handleSelectSession, resolveApproval, query, projects, selectedProjectScope, onClose],
+    [filteredItems, selectedIndex, handleSelectSession, resolveApproval, query, onClose],
   );
 
   if (!isOpen) return null;
@@ -396,8 +412,16 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header with Search Input */}
-          <div className="flex items-center gap-3 border-b border-line px-4 py-3 bg-surface/50">
+          <div className="flex items-center gap-3 border-b border-line px-4 py-3 bg-surface/60">
             <Search20Regular className="text-gray-400 shrink-0" />
+            <button
+              onClick={() => setOnlyCurrentProject((prev) => !prev)}
+              className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-sunken border border-line text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1 shrink-0"
+              title="按 Tab 切换工作区范围"
+            >
+              <span>{onlyCurrentProject ? `仅当前项目` : '全部工作区'}</span>
+              <span className="text-[9px] opacity-70">▾</span>
+            </button>
             <input
               ref={inputRef}
               type="text"
@@ -406,7 +430,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 setQuery(e.target.value);
                 setSelectedIndex(0);
               }}
-              placeholder="搜索会话、任务动作、项目... (↑ ↓ 漫游，Enter 切换)"
+              placeholder="搜索会话标题、执行工具、或项目名... (按 Tab 切换范围)"
               className="flex-1 bg-transparent text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 outline-none"
             />
             {query ? (
@@ -426,48 +450,6 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 Esc 退出
               </span>
             )}
-          </div>
-
-          {/* Project Scope Filter Pills */}
-          <div className="flex items-center gap-1.5 px-4 py-2 border-b border-line bg-surface/40 overflow-x-auto no-scrollbar">
-            <span className="text-[11px] text-gray-400 font-mono shrink-0 mr-1">工作区:</span>
-            <button
-              onClick={() => {
-                setSelectedProjectScope('all');
-                setSelectedIndex(0);
-              }}
-              className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors ${
-                selectedProjectScope === 'all'
-                  ? 'bg-accent text-white font-semibold shadow-sm'
-                  : 'bg-surface-sunken text-gray-400 hover:text-gray-200 border border-line-subtle'
-              }`}
-            >
-              全部项目
-            </button>
-            {projects.map((p) => {
-              const isSelected = selectedProjectScope === p.project_id;
-              const isCurrent = p.project_id === currentSession.project_id;
-              return (
-                <button
-                  key={p.project_id}
-                  onClick={() => {
-                    setSelectedProjectScope(p.project_id);
-                    setSelectedIndex(0);
-                  }}
-                  className={`px-2.5 py-0.5 rounded text-[11px] font-mono flex items-center gap-1 transition-colors ${
-                    isSelected
-                      ? 'bg-accent text-white font-semibold shadow-sm'
-                      : 'bg-surface-sunken text-gray-400 hover:text-gray-200 border border-line-subtle'
-                  }`}
-                >
-                  <span>{projectLabel(p)}</span>
-                  {isCurrent && <span className="opacity-80 text-[10px]">(当前)</span>}
-                </button>
-              );
-            })}
-            <span className="ml-auto text-[10px] text-gray-400 font-mono shrink-0">
-              按 <kbd className="border border-line rounded px-1">Tab</kbd> 快速切换项目
-            </span>
           </div>
 
           {/* Master-Detail Columns */}
@@ -711,6 +693,10 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">↑</kbd>{' '}
                 <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">↓</kbd>{' '}
                 漫游
+              </span>
+              <span>
+                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">Tab</kbd>{' '}
+                切换范围
               </span>
               <span>
                 <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">Enter</kbd>{' '}
