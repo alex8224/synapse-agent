@@ -483,15 +483,15 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                         setSelectedIndex(idx);
                       }}
                       onDoubleClick={() => handleSelectSession(item)}
-                      className={`relative flex items-center gap-2.5 rounded-control px-3 py-2 cursor-pointer transition-colors duration-fast ${
+                      className={`relative flex items-center gap-3 rounded-control px-3 py-2.5 cursor-pointer transition-all duration-fast ${
                         isSelected
-                          ? 'bg-selection-fill text-gray-900 dark:text-gray-100 font-medium'
-                          : 'hover:bg-control-hover text-gray-700 dark:text-gray-300'
+                          ? 'bg-blue-600/15 dark:bg-blue-500/20 text-gray-900 dark:text-white font-medium shadow-sm border border-blue-500/35 dark:border-blue-400/35'
+                          : 'hover:bg-control-hover/70 text-gray-600 dark:text-gray-400 border border-transparent'
                       }`}
                     >
-                      {/* Fluent Selection Indicator: 3px accent bar on left */}
+                      {/* Fluent Selection Indicator: 3.5px accent bar on left */}
                       {isSelected && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-full bg-accent" />
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3.5px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-sm" />
                       )}
 
                       {/* Status icon / dot */}
@@ -511,7 +511,11 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                       {/* Session title & subtitle */}
                       <div className="flex-1 min-w-0 flex flex-col">
                         <div className="flex items-center gap-1.5">
-                          <span className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">
+                          <span
+                            className={`truncate text-xs ${
+                              isSelected ? 'font-semibold text-gray-900 dark:text-white' : 'font-medium text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
                             {item.title}
                           </span>
                           {item.isCurrent && (
@@ -651,7 +655,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                     <span className="text-[11px] font-semibold text-gray-400">
                       最新摘要 / 执行结果:
                     </span>
-                    <div className="flex-1 rounded-card bg-surface-sunken p-3 border border-line text-xs text-gray-700 dark:text-gray-200 leading-relaxed overflow-y-auto font-sans">
+                    <div className="flex-1 rounded-card bg-surface-sunken p-3 border border-line text-xs text-gray-700 dark:text-gray-200 leading-relaxed overflow-y-auto font-sans no-scrollbar">
                       {currentSelected.lastSummary ? (
                         <p className="whitespace-pre-wrap">{currentSelected.lastSummary}</p>
                       ) : (
