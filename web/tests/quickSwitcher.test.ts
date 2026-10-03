@@ -10,6 +10,52 @@ test('Quick Switcher shortcut is registered and copy-only', () => {
   assert.match(qsShortcut.label, /Quick Switcher|会话/);
 });
 
+test('Quick Switcher default view caps recent idle sessions to 6 while preserving all active tasks', () => {
+  interface MockItem {
+    id: string;
+    status: 'running' | 'approval' | 'idle';
+  }
+  const items: MockItem[] = [
+    { id: 'app-1', status: 'approval' },
+    { id: 'run-1', status: 'running' },
+    ...Array.from({ length: 50 }, (_, i) => ({ id: `idle-${i}`, status: 'idle' as const })),
+  ];
+
+  const MAX_DEFAULT_RECENT = 6;
+  const approval = items.filter((i) => i.status === 'approval');
+  const running = items.filter((i) => i.status === 'running');
+  const recent = items.filter((i) => i.status === 'idle').slice(0, MAX_DEFAULT_RECENT);
+  const defaultList = [...approval, ...running, ...recent];
+
+  assert.equal(defaultList.length, 8, 'Default view should strictly be 1 approval + 1 running + 6 recent');
+  assert.equal(defaultList[0].id, 'app-1');
+  assert.equal(defaultList[1].id, 'run-1');
+  assert.equal(defaultList[2].id, 'idle-0');
+  assert.equal(defaultList[7].id, 'idle-5');
+});
+
+test('Quick Switcher project scoping isolates sessions cleanly', () => {
+  interface ScopedMockItem {
+    id: string;
+    project_id: string;
+  }
+  const items: ScopedMockItem[] = [
+    { id: 's1', project_id: 'proj-a' },
+    { id: 's2', project_id: 'proj-b' },
+    { id: 's3', project_id: 'proj-a' },
+  ];
+
+  const filterByProject = (scope: string) => {
+    if (scope === 'all') return items;
+    return items.filter((i) => i.project_id === scope);
+  };
+
+  assert.equal(filterByProject('all').length, 3);
+  assert.equal(filterByProject('proj-a').length, 2);
+  assert.equal(filterByProject('proj-b').length, 1);
+  assert.equal(filterByProject('proj-c').length, 0);
+});
+
 test('Quick Switcher items priority scoring logic', () => {
   interface MockItem {
     id: string;

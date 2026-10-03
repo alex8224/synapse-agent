@@ -71,6 +71,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedProjectScope, setSelectedProjectScope] = useState<string>('all');
 
   // Store bindings
   const currentSession = useConsoleStore((s) => s.currentSession);
@@ -217,19 +218,33 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
     extractSummary,
   ]);
 
-  // Filter items by search query
+  // Filter by selected project scope first
+  const scopedItems = useMemo(() => {
+    if (selectedProjectScope === 'all') return allItems;
+    return allItems.filter((item) => item.project_id === selectedProjectScope);
+  }, [allItems, selectedProjectScope]);
+
+  // Filter items by search query, with strict default capping to prevent clutter
   const filteredItems = useMemo(() => {
+    const MAX_DEFAULT_RECENT = 6;
     const q = query.trim().toLowerCase();
-    if (!q) return allItems;
-    return allItems.filter((item) => {
+    if (!q) {
+      // Default view: highlight active and recent without dumping all 50+ sessions
+      const approval = scopedItems.filter((i) => i.status === 'approval');
+      const running = scopedItems.filter((i) => i.status === 'running');
+      const recent = scopedItems.filter((i) => i.status === 'idle').slice(0, MAX_DEFAULT_RECENT);
+      return [...approval, ...running, ...recent];
+    }
+    // Query view: search across titles, projects, tools, and summaries (capped at 15)
+    return scopedItems.filter((item) => {
       const pLabel = resolveProjectLabel(item.project_id).toLowerCase();
       const titleMatch = item.title.toLowerCase().includes(q);
       const projectMatch = pLabel.includes(q) || item.project_id.toLowerCase().includes(q);
       const activityMatch = item.activity?.detail?.toLowerCase().includes(q) ?? false;
       const summaryMatch = item.lastSummary.toLowerCase().includes(q);
       return titleMatch || projectMatch || activityMatch || summaryMatch;
-    });
-  }, [allItems, query, resolveProjectLabel]);
+    }).slice(0, 15);
+  }, [scopedItems, query, resolveProjectLabel]);
 
   // Categorize filtered items into clear visual sections
   const categorizedGroups = useMemo(() => {
@@ -304,6 +319,17 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
         return;
       }
 
+      // Tab: Rotate project scope
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const scopes = ['all', ...projects.map((p) => p.project_id)];
+        const currentIdx = scopes.indexOf(selectedProjectScope);
+        const nextIdx = (currentIdx + 1) % scopes.length;
+        setSelectedProjectScope(scopes[nextIdx]);
+        setSelectedIndex(0);
+        return;
+      }
+
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         if (filteredItems.length > 0) {
@@ -344,7 +370,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
         }
       }
     },
-    [filteredItems, selectedIndex, handleSelectSession, resolveApproval, query, onClose],
+    [filteredItems, selectedIndex, handleSelectSession, resolveApproval, query, projects, selectedProjectScope, onClose],
   );
 
   if (!isOpen) return null;
@@ -400,6 +426,48 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 Esc 退出
               </span>
             )}
+          </div>
+
+          {/* Project Scope Filter Pills */}
+          <div className="flex items-center gap-1.5 px-4 py-2 border-b border-line bg-surface/40 overflow-x-auto no-scrollbar">
+            <span className="text-[11px] text-gray-400 font-mono shrink-0 mr-1">工作区:</span>
+            <button
+              onClick={() => {
+                setSelectedProjectScope('all');
+                setSelectedIndex(0);
+              }}
+              className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors ${
+                selectedProjectScope === 'all'
+                  ? 'bg-accent text-white font-semibold shadow-sm'
+                  : 'bg-surface-sunken text-gray-400 hover:text-gray-200 border border-line-subtle'
+              }`}
+            >
+              全部项目
+            </button>
+            {projects.map((p) => {
+              const isSelected = selectedProjectScope === p.project_id;
+              const isCurrent = p.project_id === currentSession.project_id;
+              return (
+                <button
+                  key={p.project_id}
+                  onClick={() => {
+                    setSelectedProjectScope(p.project_id);
+                    setSelectedIndex(0);
+                  }}
+                  className={`px-2.5 py-0.5 rounded text-[11px] font-mono flex items-center gap-1 transition-colors ${
+                    isSelected
+                      ? 'bg-accent text-white font-semibold shadow-sm'
+                      : 'bg-surface-sunken text-gray-400 hover:text-gray-200 border border-line-subtle'
+                  }`}
+                >
+                  <span>{projectLabel(p)}</span>
+                  {isCurrent && <span className="opacity-80 text-[10px]">(当前)</span>}
+                </button>
+              );
+            })}
+            <span className="ml-auto text-[10px] text-gray-400 font-mono shrink-0">
+              按 <kbd className="border border-line rounded px-1">Tab</kbd> 快速切换项目
+            </span>
           </div>
 
           {/* Master-Detail Columns */}
@@ -478,15 +546,27 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                         </div>
                       </div>
 
-                      {/* Project badge */}
-                      <span className="text-[10px] text-gray-400 shrink-0 font-mono">
-                        {resolveProjectLabel(item.project_id)}
-                      </span>
+                      {/* Project badge with cross-project indicator */}
+                      <div className="flex items-center gap-1 shrink-0 font-mono text-[10px]">
+                        {item.project_id !== currentSession.project_id && (
+                          <span className="text-blue-500 bg-blue-500/10 border border-blue-500/20 px-1 rounded">
+                            跨项目
+                          </span>
+                        )}
+                        <span className="text-gray-400">
+                          {resolveProjectLabel(item.project_id)}
+                        </span>
+                      </div>
                     </div>
                       );
                     })}
                   </div>
                 ))
+              )}
+              {query === '' && (
+                <div className="py-2.5 px-3 text-[11px] text-gray-400 text-center border-t border-line-subtle font-sans mt-auto">
+                  已精简收拢历史会话 · 键入关键字可搜索全部会话
+                </div>
               )}
             </div>
 
@@ -520,6 +600,14 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                       </span>
                     )}
                   </div>
+
+                  {/* Cross-project Notice */}
+                  {currentSelected.project_id !== currentSession.project_id && (
+                    <div className="rounded-control bg-blue-500/10 border border-blue-500/25 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-400 flex items-center justify-between font-mono">
+                      <span>跨项目会话</span>
+                      <span className="text-[10px] opacity-80">Enter 将自动载入该项目工作区</span>
+                    </div>
+                  )}
 
                   {/* Title */}
                   <div className="text-base font-semibold text-gray-900 dark:text-gray-100 flex items-start gap-2 leading-snug">
@@ -599,7 +687,11 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                       onClick={() => handleSelectSession(currentSelected)}
                       className="ui-button ui-compact ui-primary text-xs flex items-center gap-1.5"
                     >
-                      <span>切换到此会话</span>
+                      <span>
+                        {currentSelected.project_id === currentSession.project_id
+                          ? '切换到此会话'
+                          : `切换至 ${resolveProjectLabel(currentSelected.project_id)} 并接入`}
+                      </span>
                       <ArrowRight16Regular />
                     </button>
                   </div>
