@@ -40,6 +40,12 @@ from synapse.runtime.service.codex_usage import (
     GetCodexResetCreditsQuery,
     GetCodexUsageQuery,
 )
+from synapse.runtime.service.collaboration import (
+    CollaborationPage,
+    ListCollaborationsQuery,
+    StopCollaborationCommand,
+    StopCollaborationResult,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -472,6 +478,29 @@ class AgentRuntimeService(Protocol):
         layer).  The daemon injects a catalog-backed registrar, so the service
         layer itself never imports the project catalog.  Registration is
         idempotent per workspace path.
+        """
+        ...
+
+    async def list_collaborations(
+        self, query: ListCollaborationsQuery
+    ) -> CollaborationPage:
+        """Read the collaboration requests one session takes part in (bounded).
+
+        Optional delegate method: a delegate without it keeps the wrapper
+        constructible and reports the feature as unavailable (see the ACL layer).
+        Read-only and session-scoped: it never opens a session, builds an agent,
+        starts a turn, or contacts another project.
+        """
+        ...
+
+    async def stop_collaboration(
+        self, command: StopCollaborationCommand
+    ) -> StopCollaborationResult:
+        """Fence one session's continuation generation (stop / receive-only).
+
+        Optional delegate method: see ``list_collaborations``.  A write surface:
+        it can cancel a turn this session already started, and it can never start
+        a request or deliver a message.
         """
         ...
 

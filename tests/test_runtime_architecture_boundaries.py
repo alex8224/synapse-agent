@@ -98,6 +98,7 @@ CONTRACT_FILES = {
     "runtime_config.py",
     "artifacts.py",
     "access.py",
+    "collaboration.py",
     "project_list.py",
 }
 CONTRACT_FORBIDDEN = {

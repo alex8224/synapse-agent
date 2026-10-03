@@ -22,7 +22,13 @@
  */
 
 import type { ComposerPillKind } from './composerDocument.ts';
-import { Database20Regular, DocumentText20Regular, PuzzlePiece20Regular } from '@fluentui/react-icons';
+import {
+  Chat20Regular,
+  Database20Regular,
+  DocumentText20Regular,
+  PuzzlePiece20Regular,
+} from '@fluentui/react-icons';
+import { displaySessionTitle } from '../../stores/sessionList.ts';
 import type { ComponentType } from 'react';
 
 /** One offerable mention. */
@@ -43,13 +49,28 @@ export const MENTION_GROUP_TITLE: Record<MentionEntry['kind'], string> = {
   file: '工作区文件',
   skill: 'Agent 技能',
   context: '运行上下文',
+  session: '会话',
 };
+
+/**
+ * The order the flyout renders groups in.
+ *
+ * It is one list, not a literal inside the flyout, because the flyout numbers
+ * rows as it renders them while `RichComposer.offersFor` builds the entries in
+ * its own order (files, then sessions, then the static catalog).  A kind missing
+ * here is not merely unsorted -- it is *never painted*, so a reader cannot pick
+ * it at all -- and an order that disagrees with the entries highlights, and
+ * inserts, the wrong row when the arrows walk the list.  `MENTION_KIND_ORDER`
+ * therefore has to match that build order.
+ */
+export const MENTION_KIND_ORDER = ['file', 'session', 'skill', 'context'] as const;
 
 /** Short label shown at the right edge of a row. */
 export const MENTION_KIND_LABEL: Record<MentionEntry['kind'], string> = {
   file: '文件',
   skill: '技能',
   context: '上下文',
+  session: '会话',
 };
 
 /**
@@ -73,6 +94,7 @@ export const MENTION_KIND_ICON: Record<
   file: DocumentText20Regular,
   skill: PuzzlePiece20Regular,
   context: Database20Regular,
+  session: Chat20Regular,
 };
 
 /**
@@ -178,6 +200,31 @@ export function rankMentions(entries: readonly MentionEntry[], query: string): M
 export function fileMention(path: string): MentionEntry {
   const label = path.slice(path.lastIndexOf('/') + 1) || path;
   return { kind: 'file', id: `file:${path}`, label, detail: path, token: `@${path}` };
+}
+
+/**
+ * Build a session mention from one console session row.
+ *
+ * The token carries the exact `project_id:thread_id`, never just the visible
+ * title: two projects routinely name a session the same thing, and the agent's
+ * collaboration tool needs an unambiguous target.  The label stays the human
+ * name, so the pill reads like the sidebar row it came from.
+ */
+export function sessionMention(entry: {
+  project_id: string;
+  thread_id: string;
+  title?: string | null;
+  project_name?: string | null;
+}): MentionEntry {
+  const label = displaySessionTitle(entry.title, entry.thread_id);
+  const scope = entry.project_name ? `${entry.project_name} · ` : '';
+  return {
+    kind: 'session',
+    id: `session:${entry.project_id}:${entry.thread_id}`,
+    label,
+    detail: `${scope}${entry.project_id}:${entry.thread_id}`,
+    token: `@session:${entry.project_id}:${entry.thread_id}`,
+  };
 }
 
 /** Build a skill mention from an RPC skill entry. */

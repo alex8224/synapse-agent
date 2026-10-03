@@ -343,6 +343,7 @@ class SessionRuntime:
                 max_concurrency=int(getattr(context.settings, "max_concurrency", 4))
                 if context is not None
                 else int(getattr(self._binding.settings, "max_concurrency", 4)),
+                config_overrides=context.request.mutable_config() if context is not None else None,
             )
             self._approval_claim = (uuid.uuid4().hex, expected_turn_id, generation)
             return request
@@ -791,7 +792,8 @@ class SessionRuntime:
             if self._closed:
                 raise RuntimeClosedError("session runtime is closed")
             handle = self._active_handle
-            if handle is None or handle.done():
+            paused = self._status is SessionStatus.WAITING_APPROVAL
+            if handle is None or (handle.done() and not paused):
                 raise NoActiveTurnError("session has no active turn to cancel")
             if handle.turn_id != expected_turn_id:
                 raise TurnMismatchError(
@@ -800,7 +802,13 @@ class SessionRuntime:
                 )
             cancellation_requested = handle.cancel(reason)
             if cancellation_requested:
-                self._status = SessionStatus.CANCELLING
+                self._status = SessionStatus.CANCELLED if paused else SessionStatus.CANCELLING
+                if paused:
+                    self._active_handle = None
+                    self._active_context = None
+                    self._approval_claim = None
+                    self._consumed_approval_claim = None
+                    self._turn_generation += 1
                 self._last_activity_at = _utcnow()
         if cancellation_requested:
             self._notify_status()
@@ -885,6 +893,17 @@ class SessionRuntime:
                 active_model=getattr(self._binding.settings, "active_model", None),
                 model=getattr(self._binding.settings, "model", None),
             )
+
+    def execution_status(self, turn_id: str) -> str | None:
+        """Status of this exact turn, including its persistence settlement phase."""
+        with self._lock:
+            handle = self._active_handle or self._latest_handle
+            if handle is None or handle.turn_id != turn_id:
+                return None
+            if (handle.done() and handle in self._settling_handles
+                    and self._status is not SessionStatus.WAITING_APPROVAL):
+                return 'settling'
+            return self._status.value
 
     def live_recovery(self) -> tuple[BrokerRecoveryState, str | None]:
         """Return the live stream recovery snapshot plus the active turn id.

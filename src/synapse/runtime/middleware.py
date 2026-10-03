@@ -396,13 +396,28 @@ TOOL_INTENT_DESCRIPTION = (
 )
 
 
-def build_path_normalize_middleware(workspace: Path):
-    """Rewrite host/Windows paths in tool args to virtual ``/`` paths."""
+def build_path_normalize_middleware(workspace: Path) -> AgentMiddleware:
+    """Rewrite paths only for the workspace's virtual filesystem tools.
+
+    Argument names alone do not establish filesystem semantics: ``target`` can
+    be a session identity, and MCP tools may use host paths or opaque IDs.
+    Keep those tools' arguments intact instead of silently changing their target.
+    """
 
     root = Path(workspace).resolve()
+    filesystem_tools = frozenset({
+        "ls", "glob", "grep", "read_file", "write_file", "edit_file", "patch",
+        "find_files", "search_files",
+    })
 
     def _apply(request):  # type: ignore[no-untyped-def]
         tool_call = request.tool_call
+        name = (
+            tool_call.get("name") if isinstance(tool_call, dict)
+            else getattr(tool_call, "name", None)
+        )
+        if name not in filesystem_tools:
+            return request
         # tool_call may be dict-like
         if isinstance(tool_call, dict):
             args = dict(tool_call.get("args") or {})

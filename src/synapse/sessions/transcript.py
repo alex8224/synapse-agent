@@ -522,6 +522,7 @@ class UiTranscriptEvent:
     # Optional runtime identity/timing; checkpoint-only legacy rows lack these.
     turn_id: str | None = None
     elapsed_s: float | None = None
+    collaboration: dict[str, str] | None = None
 
 
 
@@ -610,6 +611,11 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
             except Exception:  # noqa: BLE001
                 pass
             text = _message_content(msg).strip()
+            metadata = (msg.get('additional_kwargs', {}) if isinstance(msg, dict)
+                        else getattr(msg, 'additional_kwargs', {}))
+            collaboration = metadata.get('synapse_collaboration') if metadata else None
+            if collaboration:
+                text = collaboration['text']
             if is_context_compact_text(text):
                 continue
             try:
@@ -628,6 +634,7 @@ def fold_messages_for_ui(messages: list[Any]) -> list[UiTranscriptEvent]:
                         text=text or ("(image)" if (images or attachments) else ""),
                         images=images,
                         attachments=attachments,
+                        collaboration=collaboration,
                     )
                 )
             continue

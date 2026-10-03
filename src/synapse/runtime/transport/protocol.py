@@ -77,6 +77,15 @@ from synapse.runtime.service.attachments import (
     normalize_mime,
     validate_attachment_id,
 )
+from synapse.runtime.service.collaboration import (
+    COLLABORATION_LIMIT_DEFAULT,
+    COLLABORATION_LIMIT_MAX,
+    COLLABORATION_LIMIT_MIN,
+    COLLABORATION_MESSAGES_DEFAULT,
+    COLLABORATION_MESSAGES_MAX,
+    ListCollaborationsQuery,
+    StopCollaborationCommand,
+)
 from synapse.runtime.service.contract_registry import (
     PROTOCOL_FEATURES,
     WIRE_METHODS,
@@ -1252,6 +1261,41 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 maximum=HISTORY_LIMIT_MAX,
             ),
         )
+    if method == "runtime.collaboration.list":
+        _optional_fields(params, {"session"}, {"limit", "messages_per_request"})
+        return ListCollaborationsQuery(
+            session=_session(params["session"]),
+            limit=_bounded_integer(
+                params.get("limit", COLLABORATION_LIMIT_DEFAULT),
+                minimum=COLLABORATION_LIMIT_MIN,
+                maximum=COLLABORATION_LIMIT_MAX,
+            ),
+            messages_per_request=_bounded_integer(
+                params.get("messages_per_request", COLLABORATION_MESSAGES_DEFAULT),
+                minimum=0,
+                maximum=COLLABORATION_MESSAGES_MAX,
+            ),
+        )
+    if method == "runtime.collaboration.stop":
+        _optional_fields(
+            params,
+            {"session", "scope_id", "expected_version"},
+            {"receive_only", "command_id", "assignment_id"},
+        )
+        return StopCollaborationCommand(
+            session=_session(params["session"]),
+            scope_id=_session_text(params["scope_id"]),
+            expected_version=_integer(params["expected_version"], minimum=0),
+            receive_only=_boolean(params.get("receive_only", False)),
+            assignment_id=(
+                _session_text(params['assignment_id']) if 'assignment_id' in params else None
+            ),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.session.reconcile":
         _optional_fields(params, {"session"}, {"probe_turn_ids"})
         raw_probes = params.get("probe_turn_ids", [])
@@ -1504,6 +1548,10 @@ async def dispatch(
         return await service.list_projects(dto)  # type: ignore[arg-type]
     if method == "runtime.project.register":
         return await service.register_project(dto)  # type: ignore[arg-type]
+    if method == "runtime.collaboration.list":
+        return await service.list_collaborations(dto)  # type: ignore[arg-type]
+    if method == "runtime.collaboration.stop":
+        return await service.stop_collaboration(dto)  # type: ignore[arg-type]
     if method == "runtime.fs.list":
         return await service.list_directories(dto)  # type: ignore[arg-type]
     if method == "runtime.skills.list":

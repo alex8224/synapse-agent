@@ -31,6 +31,7 @@ import type {
   ProjectListItem,
   ListDirectoriesResult,
   ListSkillsResult,
+  CollaborationResult,
   ReloadMcpResult,
   SessionRecoverabilityResult,
 } from '../client/types.ts';
@@ -564,7 +565,7 @@ interface ConsoleStore {
 
   pendingApproval: PendingApproval | null;
   resolveApproval: (decision: 'allow_once' | 'reject_once') => Promise<void>;
-  submitPrompt: (text: string) => Promise<void>;
+  submitPrompt: (text: string) => Promise<boolean>;
   cancelActiveTurn: () => Promise<void>;
   /** Explicit user close: cancel reconnect budget and detach the watch. */
   closeRuntime: () => void;
@@ -767,6 +768,16 @@ interface ConsoleStore {
    * Backs the composer's `@` skill list.
    */
   listSkills: (projectId?: string | null) => Promise<ListSkillsResult>;
+
+  // Collaboration surface: a bounded read of the requests this session takes
+  // part in, plus the one control (fencing its own continuation generation).
+  // Starting a request is an Agent action and has no store surface at all.
+  collaborationPage: CollaborationResult | null;
+  collaborationLoading: boolean;
+  /** User-facing reason the last collaboration read failed (null when it succeeded). */
+  collaborationError: string | null;
+  loadCollaborations: () => Promise<void>;
+  stopCollaboration: (options?: { receiveOnly?: boolean; assignmentId?: string }) => Promise<void>;
 
   // History pagination / availability state.
   historyLoading: boolean;
@@ -3041,9 +3052,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       usage: null,
       metricsLabel: '',
       thinkingLevelError: null,
-    projectThinkingLevel: null,
-    canSetProjectThinking: false,
-    projectThinkingError: null,
+      projectThinkingLevel: null,
+      canSetProjectThinking: false,
+      projectThinkingError: null,
+      // The runtime state belongs to the session being left: a new attach must
+      // start from "unknown" until its own reload result arrives.
+      mcpRuntime: {},
+      mcpWarnings: [],
+      mcpConnecting: false,
+      mcpTogglingServer: null,
+      mcpTogglingAction: null,
+      mcpRuntimeKnown: false,
     }));
     if (client) {
       try {
@@ -3064,6 +3083,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         await captureLiveEpoch(epoch);
         flushBufferedLiveEvents();
         await refreshRuntimeConfig(epoch);
+        // Same convention as attachToSession: attach the configured MCP servers
+        // for this session in the background, then report what actually got loaded.
+        void refreshMcpRuntime(epoch);
       } catch (err) {
         if (epoch === sessionEpoch) {
           console.error('Failed to initialize new session with runtime:', err);
@@ -3593,6 +3615,64 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (!client) throw new Error(RUNTIME_RPC_NOT_READY);
     return client.listSkills({ project_id: projectId });
   },
+  loadCollaborations: async () => {
+    const client = requireRuntimeClient();
+    if (!client) {
+      set({ collaborationError: RUNTIME_RPC_NOT_READY });
+      return;
+    }
+    const { currentSession } = get();
+    if (!currentSession.project_id || !currentSession.thread_id) return;
+    set({ collaborationLoading: true });
+    try {
+      const page = await client.listCollaborations({ session: currentSession });
+      // A session switch during the read must not paint another session's rows.
+      const now = get().currentSession;
+      if (
+        now.project_id !== currentSession.project_id ||
+        now.thread_id !== currentSession.thread_id
+      ) {
+        return;
+      }
+      set({ collaborationPage: page, collaborationError: null });
+    } catch (err) {
+      // An older daemon without the surface answers "unavailable": the tab then
+      // says so instead of pretending the session has no collaborations.
+      set({
+        collaborationPage: null,
+        collaborationError: String((err as Error)?.message ?? err),
+      });
+    } finally {
+      set({ collaborationLoading: false });
+    }
+  },
+  stopCollaboration: async (options) => {
+    const client = requireRuntimeClient();
+    if (!client) {
+      set({ collaborationError: RUNTIME_RPC_NOT_READY });
+      return;
+    }
+    const { currentSession, collaborationPage } = get();
+    const assignment = options?.assignmentId
+      ? collaborationPage?.requests.find((request) => request.request_id === options.assignmentId)
+      : null;
+    const scopeId = assignment?.scope_id ?? collaborationPage?.scope_id;
+    const version = assignment?.control_version ?? collaborationPage?.scope_version;
+    if (!scopeId || version == null) return;
+    try {
+      await client.stopCollaboration({
+        session: currentSession,
+        scope_id: scopeId,
+        expected_version: version,
+        receive_only: options?.receiveOnly === true,
+        ...(assignment ? { assignment_id: assignment.request_id } : {}),
+      });
+      set({ collaborationError: null });
+    } catch (err) {
+      set({ collaborationError: String((err as Error)?.message ?? err) });
+    }
+    await get().loadCollaborations();
+  },
   cancelActiveTurn: async () => {
     const client = requireRuntimeClient();
     if (!client) return;
@@ -3606,6 +3686,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     set({ runtimeStatus: 'idle' });
   },
   sessionTitle: '',
+  collaborationPage: null,
+  collaborationLoading: false,
+  collaborationError: null,
   sessions: [],
   switchSession: async (threadId, title) => {
     if (!requireRuntimeClient()) return;
@@ -4213,7 +4296,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   submitPrompt: async (text: string) => {
     // Refused before authentication: no local transcript mutation and no RPC.
     const client = requireRuntimeClient();
-    if (!client) return;
+    if (!client) return false;
     const state = get();
     const pending = state.attachments;
     const refs = attachmentRefsOf(pending);
@@ -4223,11 +4306,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // dropped and never sent without the attachment).
     if (hasPendingUploads(pending)) {
       set({ attachmentError: '仍有附件正在上传，请等待完成或取消后再发送。' });
-      return;
+      return false;
     }
     // An attachment-only turn is legal (the wire allows empty text when refs are
     // present); a fully empty submit still does nothing.
-    if (body === '' && refs.length === 0) return;
+    if (body === '' && refs.length === 0) return false;
     const { currentSession, runtimeStatus, activeTurnId } = state;
     const epoch = sessionEpoch;
 
@@ -4236,7 +4319,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         // `runtime.turn.steer` has no attachment_refs field: silently dropping
         // the images would be worse than refusing, so the composer keeps them.
         set({ attachmentError: '运行中无法携带附件插话：请等待当前轮次结束后再发送图片。' });
-        return;
+        return false;
       }
       set({ attachmentError: null });
       get().addUserMessage(body);
@@ -4256,10 +4339,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
             recoveryDetail: 'steer submitted during a connection drop; outcome unknown',
           });
         } else {
-          throw err;
+          set({ attachmentError: `插话未被接受：${String((err as Error)?.message ?? err)}` });
+          return false;
         }
+        return true;
       }
-      return;
+      return true;
     }
 
     set({ attachmentError: null });
@@ -4272,17 +4357,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       const opened = await client.openSession(currentSession);
       // Re-sync the authoritative totals here: this call is already being made,
       // and it is what corrects a session that was also used elsewhere.
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return false;
       set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
       if (!get().activeSubscriptionId) {
         const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
-        if (epoch !== sessionEpoch) return;
+        if (epoch !== sessionEpoch) return false;
         set({ activeSubscriptionId: watch.subscription_id });
       }
     } catch (err) {
       console.warn('Ensure open session note:', err);
     }
-    if (epoch !== sessionEpoch) return;
+    if (epoch !== sessionEpoch) return false;
     try {
       const receipt = await client.submitTurn({
         session: currentSession,
@@ -4291,7 +4376,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         // reads "absent" as "no attachments" and rejects an explicit null.
         ...(refs.length > 0 ? { attachment_refs: refs } : {}),
       });
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return false;
       if (receipt.turn_id) {
         set((s) => ({
           messages: bindWorkTurn(s.messages, receipt.turn_id!, Date.now()),
@@ -4308,8 +4393,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       // submitted: read the title back so the header and the list stop showing
       // the placeholder.
       refreshSessionTitleAfterTurn(currentSession, get().sessionTitle);
+      return true;
     } catch (err) {
-      if (epoch !== sessionEpoch) return;
+      if (epoch !== sessionEpoch) return false;
       if (err instanceof ConnectionLostError && err.unknownOutcome) {
         // The submit may have reached the daemon and started a turn; the
         // receipt was lost in the drop. Do NOT re-submit (duplicate tool
@@ -4320,8 +4406,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           recoveryState: 'unknown',
           recoveryDetail: 'submit sent but connection dropped before the receipt; outcome unknown',
         });
+        return true;
       } else {
-        const reason = String((err as Error)?.message ?? err);
+        const reason = err instanceof RpcCallError && err.service_code === 'conflict'
+          ? '会话仍有运行或收尾中的工作，本次消息未被接受，草稿已保留。'
+          : String((err as Error)?.message ?? err);
         set((s) => ({ messages: s.messages.map((m) => !m.turnId && m.work && !m.work.ended
           ? { ...m, work: { ...m.work, ended: true, elapsed: Math.max(0, (Date.now() - (m.work.startedAt ?? Date.now())) / 1000) } }
           : m) }));
@@ -4333,6 +4422,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           attachmentError: `发送失败：${reason}`,
         });
         console.error('submit failed:', err);
+        return false;
       }
     }
   },

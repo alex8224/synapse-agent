@@ -542,6 +542,7 @@ def _history_event(row: sqlite3.Row) -> HistoryEvent:
         changes_total=_non_negative_int(parsed.get("changes_total")),
         turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
         elapsed_s=elapsed,
+        collaboration=parsed.get('collaboration'),
     )
 
 

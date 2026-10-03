@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from langchain.agents.middleware.types import AgentMiddleware
 
 from synapse.runtime.middleware import (
@@ -60,6 +64,53 @@ def test_intent_and_path_middleware_have_async_wrap():
     _assert_dual_model(inject)
     _assert_dual_tool(strip)
     _assert_dual_tool(build_path_normalize_middleware(Path(".")))
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("object_call", [False, True])
+@pytest.mark.parametrize("name,args,expected", [
+    ("contact_session", {"target": "p2:b"}, {"target": "p2:b"}),
+    ("contact_session", {"target": "@session:p2:b"}, {"target": "@session:p2:b"}),
+    ("mcp__lookup", {"source": "account", "path": "opaque-id"},
+     {"source": "account", "path": "opaque-id"}),
+    ("read_file", {"file_path": "src/main.py"}, {"file_path": "/src/main.py"}),
+    ("write_file", {"file_path": "new.py"}, {"file_path": "/new.py"}),
+    ("edit_file", {"file_path": "old.py"}, {"file_path": "/old.py"}),
+    ("patch", {"file_path": "src/main.py"}, {"file_path": "/src/main.py"}),
+    ("find_files", {"path": "src"}, {"path": "/src"}),
+    ("search_files", {"path": "src", "pattern": "x"}, {"path": "/src", "pattern": "x"}),
+    ("ls", {"path": "src"}, {"path": "/src"}),
+    ("glob", {"path": "src"}, {"path": "/src"}),
+    ("grep", {"path": "src"}, {"path": "/src"}),
+])
+def test_path_middleware_only_rewrites_filesystem_tools(
+    tmp_path: Path, async_mode: bool, object_call: bool,
+    name: str, args: dict, expected: dict,
+) -> None:
+    @dataclass
+    class Request:
+        tool_call: object
+
+        def override(self, **kwargs):
+            return replace(self, **kwargs)
+
+    call = {"name": name, "id": "call-1", "args": args}
+    request = Request(SimpleNamespace(**call) if object_call else call)
+    middleware = build_path_normalize_middleware(tmp_path)
+
+    def handler(value):
+        call = value.tool_call
+        return call["args"] if isinstance(call, dict) else call.args
+
+    async def async_handler(value):
+        return handler(value)
+
+    if async_mode:
+        result = asyncio.run(middleware.awrap_tool_call(request, async_handler))
+    else:
+        result = middleware.wrap_tool_call(request, handler)
+    assert result == expected
+    assert handler(request) == args
 
 
 def test_task_namespace_middleware_scopes_sync_handler():

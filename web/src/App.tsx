@@ -8,6 +8,7 @@ import { RuntimeDiagnosticsBanner } from './components/RuntimeDiagnosticsBanner'
 import { RecoveryNotice } from './components/RecoveryNotice.tsx';
 import { CommandInput } from './components/CommandInput';
 import { ScreenshotTaskBanner } from './components/ScreenshotTaskBanner.tsx';
+import { CollaborationNotice } from './components/CollaborationNotice.tsx';
 import { RightDock } from './components/rightDock/RightDock.tsx';
 import { BottomTerminalPanel } from './components/terminal/BottomTerminalPanel.tsx';
 import { useTerminalStore } from './stores/useTerminalStore.ts';
@@ -257,6 +258,9 @@ export function App() {
             <ErrorBoundary level="panel" sectionTitle="输入框">
               <CommandInput />
             </ErrorBoundary>
+            {/* In flow, above the composer: the reader sees whether the other
+                session is still working without opening a panel. */}
+            <CollaborationNotice />
             <ScreenshotTaskBanner />
           </main>
           <BottomTerminalPanel />

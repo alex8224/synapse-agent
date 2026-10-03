@@ -362,6 +362,23 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                 className="w-full accent-accent cursor-pointer h-1.5 bg-line rounded-full"
               />
             </div>
+
+            {/* Terminal pane opacity */}
+            <div>
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span>终端衬底浓度</span>
+                <span className="font-mono text-gray-500">{Math.round((vibrancy.terminalOpacity ?? vibrancy.paneOpacity) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.10"
+                max="0.95"
+                step="0.01"
+                value={vibrancy.terminalOpacity ?? vibrancy.paneOpacity}
+                onChange={(e) => setVibrancy({ terminalOpacity: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer h-1.5 bg-line rounded-full"
+              />
+            </div>
           </div>
         </Section>
 

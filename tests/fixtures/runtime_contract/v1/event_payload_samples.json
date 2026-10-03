@@ -1,4 +1,8 @@
 {
+  "collaboration_input": {
+    "message_id": "collaboration-message-1",
+    "text": "协作结论 · 来自 p:b\n已核对接口"
+  },
   "activity_started": {
     "detail": "planning",
     "phase": "thinking",

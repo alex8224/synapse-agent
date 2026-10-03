@@ -159,6 +159,8 @@ test('the arrows walk the list and Escape closes it', () => {
 test('the rich draft still reaches the runtime as one plain string', () => {
   // The card is the only thing that talks to the store, and it passes text.
   assert.ok(card.includes('submitPrompt(snapshot.text)'), 'the store gets the serialized text');
+  assert.ok(card.includes('.then((accepted)'), 'the composer must wait for the acceptance result');
+  assert.ok(card.includes('if (accepted'), 'a refused send must keep the draft');
   assert.ok(
     !card.includes('attachment_refs'),
     'attachment refs stay the store\'s business: the composer never builds them',

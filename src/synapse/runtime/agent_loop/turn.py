@@ -17,6 +17,12 @@ from synapse.runtime.agent_loop.model import (
     TurnStatus,
 )
 from synapse.runtime.async_runtime import AsyncRuntime, get_async_runtime
+from synapse.runtime.service.event_types import (
+    EVENT_VERSION,
+    CollaborationInputPayload,
+    TurnEvent,
+    TurnEventKind,
+)
 from synapse.runtime.streaming import AgentEventSink
 from synapse.runtime.turn_reverts import build_record, save_record
 from synapse.runtime.workspace_changes import changes_between, snapshot_workspace
@@ -184,6 +190,15 @@ class AgentTurnRuntime:
     ) -> TurnResult:
         settings = context.settings
         safe_sink = _SafeEventSink(sink) if sink is not None else None
+        summary = context.request.config.get('configurable', {}).get('synapse_collaboration')
+        if safe_sink is not None and summary and not context.request.resume:
+            safe_sink.emit(TurnEvent(
+                version=EVENT_VERSION, thread_id=context.thread_id, turn_id=context.turn_id,
+                sequence=0, kind=TurnEventKind.COLLABORATION_INPUT,
+                payload=CollaborationInputPayload(
+                    text=summary['text'], message_id=summary['message_id'],
+                ),
+            ))
         workspace = getattr(settings, "workspace", None)
         # The workspace as the turn finds it.  What the turn changes cannot be read off
         # the workspace afterwards: the standing delta against `HEAD` already holds

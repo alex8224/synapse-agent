@@ -589,7 +589,17 @@ export function reduceRuntimeEvent(
   }
   if (turnId) next.activeTurnId = turnId;
 
-  if (kind === 'activity_started') {
+  if (kind === 'collaboration_input') {
+    const messageId = asText(payload.message_id);
+    const id = `collaboration-${messageId}`;
+    if (!state.messages.some((message) => message.id === id)) {
+      next.messages = [...state.messages, {
+        id, type: 'info', timestamp: stamp, turnId, content: asText(payload.text),
+        infoLevel: 'info', work: { startedAt: at, ended: false },
+      }];
+    }
+    next.runtimeStatus = 'running';
+  } else if (kind === 'activity_started') {
     next.runtimeStatus = 'running';
     next.activity = {
       phase: asText(payload.phase) || 'thinking',

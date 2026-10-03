@@ -55,6 +55,15 @@ def _manager(project_id: str) -> RuntimeManager:
     )
 
 
+def test_published_manager_lookup_does_not_build_a_runtime() -> None:
+    def unexpected(*_args: Any) -> Any:
+        raise AssertionError('a read-only lookup must not build')
+    router = RuntimeManagerRouter(unexpected, unexpected)
+    assert router.published_manager('unknown') is None
+    assert router.manager_count == 0
+    asyncio.run(router.shutdown())
+
+
 class _CountingManager(RuntimeManager):
     def __init__(
         self,

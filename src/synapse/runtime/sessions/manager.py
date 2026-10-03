@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -142,6 +142,7 @@ class RuntimeManager:
         persist_resources: Any | None = None,
         on_status_change: Callable[[SessionSnapshot], None] | None = None,
         persist_model_binding: Callable[[str, Any], None] | None = None,
+        on_turn_started: Callable[[SessionRef, str, bool], None] | None = None,
     ) -> None:
         self.settings = settings
         self.agent_factory = agent_factory
@@ -159,6 +160,11 @@ class RuntimeManager:
         self.persist_resources = persist_resources
         self.on_status_change = on_status_change
         self.persist_model_binding = persist_model_binding
+        #: ``(ref, turn_id, is_collaboration_delivery)``. The collaboration
+        #: domain needs to know when a *user* turn begins (it starts a new work
+        #: generation) and must never mistake a delivery turn for one. Best
+        #: effort: bookkeeping may not fail a submitted turn.
+        self.on_turn_started = on_turn_started
         self._async_runtime = async_runtime or get_async_runtime()
         self._sessions: dict[str, SessionRuntime] = {}
         self._lock = threading.RLock()
@@ -926,7 +932,27 @@ class RuntimeManager:
                 if self._release_tasks_by_thread.get(thread_id) is done:
                     del self._release_tasks_by_thread[thread_id]
         task.add_done_callback(forget_release)
+        self._notify_turn_started(thread_id, handle, message)
         return handle
+
+    def _notify_turn_started(self, thread_id: str, handle: TurnHandle, message: UserTurn) -> None:
+        """Report a started turn, and whether it is collaboration delivery work."""
+        callback = self.on_turn_started
+        if callback is None or self.project_id is None:
+            return
+        config = message.request.config if message.request is not None else message.config_overrides
+        configurable = config.get('configurable')
+        is_collaboration = (
+            isinstance(configurable, Mapping) and 'collaboration' in configurable
+        )
+        try:
+            callback(
+                SessionRef(project_id=self.project_id, thread_id=thread_id),
+                handle.turn_id,
+                bool(is_collaboration),
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping is never the turn's owner
+            return
 
     def steer(self, thread_id: str, text: str) -> bool:
         session = self.get_session(thread_id)

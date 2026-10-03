@@ -89,6 +89,7 @@ exclude = [
     "/agent-studio-prototype",
     "/dashboard.html",
     "/ward-board.html",
+    "/web/node_modules",
 ]
 
 [tool.hatch.build.targets.sdist.force-include]

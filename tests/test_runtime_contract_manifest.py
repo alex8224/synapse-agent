@@ -174,6 +174,8 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.skills.list": "list_skills",
     "runtime.screenshot.status": "get_screenshot_status",
     "runtime.screenshot.settings.open": "open_screenshot_settings",
+    "runtime.collaboration.list": "list_collaborations",
+    "runtime.collaboration.stop": "stop_collaboration",
     "runtime.screenshot.capture": "start_screenshot_capture",
     "runtime.screenshot.cancel": "cancel_screenshot_capture",
     "runtime.stt.status": "get_stt_status",
@@ -222,6 +224,8 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
         "stt.control",
         "models.read",
         "models.write",
+        "collaboration.read",
+        "collaboration.control",
         "mcp.read",
         "mcp.write",
     }
@@ -234,6 +238,16 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "ListProjectsParams",
         "ProjectListItem",
         "ProjectListResult",
+        # Session-collaboration DTOs added by the collaboration slice.  The
+        # console reads them and fences its own generation; there is no wire
+        # method that starts a request, so no client type exists for one.
+        "CollaborationMessageView",
+        "CollaborationRequestView",
+        "CollaborationPage",
+        "CollaborationResult",
+        "ListCollaborationsParams",
+        "StopCollaborationParams",
+        "StopCollaborationView",
         "CreateSessionParams",
         "CreateSessionResult",
         "ForkSessionParams",
@@ -629,7 +643,7 @@ def test_every_event_kind_declares_a_payload_schema() -> None:
     """All 25 kinds are declared, each with a resolvable payload schema."""
     kinds = {event.kind for event in contract_registry.EVENTS}
     assert kinds == {kind.value for kind in TurnEventKind}
-    assert len(kinds) == 25
+    assert len(kinds) == 26
     schemas = contract_export.schema_names()
     for event in contract_registry.EVENTS:
         assert event.status in {"v1", "v1-ui-ignored"}

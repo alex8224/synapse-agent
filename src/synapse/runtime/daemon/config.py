@@ -20,6 +20,10 @@ class DaemonConfig:
     port: int = 0
     state_dir: Path = _DEFAULT_STATE_DIR
     token_file: Path | None = None
+    #: Session collaboration may target another registered project by default.
+    #: Set false for a deployment that relies on the console's single-project
+    #: boundary, where a session must not reach into a sibling workspace.
+    allow_cross_project_collaboration: bool = True
 
     def __post_init__(self) -> None:
         if type(self.host) is not str or not self.host or "\x00" in self.host:
@@ -31,6 +35,8 @@ class DaemonConfig:
             raise ValueError("host must be a non-empty string") from None
         if type(self.port) is not int or not 0 <= self.port <= 65535:
             raise ValueError("port must be an integer between 0 and 65535")
+        if type(self.allow_cross_project_collaboration) is not bool:
+            raise ValueError("allow_cross_project_collaboration must be a boolean")
         state_dir = Path(self.state_dir).expanduser()
         token_file = (
             Path(self.token_file).expanduser()

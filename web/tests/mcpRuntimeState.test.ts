@@ -163,3 +163,56 @@ test('toggling a server persists the flag and merges the reported state', async 
   assert.equal(state.mcpRuntime.search.attached, false);
   assert.equal(state.mcpStatus, '0 on');
 });
+
+test('createNewSession resets MCP runtime state and triggers reloadMcp for the new session', async () => {
+  // Seed state with an existing session having attached MCP
+  useConsoleStore.setState({
+    currentSession: { project_id: 'p', thread_id: 'old-thread' },
+    mcpRuntime: {
+      search: {
+        attached: true,
+        loaded: ['search__query'],
+        discovered: ['query'],
+        include_tools: ['query'],
+      },
+    },
+    mcpRuntimeKnown: true,
+    mcpServers: [{ name: 'search', transport: 'streamable_http', enabled: true, attached: true }],
+  });
+
+  const fullStub = {
+    ...stubClient,
+    createSession: async ({ project_id }: { project_id: string }) => ({
+      command_id: 'cmd-1',
+      session: { project_id, thread_id: 'new-thread-1' },
+      title: 'New Session Title',
+      created: true,
+    }),
+    openSession: async (session: unknown) => ({
+      session,
+      view: { latest_sequence: 0 },
+    }),
+    watchEvents: async () => ({ subscription_id: 'sub-new-1' }),
+    getRuntimeConfig: async () => ({
+      mcp_enabled: true,
+      mcp_servers: [{ name: 'search', transport: 'streamable_http', enabled: true }],
+      available_models: [],
+      thinking_levels: [],
+    }),
+  };
+  useConsoleStore.setState({ client: fullStub as never });
+
+  await useConsoleStore.getState().createNewSession();
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const reloadCall = calls.find((c) => (c.params.session as { thread_id: string })?.thread_id === 'new-thread-1');
+  assert.ok(reloadCall, 'createNewSession must trigger reloadMcp for the brand-new session');
+  assert.deepEqual(reloadCall.params, {
+    session: { project_id: 'p', thread_id: 'new-thread-1' },
+  });
+  const state = useConsoleStore.getState();
+  assert.equal(state.currentSession.thread_id, 'new-thread-1');
+  assert.equal(state.mcpRuntimeKnown, true);
+  assert.equal(state.mcpRuntime.search.attached, true);
+});

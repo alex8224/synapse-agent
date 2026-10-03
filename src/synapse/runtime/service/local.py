@@ -62,6 +62,12 @@ from synapse.runtime.service.codex_usage import (
     GetCodexResetCreditsQuery,
     GetCodexUsageQuery,
 )
+from synapse.runtime.service.collaboration import (
+    CollaborationPage,
+    ListCollaborationsQuery,
+    StopCollaborationCommand,
+    StopCollaborationResult,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -678,6 +684,7 @@ class LocalAgentRuntimeService:
         codex_usage_provider: CodexUsageProvider | None = None,
         screenshot_service: ScreenshotService | None = None,
         stt_service: SttService | None = None,
+        collaboration_provider: Any | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -707,6 +714,10 @@ class LocalAgentRuntimeService:
         # survive a reconnect.  Without one the five stt methods report themselves
         # as unavailable instead of failing the service build.
         self._stt = stt_service
+        # The collaboration read surface and its stop control are optional: the
+        # daemon injects an adapter over its own mailbox, and without one the two
+        # methods report themselves as unavailable instead of half-working.
+        self._collaboration_provider = collaboration_provider
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -1495,6 +1506,42 @@ class LocalAgentRuntimeService:
         if provider is None:
             raise InvalidRequestError("project list is unavailable")
         return await asyncio.to_thread(provider, query)
+
+    async def list_collaborations(self, query: ListCollaborationsQuery) -> CollaborationPage:
+        """Read this session's collaboration requests through the injected adapter.
+
+        Read-only and bounded: it never opens a session, builds an agent, starts a
+        turn or contacts another project.  The blocking SQLite read runs on a
+        worker thread so the event loop is never held by disk I/O.
+        """
+        if type(query) is not ListCollaborationsQuery:
+            raise InvalidRequestError(
+                "list collaborations query must be a ListCollaborationsQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        provider = self._collaboration_provider
+        if provider is None:
+            raise InvalidRequestError("session collaboration is unavailable")
+        return await asyncio.to_thread(provider.list, query)
+
+    async def stop_collaboration(
+        self, command: StopCollaborationCommand
+    ) -> StopCollaborationResult:
+        """Fence one continuation generation, then cancel the turns it started.
+
+        The one write on this surface.  It deliberately cannot start a request or
+        deliver a message: those are Agent actions, so a client can never make one
+        session contact another.
+        """
+        if type(command) is not StopCollaborationCommand:
+            raise InvalidRequestError(
+                "stop collaboration command must be a StopCollaborationCommand, "
+                f"got type {type(command).__name__!r}"
+            )
+        provider = self._collaboration_provider
+        if provider is None:
+            raise InvalidRequestError("session collaboration is unavailable")
+        return await asyncio.to_thread(provider.stop, command)
 
     async def register_project(self, command: RegisterProjectCommand) -> ProjectListItem:
         """Register one host workspace path through the injected registrar adapter.

@@ -31,10 +31,25 @@ test('the panel derives its phase from the runtime view helpers', () => {
   );
 });
 
-test('the store attaches MCP when a session is attached', () => {
+test('the store attaches MCP when a session is attached or created', () => {
   assert.ok(
     store.includes('void refreshMcpRuntime(epoch)'),
     'attachToSession must trigger the MCP attach/refresh',
+  );
+  const createStart = store.indexOf('createNewSession: async');
+  const createEnd = store.indexOf('switchSession:', createStart);
+  const createBlock = store.slice(createStart, createEnd);
+  assert.ok(
+    createBlock.includes('void refreshMcpRuntime(epoch)'),
+    'createNewSession must trigger the MCP attach/refresh for the brand-new session',
+  );
+  assert.ok(
+    createBlock.includes('mcpRuntimeKnown: false'),
+    'createNewSession must reset mcpRuntimeKnown so stale attach states do not linger',
+  );
+  assert.ok(
+    createBlock.includes('mcpRuntime: {}'),
+    'createNewSession must clear mcpRuntime map on new session creation',
   );
   assert.ok(
     store.includes('mcpRuntimeKnown'),

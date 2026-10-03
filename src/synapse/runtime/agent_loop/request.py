@@ -103,6 +103,9 @@ def build_turn_request(
     if isinstance(override_configurable, Mapping):
         config["configurable"].update(dict(override_configurable))
     config["configurable"]["thread_id"] = thread_id
+    collaboration = config['configurable'].get('synapse_collaboration')
+    if isinstance(collaboration, dict):
+        message.setdefault('additional_kwargs', {})['synapse_collaboration'] = collaboration
     return TurnRequest(
         payload=payload,
         config=config,

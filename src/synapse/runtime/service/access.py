@@ -43,6 +43,12 @@ from synapse.runtime.service.codex_usage import (
     GetCodexResetCreditsQuery,
     GetCodexUsageQuery,
 )
+from synapse.runtime.service.collaboration import (
+    CollaborationPage,
+    ListCollaborationsQuery,
+    StopCollaborationCommand,
+    StopCollaborationResult,
+)
 from synapse.runtime.service.commands import (
     CancelTurnCommand,
     CancelTurnResult,
@@ -249,6 +255,14 @@ SESSION_THINKING = "session.thinking"
 #: session's live turn), so ``session.read`` -- which only authorizes reading the
 #: goal projection -- must never authorize it.
 SESSION_GOAL = "session.goal"
+#: Read this session's collaboration requests (bounded, read-only).  Session
+#: scoped: the grant is bound to one ``SessionRef`` and never to a project.
+COLLABORATION_READ = "collaboration.read"
+#: Fence this session's continuation generation (stop / receive-only).  A write
+#: surface with its own blast radius -- it can cancel a running turn -- so
+#: ``collaboration.read`` must never authorize it.  It cannot start a request or
+#: deliver a message: those are Agent actions with no wire method.
+COLLABORATION_CONTROL = "collaboration.control"
 PROJECT_THINKING = "project.thinking"
 #: Enumerate the projects the principal may see.  A project-level capability
 #: (never a thread-scoped one): only a project-wide grant authorizes it, and the
@@ -352,6 +366,8 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         SESSION_REBIND,
         SESSION_THINKING,
         SESSION_GOAL,
+        COLLABORATION_READ,
+        COLLABORATION_CONTROL,
         PROJECT_THINKING,
         PROJECT_LIST,
         PROJECT_REGISTER,
@@ -1008,6 +1024,43 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("runtime config is unavailable")
         return await delegate(query)
+
+    async def list_collaborations(
+        self, query: ListCollaborationsQuery
+    ) -> CollaborationPage:
+        """Authorize ``collaboration.read`` per session, then delegate the read.
+
+        Deliberately its own capability rather than ``session.read``: the
+        projection names other sessions and other projects, so reading a
+        transcript and reading who this session is talking to are different
+        permissions.  Optional delegate method; the ACL check runs first.
+        """
+        session = self._session_from_dto(
+            query, ListCollaborationsQuery, "collaboration query"
+        )
+        self._authorize(session, COLLABORATION_READ)
+        delegate = getattr(self._delegate, "list_collaborations", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session collaboration is unavailable")
+        return await delegate(query)
+
+    async def stop_collaboration(
+        self, command: StopCollaborationCommand
+    ) -> StopCollaborationResult:
+        """Authorize ``collaboration.control``, then delegate the fence.
+
+        Stopping can cancel a running turn, so it is a write and never authorized
+        by ``collaboration.read``.  Optional delegate method; the ACL check runs
+        before the delegate is consulted.
+        """
+        session = self._session_from_dto(
+            command, StopCollaborationCommand, "stop collaboration command"
+        )
+        self._authorize(session, COLLABORATION_CONTROL)
+        delegate = getattr(self._delegate, "stop_collaboration", None)
+        if not callable(delegate):
+            raise InvalidRequestError("session collaboration is unavailable")
+        return await delegate(command)
 
     async def get_codex_usage(self, query: GetCodexUsageQuery) -> CodexUsageView:
         """Authorize ``codex.usage.read`` per session, then delegate the read.

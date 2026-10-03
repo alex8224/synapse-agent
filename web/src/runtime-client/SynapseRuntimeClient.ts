@@ -19,6 +19,8 @@ import {
   HISTORY_PAGE_SIZE,
   PROJECT_LIST_PAGE_SIZE,
   DIRECTORY_LIST_PAGE_SIZE,
+  COLLABORATION_PAGE_SIZE,
+  COLLABORATION_MESSAGES_PER_REQUEST,
 } from './types.ts';
 import type {
   JsonRpcNotification,
@@ -37,6 +39,10 @@ import type {
   RebindSessionResult,
   ReloadMcpParams,
   ReloadMcpResult,
+  ListCollaborationsParams,
+  CollaborationResult,
+  StopCollaborationParams,
+  StopCollaborationView,
   McpServerListResult,
   EventNotificationMeta,
   ModelListResult,
@@ -562,6 +568,48 @@ export class SynapseRuntimeClient {
           options.reconnect.stableConnectionMs ?? DEFAULT_RECONNECT_POLICY.stableConnectionMs,
       };
     }
+  }
+
+  /**
+   * Read the collaboration requests this session takes part in
+   * (`runtime.collaboration.list`).
+   *
+   * Read-only and bounded: the page names the other sessions and projects, so
+   * it is a different permission from reading this session's transcript.  The
+   * response also carries this session's own continuation generation and its
+   * version, which `stopCollaboration` requires.
+   */
+  public async listCollaborations(
+    params: ListCollaborationsParams,
+  ): Promise<CollaborationResult> {
+    return this.call<CollaborationResult>('runtime.collaboration.list', {
+      session: params.session,
+      limit: params.limit ?? COLLABORATION_PAGE_SIZE,
+      messages_per_request:
+        params.messages_per_request ?? COLLABORATION_MESSAGES_PER_REQUEST,
+    });
+  }
+
+  /**
+   * Fence this session's continuation generation
+   * (`runtime.collaboration.stop`).
+   *
+   * `receive_only` keeps the requests alive and lets their targets finish while
+   * results stop starting work here; without it the generation is revoked.  A
+   * stale `expected_version` is a conflict, never a silent second stop.
+   */
+  public async stopCollaboration(
+    params: StopCollaborationParams,
+  ): Promise<StopCollaborationView> {
+    const payload: Record<string, unknown> = {
+      session: params.session,
+      scope_id: params.scope_id,
+      expected_version: params.expected_version,
+    };
+    if (params.receive_only !== undefined) payload.receive_only = params.receive_only;
+    if (params.assignment_id != null) payload.assignment_id = params.assignment_id;
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<StopCollaborationView>('runtime.collaboration.stop', payload);
   }
 
   /**

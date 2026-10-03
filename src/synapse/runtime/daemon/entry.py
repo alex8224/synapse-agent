@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--token-file", type=Path)
+    parser.add_argument(
+        "--no-cross-project-collaboration",
+        action="store_true",
+        help=(
+            "会话协作只允许同一项目内的目标会话。默认允许跨项目；"
+            "依赖单项目边界的部署应显式关闭。"
+        ),
+    )
     return parser
 
 
@@ -53,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             state_dir=args.state_dir or DaemonConfig().state_dir,
             token_file=args.token_file,
+            allow_cross_project_collaboration=not args.no_cross_project_collaboration,
         )
         handler = _configure_error_log(config.state_dir)
         asyncio.run(run_daemon(config, stdout=sys.stdout))

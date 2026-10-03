@@ -161,6 +161,10 @@ class SessionPersistence:
             return
         resume = bool(context.request.resume)
         user_text = "" if resume else context.request.input
+        metadata = _request_message_metadata(context.request) or {}
+        collaboration = metadata.get('synapse_collaboration')
+        if collaboration and not resume:
+            user_text = collaboration['text']
         # Durable attachment metadata travels with the frozen request's user
         # message metadata (never a process-global map), so a settled turn can
         # persist the opaque ids even when the in-memory attachment objects are
@@ -174,6 +178,8 @@ class SessionPersistence:
             turn_events=turn_events,
             attachments=attachment_refs,
         )
+        if collaboration and not resume and events:
+            events[0].collaboration = dict(collaboration)
         if resume:
             # The original user turn is already projected. Resume may still run
             # the model after approval/rejection, so persist usage only.

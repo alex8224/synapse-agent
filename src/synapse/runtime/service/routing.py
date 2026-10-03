@@ -360,6 +360,11 @@ class RuntimeManagerRouter:
         with self._lock:
             return len(self._published)
 
+    def published_manager(self, project_id: str) -> RuntimeManager | None:
+        """Read an existing manager without constructing a project runtime."""
+        with self._lock:
+            return self._published.get(project_id)
+
     async def shutdown(self) -> None:
         """Close every published manager exactly once and join concurrent calls.
 

@@ -42,6 +42,8 @@ from synapse.runtime.service.access import (
     ATTACHMENTS_WRITE,
     CODEX_RESET_CONSUME,
     CODEX_USAGE_READ,
+    COLLABORATION_CONTROL,
+    COLLABORATION_READ,
     EVENTS_READ,
     EVENTS_WATCH,
     FS_LIST,
@@ -128,6 +130,16 @@ from synapse.runtime.service.codex_usage import (
     GetCodexResetCreditsQuery,
     GetCodexUsageQuery,
 )
+from synapse.runtime.service.collaboration import (
+    COLLABORATION_LIMIT_DEFAULT,
+    COLLABORATION_MESSAGES_DEFAULT,
+    CollaborationMessageView,
+    CollaborationPage,
+    CollaborationRequestView,
+    ListCollaborationsQuery,
+    StopCollaborationCommand,
+    StopCollaborationResult,
+)
 from synapse.runtime.service.commands import (
     ApprovalDecision,
     CancelTurnCommand,
@@ -157,6 +169,7 @@ from synapse.runtime.service.event_types import (
     ActivityPayload,
     ApprovalActionPayload,
     ApprovalPayload,
+    CollaborationInputPayload,
     DiffPayload,
     PlanEntryPayload,
     PlanPayload,
@@ -567,6 +580,8 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         EventFilter,
         role="request",
         notes=(
+            "With assignment_id, control applies to that one assignment; receive_only "
+            "suppresses source continuations, and revocation cancels its linked turns.",
             "Request-only AND filter: when ``filter`` is present the wire requires both",
             "``kinds`` and ``turn_ids``; each is a list of strings.",
         ),
@@ -788,6 +803,60 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(ReadSessionHistoryQuery, role="request"),
+    _dto(
+        ListCollaborationsQuery,
+        role="request",
+        notes=(
+            "Read-only: it projects the requests this session takes part in and never "
+            "opens a session, builds an agent, starts a turn, or contacts another project.",
+            "``limit`` is bounded to 1..50 and ``messages_per_request`` to 0..32 by the "
+            "wire decoder.",
+        ),
+    ),
+    _dto(
+        StopCollaborationCommand,
+        role="request",
+        notes=(
+            "With ``assignment_id``, expected_version is the assignment control version; "
+            "revocation cancels only its linked executions, never another assignment.",
+            "``expected_version`` is the generation version the caller last read, so a "
+            "stop can never silently apply to a generation it did not see.",
+            "``receive_only`` keeps the requests alive and lets their targets finish "
+            "while results stop starting work here; without it the generation is revoked.",
+            "It cannot start a request or deliver a message: those are Agent actions.",
+        ),
+    ),
+    _dto(
+        CollaborationMessageView,
+        role="value",
+        notes=("One message of a request, in request order.",),
+    ),
+    _dto(
+        CollaborationRequestView,
+        role="value",
+        notes=(
+            "collaboration_id identifies the group; assignment_id identifies one "
+            "delegated work item independently of user turns. Execution and result "
+            "processing states describe separate facts.",
+            "``messages`` is a bounded window of the request's newest messages; "
+            "``message_total`` is how many exist.",
+            "``pending`` counts deliveries that have not settled, which is what tells a "
+            "reader whether work is still in flight.",
+        ),
+    ),
+    _dto(
+        CollaborationPage,
+        role="result",
+        notes=(
+            "``scope_*`` describes this session's own continuation generation; the stop "
+            "control needs its id and version.",
+        ),
+    ),
+    _dto(
+        StopCollaborationResult,
+        role="result",
+        notes=("The fenced generation's new state and version.",),
+    ),
     _dto(ReconcileSessionQuery, role="request"),
     _dto(PendingApprovalQuery, role="request"),
     _dto(StatArtifactQuery, role="request"),
@@ -1182,6 +1251,7 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
     _dto(EventPage, role="result"),
     # --- event payloads -------------------------------------------------------
     _dto(ActivityPayload, role="result"),
+    _dto(CollaborationInputPayload, role="result"),
     _dto(TextPayload, role="result"),
     _dto(ApprovalPayload, role="result"),
     _dto(
@@ -2338,6 +2408,58 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         ),
     ),
     WireMethod(
+        method="runtime.collaboration.list",
+        method_class="service",
+        request="ListCollaborationsQuery",
+        result="CollaborationPage",
+        capability=COLLABORATION_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="list_collaborations",
+        params_alias="ListCollaborationsParams",
+        result_alias="CollaborationResult",
+        wire_defaults=(
+            ("limit", COLLABORATION_LIMIT_DEFAULT),
+            ("messages_per_request", COLLABORATION_MESSAGES_DEFAULT),
+        ),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable.  The read never opens a session, builds an agent, starts a "
+            "turn, or contacts another project."
+        ),
+        notes=(
+            "Read-only projection of the requests this session takes part in, newest "
+            "first, each with a bounded window of its own messages.",
+            "``limit`` is bounded to 1..50 and ``messages_per_request`` to 0..32 by the "
+            "wire decoder.  The page also carries this session's continuation generation "
+            "and its version, which the stop control requires.",
+        ),
+    ),
+    WireMethod(
+        method="runtime.collaboration.stop",
+        method_class="service",
+        request="StopCollaborationCommand",
+        result="StopCollaborationResult",
+        capability=COLLABORATION_CONTROL,
+        scope="session",
+        scope_location="params.session",
+        service_method="stop_collaboration",
+        params_alias="StopCollaborationParams",
+        result_alias="StopCollaborationView",
+        wire_defaults=(("receive_only", False),),
+        in_process=(
+            "Optional delegate method: a delegate without it reports the feature as "
+            "unavailable."
+        ),
+        notes=(
+            "Fences one continuation generation, then cancels the turns that generation "
+            "already started in this session; the target's own work is never touched.",
+            "``expected_version`` must match the generation the caller last read, or the "
+            "call fails with conflict.",
+            "It cannot start a request or deliver a message: those are Agent actions.",
+        ),
+    ),
+    WireMethod(
         method="runtime.project.register",
         method_class="service",
         request="RegisterProjectCommand",
@@ -2925,6 +3047,7 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
 #: the web console deliberately do not render.  No UI-only attribute (consumer
 #: list, timestamps, presentation flags) is part of the contract.
 EVENTS: Final[tuple[EventDeclaration, ...]] = (
+    EventDeclaration(kind='collaboration_input', payload='CollaborationInputPayload', status='v1'),
     EventDeclaration(kind="activity_started", payload="ActivityPayload", status="v1"),
     EventDeclaration(kind="activity_updated", payload="ActivityPayload", status="v1"),
     EventDeclaration(kind="activity_stopped", payload="ActivityPayload", status="v1"),

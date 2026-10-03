@@ -26,6 +26,7 @@ __all__ = [
     "PlanRemovedPayload",
     "SubagentStatusPayload",
     "TextPayload",
+    "CollaborationInputPayload",
     "ToolBatchFinishedPayload",
     "ToolBatchPayload",
     "ToolCallPayload",
@@ -66,6 +67,7 @@ class TurnEventKind(StrEnum):
     USAGE_UPDATED = "usage_updated"
     APPROVAL_REQUIRED = "approval_required"
     INFO = "info"
+    COLLABORATION_INPUT = 'collaboration_input'
     TURN_CHANGES = "turn_changes"
     TURN_COMPLETED = "turn_completed"
     TURN_CANCELLED = "turn_cancelled"
@@ -108,6 +110,14 @@ class ActivityPayload:
 class TextPayload:
     text: str
     message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CollaborationInputPayload:
+    """Bounded human-readable input summary, not the model's control envelope."""
+
+    text: str
+    message_id: str
 
 
 @dataclass(frozen=True, slots=True)

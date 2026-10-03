@@ -128,6 +128,7 @@ export const CommandInput: React.FC = () => {
   const uploading = attachments.some((entry) => entry.status === 'uploading');
   const readyAttachment = attachments.some((entry) => entry.status === 'ready');
   const canSend = (hasContent || readyAttachment) && !uploading;
+  const sending = useRef(false);
 
   /**
    * One submit path, shared by the editor's Enter, the primary button and the
@@ -140,16 +141,23 @@ export const CommandInput: React.FC = () => {
   const handleSubmit = useCallback(
     (draft?: ComposerSnapshot) => {
       const snapshot = draft ?? composerRef.current?.snapshot();
-      if (snapshot === undefined) return;
+      if (snapshot === undefined || sending.current) return;
       if (uploading) {
         void submitPrompt(snapshot.text);
         return;
       }
       if (isSnapshotEmpty(snapshot) && !readyAttachment) return;
-      void submitPrompt(snapshot.text);
-      composerRef.current?.reset();
+      const session = currentSession;
+      sending.current = true;
+      void submitPrompt(snapshot.text).then((accepted) => {
+        const now = useConsoleStore.getState().currentSession;
+        if (accepted && now.project_id === session.project_id && now.thread_id === session.thread_id
+          && composerRef.current?.snapshot().text === snapshot.text) {
+          composerRef.current?.reset();
+        }
+      }).finally(() => { sending.current = false; });
     },
-    [submitPrompt, uploading, readyAttachment],
+    [submitPrompt, uploading, readyAttachment, currentSession],
   );
 
   const handleFiles = useCallback(

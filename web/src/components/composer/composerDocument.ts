@@ -18,12 +18,12 @@
  * a multi-line paste, a pill mid-sentence and a trailing newline all exact.
  */
 
-/** The three mention kinds the `@` flyout offers, plus the image pill. */
-export type ComposerPillKind = 'file' | 'skill' | 'context' | 'image';
+/** The mention kinds the `@` flyout offers, plus the image pill. */
+export type ComposerPillKind = 'file' | 'skill' | 'context' | 'session' | 'image';
 
 /** One non-image pill: what the `@` flyout inserted. */
 export interface ComposerMentionPill {
-  kind: 'file' | 'skill' | 'context';
+  kind: 'file' | 'skill' | 'context' | 'session';
   /** Local, DOM-only identity (never sent anywhere). */
   pillId: string;
   /** Canonical token the model receives (`@src/app.py`, `@skill:cua-driver`). */

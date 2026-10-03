@@ -15,6 +15,7 @@ import {
   MENTION_KIND_ICON,
   MENTION_KIND_LABEL,
   rankMentions,
+  sessionMention,
   SKILL_MENTIONS,
   skillMention,
   type MentionEntry,
@@ -42,6 +43,8 @@ import {
 } from './composerSelection.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore';
 import type { PendingAttachment } from '../../stores/useConsoleStore.ts';
+import { projectLabel } from '../../stores/sessionList.ts';
+import type { SessionItem } from '../../stores/historyMapper.ts';
 import type { TranscriptAttachment } from '../../stores/historyAttachments.ts';
 import { ARTIFACT_LIST_LIMIT } from '../../runtime-client/artifacts.ts';
 import { createArtifactSurface } from '../../client/artifactSurface.ts';
@@ -162,7 +165,17 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     null,
   );
 
-  const { client, workspacePath, rpcReady, listSkills, currentSession } = useConsoleStore(
+  const {
+    client,
+    workspacePath,
+    rpcReady,
+    listSkills,
+    currentSession,
+    sessions,
+    projectSessions,
+    projects,
+    activeProjectId,
+  } = useConsoleStore(
     // Only what a directory read needs: a reasoning delta must never re-render
     // the surface the reader is typing into.
     useShallow((state) => ({
@@ -171,6 +184,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       rpcReady: state.connectionState === 'connected',
       listSkills: state.listSkills,
       currentSession: state.currentSession,
+      // Sessions already loaded for the sidebar: offering them here is what
+      // makes `@` able to name another session at all.  Nothing is fetched for
+      // the flyout, so a project the reader has not opened is simply absent.
+      sessions: state.sessions,
+      projectSessions: state.projectSessions,
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
     })),
   );
 
@@ -256,6 +276,36 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     };
   }, [handleRef, snapshot, reset, restore, focus, insertSpoken]);
 
+  /**
+   * Sessions the reader can name with `@`.
+   *
+   * Built from what the sidebar already loaded (the active project's list plus
+   * every expanded project's page), so the flyout never issues a read of its
+   * own.  Cross-project entries keep their project name in `detail`, because the
+   * token alone is not something a reader can check at a glance.
+   */
+  const sessionCandidates = useMemo(() => {
+    const rows = new Map<string, MentionEntry>();
+    const nameOf = (projectId: string): string => {
+      const project = projects.find((item) => item.project_id === projectId);
+      return project === undefined ? '' : projectLabel(project);
+    };
+    const add = (projectId: string, session: SessionItem): void => {
+      const entry = sessionMention({
+        project_id: projectId,
+        thread_id: session.thread_id,
+        title: session.title,
+        project_name: nameOf(projectId),
+      });
+      rows.set(entry.id, entry);
+    };
+    for (const session of sessions) add(activeProjectId, session);
+    for (const [projectId, items] of Object.entries(projectSessions)) {
+      for (const session of items) add(projectId, session);
+    }
+    return [...rows.values()];
+  }, [sessions, projectSessions, projects, activeProjectId]);
+
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(
     (query: string): MentionEntry[] => {
@@ -265,9 +315,18 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       );
       const activeSkills = skills.length > 0 ? skills : SKILL_MENTIONS;
       const statics = rankMentions([...activeSkills, ...CONTEXT_MENTIONS], query);
-      return [...matched, ...statics];
+      // The current session is excluded: contacting yourself is refused by the
+      // tool, so offering it would only produce a failed call.
+      const sessions = rankMentions(
+        sessionCandidates.filter(
+          (entry) =>
+            entry.id !== `session:${currentSession.project_id}:${currentSession.thread_id}`,
+        ),
+        query,
+      );
+      return [...matched, ...sessions, ...statics];
     },
-    [files, skills],
+    [files, skills, sessionCandidates, currentSession],
   );
 
   /** Open, update or close the `@` list for the caret's current position. */

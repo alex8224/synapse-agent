@@ -21,6 +21,19 @@ class _Human:
         self.content = content
 
 
+def test_collaboration_summary_is_checkpoint_metadata_not_text_detection():
+    metadata = {'message_id': 'message', 'text': '协作结论 · 来自 p:b\n接口已确认'}
+    events = fold_messages_for_ui([
+        {'role': 'user', 'content': '[technical envelope]',
+         'additional_kwargs': {'synapse_collaboration': metadata}},
+        {'role': 'user', 'content': '[会话协作消息] ordinary user text'},
+    ])
+    assert events[0].text == metadata['text']
+    assert events[0].collaboration == metadata
+    assert events[1].text == '[会话协作消息] ordinary user text'
+    assert events[1].collaboration is None
+
+
 class _AI:
     type = "ai"
 

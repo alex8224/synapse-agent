@@ -17,9 +17,24 @@ import {
   toolItemFromPayload,
   type LiveReducibleState,
 } from '../src/stores/liveEventReducer.ts';
+import { mapHistoryEvents } from '../src/stores/historyMapper.ts';
 
 const AT = new Date(0);
 const now = () => AT;
+
+test('collaboration input has the same summary and identity live and after reload', () => {
+  const summary = { message_id: 'm1', text: '协作结论 · 来自 p:b\n已完成' };
+  let state = apply(baseState(), event('collaboration_input', summary));
+  state = apply(state, event('collaboration_input', summary, 't1', 2));
+  assert.equal(state.messages.length, 1);
+  const restored = mapHistoryEvents([{
+    kind: 'user', text: summary.text, tool_calls: [], tool_results: [], turn_id: 't1',
+    collaboration: summary,
+  }], { startTurn: 1, pageTag: 'reload' });
+  assert.equal(restored[0].type, 'info');
+  assert.equal(restored[0].id, state.messages[0].id);
+  assert.equal(restored[0].content, state.messages[0].content);
+});
 
 function baseState(): LiveReducibleState {
   return {

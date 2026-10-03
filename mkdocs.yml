@@ -108,5 +108,6 @@ nav:
       - 实施进度: web-console/progress.md
       - 正式宿主、配对认证与部署: web-console/formal-host.md
       - Web 端架构审查结论: web-console/architecture-review.md
+      - 会话协作实施计划: web-console/session-collaboration-plan.md
   - 原生核心工具: native-core-tool.md
   - Docker Web TUI: docker-web.md

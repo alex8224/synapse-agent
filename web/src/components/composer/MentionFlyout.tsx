@@ -4,6 +4,7 @@ import {
   MENTION_GROUP_TITLE,
   MENTION_KIND_ICON,
   MENTION_KIND_LABEL,
+  MENTION_KIND_ORDER,
   type MentionEntry,
 } from './mentionCatalog.ts';
 import { mentionOptionId } from './mentionOption.ts';
@@ -93,7 +94,7 @@ export const MentionFlyout: React.FC<MentionFlyoutProps> = ({
           {entries.length === 0 && loading && (
             <p className="px-3 py-3 text-[12px] text-gray-500">正在读取工作区文件…</p>
           )}
-          {(['file', 'skill', 'context'] as const).map((kind) => {
+          {MENTION_KIND_ORDER.map((kind) => {
             const rows = entries.filter((entry) => entry.kind === kind);
             if (rows.length === 0) return null;
             return (

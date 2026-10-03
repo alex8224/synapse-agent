@@ -373,8 +373,8 @@ export function mapHistoryEvents(
       const attachments = mapHistoryAttachments(ev.attachments);
       if (content || attachments.length > 0) {
         out.push({
-          id: `hist-u-${tag}`,
-          type: 'user',
+          id: ev.collaboration ? `collaboration-${ev.collaboration.message_id}` : `hist-u-${tag}`,
+          type: ev.collaboration ? 'info' : 'user',
           timestamp: `Turn ${turn}`,
           turnId,
           work: {

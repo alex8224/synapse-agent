@@ -162,6 +162,7 @@ class HistoryEvent:
     # Additive metadata: older/checkpoint-rebuilt history reports unknown, not zero.
     turn_id: str | None = None
     elapsed_s: float | None = None
+    collaboration: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)

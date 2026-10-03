@@ -22,7 +22,7 @@ from synapse.runtime.daemon.auth import (
     load_token,
 )
 from synapse.runtime.daemon.codex_usage import CodexUsageAdapter
-from synapse.runtime.daemon.config import DaemonConfig
+from synapse.runtime.daemon.config import DaemonConfig, ensure_directory
 from synapse.runtime.daemon.lease import DaemonLease
 from synapse.runtime.service import (
     AclAuthorizer,
@@ -38,7 +38,7 @@ from synapse.runtime.service import (
     SttService,
     bind_access,
 )
-from synapse.runtime.sessions import RuntimeManager
+from synapse.runtime.sessions import RuntimeManager, SessionRef
 from synapse.runtime.transport import ConnectionAuthenticator, RuntimeWebSocketServer
 from synapse.sessions.store import (
     SessionStore,
@@ -53,6 +53,12 @@ from synapse.settings.config_paths import (
 from synapse.stt.credentials import api_key as stt_api_key
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Delivery workers per daemon. Two is enough to keep a source and a target
+#: moving at once without turning collaboration into an unbounded scheduler.
+_COLLABORATION_WORKERS = 2
+#: Batch size for the startup classification of interrupted deliveries.
+_COLLABORATION_BATCH = 100
 
 #: Trusted per-connection project scope.  The scope-aware authenticator sets it
 #: from the host-private handshake header, and the per-connection service factory
@@ -317,6 +323,13 @@ class RuntimeDaemon:
         #: sessions must survive a reconnect, so one service is kept for the
         #: daemon's lifetime and keyed by model directory.
         self._stt_service: SttService | None = None
+        #: One daemon-resident collaboration mailbox and its delivery loop. The
+        #: facts must outlive any browser connection, and only the daemon may
+        #: start a delivery turn, so neither belongs to a connection.
+        self._collaboration_store: Any | None = None
+        self._collaboration_runtime: Any | None = None
+        self._collaboration_service: Any | None = None
+        self.collaboration: Any | None = None
         self.settings: Any | None = None
         self.catalog: ProjectCatalog | Any | None = None
         self.lease: DaemonLease | Any | None = None
@@ -356,6 +369,7 @@ class RuntimeDaemon:
                 load_mcp=None,
                 prompt_cache_key=lambda: thread_id,
                 mcp_pool_key=f"{descriptor.project_id}:{thread_id}",
+                extra_tools=self._collaboration_tools(descriptor.project_id) or None,
             )
 
         def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:
@@ -457,6 +471,7 @@ class RuntimeDaemon:
             persist_result=persist_result,
             load_usage=load_usage,
             persist_resources=persistence if persistence.enabled else None,
+            on_turn_started=self._collaboration_turn_started,
         )
 
     def _make_service(self, principal: Principal) -> Any:
@@ -485,6 +500,7 @@ class RuntimeDaemon:
                 codex_usage_provider=self._codex_usage_provider(),
                 screenshot_service=self._screenshot_service_provider(),
                 stt_service=self._stt_service_provider(),
+                collaboration_provider=self._collaboration_provider(),
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -621,6 +637,7 @@ class RuntimeDaemon:
                 if self._router_factory is not None
                 else RuntimeManagerRouter(provider, self._make_manager)
             )
+            await self._start_collaboration()
             self.server = self._server_factory(
                 authenticator,
                 self._make_service,
@@ -726,6 +743,203 @@ class RuntimeDaemon:
             self._shutdown_task.add_done_callback(_consume_task_exception)
         return self._shutdown_task
 
+    async def _start_collaboration(self) -> None:
+        """Open the collaboration mailbox and start its delivery loop.
+
+        Collaboration is additive: a failure here (an unwritable state directory,
+        a schema this build does not own) leaves the daemon and every existing
+        surface working and only the new capability unavailable, so nothing in
+        this method may raise into startup.
+        """
+        try:
+            from synapse.runtime.collaboration.coordinator import CollaborationCoordinator
+            from synapse.runtime.collaboration.runtime import (
+                CollaborationRuntime,
+                ManagerExecutor,
+            )
+            from synapse.runtime.collaboration.store import CollaborationStore
+
+            ensure_directory(self.config.state_dir)
+            store = CollaborationStore(self.config.state_dir / "collaboration.sqlite")
+        except Exception as exc:  # noqa: BLE001 - optional capability
+            _LOGGER.warning(
+                "session collaboration is unavailable: %s", type(exc).__name__
+            )
+            return
+        try:
+            # Startup is the only moment this process holds the mailbox
+            # exclusively, so it is the only place that may classify work an
+            # earlier process left behind. Both steps run in bounded batches and
+            # neither replays a delivery.
+            while store.recover_uncertain(limit=_COLLABORATION_BATCH):
+                pass
+            while store.settle_interrupted(limit=_COLLABORATION_BATCH):
+                pass
+            runtime = CollaborationRuntime(
+                store,
+                ManagerExecutor(
+                    self._collaboration_manager_for, resumed=store.link_resumed_turn,
+                ),
+                workers=_COLLABORATION_WORKERS,
+            )
+            coordinator = CollaborationCoordinator(
+                store,
+                wake=runtime.notify,
+                cancel_turn=self._cancel_collaboration_turn,
+                allows=self._collaboration_allowed,
+                reachable=self._collaboration_reachable,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional capability
+            _LOGGER.warning(
+                "session collaboration is unavailable: %s", type(exc).__name__
+            )
+            with contextlib.suppress(Exception):
+                store.close()
+            return
+        self._collaboration_store = store
+        self._collaboration_runtime = runtime
+        self.collaboration = coordinator
+        self._collaboration_service = self._make_collaboration_adapter(
+            store, coordinator, execution_status=self._collaboration_execution_status,
+        )
+        await runtime.start()
+
+    @staticmethod
+    def _make_collaboration_adapter(
+        store: Any, coordinator: Any, *, execution_status: Any = None,
+    ) -> Any | None:
+        """Build the read/stop adapter, or ``None`` when it cannot be built."""
+        try:
+            from synapse.runtime.collaboration.service_adapter import (
+                CollaborationServiceAdapter,
+            )
+
+            return CollaborationServiceAdapter(
+                store, coordinator, execution_status=execution_status,
+            )
+        except Exception:  # noqa: BLE001 - optional capability
+            return None
+
+    def _collaboration_provider(self) -> Any | None:
+        """The adapter the service layer calls, or ``None`` when unavailable."""
+        return getattr(self, '_collaboration_service', None)
+
+    def _collaboration_manager_for(self, project_id: str) -> Any | None:
+        """Resolve one project's manager for the delivery runtime, never raise."""
+        router = self.router
+        if router is None:
+            return None
+        try:
+            return router(project_id)
+        except Exception as exc:  # noqa: BLE001 - an unknown project is "not available"
+            # Named, not silent: a project that exists but cannot be built (bad
+            # settings, an unreadable workspace) would otherwise look exactly
+            # like an unregistered one, and a refused collaboration would carry
+            # no clue why.
+            _LOGGER.warning(
+                "collaboration target %s is unavailable: %s", project_id, type(exc).__name__
+            )
+            return None
+
+    def _collaboration_allowed(self, source: SessionRef, target: SessionRef) -> bool:
+        """Deployment policy only: same project always, cross-project by configuration."""
+        if (
+            source.project_id != target.project_id
+            and not self.config.allow_cross_project_collaboration
+        ):
+            _LOGGER.warning(
+                "collaboration refused: cross-project is disabled for this deployment"
+            )
+            return False
+        return True
+
+    def _collaboration_reachable(self, target: SessionRef) -> str | None:
+        """``None`` when the target project is registered, else why it is not.
+
+        Deliberately a *catalog* check and not a manager resolution: this runs on
+        the Agent's own turn thread, and building another project's runtime there
+        would be a heavy side effect on a path that may be refused anyway.  The
+        question the tool must answer is "is this a real target"; whether it can
+        actually be started is the delivery runtime's, and it reports its own
+        named reason if not.
+
+        The reason travels back to the caller (and to the model), because a bare
+        "cannot be reached" leaves the reader with nothing to act on.  Only a
+        short machine-readable token is returned: never a path or an exception
+        body, both of which would leak the host's layout into a transcript.
+        """
+        catalog = self.catalog
+        if catalog is None:
+            return 'runtime-not-ready'
+        try:
+            row = catalog.get_project(project_id=target.project_id)
+        except Exception as exc:  # noqa: BLE001 - a named refusal, not a crash
+            _LOGGER.warning(
+                "collaboration target %s could not be looked up: %s",
+                target.project_id,
+                type(exc).__name__,
+            )
+            return f'lookup-failed:{type(exc).__name__}'
+        if row is None:
+            _LOGGER.warning(
+                "collaboration target %s is not a registered project", target.project_id
+            )
+            return 'project-not-registered'
+        return None
+
+    def _collaboration_turn_started(
+        self, ref: SessionRef, turn_id: str, is_collaboration: bool
+    ) -> None:
+        """Start a new work generation for a user turn, never for a delivery turn."""
+        coordinator = self.collaboration
+        if coordinator is None or is_collaboration:
+            return
+        try:
+            coordinator.begin_work(ref, turn_id)
+        except Exception:  # noqa: BLE001 - bookkeeping is best effort
+            return
+
+    def _collaboration_tools(self, project_id: str) -> list[Any]:
+        """The collaboration tools for one project's agent, or none."""
+        coordinator = self.collaboration
+        if coordinator is None:
+            return []
+        try:
+            from synapse.runtime.collaboration.tools import build_collaboration_tools
+
+            return build_collaboration_tools(coordinator, source_project=project_id)
+        except Exception:  # noqa: BLE001 - a tool import must not block the agent
+            return []
+
+    def _cancel_collaboration_turn(self, ref: SessionRef, turn_id: str) -> bool:
+        """Cancel a linked assignment turn, never a different turn in that session."""
+        manager = self._collaboration_manager_for(ref.project_id)
+        if manager is None:
+            return False
+        from synapse.runtime.sessions.errors import NoActiveTurnError, TurnMismatchError
+
+        try:
+            _turn_id, requested = manager.cancel_turn_ref(
+                ref, turn_id, "collaboration_stopped"
+            )
+        except (NoActiveTurnError, TurnMismatchError):
+            # A completed delivery can outlive its turn until mailbox settlement.
+            return False
+        return bool(requested)
+
+    def _collaboration_execution_status(self, ref: SessionRef, turn_id: str) -> str | None:
+        """Read an existing execution without opening a project or session."""
+        router = self.router
+        if router is None:
+            return None
+        manager = router.published_manager(ref.project_id)
+        if manager is None:
+            return None
+        session = manager.get_session_ref(ref)
+        if session is None:
+            return None
+        return session.execution_status(turn_id)
+
     async def _finish_shutdown(self) -> None:
         first_error: BaseException | None = None
         # Signal restoration is deliberately performed before resources: it is
@@ -738,6 +952,8 @@ class RuntimeDaemon:
             self._signal_restore = None
         for resource, method in (
             (self.server, "close"),
+            (self._collaboration_runtime, "stop"),
+            (self._collaboration_store, "close"),
             (self.router, "shutdown"),
             (self.catalog, "close"),
             (self.lease, "release"),

@@ -44,6 +44,26 @@ def _event(sequence: int, kind: TurnEventKind, payload: Any = "") -> TurnEvent:
     )
 
 
+def test_cancel_paused_approval_revokes_resume_without_closing_session() -> None:
+    async def scenario() -> None:
+        controlled = _ControlledTurnRuntime()
+        session = _session(controlled)
+        handle = await session.submit(UserTurn(text='work'))
+        controlled.future.set_result(TurnResult(
+            turn_id=handle.turn_id, thread_id='thread', status=TurnStatus.WAITING_APPROVAL,
+        ))
+        await session.wait_for_settlement(handle)
+        assert session.snapshot().status is SessionStatus.WAITING_APPROVAL
+        assert session.cancel_turn(handle.turn_id) == (handle.turn_id, True)
+        assert session.snapshot().status is SessionStatus.CANCELLED
+        assert session.active_handle() is None
+        assert session.active_context() is None
+        reservation = session.reserve_turn_or_raise()
+        assert session.release_turn(reservation)
+        await session.close()
+    asyncio.run(scenario())
+
+
 def _result(status: TurnStatus = TurnStatus.COMPLETED) -> TurnResult:
     return TurnResult(
         turn_id="turn",

@@ -107,6 +107,7 @@ function fakeStorage(name: string): unknown {
 
 const { RUNTIME_RPC_NOT_READY, useConsoleStore } = await import('../src/stores/useConsoleStore.ts');
 const { RUNTIME_STATUS_PATH } = await import('../src/client/runtimeStatus.ts');
+const { RpcCallError } = await import('../src/runtime-client/SynapseRuntimeClient.ts');
 
 /** The pristine state of the store, captured before any test mutates it. */
 const initialState = { ...useConsoleStore.getState() };
@@ -373,6 +374,28 @@ test('C-05 business RPCs are refused with a diagnosable reason before authentica
   assert.equal(state.currentSession.thread_id, '');
   assert.equal(state.modelName, '');
   assert.equal(state.sessions.length, 0);
+});
+
+test('a busy submit is refused once, preserves the draft contract, and never becomes steer', async () => {
+  resetStore();
+  let submits = 0;
+  let steers = 0;
+  useConsoleStore.setState({
+    pairingState: 'paired', connectionState: 'connected',
+    currentSession: { project_id: 'p', thread_id: 't' },
+    activeSubscriptionId: 'watch', attachments: [],
+    client: {
+      openSession: async () => ({ view: { latest_sequence: 0 } }),
+      submitTurn: async () => { submits += 1; throw new RpcCallError('busy', -32000, 'conflict'); },
+      steerTurn: async () => { steers += 1; },
+    } as any,
+  });
+  const accepted = await muted(() => useConsoleStore.getState().submitPrompt('independent work'));
+  assert.equal(accepted, false, 'the composer may clear only on acceptance');
+  assert.equal(submits, 1);
+  assert.equal(steers, 0, 'a rejected new turn must not silently become a steer');
+  assert.match(useConsoleStore.getState().attachmentError ?? '', /草稿已保留/);
+  resetStore();
 });
 
 test('C-08 logout invalidates the session, clears state and returns to the pairing gate', async () => {

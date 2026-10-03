@@ -665,6 +665,7 @@ def compact_transcript_events(events: list[UiTranscriptEvent]) -> list[UiTranscr
                     attachments=[dict(item) for item in event.attachments],
                     turn_id=event.turn_id,
                     elapsed_s=event.elapsed_s,
+                    collaboration=event.collaboration,
                 )
             )
             continue
@@ -716,6 +717,8 @@ def _event_payload_json(event: UiTranscriptEvent) -> str:
     # Raw images can dominate projection size and are already persisted in the
     # source checkpoint. Keep image count in text, not duplicate binary payloads.
     payload["images"] = []
+    if payload['collaboration'] is None:
+        payload.pop('collaboration')
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
@@ -740,4 +743,5 @@ def _event_from_row(row: sqlite3.Row) -> UiTranscriptEvent:
         else 0,
         turn_id=payload.get("turn_id"),
         elapsed_s=payload.get("elapsed_s"),
+        collaboration=payload.get('collaboration'),
     )

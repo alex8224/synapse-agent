@@ -54,9 +54,11 @@ test('manifest.tsx registers all shipped tab modules in rightDock', () => {
   assert.deepEqual(registered, modules);
   assert.deepEqual(modules, [
     'changesTab.tsx',
+    'collaborationTab.tsx',
     'filesTab.tsx',
     'gitTab.tsx',
     'goalsTab.tsx',
+    'peerSessionTab.tsx',
     'previewTab.tsx',
     'trajectoryTab.tsx',
   ]);

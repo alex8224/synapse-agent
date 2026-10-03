@@ -19,6 +19,7 @@ import {
   fileMention,
   MENTION_GROUP_TITLE,
   MENTION_KIND_LABEL,
+  MENTION_KIND_ORDER,
   rankMentions,
   SKILL_MENTIONS,
 } from '../src/components/composer/mentionCatalog.ts';
@@ -93,8 +94,24 @@ test('an empty query offers everything and a miss offers nothing', () => {
 });
 
 test('every kind has a group title and a row label', () => {
-  for (const kind of ['file', 'skill', 'context'] as const) {
+  // The list itself is the contract: a kind that exists in the catalog but not
+  // here is one the flyout never paints, which is exactly how `session` was
+  // unreachable from the composer.
+  assert.deepEqual(
+    [...MENTION_KIND_ORDER].sort(),
+    ['context', 'file', 'session', 'skill'],
+    'every mention kind must be renderable',
+  );
+  for (const kind of MENTION_KIND_ORDER) {
     assert.ok(MENTION_GROUP_TITLE[kind].length > 0, `${kind} needs a group title`);
     assert.ok(MENTION_KIND_LABEL[kind].length > 0, `${kind} needs a row label`);
   }
+});
+
+test('the flyout renders the shared kind order, not its own list', () => {
+  const source = readFileSync(
+    join(here, '..', 'src', 'components', 'composer', 'MentionFlyout.tsx'),
+    'utf8',
+  );
+  assert.match(source, /MENTION_KIND_ORDER\.map\(/);
 });

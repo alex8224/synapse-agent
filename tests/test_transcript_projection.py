@@ -23,6 +23,20 @@ def _events(turns: int) -> list[UiTranscriptEvent]:
     return out
 
 
+def test_projection_keeps_collaboration_summary_and_identity(tmp_path):
+    metadata = {'message_id': 'message', 'text': '协作交办 · 来自 p:a\n检查接口'}
+    projection = TranscriptProjection(tmp_path / 'transcript.sqlite')
+    try:
+        projection.append_turn('t1', [UiTranscriptEvent(
+            kind='user', text=metadata['text'], collaboration=metadata,
+        )])
+        page = projection.load_tail('t1', turns=1)
+        assert page.events[0].collaboration == metadata
+        assert page.events[0].text == metadata['text']
+    finally:
+        projection.close()
+
+
 def test_projection_pages_complete_turns_without_full_history(tmp_path) -> None:
     projection = TranscriptProjection(tmp_path / "transcript.sqlite")
     try:

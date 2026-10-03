@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 72 wire methods: 70 service methods
+ * The 74 wire methods: 72 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -44,6 +44,8 @@ export const WIRE_METHODS = [
   "runtime.codex.reset_credits.consume",
   "runtime.codex.reset_credits.get",
   "runtime.codex.usage.get",
+  "runtime.collaboration.list",
+  "runtime.collaboration.stop",
   "runtime.config.get",
   "runtime.events.read",
   "runtime.events.unwatch",
@@ -118,7 +120,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (44). */
+/** Authorization capabilities enforced by the ACL layer (46). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -128,6 +130,8 @@ export const AUTHORIZATION_CAPABILITIES = [
   "attachments.write",
   "codex.reset.consume",
   "codex.usage.read",
+  "collaboration.control",
+  "collaboration.read",
   "events.read",
   "events.watch",
   "fs.list",
@@ -207,6 +211,8 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.codex.reset_credits.consume": "codex.reset.consume",
   "runtime.codex.reset_credits.get": "codex.usage.read",
   "runtime.codex.usage.get": "codex.usage.read",
+  "runtime.collaboration.list": "collaboration.read",
+  "runtime.collaboration.stop": "collaboration.control",
   "runtime.config.get": "session.read",
   "runtime.events.read": "events.read",
   "runtime.events.watch": "events.watch",
@@ -537,6 +543,98 @@ export interface CodexUsageWindow {
   reset_at: number | null;
 }
 
+export interface CollaborationInputPayload {
+  text: string;
+  message_id: string;
+}
+
+/**
+ * One message of a request, in request order.
+ */
+export interface CollaborationMessageView {
+  message_id: string;
+  request_id: string;
+  sequence: number;
+  sender_project: string;
+  sender_thread: string;
+  kind: string;
+  body: string;
+  created_at_ms: number;
+}
+
+/**
+ * ``scope_*`` describes this session's own continuation generation; the stop control needs its id and version.
+ */
+export interface CollaborationPage {
+  requests: CollaborationRequestView[];
+  total: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  scope_id: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  scope_state: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  scope_version: number | null;
+}
+
+/**
+ * collaboration_id identifies the group; assignment_id identifies one delegated work item independently of user turns. Execution and result processing states describe separate facts.
+ * ``messages`` is a bounded window of the request's newest messages; ``message_total`` is how many exist.
+ * ``pending`` counts deliveries that have not settled, which is what tells a reader whether work is still in flight.
+ */
+export interface CollaborationRequestView {
+  request_id: string;
+  scope_id: string;
+  source_project: string;
+  source_thread: string;
+  target_project: string;
+  target_thread: string;
+  state: string;
+  version: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  messages: CollaborationMessageView[];
+  message_total: number;
+  pending: number;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  collaboration_id: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  assignment_id: string;
+  /**
+   * python_default_kind=value python_default="active"
+   */
+  continuation_state: string;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  control_version: number;
+  /**
+   * python_default_kind=value python_default="pending"
+   */
+  execution_state: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  execution_turn_id: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  execution_reason: string | null;
+  /**
+   * python_default_kind=value python_default="not_received"
+   */
+  result_state: string;
+}
+
 /**
  * A receipt is returned only after the turn actually started; it never
  * carries a runtime handle.  There is no ``accepted_at`` field.
@@ -688,6 +786,7 @@ export interface EventCursor {
 }
 
 /**
+ * With assignment_id, control applies to that one assignment; receive_only suppresses source continuations, and revocation cancels its linked turns.
  * Request-only AND filter: when ``filter`` is present the wire requires both
  * ``kinds`` and ``turn_ids``; each is a list of strings.
  */
@@ -946,6 +1045,10 @@ export interface HistoryEvent {
    * python_default_kind=value python_default=null
    */
   elapsed_s: number | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  collaboration: Record<string, string> | null;
 }
 
 export interface JsonRpcError {
@@ -998,6 +1101,22 @@ export interface ListArtifactsQuery {
    * python_default_kind=value python_default=100
    */
   limit?: number;
+}
+
+/**
+ * Read-only: it projects the requests this session takes part in and never opens a session, builds an agent, starts a turn, or contacts another project.
+ * ``limit`` is bounded to 1..50 and ``messages_per_request`` to 0..32 by the wire decoder.
+ */
+export interface ListCollaborationsQuery {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=20
+   */
+  limit?: number;
+  /**
+   * python_default_kind=value python_default=8
+   */
+  messages_per_request?: number;
 }
 
 /**
@@ -2075,6 +2194,41 @@ export interface SteerTurnResult {
 }
 
 /**
+ * With ``assignment_id``, expected_version is the assignment control version; revocation cancels only its linked executions, never another assignment.
+ * ``expected_version`` is the generation version the caller last read, so a stop can never silently apply to a generation it did not see.
+ * ``receive_only`` keeps the requests alive and lets their targets finish while results stop starting work here; without it the generation is revoked.
+ * It cannot start a request or deliver a message: those are Agent actions.
+ */
+export interface StopCollaborationCommand {
+  session: SessionRef;
+  scope_id: string;
+  expected_version: number;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  receive_only?: boolean;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  assignment_id?: string | null;
+}
+
+/**
+ * The fenced generation's new state and version.
+ */
+export interface StopCollaborationResult {
+  command_id: string;
+  session: SessionRef;
+  scope_id: string;
+  state: string;
+  version: number;
+}
+
+/**
  * One base64 chunk of int16 little-endian mono PCM at the announced sample
  * rate; bounded to 65536 decoded bytes by the wire decoder and
  * the service.
@@ -2598,6 +2752,7 @@ export interface RuntimeEventPayloadMap {
   answer_completed: TextPayload;
   answer_delta: TextPayload;
   approval_required: ApprovalPayload;
+  collaboration_input: CollaborationInputPayload;
   diff_updated: DiffPayload;
   info: string;
   plan_removed: PlanRemovedPayload;
@@ -2628,6 +2783,7 @@ export const RUNTIME_EVENT_KINDS = [
   "answer_completed",
   "answer_delta",
   "approval_required",
+  "collaboration_input",
   "diff_updated",
   "info",
   "plan_removed",
@@ -2678,6 +2834,7 @@ export type CancelTurnParams = CancelTurnCommand;
 export type ClearSessionGoalParams = ClearSessionGoalCommand;
 export type CodexResetCreditsResult = CodexResetCreditsView;
 export type CodexUsageResult = CodexUsageView;
+export type CollaborationResult = CollaborationPage;
 export type ConsumeCodexResetParams = ConsumeCodexResetCommand;
 export type CreateSessionParams = CreateSessionCommand;
 export type DeleteSessionParams = DeleteSessionCommand;
@@ -2688,6 +2845,7 @@ export type GetCodexUsageParams = GetCodexUsageQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;
+export type ListCollaborationsParams = ListCollaborationsQuery;
 export type ListDirectoriesParams = ListDirectoriesQuery;
 export type ListDirectoriesResult = DirectoryListing;
 export type ListProjectsParams = ListProjectsQuery;
@@ -2714,5 +2872,7 @@ export type SessionRecoverabilityResult = SessionRecoverabilityView;
 export type SessionSearchResult = SessionSearchPage;
 export type SetSessionGoalParams = SetSessionGoalCommand;
 export type SteerTurnParams = SteerTurnCommand;
+export type StopCollaborationParams = StopCollaborationCommand;
+export type StopCollaborationView = StopCollaborationResult;
 export type SubmitTurnParams = SubmitTurnCommand;
 export type WatchEventsParams = WatchSpec;

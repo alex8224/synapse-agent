@@ -12,6 +12,8 @@ import { changesTab } from './changesTab.tsx';
 import { gitTab } from './gitTab.tsx';
 import { trajectoryTab } from './trajectoryTab.tsx';
 import { goalsTab } from './goalsTab.tsx';
+import { collaborationTab } from './collaborationTab.tsx';
+import { peerSessionTab } from './peerSessionTab.tsx';
 import { previewTab } from './previewTab.tsx';
 import type { RightDockTabDefinition } from './contract.ts';
 
@@ -20,6 +22,8 @@ export const RIGHT_DOCK_MANIFEST: readonly RightDockTabDefinition[] = [
   changesTab,
   gitTab,
   trajectoryTab,
+  collaborationTab,
+  peerSessionTab,
   goalsTab,
   previewTab,
 ];

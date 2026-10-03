@@ -4,7 +4,9 @@
  * Implements:
  * - Direct WebGL/Canvas/DOM terminal rendering via @xterm/xterm
  * - Responsive auto-fitting via @xterm/addon-fit
- * - Dynamic Fluent 2 Light/Dark theme switching
+ * - Dynamic Fluent 2 Light/Dark theme switching (the foreground palette; the
+ *   surface itself belongs to the panel's material, so the terminal paints no
+ *   fill of its own)
  * - Bidirectional Tauri PTY IPC data streaming
  */
 import React, { useEffect, useRef } from 'react';
@@ -91,6 +93,11 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
 
     const term = new Terminal({
       allowProposedApi: true,
+      // The frosted panel behind the terminal *is* the terminal's surface: a fill
+      // here would cover the glass, which is the one thing the panel cannot do for
+      // itself.  `allowTransparency` is the option a canvas/WebGL renderer reads;
+      // the DOM renderer paints its viewport straight from `theme.background`.
+      allowTransparency: true,
       cursorBlink: true,
       cursorStyle: 'bar',
       fontSize: 13,
@@ -99,7 +106,7 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
       fontFamily:
         "'CaskaydiaCove Nerd Font', 'CaskaydiaCove NF', 'Cascadia Code NF', 'Cascadia Mono NF', 'JetBrainsMono Nerd Font', 'MesloLGS NF', 'FiraCode Nerd Font', 'Caskaydia Cove Nerd Font', 'Cascadia Code', Consolas, 'Segoe UI Symbol', monospace",
       theme: {
-        background: isDark ? '#181818' : '#fafafa',
+        background: 'rgba(0, 0, 0, 0)',
         foreground: isDark ? '#d4d4d4' : '#1f1f1f',
         cursor: '#0078d4',
         cursorAccent: '#ffffff',
@@ -285,9 +292,6 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
     <div
       ref={containerRef}
       className="h-full w-full overflow-hidden px-3 py-1.5 select-text"
-      style={{
-        backgroundColor: document.documentElement.dataset.theme === 'fluent-light' ? '#fafafa' : '#181818',
-      }}
     />
   );
 };

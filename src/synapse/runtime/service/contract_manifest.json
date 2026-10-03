@@ -14,6 +14,8 @@
     "attachments.write",
     "codex.reset.consume",
     "codex.usage.read",
+    "collaboration.control",
+    "collaboration.read",
     "events.read",
     "events.watch",
     "fs.list",
@@ -93,6 +95,13 @@
       "kind": "approval_required",
       "legacy": false,
       "payload": "ApprovalPayload",
+      "status": "v1",
+      "transient": false
+    },
+    {
+      "kind": "collaboration_input",
+      "legacy": false,
+      "payload": "CollaborationInputPayload",
       "status": "v1",
       "transient": false
     },
@@ -501,6 +510,50 @@
       "service_method": "get_codex_usage",
       "wire_defaults": {
         "force": false
+      }
+    },
+    {
+      "capability": "collaboration.read",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  The read never opens a session, builds an agent, starts a turn, or contacts another project.",
+      "method": "runtime.collaboration.list",
+      "notes": [
+        "Read-only projection of the requests this session takes part in, newest first, each with a bounded window of its own messages.",
+        "``limit`` is bounded to 1..50 and ``messages_per_request`` to 0..32 by the wire decoder.  The page also carries this session's continuation generation and its version, which the stop control requires."
+      ],
+      "params_alias": "ListCollaborationsParams",
+      "request": "ListCollaborationsQuery",
+      "result": "CollaborationPage",
+      "result_alias": "CollaborationResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "list_collaborations",
+      "wire_defaults": {
+        "limit": 20,
+        "messages_per_request": 8
+      }
+    },
+    {
+      "capability": "collaboration.control",
+      "class": "service",
+      "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.",
+      "method": "runtime.collaboration.stop",
+      "notes": [
+        "Fences one continuation generation, then cancels the turns that generation already started in this session; the target's own work is never touched.",
+        "``expected_version`` must match the generation the caller last read, or the call fails with conflict.",
+        "It cannot start a request or deliver a message: those are Agent actions."
+      ],
+      "params_alias": "StopCollaborationParams",
+      "request": "StopCollaborationCommand",
+      "result": "StopCollaborationResult",
+      "result_alias": "StopCollaborationView",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "stop_collaboration",
+      "wire_defaults": {
+        "receive_only": false
       }
     },
     {
@@ -2741,6 +2794,387 @@
       "origin": "python",
       "role": "result"
     },
+    "CollaborationInputPayload": {
+      "fields": [
+        {
+          "name": "text",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "message_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CollaborationMessageView": {
+      "fields": [
+        {
+          "name": "message_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "request_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "sequence",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "sender_project",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "sender_thread",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "kind",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "created_at_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One message of a request, in request order."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
+    "CollaborationPage": {
+      "fields": [
+        {
+          "name": "requests",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[CollaborationRequestView, ...]",
+          "required": true,
+          "ts_type": "CollaborationRequestView[]",
+          "wire": "json"
+        },
+        {
+          "name": "total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "scope_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "scope_state",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "scope_version",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``scope_*`` describes this session's own continuation generation; the stop control needs its id and version."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "CollaborationRequestView": {
+      "fields": [
+        {
+          "name": "request_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "scope_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "source_project",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "source_thread",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "target_project",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "target_thread",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "version",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "created_at_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "updated_at_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "messages",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[CollaborationMessageView, ...]",
+          "required": true,
+          "ts_type": "CollaborationMessageView[]",
+          "wire": "json"
+        },
+        {
+          "name": "message_total",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "name": "pending",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "collaboration_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "assignment_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "active",
+          "default_kind": "value",
+          "name": "continuation_state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "control_version",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": "pending",
+          "default_kind": "value",
+          "name": "execution_state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "execution_turn_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "execution_reason",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": "not_received",
+          "default_kind": "value",
+          "name": "result_state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "collaboration_id identifies the group; assignment_id identifies one delegated work item independently of user turns. Execution and result processing states describe separate facts.",
+        "``messages`` is a bounded window of the request's newest messages; ``message_total`` is how many exist.",
+        "``pending`` counts deliveries that have not settled, which is what tells a reader whether work is still in flight."
+      ],
+      "origin": "python",
+      "role": "value"
+    },
     "CommandReceipt": {
       "fields": [
         {
@@ -3295,6 +3729,7 @@
         }
       ],
       "notes": [
+        "With assignment_id, control applies to that one assignment; receive_only suppresses source continuations, and revocation cancels its linked turns.",
         "Request-only AND filter: when ``filter`` is present the wire requires both",
         "``kinds`` and ``turn_ids``; each is a list of strings."
       ],
@@ -4255,6 +4690,17 @@
           "required": true,
           "ts_type": "number | null",
           "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "collaboration",
+          "nullable": true,
+          "optional": false,
+          "python_type": "dict[str, str] | None",
+          "required": true,
+          "ts_type": "Record<string, string> | null",
+          "wire": "json"
         }
       ],
       "notes": [
@@ -4515,6 +4961,47 @@
           "ts_type": "number",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListCollaborationsQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": 20,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 8,
+          "default_kind": "value",
+          "name": "messages_per_request",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Read-only: it projects the requests this session takes part in and never opens a session, builds an agent, starts a turn, or contacts another project.",
+        "``limit`` is bounded to 1..50 and ``messages_per_request`` to 0..32 by the wire decoder."
       ],
       "origin": "python",
       "role": "request"
@@ -8366,6 +8853,132 @@
           "ts_type": "number",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "StopCollaborationCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "scope_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "expected_version",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "receive_only",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "assignment_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "With ``assignment_id``, expected_version is the assignment control version; revocation cancels only its linked executions, never another assignment.",
+        "``expected_version`` is the generation version the caller last read, so a stop can never silently apply to a generation it did not see.",
+        "``receive_only`` keeps the requests alive and lets their targets finish while results stop starting work here; without it the generation is revoked.",
+        "It cannot start a request or deliver a message: those are Agent actions."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "StopCollaborationResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "scope_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "state",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "version",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "The fenced generation's new state and version."
       ],
       "origin": "python",
       "role": "result"

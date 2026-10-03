@@ -26,6 +26,13 @@ export type {
   CancelTurnParams,
   ClearSessionGoalParams,
   CommandReceipt,
+  CollaborationMessageView,
+  CollaborationPage,
+  CollaborationRequestView,
+  CollaborationResult,
+  ListCollaborationsParams,
+  StopCollaborationParams,
+  StopCollaborationView,
   DeleteModelCommand,
   DeleteMcpServerCommand,
   CreateSessionParams,
@@ -124,3 +131,7 @@ export const PROJECT_LIST_PAGE_SIZE = 100;
 export const DIRECTORY_LIST_PAGE_SIZE = 200;
 /** Bounded page size for `runtime.session.history` (backend default is 20, cap 100). */
 export const HISTORY_PAGE_SIZE = 20;
+/** Requests read per `runtime.collaboration.list` page (server max is 50). */
+export const COLLABORATION_PAGE_SIZE = 20;
+/** Messages requested per collaboration request (server max is 32). */
+export const COLLABORATION_MESSAGES_PER_REQUEST = 8;
